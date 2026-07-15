@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 24;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 24;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 25;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 25;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -111,6 +111,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 24,
         description: "add scoped external runtime checkpoints and invocation receipts",
+    },
+    SchemaMigration {
+        version: 25,
+        description: "bind provider embedding identity and pricing to durable memory versions",
     },
 ];
 
@@ -295,6 +299,11 @@ CREATE TABLE IF NOT EXISTS external_runtime_invocations (
 );
 CREATE INDEX IF NOT EXISTS idx_external_runtime_invocations_scope
     ON external_runtime_invocations(tenant_id, workspace_id, run_id, node_id, updated_at);
+";
+
+pub(super) const V25_DDL: &str = "
+ALTER TABLE durable_memory_versions ADD COLUMN embedding_metadata_json TEXT;
+ALTER TABLE durable_memory_versions ADD COLUMN embedding_binding_sha256 TEXT;
 ";
 
 pub(super) const SQLITE_DDL: &str = "

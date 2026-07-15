@@ -7,6 +7,7 @@ pub mod circuit_breaker_provider;
 pub mod config;
 pub mod cost_gate;
 pub mod credential;
+pub mod embedding;
 pub mod executor;
 pub mod fake;
 pub mod openai;

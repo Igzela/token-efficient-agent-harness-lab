@@ -1,0 +1,688 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use super::credential::CredentialBoundary;
+use super::transport::{HttpError, HttpRequest, HttpTransport, ReqwestTransport};
+use crate::infrastructure::circuit_breaker::{CircuitBreaker, CircuitBreakerError};
+
+pub const OPENROUTER_EMBEDDING_PROVIDER_ID: &str = "openrouter";
+pub const OPENROUTER_EMBEDDING_BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub const OPENROUTER_EMBEDDING_MODEL_ID: &str = "nvidia/llama-nemotron-embed-vl-1b-v2:free";
+pub const OPENROUTER_EMBEDDING_CANONICAL_SLUG: &str =
+    "nvidia/llama-nemotron-embed-vl-1b-v2-20260224";
+pub const OPENROUTER_EMBEDDING_DIMENSIONS: usize = 1_536;
+pub const OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE: &str = "2026-07-15";
+pub const OPENROUTER_EMBEDDING_CREDENTIAL_ENV: &str = "OPENROUTER_API_KEY";
+
+const MAX_BATCH_INPUTS: usize = 16;
+const MAX_INPUT_BYTES: usize = 64 * 1024;
+const DEFAULT_TIMEOUT_MS: u64 = 20_000;
+const DEFAULT_MAX_RETRIES: usize = 2;
+const DEFAULT_PER_CALL_CAP_USD: f64 = 0.01;
+const DEFAULT_DAILY_CAP_USD: f64 = 0.10;
+
+#[cfg(test)]
+pub(crate) static EMBEDDING_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddingPricingEvidence {
+    pub prompt_cost_per_token_usd: f64,
+    pub completion_cost_per_token_usd: f64,
+    pub currency: String,
+    pub effective_date: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderEmbeddingMetadata {
+    pub provider_id: String,
+    pub requested_model_id: String,
+    pub canonical_model_slug: String,
+    pub resolved_model_id: String,
+    pub dimensions: usize,
+    pub input_tokens: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub pricing: EmbeddingPricingEvidence,
+    pub measurement_provenance: String,
+    pub normalized_content_sha256: String,
+    pub vector_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProviderEmbeddingOutput {
+    pub vectors: Vec<Vec<f64>>,
+    pub metadata: Vec<ProviderEmbeddingMetadata>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProviderEmbeddingConfig {
+    pub timeout_ms: u64,
+    pub max_retries: usize,
+    pub per_call_cap_usd: f64,
+    pub daily_cap_usd: f64,
+}
+
+impl ProviderEmbeddingConfig {
+    pub(crate) fn from_env() -> Result<Self, String> {
+        if std::env::var("CI").is_ok() {
+            return Err("provider embedding generation is prohibited in CI".to_string());
+        }
+        if std::env::var("ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS").as_deref() != Ok("1") {
+            return Err("durable memory embedding gate is disabled".to_string());
+        }
+        if std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH").as_deref() == Ok("1") {
+            return Err("durable memory embedding kill switch is active".to_string());
+        }
+        let credential_env = std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_CREDENTIAL_ENV")
+            .unwrap_or_else(|_| OPENROUTER_EMBEDDING_CREDENTIAL_ENV.to_string());
+        if credential_env != OPENROUTER_EMBEDDING_CREDENTIAL_ENV {
+            return Err(format!(
+                "durable memory embedding credential reference must be {OPENROUTER_EMBEDDING_CREDENTIAL_ENV}"
+            ));
+        }
+        let timeout_ms = bounded_u64_env(
+            "ACP_DURABLE_MEMORY_EMBEDDING_TIMEOUT_MS",
+            DEFAULT_TIMEOUT_MS,
+            100,
+            60_000,
+        )?;
+        let max_retries = bounded_u64_env(
+            "ACP_DURABLE_MEMORY_EMBEDDING_MAX_RETRIES",
+            DEFAULT_MAX_RETRIES as u64,
+            0,
+            3,
+        )? as usize;
+        let per_call_cap_usd = positive_f64_env(
+            "ACP_DURABLE_MEMORY_EMBEDDING_PER_CALL_CAP_USD",
+            DEFAULT_PER_CALL_CAP_USD,
+        )?;
+        let daily_cap_usd = positive_f64_env(
+            "ACP_DURABLE_MEMORY_EMBEDDING_DAILY_CAP_USD",
+            DEFAULT_DAILY_CAP_USD,
+        )?;
+        Ok(Self {
+            timeout_ms,
+            max_retries,
+            per_call_cap_usd,
+            daily_cap_usd,
+        })
+    }
+}
+
+pub(crate) struct ProviderEmbeddingClient {
+    transport: Arc<dyn HttpTransport>,
+    circuit_breaker: Arc<CircuitBreaker>,
+}
+
+impl Default for ProviderEmbeddingClient {
+    fn default() -> Self {
+        Self::new(Arc::new(ReqwestTransport::new()))
+    }
+}
+
+impl ProviderEmbeddingClient {
+    pub(crate) fn new(transport: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            transport,
+            circuit_breaker: Arc::new(CircuitBreaker::new(
+                "openrouter-durable-memory-embedding",
+                3,
+                30_000,
+            )),
+        }
+    }
+
+    pub(crate) fn embed(
+        &self,
+        inputs: &[String],
+        config: &ProviderEmbeddingConfig,
+    ) -> Result<ProviderEmbeddingOutput, String> {
+        validate_inputs(inputs)?;
+        let boundary = CredentialBoundary::new("env")?;
+        let api_key = boundary.resolve(OPENROUTER_EMBEDDING_CREDENTIAL_ENV)?;
+        let result = self
+            .circuit_breaker
+            .call(|| self.verify_catalog_and_embed(inputs, config, &api_key));
+        match result {
+            Ok(output) => Ok(output),
+            Err(CircuitBreakerError::CircuitOpen) => {
+                Err("durable memory embedding provider circuit is open".to_string())
+            }
+            Err(CircuitBreakerError::Inner(error)) => Err(error),
+        }
+    }
+
+    fn verify_catalog_and_embed(
+        &self,
+        inputs: &[String],
+        config: &ProviderEmbeddingConfig,
+        api_key: &str,
+    ) -> Result<ProviderEmbeddingOutput, String> {
+        let catalog = self.send_with_retry(
+            HttpRequest {
+                url: format!("{OPENROUTER_EMBEDDING_BASE_URL}/embeddings/models"),
+                method: "GET".to_string(),
+                headers: authorization_headers(api_key),
+                body: None,
+                timeout_secs: Some(config.timeout_ms as f64 / 1000.0),
+            },
+            config,
+        )?;
+        let pricing = validate_catalog(&catalog.body)?;
+        let body = json!({
+            "model": OPENROUTER_EMBEDDING_MODEL_ID,
+            "input": inputs,
+            "dimensions": OPENROUTER_EMBEDDING_DIMENSIONS,
+            "encoding_format": "float",
+        });
+        let response = self.send_with_retry(
+            HttpRequest {
+                url: format!("{OPENROUTER_EMBEDDING_BASE_URL}/embeddings"),
+                method: "POST".to_string(),
+                headers: authorization_headers(api_key),
+                body: Some(serde_json::to_vec(&body).map_err(|error| error.to_string())?),
+                timeout_secs: Some(config.timeout_ms as f64 / 1000.0),
+            },
+            config,
+        )?;
+        parse_embedding_response(&response.body, inputs, pricing)
+    }
+
+    fn send_with_retry(
+        &self,
+        request: HttpRequest,
+        config: &ProviderEmbeddingConfig,
+    ) -> Result<super::transport::HttpResponse, String> {
+        let mut attempt = 0usize;
+        loop {
+            if std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH").as_deref() == Ok("1") {
+                return Err("durable memory embedding kill switch became active".to_string());
+            }
+            match send_blocking(Arc::clone(&self.transport), request.clone()) {
+                Ok(response) => return Ok(response),
+                Err(error) if retryable_http_error(&error) && attempt < config.max_retries => {
+                    let delay = Duration::from_millis(100 * (1u64 << attempt));
+                    std::thread::sleep(delay);
+                    attempt += 1;
+                }
+                Err(error) => return Err(redacted_http_error(&error)),
+            }
+        }
+    }
+}
+
+fn send_blocking(
+    transport: Arc<dyn HttpTransport>,
+    request: HttpRequest,
+) -> Result<super::transport::HttpResponse, HttpError> {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .map_err(|error| HttpError::Connection(error.to_string()))?
+                    .block_on(transport.send(&request))
+            })
+            .join()
+            .map_err(|_| HttpError::Connection("embedding transport worker panicked".to_string()))?
+    })
+}
+
+fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
+    let value: Value = serde_json::from_slice(body)
+        .map_err(|_| "embedding model catalog response is malformed".to_string())?;
+    let record = value
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|records| {
+            records.iter().find(|record| {
+                record.get("id").and_then(Value::as_str) == Some(OPENROUTER_EMBEDDING_MODEL_ID)
+            })
+        })
+        .ok_or_else(|| "pinned embedding model is unavailable".to_string())?;
+    if record.get("canonical_slug").and_then(Value::as_str)
+        != Some(OPENROUTER_EMBEDDING_CANONICAL_SLUG)
+    {
+        return Err("embedding model canonical identity changed".to_string());
+    }
+    let output_modalities = record
+        .pointer("/architecture/output_modalities")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "embedding model capability record is incomplete".to_string())?;
+    if !output_modalities
+        .iter()
+        .any(|value| value.as_str() == Some("embeddings"))
+    {
+        return Err("pinned model is not embedding-capable".to_string());
+    }
+    let prompt = parse_price(record.pointer("/pricing/prompt"))?;
+    let completion = parse_price(record.pointer("/pricing/completion"))?;
+    if prompt != 0.0 || completion != 0.0 {
+        return Err("pinned free embedding model pricing changed".to_string());
+    }
+    Ok(EmbeddingPricingEvidence {
+        prompt_cost_per_token_usd: prompt,
+        completion_cost_per_token_usd: completion,
+        currency: "USD".to_string(),
+        effective_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        source: "provider_catalog_reported".to_string(),
+    })
+}
+
+fn parse_embedding_response(
+    body: &[u8],
+    inputs: &[String],
+    pricing: EmbeddingPricingEvidence,
+) -> Result<ProviderEmbeddingOutput, String> {
+    let value: Value = serde_json::from_slice(body)
+        .map_err(|_| "embedding provider response is malformed".to_string())?;
+    let resolved_model_id = value
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 256)
+        .ok_or_else(|| "embedding provider outcome has no resolved model identity".to_string())?;
+    let data = value
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "embedding provider outcome has no vectors".to_string())?;
+    if data.len() != inputs.len() {
+        return Err("embedding provider vector count mismatch".to_string());
+    }
+    let input_tokens = value
+        .pointer("/usage/prompt_tokens")
+        .and_then(Value::as_i64);
+    if input_tokens.is_some_and(|tokens| tokens < 0) {
+        return Err("embedding provider usage is invalid".to_string());
+    }
+    let total_cost = input_tokens.map(|tokens| tokens as f64 * pricing.prompt_cost_per_token_usd);
+    let mut indexed = vec![None; inputs.len()];
+    for item in data {
+        let index = item
+            .get("index")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|index| *index < inputs.len())
+            .ok_or_else(|| "embedding provider vector index is invalid".to_string())?;
+        if indexed[index].is_some() {
+            return Err("embedding provider returned duplicate vector index".to_string());
+        }
+        let values = item
+            .get("embedding")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "embedding provider returned an empty vector".to_string())?
+            .iter()
+            .map(|value| {
+                value
+                    .as_f64()
+                    .filter(|value| value.is_finite())
+                    .ok_or_else(|| {
+                        "embedding provider returned a non-finite vector value".to_string()
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if values.len() != OPENROUTER_EMBEDDING_DIMENSIONS {
+            return Err(format!(
+                "embedding dimension mismatch: expected {OPENROUTER_EMBEDDING_DIMENSIONS}, got {}",
+                values.len()
+            ));
+        }
+        indexed[index] = Some(values);
+    }
+    let vectors = indexed
+        .into_iter()
+        .map(|value| value.ok_or_else(|| "embedding provider vector index is missing".to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let per_input_tokens = (inputs.len() == 1).then_some(input_tokens).flatten();
+    let per_input_cost = (inputs.len() == 1).then_some(total_cost).flatten();
+    let metadata = inputs
+        .iter()
+        .zip(&vectors)
+        .map(|(input, vector)| ProviderEmbeddingMetadata {
+            provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            requested_model_id: OPENROUTER_EMBEDDING_MODEL_ID.to_string(),
+            canonical_model_slug: OPENROUTER_EMBEDDING_CANONICAL_SLUG.to_string(),
+            resolved_model_id: resolved_model_id.to_string(),
+            dimensions: vector.len(),
+            input_tokens: per_input_tokens,
+            cost_usd: per_input_cost,
+            pricing: pricing.clone(),
+            measurement_provenance: "provider_reported".to_string(),
+            normalized_content_sha256: sha256_bytes(normalize_input(input).as_bytes()),
+            vector_sha256: sha256_json(&serde_json::to_value(vector).unwrap_or(Value::Null)),
+        })
+        .collect();
+    Ok(ProviderEmbeddingOutput { vectors, metadata })
+}
+
+fn validate_inputs(inputs: &[String]) -> Result<(), String> {
+    if inputs.is_empty() || inputs.len() > MAX_BATCH_INPUTS {
+        return Err(format!(
+            "embedding batch size must be within 1..={MAX_BATCH_INPUTS}"
+        ));
+    }
+    let total = inputs.iter().try_fold(0usize, |total, input| {
+        if input.trim().is_empty() {
+            return Err("embedding input is empty".to_string());
+        }
+        Ok(total.saturating_add(input.len()))
+    })?;
+    if total > MAX_INPUT_BYTES {
+        return Err(format!("embedding input exceeds {MAX_INPUT_BYTES} bytes"));
+    }
+    Ok(())
+}
+
+fn authorization_headers(api_key: &str) -> Vec<(String, String)> {
+    vec![
+        ("Authorization".to_string(), format!("Bearer {api_key}")),
+        ("content-type".to_string(), "application/json".to_string()),
+    ]
+}
+
+fn retryable_http_error(error: &HttpError) -> bool {
+    matches!(
+        error,
+        HttpError::Timeout(_)
+            | HttpError::Connection(_)
+            | HttpError::Http {
+                status: 429 | 500..=599,
+                ..
+            }
+    )
+}
+
+fn redacted_http_error(error: &HttpError) -> String {
+    match error {
+        HttpError::Http {
+            status: 401 | 403, ..
+        } => "embedding provider authentication refused".to_string(),
+        HttpError::Http { status: 429, .. } => "embedding provider rate limit exceeded".to_string(),
+        HttpError::Http { status, .. } => format!("embedding provider HTTP {status}"),
+        HttpError::Timeout(_) => "embedding provider request timed out".to_string(),
+        HttpError::Connection(_) => "embedding provider connection failed".to_string(),
+        HttpError::Parse(_) => "embedding provider transport response was malformed".to_string(),
+    }
+}
+
+fn parse_price(value: Option<&Value>) -> Result<f64, String> {
+    let parsed = value
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .ok_or_else(|| "embedding provider pricing is unknown or incomplete".to_string())?;
+    Ok(parsed)
+}
+
+fn bounded_u64_env(key: &str, default: u64, min: u64, max: u64) -> Result<u64, String> {
+    let value = std::env::var(key)
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| format!("{key} is invalid"))
+        })
+        .transpose()?
+        .unwrap_or(default);
+    if !(min..=max).contains(&value) {
+        return Err(format!("{key} is outside {min}..={max}"));
+    }
+    Ok(value)
+}
+
+fn positive_f64_env(key: &str, default: f64) -> Result<f64, String> {
+    let value = std::env::var(key)
+        .ok()
+        .map(|value| {
+            value
+                .parse::<f64>()
+                .map_err(|_| format!("{key} is invalid"))
+        })
+        .transpose()?
+        .unwrap_or(default);
+    if !value.is_finite() || value <= 0.0 {
+        return Err(format!("{key} must be finite and positive"));
+    }
+    Ok(value)
+}
+
+fn normalize_input(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn sha256_json(value: &Value) -> String {
+    serde_json::to_vec(value)
+        .map(|bytes| sha256_bytes(&bytes))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::transport::{HttpResponse, MockTransport};
+
+    fn catalog() -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            body: serde_json::to_vec(&json!({"data":[{
+                "id": OPENROUTER_EMBEDDING_MODEL_ID,
+                "canonical_slug": OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+                "pricing":{"prompt":"0","completion":"0"},
+                "architecture":{"output_modalities":["embeddings"]}
+            }]}))
+            .unwrap(),
+        }
+    }
+
+    fn response(values: Vec<f64>) -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            body: serde_json::to_vec(&json!({
+                "model":"private/openrouter/nvidia/llama-nemotron-embed-vl-1b-v2",
+                "data":[{"index":0,"embedding":values}],
+                "usage":{"prompt_tokens":7}
+            }))
+            .unwrap(),
+        }
+    }
+
+    fn config() -> ProviderEmbeddingConfig {
+        ProviderEmbeddingConfig {
+            timeout_ms: 1000,
+            max_retries: 0,
+            per_call_cap_usd: 0.01,
+            daily_cap_usd: 0.10,
+        }
+    }
+
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prior_key: Option<String>,
+        prior_kill_switch: Option<String>,
+    }
+    impl EnvGuard {
+        fn enabled() -> Self {
+            let lock = EMBEDDING_TEST_ENV_LOCK.lock().unwrap();
+            let prior_key = std::env::var(OPENROUTER_EMBEDDING_CREDENTIAL_ENV).ok();
+            let prior_kill_switch = std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH").ok();
+            std::env::set_var(OPENROUTER_EMBEDDING_CREDENTIAL_ENV, "test-secret");
+            std::env::remove_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH");
+            Self {
+                _lock: lock,
+                prior_key,
+                prior_kill_switch,
+            }
+        }
+
+        fn missing() -> Self {
+            let guard = Self::enabled();
+            std::env::remove_var(OPENROUTER_EMBEDDING_CREDENTIAL_ENV);
+            guard
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.prior_key {
+                std::env::set_var(OPENROUTER_EMBEDDING_CREDENTIAL_ENV, value);
+            } else {
+                std::env::remove_var(OPENROUTER_EMBEDDING_CREDENTIAL_ENV);
+            }
+            if let Some(value) = &self.prior_kill_switch {
+                std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH", value);
+            } else {
+                std::env::remove_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH");
+            }
+        }
+    }
+
+    #[test]
+    fn provider_embedding_validates_catalog_and_response() {
+        let _guard = EnvGuard::enabled();
+        let client = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(vec![
+            Ok(catalog()),
+            Ok(response(vec![0.25; OPENROUTER_EMBEDDING_DIMENSIONS])),
+        ])));
+        let output = client
+            .embed(&["bounded memory".to_string()], &config())
+            .unwrap();
+        assert_eq!(output.vectors[0].len(), OPENROUTER_EMBEDDING_DIMENSIONS);
+        assert_eq!(output.metadata[0].provider_id, "openrouter");
+        assert_eq!(output.metadata[0].input_tokens, Some(7));
+        assert_eq!(output.metadata[0].cost_usd, Some(0.0));
+    }
+
+    #[test]
+    fn provider_embedding_supports_bounded_batches_without_fabricating_per_item_usage() {
+        let _guard = EnvGuard::enabled();
+        let batch_response = HttpResponse {
+            status: 200,
+            body: serde_json::to_vec(&json!({
+                "model":"private/openrouter/nvidia/llama-nemotron-embed-vl-1b-v2",
+                "data":[
+                    {"index":0,"embedding":vec![0.25;OPENROUTER_EMBEDDING_DIMENSIONS]},
+                    {"index":1,"embedding":vec![0.5;OPENROUTER_EMBEDDING_DIMENSIONS]}
+                ],
+                "usage":{"prompt_tokens":11}
+            }))
+            .unwrap(),
+        };
+        let client = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(vec![
+            Ok(catalog()),
+            Ok(batch_response),
+        ])));
+        let output = client
+            .embed(&["first".to_string(), "second".to_string()], &config())
+            .unwrap();
+        assert_eq!(output.vectors.len(), 2);
+        assert_eq!(output.metadata[0].input_tokens, None);
+        assert_eq!(output.metadata[1].cost_usd, None);
+    }
+
+    #[test]
+    fn malformed_non_finite_empty_and_dimension_mismatch_fail_closed() {
+        let pricing = EmbeddingPricingEvidence {
+            prompt_cost_per_token_usd: 0.0,
+            completion_cost_per_token_usd: 0.0,
+            currency: "USD".to_string(),
+            effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
+            source: "provider_catalog_reported".to_string(),
+        };
+        let input = ["memory".to_string()];
+        assert!(parse_embedding_response(b"{}", &input, pricing.clone()).is_err());
+        let empty = json!({"model":"m","data":[{"index":0,"embedding":[]}],"usage":{}});
+        assert!(parse_embedding_response(
+            &serde_json::to_vec(&empty).unwrap(),
+            &input,
+            pricing.clone()
+        )
+        .unwrap_err()
+        .contains("dimension"));
+        let short = json!({"model":"m","data":[{"index":0,"embedding":[0.1]}],"usage":{}});
+        assert!(
+            parse_embedding_response(&serde_json::to_vec(&short).unwrap(), &input, pricing)
+                .unwrap_err()
+                .contains("dimension")
+        );
+    }
+
+    #[test]
+    fn auth_timeout_kill_switch_and_pricing_change_are_refused() {
+        let _guard = EnvGuard::enabled();
+        let auth = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(vec![Err(
+            HttpError::Http {
+                status: 401,
+                reason: "secret-shaped provider body".to_string(),
+            },
+        )])));
+        assert_eq!(
+            auth.embed(&["x".to_string()], &config()).unwrap_err(),
+            "embedding provider authentication refused"
+        );
+
+        let timeout = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(vec![Err(
+            HttpError::Timeout("internal detail".to_string()),
+        )])));
+        assert_eq!(
+            timeout.embed(&["x".to_string()], &config()).unwrap_err(),
+            "embedding provider request timed out"
+        );
+
+        std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH", "1");
+        let blocked = ProviderEmbeddingClient::new(Arc::new(MockTransport::empty()));
+        assert!(blocked
+            .embed(&["x".to_string()], &config())
+            .unwrap_err()
+            .contains("kill switch"));
+        std::env::remove_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH");
+
+        let changed = json!({"data":[{
+            "id":OPENROUTER_EMBEDDING_MODEL_ID,
+            "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+            "pricing":{"prompt":"0.0001","completion":"0"},
+            "architecture":{"output_modalities":["embeddings"]}
+        }]});
+        assert!(validate_catalog(&serde_json::to_vec(&changed).unwrap())
+            .unwrap_err()
+            .contains("pricing changed"));
+    }
+
+    #[test]
+    fn missing_credentials_and_oversized_batches_are_refused() {
+        let _guard = EnvGuard::missing();
+        let client = ProviderEmbeddingClient::new(Arc::new(MockTransport::empty()));
+        assert!(client
+            .embed(&["x".to_string()], &config())
+            .unwrap_err()
+            .contains("is not set"));
+        assert!(validate_inputs(&vec!["x".to_string(); MAX_BATCH_INPUTS + 1]).is_err());
+    }
+
+    #[test]
+    fn repeated_provider_failures_open_the_circuit() {
+        let _guard = EnvGuard::enabled();
+        let failures = (0..3)
+            .map(|_| {
+                Err(HttpError::Http {
+                    status: 503,
+                    reason: "unavailable".to_string(),
+                })
+            })
+            .collect();
+        let client = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(failures)));
+        for _ in 0..3 {
+            assert!(client.embed(&["x".to_string()], &config()).is_err());
+        }
+        assert_eq!(
+            client.embed(&["x".to_string()], &config()).unwrap_err(),
+            "durable memory embedding provider circuit is open"
+        );
+    }
+}

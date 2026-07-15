@@ -91,8 +91,10 @@ impl LocalProductStore {
     ) -> Result<(), String> {
         let reserved_cost = event
             .cost
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .ok_or_else(|| "provider cost reservation must be finite and positive".to_string())?;
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .ok_or_else(|| {
+                "provider cost reservation must be finite and non-negative".to_string()
+            })?;
         if !per_call_cap_usd.is_finite()
             || per_call_cap_usd <= 0.0
             || !daily_cap_usd.is_finite()

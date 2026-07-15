@@ -28,6 +28,13 @@ use engine::orchestration::schemas::{
     DebatePosition, DebateRequest, DebateResolution, HandoffRequest, ReviewRequest, ReviewVerdict,
 };
 #[cfg(feature = "pg-tests")]
+use engine::provider::embedding::{
+    OPENROUTER_EMBEDDING_CANONICAL_SLUG, OPENROUTER_EMBEDDING_DIMENSIONS,
+    OPENROUTER_EMBEDDING_MODEL_ID,
+};
+#[cfg(feature = "pg-tests")]
+use engine::provider::transport::{HttpResponse, MockTransport};
+#[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::BudgetAutoPausePolicy;
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::{
@@ -2699,6 +2706,129 @@ fn pg_durable_memory_is_scope_bound_restart_safe_and_concurrency_safe() {
         )
         .unwrap();
     assert_eq!(resolved["winner"]["state"], "current");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_provider_embedding_metadata_is_atomic_and_restart_safe() {
+    let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        return;
+    };
+    let keys = [
+        "CI",
+        "OPENROUTER_API_KEY",
+        "ACP_DURABLE_MEMORY_EMBEDDING_MODE",
+        "ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS",
+        "ACP_DURABLE_MEMORY_EMBEDDING_DAILY_CAP_USD",
+    ];
+    let prior = keys
+        .into_iter()
+        .map(|key| (key, std::env::var(key).ok()))
+        .collect::<Vec<_>>();
+    std::env::remove_var("CI");
+    std::env::set_var("OPENROUTER_API_KEY", "fixture-credential");
+    std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_MODE", "provider");
+    std::env::set_var("ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS", "1");
+    // Other PostgreSQL integration tests intentionally leave historical usage
+    // in this shared disposable database. Isolate this zero-price provider
+    // fixture from that unrelated aggregate while retaining production cost
+    // reservation behavior.
+    std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_DAILY_CAP_USD", "1000000000");
+    let fake_responses = || {
+        vec![
+            Ok(HttpResponse {
+                status: 200,
+                body: serde_json::to_vec(&json!({"data":[{
+                    "id":OPENROUTER_EMBEDDING_MODEL_ID,
+                    "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+                    "pricing":{"prompt":"0","completion":"0"},
+                    "architecture":{"output_modalities":["embeddings"]}
+                }]}))
+                .unwrap(),
+            }),
+            Ok(HttpResponse {
+                status: 200,
+                body: serde_json::to_vec(&json!({
+                    "model":"private/openrouter/nvidia/llama-nemotron-embed-vl-1b-v2",
+                    "data":[{"index":0,"embedding":vec![0.25;OPENROUTER_EMBEDDING_DIMENSIONS]}],
+                    "usage":{"prompt_tokens":4}
+                }))
+                .unwrap(),
+            }),
+        ]
+    };
+    let result = (|| -> Result<(), String> {
+        let tag = uuid_tag();
+        let store = LocalProductStore::new_postgres_with_embedding_transport_for_test(
+            &url,
+            utc_now_string,
+            Arc::new(MockTransport::new(fake_responses())),
+        )?;
+        let scope = MemoryScope {
+            tenant_id: "local".to_string(),
+            workspace_id: format!("pg-provider-memory-{tag}"),
+            agent_id: Some(format!("agent-{tag}")),
+            task_id: None,
+        };
+        let created = store.create_durable_memory(
+            &DurableMemoryCreate {
+                scope: scope.clone(),
+                run_id: Some(format!("run-{tag}")),
+                source_id: format!("source-{tag}"),
+                source_sha256: "ab".repeat(32),
+                conflict_key: format!("fact-{tag}"),
+                content: json!({"fact":"postgres provider embedding"}),
+                confidence: 1.0,
+                fresh_until: None,
+                expires_at: None,
+                supersedes_memory_id: None,
+            },
+            "pg-provider-memory-test",
+        )?;
+        let memory_id = created["memory_id"].as_str().unwrap().to_string();
+        assert_eq!(created["embedding"]["provenance"], "provider_reported");
+        assert_eq!(created["embedding"]["dimensions"], 1536);
+        drop(store);
+
+        let restarted = LocalProductStore::new_postgres_with_embedding_transport_for_test(
+            &url,
+            utc_now_string,
+            Arc::new(MockTransport::new(fake_responses())),
+        )?;
+        let history = restarted.inspect_durable_memory(&memory_id)?;
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0]["embedding"]["binding_sha256"],
+            created["embedding"]["binding_sha256"]
+        );
+        let retrieval = restarted.retrieve_durable_memories(
+            &MemoryRetrievalRequest {
+                scope,
+                run_id: format!("run-retrieve-{tag}"),
+                node_id: format!("node-{tag}"),
+                query: "postgres provider embedding".to_string(),
+                top_k: 5,
+                max_tokens: 100,
+                max_bytes: 1000,
+                allow_lexical_fallback: false,
+            },
+            "pg-provider-memory-test",
+        )?;
+        assert_eq!(retrieval.selected.len(), 1);
+        assert_eq!(
+            retrieval.embedding_provider.unwrap()["provider_id"],
+            "openrouter"
+        );
+        Ok(())
+    })();
+    for (key, value) in prior {
+        if let Some(value) = value {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
+    result.unwrap();
 }
 
 #[test]

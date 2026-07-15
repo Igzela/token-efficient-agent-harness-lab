@@ -105,6 +105,7 @@ pub struct LocalProductStore {
     db: DatabaseConnection,
     clock: Box<dyn Fn() -> String + Send + Sync>,
     encryption_active: bool,
+    pub(super) embedding_client: crate::provider::embedding::ProviderEmbeddingClient,
 }
 
 impl LocalProductStore {
@@ -126,6 +127,20 @@ impl LocalProductStore {
         clock: impl Fn() -> String + Send + Sync + 'static,
         encryption_key: Option<&str>,
     ) -> Result<Self, String> {
+        Self::new_with_components(
+            path,
+            clock,
+            encryption_key,
+            crate::provider::embedding::ProviderEmbeddingClient::default(),
+        )
+    }
+
+    fn new_with_components(
+        path: impl AsRef<Path>,
+        clock: impl Fn() -> String + Send + Sync + 'static,
+        encryption_key: Option<&str>,
+        embedding_client: crate::provider::embedding::ProviderEmbeddingClient,
+    ) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -146,10 +161,25 @@ impl LocalProductStore {
             db: DatabaseConnection::Sqlite(Mutex::new(conn)),
             clock: Box::new(clock),
             encryption_active: encryption_key.is_some(),
+            embedding_client,
         };
         store.ensure_default_config()?;
         store.run_migrations()?;
         Ok(store)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_embedding_transport(
+        path: impl AsRef<Path>,
+        clock: impl Fn() -> String + Send + Sync + 'static,
+        transport: std::sync::Arc<dyn crate::provider::transport::HttpTransport>,
+    ) -> Result<Self, String> {
+        Self::new_with_components(
+            path,
+            clock,
+            None,
+            crate::provider::embedding::ProviderEmbeddingClient::new(transport),
+        )
     }
 
     pub fn is_encrypted(&self) -> bool {
@@ -267,6 +297,19 @@ impl LocalProductStore {
         pg_url: &str,
         clock: impl Fn() -> String + Send + Sync + 'static,
     ) -> Result<Self, String> {
+        Self::new_postgres_with_components(
+            pg_url,
+            clock,
+            crate::provider::embedding::ProviderEmbeddingClient::default(),
+        )
+    }
+
+    #[cfg(feature = "pg")]
+    fn new_postgres_with_components(
+        pg_url: &str,
+        clock: impl Fn() -> String + Send + Sync + 'static,
+        embedding_client: crate::provider::embedding::ProviderEmbeddingClient,
+    ) -> Result<Self, String> {
         let manager = PostgresConnectionManager::new(
             pg_url.parse().map_err(|e| format!("invalid PG URL: {e}"))?,
             NoTls,
@@ -286,10 +329,25 @@ impl LocalProductStore {
             db: DatabaseConnection::Pg(pool),
             clock: Box::new(clock),
             encryption_active: false,
+            embedding_client,
         };
         store.ensure_default_config()?;
         store.run_pg_migrations()?;
         Ok(store)
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[doc(hidden)]
+    pub fn new_postgres_with_embedding_transport_for_test(
+        pg_url: &str,
+        clock: impl Fn() -> String + Send + Sync + 'static,
+        transport: std::sync::Arc<dyn crate::provider::transport::HttpTransport>,
+    ) -> Result<Self, String> {
+        Self::new_postgres_with_components(
+            pg_url,
+            clock,
+            crate::provider::embedding::ProviderEmbeddingClient::new(transport),
+        )
     }
 
     #[cfg(feature = "pg")]

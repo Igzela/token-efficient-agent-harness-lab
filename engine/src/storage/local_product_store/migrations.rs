@@ -5,6 +5,7 @@ use super::{schema, DatabaseConnection, LocalProductStore};
 pub(super) const V22_SCHEMA_VERSION: i64 = 22;
 pub(super) const V23_SCHEMA_VERSION: i64 = 23;
 pub(super) const V24_SCHEMA_VERSION: i64 = 24;
+pub(super) const V25_SCHEMA_VERSION: i64 = 25;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -63,6 +64,7 @@ impl LocalProductStore {
                     22 => Self::migrate_v22_add_agent_action_receipts_and_tool_profiles(conn)?,
                     23 => Self::migrate_v23_add_durable_memory_and_production_jobs(conn)?,
                     24 => Self::migrate_v24_add_external_runtime_state(conn)?,
+                    25 => Self::migrate_v25_add_provider_embedding_bindings(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -542,6 +544,65 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
         }
     }
 
+    /// Roll back v25 only when no provider embedding binding has been stored.
+    /// Runtime writers must be stopped before this operation.
+    pub fn rollback_v25_to_v24(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v25 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v25 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v25_to_v24(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v25_to_v24_internal(actor, &now),
+        }
+    }
+
+    fn rollback_sqlite_v25_to_v24(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            require_v25_rollback_source(current_version)?;
+            let occupied: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM durable_memory_versions
+                     WHERE embedding_metadata_json IS NOT NULL
+                        OR embedding_binding_sha256 IS NOT NULL LIMIT 1)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            require_empty_v25_bindings(occupied)?;
+            tx.execute_batch(
+                "ALTER TABLE durable_memory_versions DROP COLUMN embedding_binding_sha256;
+                 ALTER TABLE durable_memory_versions DROP COLUMN embedding_metadata_json;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v25_to_v24', 'local_product_store', ?3)",
+                rusqlite::params![now, actor, v25_rollback_audit_details()],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V24_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
+
     /// Roll back the additive v24 schema to v23 only when no external-runtime
     /// checkpoint or invocation receipt exists. Runtime writers must be stopped.
     pub fn rollback_v24_to_v23(
@@ -914,6 +975,27 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         conn.execute_batch(schema::V24_DDL)
             .map_err(|error| error.to_string())
     }
+
+    fn migrate_v25_add_provider_embedding_bindings(conn: &Connection) -> Result<(), String> {
+        for column in ["embedding_metadata_json", "embedding_binding_sha256"] {
+            let exists = conn
+                .prepare("PRAGMA table_info(durable_memory_versions)")
+                .and_then(|mut statement| {
+                    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+                    rows.collect::<Result<Vec<_>, _>>()
+                })
+                .map_err(|error| error.to_string())?
+                .iter()
+                .any(|existing| existing == column);
+            if !exists {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE durable_memory_versions ADD COLUMN {column} TEXT;"
+                ))
+                .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn occupied_sqlite_tables(tx: &Transaction<'_>, tables: &[&str]) -> Result<Vec<String>, String> {
@@ -948,6 +1030,28 @@ pub(super) fn require_v24_rollback_source(current_version: i64) -> Result<(), St
             "v24 rollback requires current schema version 24; found {current_version}"
         ))
     }
+}
+
+pub(super) fn require_v25_rollback_source(current_version: i64) -> Result<(), String> {
+    if current_version == V25_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(format!(
+            "v25 rollback requires current schema version 25; found {current_version}"
+        ))
+    }
+}
+
+pub(super) fn require_empty_v25_bindings(occupied: bool) -> Result<(), String> {
+    if occupied {
+        Err("v25 rollback blocked: authoritative provider embedding bindings exist".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn v25_rollback_audit_details() -> &'static str {
+    r#"{"from_version":25,"to_version":24,"dropped_empty_columns":["embedding_metadata_json","embedding_binding_sha256"]}"#
 }
 
 pub(super) fn require_empty_v24_tables(occupied: &[String]) -> Result<(), String> {
@@ -1038,6 +1142,7 @@ mod tests {
 
     fn store_at_v22(path: impl AsRef<std::path::Path>) -> LocalProductStore {
         let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v25_to_v24("migration-test", true).unwrap();
         store.rollback_v24_to_v23("migration-test", true).unwrap();
         store.rollback_v23_to_v22("migration-test", true).unwrap();
         store
@@ -1089,7 +1194,7 @@ mod tests {
 
         drop(store);
         let upgraded = LocalProductStore::new(&path).unwrap();
-        assert_eq!(upgraded.schema_version().unwrap(), V24_SCHEMA_VERSION);
+        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
         for table in V22_TABLES {
             assert!(table_exists(&upgraded, table), "{table} should be restored");
         }
@@ -1236,6 +1341,9 @@ mod tests {
         let occupied_path = dir.path().join("v23-occupied.db");
         let occupied = LocalProductStore::new(&occupied_path).unwrap();
         occupied
+            .rollback_v25_to_v24("migration-test", true)
+            .unwrap();
+        occupied
             .rollback_v24_to_v23("migration-test", true)
             .unwrap();
         occupied
@@ -1258,6 +1366,7 @@ mod tests {
 
         let empty_path = dir.path().join("v23-empty.db");
         let empty = LocalProductStore::new(&empty_path).unwrap();
+        empty.rollback_v25_to_v24("migration-test", true).unwrap();
         empty.rollback_v24_to_v23("migration-test", true).unwrap();
         empty.rollback_v23_to_v22("migration-test", true).unwrap();
         assert_eq!(empty.schema_version().unwrap(), V22_SCHEMA_VERSION);
@@ -1266,7 +1375,7 @@ mod tests {
         }
         drop(empty);
         let upgraded = LocalProductStore::new(&empty_path).unwrap();
-        assert_eq!(upgraded.schema_version().unwrap(), V24_SCHEMA_VERSION);
+        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
         for table in V23_TABLES {
             assert!(table_exists(&upgraded, table));
         }
@@ -1280,6 +1389,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let occupied_path = dir.path().join("v24-occupied.db");
         let occupied = LocalProductStore::new(&occupied_path).unwrap();
+        occupied
+            .rollback_v25_to_v24("migration-test", true)
+            .unwrap();
         occupied
             .with_conn(|conn| {
                 conn.execute(
@@ -1302,6 +1414,7 @@ mod tests {
 
         let empty_path = dir.path().join("v24-empty.db");
         let empty = LocalProductStore::new(&empty_path).unwrap();
+        empty.rollback_v25_to_v24("migration-test", true).unwrap();
         empty.rollback_v24_to_v23("migration-test", true).unwrap();
         assert_eq!(empty.schema_version().unwrap(), V23_SCHEMA_VERSION);
         for table in V24_TABLES {
@@ -1309,9 +1422,66 @@ mod tests {
         }
         drop(empty);
         let upgraded = LocalProductStore::new(&empty_path).unwrap();
-        assert_eq!(upgraded.schema_version().unwrap(), V24_SCHEMA_VERSION);
+        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
         for table in V24_TABLES {
             assert!(table_exists(&upgraded, table));
         }
+    }
+
+    #[test]
+    fn sqlite_v25_rollback_refuses_provider_bindings_and_reapplies_cleanly() {
+        let dir = tempdir().unwrap();
+        let occupied = LocalProductStore::new(dir.path().join("v25-occupied.db")).unwrap();
+        occupied
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO durable_memory_versions
+                     (memory_id,version,tenant_id,workspace_id,source_id,source_sha256,
+                      conflict_key,state,confidence,content_json,embedding_provenance,
+                      embedding_metadata_json,embedding_binding_sha256,record_sha256,
+                      created_at,created_by)
+                     VALUES ('memory',1,'tenant','workspace','source',?1,'fact','current',1.0,
+                             '{}','provider_reported','{}',?1,?1,'2026-07-15T00:00:00Z','test')",
+                    ["a".repeat(64)],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let error = occupied
+            .rollback_v25_to_v24("migration-test", true)
+            .unwrap_err();
+        assert!(error.contains("provider embedding bindings exist"));
+        assert_eq!(occupied.schema_version().unwrap(), V25_SCHEMA_VERSION);
+
+        let path = dir.path().join("v25-empty.db");
+        let empty = LocalProductStore::new(&path).unwrap();
+        empty
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO durable_memory_versions
+                     (memory_id,version,tenant_id,workspace_id,source_id,source_sha256,
+                      conflict_key,state,confidence,content_json,embedding_provenance,
+                      record_sha256,created_at,created_by)
+                     VALUES ('legacy-memory',1,'tenant','workspace','source',?1,'fact','current',
+                             1.0,'{}','unavailable',?1,'2026-07-15T00:00:00Z','test')",
+                    ["b".repeat(64)],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        empty.rollback_v25_to_v24("migration-test", true).unwrap();
+        assert_eq!(empty.schema_version().unwrap(), V24_SCHEMA_VERSION);
+        drop(empty);
+        let upgraded = LocalProductStore::new(&path).unwrap();
+        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
+        assert_eq!(
+            upgraded
+                .inspect_durable_memory("legacy-memory")
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

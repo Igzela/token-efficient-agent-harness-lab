@@ -50,7 +50,8 @@ fn pg_column_exists(
         .query_one(
             "SELECT EXISTS(
                 SELECT 1 FROM information_schema.columns
-                WHERE table_name = $1 AND column_name = $2
+                WHERE table_schema = current_schema()
+                  AND table_name = $1 AND column_name = $2
             )",
             &[&table, &column],
         )
@@ -152,6 +153,24 @@ impl LocalProductStore {
                     }
                     23 => schema::V23_DDL,
                     24 => schema::V24_DDL,
+                    25 => {
+                        let metadata = pg_column_exists(
+                            client,
+                            "durable_memory_versions",
+                            "embedding_metadata_json",
+                        )?;
+                        let binding = pg_column_exists(
+                            client,
+                            "durable_memory_versions",
+                            "embedding_binding_sha256",
+                        )?;
+                        match (metadata, binding) {
+                            (true, true) => "",
+                            (false, false) => schema::V25_DDL,
+                            (false, true) => "ALTER TABLE durable_memory_versions ADD COLUMN embedding_metadata_json TEXT;",
+                            (true, false) => "ALTER TABLE durable_memory_versions ADD COLUMN embedding_binding_sha256 TEXT;",
+                        }
+                    }
                     _ => {
                         return Err(format!(
                             "unknown pg migration version: {}",
@@ -336,6 +355,66 @@ impl LocalProductStore {
         })
     }
 
+    pub(in crate::storage::local_product_store) fn rollback_pg_v25_to_v24_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.with_pg_conn(|client| {
+            let mut tx = client.transaction().map_err(|error| error.to_string())?;
+            tx.batch_execute(
+                "LOCK TABLE schema_migrations IN ACCESS EXCLUSIVE MODE;
+                 LOCK TABLE durable_memory_versions IN ACCESS EXCLUSIVE MODE;",
+            )
+            .map_err(|error| error.to_string())?;
+            let current_version = tx
+                .query_one(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                    &[],
+                )
+                .map(|row| row.get::<_, i64>(0))
+                .map_err(|error| error.to_string())?;
+            super::super::migrations::require_v25_rollback_source(current_version)?;
+            let occupied = tx
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM durable_memory_versions
+                     WHERE embedding_metadata_json IS NOT NULL
+                        OR embedding_binding_sha256 IS NOT NULL LIMIT 1)",
+                    &[],
+                )
+                .map(|row| row.get::<_, bool>(0))
+                .map_err(|error| error.to_string())?;
+            super::super::migrations::require_empty_v25_bindings(occupied)?;
+            tx.batch_execute(
+                "ALTER TABLE durable_memory_versions DROP COLUMN embedding_binding_sha256;
+                 ALTER TABLE durable_memory_versions DROP COLUMN embedding_metadata_json;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1, $2, 'schema.rollback.v25_to_v24', 'local_product_store', $3)",
+                &[
+                    &now,
+                    &actor,
+                    &super::super::migrations::v25_rollback_audit_details(),
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            let removed = tx
+                .execute(
+                    "DELETE FROM schema_migrations WHERE version = $1",
+                    &[&super::super::migrations::V25_SCHEMA_VERSION],
+                )
+                .map_err(|error| error.to_string())?;
+            if removed != 1 {
+                return Err(format!(
+                    "v25 rollback expected one version marker, removed {removed}"
+                ));
+            }
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
+
     pub(in crate::storage::local_product_store) fn rollback_pg_v24_to_v23_internal(
         &self,
         actor: &str,
@@ -496,6 +575,7 @@ mod tests {
                 db: DatabaseConnection::Pg(pool),
                 clock: Box::new(|| "2026-07-14T00:00:00Z".to_string()),
                 encryption_active: false,
+                embedding_client: crate::provider::embedding::ProviderEmbeddingClient::default(),
             };
             store
                 .run_pg_migrations_internal()
@@ -527,6 +607,10 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     fn prepare_v23_rollback_fixture(store: &LocalProductStore) {
+        assert_eq!(store.schema_version().unwrap(), 25);
+        store
+            .rollback_v25_to_v24("migration-test-setup", true)
+            .unwrap();
         assert_eq!(store.schema_version().unwrap(), 24);
         store
             .rollback_v24_to_v23("migration-test-setup", true)
@@ -545,11 +629,70 @@ mod tests {
 
     #[test]
     #[cfg(feature = "pg-tests")]
+    fn pg_v25_rollback_refuses_provider_bindings_without_moving_marker() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        let store = &fixture.store;
+        store
+            .with_pg_conn(|client| {
+                client
+                    .execute(
+                        "INSERT INTO durable_memory_versions
+                         (memory_id, version, tenant_id, workspace_id, source_id,
+                          source_sha256, conflict_key, state, confidence, content_json,
+                          embedding_provenance, embedding_metadata_json,
+                          embedding_binding_sha256, record_sha256, created_at, created_by)
+                         VALUES
+                         ('provider-bound', 1, 'tenant', 'workspace', 'source',
+                          $1, 'fact', 'current', 1.0, '{}', 'provider_reported', '{}',
+                          $2, $3, '2026-07-14T00:00:00Z', 'migration-test')",
+                        &[
+                            &"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            &"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            &"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                        ],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let error = store
+            .rollback_v25_to_v24("migration-test", true)
+            .unwrap_err();
+        assert!(error.contains("provider embedding bindings exist"));
+        assert_eq!(store.schema_version().unwrap(), 25);
+        store
+            .with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT embedding_binding_sha256
+                         FROM durable_memory_versions
+                         WHERE memory_id = 'provider-bound' AND version = 1",
+                        &[],
+                    )
+                    .map(|row| {
+                        assert_eq!(
+                            row.get::<_, String>(0),
+                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        );
+                    })
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
     fn pg_v24_rollback_is_atomic_and_can_be_migrated_forward_again() {
         let Some(fixture) = IsolatedPgStore::from_environment() else {
             return;
         };
         let store = &fixture.store;
+        store
+            .rollback_v25_to_v24("migration-test-setup", true)
+            .unwrap();
         store.rollback_v24_to_v23("migration-test", true).unwrap();
         assert_eq!(store.schema_version().unwrap(), 23);
         for table in super::super::super::migrations::V24_TABLES {
@@ -580,7 +723,7 @@ mod tests {
             })
         );
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 24);
+        assert_eq!(store.schema_version().unwrap(), 25);
         for table in super::super::super::migrations::V24_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -630,7 +773,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 24);
+        assert_eq!(store.schema_version().unwrap(), 25);
         for table in super::super::super::migrations::V23_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -739,7 +882,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 24);
+        assert_eq!(store.schema_version().unwrap(), 25);
         for table in super::super::super::migrations::V22_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }

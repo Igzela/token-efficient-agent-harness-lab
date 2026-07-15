@@ -100,7 +100,22 @@ export ACP_DURABLE_MEMORY_EMBEDDING_MODE=disabled
 # export ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS=1
 ```
 
-`provider` embedding mode is intentionally unavailable until the managed external-provider adapter can apply the existing credential, pricing, timeout, cost, audit, and kill-switch boundaries. `fixture` is test-only. Lexical retrieval occurs only when the request explicitly sets `allow_lexical_fallback=true`; its result remains labeled `lexical_fallback`.
+Provider embeddings are separately default-off and use the existing symbolic credential, provider audit/cost reservation, timeout/retry, circuit-breaker, and kill-switch boundaries. The production contract is pinned to OpenRouter's embedding endpoint, `nvidia/llama-nemotron-embed-vl-1b-v2:free`, and 1,536 dimensions. Every call revalidates the current OpenRouter embedding catalog, exact canonical model identity, embedding capability, and complete zero-price prompt/completion record before the embedding request. A catalog/model/pricing change fails closed and requires a reviewed contract update; it never falls back to local hashing or lexical retrieval.
+
+```bash
+# OPENROUTER_API_KEY must already exist in this process-private environment.
+test -n "${OPENROUTER_API_KEY:-}"
+export ACP_DURABLE_MEMORY_EMBEDDING_MODE=provider
+export ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS=1
+export ACP_DURABLE_MEMORY_EMBEDDING_CREDENTIAL_ENV=OPENROUTER_API_KEY
+export ACP_DURABLE_MEMORY_EMBEDDING_TIMEOUT_MS=20000
+export ACP_DURABLE_MEMORY_EMBEDDING_MAX_RETRIES=2
+export ACP_DURABLE_MEMORY_EMBEDDING_PER_CALL_CAP_USD=0.01
+export ACP_DURABLE_MEMORY_EMBEDDING_DAILY_CAP_USD=0.10
+unset ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH
+```
+
+Do not paste a credential into this command or shell history; obtain it through the trusted-local process environment. `ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH=1` blocks new calls, provider mode is prohibited when `CI` is set, and `fixture` remains test-only. Provider responses persist only model/pricing/usage/vector hashes and scope/source/version bindings; raw memory text is excluded from provider audit and scorecards. Lexical retrieval occurs only when the request explicitly sets `allow_lexical_fallback=true`; its result remains labeled `lexical_fallback`.
 
 Create and retrieve one bounded record. Replace IDs and hashes with exact app-owned values; never place raw credentials, provider transcripts, repository content, or private paths in memory:
 
@@ -153,10 +168,10 @@ Replay production is provider-free and shadow-only. `PUT /api/v1/offline-replays
 
 PR2 rollback procedure:
 
-1. Disable local embedding generation and replay production; pause scheduler admission and drain active memory/budget jobs.
+1. Set `ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH=1`, disable embedding generation and replay production, pause scheduler admission, and drain active memory/budget jobs.
 2. Take a verified SQLite online backup or PostgreSQL operator backup and run integrity checks.
-3. Prefer reverting the integration merge and leaving v23 tables inert so memory, artifacts, acknowledgements, and job fencing remain auditable.
-4. Destructive local downgrade is permitted only while v23 code is installed, every v23 writer is stopped, and all six v23 tables are empty. Invoke the explicit-confirmation `rollback_v23_to_v22`; it locks the version and tables, writes the audit, drops only v23 tables, and changes the marker atomically. It refuses any authoritative row. Never manually drop memory, usage, job, replay-binding, or acknowledgement evidence.
+3. Prefer reverting the integration merge while retaining migration v25 so provider binding evidence remains inspectable. A v25-to-v24 downgrade is permitted only before any provider embedding binding exists; `rollback_v25_to_v24` locks the version/table and refuses non-empty binding columns.
+4. Destructive local downgrade is permitted only while the matching migration code is installed, every writer is stopped, and the affected authority is empty. After a permitted v25 rollback, `rollback_v24_to_v23` and then `rollback_v23_to_v22` retain their existing explicit-confirmation, atomic audit, and non-empty-authority refusal. Never manually drop embedding bindings, memory, usage, job, replay-binding, or acknowledgement evidence.
 
 ## Bounded PE-6 Recovery Drills
 
