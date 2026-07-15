@@ -2684,15 +2684,25 @@ async fn axum_supervised_patch_concurrent_verification_executes_canonical_bindin
     let (first, second) = tokio::join!(first, second);
     let first = first.unwrap();
     let second = second.unwrap();
-    assert!(matches!(
-        first.status(),
-        StatusCode::OK | StatusCode::CONFLICT
-    ));
-    assert!(matches!(
-        second.status(),
-        StatusCode::OK | StatusCode::CONFLICT
-    ));
-    assert!(first.status() == StatusCode::OK || second.status() == StatusCode::OK);
+    let first_status = first.status();
+    let second_status = second.status();
+    let first_body = response_json(first).await;
+    let second_body = response_json(second).await;
+    assert!(
+        matches!(first_status, StatusCode::OK | StatusCode::CONFLICT),
+        "unexpected first response: status={first_status}, body={first_body}"
+    );
+    assert!(
+        matches!(second_status, StatusCode::OK | StatusCode::CONFLICT),
+        "unexpected second response: status={second_status}, body={second_body}"
+    );
+    if first_status == StatusCode::CONFLICT {
+        assert_eq!(first_body["code"], "verification_in_progress");
+    }
+    if second_status == StatusCode::CONFLICT {
+        assert_eq!(second_body["code"], "verification_in_progress");
+    }
+    assert!(first_status == StatusCode::OK || second_status == StatusCode::OK);
     assert_eq!(
         fs::read_to_string(workspace_path.join("verify-count.txt")).unwrap(),
         "1"

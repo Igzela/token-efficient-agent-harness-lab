@@ -865,10 +865,16 @@ impl LocalProductStore {
         expected_execution_owner: Option<&str>,
     ) -> Result<Value, String> {
         let agent_executor = executor.executor_type_name() == "agent_step";
-        // Phase 1: Lease a ready node (inside lock)
+        // Phase 1: Lease a ready node. SQLite needs an immediate transaction here:
+        // the in-process mutex only protects one LocalProductStore connection, while
+        // production restarts and concurrent API owners can open the same database
+        // through independent connections.
         let leased = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                ensure_run_exists_locked(conn, run_id)?;
+                conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")
+                    .map_err(|error| error.to_string())?;
+                let lease_result = (|| {
+                    ensure_run_exists_locked(conn, run_id)?;
 
                 let (run_status, execution_owner): (String, Option<String>) = conn
                     .query_row(
@@ -1128,13 +1134,25 @@ impl LocalProductStore {
                     )?;
                 }
 
-                Ok(LeaseResult::Leased {
-                    node_id,
-                    task_type,
-                    workflow_id,
-                    attempt,
-                    node_metadata,
-                })
+                    Ok(LeaseResult::Leased {
+                        node_id,
+                        task_type,
+                        workflow_id,
+                        attempt,
+                        node_metadata,
+                    })
+                })();
+                match lease_result {
+                    Ok(leased) => {
+                        conn.execute_batch("COMMIT")
+                            .map_err(|error| error.to_string())?;
+                        Ok(leased)
+                    }
+                    Err(error) => {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        Err(error)
+                    }
+                }
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
