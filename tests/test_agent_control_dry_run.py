@@ -89,6 +89,15 @@ class TestDryRunAndVaderTrustBoundary(unittest.TestCase):
 
 
 class TestCredentialIsolation(unittest.TestCase):
+    def test_settings_read_token_is_isolated_to_hosted_repository_preflight(self):
+        source = (WORKFLOWS / "agent-worker.yml").read_text()
+        self.assertEqual(source.count("AGENT_SETTINGS_READ_TOKEN"), 1)
+        validate = source.split("  validate:", 1)[1].split("\n  vader-implementation:", 1)[0]
+        vader = source.split("  vader-implementation:", 1)[1].split("\n  finalize:", 1)[0]
+        self.assertIn("Preflight PR-creation setting with isolated read credential", validate)
+        self.assertIn("AGENT_SETTINGS_READ_TOKEN", validate)
+        self.assertNotIn("AGENT_SETTINGS_READ_TOKEN", vader)
+
     def test_push_token_is_isolated_to_finalizer_push_steps(self):
         for name in ("agent-worker.yml", "agent-ci-repair.yml"):
             source = (WORKFLOWS / name).read_text()

@@ -4,6 +4,7 @@ set -euo pipefail
 # Never commits, pushes, merges, or creates PRs. The surrounding workflow owns
 # every GitHub and Git write and performs its own runtime stop checks.
 CODEX_HOME="${CODEX_HOME:-}"
+CODEX_TIMEOUT_SECONDS="${AGENT_CODEX_TIMEOUT_SECONDS:-1800}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKER_TYPE="${1:?Usage: codex_wrapper.sh <worker-type> <prompt-file> <output-dir> [workspace]}"
@@ -54,6 +55,10 @@ CODEX_BIN="$(command -v codex || true)"
 [ -n "${HOME:-}" ] || fail_closed "environment_invalid" "HOME is not set"
 [ -f "$PROMPT_FILE" ] || fail_closed "prompt_missing" "prompt file not found"
 [ -d "$WORKSPACE" ] || fail_closed "workspace_invalid" "workspace directory not found"
+command -v timeout >/dev/null 2>&1 || fail_closed "timeout_unavailable" "bounded execution utility is unavailable"
+if ! [[ "$CODEX_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || [ "$CODEX_TIMEOUT_SECONDS" -lt 1 ] || [ "$CODEX_TIMEOUT_SECONDS" -gt 3600 ]; then
+  fail_closed "timeout_invalid" "Codex execution timeout is outside the bounded range"
+fi
 
 # Construct the child environment from an explicit allowlist.  In particular,
 # do not rely on a denylist: runner images and provider CLIs add new secret-
@@ -89,6 +94,11 @@ run_codex() {
   env -i "${SANITIZED_ENV[@]}" "$CODEX_BIN" "$@"
 }
 
+run_codex_bounded() {
+  timeout --signal=TERM --kill-after=5s "$CODEX_TIMEOUT_SECONDS" \
+    env -i "${SANITIZED_ENV[@]}" "$CODEX_BIN" "$@"
+}
+
 if ! CODEX_VERSION=$(run_codex --version 2>/dev/null); then
   fail_closed "cli_missing" "codex version query failed"
 fi
@@ -115,7 +125,7 @@ STDERR_OUTPUT="$(mktemp "$TMPDIR/agent-codex-stderr.XXXXXX")"
 trap 'rm -f "$STDERR_OUTPUT"' EXIT
 
 set +e
-run_codex exec \
+run_codex_bounded exec \
   --cd "$WORKSPACE" \
   --sandbox "$SANDBOX_MODE" \
   --ephemeral \
@@ -138,6 +148,9 @@ if [ "$CODEX_EXIT" -ne 0 ]; then
   # prompt content, or an access token even though the child environment is
   # sanitized.
   printf '%s\n' '{"type":"error","message":"codex execution failed"}' > "$JSONL_OUTPUT"
+  if [ "$CODEX_EXIT" -eq 124 ] || [ "$CODEX_EXIT" -eq 137 ]; then
+    fail_closed "model_execution_timeout" "Codex execution exceeded its bounded timeout"
+  fi
   if grep -Eq 'credit|usage|quota|rate limit' <<<"$LOWER_OUTPUT"; then
     fail_closed "usage_or_credit_exhaustion" "Codex usage or credit limit rejected execution"
   fi

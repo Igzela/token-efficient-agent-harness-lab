@@ -35,6 +35,7 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       actions: write
       contents: read
@@ -78,6 +79,7 @@ jobs:
   vader-repair:
     needs: prepare
     runs-on: [self-hosted, vader, agent-worker]
+    timeout-minutes: 35
     permissions:
       actions: write
       contents: read
@@ -93,6 +95,12 @@ jobs:
       - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
         with:
           python-version: "3.11"
+      - name: Clean only verified stale terminal worktrees
+        env:
+          AGENT_REPO_PATH: ${{ github.workspace }}
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/cleanup.py
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: repair-evidence-${{ github.run_id }}-${{ inputs.pr_number }}
@@ -156,6 +164,7 @@ jobs:
     needs: vader-repair
     if: needs.vader-repair.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       actions: write
       contents: write
@@ -292,7 +301,9 @@ jobs:
     needs: [prepare, vader-repair, finalize]
     if: failure()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
+      actions: read
       contents: read
       issues: write
     steps:
@@ -304,6 +315,7 @@ jobs:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/agent-control/state_manager.py release-failed \
-            "${{ inputs.issue_number }}" ci-repairing agent-blocked "$INPUT_HEAD_SHA" \
-            "${{ inputs.ci_run_id }}" "${{ inputs.repair_count }}"
+          python3 scripts/agent-control/state_manager.py release-failed-evidence \
+            "${{ inputs.issue_number }}" ci-repairing agent-blocked ci-repair \
+            "${{ github.run_id }}" "$INPUT_HEAD_SHA" "${{ inputs.ci_run_id }}" \
+            "${{ inputs.repair_count }}"

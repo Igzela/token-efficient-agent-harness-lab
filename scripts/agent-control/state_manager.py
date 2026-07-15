@@ -41,6 +41,29 @@ MAX_REVIEW_API_NODES = 1000
 MAX_REVIEW_THREAD_PAGES = 20
 MAX_REVIEW_THREADS = 2000
 REVIEW_VERDICTS = frozenset({"PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL"})
+WORKFLOW_FAILURE_KINDS = frozenset({"implementation", "review", "ci-repair"})
+PREFLIGHT_FAILURE_REASONS = frozenset({
+    "control_not_live",
+    "github_actions_pr_creation_disabled",
+    "github_workflow_permissions_malformed",
+    "github_workflow_permissions_unavailable",
+    "invalid_issue_scope",
+    "dispatcher_claim_invalid",
+})
+WORKFLOW_JOB_ORDER = {
+    "implementation": ("gate", "validate", "vader-implementation", "finalize"),
+    "review": ("prepare", "vader-review", "finalize"),
+    "ci-repair": ("prepare", "vader-repair", "finalize"),
+}
+JOB_PHASES = {
+    "gate": "control_gate",
+    "validate": "claim_validation",
+    "prepare": "trusted_input_preparation",
+    "vader-implementation": "isolated_implementation",
+    "vader-review": "isolated_review",
+    "vader-repair": "isolated_ci_repair",
+    "finalize": "trusted_finalization",
+}
 
 
 class StateUnavailableError(RuntimeError):
@@ -123,6 +146,21 @@ class ReviewValidationFailureState:
 
     def to_wire(self):
         return _state_wire("agent-orchestrator-review-validation-failure", 1, self)
+
+
+@dataclass(frozen=True)
+class WorkflowFailureState:
+    issue_number: int
+    workflow_kind: str
+    workflow_run_id: int
+    failed_job: str
+    failed_phase: str
+    reason_code: str
+    capacity_release_outcome: str
+    capacity_release_reason: str
+
+    def to_wire(self):
+        return _state_wire("agent-orchestrator-worker-failure", 1, self)
 
 
 @dataclass(frozen=True)
@@ -950,8 +988,166 @@ def release_failed_capacity(
     return True, "released"
 
 
+def _workflow_failure_details(workflow_kind, workflow_run_id, repo=""):
+    """Return allowlisted run/job/phase evidence without copying logs or names."""
+
+    if workflow_kind not in WORKFLOW_FAILURE_KINDS:
+        return "unknown", "workflow", "workflow_identity_invalid"
+    if type(workflow_run_id) is not int or workflow_run_id < 1:
+        return "unknown", "workflow", "workflow_identity_invalid"
+    target = repo or os.environ.get("GITHUB_REPOSITORY", "")
+    if re.fullmatch(r"[^/\s]+/[^/\s]+", target) is None:
+        return "unknown", "workflow", "workflow_failure_details_unavailable"
+    raw = _gh("api", f"repos/{target}/actions/runs/{workflow_run_id}/jobs?per_page=100")
+    try:
+        value = json.loads(raw) if raw is not None else None
+    except json.JSONDecodeError:
+        value = None
+    if not isinstance(value, dict) or type(value.get("total_count")) is not int:
+        return "unknown", "workflow", "workflow_failure_details_unavailable"
+    jobs = value.get("jobs")
+    if not isinstance(jobs, list) or value["total_count"] > len(jobs) or len(jobs) > 100:
+        return "unknown", "workflow", "workflow_failure_details_unavailable"
+    allowed = WORKFLOW_JOB_ORDER[workflow_kind]
+    indexed = {name: index for index, name in enumerate(allowed)}
+    failed = [
+        job for job in jobs
+        if isinstance(job, dict)
+        and job.get("name") in indexed
+        and job.get("conclusion") in {
+            "failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"
+        }
+    ]
+    if not failed:
+        return "unknown", "workflow", "workflow_failure_details_unavailable"
+    job = min(failed, key=lambda item: indexed[item["name"]])
+    job_name = job["name"]
+    conclusion = job.get("conclusion")
+    if conclusion == "cancelled":
+        return job_name, JOB_PHASES[job_name], "workflow_cancelled"
+    if conclusion == "timed_out":
+        return job_name, JOB_PHASES[job_name], "workflow_timeout"
+    steps = job.get("steps") if isinstance(job.get("steps"), list) else []
+    failed_step = next(
+        (
+            step.get("name", "") for step in steps
+            if isinstance(step, dict)
+            and step.get("conclusion") in {"failure", "cancelled", "timed_out"}
+            and isinstance(step.get("name"), str)
+        ),
+        "",
+    ).lower()
+    mappings = (
+        (("codex",), "model_execution", "model_execution_failure"),
+        (("artifact", "validate"), "artifact_validation", "artifact_validation_failure"),
+        (("artifact", "upload"), "artifact_upload", "artifact_upload_failure"),
+        (("create or update issue-bound pr",), "pr_creation", "pr_creation_failure"),
+        (("push branch",), "branch_push", "branch_push_failure"),
+        (("worktree",), "worktree", "worktree_failure"),
+        (("exact-head ci",), "ci_acquisition", "ci_acquisition_failure"),
+    )
+    for fragments, phase, reason in mappings:
+        if all(fragment in failed_step for fragment in fragments):
+            return job_name, phase, reason
+    phase = JOB_PHASES[job_name]
+    return job_name, phase, f"{phase}_failure"
+
+
+def _record_workflow_failure(
+    issue_number,
+    workflow_kind,
+    workflow_run_id,
+    failed_job,
+    failed_phase,
+    reason_code,
+    release_ok,
+    release_reason,
+    repo="",
+):
+    if workflow_kind not in WORKFLOW_FAILURE_KINDS:
+        return False, "workflow_kind_invalid"
+    if type(workflow_run_id) is not int or workflow_run_id < 1:
+        return False, "workflow_run_id_invalid"
+    fixed_values = (failed_job, failed_phase, reason_code, release_reason)
+    if any(not isinstance(item, str) or re.fullmatch(r"[a-z0-9_-]+", item) is None for item in fixed_values):
+        return False, "failure_evidence_invalid"
+    state = WorkflowFailureState(
+        int(issue_number),
+        workflow_kind,
+        workflow_run_id,
+        failed_job,
+        failed_phase,
+        reason_code,
+        "released" if release_ok else "failed",
+        release_reason,
+    ).to_wire()
+    try:
+        comments = get_issue_comments(issue_number, repo)
+    except StateUnavailableError:
+        return False, "failure_state_unavailable"
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        try:
+            previous = json.loads(comment.get("body", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (
+            previous.get("kind") == "agent-orchestrator-worker-failure"
+            and previous.get("workflow_kind") == workflow_kind
+            and previous.get("workflow_run_id") == workflow_run_id
+            and previous == state
+        ):
+            return True, "already_recorded"
+    if not comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo):
+        return False, "failure_state_write_failed"
+    return True, "recorded"
+
+
+def release_and_record_failure(
+    issue_number,
+    expected_active,
+    terminal_label,
+    workflow_kind,
+    workflow_run_id,
+    expected_sha=None,
+    repo="",
+    failed_run_id=None,
+    repair_attempt=None,
+):
+    """Release capacity and durably record bounded exact-run failure evidence."""
+
+    release_ok, release_reason = release_failed_capacity(
+        issue_number,
+        expected_active,
+        terminal_label,
+        expected_sha,
+        repo,
+        failed_run_id,
+        repair_attempt,
+    )
+    failed_job, failed_phase, reason_code = _workflow_failure_details(
+        workflow_kind, workflow_run_id, repo
+    )
+    recorded, record_reason = _record_workflow_failure(
+        issue_number,
+        workflow_kind,
+        workflow_run_id,
+        failed_job,
+        failed_phase,
+        reason_code,
+        release_ok,
+        release_reason,
+        repo,
+    )
+    if not recorded:
+        return False, record_reason
+    return release_ok, release_reason
+
+
 def release_rejected_worker(
-    issue_number, gate_enabled, validate_result, can_start, repo=""
+    issue_number, gate_enabled, validate_result, can_start, repo="", workflow_run_id=None,
+    rejection_reason=None,
 ):
     """Release a dispatcher claim when a worker safely rejects before Vader."""
 
@@ -960,9 +1156,25 @@ def release_rejected_worker(
     )
     if not rejected:
         return True, "worker_not_rejected"
-    return release_failed_capacity(
+    released, release_reason = release_failed_capacity(
         issue_number, LABEL_RUNNING, LABEL_BLOCKED, repo=repo
     )
+    if workflow_run_id is not None:
+        reason = rejection_reason if rejection_reason in PREFLIGHT_FAILURE_REASONS else "dispatcher_claim_invalid"
+        recorded, record_reason = _record_workflow_failure(
+            issue_number,
+            "implementation",
+            int(workflow_run_id),
+            "validate",
+            "claim_validation",
+            reason,
+            released,
+            release_reason,
+            repo,
+        )
+        if not recorded:
+            return False, record_reason
+    return released, release_reason
 
 
 def _repo_parts(repo):
@@ -1343,10 +1555,41 @@ def main():
             sys.exit(1)
         print(reason)
 
+    elif command == "release-failed-evidence":
+        issue_number = int(sys.argv[2])
+        expected_active = sys.argv[3]
+        terminal_label = sys.argv[4]
+        workflow_kind = sys.argv[5]
+        workflow_run_id = int(sys.argv[6])
+        expected_sha = sys.argv[7] or None
+        failed_run_id = sys.argv[8] or None
+        repair_attempt = sys.argv[9] or None
+        ok, reason = release_and_record_failure(
+            issue_number,
+            expected_active,
+            terminal_label,
+            workflow_kind,
+            workflow_run_id,
+            expected_sha,
+            repo,
+            failed_run_id,
+            repair_attempt,
+        )
+        if not ok:
+            print(f"FATAL: unable to release and record failed capacity: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print(reason)
+
     elif command == "release-rejected-worker":
         issue_number = int(sys.argv[2])
         ok, reason = release_rejected_worker(
-            issue_number, sys.argv[3], sys.argv[4], sys.argv[5], repo
+            issue_number,
+            sys.argv[3],
+            sys.argv[4],
+            sys.argv[5],
+            repo,
+            int(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else None,
+            sys.argv[7] if len(sys.argv) > 7 else None,
         )
         if not ok:
             print(f"FATAL: unable to release rejected worker: {reason}", file=sys.stderr)

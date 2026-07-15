@@ -2,7 +2,7 @@
 """Fail-closed readiness checks for the repository's self-hosted runner.
 
 This checker deliberately does not use the Actions runner's ``config.sh``.
-It verifies only bounded local metadata and the public runner status API; it
+It verifies only bounded local metadata and GitHub status/settings APIs; it
 never reads or prints runner credential files.
 """
 
@@ -61,6 +61,33 @@ def _validate_arguments(repo: str, runner_name: str) -> None:
         raise ReadinessError("repository_invalid")
     if not runner_name or len(runner_name) > 128 or any(char in runner_name for char in "\r\n\x00"):
         raise ReadinessError("runner_name_invalid")
+
+
+def _validate_repo(repo: str) -> None:
+    if re.fullmatch(r"[^/\s]+/[^/\s]+", repo) is None:
+        raise ReadinessError("repository_invalid")
+
+
+def _check_repository_capabilities(repo: str) -> dict[str, Any]:
+    """Require the GitHub Actions setting that permits PR creation.
+
+    GitHub exposes this repository setting under the workflow-permissions API.
+    The orchestrator creates PRs with ``github.token``; without this explicit
+    capability a Vader run can push a branch and then fail irrecoverably at the
+    final PR-binding step.
+    """
+
+    _validate_repo(repo)
+    endpoint = f"repos/{repo}/actions/permissions/workflow"
+    try:
+        value = json.loads(_run_command(["gh", "api", endpoint]))
+    except (ReadinessError, json.JSONDecodeError, TypeError, ValueError):
+        raise ReadinessError("github_workflow_permissions_unavailable") from None
+    if not isinstance(value, dict) or type(value.get("can_approve_pull_request_reviews")) is not bool:
+        raise ReadinessError("github_workflow_permissions_malformed")
+    if value["can_approve_pull_request_reviews"] is not True:
+        raise ReadinessError("github_actions_pr_creation_disabled")
+    return {"actions_pr_creation": True}
 
 
 def _check_local_configuration(root: pathlib.Path) -> None:
@@ -215,6 +242,7 @@ def check_readiness(
     }
     try:
         _validate_arguments(repo, runner_name)
+        capabilities = _check_repository_capabilities(repo)
         _check_local_configuration(root)
         _check_listener(root)
         service_name = _service_name(repo, runner_name)
@@ -225,6 +253,7 @@ def check_readiness(
                 "ready": True,
                 "service_layout": service_layout,
                 "service_name": service_name,
+                **capabilities,
                 **github,
             }
         )
@@ -241,19 +270,40 @@ def check_readiness(
     return base
 
 
+def check_repository_capabilities(repo: str) -> dict[str, Any]:
+    """Return bounded repository-only preflight status for hosted jobs."""
+
+    status: dict[str, Any] = {"ready": False, "repo": repo[:256]}
+    try:
+        status.update(_check_repository_capabilities(repo))
+        status["ready"] = True
+    except ReadinessError as error:
+        status["reason"] = str(error)
+    serialized = json.dumps(status, sort_keys=True, separators=(",", ":"))
+    if len(serialized.encode("utf-8")) > MAX_STATUS_BYTES:
+        return {"ready": False, "repo": status["repo"], "reason": "status_too_large"}
+    return status
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
-    parser.add_argument("--runner-root", required=True)
-    parser.add_argument("--runner-name", required=True)
+    parser.add_argument("--runner-root")
+    parser.add_argument("--runner-name")
     parser.add_argument("--allow-busy", action="store_true")
+    parser.add_argument("--repository-capabilities-only", action="store_true")
     args = parser.parse_args(argv)
-    status = check_readiness(
-        repo=args.repo,
-        runner_root=args.runner_root,
-        runner_name=args.runner_name,
-        allow_busy=args.allow_busy,
-    )
+    if args.repository_capabilities_only:
+        status = check_repository_capabilities(args.repo)
+    else:
+        if not args.runner_root or not args.runner_name:
+            parser.error("--runner-root and --runner-name are required for runner readiness")
+        status = check_readiness(
+            repo=args.repo,
+            runner_root=args.runner_root,
+            runner_name=args.runner_name,
+            allow_busy=args.allow_busy,
+        )
     print(json.dumps(status, sort_keys=True, separators=(",", ":")))
     return 0 if status.get("ready") else 1
 

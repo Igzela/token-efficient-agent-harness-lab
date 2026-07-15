@@ -912,13 +912,19 @@ class TestRunnerReadiness(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
-    def command(self, *, runners, service_scope="user", service_active=True, api_error=None):
+    def command(self, *, runners, service_scope="user", service_active=True, api_error=None,
+                pr_creation=True):
         def fake(argv, **kwargs):
             if argv[:2] == ["gh", "api"]:
                 if api_error == "failed":
                     raise runner_readiness.ReadinessError("command_failed")
                 if api_error == "malformed":
                     return "not-json"
+                if argv[-1].endswith("/actions/permissions/workflow"):
+                    return json.dumps({
+                        "default_workflow_permissions": "read",
+                        "can_approve_pull_request_reviews": pr_creation,
+                    })
                 return json.dumps(runners)
             if argv and argv[0] == str(self.root / "bin" / "Runner.Listener"):
                 return "Runner.Listener 3.0\n"
@@ -934,7 +940,8 @@ class TestRunnerReadiness(unittest.TestCase):
         return fake
 
     def runner(self, *, busy=False, labels=None, status="online", runners=None,
-               service_scope="user", service_active=True, api_error=None, allow_busy=False):
+               service_scope="user", service_active=True, api_error=None, allow_busy=False,
+               pr_creation=True):
         entry = {
             "id": 17,
             "name": "Vader",
@@ -950,6 +957,7 @@ class TestRunnerReadiness(unittest.TestCase):
                 service_scope=service_scope,
                 service_active=service_active,
                 api_error=api_error,
+                pr_creation=pr_creation,
             ),
         ):
             return runner_readiness.check_readiness(
@@ -972,6 +980,27 @@ class TestRunnerReadiness(unittest.TestCase):
         self.assertTrue(result["ready"])
         self.assertEqual(result["service_layout"], "user")
         self.assertFalse(result["busy"])
+        self.assertTrue(result["actions_pr_creation"])
+
+    def test_repository_pr_creation_capability_fails_closed(self):
+        result = self.runner(pr_creation=False)
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["reason"], "github_actions_pr_creation_disabled")
+
+    def test_repository_only_preflight_has_no_runner_dependency(self):
+        with mock.patch.object(
+            runner_readiness,
+            "_run_command",
+            return_value=json.dumps({"can_approve_pull_request_reviews": True}),
+        ):
+            result = runner_readiness.check_repository_capabilities(
+                "Igzela/token-efficient-agent-harness-lab"
+            )
+        self.assertEqual(result, {
+            "actions_pr_creation": True,
+            "ready": True,
+            "repo": "Igzela/token-efficient-agent-harness-lab",
+        })
 
     def test_allowed_busy_runner_passes_only_with_explicit_option(self):
         self.assertFalse(self.runner(busy=True)["ready"])
@@ -1019,7 +1048,7 @@ class TestRunnerReadiness(unittest.TestCase):
             with self.subTest(api_error=api_error):
                 result = self.runner(api_error=api_error)
                 self.assertFalse(result["ready"])
-                self.assertEqual(result["reason"], "github_api_unavailable")
+                self.assertEqual(result["reason"], "github_workflow_permissions_unavailable")
 
     def test_credential_contents_never_appear_in_bounded_status(self):
         result = self.runner()

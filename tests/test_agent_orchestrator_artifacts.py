@@ -597,6 +597,51 @@ class TestCodexLastMessageBoundary(unittest.TestCase):
         finally:
             directory.cleanup()
 
+    def test_codex_execution_timeout_is_bounded_and_redacted(self):
+        directory = tempfile.TemporaryDirectory()
+        try:
+            root = Path(directory.name)
+            fake = root / "codex"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys, time\n"
+                "if sys.argv[1:3] == ['--version']:\n"
+                " print('codex 1.0'); raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['login', 'status']: raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['exec', '--help']:\n"
+                " print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
+                "if sys.argv and sys.argv[1] == 'exec':\n"
+                " print('provider-secret-must-not-escape', file=sys.stderr); time.sleep(10)\n"
+            )
+            fake.chmod(fake.stat().st_mode | 0o111)
+            prompt = root / "prompt.txt"
+            prompt.write_text("timeout")
+            output = root / "output"
+            home = root / "home"
+            home.mkdir()
+            result = subprocess.run(
+                [str(CONTROL / "codex_wrapper.sh"), "review", str(prompt), str(output), str(root)],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "PATH": f"{root}:{os.environ['PATH']}",
+                    "HOME": str(home),
+                    "AGENT_CODEX_TIMEOUT_SECONDS": "1",
+                },
+                text=True,
+                capture_output=True,
+                timeout=15,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            failure = json.loads((output / "failure_reason.json").read_text())
+            self.assertEqual(failure["reason"], "model_execution_timeout")
+            self.assertNotIn("provider-secret-must-not-escape", result.stderr)
+            self.assertNotIn("provider-secret-must-not-escape", "".join(
+                path.read_text(errors="replace") for path in output.glob("*")
+            ))
+        finally:
+            directory.cleanup()
+
     def test_implementation_and_repair_modes_remove_raw_final_message(self):
         for worker in ("implement", "ci-repair"):
             with self.subTest(worker=worker):
