@@ -114,7 +114,7 @@ impl HttpTransport for PgCountingEmbeddingTransport {
                     "id":OPENROUTER_EMBEDDING_MODEL_ID,
                     "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
                     "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-                    "pricing":{"prompt":"0","completion":"0"},
+                    "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
                     "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
                 }]}))
                 .unwrap(),
@@ -2944,24 +2944,53 @@ fn pg_provider_embedding_metadata_is_atomic_and_restart_safe() {
             history[0]["embedding"]["binding_sha256"],
             created["embedding"]["binding_sha256"]
         );
-        let retrieval = restarted.retrieve_durable_memories(
-            &MemoryRetrievalRequest {
-                scope,
-                run_id: format!("run-retrieve-{tag}"),
-                node_id: format!("node-{tag}"),
-                query: "postgres provider embedding".to_string(),
-                top_k: 5,
-                max_tokens: 100,
-                max_bytes: 1000,
-                allow_lexical_fallback: false,
-            },
-            "pg-provider-memory-test",
-        )?;
+        let retrieval_request = MemoryRetrievalRequest {
+            scope,
+            run_id: format!("run-retrieve-{tag}"),
+            node_id: format!("node-{tag}"),
+            query: "postgres provider embedding".to_string(),
+            top_k: 5,
+            max_tokens: 100,
+            max_bytes: 1000,
+            allow_lexical_fallback: false,
+        };
+        let retrieval =
+            restarted.retrieve_durable_memories(&retrieval_request, "pg-provider-memory-test")?;
         assert_eq!(retrieval.selected.len(), 1);
         assert_eq!(
             retrieval.embedding_provider.unwrap()["provider_id"],
             "openrouter"
         );
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 3);
+        let duplicate =
+            restarted.retrieve_durable_memories(&retrieval_request, "pg-provider-memory-test")?;
+        assert_eq!(duplicate.result_sha256, retrieval.result_sha256);
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 3);
+        let receipts = restarted.provider_embedding_receipt_evidence(100)?;
+        assert!(receipts.iter().any(|receipt| {
+            receipt["operation_kind"] == "retrieval_query"
+                && receipt["state"] == "succeeded"
+                && receipt["redacted"] == true
+        }));
+        assert_eq!(restarted.check_integrity()?.status, "ok");
+        let mut client =
+            postgres::Client::connect(&url, postgres::NoTls).map_err(|error| error.to_string())?;
+        client
+            .execute(
+                "UPDATE memory_retrieval_events SET result_sha256=$1 WHERE retrieval_id=$2",
+                &[&"f".repeat(64), &duplicate.retrieval_id],
+            )
+            .map_err(|error| error.to_string())?;
+        assert!(restarted
+            .check_integrity()
+            .unwrap_err()
+            .contains("retrieval result cross-owner binding is invalid"));
+        client
+            .execute(
+                "UPDATE memory_retrieval_events SET result_sha256=$1 WHERE retrieval_id=$2",
+                &[&duplicate.result_sha256, &duplicate.retrieval_id],
+            )
+            .map_err(|error| error.to_string())?;
         assert_eq!(restarted.check_integrity()?.status, "ok");
         Ok(())
     })();
@@ -3047,7 +3076,7 @@ fn pg_provider_embedding_failure_audit_and_retry_authority_are_atomic() {
             )
             .map_err(|error| error.to_string())?;
         let memory_id: String = row.get(0);
-        assert_eq!(row.get::<_, String>(1), "failed");
+        assert_eq!(row.get::<_, String>(1), "failed_known_outcome");
         assert_eq!(row.get::<_, i64>(2), 1);
         let error_events:i64=client.query_one(
             "SELECT COUNT(*) FROM provider_audit_events WHERE dispatch_id LIKE $1 AND event_type='error'",

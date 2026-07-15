@@ -100,60 +100,11 @@ export ACP_DURABLE_MEMORY_EMBEDDING_MODE=disabled
 # export ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS=1
 ```
 
-Provider embeddings are separately default-off and require the authoritative provider-execution gate (the legacy switch or a ready trusted-local profile) plus authenticated runtime mode. They reuse the existing symbolic credential, provider audit/cost reservation, timeout, circuit-breaker, and kill-switch boundaries. The production contract is pinned to OpenRouter's embedding endpoint, `nvidia/llama-nemotron-embed-vl-1b-v2:free`, and 1,536 dimensions. Every call revalidates the current OpenRouter embedding catalog, exact canonical and resolved model identity, text input capability, 131,072-token context contract, and complete zero-price prompt/completion record before the embedding request. The scope/source binding and the complete catalog contract are stored and hash-bound in the operation receipt. Only the read-only catalog request has bounded retry; the embedding POST is sent once, and connection loss or timeout is recorded as `provider_outcome_unknown`. Secret-shaped outbound content fails before the request claim. A catalog/model/pricing change fails closed; it never falls back to local hashing or lexical retrieval.
+Provider embeddings remain default-off and are not yet a proven live operator procedure. The implementation and deterministic fixtures define a fail-closed contract for symbolic credentials, explicit provider authority, catalog pricing, public requested/resolved model identity, bounded transport, reservation/send/outcome/finalize receipts, provider audit, and kill-switch behavior. That fixture evidence is not live proof. Do not enable provider mode from this RUNBOOK until `DURABLE-MEMORY-PROVIDER-EMBEDDING-REPAIR-1` is merged with exact-head CI and independent review and the subsequent controlled live acceptance records a currently free embedding model. If no fully free OpenRouter embedding model can be proved from the current catalog, record `BLOCKED_NO_FREE_OPENROUTER_EMBEDDING_MODEL` and make no embedding provider call.
 
-Known provider failures and unknown outcomes are not repaired by deleting receipts. Use `POST /api/v1/memories/{memory_id}/embedding/reconcile` with `dispatch:execute`, exact run/scope/target/attempt binding, and `confirm_resolution=true`. `retry_failed` applies only to a definitive pre-effect failure and is capped at four attempts. `acknowledge_unknown` requires a bounded operator source ID and SHA-256 reference, records an exact audit binding, and never authorizes another POST; `request_sent`, `outcome_unknown`, and `outcome_unknown_acknowledged` remain blocked because OpenRouter exposes no status/idempotency contract that can prove absence of effect. Duplicate reconciliation succeeds only when its action and evidence exactly match the stored audit. Use `POST /api/v1/memories/{memory_id}/reembed` with exact expected version and `confirm_reembed=true` to create a new immutable version under the current pinned contract after a reviewed model rotation; old vectors are never rewritten. Historical provider identity, dimension, context, pricing, and selection-date provenance must remain in the append-only supported registry until their rows have been re-embedded or retired.
+Known provider failures and unknown outcomes are never repaired by deleting receipts. The typed reconciliation owner permits an explicitly confirmed retry only for a proved failed-before-send/known-no-effect state and requires evidence-bound acknowledgement for unknown outcomes; `sending`, `outcome_unknown`, and `outcome_unknown_acknowledged` never authorize another POST. Until controlled live acceptance is complete, treat reconciliation and re-embedding endpoints as implementation surfaces for deterministic verification rather than live operator steps. Historical provider identity, dimension, pricing, audit, and result bindings remain authoritative and must not be rewritten to force a retry.
 
-```bash
-# OPENROUTER_API_KEY must already exist in this process-private environment.
-test -n "${OPENROUTER_API_KEY:-}"
-export ACP_DURABLE_MEMORY_EMBEDDING_MODE=provider
-export ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS=1
-export ACP_ENABLE_PROVIDER_EXECUTION=1
-export ACP_REQUIRE_AUTH=1
-export ACP_DURABLE_MEMORY_EMBEDDING_CREDENTIAL_ENV=OPENROUTER_API_KEY
-export ACP_DURABLE_MEMORY_EMBEDDING_TIMEOUT_MS=20000
-export ACP_DURABLE_MEMORY_EMBEDDING_MAX_RETRIES=2
-export ACP_DURABLE_MEMORY_EMBEDDING_PER_CALL_CAP_USD=0.01
-export ACP_DURABLE_MEMORY_EMBEDDING_DAILY_CAP_USD=0.10
-unset ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH
-```
-
-Do not paste a credential into this command or shell history; obtain it through the trusted-local process environment. `ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH=1` blocks new calls, provider mode is prohibited when `CI` is set, and `fixture` remains test-only. Provider responses persist only the numeric vector, model/pricing/usage/vector hashes, scope/source/version bindings, catalog-evidence hash, and restart receipt; raw memory text is excluded from provider audit and scorecards. A `completed` receipt is reused for the exact mutation after restart without another POST. `request_sent`, `outcome_unknown`, and `outcome_unknown_acknowledged` remain permanently blocked. `failed` remains blocked until the typed owner authorizes an exact bounded retry; deleting or rewriting receipts to force a retry is unsupported. Lexical retrieval occurs only when the request explicitly sets `allow_lexical_fallback=true`; its result remains labeled `lexical_fallback`.
-
-Create and retrieve one bounded record. Replace IDs and hashes with exact app-owned values; never place raw credentials, provider transcripts, repository content, or private paths in memory:
-
-```bash
-curl -sS -X POST "$ACP_API_URL/api/v1/memories" \
-  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
-  -H "content-type: application/json" \
-  -d '{
-    "scope":{"tenant_id":"local","workspace_id":"REPLACE_WITH_RUN_WORKSPACE","agent_id":null,"task_id":null},
-    "run_id":"REPLACE_WITH_RUN_ID",
-    "source_id":"operator-source-1",
-    "source_sha256":"REPLACE_WITH_64_HEX_SOURCE_HASH",
-    "conflict_key":"bounded-fact-1",
-    "content":{"summary":"bounded approved fact"},
-    "confidence":0.9,
-    "fresh_until":null,
-    "expires_at":null,
-    "supersedes_memory_id":null
-  }'
-
-curl -sS -X POST "$ACP_API_URL/api/v1/memories/retrieve" \
-  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
-  -H "content-type: application/json" \
-  -d '{
-    "scope":{"tenant_id":"local","workspace_id":"REPLACE_WITH_RUN_WORKSPACE","agent_id":null,"task_id":null},
-    "run_id":"REPLACE_WITH_RUN_ID",
-    "node_id":"REPLACE_WITH_NODE_ID",
-    "query":"bounded approved fact",
-    "top_k":5,
-    "max_tokens":256,
-    "max_bytes":4096,
-    "allow_lexical_fallback":true
-  }'
-```
+Provider mode is prohibited in CI, fixture embeddings remain test-only, and live artifacts must exclude raw query, memory, vector, prompt/output/transcript, and credential data. The read-only Dashboard receipt evidence exposes only bounded identities, states, audit/result bindings, error domains, and timestamps. Lexical retrieval occurs only when the request explicitly sets `allow_lexical_fallback=true`; its result remains labeled `lexical_fallback`.
 
 Revision, invalidation, forget, and supersede require the authoritative `run_id`, exact scope, and latest exact version. A conflict never silently overwrites either record. Resolve the existing two-record conflict pair before adding another incompatible fact; a third member is rejected without mutation. Forget deletes prior version content and leaves a metadata-safe tombstone; prune requires explicit confirmation and removes at most the bounded expired batch. Inspect with `GET /api/v1/memories/:memory_id?run_id=REPLACE_WITH_RUN_ID`. Scheduler injection uses the run's stored tenant/workspace and cannot be broadened by node metadata.
 

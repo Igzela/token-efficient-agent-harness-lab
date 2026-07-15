@@ -472,6 +472,7 @@ impl LocalProductStore {
         let config = self.config_snapshot()?;
         let costs = self.cost_summary()?;
         let counts = self.stats()?;
+        let provider_embedding_receipts = self.provider_embedding_receipt_evidence(limit)?;
         Ok(json!({
             "schema_version": LOCAL_DASHBOARD_SCHEMA_VERSION,
             "status": "ready",
@@ -480,6 +481,7 @@ impl LocalProductStore {
             "team": team,
             "config": config,
             "costs": costs,
+            "provider_embedding_receipts": provider_embedding_receipts,
             "boundaries": local_boundaries(executor_type, provider_enabled),
         }))
     }

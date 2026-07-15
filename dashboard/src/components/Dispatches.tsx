@@ -14,7 +14,7 @@ export function Dispatches({
   dispatches,
   totalDispatches = dispatches.length,
 }: {
-  dispatches: LocalDispatchHistory[];
+  dispatches: readonly LocalDispatchHistory[];
   totalDispatches?: number;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);

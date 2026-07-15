@@ -30,7 +30,7 @@ rusqlite = { version = "0.40", features = ["backup", "bundled-sqlcipher-vendored
 axum = "0.7"
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli", "deflate", "zstd"] }
 async-trait = "0.1"
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
@@ -50,3 +50,4 @@ pg-tests = ["pg"]
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+flate2 = "1"

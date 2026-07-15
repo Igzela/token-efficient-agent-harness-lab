@@ -93,8 +93,10 @@ pub(crate) async fn api_create_memory(
         )
     })?;
     require_run_scope(&state, run_id, &request.scope)?;
-    let memory = require_store(&state)?
-        .create_durable_memory(&request, &context.api_key_id)
+    let store = require_store(&state)?;
+    let actor = context.api_key_id;
+    let memory = run_store_blocking(move || store.create_durable_memory(&request, &actor))
+        .await?
         .map_err(bad_memory_request)?;
     Ok((
         StatusCode::CREATED,
@@ -230,9 +232,13 @@ pub(crate) async fn api_revise_memory(
         fresh_until: request.fresh_until,
         expires_at: request.expires_at,
     };
-    let memory = require_store(&state)?
-        .revise_durable_memory(&memory_id, &revision, &context.api_key_id)
-        .map_err(bad_memory_request)?;
+    let store = require_store(&state)?;
+    let actor = context.api_key_id;
+    let memory_id = memory_id.clone();
+    let memory =
+        run_store_blocking(move || store.revise_durable_memory(&memory_id, &revision, &actor))
+            .await?
+            .map_err(bad_memory_request)?;
     Ok((cors_headers(), Json(json!({"memory": memory}))))
 }
 
@@ -260,9 +266,14 @@ pub(crate) async fn api_reembed_memory(
     }
     require_run_scope(&state, &request.run_id, &request.scope)?;
     require_memory_scope(&state, &memory_id, &request.scope, &context.tenant_id)?;
-    let memory = require_store(&state)?
-        .reembed_durable_memory(&memory_id, request.expected_version, &context.api_key_id)
-        .map_err(bad_memory_request)?;
+    let store = require_store(&state)?;
+    let actor = context.api_key_id;
+    let expected_version = request.expected_version;
+    let memory = run_store_blocking(move || {
+        store.reembed_durable_memory(&memory_id, expected_version, &actor)
+    })
+    .await?
+    .map_err(bad_memory_request)?;
     Ok((cors_headers(), Json(json!({"memory":memory}))))
 }
 
@@ -377,10 +388,22 @@ pub(crate) async fn api_retrieve_memory(
         ));
     }
     require_retrieval_node_scope(&run, &request)?;
-    let result = require_store(&state)?
-        .retrieve_durable_memories(&request, &context.api_key_id)
+    let store = require_store(&state)?;
+    let actor = context.api_key_id;
+    let result = run_store_blocking(move || store.retrieve_durable_memories(&request, &actor))
+        .await?
         .map_err(bad_memory_request)?;
     Ok((cors_headers(), Json(json!({"retrieval": result}))))
+}
+
+async fn run_store_blocking<T, F>(operation: F) -> Result<Result<T, String>, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| internal_error(format!("memory store worker failed: {error}")))
 }
 
 fn require_memory_scope(
@@ -521,4 +544,39 @@ fn bad_memory_request(error: String) -> ApiError {
         StatusCode::BAD_REQUEST
     };
     ApiError::with_code(status, "durable_memory_request_rejected", error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use super::run_store_blocking;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_store_work_does_not_block_the_async_worker() {
+        let started = Arc::new(AtomicBool::new(false));
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker_started = Arc::clone(&started);
+        let blocking = tokio::spawn(async move {
+            run_store_blocking(move || {
+                worker_started.store(true, Ordering::SeqCst);
+                release_rx.recv().unwrap();
+                Ok::<usize, String>(7)
+            })
+            .await
+        });
+        while !started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let progressed = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            tokio::task::yield_now().await;
+            11usize
+        })
+        .await
+        .unwrap();
+        assert_eq!(progressed, 11);
+        release_tx.send(()).unwrap();
+        assert_eq!(blocking.await.unwrap().unwrap().unwrap(), 7);
+    }
 }

@@ -15,8 +15,7 @@ pub const OPENROUTER_EMBEDDING_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const OPENROUTER_EMBEDDING_MODEL_ID: &str = "nvidia/llama-nemotron-embed-vl-1b-v2:free";
 pub const OPENROUTER_EMBEDDING_CANONICAL_SLUG: &str =
     "nvidia/llama-nemotron-embed-vl-1b-v2-20260224";
-pub const OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID: &str =
-    "private/openrouter/nvidia/llama-nemotron-embed-vl-1b-v2";
+pub const OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID: &str = OPENROUTER_EMBEDDING_MODEL_ID;
 pub const OPENROUTER_EMBEDDING_DIMENSIONS: usize = 1_536;
 pub const OPENROUTER_EMBEDDING_CONTEXT_LENGTH: u64 = 131_072;
 pub const OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE: &str = "2026-07-15";
@@ -37,6 +36,8 @@ const SUPPORTED_DURABLE_EMBEDDING_IDENTITIES: &[DurableEmbeddingIdentity] =
         context_length: OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
         prompt_cost_per_token_usd: 0.0,
         completion_cost_per_token_usd: 0.0,
+        request_cost_per_request_usd: 0.0,
+        image_cost_per_image_usd: 0.0,
         currency: "USD",
         pricing_effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE,
         pricing_source: OPENROUTER_EMBEDDING_PRICING_SOURCE,
@@ -51,6 +52,8 @@ struct DurableEmbeddingIdentity {
     context_length: u64,
     prompt_cost_per_token_usd: f64,
     completion_cost_per_token_usd: f64,
+    request_cost_per_request_usd: f64,
+    image_cost_per_image_usd: f64,
     currency: &'static str,
     pricing_effective_date: &'static str,
     pricing_source: &'static str,
@@ -71,9 +74,32 @@ pub(crate) static EMBEDDING_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mut
 pub struct EmbeddingPricingEvidence {
     pub prompt_cost_per_token_usd: f64,
     pub completion_cost_per_token_usd: f64,
+    pub request_cost_per_request_usd: f64,
+    pub image_cost_per_image_usd: f64,
+    pub request_max_price: EmbeddingPricingOverrides,
     pub currency: String,
     pub effective_date: String,
     pub source: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddingPricingOverrides {
+    pub prompt_usd_per_million_tokens: f64,
+    pub completion_usd_per_million_tokens: f64,
+    pub request_usd: f64,
+    pub image_usd: f64,
+}
+
+impl EmbeddingPricingOverrides {
+    pub(crate) fn zero() -> Self {
+        Self {
+            prompt_usd_per_million_tokens: 0.0,
+            completion_usd_per_million_tokens: 0.0,
+            request_usd: 0.0,
+            image_usd: 0.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -100,6 +126,19 @@ impl EmbeddingContractEvidence {
             pricing,
         }
     }
+}
+
+pub(crate) fn pinned_free_embedding_contract_evidence() -> EmbeddingContractEvidence {
+    EmbeddingContractEvidence::current(EmbeddingPricingEvidence {
+        prompt_cost_per_token_usd: 0.0,
+        completion_cost_per_token_usd: 0.0,
+        request_cost_per_request_usd: 0.0,
+        image_cost_per_image_usd: 0.0,
+        request_max_price: EmbeddingPricingOverrides::zero(),
+        currency: "USD".to_string(),
+        effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
+        source: OPENROUTER_EMBEDDING_PRICING_SOURCE.to_string(),
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -155,6 +194,9 @@ fn pricing_matches_identity(
 ) -> bool {
     pricing.prompt_cost_per_token_usd == identity.prompt_cost_per_token_usd
         && pricing.completion_cost_per_token_usd == identity.completion_cost_per_token_usd
+        && pricing.request_cost_per_request_usd == identity.request_cost_per_request_usd
+        && pricing.image_cost_per_image_usd == identity.image_cost_per_image_usd
+        && pricing.request_max_price == EmbeddingPricingOverrides::zero()
         && pricing.currency == identity.currency
         && pricing.effective_date == identity.pricing_effective_date
         && pricing.source == identity.pricing_source
@@ -340,6 +382,16 @@ impl ProviderEmbeddingClient {
             "input": inputs,
             "dimensions": OPENROUTER_EMBEDDING_DIMENSIONS,
             "encoding_format": "float",
+            "provider": {
+                "allow_fallbacks": false,
+                "require_parameters": true,
+                "max_price": {
+                    "prompt": 0,
+                    "completion": 0,
+                    "request": 0,
+                    "image": 0,
+                }
+            },
         });
         let result = self.embedding_circuit_breaker.call(|| {
             let response = self.send_embedding_once(HttpRequest {
@@ -507,14 +559,33 @@ fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
     {
         return Err("embedding model context contract changed".to_string());
     }
-    let prompt = parse_price(record.pointer("/pricing/prompt"))?;
-    let completion = parse_price(record.pointer("/pricing/completion"))?;
-    if prompt != 0.0 || completion != 0.0 {
+    let pricing = record
+        .get("pricing")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "embedding provider pricing is unknown or incomplete".to_string())?;
+    let expected_fields = ["prompt", "completion", "request", "image"];
+    if pricing.len() != expected_fields.len()
+        || pricing
+            .keys()
+            .any(|key| !expected_fields.contains(&key.as_str()))
+    {
+        return Err(
+            "embedding provider pricing contains an unknown or unmodelled charge field".to_string(),
+        );
+    }
+    let prompt = parse_price(pricing.get("prompt"))?;
+    let completion = parse_price(pricing.get("completion"))?;
+    let request = parse_price(pricing.get("request"))?;
+    let image = parse_price(pricing.get("image"))?;
+    if prompt != 0.0 || completion != 0.0 || request != 0.0 || image != 0.0 {
         return Err("pinned free embedding model pricing changed".to_string());
     }
     Ok(EmbeddingPricingEvidence {
         prompt_cost_per_token_usd: prompt,
         completion_cost_per_token_usd: completion,
+        request_cost_per_request_usd: request,
+        image_cost_per_image_usd: image,
+        request_max_price: EmbeddingPricingOverrides::zero(),
         currency: "USD".to_string(),
         effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
         source: OPENROUTER_EMBEDDING_PRICING_SOURCE.to_string(),
@@ -743,7 +814,7 @@ mod tests {
                 "id": OPENROUTER_EMBEDDING_MODEL_ID,
                 "canonical_slug": OPENROUTER_EMBEDDING_CANONICAL_SLUG,
                 "context_length": OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-                "pricing":{"prompt":"0","completion":"0"},
+                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
                 "architecture":{"input_modalities":["text","image"],"output_modalities":["embeddings"]}
             }]}))
             .unwrap(),
@@ -845,7 +916,7 @@ mod tests {
         let batch_response = HttpResponse {
             status: 200,
             body: serde_json::to_vec(&json!({
-                "model":"private/openrouter/nvidia/llama-nemotron-embed-vl-1b-v2",
+                "model":OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
                 "data":[
                     {"index":0,"embedding":vec![0.25;OPENROUTER_EMBEDDING_DIMENSIONS]},
                     {"index":1,"embedding":vec![0.5;OPENROUTER_EMBEDDING_DIMENSIONS]}
@@ -871,6 +942,9 @@ mod tests {
         let pricing = EmbeddingPricingEvidence {
             prompt_cost_per_token_usd: 0.0,
             completion_cost_per_token_usd: 0.0,
+            request_cost_per_request_usd: 0.0,
+            image_cost_per_image_usd: 0.0,
+            request_max_price: EmbeddingPricingOverrides::zero(),
             currency: "USD".to_string(),
             effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
             source: OPENROUTER_EMBEDDING_PRICING_SOURCE.to_string(),
@@ -905,6 +979,9 @@ mod tests {
             EmbeddingPricingEvidence {
                 prompt_cost_per_token_usd: 0.0,
                 completion_cost_per_token_usd: 0.0,
+                request_cost_per_request_usd: 0.0,
+                image_cost_per_image_usd: 0.0,
+                request_max_price: EmbeddingPricingOverrides::zero(),
                 currency: "USD".to_string(),
                 effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
                 source: OPENROUTER_EMBEDDING_PRICING_SOURCE.to_string(),
@@ -954,12 +1031,71 @@ mod tests {
             "id":OPENROUTER_EMBEDDING_MODEL_ID,
             "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
             "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-            "pricing":{"prompt":"0.0001","completion":"0"},
+            "pricing":{"prompt":"0.0001","completion":"0","request":"0","image":"0"},
             "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
         }]});
         assert!(validate_catalog(&serde_json::to_vec(&changed).unwrap())
             .unwrap_err()
             .contains("pricing changed"));
+    }
+
+    #[test]
+    fn request_pricing_and_all_catalog_charge_fields_fail_closed() {
+        let base = json!({"data":[{
+            "id":OPENROUTER_EMBEDDING_MODEL_ID,
+            "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+            "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
+            "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
+            "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
+        }]});
+        assert!(validate_catalog(&serde_json::to_vec(&base).unwrap()).is_ok());
+
+        for (name, pricing) in [
+            ("missing-request", json!({"prompt":"0","completion":"0"})),
+            (
+                "paid-request",
+                json!({"prompt":"0","completion":"0","request":"0.01"}),
+            ),
+            (
+                "unknown-paid-field",
+                json!({"prompt":"0","completion":"0","request":"0","future_charge":"0.01"}),
+            ),
+            (
+                "unparseable-field",
+                json!({"prompt":"0","completion":"0","request":"0","image":"free"}),
+            ),
+        ] {
+            let mut changed = base.clone();
+            changed["data"][0]["pricing"] = pricing;
+            assert!(
+                validate_catalog(&serde_json::to_vec(&changed).unwrap()).is_err(),
+                "{name} pricing must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn undocumented_private_response_model_identity_is_refused() {
+        let body = json!({
+            "model":"private/openrouter/nvidia/llama-nemotron-embed-vl-1b-v2",
+            "data":[{"index":0,"embedding":vec![0.25;OPENROUTER_EMBEDDING_DIMENSIONS]}],
+            "usage":{"prompt_tokens":7}
+        });
+        assert!(parse_embedding_response(
+            &serde_json::to_vec(&body).unwrap(),
+            &["bounded memory".to_string()],
+            EmbeddingPricingEvidence {
+                prompt_cost_per_token_usd: 0.0,
+                completion_cost_per_token_usd: 0.0,
+                request_cost_per_request_usd: 0.0,
+                image_cost_per_image_usd: 0.0,
+                request_max_price: EmbeddingPricingOverrides::zero(),
+                currency: "USD".to_string(),
+                effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
+                source: OPENROUTER_EMBEDDING_PRICING_SOURCE.to_string(),
+            },
+        )
+        .is_err());
     }
 
     #[test]

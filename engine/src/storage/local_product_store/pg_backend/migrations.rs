@@ -121,6 +121,7 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
     }
     let operation_ddl = "CREATE TABLE IF NOT EXISTS provider_embedding_operations (
             operation_id TEXT PRIMARY KEY,
+            operation_kind TEXT NOT NULL CHECK (operation_kind IN ('memory_version','retrieval_query')),
             target_memory_id TEXT NOT NULL,
             target_version BIGINT NOT NULL,
             tenant_id TEXT NOT NULL,
@@ -130,25 +131,45 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
             task_id TEXT,
             source_id TEXT NOT NULL,
             source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+            node_id TEXT,
+            query_sha256 TEXT CHECK (query_sha256 IS NULL OR length(query_sha256) = 64),
+            request_identity_sha256 TEXT NOT NULL CHECK (length(request_identity_sha256) = 64),
             operation_binding_sha256 TEXT NOT NULL CHECK (length(operation_binding_sha256) = 64),
             content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
             contract_json TEXT NOT NULL,
             contract_sha256 TEXT NOT NULL CHECK (length(contract_sha256) = 64),
             receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
             provider_id TEXT NOT NULL,
-            model_id TEXT NOT NULL,
-            state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown','outcome_unknown_acknowledged','retry_authorized')),
+            requested_model_id TEXT NOT NULL,
+            resolved_model_id TEXT NOT NULL,
+            dimensions BIGINT NOT NULL CHECK (dimensions > 0),
+            reservation_event_id TEXT NOT NULL,
+            send_event_id TEXT,
+            outcome_event_id TEXT,
+            result_kind TEXT CHECK (result_kind IS NULL OR result_kind IN ('memory_version','retrieval_event')),
+            result_id TEXT,
+            result_sha256 TEXT CHECK (result_sha256 IS NULL OR length(result_sha256) = 64),
+            state TEXT NOT NULL CHECK (state IN ('preflight_reserved','reserved','sending','network_succeeded','succeeded','result_erased','failed_before_send','failed_known_outcome','outcome_unknown','outcome_unknown_acknowledged','retry_authorized')),
             attempt_count BIGINT NOT NULL DEFAULT 1 CHECK (attempt_count BETWEEN 1 AND 4),
             vector_json TEXT,
             metadata_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE (target_memory_id, target_version)
+            UNIQUE (target_memory_id, target_version),
+            FOREIGN KEY (reservation_event_id) REFERENCES provider_audit_events(event_id),
+            FOREIGN KEY (send_event_id) REFERENCES provider_audit_events(event_id),
+            FOREIGN KEY (outcome_event_id) REFERENCES provider_audit_events(event_id),
+            CHECK ((result_kind IS NULL AND result_id IS NULL AND result_sha256 IS NULL)
+                OR (result_kind IS NOT NULL AND result_id IS NOT NULL AND result_sha256 IS NOT NULL)),
+            CHECK ((operation_kind='memory_version' AND node_id IS NULL AND query_sha256 IS NULL)
+                OR (operation_kind='retrieval_query' AND run_id IS NOT NULL AND node_id IS NOT NULL
+                    AND query_sha256 IS NOT NULL AND query_sha256=source_sha256))
         );";
     tx.batch_execute(operation_ddl)
         .map_err(|error| format!("migration 25 operation receipt failed: {error}"))?;
     let required_columns = [
         "operation_id",
+        "operation_kind",
         "target_memory_id",
         "target_version",
         "tenant_id",
@@ -158,13 +179,24 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
         "task_id",
         "source_id",
         "source_sha256",
+        "node_id",
+        "query_sha256",
+        "request_identity_sha256",
         "operation_binding_sha256",
         "content_sha256",
         "contract_json",
         "contract_sha256",
         "receipt_sha256",
         "provider_id",
-        "model_id",
+        "requested_model_id",
+        "resolved_model_id",
+        "dimensions",
+        "reservation_event_id",
+        "send_event_id",
+        "outcome_event_id",
+        "result_kind",
+        "result_id",
+        "result_sha256",
         "state",
         "attempt_count",
         "vector_json",
@@ -178,7 +210,8 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
             missing_columns.push(column);
         }
     }
-    if !missing_columns.is_empty() {
+    let invalid_schema = !missing_columns.is_empty() || !pg_v25_operation_schema_valid(&mut tx)?;
+    if invalid_schema {
         let occupied: bool = tx
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
@@ -188,8 +221,8 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
             .map_err(|error| format!("failed to inspect partial migration 25 receipts: {error}"))?;
         if occupied {
             return Err(format!(
-                "migration 25 cannot repair an occupied partial operation table; missing {}",
-                missing_columns.join(",")
+                "migration 25 cannot repair an occupied partial operation table; missing or invalid {}",
+                if missing_columns.is_empty() { "constraints/indexes/foreign-keys".to_string() } else { missing_columns.join(",") }
             ));
         }
         tx.batch_execute("DROP TABLE provider_embedding_operations;")
@@ -223,11 +256,122 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
     }
     tx.batch_execute(
         "CREATE INDEX IF NOT EXISTS idx_provider_embedding_operations_state
-         ON provider_embedding_operations(state, updated_at);",
+         ON provider_embedding_operations(state, updated_at);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_embedding_operations_retrieval_identity
+         ON provider_embedding_operations(tenant_id,workspace_id,run_id,node_id,query_sha256,provider_id,
+             requested_model_id,resolved_model_id,dimensions,request_identity_sha256)
+         WHERE operation_kind='retrieval_query';",
     )
     .map_err(|error| format!("migration 25 operation index failed: {error}"))?;
+    if !pg_v25_operation_schema_valid(&mut tx)? {
+        return Err("migration 25 operation schema verification failed".to_string());
+    }
+    let marker: bool = tx
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)",
+            &[&version],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if !marker {
+        return Err("migration 25 schema version verification failed".to_string());
+    }
     tx.commit()
         .map_err(|error| format!("failed to commit migration 25: {error}"))
+}
+
+fn pg_v25_operation_schema_valid(
+    client: &mut impl postgres::GenericClient,
+) -> Result<bool, String> {
+    let required_not_null = [
+        "operation_id",
+        "operation_kind",
+        "target_memory_id",
+        "target_version",
+        "tenant_id",
+        "workspace_id",
+        "source_id",
+        "source_sha256",
+        "request_identity_sha256",
+        "operation_binding_sha256",
+        "content_sha256",
+        "contract_json",
+        "contract_sha256",
+        "receipt_sha256",
+        "provider_id",
+        "requested_model_id",
+        "resolved_model_id",
+        "dimensions",
+        "reservation_event_id",
+        "state",
+        "attempt_count",
+        "created_at",
+        "updated_at",
+    ];
+    for column in required_not_null {
+        let valid: bool = client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.columns
+             WHERE table_schema=current_schema() AND table_name='provider_embedding_operations'
+               AND column_name=$1 AND is_nullable='NO')",
+                &[&column],
+            )
+            .map_err(|error| error.to_string())?
+            .get(0);
+        if !valid {
+            return Ok(false);
+        }
+    }
+    let constraints = client
+        .query(
+            "SELECT contype::TEXT,pg_get_constraintdef(oid)
+         FROM pg_constraint WHERE conrelid='provider_embedding_operations'::regclass",
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+    let rendered = constraints
+        .iter()
+        .map(|row| {
+            format!("{}:{}", row.get::<_, String>(0), row.get::<_, String>(1)).to_ascii_lowercase()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    for fragment in [
+        "primary key (operation_id)",
+        "unique (target_memory_id, target_version)",
+        "operation_kind",
+        "result_erased",
+        "failed_before_send",
+        "outcome_unknown_acknowledged",
+        "dimensions > 0",
+        "attempt_count",
+        "foreign key (reservation_event_id) references provider_audit_events(event_id)",
+        "foreign key (send_event_id) references provider_audit_events(event_id)",
+        "foreign key (outcome_event_id) references provider_audit_events(event_id)",
+    ] {
+        if !rendered.contains(fragment) {
+            return Ok(false);
+        }
+    }
+    let indexes = client
+        .query(
+            "SELECT indexname,indexdef FROM pg_indexes
+         WHERE schemaname=current_schema() AND tablename='provider_embedding_operations'",
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+    let indexes = indexes
+        .iter()
+        .map(|row| {
+            format!("{}:{}", row.get::<_, String>(0), row.get::<_, String>(1)).to_ascii_lowercase()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(indexes.contains("idx_provider_embedding_operations_state")
+        && indexes.contains("(state, updated_at)")
+        && indexes.contains("idx_provider_embedding_operations_retrieval_identity")
+        && indexes.contains("unique")
+        && indexes.contains("operation_kind = 'retrieval_query'"))
 }
 
 impl LocalProductStore {

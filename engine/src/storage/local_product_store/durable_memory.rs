@@ -7,8 +7,10 @@ use sha2::{Digest, Sha256};
 
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::provider::embedding::{
-    normalized_content_sha256, validate_inputs, EmbeddingContractEvidence, ProviderEmbeddingConfig,
-    ProviderEmbeddingMetadata, OPENROUTER_EMBEDDING_MODEL_ID, OPENROUTER_EMBEDDING_PROVIDER_ID,
+    normalized_content_sha256, pinned_free_embedding_contract_evidence, validate_inputs,
+    EmbeddingContractEvidence, ProviderEmbeddingConfig, ProviderEmbeddingMetadata,
+    OPENROUTER_EMBEDDING_DIMENSIONS, OPENROUTER_EMBEDDING_MODEL_ID,
+    OPENROUTER_EMBEDDING_PROVIDER_ID, OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
 };
 use crate::provider::ProviderAuditEvent;
 
@@ -156,17 +158,22 @@ struct EmbeddingMaterial {
     values: Vec<f64>,
     provenance: String,
     provider: Option<ProviderEmbeddingMetadata>,
+    pending_operation_id: Option<String>,
 }
 
 #[derive(Debug)]
 struct EmbeddingOperationBinding<'a> {
     binding_sha256: &'a str,
+    operation_kind: &'a str,
     memory_id: &'a str,
     target_version: i64,
     scope: &'a MemoryScope,
     run_id: Option<&'a str>,
     source_id: &'a str,
     source_sha256: &'a str,
+    node_id: Option<&'a str>,
+    query_sha256: Option<&'a str>,
+    request_identity_sha256: &'a str,
 }
 
 #[derive(Debug)]
@@ -221,14 +228,21 @@ impl LocalProductStore {
             &request.content.to_string(),
             Some(&EmbeddingOperationBinding {
                 binding_sha256: &operation_binding,
+                operation_kind: "memory_version",
                 memory_id: &memory_id,
                 target_version: 1,
                 scope: &request.scope,
                 run_id: request.run_id.as_deref(),
                 source_id: &request.source_id,
                 source_sha256: &request.source_sha256,
+                node_id: None,
+                query_sha256: None,
+                request_identity_sha256: &operation_binding,
             }),
         )?;
+        let pending_operation_id = embedding
+            .as_ref()
+            .and_then(|material| material.pending_operation_id.clone());
         let now = self.now();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -264,6 +278,9 @@ impl LocalProductStore {
                     actor.to_string(),
                 )?;
                 sqlite_insert_memory(&tx, &record)?;
+                if let Some(operation_id) = pending_operation_id.as_deref() {
+                    sqlite_finalize_provider_embedding_memory(&tx, operation_id, &record, &now)?;
+                }
                 append_audit_locked(
                     &tx,
                     &now,
@@ -313,6 +330,9 @@ impl LocalProductStore {
                     actor.to_string(),
                 )?;
                 pg_insert_memory(&mut tx, &record)?;
+                if let Some(operation_id) = pending_operation_id.as_deref() {
+                    pg_finalize_provider_embedding_memory(&mut tx, operation_id, &record, &now)?;
+                }
                 pg_append_audit(
                     &mut tx,
                     &now,
@@ -354,12 +374,16 @@ impl LocalProductStore {
             &revision.content.to_string(),
             Some(&EmbeddingOperationBinding {
                 binding_sha256: &operation_binding,
+                operation_kind: "memory_version",
                 memory_id,
                 target_version: revision.expected_version + 1,
                 scope: &prior.scope,
                 run_id: prior.run_id.as_deref(),
                 source_id: &revision.source_id,
                 source_sha256: &revision.source_sha256,
+                node_id: None,
+                query_sha256: None,
+                request_identity_sha256: &operation_binding,
             }),
         )?;
         self.append_memory_version(
@@ -405,12 +429,16 @@ impl LocalProductStore {
             &prior.content.to_string(),
             Some(&EmbeddingOperationBinding {
                 binding_sha256: &operation_binding,
+                operation_kind: "memory_version",
                 memory_id,
                 target_version: next_version,
                 scope: &prior.scope,
                 run_id: prior.run_id.as_deref(),
                 source_id: &prior.source_id,
                 source_sha256: &prior.source_sha256,
+                node_id: None,
+                query_sha256: None,
+                request_identity_sha256: &operation_binding,
             }),
         )?;
         let revision = DurableMemoryRevision {
@@ -642,6 +670,9 @@ impl LocalProductStore {
                     .map_err(|error| error.to_string())?;
                 }
                 sqlite_insert_memory(&tx, &record)?;
+                if state == "tombstoned" {
+                    sqlite_erase_provider_embedding_memory_results(&tx, memory_id, &now)?;
+                }
                 let mut evidence = memory_audit(&record);
                 evidence["previous_record_sha256"] = json!(prior.record_sha256);
                 evidence["prior_versions_erased"] = json!(state == "tombstoned");
@@ -672,6 +703,9 @@ impl LocalProductStore {
                     .map_err(|error| error.to_string())?;
                 }
                 pg_insert_memory(&mut tx, &record)?;
+                if state == "tombstoned" {
+                    pg_erase_provider_embedding_memory_results(&mut tx, memory_id, &now)?;
+                }
                 let mut evidence = memory_audit(&record);
                 evidence["previous_record_sha256"] = json!(prior.record_sha256);
                 evidence["prior_versions_erased"] = json!(state == "tombstoned");
@@ -699,6 +733,9 @@ impl LocalProductStore {
         actor: &str,
         audit_action: &str,
     ) -> Result<Value, String> {
+        let pending_operation_id = embedding
+            .as_ref()
+            .and_then(|material| material.pending_operation_id.clone());
         let now = self.now();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -727,6 +764,9 @@ impl LocalProductStore {
                     actor.to_string(),
                 )?;
                 sqlite_insert_memory(&tx, &record)?;
+                if let Some(operation_id) = pending_operation_id.as_deref() {
+                    sqlite_finalize_provider_embedding_memory(&tx, operation_id, &record, &now)?;
+                }
                 append_audit_locked(
                     &tx,
                     &now,
@@ -765,6 +805,9 @@ impl LocalProductStore {
                     actor.to_string(),
                 )?;
                 pg_insert_memory(&mut tx, &record)?;
+                if let Some(operation_id) = pending_operation_id.as_deref() {
+                    pg_finalize_provider_embedding_memory(&mut tx, operation_id, &record, &now)?;
+                }
                 pg_append_audit(
                     &mut tx,
                     &now,
@@ -804,7 +847,46 @@ impl LocalProductStore {
     ) -> Result<MemoryRetrievalResult, String> {
         validate_retrieval(request)?;
         validate_identifier(actor, "actor")?;
-        let query_embedding = self.embedding_for_text(&request.query, None)?;
+        let query_sha256 = sha256_bytes(request.query.as_bytes());
+        let request_identity_sha256 = sha256_json(&json!({
+            "scope": request.scope,
+            "run_id": request.run_id,
+            "node_id": request.node_id,
+            "query_sha256": query_sha256,
+            "top_k": request.top_k,
+            "max_tokens": request.max_tokens,
+            "max_bytes": request.max_bytes,
+            "allow_lexical_fallback": request.allow_lexical_fallback,
+        }))?;
+        let query_operation_binding_sha256 = sha256_json(&json!({
+            "operation_kind": "retrieval_query",
+            "tenant_id": request.scope.tenant_id,
+            "workspace_id": request.scope.workspace_id,
+            "run_id": request.run_id,
+            "node_id": request.node_id,
+            "query_sha256": query_sha256,
+            "provider_id": OPENROUTER_EMBEDDING_PROVIDER_ID,
+            "requested_model_id": OPENROUTER_EMBEDDING_MODEL_ID,
+            "resolved_model_id": OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
+            "dimensions": OPENROUTER_EMBEDDING_DIMENSIONS,
+            "request_identity_sha256": request_identity_sha256,
+        }))?;
+        let query_target = format!("retrieval-query-{query_operation_binding_sha256}");
+        let query_source = format!("retrieval-query/{}", request.node_id);
+        let query_binding = EmbeddingOperationBinding {
+            binding_sha256: &query_operation_binding_sha256,
+            operation_kind: "retrieval_query",
+            memory_id: &query_target,
+            target_version: 1,
+            scope: &request.scope,
+            run_id: Some(&request.run_id),
+            source_id: &query_source,
+            source_sha256: &query_sha256,
+            node_id: Some(&request.node_id),
+            query_sha256: Some(&query_sha256),
+            request_identity_sha256: &request_identity_sha256,
+        };
+        let query_embedding = self.embedding_for_text(&request.query, Some(&query_binding))?;
         let (mode, provenance) = match &query_embedding {
             Some(material) => ("semantic_vector", material.provenance.clone()),
             None if request.allow_lexical_fallback => {
@@ -921,7 +1003,7 @@ impl LocalProductStore {
             request_sha256,
             result_sha256,
         };
-        self.record_retrieval_event(request, &result, actor)?;
+        self.record_retrieval_event(request, &result, query_embedding.as_ref(), actor)?;
         Ok(result)
     }
 
@@ -964,6 +1046,7 @@ impl LocalProductStore {
         &self,
         request: &MemoryRetrievalRequest,
         result: &MemoryRetrievalResult,
+        query_embedding: Option<&EmbeddingMaterial>,
         actor: &str,
     ) -> Result<(), String> {
         let evidence = json!({
@@ -998,14 +1081,28 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = conn.unchecked_transaction().map_err(|error| error.to_string())?;
                 let changed = tx.execute("INSERT OR IGNORE INTO memory_retrieval_events (retrieval_id, tenant_id, workspace_id, run_id, node_id, agent_id, request_sha256, result_sha256, mode, candidate_count, selected_count, estimated_tokens, read_bytes, truncated, evidence_json, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", params![result.retrieval_id, request.scope.tenant_id, request.scope.workspace_id, request.run_id, request.node_id, request.scope.agent_id, result.request_sha256, result.result_sha256, result.mode, candidate_count, selected_count, estimated_tokens, read_bytes, truncated, evidence_json, now]).map_err(|error| error.to_string())?;
-                if changed == 1 { append_audit_locked(&tx, &now, actor, "durable_memory.retrieve", &format!("memory-retrieval/{}", result.retrieval_id), &evidence)?; }
+                if changed == 1 {
+                    if let Some(material) = query_embedding.filter(|material| material.pending_operation_id.is_some()) {
+                        sqlite_finalize_provider_embedding_retrieval(
+                            &tx, request, result, material, &now,
+                        )?;
+                    }
+                    append_audit_locked(&tx, &now, actor, "durable_memory.retrieve", &format!("memory-retrieval/{}", result.retrieval_id), &evidence)?;
+                }
                 tx.commit().map_err(|error| error.to_string())
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
                 let changed = tx.execute("INSERT INTO memory_retrieval_events (retrieval_id, tenant_id, workspace_id, run_id, node_id, agent_id, request_sha256, result_sha256, mode, candidate_count, selected_count, estimated_tokens, read_bytes, truncated, evidence_json, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(retrieval_id) DO NOTHING", &[&result.retrieval_id, &request.scope.tenant_id, &request.scope.workspace_id, &request.run_id, &request.node_id, &request.scope.agent_id, &result.request_sha256, &result.result_sha256, &result.mode, &candidate_count, &selected_count, &estimated_tokens, &read_bytes, &truncated, &evidence_json, &now]).map_err(|error| error.to_string())?;
-                if changed == 1 { pg_append_audit(&mut tx, &now, actor, "durable_memory.retrieve", &format!("memory-retrieval/{}", result.retrieval_id), &evidence)?; }
+                if changed == 1 {
+                    if let Some(material) = query_embedding.filter(|material| material.pending_operation_id.is_some()) {
+                        pg_finalize_provider_embedding_retrieval(
+                            &mut tx, request, result, material, &now,
+                        )?;
+                    }
+                    pg_append_audit(&mut tx, &now, actor, "durable_memory.retrieve", &format!("memory-retrieval/{}", result.retrieval_id), &evidence)?;
+                }
                 tx.commit().map_err(|error| error.to_string())
             }),
         }
@@ -1166,6 +1263,7 @@ impl LocalProductStore {
                 values: local_embedding(text),
                 provenance: "deterministic_fixture".to_string(),
                 provider: None,
+                pending_operation_id: None,
             })),
             "fixture" => Err("fixture embeddings are forbidden outside tests".to_string()),
             "local_hash_v1" => {
@@ -1179,6 +1277,7 @@ impl LocalProductStore {
                     values: local_embedding(text),
                     provenance: "harness_derived".to_string(),
                     provider: None,
+                    pending_operation_id: None,
                 }))
             }
             "provider" => self
@@ -1196,15 +1295,90 @@ impl LocalProductStore {
         let config = ProviderEmbeddingConfig::from_env()?;
         let inputs = [text.to_string()];
         validate_inputs(&inputs)?;
-        let mut dispatch_suffix = operation_binding
-            .map(|binding| binding.binding_sha256.to_string())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
-        let mut dispatch_id = format!("memory-embedding-{dispatch_suffix}");
+        let binding = operation_binding.ok_or_else(|| {
+            "provider embedding requires a durable operation receipt binding".to_string()
+        })?;
+        let base_dispatch_suffix = binding.binding_sha256.to_string();
         let now = self.now();
+        let contract_evidence = pinned_free_embedding_contract_evidence();
+        validate_contract_evidence(&contract_evidence)?;
+        let contract_json =
+            serde_json::to_string(&contract_evidence).map_err(|error| error.to_string())?;
+        let contract_sha256 = sha256_bytes(contract_json.as_bytes());
+        let mut operation = ProviderEmbeddingOperation {
+            operation_id: format!("embedding-operation-{}", binding.binding_sha256),
+            operation_kind: binding.operation_kind.to_string(),
+            target_memory_id: binding.memory_id.to_string(),
+            target_version: binding.target_version,
+            tenant_id: binding.scope.tenant_id.clone(),
+            workspace_id: binding.scope.workspace_id.clone(),
+            agent_id: binding.scope.agent_id.clone(),
+            run_id: binding.run_id.map(str::to_string),
+            task_id: binding.scope.task_id.clone(),
+            source_id: binding.source_id.to_string(),
+            source_sha256: binding.source_sha256.to_string(),
+            node_id: binding.node_id.map(str::to_string),
+            query_sha256: binding.query_sha256.map(str::to_string),
+            request_identity_sha256: binding.request_identity_sha256.to_string(),
+            operation_binding_sha256: binding.binding_sha256.to_string(),
+            content_sha256: normalized_content_sha256(text),
+            contract_json,
+            contract_sha256,
+            receipt_sha256: String::new(),
+            provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            requested_model_id: contract_evidence.requested_model_id.clone(),
+            resolved_model_id: contract_evidence.resolved_model_id.clone(),
+            dimensions: contract_evidence.dimensions as i64,
+            created_at: now.clone(),
+        };
+        operation.receipt_sha256 = provider_embedding_operation_receipt_sha256(&operation)?;
+        let preflight = ProviderAuditEvent {
+            schema_version: "provider_audit_event.v1".to_string(),
+            event_id: format!("paudit-preflight-{base_dispatch_suffix}"),
+            dispatch_id: format!("memory-embedding-{base_dispatch_suffix}"),
+            provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            event_type: "contract_check_reserved".to_string(),
+            input_token_count: None,
+            output_token_count: None,
+            cost: None,
+            currency: None,
+            latency_ms: None,
+            error_domain: None,
+            redaction_status: "redacted".to_string(),
+            created_at: now.clone(),
+        };
+        let attempt_count =
+            match self.reserve_provider_embedding_preflight(&operation, &preflight)? {
+                ProviderEmbeddingOperationClaim::PreflightReserved { attempt_count }
+                | ProviderEmbeddingOperationClaim::Claimed { attempt_count } => attempt_count,
+                ProviderEmbeddingOperationClaim::Completed {
+                    vector_json,
+                    metadata_json,
+                } => return completed_embedding_material(&operation, &vector_json, &metadata_json),
+                ProviderEmbeddingOperationClaim::RetryAuthorized { .. } => {
+                    return Err("provider embedding retry authorization was not claimed".to_string())
+                }
+            };
+        let dispatch_suffix = if attempt_count > 1 {
+            format!("{base_dispatch_suffix}-attempt-{attempt_count}")
+        } else {
+            base_dispatch_suffix
+        };
+        let dispatch_id = format!("memory-embedding-{dispatch_suffix}");
         let contract = match self.embedding_client.verify_contract(&config) {
-            Ok(contract) => contract,
+            Ok(contract) if contract.evidence() == contract_evidence => contract,
+            Ok(_) => {
+                let error = "embedding catalog contract differs from the reserved public identity"
+                    .to_string();
+                let event =
+                    preflight_failure_event(&dispatch_suffix, &dispatch_id, &error, self.now());
+                self.fail_provider_embedding_preflight(&operation, &event)?;
+                return Err(error);
+            }
             Err(error) => {
-                self.record_embedding_error(&dispatch_id, &error, None)?;
+                let event =
+                    preflight_failure_event(&dispatch_suffix, &dispatch_id, &error, self.now());
+                self.fail_provider_embedding_preflight(&operation, &event)?;
                 return Err(error);
             }
         };
@@ -1238,87 +1412,24 @@ impl LocalProductStore {
             redaction_status: "redacted".to_string(),
             created_at: now.clone(),
         };
-        let contract_evidence = contract.evidence();
-        validate_contract_evidence(&contract_evidence)?;
-        let contract_json =
-            serde_json::to_string(&contract_evidence).map_err(|error| error.to_string())?;
-        let contract_sha256 = sha256_bytes(contract_json.as_bytes());
-        let operation = operation_binding
-            .map(|binding| {
-                let mut operation = ProviderEmbeddingOperation {
-                    operation_id: format!("embedding-operation-{}", binding.binding_sha256),
-                    target_memory_id: binding.memory_id.to_string(),
-                    target_version: binding.target_version,
-                    tenant_id: binding.scope.tenant_id.clone(),
-                    workspace_id: binding.scope.workspace_id.clone(),
-                    agent_id: binding.scope.agent_id.clone(),
-                    run_id: binding.run_id.map(str::to_string),
-                    task_id: binding.scope.task_id.clone(),
-                    source_id: binding.source_id.to_string(),
-                    source_sha256: binding.source_sha256.to_string(),
-                    operation_binding_sha256: binding.binding_sha256.to_string(),
-                    content_sha256: normalized_content_sha256(text),
-                    contract_json: contract_json.clone(),
-                    contract_sha256: contract_sha256.clone(),
-                    receipt_sha256: String::new(),
-                    provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
-                    model_id: OPENROUTER_EMBEDDING_MODEL_ID.to_string(),
-                    created_at: now.clone(),
-                };
-                operation.receipt_sha256 = provider_embedding_operation_receipt_sha256(&operation)?;
-                Ok::<ProviderEmbeddingOperation, String>(operation)
-            })
-            .transpose()?;
-        if let Some(operation) = &operation {
-            match self.claim_verified_free_embedding_operation(
-                operation,
-                &reservation,
-                &request_sent,
-                config.per_call_cap_usd,
-                config.daily_cap_usd,
-                &contract.pricing,
-            )? {
-                ProviderEmbeddingOperationClaim::Claimed { attempt_count } => {
-                    if attempt_count > 1 {
-                        dispatch_suffix = format!("{dispatch_suffix}-attempt-{attempt_count}");
-                        dispatch_id = format!("{dispatch_id}-attempt-{attempt_count}");
-                    }
-                }
-                ProviderEmbeddingOperationClaim::RetryAuthorized { .. } => {
-                    return Err("provider embedding retry authorization was not claimed".to_string())
-                }
-                ProviderEmbeddingOperationClaim::Completed {
-                    vector_json,
-                    metadata_json,
-                } => {
-                    let values = serde_json::from_str(&vector_json).map_err(|_| {
-                        "completed embedding vector receipt is malformed".to_string()
-                    })?;
-                    let metadata = serde_json::from_str(&metadata_json).map_err(|_| {
-                        "completed embedding metadata receipt is malformed".to_string()
-                    })?;
-                    return Ok(EmbeddingMaterial {
-                        values,
-                        provenance: "provider_reported".to_string(),
-                        provider: Some(metadata),
-                    });
-                }
+        match self.reserve_verified_free_embedding_operation(
+            &operation,
+            &reservation,
+            config.per_call_cap_usd,
+            config.daily_cap_usd,
+            &contract.pricing,
+        )? {
+            ProviderEmbeddingOperationClaim::Claimed { .. } => {}
+            ProviderEmbeddingOperationClaim::Completed {
+                vector_json,
+                metadata_json,
+            } => return completed_embedding_material(&operation, &vector_json, &metadata_json),
+            ProviderEmbeddingOperationClaim::PreflightReserved { .. }
+            | ProviderEmbeddingOperationClaim::RetryAuthorized { .. } => {
+                return Err("provider embedding verified reservation state conflict".to_string())
             }
-        } else {
-            let claimed = self.reserve_verified_free_embedding_cost(
-                &reservation,
-                config.per_call_cap_usd,
-                config.daily_cap_usd,
-                &contract.pricing,
-            )?;
-            if !claimed {
-                return Err(
-                    "provider embedding operation is already reserved; refresh authoritative state"
-                        .to_string(),
-                );
-            }
-            self.record_provider_audit_event(&request_sent)?;
         }
+        self.claim_verified_free_embedding_send(&operation, &request_sent)?;
         let started = std::time::Instant::now();
         let result = self
             .embedding_client
@@ -1348,24 +1459,21 @@ impl LocalProductStore {
                     redaction_status: "redacted".to_string(),
                     created_at: self.now(),
                 };
-                if let Some(operation) = &operation {
-                    let vector_json =
-                        serde_json::to_string(&values).map_err(|error| error.to_string())?;
-                    let metadata_json =
-                        serde_json::to_string(&metadata).map_err(|error| error.to_string())?;
-                    self.complete_provider_embedding_operation(
-                        operation,
-                        &vector_json,
-                        &metadata_json,
-                        &event,
-                    )?;
-                } else {
-                    self.record_provider_audit_event(&event)?;
-                }
+                let vector_json =
+                    serde_json::to_string(&values).map_err(|error| error.to_string())?;
+                let metadata_json =
+                    serde_json::to_string(&metadata).map_err(|error| error.to_string())?;
+                self.complete_provider_embedding_operation(
+                    &operation,
+                    &vector_json,
+                    &metadata_json,
+                    &event,
+                )?;
                 Ok(EmbeddingMaterial {
                     values,
                     provenance: "provider_reported".to_string(),
                     provider: Some(metadata),
+                    pending_operation_id: Some(operation.operation_id.clone()),
                 })
             }
             Err(error) => {
@@ -1386,41 +1494,50 @@ impl LocalProductStore {
                     redaction_status: "redacted".to_string(),
                     created_at: self.now(),
                 };
-                if let Some(operation) = &operation {
-                    self.fail_provider_embedding_operation(
-                        operation,
-                        outcome_unknown,
-                        &error_event,
-                    )?;
-                } else {
-                    self.record_provider_audit_event(&error_event)?;
-                }
+                self.fail_provider_embedding_operation(&operation, outcome_unknown, &error_event)?;
                 Err(error)
             }
         }
     }
+}
 
-    fn record_embedding_error(
-        &self,
-        dispatch_id: &str,
-        error: &str,
-        latency_ms: Option<i64>,
-    ) -> Result<(), String> {
-        self.record_provider_audit_event(&ProviderAuditEvent {
-            schema_version: "provider_audit_event.v1".to_string(),
-            event_id: format!("paudit-error-{}", uuid::Uuid::new_v4().simple()),
-            dispatch_id: dispatch_id.to_string(),
-            provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
-            event_type: "error".to_string(),
-            input_token_count: None,
-            output_token_count: None,
-            cost: None,
-            currency: Some("USD".to_string()),
-            latency_ms,
-            error_domain: Some(provider_error_domain(error).to_string()),
-            redaction_status: "redacted".to_string(),
-            created_at: self.now(),
-        })
+fn completed_embedding_material(
+    operation: &ProviderEmbeddingOperation,
+    vector_json: &str,
+    metadata_json: &str,
+) -> Result<EmbeddingMaterial, String> {
+    let values = serde_json::from_str(vector_json)
+        .map_err(|_| "completed embedding vector receipt is malformed".to_string())?;
+    let metadata = serde_json::from_str(metadata_json)
+        .map_err(|_| "completed embedding metadata receipt is malformed".to_string())?;
+    Ok(EmbeddingMaterial {
+        values,
+        provenance: "provider_reported".to_string(),
+        provider: Some(metadata),
+        pending_operation_id: Some(operation.operation_id.clone()),
+    })
+}
+
+fn preflight_failure_event(
+    dispatch_suffix: &str,
+    dispatch_id: &str,
+    _error: &str,
+    created_at: String,
+) -> ProviderAuditEvent {
+    ProviderAuditEvent {
+        schema_version: "provider_audit_event.v1".to_string(),
+        event_id: format!("paudit-contract-error-{dispatch_suffix}"),
+        dispatch_id: dispatch_id.to_string(),
+        provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+        event_type: "error".to_string(),
+        input_token_count: None,
+        output_token_count: None,
+        cost: None,
+        currency: Some("USD".to_string()),
+        latency_ms: None,
+        error_domain: Some("provider_failed_before_send".to_string()),
+        redaction_status: "redacted".to_string(),
+        created_at,
     }
 }
 
@@ -1611,6 +1728,7 @@ fn stored_embedding_material(memory: &StoredMemory) -> Option<EmbeddingMaterial>
             .embedding_metadata
             .as_ref()
             .map(|metadata| metadata.provider.clone()),
+        pending_operation_id: None,
     })
 }
 
@@ -1699,6 +1817,7 @@ fn validate_stored_embedding_binding(memory: &StoredMemory) -> Result<(), String
                 values: values.clone(),
                 provenance: memory.embedding_provenance.clone(),
                 provider: Some(metadata.provider.clone()),
+                pending_operation_id: None,
             };
             validate_embedding_material(&material, &memory.content)?;
             if embedding_binding_sha256(metadata)? != *binding {
@@ -1993,6 +2112,139 @@ fn sqlite_insert_memory(conn: &rusqlite::Connection, memory: &StoredMemory) -> R
     Ok(())
 }
 
+fn sqlite_finalize_provider_embedding_memory(
+    tx: &rusqlite::Transaction<'_>,
+    operation_id: &str,
+    memory: &StoredMemory,
+    updated_at: &str,
+) -> Result<(), String> {
+    let vector_json = serde_json::to_string(
+        memory
+            .embedding
+            .as_ref()
+            .ok_or_else(|| "provider embedding finalize is missing the vector".to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let provider = &memory
+        .embedding_metadata
+        .as_ref()
+        .ok_or_else(|| "provider embedding finalize is missing metadata".to_string())?
+        .provider;
+    let metadata_json = serde_json::to_string(provider).map_err(|error| error.to_string())?;
+    let changed = tx
+        .execute(
+            "UPDATE provider_embedding_operations
+             SET state='succeeded',result_kind='memory_version',result_id=?1,
+                 result_sha256=?2,updated_at=?3
+             WHERE operation_id=?4 AND target_memory_id=?5 AND target_version=?6
+               AND tenant_id=?7 AND workspace_id=?8 AND agent_id IS ?9 AND run_id IS ?10
+               AND task_id IS ?11 AND source_id=?12 AND source_sha256=?13
+               AND provider_id=?14 AND requested_model_id=?15 AND resolved_model_id=?16
+               AND dimensions=?17 AND state IN ('network_succeeded','succeeded')
+               AND vector_json=?18 AND metadata_json=?19",
+            params![
+                format!("{}:{}", memory.memory_id, memory.version),
+                memory.embedding_binding_sha256,
+                updated_at,
+                operation_id,
+                memory.memory_id,
+                memory.version,
+                memory.scope.tenant_id,
+                memory.scope.workspace_id,
+                memory.scope.agent_id,
+                memory.run_id,
+                memory.scope.task_id,
+                memory.source_id,
+                memory.source_sha256,
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                provider.requested_model_id,
+                provider.resolved_model_id,
+                provider.dimensions as i64,
+                vector_json,
+                metadata_json
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("provider embedding memory finalize integrity binding mismatch".to_string())
+    }
+}
+
+fn sqlite_erase_provider_embedding_memory_results(
+    tx: &rusqlite::Transaction<'_>,
+    memory_id: &str,
+    updated_at: &str,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE provider_embedding_operations
+         SET state='result_erased',vector_json=NULL,metadata_json=NULL,
+             result_kind=NULL,result_id=NULL,result_sha256=NULL,updated_at=?1
+         WHERE target_memory_id=?2 AND operation_kind='memory_version' AND state='succeeded'",
+        params![updated_at, memory_id],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+fn sqlite_finalize_provider_embedding_retrieval(
+    tx: &rusqlite::Transaction<'_>,
+    request: &MemoryRetrievalRequest,
+    result: &MemoryRetrievalResult,
+    material: &EmbeddingMaterial,
+    updated_at: &str,
+) -> Result<(), String> {
+    let operation_id = material
+        .pending_operation_id
+        .as_deref()
+        .ok_or_else(|| "provider retrieval finalize is missing operation identity".to_string())?;
+    let provider = material
+        .provider
+        .as_ref()
+        .ok_or_else(|| "provider retrieval finalize is missing metadata".to_string())?;
+    let vector_json = serde_json::to_string(&material.values).map_err(|error| error.to_string())?;
+    let metadata_json = serde_json::to_string(provider).map_err(|error| error.to_string())?;
+    let source_id = format!("retrieval-query/{}", request.node_id);
+    let content_sha256 = normalized_content_sha256(&request.query);
+    let changed = tx
+        .execute(
+            "UPDATE provider_embedding_operations
+             SET state='succeeded',result_kind='retrieval_event',result_id=?1,
+                 result_sha256=?2,updated_at=?3
+             WHERE operation_id=?4 AND tenant_id=?5 AND workspace_id=?6 AND agent_id IS ?7
+               AND run_id=?8 AND task_id IS ?9 AND source_id=?10 AND content_sha256=?11
+               AND provider_id=?12 AND requested_model_id=?13 AND resolved_model_id=?14
+               AND dimensions=?15 AND state='network_succeeded'
+               AND vector_json=?16 AND metadata_json=?17",
+            params![
+                result.retrieval_id,
+                result.result_sha256,
+                updated_at,
+                operation_id,
+                request.scope.tenant_id,
+                request.scope.workspace_id,
+                request.scope.agent_id,
+                request.run_id,
+                request.scope.task_id,
+                source_id,
+                content_sha256,
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                provider.requested_model_id,
+                provider.resolved_model_id,
+                provider.dimensions as i64,
+                vector_json,
+                metadata_json
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("provider embedding retrieval finalize integrity binding mismatch".to_string())
+    }
+}
+
 fn sqlite_latest_memory(
     conn: &rusqlite::Connection,
     memory_id: &str,
@@ -2274,6 +2526,143 @@ fn pg_insert_memory(
         .map(|value| serde_json::to_string(value).unwrap());
     tx.execute("INSERT INTO durable_memory_versions (memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,embedding_metadata_json,embedding_binding_sha256,record_sha256,created_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)",&[&memory.memory_id,&memory.version,&memory.scope.tenant_id,&memory.scope.workspace_id,&memory.scope.agent_id,&memory.run_id,&memory.scope.task_id,&memory.source_id,&memory.source_sha256,&memory.conflict_key,&memory.state,&memory.confidence,&memory.fresh_until,&memory.expires_at,&memory.supersedes_memory_id,&content,&embedding,&memory.embedding_provenance,&embedding_metadata,&memory.embedding_binding_sha256,&memory.record_sha256,&memory.created_at,&memory.created_by]).map_err(|error|error.to_string())?;
     Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn pg_finalize_provider_embedding_memory(
+    tx: &mut postgres::Transaction<'_>,
+    operation_id: &str,
+    memory: &StoredMemory,
+    updated_at: &str,
+) -> Result<(), String> {
+    let vector_json = serde_json::to_string(
+        memory
+            .embedding
+            .as_ref()
+            .ok_or_else(|| "provider embedding finalize is missing the vector".to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let provider = &memory
+        .embedding_metadata
+        .as_ref()
+        .ok_or_else(|| "provider embedding finalize is missing metadata".to_string())?
+        .provider;
+    let metadata_json = serde_json::to_string(provider).map_err(|error| error.to_string())?;
+    let changed = tx
+        .execute(
+            "UPDATE provider_embedding_operations
+             SET state='succeeded',result_kind='memory_version',result_id=$1,
+                 result_sha256=$2,updated_at=$3
+             WHERE operation_id=$4 AND target_memory_id=$5 AND target_version=$6
+               AND tenant_id=$7 AND workspace_id=$8 AND agent_id IS NOT DISTINCT FROM $9
+               AND run_id IS NOT DISTINCT FROM $10 AND task_id IS NOT DISTINCT FROM $11
+               AND source_id=$12 AND source_sha256=$13 AND provider_id=$14
+               AND requested_model_id=$15 AND resolved_model_id=$16 AND dimensions=$17
+               AND state IN ('network_succeeded','succeeded') AND vector_json=$18 AND metadata_json=$19",
+            &[
+                &format!("{}:{}", memory.memory_id, memory.version),
+                &memory.embedding_binding_sha256,
+                &updated_at,
+                &operation_id,
+                &memory.memory_id,
+                &memory.version,
+                &memory.scope.tenant_id,
+                &memory.scope.workspace_id,
+                &memory.scope.agent_id,
+                &memory.run_id,
+                &memory.scope.task_id,
+                &memory.source_id,
+                &memory.source_sha256,
+                &OPENROUTER_EMBEDDING_PROVIDER_ID,
+                &provider.requested_model_id,
+                &provider.resolved_model_id,
+                &(provider.dimensions as i64),
+                &vector_json,
+                &metadata_json,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("provider embedding memory finalize integrity binding mismatch".to_string())
+    }
+}
+
+#[cfg(feature = "pg")]
+fn pg_erase_provider_embedding_memory_results(
+    tx: &mut postgres::Transaction<'_>,
+    memory_id: &str,
+    updated_at: &str,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE provider_embedding_operations
+         SET state='result_erased',vector_json=NULL,metadata_json=NULL,
+             result_kind=NULL,result_id=NULL,result_sha256=NULL,updated_at=$1
+         WHERE target_memory_id=$2 AND operation_kind='memory_version' AND state='succeeded'",
+        &[&updated_at, &memory_id],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "pg")]
+fn pg_finalize_provider_embedding_retrieval(
+    tx: &mut postgres::Transaction<'_>,
+    request: &MemoryRetrievalRequest,
+    result: &MemoryRetrievalResult,
+    material: &EmbeddingMaterial,
+    updated_at: &str,
+) -> Result<(), String> {
+    let operation_id = material
+        .pending_operation_id
+        .as_deref()
+        .ok_or_else(|| "provider retrieval finalize is missing operation identity".to_string())?;
+    let provider = material
+        .provider
+        .as_ref()
+        .ok_or_else(|| "provider retrieval finalize is missing metadata".to_string())?;
+    let vector_json = serde_json::to_string(&material.values).map_err(|error| error.to_string())?;
+    let metadata_json = serde_json::to_string(provider).map_err(|error| error.to_string())?;
+    let source_id = format!("retrieval-query/{}", request.node_id);
+    let content_sha256 = normalized_content_sha256(&request.query);
+    let changed = tx
+        .execute(
+            "UPDATE provider_embedding_operations
+             SET state='succeeded',result_kind='retrieval_event',result_id=$1,
+                 result_sha256=$2,updated_at=$3
+             WHERE operation_id=$4 AND tenant_id=$5 AND workspace_id=$6
+               AND agent_id IS NOT DISTINCT FROM $7 AND run_id=$8
+               AND task_id IS NOT DISTINCT FROM $9 AND source_id=$10 AND content_sha256=$11
+               AND provider_id=$12 AND requested_model_id=$13 AND resolved_model_id=$14
+               AND dimensions=$15 AND state='network_succeeded'
+               AND vector_json=$16 AND metadata_json=$17",
+            &[
+                &result.retrieval_id,
+                &result.result_sha256,
+                &updated_at,
+                &operation_id,
+                &request.scope.tenant_id,
+                &request.scope.workspace_id,
+                &request.scope.agent_id,
+                &request.run_id,
+                &request.scope.task_id,
+                &source_id,
+                &content_sha256,
+                &OPENROUTER_EMBEDDING_PROVIDER_ID,
+                &provider.requested_model_id,
+                &provider.resolved_model_id,
+                &(provider.dimensions as i64),
+                &vector_json,
+                &metadata_json,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("provider embedding retrieval finalize integrity binding mismatch".to_string())
+    }
 }
 
 #[cfg(feature = "pg")]
@@ -2599,7 +2988,7 @@ mod tests {
                 "id":OPENROUTER_EMBEDDING_MODEL_ID,
                 "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
                 "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-                "pricing":{"prompt":"0","completion":"0"},
+                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
                 "architecture":{"input_modalities":["text","image"],"output_modalities":["embeddings"]}
             }]}))
             .unwrap(),
@@ -3131,6 +3520,13 @@ mod tests {
         store
             .with_conn(|conn| {
                 conn.execute(
+                    "UPDATE provider_embedding_operations
+                     SET state='network_succeeded',result_kind=NULL,result_id=NULL,result_sha256=NULL
+                     WHERE target_memory_id=?1",
+                    [created["memory_id"].as_str().unwrap()],
+                )
+                .map_err(|error| error.to_string())?;
+                conn.execute(
                     "DELETE FROM durable_memory_versions WHERE memory_id=?1",
                     [created["memory_id"].as_str().unwrap()],
                 )
@@ -3152,6 +3548,262 @@ mod tests {
             created["embedding"]["binding_sha256"]
         );
         assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn local_finalize_failure_reuses_network_result_without_another_post() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let transport = Arc::new(CountingEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let store = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-local-finalize.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            transport.clone(),
+        )
+        .unwrap();
+        let request = create(
+            "ws-provider-local-finalize",
+            "provider-source-local-finalize",
+            "reuse provider result after local finalize failure",
+        );
+        store
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "CREATE TRIGGER fail_memory_finalize BEFORE INSERT ON durable_memory_versions
+                     BEGIN SELECT RAISE(ABORT, 'fixture local finalize failure'); END;",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert!(store
+            .create_durable_memory(&request, "test")
+            .unwrap_err()
+            .contains("fixture local finalize failure"));
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+        let memory_id = memory_id(&request).unwrap();
+        let state = |store: &LocalProductStore| {
+            store
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT state FROM provider_embedding_operations WHERE target_memory_id=?1",
+                        [&memory_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|error| error.to_string())
+                })
+                .unwrap()
+        };
+        assert_eq!(state(&store), "network_succeeded");
+
+        store
+            .with_conn(|conn| {
+                conn.execute_batch("DROP TRIGGER fail_memory_finalize;")
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let recovered = store.create_durable_memory(&request, "test").unwrap();
+        assert_eq!(recovered["version"], 1);
+        assert_eq!(state(&store), "succeeded");
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn retrieval_query_embedding_receipt_reuses_success_across_duplicate_and_restart() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("provider-retrieval-reuse.db");
+        let transport = Arc::new(CountingEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let request = MemoryRetrievalRequest {
+            scope: scope("ws-provider-retrieval-reuse"),
+            run_id: "run-provider-retrieval-reuse".into(),
+            node_id: "node-provider-retrieval-reuse".into(),
+            query: "bounded retrieval query".into(),
+            top_k: 5,
+            max_tokens: 100,
+            max_bytes: 1_000,
+            allow_lexical_fallback: false,
+        };
+        let store = LocalProductStore::new_with_embedding_transport(
+            &path,
+            || "2026-07-15T00:00:00Z".to_string(),
+            transport.clone(),
+        )
+        .unwrap();
+
+        let first = store.retrieve_durable_memories(&request, "test").unwrap();
+        let receipt_state: String = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT state FROM provider_embedding_operations WHERE run_id=?1 AND source_id=?2",
+                    params![request.run_id, format!("retrieval-query/{}", request.node_id)],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(receipt_state, "succeeded");
+        let dashboard = store.dashboard_snapshot(20, "noop", false).unwrap();
+        let receipt = &dashboard["provider_embedding_receipts"][0];
+        assert_eq!(receipt["state"], "succeeded");
+        assert_eq!(receipt["operation_kind"], "retrieval_query");
+        assert_eq!(receipt["requested_model_id"], OPENROUTER_EMBEDDING_MODEL_ID);
+        assert_eq!(receipt["redacted"], true);
+        let dashboard_json = dashboard.to_string();
+        assert!(!dashboard_json.contains(&request.query));
+        for forbidden in [
+            "vector_json",
+            "metadata_json",
+            "contract_json",
+            "credential",
+        ] {
+            assert!(!dashboard_json.contains(forbidden));
+        }
+        let duplicate = store.retrieve_durable_memories(&request, "test").unwrap();
+        assert_eq!(duplicate.request_sha256, first.request_sha256);
+        assert_eq!(duplicate.result_sha256, first.result_sha256);
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+        drop(store);
+
+        let reopened = LocalProductStore::new_with_embedding_transport(
+            &path,
+            || "2026-07-16T00:00:00Z".to_string(),
+            transport.clone(),
+        )
+        .unwrap();
+        let restarted = reopened
+            .retrieve_durable_memories(&request, "test")
+            .unwrap();
+        assert_eq!(restarted.request_sha256, first.request_sha256);
+        assert_eq!(restarted.result_sha256, first.result_sha256);
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+        assert_eq!(reopened.check_integrity().unwrap().status, "ok");
+        reopened
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE memory_retrieval_events SET result_sha256=?1 WHERE retrieval_id=?2",
+                        params!["f".repeat(64), restarted.retrieval_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(reopened
+            .check_integrity()
+            .unwrap_err()
+            .contains("retrieval result cross-owner binding is invalid"));
+        reopened
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE memory_retrieval_events SET result_sha256=?1 WHERE retrieval_id=?2",
+                        params![restarted.result_sha256, restarted.retrieval_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(reopened.check_integrity().unwrap().status, "ok");
+    }
+
+    #[test]
+    fn retrieval_query_embedding_concurrent_duplicate_posts_once_and_identity_changes_are_distinct()
+    {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let transport = Arc::new(CountingEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let store = Arc::new(
+            LocalProductStore::new_with_embedding_transport(
+                dir.path().join("provider-retrieval-identity.db"),
+                || "2026-07-15T00:00:00Z".to_string(),
+                transport.clone(),
+            )
+            .unwrap(),
+        );
+        let request = MemoryRetrievalRequest {
+            scope: scope("ws-provider-retrieval-identity"),
+            run_id: "run-provider-retrieval-identity".into(),
+            node_id: "node-provider-retrieval-identity".into(),
+            query: "bounded concurrent retrieval query".into(),
+            top_k: 5,
+            max_tokens: 100,
+            max_bytes: 1_000,
+            allow_lexical_fallback: false,
+        };
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let results = std::thread::scope(|scope| {
+            let handles = (0..2)
+                .map(|_| {
+                    let store = Arc::clone(&store);
+                    let barrier = Arc::clone(&barrier);
+                    let request = request.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        store.retrieve_durable_memories(&request, "test")
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1, "{results:?}");
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert!(
+            results
+                .iter()
+                .filter_map(|result| result.as_ref().err())
+                .all(
+                    |error| error.contains("competing provider embedding mutation")
+                        || error.contains("provider embedding outcome is unknown")
+                ),
+            "{results:?}"
+        );
+
+        let identity_variants = [
+            MemoryRetrievalRequest {
+                query: "changed retrieval query".into(),
+                ..request.clone()
+            },
+            MemoryRetrievalRequest {
+                scope: scope("ws-provider-retrieval-other"),
+                ..request.clone()
+            },
+            MemoryRetrievalRequest {
+                run_id: "run-provider-retrieval-other".into(),
+                ..request.clone()
+            },
+            MemoryRetrievalRequest {
+                node_id: "node-provider-retrieval-other".into(),
+                ..request
+            },
+        ];
+        for variant in &identity_variants {
+            store.retrieve_durable_memories(variant, "test").unwrap();
+        }
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 5);
+        let receipt_count: i64 = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM provider_embedding_operations
+                         WHERE operation_kind='retrieval_query'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(receipt_count, 5);
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
     }
 
     #[test]
@@ -3248,6 +3900,73 @@ mod tests {
             .unwrap()
             .iter()
             .any(|event| event["event_type"] == "request_sent"));
+    }
+
+    #[test]
+    fn provider_embedding_catalog_failures_are_failed_before_send_and_never_replayed() {
+        let _env = ProviderEnvGuard::enabled();
+        let cases = vec![
+            Ok(HttpResponse {
+                status: 200,
+                body: b"not-json".to_vec(),
+            }),
+            Err(HttpError::Http {
+                status: 302,
+                reason: "redirect refused".into(),
+            }),
+            Err(HttpError::Parse(
+                "failed to read body: truncated body".into(),
+            )),
+            Err(HttpError::Parse("response body limit exceeded".into())),
+        ];
+        for (index, catalog_result) in cases.into_iter().enumerate() {
+            let dir = TempDir::new().unwrap();
+            let request = create(
+                &format!("ws-provider-preflight-{index}"),
+                &format!("source-provider-preflight-{index}"),
+                "bounded provider preflight failure",
+            );
+            let store = LocalProductStore::new_with_embedding_transport(
+                dir.path().join("provider-preflight-failure.db"),
+                || "2026-07-15T00:00:00Z".to_string(),
+                Arc::new(MockTransport::new(vec![
+                    catalog_result,
+                    Ok(provider_catalog_response()),
+                ])),
+            )
+            .unwrap();
+            let first = store.create_durable_memory(&request, "test").unwrap_err();
+            assert!(!first.contains("outcome unknown"));
+            let memory_id = memory_id(&request).unwrap();
+            let state: String =
+                store
+                    .with_conn(|conn| {
+                        conn.query_row(
+                "SELECT state FROM provider_embedding_operations WHERE target_memory_id=?1",
+                [&memory_id], |row|row.get(0),
+            ).map_err(|error|error.to_string())
+                    })
+                    .unwrap();
+            assert_eq!(state, "failed_before_send");
+            let events = store.provider_audit_events(10).unwrap();
+            assert!(events
+                .iter()
+                .any(|event| event["event_type"] == "contract_check_reserved"));
+            assert!(events.iter().any(|event| event["event_type"] == "error"
+                && event["error_domain"] == "provider_failed_before_send"));
+            assert!(!events
+                .iter()
+                .any(|event| event["event_type"] == "request_sent"));
+            assert!(store
+                .create_durable_memory(&request, "test")
+                .unwrap_err()
+                .contains("explicit operator retry"));
+            assert!(!store
+                .provider_audit_events(20)
+                .unwrap()
+                .iter()
+                .any(|event| event["event_type"] == "request_sent"));
+        }
     }
 
     #[test]
@@ -3573,6 +4292,7 @@ mod tests {
                 .unwrap()["winner"]["state"],
             "current"
         );
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
         let tombstoned = store.forget_durable_memory(second_id, 2, "test").unwrap();
         assert_eq!(tombstoned["state"], "tombstoned");
         assert_eq!(tombstoned["embedding"]["present"], false);

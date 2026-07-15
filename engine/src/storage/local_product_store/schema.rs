@@ -307,6 +307,7 @@ ALTER TABLE durable_memory_versions ADD COLUMN embedding_metadata_json TEXT;
 ALTER TABLE durable_memory_versions ADD COLUMN embedding_binding_sha256 TEXT;
 CREATE TABLE IF NOT EXISTS provider_embedding_operations (
     operation_id TEXT PRIMARY KEY,
+    operation_kind TEXT NOT NULL CHECK (operation_kind IN ('memory_version','retrieval_query')),
     target_memory_id TEXT NOT NULL,
     target_version BIGINT NOT NULL,
     tenant_id TEXT NOT NULL,
@@ -316,23 +317,46 @@ CREATE TABLE IF NOT EXISTS provider_embedding_operations (
     task_id TEXT,
     source_id TEXT NOT NULL,
     source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+    node_id TEXT,
+    query_sha256 TEXT CHECK (query_sha256 IS NULL OR length(query_sha256) = 64),
+    request_identity_sha256 TEXT NOT NULL CHECK (length(request_identity_sha256) = 64),
     operation_binding_sha256 TEXT NOT NULL CHECK (length(operation_binding_sha256) = 64),
     content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
     contract_json TEXT NOT NULL,
     contract_sha256 TEXT NOT NULL CHECK (length(contract_sha256) = 64),
     receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
     provider_id TEXT NOT NULL,
-    model_id TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown','outcome_unknown_acknowledged','retry_authorized')),
+    requested_model_id TEXT NOT NULL,
+    resolved_model_id TEXT NOT NULL,
+    dimensions BIGINT NOT NULL CHECK (dimensions > 0),
+    reservation_event_id TEXT NOT NULL,
+    send_event_id TEXT,
+    outcome_event_id TEXT,
+    result_kind TEXT CHECK (result_kind IS NULL OR result_kind IN ('memory_version','retrieval_event')),
+    result_id TEXT,
+    result_sha256 TEXT CHECK (result_sha256 IS NULL OR length(result_sha256) = 64),
+    state TEXT NOT NULL CHECK (state IN ('preflight_reserved','reserved','sending','network_succeeded','succeeded','result_erased','failed_before_send','failed_known_outcome','outcome_unknown','outcome_unknown_acknowledged','retry_authorized')),
     attempt_count BIGINT NOT NULL DEFAULT 1 CHECK (attempt_count BETWEEN 1 AND 4),
     vector_json TEXT,
     metadata_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE (target_memory_id, target_version)
+    UNIQUE (target_memory_id, target_version),
+    FOREIGN KEY (reservation_event_id) REFERENCES provider_audit_events(event_id),
+    FOREIGN KEY (send_event_id) REFERENCES provider_audit_events(event_id),
+    FOREIGN KEY (outcome_event_id) REFERENCES provider_audit_events(event_id),
+    CHECK ((result_kind IS NULL AND result_id IS NULL AND result_sha256 IS NULL)
+        OR (result_kind IS NOT NULL AND result_id IS NOT NULL AND result_sha256 IS NOT NULL)),
+    CHECK ((operation_kind='memory_version' AND node_id IS NULL AND query_sha256 IS NULL)
+        OR (operation_kind='retrieval_query' AND run_id IS NOT NULL AND node_id IS NOT NULL
+            AND query_sha256 IS NOT NULL AND query_sha256=source_sha256))
 );
 CREATE INDEX IF NOT EXISTS idx_provider_embedding_operations_state
     ON provider_embedding_operations(state, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_embedding_operations_retrieval_identity
+    ON provider_embedding_operations(tenant_id,workspace_id,run_id,node_id,query_sha256,provider_id,
+        requested_model_id,resolved_model_id,dimensions,request_identity_sha256)
+    WHERE operation_kind='retrieval_query';
 ";
 
 pub(super) const SQLITE_DDL: &str = "

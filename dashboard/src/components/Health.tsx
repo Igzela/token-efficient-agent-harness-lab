@@ -61,6 +61,28 @@ export function Health({
           <span>{dashboard.counts.audit_events}</span>
         </div>
       </div>
+      <h3 className="section-subhead">Provider Embedding Receipts</h3>
+      <p className="muted" style={{ fontSize: "12px" }}>
+        Read-only redacted receipt and failure evidence. Raw queries, memory content, vectors, and credentials are excluded.
+      </p>
+      {dashboard.provider_embedding_receipts.length === 0 ? (
+        <p className="muted">No provider embedding receipts persisted.</p>
+      ) : (
+        <div className="stack readable-list">
+          {dashboard.provider_embedding_receipts.map((receipt) => (
+            <div className="kv-row" key={receipt.operation_id}>
+              <span className="muted">
+                {receipt.operation_kind} · {receipt.requested_model_id} · {receipt.dimensions}d
+              </span>
+              <span className="mono">
+                {receipt.state} · attempt {receipt.attempt_count}
+                {receipt.error_domain ? ` · ${receipt.error_domain}` : ""}
+                {` · ${receipt.receipt_sha256.slice(0, 12)}`}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       <h3 className="section-subhead">Boundaries</h3>
       <div className="stack readable-list">
         {Object.entries(dashboard.boundaries).map(([key, value]) => (

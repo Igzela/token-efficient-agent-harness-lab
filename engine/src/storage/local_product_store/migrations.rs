@@ -1,4 +1,4 @@
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::{schema, DatabaseConnection, LocalProductStore};
 
@@ -36,6 +36,11 @@ impl LocalProductStore {
                 .map_err(|e| e.to_string())?;
 
             for migration in schema::SQLITE_MIGRATIONS {
+                if migration.version == V25_SCHEMA_VERSION && current_version >= V25_SCHEMA_VERSION
+                {
+                    Self::migrate_v25_add_provider_embedding_bindings(conn)?;
+                    continue;
+                }
                 if migration.version <= current_version {
                     continue;
                 }
@@ -1009,6 +1014,7 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         }
         let operation_ddl = "CREATE TABLE IF NOT EXISTS provider_embedding_operations (
                 operation_id TEXT PRIMARY KEY,
+                operation_kind TEXT NOT NULL CHECK (operation_kind IN ('memory_version','retrieval_query')),
                 target_memory_id TEXT NOT NULL,
                 target_version BIGINT NOT NULL,
                 tenant_id TEXT NOT NULL,
@@ -1018,25 +1024,45 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
                 task_id TEXT,
                 source_id TEXT NOT NULL,
                 source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+                node_id TEXT,
+                query_sha256 TEXT CHECK (query_sha256 IS NULL OR length(query_sha256) = 64),
+                request_identity_sha256 TEXT NOT NULL CHECK (length(request_identity_sha256) = 64),
                 operation_binding_sha256 TEXT NOT NULL CHECK (length(operation_binding_sha256) = 64),
                 content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
                 contract_json TEXT NOT NULL,
                 contract_sha256 TEXT NOT NULL CHECK (length(contract_sha256) = 64),
                 receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
                 provider_id TEXT NOT NULL,
-                model_id TEXT NOT NULL,
-                state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown','outcome_unknown_acknowledged','retry_authorized')),
+                requested_model_id TEXT NOT NULL,
+                resolved_model_id TEXT NOT NULL,
+                dimensions BIGINT NOT NULL CHECK (dimensions > 0),
+                reservation_event_id TEXT NOT NULL,
+                send_event_id TEXT,
+                outcome_event_id TEXT,
+                result_kind TEXT CHECK (result_kind IS NULL OR result_kind IN ('memory_version','retrieval_event')),
+                result_id TEXT,
+                result_sha256 TEXT CHECK (result_sha256 IS NULL OR length(result_sha256) = 64),
+                state TEXT NOT NULL CHECK (state IN ('preflight_reserved','reserved','sending','network_succeeded','succeeded','result_erased','failed_before_send','failed_known_outcome','outcome_unknown','outcome_unknown_acknowledged','retry_authorized')),
                 attempt_count BIGINT NOT NULL DEFAULT 1 CHECK (attempt_count BETWEEN 1 AND 4),
                 vector_json TEXT,
                 metadata_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                UNIQUE (target_memory_id, target_version)
+                UNIQUE (target_memory_id, target_version),
+                FOREIGN KEY (reservation_event_id) REFERENCES provider_audit_events(event_id),
+                FOREIGN KEY (send_event_id) REFERENCES provider_audit_events(event_id),
+                FOREIGN KEY (outcome_event_id) REFERENCES provider_audit_events(event_id),
+                CHECK ((result_kind IS NULL AND result_id IS NULL AND result_sha256 IS NULL)
+                    OR (result_kind IS NOT NULL AND result_id IS NOT NULL AND result_sha256 IS NOT NULL)),
+                CHECK ((operation_kind='memory_version' AND node_id IS NULL AND query_sha256 IS NULL)
+                    OR (operation_kind='retrieval_query' AND run_id IS NOT NULL AND node_id IS NOT NULL
+                        AND query_sha256 IS NOT NULL AND query_sha256=source_sha256))
             );";
         tx.execute_batch(operation_ddl)
             .map_err(|error| error.to_string())?;
         let required_columns = [
             "operation_id",
+            "operation_kind",
             "target_memory_id",
             "target_version",
             "tenant_id",
@@ -1046,13 +1072,24 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
             "task_id",
             "source_id",
             "source_sha256",
+            "node_id",
+            "query_sha256",
+            "request_identity_sha256",
             "operation_binding_sha256",
             "content_sha256",
             "contract_json",
             "contract_sha256",
             "receipt_sha256",
             "provider_id",
-            "model_id",
+            "requested_model_id",
+            "resolved_model_id",
+            "dimensions",
+            "reservation_event_id",
+            "send_event_id",
+            "outcome_event_id",
+            "result_kind",
+            "result_id",
+            "result_sha256",
             "state",
             "attempt_count",
             "vector_json",
@@ -1066,7 +1103,9 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
                 missing_columns.push(column);
             }
         }
-        if !missing_columns.is_empty() {
+        let invalid_schema =
+            !missing_columns.is_empty() || !sqlite_v25_operation_schema_valid(&tx)?;
+        if invalid_schema {
             let occupied: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
@@ -1076,8 +1115,8 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
                 .map_err(|error| error.to_string())?;
             if occupied {
                 return Err(format!(
-                    "migration 25 cannot repair an occupied partial operation table; missing {}",
-                    missing_columns.join(",")
+                    "migration 25 cannot repair an occupied partial operation table; missing or invalid {}",
+                    if missing_columns.is_empty() { "constraints/indexes/foreign-keys".to_string() } else { missing_columns.join(",") }
                 ));
             }
             tx.execute_batch("DROP TABLE provider_embedding_operations;")
@@ -1094,13 +1133,137 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         }
         tx.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_provider_embedding_operations_state
-             ON provider_embedding_operations(state, updated_at);",
+             ON provider_embedding_operations(state, updated_at);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_embedding_operations_retrieval_identity
+             ON provider_embedding_operations(tenant_id,workspace_id,run_id,node_id,query_sha256,provider_id,
+                 requested_model_id,resolved_model_id,dimensions,request_identity_sha256)
+             WHERE operation_kind='retrieval_query';",
         )
         .map_err(|error| error.to_string())?;
         tx.execute_batch("PRAGMA user_version = 25")
             .map_err(|error| error.to_string())?;
+        if !sqlite_v25_operation_schema_valid(&tx)? {
+            return Err("migration 25 operation schema verification failed".to_string());
+        }
+        let version: i64 = tx
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        if version != V25_SCHEMA_VERSION {
+            return Err("migration 25 schema version verification failed".to_string());
+        }
         tx.commit().map_err(|error| error.to_string())
     }
+}
+
+fn sqlite_v25_operation_schema_valid(tx: &Transaction<'_>) -> Result<bool, String> {
+    let ddl: Option<String> = tx
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='provider_embedding_operations'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(ddl) = ddl else {
+        return Ok(false);
+    };
+    let normalized = ddl
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<String>();
+    for fragment in [
+        "check(operation_kindin('memory_version','retrieval_query'))",
+        "'result_erased'",
+        "'failed_before_send'",
+        "'outcome_unknown_acknowledged'",
+        "check(dimensions>0)",
+        "check(attempt_countbetween1and4)",
+        "foreignkey(reservation_event_id)referencesprovider_audit_events(event_id)",
+        "foreignkey(send_event_id)referencesprovider_audit_events(event_id)",
+        "foreignkey(outcome_event_id)referencesprovider_audit_events(event_id)",
+    ] {
+        if !normalized.contains(fragment) {
+            return Ok(false);
+        }
+    }
+    let mut not_null = std::collections::BTreeMap::new();
+    let mut statement = tx
+        .prepare("PRAGMA table_info(provider_embedding_operations)")
+        .map_err(|error| error.to_string())?;
+    for row in statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?))
+        })
+        .map_err(|error| error.to_string())?
+    {
+        let (name, required) = row.map_err(|error| error.to_string())?;
+        not_null.insert(name, required == 1);
+    }
+    for column in [
+        "operation_kind",
+        "target_memory_id",
+        "target_version",
+        "tenant_id",
+        "workspace_id",
+        "source_id",
+        "source_sha256",
+        "request_identity_sha256",
+        "operation_binding_sha256",
+        "content_sha256",
+        "contract_json",
+        "contract_sha256",
+        "receipt_sha256",
+        "provider_id",
+        "requested_model_id",
+        "resolved_model_id",
+        "dimensions",
+        "reservation_event_id",
+        "state",
+        "attempt_count",
+        "created_at",
+        "updated_at",
+    ] {
+        if not_null.get(column) != Some(&true) {
+            return Ok(false);
+        }
+    }
+    let state_index: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index'
+         AND name='idx_provider_embedding_operations_state'
+         AND lower(replace(sql,' ','')) LIKE '%(state,updated_at)%')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let retrieval_index: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index'
+         AND name='idx_provider_embedding_operations_retrieval_identity'
+         AND lower(sql) LIKE 'create unique index%'
+         AND lower(replace(sql,' ','')) LIKE '%whereoperation_kind=''retrieval_query''%')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let target_unique: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_index_list('provider_embedding_operations')
+         WHERE [unique]=1 AND origin='u')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let foreign_keys: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_list('provider_embedding_operations')
+         WHERE [table]='provider_audit_events' AND [to]='event_id'
+           AND [from] IN ('reservation_event_id','send_event_id','outcome_event_id')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(state_index && retrieval_index && target_unique && foreign_keys == 3)
 }
 
 fn occupied_sqlite_tables(tx: &Transaction<'_>, tables: &[&str]) -> Result<Vec<String>, String> {
@@ -1640,6 +1803,37 @@ mod tests {
                     "receipt_sha256"
                 )?);
                 Ok(())
+            })
+            .unwrap();
+
+        let constraint_path = dir.path().join("v25-empty-constraint-partial.db");
+        let constraint_repair = LocalProductStore::new(&constraint_path).unwrap();
+        constraint_repair
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "PRAGMA foreign_keys=OFF;
+                     ALTER TABLE provider_embedding_operations RENAME TO provider_embedding_operations_valid;
+                     CREATE TABLE provider_embedding_operations AS
+                         SELECT * FROM provider_embedding_operations_valid WHERE 0;
+                     DROP TABLE provider_embedding_operations_valid;
+                     PRAGMA user_version=24;
+                     PRAGMA foreign_keys=ON;",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        constraint_repair.run_migrations().unwrap();
+        assert_eq!(
+            constraint_repair.schema_version().unwrap(),
+            V25_SCHEMA_VERSION
+        );
+        constraint_repair
+            .with_conn(|conn| {
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                assert!(sqlite_v25_operation_schema_valid(&tx)?);
+                tx.rollback().map_err(|error| error.to_string())
             })
             .unwrap();
 
