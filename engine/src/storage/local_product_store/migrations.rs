@@ -64,7 +64,10 @@ impl LocalProductStore {
                     22 => Self::migrate_v22_add_agent_action_receipts_and_tool_profiles(conn)?,
                     23 => Self::migrate_v23_add_durable_memory_and_production_jobs(conn)?,
                     24 => Self::migrate_v24_add_external_runtime_state(conn)?,
-                    25 => Self::migrate_v25_add_provider_embedding_bindings(conn)?,
+                    25 => {
+                        Self::migrate_v25_add_provider_embedding_bindings(conn)?;
+                        continue;
+                    }
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -985,8 +988,10 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
     }
 
     fn migrate_v25_add_provider_embedding_bindings(conn: &Connection) -> Result<(), String> {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
         for column in ["embedding_metadata_json", "embedding_binding_sha256"] {
-            let exists = conn
+            let exists = tx
                 .prepare("PRAGMA table_info(durable_memory_versions)")
                 .and_then(|mut statement| {
                     let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
@@ -996,23 +1001,33 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
                 .iter()
                 .any(|existing| existing == column);
             if !exists {
-                conn.execute_batch(&format!(
+                tx.execute_batch(&format!(
                     "ALTER TABLE durable_memory_versions ADD COLUMN {column} TEXT;"
                 ))
                 .map_err(|error| error.to_string())?;
             }
         }
-        conn.execute_batch(
+        tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS provider_embedding_operations (
                 operation_id TEXT PRIMARY KEY,
                 target_memory_id TEXT NOT NULL,
                 target_version BIGINT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                agent_id TEXT,
+                run_id TEXT,
+                task_id TEXT,
+                source_id TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
                 operation_binding_sha256 TEXT NOT NULL CHECK (length(operation_binding_sha256) = 64),
                 content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+                contract_json TEXT NOT NULL,
+                contract_sha256 TEXT NOT NULL CHECK (length(contract_sha256) = 64),
                 receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
                 provider_id TEXT NOT NULL,
                 model_id TEXT NOT NULL,
-                state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown')),
+                state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown','retry_authorized')),
+                attempt_count BIGINT NOT NULL DEFAULT 1 CHECK (attempt_count BETWEEN 1 AND 4),
                 vector_json TEXT,
                 metadata_json TEXT,
                 created_at TEXT NOT NULL,
@@ -1023,8 +1038,8 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
                 ON provider_embedding_operations(state, updated_at);",
         )
         .map_err(|error| error.to_string())?;
-        if !column_exists(conn, "provider_embedding_operations", "receipt_sha256")? {
-            let occupied: bool = conn
+        if !column_exists(&tx, "provider_embedding_operations", "receipt_sha256")? {
+            let occupied: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
                     [],
@@ -1037,13 +1052,15 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
                         .to_string(),
                 );
             }
-            conn.execute_batch(
+            tx.execute_batch(
                 "ALTER TABLE provider_embedding_operations
                  ADD COLUMN receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64);",
             )
             .map_err(|error| error.to_string())?;
         }
-        Ok(())
+        tx.execute_batch("PRAGMA user_version = 25")
+            .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())
     }
 }
 
@@ -1532,5 +1549,59 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn sqlite_v25_migration_is_atomic_and_concurrent_restart_safe() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("v25-atomic.db");
+        let store = LocalProductStore::new(&path).unwrap();
+        store.rollback_v25_to_v24("migration-test", true).unwrap();
+        drop(store);
+        let barrier = std::sync::Barrier::new(2);
+        let (left, right) = std::thread::scope(|scope| {
+            let left = scope.spawn(|| {
+                barrier.wait();
+                LocalProductStore::new(&path).map(|store| store.schema_version().unwrap())
+            });
+            let right = scope.spawn(|| {
+                barrier.wait();
+                LocalProductStore::new(&path).map(|store| store.schema_version().unwrap())
+            });
+            (left.join().unwrap(), right.join().unwrap())
+        });
+        assert_eq!(left.unwrap(), V25_SCHEMA_VERSION);
+        assert_eq!(right.unwrap(), V25_SCHEMA_VERSION);
+
+        let failure_path = dir.path().join("v25-atomic-failure.db");
+        let failure = LocalProductStore::new(&failure_path).unwrap();
+        failure.rollback_v25_to_v24("migration-test", true).unwrap();
+        failure.with_conn(|conn|conn.execute_batch(
+            "CREATE TABLE provider_embedding_operations (
+                operation_id TEXT PRIMARY KEY,target_memory_id TEXT NOT NULL,target_version BIGINT NOT NULL
+             );
+             INSERT INTO provider_embedding_operations VALUES ('partial','memory',1);"
+        ).map_err(|error|error.to_string())).unwrap();
+        let error = failure.run_migrations().unwrap_err();
+        assert!(
+            error.contains("occupied operation table") || error.contains("no such column"),
+            "unexpected partial-v25 failure: {error}"
+        );
+        assert_eq!(failure.schema_version().unwrap(), V24_SCHEMA_VERSION);
+        failure
+            .with_conn(|conn| {
+                assert!(!column_exists(
+                    conn,
+                    "durable_memory_versions",
+                    "embedding_metadata_json"
+                )?);
+                assert!(!column_exists(
+                    conn,
+                    "durable_memory_versions",
+                    "embedding_binding_sha256"
+                )?);
+                Ok(())
+            })
+            .unwrap();
     }
 }

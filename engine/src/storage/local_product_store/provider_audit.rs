@@ -2,7 +2,7 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::Digest;
 
-use super::{collect_values, DatabaseConnection, LocalProductStore};
+use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
 
 type ProviderReservationBinding = (String, String, String, Option<f64>, Option<String>, String);
 
@@ -11,8 +11,17 @@ pub(crate) struct ProviderEmbeddingOperation {
     pub operation_id: String,
     pub target_memory_id: String,
     pub target_version: i64,
+    pub tenant_id: String,
+    pub workspace_id: String,
+    pub agent_id: Option<String>,
+    pub run_id: Option<String>,
+    pub task_id: Option<String>,
+    pub source_id: String,
+    pub source_sha256: String,
     pub operation_binding_sha256: String,
     pub content_sha256: String,
+    pub contract_json: String,
+    pub contract_sha256: String,
     pub receipt_sha256: String,
     pub provider_id: String,
     pub model_id: String,
@@ -21,26 +30,168 @@ pub(crate) struct ProviderEmbeddingOperation {
 
 #[derive(Debug)]
 pub(crate) enum ProviderEmbeddingOperationClaim {
-    Claimed,
+    Claimed {
+        attempt_count: i64,
+    },
+    RetryAuthorized {
+        attempt_count: i64,
+    },
     Completed {
         vector_json: String,
         metadata_json: String,
     },
 }
 
-type StoredEmbeddingOperation = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-);
+#[derive(Debug)]
+struct StoredEmbeddingOperation {
+    operation_id: String,
+    tenant_id: String,
+    workspace_id: String,
+    agent_id: Option<String>,
+    run_id: Option<String>,
+    task_id: Option<String>,
+    source_id: String,
+    source_sha256: String,
+    operation_binding_sha256: String,
+    content_sha256: String,
+    contract_json: String,
+    contract_sha256: String,
+    receipt_sha256: String,
+    provider_id: String,
+    model_id: String,
+    state: String,
+    attempt_count: i64,
+    vector_json: Option<String>,
+    metadata_json: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderEmbeddingResolutionAction {
+    RetryFailed,
+    ConfirmUnknownNoEffectAndRetry,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderEmbeddingResolutionRequest {
+    pub target_version: i64,
+    pub expected_attempt_count: i64,
+    pub scope: super::durable_memory::MemoryScope,
+    pub run_id: Option<String>,
+    pub action: ProviderEmbeddingResolutionAction,
+    pub evidence_source_id: Option<String>,
+    pub evidence_sha256: Option<String>,
+    pub confirm_resolution: bool,
+}
 
 impl LocalProductStore {
+    pub fn reconcile_provider_embedding_operation(
+        &self,
+        memory_id: &str,
+        request: &ProviderEmbeddingResolutionRequest,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if memory_id.is_empty() || actor.is_empty() || request.target_version <= 0 {
+            return Err("invalid provider embedding reconciliation binding".to_string());
+        }
+        if !request.confirm_resolution {
+            return Err(
+                "provider embedding reconciliation requires explicit confirmation".to_string(),
+            );
+        }
+        let evidence_sha256 = match request.action {
+            ProviderEmbeddingResolutionAction::RetryFailed => {
+                if request.evidence_source_id.is_some() || request.evidence_sha256.is_some() {
+                    return Err(
+                        "known-failure retry must not claim external outcome evidence".to_string(),
+                    );
+                }
+                None
+            }
+            ProviderEmbeddingResolutionAction::ConfirmUnknownNoEffectAndRetry => {
+                let source = request
+                    .evidence_source_id
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        "unknown-outcome retry requires an evidence source".to_string()
+                    })?;
+                let hash = request
+                    .evidence_sha256
+                    .as_deref()
+                    .filter(|value| is_sha256(value))
+                    .ok_or_else(|| {
+                        "unknown-outcome retry requires a SHA-256 evidence binding".to_string()
+                    })?;
+                Some((source, hash))
+            }
+        };
+        let now = self.now();
+        let audit_evidence = |operation_id: &str, prior_state: &str, next_attempt: i64| {
+            json!({
+                "schema_version":"provider_embedding_resolution.v1",
+                "operation_id":operation_id,
+                "target_memory_id":memory_id,
+                "target_version":request.target_version,
+                "prior_state":prior_state,
+                "action":request.action,
+                "next_attempt_count":next_attempt,
+                "evidence_source_id":evidence_sha256.map(|value|value.0),
+                "evidence_sha256":evidence_sha256.map(|value|value.1),
+                "raw_evidence_stored":false,
+            })
+        };
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx=rusqlite::Transaction::new_unchecked(conn,rusqlite::TransactionBehavior::Immediate)
+                    .map_err(|error|error.to_string())?;
+                let row=sqlite_embedding_operation_for_resolution(&tx,memory_id,request.target_version)?
+                    .ok_or_else(||"provider embedding operation not found".to_string())?;
+                validate_resolution_scope(&row,request)?;
+                if row.state=="retry_authorized" && row.attempt_count==request.expected_attempt_count+1 {
+                    return Ok(json!({"operation_id":row.operation_id,"state":row.state,"attempt_count":row.attempt_count,"idempotent":true}));
+                }
+                validate_resolution_transition(&row,request)?;
+                let next_attempt=row.attempt_count+1;
+                let changed=tx.execute(
+                    "UPDATE provider_embedding_operations SET state='retry_authorized',attempt_count=?1,updated_at=?2
+                     WHERE operation_id=?3 AND state=?4 AND attempt_count=?5",
+                    params![next_attempt,now,row.operation_id,row.state,row.attempt_count],
+                ).map_err(|error|error.to_string())?;
+                require_single_embedding_operation_update(changed)?;
+                append_audit_locked(&tx,&now,actor,"provider_embedding.retry_authorized",
+                    &format!("provider-embedding/{}",row.operation_id),&audit_evidence(&row.operation_id,&row.state,next_attempt))?;
+                tx.commit().map_err(|error|error.to_string())?;
+                Ok(json!({"operation_id":row.operation_id,"state":"retry_authorized","attempt_count":next_attempt,"idempotent":false}))
+            }),
+            #[cfg(feature="pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx=client.transaction().map_err(|error|error.to_string())?;
+                tx.execute("SELECT pg_advisory_xact_lock(hashtext($1))",&[&format!("{}:{}",memory_id,request.target_version)])
+                    .map_err(|error|error.to_string())?;
+                let row=pg_embedding_operation_for_resolution(&mut tx,memory_id,request.target_version)?
+                    .ok_or_else(||"provider embedding operation not found".to_string())?;
+                validate_resolution_scope(&row,request)?;
+                if row.state=="retry_authorized" && row.attempt_count==request.expected_attempt_count+1 {
+                    return Ok(json!({"operation_id":row.operation_id,"state":row.state,"attempt_count":row.attempt_count,"idempotent":true}));
+                }
+                validate_resolution_transition(&row,request)?;
+                let next_attempt=row.attempt_count+1;
+                let changed=tx.execute(
+                    "UPDATE provider_embedding_operations SET state='retry_authorized',attempt_count=$1,updated_at=$2
+                     WHERE operation_id=$3 AND state=$4 AND attempt_count=$5",
+                    &[&next_attempt,&now,&row.operation_id,&row.state,&row.attempt_count],
+                ).map_err(|error|error.to_string())?;
+                require_single_embedding_operation_update(changed as usize)?;
+                append_provider_embedding_resolution_audit_pg(&mut tx,&now,actor,"provider_embedding.retry_authorized",
+                    &format!("provider-embedding/{}",row.operation_id),&audit_evidence(&row.operation_id,&row.state,next_attempt))?;
+                tx.commit().map_err(|error|error.to_string())?;
+                Ok(json!({"operation_id":row.operation_id,"state":"retry_authorized","attempt_count":next_attempt,"idempotent":false}))
+            }),
+        }
+    }
+
     pub fn record_provider_audit_event(
         &self,
         event: &crate::provider::ProviderAuditEvent,
@@ -189,9 +340,21 @@ impl LocalProductStore {
                     rusqlite::TransactionBehavior::Immediate,
                 )
                 .map_err(|error| error.to_string())?;
-                if let Some(existing) = sqlite_embedding_operation(&tx, operation)? {
-                    return validate_stored_embedding_operation(operation, existing);
-                }
+                let retry_attempt = match sqlite_embedding_operation(&tx, operation)? {
+                    Some(existing) => match validate_stored_embedding_operation(operation, existing)? {
+                        ProviderEmbeddingOperationClaim::RetryAuthorized { attempt_count } => {
+                            Some(attempt_count)
+                        }
+                        completed => return Ok(completed),
+                    },
+                    None => None,
+                };
+                let reservation = retry_attempt
+                    .map(|attempt| retry_audit_event(reservation, attempt))
+                    .unwrap_or_else(|| reservation.clone());
+                let request_sent = retry_attempt
+                    .map(|attempt| retry_audit_event(request_sent, attempt))
+                    .unwrap_or_else(|| request_sent.clone());
                 let dispatch_cost: f64 = tx
                     .query_row(
                         "SELECT COALESCE(SUM(COALESCE(estimated_cost_usd, reserved_cost)), 0.0)
@@ -222,28 +385,38 @@ impl LocalProductStore {
                 if today_total > daily_cap_usd {
                     return Err("agent decision provider daily cost cap exceeded".to_string());
                 }
-                insert_provider_event_sqlite(&tx, reservation)?;
-                insert_provider_event_sqlite(&tx, request_sent)?;
-                tx.execute(
-                    "INSERT INTO provider_embedding_operations
-                     (operation_id,target_memory_id,target_version,operation_binding_sha256,
-                      content_sha256,receipt_sha256,provider_id,model_id,state,created_at,updated_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'request_sent',?9,?9)",
-                    params![
-                        operation.operation_id,
-                        operation.target_memory_id,
-                        operation.target_version,
-                        operation.operation_binding_sha256,
-                        operation.content_sha256,
-                        operation.receipt_sha256,
-                        operation.provider_id,
-                        operation.model_id,
-                        operation.created_at,
-                    ],
-                )
-                .map_err(map_embedding_claim_conflict)?;
+                insert_provider_event_sqlite(&tx, &reservation)?;
+                insert_provider_event_sqlite(&tx, &request_sent)?;
+                if let Some(attempt) = retry_attempt {
+                    let changed = tx.execute(
+                        "UPDATE provider_embedding_operations SET state='request_sent',updated_at=?1
+                         WHERE operation_id=?2 AND operation_binding_sha256=?3
+                           AND state='retry_authorized' AND attempt_count=?4",
+                        params![request_sent.created_at,operation.operation_id,
+                            operation.operation_binding_sha256,attempt],
+                    ).map_err(|error|error.to_string())?;
+                    require_single_embedding_operation_update(changed)?;
+                } else {
+                    tx.execute(
+                        "INSERT INTO provider_embedding_operations
+                         (operation_id,target_memory_id,target_version,tenant_id,workspace_id,agent_id,
+                          run_id,task_id,source_id,source_sha256,operation_binding_sha256,content_sha256,
+                          contract_json,contract_sha256,receipt_sha256,provider_id,model_id,state,
+                          attempt_count,created_at,updated_at)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
+                                 'request_sent',1,?18,?18)",
+                        params![operation.operation_id,operation.target_memory_id,operation.target_version,
+                            operation.tenant_id,operation.workspace_id,operation.agent_id,operation.run_id,
+                            operation.task_id,operation.source_id,operation.source_sha256,
+                            operation.operation_binding_sha256,operation.content_sha256,
+                            operation.contract_json,operation.contract_sha256,operation.receipt_sha256,
+                            operation.provider_id,operation.model_id,operation.created_at],
+                    ).map_err(map_embedding_claim_conflict)?;
+                }
                 tx.commit().map_err(|error| error.to_string())?;
-                Ok(ProviderEmbeddingOperationClaim::Claimed)
+                Ok(ProviderEmbeddingOperationClaim::Claimed {
+                    attempt_count: retry_attempt.unwrap_or(1),
+                })
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
@@ -258,9 +431,21 @@ impl LocalProductStore {
                     )],
                 )
                 .map_err(|error| error.to_string())?;
-                if let Some(existing) = pg_embedding_operation(&mut tx, operation)? {
-                    return validate_stored_embedding_operation(operation, existing);
-                }
+                let retry_attempt = match pg_embedding_operation(&mut tx, operation)? {
+                    Some(existing) => match validate_stored_embedding_operation(operation, existing)? {
+                        ProviderEmbeddingOperationClaim::RetryAuthorized { attempt_count } => {
+                            Some(attempt_count)
+                        }
+                        completed => return Ok(completed),
+                    },
+                    None => None,
+                };
+                let reservation = retry_attempt
+                    .map(|attempt| retry_audit_event(reservation, attempt))
+                    .unwrap_or_else(|| reservation.clone());
+                let request_sent = retry_attempt
+                    .map(|attempt| retry_audit_event(request_sent, attempt))
+                    .unwrap_or_else(|| request_sent.clone());
                 let dispatch_cost: f64 = tx.query_one(
                     "SELECT COALESCE(SUM(COALESCE(estimated_cost_usd, reserved_cost)), 0.0)::DOUBLE PRECISION
                      FROM dispatch_history WHERE created_at LIKE $1",
@@ -280,20 +465,38 @@ impl LocalProductStore {
                 if today_total > daily_cap_usd {
                     return Err("agent decision provider daily cost cap exceeded".to_string());
                 }
-                insert_provider_event_pg(&mut tx, reservation)?;
-                insert_provider_event_pg(&mut tx, request_sent)?;
-                tx.execute(
-                    "INSERT INTO provider_embedding_operations
-                     (operation_id,target_memory_id,target_version,operation_binding_sha256,
-                      content_sha256,receipt_sha256,provider_id,model_id,state,created_at,updated_at)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'request_sent',$9,$9)",
-                    &[&operation.operation_id,&operation.target_memory_id,&operation.target_version,
-                      &operation.operation_binding_sha256,&operation.content_sha256,
-                      &operation.receipt_sha256,&operation.provider_id,&operation.model_id,
-                      &operation.created_at],
-                ).map_err(map_embedding_claim_conflict)?;
+                insert_provider_event_pg(&mut tx, &reservation)?;
+                insert_provider_event_pg(&mut tx, &request_sent)?;
+                if let Some(attempt) = retry_attempt {
+                    let changed=tx.execute(
+                        "UPDATE provider_embedding_operations SET state='request_sent',updated_at=$1
+                         WHERE operation_id=$2 AND operation_binding_sha256=$3
+                           AND state='retry_authorized' AND attempt_count=$4",
+                        &[&request_sent.created_at,&operation.operation_id,
+                          &operation.operation_binding_sha256,&attempt],
+                    ).map_err(|error|error.to_string())?;
+                    require_single_embedding_operation_update(changed as usize)?;
+                } else {
+                    tx.execute(
+                        "INSERT INTO provider_embedding_operations
+                         (operation_id,target_memory_id,target_version,tenant_id,workspace_id,agent_id,
+                          run_id,task_id,source_id,source_sha256,operation_binding_sha256,content_sha256,
+                          contract_json,contract_sha256,receipt_sha256,provider_id,model_id,state,
+                          attempt_count,created_at,updated_at)
+                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                                 'request_sent',1,$18,$18)",
+                        &[&operation.operation_id,&operation.target_memory_id,&operation.target_version,
+                          &operation.tenant_id,&operation.workspace_id,&operation.agent_id,&operation.run_id,
+                          &operation.task_id,&operation.source_id,&operation.source_sha256,
+                          &operation.operation_binding_sha256,&operation.content_sha256,
+                          &operation.contract_json,&operation.contract_sha256,&operation.receipt_sha256,
+                          &operation.provider_id,&operation.model_id,&operation.created_at],
+                    ).map_err(map_embedding_claim_conflict)?;
+                }
                 tx.commit().map_err(|error| error.to_string())?;
-                Ok(ProviderEmbeddingOperationClaim::Claimed)
+                Ok(ProviderEmbeddingOperationClaim::Claimed {
+                    attempt_count: retry_attempt.unwrap_or(1),
+                })
             }),
         }
     }
@@ -310,6 +513,21 @@ impl LocalProductStore {
         let _: crate::provider::embedding::ProviderEmbeddingMetadata =
             serde_json::from_str(metadata_json)
                 .map_err(|_| "completed embedding metadata receipt is malformed".to_string())?;
+        let expected_response_id = response
+            .dispatch_id
+            .strip_prefix("memory-embedding-")
+            .map(|suffix| format!("paudit-response-{suffix}"));
+        if response.event_type != "response_received"
+            || !response.dispatch_id.starts_with(&format!(
+                "memory-embedding-{}",
+                operation.operation_binding_sha256
+            ))
+            || response.provider_id != operation.provider_id
+            || response.redaction_status != "redacted"
+            || expected_response_id.as_deref() != Some(response.event_id.as_str())
+        {
+            return Err("invalid provider embedding response audit event".to_string());
+        }
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = rusqlite::Transaction::new_unchecked(
@@ -355,30 +573,57 @@ impl LocalProductStore {
         &self,
         operation: &ProviderEmbeddingOperation,
         outcome_unknown: bool,
-        updated_at: &str,
+        error_event: &crate::provider::ProviderAuditEvent,
     ) -> Result<(), String> {
         let state = if outcome_unknown {
             "outcome_unknown"
         } else {
             "failed"
         };
+        let expected_error_id = error_event
+            .dispatch_id
+            .strip_prefix("memory-embedding-")
+            .map(|suffix| format!("paudit-error-{suffix}"));
+        if error_event.event_type != "error"
+            || !error_event.dispatch_id.starts_with(&format!(
+                "memory-embedding-{}",
+                operation.operation_binding_sha256
+            ))
+            || error_event.provider_id != operation.provider_id
+            || expected_error_id.as_deref() != Some(error_event.event_id.as_str())
+            || error_event.redaction_status != "redacted"
+            || error_event.error_domain.is_none()
+        {
+            return Err("invalid provider embedding failure audit event".to_string());
+        }
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let changed = conn.execute(
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                ).map_err(|error|error.to_string())?;
+                let changed = tx.execute(
                     "UPDATE provider_embedding_operations SET state=?1,updated_at=?2
                      WHERE operation_id=?3 AND operation_binding_sha256=?4 AND state='request_sent'",
-                    params![state,updated_at,operation.operation_id,operation.operation_binding_sha256],
+                    params![state,error_event.created_at,operation.operation_id,operation.operation_binding_sha256],
                 ).map_err(|error|error.to_string())?;
-                require_single_embedding_operation_update(changed)
+                require_single_embedding_operation_update(changed)?;
+                insert_provider_event_sqlite(&tx,error_event)?;
+                tx.commit().map_err(|error|error.to_string())
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                let changed = client.execute(
+                let mut tx=client.transaction().map_err(|error|error.to_string())?;
+                tx.execute("SELECT pg_advisory_xact_lock(hashtext($1))", &[&format!("{}:{}",operation.target_memory_id,operation.target_version)])
+                    .map_err(|error|error.to_string())?;
+                let changed = tx.execute(
                     "UPDATE provider_embedding_operations SET state=$1,updated_at=$2
                      WHERE operation_id=$3 AND operation_binding_sha256=$4 AND state='request_sent'",
-                    &[&state,&updated_at,&operation.operation_id,&operation.operation_binding_sha256],
+                    &[&state,&error_event.created_at,&operation.operation_id,&operation.operation_binding_sha256],
                 ).map_err(|error|error.to_string())?;
-                require_single_embedding_operation_update(changed as usize)
+                require_single_embedding_operation_update(changed as usize)?;
+                insert_provider_event_pg(&mut tx,error_event)?;
+                tx.commit().map_err(|error|error.to_string())
             }),
         }
     }
@@ -743,8 +988,17 @@ fn validate_embedding_operation(operation: &ProviderEmbeddingOperation) -> Resul
     if operation.operation_id.is_empty()
         || operation.target_memory_id.is_empty()
         || operation.target_version <= 0
-        || operation.operation_binding_sha256.len() != 64
-        || operation.content_sha256.len() != 64
+        || operation.tenant_id.is_empty()
+        || operation.workspace_id.is_empty()
+        || operation.source_id.is_empty()
+        || !is_sha256(&operation.source_sha256)
+        || !is_sha256(&operation.operation_binding_sha256)
+        || !is_sha256(&operation.content_sha256)
+        || !is_sha256(&operation.contract_sha256)
+        || format!(
+            "{:x}",
+            sha2::Sha256::digest(operation.contract_json.as_bytes())
+        ) != operation.contract_sha256
         || operation.receipt_sha256 != provider_embedding_operation_receipt_sha256(operation)?
         || operation.provider_id != crate::provider::embedding::OPENROUTER_EMBEDDING_PROVIDER_ID
         || operation.model_id != crate::provider::embedding::OPENROUTER_EMBEDDING_MODEL_ID
@@ -762,8 +1016,16 @@ pub(crate) fn provider_embedding_operation_receipt_sha256(
         "operation_id": operation.operation_id,
         "target_memory_id": operation.target_memory_id,
         "target_version": operation.target_version,
+        "tenant_id":operation.tenant_id,
+        "workspace_id":operation.workspace_id,
+        "agent_id":operation.agent_id,
+        "run_id":operation.run_id,
+        "task_id":operation.task_id,
+        "source_id":operation.source_id,
+        "source_sha256":operation.source_sha256,
         "operation_binding_sha256": operation.operation_binding_sha256,
         "content_sha256": operation.content_sha256,
+        "contract_sha256":operation.contract_sha256,
         "provider_id": operation.provider_id,
         "model_id": operation.model_id,
     });
@@ -809,19 +1071,28 @@ fn validate_stored_embedding_operation(
     operation: &ProviderEmbeddingOperation,
     existing: StoredEmbeddingOperation,
 ) -> Result<ProviderEmbeddingOperationClaim, String> {
-    if existing.0 != operation.operation_id
-        || existing.1 != operation.operation_binding_sha256
-        || existing.2 != operation.content_sha256
-        || existing.3 != operation.receipt_sha256
-        || existing.4 != operation.provider_id
-        || existing.5 != operation.model_id
+    if existing.operation_id != operation.operation_id
+        || existing.tenant_id != operation.tenant_id
+        || existing.workspace_id != operation.workspace_id
+        || existing.agent_id != operation.agent_id
+        || existing.run_id != operation.run_id
+        || existing.task_id != operation.task_id
+        || existing.source_id != operation.source_id
+        || existing.source_sha256 != operation.source_sha256
+        || existing.operation_binding_sha256 != operation.operation_binding_sha256
+        || existing.content_sha256 != operation.content_sha256
+        || existing.contract_json != operation.contract_json
+        || existing.contract_sha256 != operation.contract_sha256
+        || existing.receipt_sha256 != operation.receipt_sha256
+        || existing.provider_id != operation.provider_id
+        || existing.model_id != operation.model_id
     {
         return Err(
             "competing provider embedding mutation already owns this memory version".to_string(),
         );
     }
-    match existing.6.as_str() {
-        "completed" => match (existing.7, existing.8) {
+    match existing.state.as_str() {
+        "completed" => match (existing.vector_json, existing.metadata_json) {
             (Some(vector_json), Some(metadata_json)) => {
                 Ok(ProviderEmbeddingOperationClaim::Completed {
                     vector_json,
@@ -836,6 +1107,9 @@ fn validate_stored_embedding_operation(
         "failed" => Err(
             "provider embedding operation failed; explicit operator retry is required".to_string(),
         ),
+        "retry_authorized" => Ok(ProviderEmbeddingOperationClaim::RetryAuthorized {
+            attempt_count: existing.attempt_count,
+        }),
         _ => Err("provider embedding operation state is invalid".to_string()),
     }
 }
@@ -845,27 +1119,59 @@ fn sqlite_embedding_operation(
     operation: &ProviderEmbeddingOperation,
 ) -> Result<Option<StoredEmbeddingOperation>, String> {
     tx.query_row(
-        "SELECT operation_id,operation_binding_sha256,content_sha256,receipt_sha256,provider_id,model_id,
-                state,vector_json,metadata_json
+        "SELECT operation_id,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,
+                operation_binding_sha256,content_sha256,contract_json,contract_sha256,receipt_sha256,
+                provider_id,model_id,state,attempt_count,vector_json,metadata_json
          FROM provider_embedding_operations
          WHERE target_memory_id=?1 AND target_version=?2",
         params![operation.target_memory_id, operation.target_version],
         |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7)?,
-                row.get(8)?,
-            ))
+            stored_embedding_operation_sqlite(row)
         },
     )
     .optional()
     .map_err(|error| error.to_string())
+}
+
+fn sqlite_embedding_operation_for_resolution(
+    tx: &rusqlite::Transaction<'_>,
+    memory_id: &str,
+    target_version: i64,
+) -> Result<Option<StoredEmbeddingOperation>, String> {
+    tx.query_row(
+        "SELECT operation_id,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,
+                operation_binding_sha256,content_sha256,contract_json,contract_sha256,receipt_sha256,
+                provider_id,model_id,state,attempt_count,vector_json,metadata_json
+         FROM provider_embedding_operations WHERE target_memory_id=?1 AND target_version=?2",
+        params![memory_id,target_version],
+        stored_embedding_operation_sqlite,
+    ).optional().map_err(|error|error.to_string())
+}
+
+fn stored_embedding_operation_sqlite(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredEmbeddingOperation> {
+    Ok(StoredEmbeddingOperation {
+        operation_id: row.get(0)?,
+        tenant_id: row.get(1)?,
+        workspace_id: row.get(2)?,
+        agent_id: row.get(3)?,
+        run_id: row.get(4)?,
+        task_id: row.get(5)?,
+        source_id: row.get(6)?,
+        source_sha256: row.get(7)?,
+        operation_binding_sha256: row.get(8)?,
+        content_sha256: row.get(9)?,
+        contract_json: row.get(10)?,
+        contract_sha256: row.get(11)?,
+        receipt_sha256: row.get(12)?,
+        provider_id: row.get(13)?,
+        model_id: row.get(14)?,
+        state: row.get(15)?,
+        attempt_count: row.get(16)?,
+        vector_json: row.get(17)?,
+        metadata_json: row.get(18)?,
+    })
 }
 
 #[cfg(feature = "pg")]
@@ -874,28 +1180,105 @@ fn pg_embedding_operation(
     operation: &ProviderEmbeddingOperation,
 ) -> Result<Option<StoredEmbeddingOperation>, String> {
     tx.query_opt(
-        "SELECT operation_id,operation_binding_sha256,content_sha256,receipt_sha256,provider_id,model_id,
-                state,vector_json,metadata_json
+        "SELECT operation_id,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,
+                operation_binding_sha256,content_sha256,contract_json,contract_sha256,receipt_sha256,
+                provider_id,model_id,state,attempt_count,vector_json,metadata_json
          FROM provider_embedding_operations
          WHERE target_memory_id=$1 AND target_version=$2 FOR UPDATE",
         &[&operation.target_memory_id, &operation.target_version],
     )
     .map_err(|error| error.to_string())
     .map(|row| {
-        row.map(|row| {
-            (
-                row.get(0),
-                row.get(1),
-                row.get(2),
-                row.get(3),
-                row.get(4),
-                row.get(5),
-                row.get(6),
-                row.get(7),
-                row.get(8),
-            )
-        })
+        row.map(|row| stored_embedding_operation_pg(&row))
     })
+}
+
+#[cfg(feature = "pg")]
+fn pg_embedding_operation_for_resolution(
+    tx: &mut postgres::Transaction<'_>,
+    memory_id: &str,
+    target_version: i64,
+) -> Result<Option<StoredEmbeddingOperation>, String> {
+    tx.query_opt(
+        "SELECT operation_id,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,
+                operation_binding_sha256,content_sha256,contract_json,contract_sha256,receipt_sha256,
+                provider_id,model_id,state,attempt_count,vector_json,metadata_json
+         FROM provider_embedding_operations WHERE target_memory_id=$1 AND target_version=$2 FOR UPDATE",
+        &[&memory_id,&target_version],
+    ).map_err(|error|error.to_string()).map(|row|row.map(|row|stored_embedding_operation_pg(&row)))
+}
+
+#[cfg(feature = "pg")]
+fn stored_embedding_operation_pg(row: &postgres::Row) -> StoredEmbeddingOperation {
+    StoredEmbeddingOperation {
+        operation_id: row.get(0),
+        tenant_id: row.get(1),
+        workspace_id: row.get(2),
+        agent_id: row.get(3),
+        run_id: row.get(4),
+        task_id: row.get(5),
+        source_id: row.get(6),
+        source_sha256: row.get(7),
+        operation_binding_sha256: row.get(8),
+        content_sha256: row.get(9),
+        contract_json: row.get(10),
+        contract_sha256: row.get(11),
+        receipt_sha256: row.get(12),
+        provider_id: row.get(13),
+        model_id: row.get(14),
+        state: row.get(15),
+        attempt_count: row.get(16),
+        vector_json: row.get(17),
+        metadata_json: row.get(18),
+    }
+}
+
+fn validate_resolution_scope(
+    row: &StoredEmbeddingOperation,
+    request: &ProviderEmbeddingResolutionRequest,
+) -> Result<(), String> {
+    if row.tenant_id != request.scope.tenant_id
+        || row.workspace_id != request.scope.workspace_id
+        || row.agent_id != request.scope.agent_id
+        || row.task_id != request.scope.task_id
+        || row.run_id != request.run_id
+    {
+        return Err("provider embedding reconciliation scope mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn validate_resolution_transition(
+    row: &StoredEmbeddingOperation,
+    request: &ProviderEmbeddingResolutionRequest,
+) -> Result<(), String> {
+    if row.attempt_count != request.expected_attempt_count || row.attempt_count >= 4 {
+        return Err("provider embedding reconciliation attempt conflict".to_string());
+    }
+    match (&request.action, row.state.as_str()) {
+        (ProviderEmbeddingResolutionAction::RetryFailed, "failed") => Ok(()),
+        (ProviderEmbeddingResolutionAction::ConfirmUnknownNoEffectAndRetry, "outcome_unknown") => {
+            Ok(())
+        }
+        _ => Err("provider embedding reconciliation state/action conflict".to_string()),
+    }
+}
+
+fn retry_audit_event(
+    event: &crate::provider::ProviderAuditEvent,
+    attempt_count: i64,
+) -> crate::provider::ProviderAuditEvent {
+    let mut event = event.clone();
+    event.event_id = format!("{}-attempt-{attempt_count}", event.event_id);
+    event.dispatch_id = format!("{}-attempt-{attempt_count}", event.dispatch_id);
+    event
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn insert_provider_event_sqlite(
@@ -924,6 +1307,22 @@ fn insert_provider_event_sqlite(
     )
     .map(|_| ())
     .map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "pg")]
+fn append_provider_embedding_resolution_audit_pg(
+    tx: &mut postgres::Transaction<'_>,
+    now: &str,
+    actor: &str,
+    action: &str,
+    resource: &str,
+    evidence: &Value,
+) -> Result<(), String> {
+    let details = serde_json::to_string(evidence).map_err(|error| error.to_string())?;
+    tx.execute(
+        "INSERT INTO audit_log (created_at,actor,action,resource,details_json) VALUES ($1,$2,$3,$4,$5)",
+        &[&now,&actor,&action,&resource,&details],
+    ).map(|_|()).map_err(|error|error.to_string())
 }
 
 #[cfg(feature = "pg")]

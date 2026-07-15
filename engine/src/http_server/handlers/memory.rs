@@ -11,6 +11,7 @@ use crate::http_server::middleware::{
 use crate::http_server::state::AxumApiState;
 use crate::storage::local_product_store::{
     DurableMemoryCreate, DurableMemoryRevision, MemoryRetrievalRequest, MemoryScope,
+    ProviderEmbeddingResolutionRequest,
 };
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +59,15 @@ pub(crate) struct MemoryPruneRequest {
 #[serde(deny_unknown_fields)]
 pub(crate) struct MemoryDetailQuery {
     run_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MemoryReembedRequest {
+    expected_version: i64,
+    run_id: String,
+    scope: MemoryScope,
+    confirm_reembed: bool,
 }
 
 pub(crate) async fn api_create_memory(
@@ -224,6 +234,66 @@ pub(crate) async fn api_revise_memory(
         .revise_durable_memory(&memory_id, &revision, &context.api_key_id)
         .map_err(bad_memory_request)?;
     Ok((cors_headers(), Json(json!({"memory": memory}))))
+}
+
+pub(crate) async fn api_reembed_memory(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(memory_id): AxumPath<String>,
+    Json(request): Json<MemoryReembedRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    if !request.confirm_reembed {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "durable_memory_reembed_confirmation_required",
+            "confirm_reembed must be true",
+        ));
+    }
+    require_run_scope(&state, &request.run_id, &request.scope)?;
+    require_memory_scope(&state, &memory_id, &request.scope, &context.tenant_id)?;
+    let memory = require_store(&state)?
+        .reembed_durable_memory(&memory_id, request.expected_version, &context.api_key_id)
+        .map_err(bad_memory_request)?;
+    Ok((cors_headers(), Json(json!({"memory":memory}))))
+}
+
+pub(crate) async fn api_reconcile_memory_embedding(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(memory_id): AxumPath<String>,
+    Json(request): Json<ProviderEmbeddingResolutionRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    require_tenant(&context.tenant_id, &request.scope.tenant_id)?;
+    let run_id = request.run_id.as_deref().ok_or_else(|| {
+        ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "provider_embedding_resolution_run_required",
+            "provider embedding reconciliation requires an authoritative run_id",
+        )
+    })?;
+    require_run_scope(&state, run_id, &request.scope)?;
+    let resolution = require_store(&state)?
+        .reconcile_provider_embedding_operation(&memory_id, &request, &context.api_key_id)
+        .map_err(bad_memory_request)?;
+    Ok((cors_headers(), Json(json!({"resolution":resolution}))))
 }
 
 pub(crate) async fn api_invalidate_memory(
@@ -443,6 +513,8 @@ fn require_tenant(expected: &str, actual: &str) -> Result<(), ApiError> {
 fn bad_memory_request(error: String) -> ApiError {
     let status = if error.contains("not found") {
         StatusCode::NOT_FOUND
+    } else if error.contains("scope mismatch") {
+        StatusCode::FORBIDDEN
     } else if error.contains("version conflict") {
         StatusCode::CONFLICT
     } else {

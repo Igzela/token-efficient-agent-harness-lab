@@ -168,6 +168,8 @@ class ClientLocalStateTest(unittest.TestCase):
         client.create_memory({"scope": scope, "run_id": "run-1", "source_id": "source-1"})
         client.memory("memory/one", "run-1")
         client.revise_memory("memory/one", {"run_id": "run-1", "scope": scope, "expected_version": 1})
+        client.reembed_memory("memory/one", {"run_id": "run-1", "scope": scope, "expected_version": 2, "confirm_reembed": True})
+        client.reconcile_memory_embedding("memory/one", {"run_id": "run-1", "scope": scope, "target_version": 3, "expected_attempt_count": 1, "action": "retry_failed", "confirm_resolution": True})
         client.invalidate_memory("memory/one", {"expected_version": 2, "run_id": "run-1", "scope": scope})
         client.forget_memory("memory/one", {"expected_version": 3, "run_id": "run-1", "scope": scope})
         client.supersede_memory(
@@ -199,6 +201,8 @@ class ClientLocalStateTest(unittest.TestCase):
                 ("POST", "http://localhost:8080/api/v1/memories"),
                 ("GET", "http://localhost:8080/api/v1/memories/memory%2Fone?run_id=run-1"),
                 ("POST", "http://localhost:8080/api/v1/memories/memory%2Fone/revise"),
+                ("POST", "http://localhost:8080/api/v1/memories/memory%2Fone/reembed"),
+                ("POST", "http://localhost:8080/api/v1/memories/memory%2Fone/embedding/reconcile"),
                 ("POST", "http://localhost:8080/api/v1/memories/memory%2Fone/invalidate"),
                 ("POST", "http://localhost:8080/api/v1/memories/memory%2Fone/forget"),
                 ("POST", "http://localhost:8080/api/v1/memories/memory%2Fone/supersede"),
@@ -212,13 +216,14 @@ class ClientLocalStateTest(unittest.TestCase):
                 ("POST", "http://localhost:8080/api/v1/adaptive-fusion/policies/promote-with-evidence"),
             ],
         )
-        self.assertEqual(json.loads(requests[3].data), {"expected_version": 2, "run_id": "run-1", "scope": scope})
-        self.assertTrue(json.loads(requests[5].data)["confirm_supersede"])
-        self.assertTrue(json.loads(requests[6].data)["confirm_prune"])
-        self.assertTrue(json.loads(requests[9].data)["confirm_recompute"])
-        self.assertTrue(json.loads(requests[10].data)["confirm_generation"])
-        self.assertTrue(json.loads(requests[12].data)["confirm_profile"])
-        self.assertTrue(json.loads(requests[13].data)["confirm_promotion"])
+        self.assertTrue(json.loads(requests[3].data)["confirm_reembed"])
+        self.assertEqual(json.loads(requests[4].data)["action"], "retry_failed")
+        self.assertTrue(json.loads(requests[7].data)["confirm_supersede"])
+        self.assertTrue(json.loads(requests[8].data)["confirm_prune"])
+        self.assertTrue(json.loads(requests[11].data)["confirm_recompute"])
+        self.assertTrue(json.loads(requests[12].data)["confirm_generation"])
+        self.assertTrue(json.loads(requests[14].data)["confirm_profile"])
+        self.assertTrue(json.loads(requests[15].data)["confirm_promotion"])
 
     @patch("agent_control_plane_sdk.client.urlopen")
     def test_offline_replay_readers_send_filters_and_encode_artifact_ids(self, mock_urlopen):

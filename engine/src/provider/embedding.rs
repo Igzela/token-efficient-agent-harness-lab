@@ -22,6 +22,17 @@ pub const OPENROUTER_EMBEDDING_CONTEXT_LENGTH: u64 = 131_072;
 pub const OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE: &str = "2026-07-15";
 pub const OPENROUTER_EMBEDDING_CREDENTIAL_ENV: &str = "OPENROUTER_API_KEY";
 
+/// Append-only registry for durable provider-vector identities. When the
+/// current contract rotates, retain the prior tuple here so historical rows
+/// remain inspectable and can be re-embedded through the bounded owner.
+const SUPPORTED_DURABLE_EMBEDDING_IDENTITIES: &[(&str, &str, &str, &str, usize)] = &[(
+    OPENROUTER_EMBEDDING_PROVIDER_ID,
+    OPENROUTER_EMBEDDING_MODEL_ID,
+    OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+    OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
+    OPENROUTER_EMBEDDING_DIMENSIONS,
+)];
+
 const MAX_BATCH_INPUTS: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const DEFAULT_TIMEOUT_MS: u64 = 20_000;
@@ -44,6 +55,32 @@ pub struct EmbeddingPricingEvidence {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct EmbeddingContractEvidence {
+    pub provider_id: String,
+    pub requested_model_id: String,
+    pub canonical_model_slug: String,
+    pub resolved_model_id: String,
+    pub dimensions: usize,
+    pub context_length: u64,
+    pub pricing: EmbeddingPricingEvidence,
+}
+
+impl EmbeddingContractEvidence {
+    pub(crate) fn current(pricing: EmbeddingPricingEvidence) -> Self {
+        Self {
+            provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            requested_model_id: OPENROUTER_EMBEDDING_MODEL_ID.to_string(),
+            canonical_model_slug: OPENROUTER_EMBEDDING_CANONICAL_SLUG.to_string(),
+            resolved_model_id: OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID.to_string(),
+            dimensions: OPENROUTER_EMBEDDING_DIMENSIONS,
+            context_length: OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
+            pricing,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderEmbeddingMetadata {
     pub provider_id: String,
     pub requested_model_id: String,
@@ -58,6 +95,20 @@ pub struct ProviderEmbeddingMetadata {
     pub vector_sha256: String,
 }
 
+pub(crate) fn is_supported_durable_embedding_identity(
+    metadata: &ProviderEmbeddingMetadata,
+) -> bool {
+    SUPPORTED_DURABLE_EMBEDDING_IDENTITIES.iter().any(
+        |(provider, requested, canonical, resolved, dimensions)| {
+            metadata.provider_id == *provider
+                && metadata.requested_model_id == *requested
+                && metadata.canonical_model_slug == *canonical
+                && metadata.resolved_model_id == *resolved
+                && metadata.dimensions == *dimensions
+        },
+    )
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderEmbeddingOutput {
     pub vectors: Vec<Vec<f64>>,
@@ -67,6 +118,12 @@ pub struct ProviderEmbeddingOutput {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct VerifiedEmbeddingContract {
     pub pricing: EmbeddingPricingEvidence,
+}
+
+impl VerifiedEmbeddingContract {
+    pub(crate) fn evidence(&self) -> EmbeddingContractEvidence {
+        EmbeddingContractEvidence::current(self.pricing.clone())
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -1912,6 +1912,7 @@ async fn axum_workflow_runs_persist_inert_state_from_plan() {
         .await
         .unwrap();
     assert_eq!(detail.status(), StatusCode::OK);
+
     let detail_body = response_json(detail).await;
     assert_eq!(detail_body["run"]["events"].as_array().unwrap().len(), 4);
     assert_eq!(detail_body["run"]["approvals"].as_array().unwrap().len(), 1);
@@ -4410,6 +4411,23 @@ async fn axum_durable_memory_routes_enforce_scope_and_survive_restart() {
         .await
         .unwrap();
     assert_eq!(detail.status(), StatusCode::OK);
+
+    let unconfirmed_reembed = post_json(
+        &app,
+        &format!("/api/v1/memories/{retrievable_id}/reembed"),
+        json!({"run_id":run_id,"scope":scope,"expected_version":1,"confirm_reembed":false}),
+    )
+    .await;
+    assert_eq!(unconfirmed_reembed.status(), StatusCode::BAD_REQUEST);
+    let missing_reconciliation = post_json(
+        &app,
+        &format!("/api/v1/memories/{retrievable_id}/embedding/reconcile"),
+        json!({"run_id":run_id,"scope":scope,"target_version":2,"expected_attempt_count":1,
+            "action":"retry_failed","evidence_source_id":null,"evidence_sha256":null,
+            "confirm_resolution":true}),
+    )
+    .await;
+    assert_eq!(missing_reconciliation.status(), StatusCode::NOT_FOUND);
 
     let first = post_json(
         &app,

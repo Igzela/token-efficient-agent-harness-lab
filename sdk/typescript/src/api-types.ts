@@ -1616,6 +1616,20 @@ export interface MemoryVersionTransitionRequest {
   run_id: string;
   scope: MemoryScope;
 }
+export interface MemoryReembedRequest extends MemoryVersionTransitionRequest {
+  confirm_reembed: true;
+}
+export interface ProviderEmbeddingResolutionRequest {
+  target_version: number;
+  expected_attempt_count: number;
+  scope: MemoryScope;
+  run_id: string;
+  action: "retry_failed" | "confirm_unknown_no_effect_and_retry";
+  evidence_source_id?: string | null;
+  evidence_sha256?: string | null;
+  confirm_resolution: true;
+}
+export interface ProviderEmbeddingResolutionResponse { resolution: Record<string, unknown>; }
 export interface MemoryRetrievalRequest {
   scope: MemoryScope;
   run_id: string;

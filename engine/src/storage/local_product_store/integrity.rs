@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 use super::{count_table, DatabaseConnection, LocalProductStore};
 use crate::provider::embedding::{
-    ProviderEmbeddingMetadata, OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+    EmbeddingContractEvidence, ProviderEmbeddingMetadata, OPENROUTER_EMBEDDING_CANONICAL_SLUG,
     OPENROUTER_EMBEDDING_DIMENSIONS, OPENROUTER_EMBEDDING_MODEL_ID,
     OPENROUTER_EMBEDDING_PROVIDER_ID, OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
 };
@@ -117,12 +117,22 @@ struct ProviderEmbeddingOperationIntegrityRow {
     operation_id: String,
     target_memory_id: String,
     target_version: i64,
+    tenant_id: String,
+    workspace_id: String,
+    agent_id: Option<String>,
+    run_id: Option<String>,
+    task_id: Option<String>,
+    source_id: String,
+    source_sha256: String,
     operation_binding_sha256: String,
     content_sha256: String,
+    contract_json: String,
+    contract_sha256: String,
     receipt_sha256: String,
     provider_id: String,
     model_id: String,
     state: String,
+    attempt_count: i64,
     vector_json: Option<String>,
     metadata_json: Option<String>,
     created_at: String,
@@ -254,9 +264,10 @@ fn validate_sqlite_provider_embedding_operations(
 ) -> Result<(), String> {
     let mut statement = conn
         .prepare(
-            "SELECT operation_id,target_memory_id,target_version,operation_binding_sha256,
-                    content_sha256,receipt_sha256,provider_id,model_id,state,vector_json,metadata_json,
-                    created_at,updated_at
+            "SELECT operation_id,target_memory_id,target_version,tenant_id,workspace_id,agent_id,run_id,
+                    task_id,source_id,source_sha256,operation_binding_sha256,content_sha256,
+                    contract_json,contract_sha256,receipt_sha256,provider_id,model_id,state,
+                    attempt_count,vector_json,metadata_json,created_at,updated_at
              FROM provider_embedding_operations ORDER BY operation_id",
         )
         .map_err(|error| error.to_string())?;
@@ -266,16 +277,26 @@ fn validate_sqlite_provider_embedding_operations(
                 operation_id: row.get(0)?,
                 target_memory_id: row.get(1)?,
                 target_version: row.get(2)?,
-                operation_binding_sha256: row.get(3)?,
-                content_sha256: row.get(4)?,
-                receipt_sha256: row.get(5)?,
-                provider_id: row.get(6)?,
-                model_id: row.get(7)?,
-                state: row.get(8)?,
-                vector_json: row.get(9)?,
-                metadata_json: row.get(10)?,
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
+                tenant_id: row.get(3)?,
+                workspace_id: row.get(4)?,
+                agent_id: row.get(5)?,
+                run_id: row.get(6)?,
+                task_id: row.get(7)?,
+                source_id: row.get(8)?,
+                source_sha256: row.get(9)?,
+                operation_binding_sha256: row.get(10)?,
+                content_sha256: row.get(11)?,
+                contract_json: row.get(12)?,
+                contract_sha256: row.get(13)?,
+                receipt_sha256: row.get(14)?,
+                provider_id: row.get(15)?,
+                model_id: row.get(16)?,
+                state: row.get(17)?,
+                attempt_count: row.get(18)?,
+                vector_json: row.get(19)?,
+                metadata_json: row.get(20)?,
+                created_at: row.get(21)?,
+                updated_at: row.get(22)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -332,9 +353,10 @@ fn validate_pg_durable_memory_rows(client: &mut postgres::Client) -> Result<(), 
 fn validate_pg_provider_embedding_operations(client: &mut postgres::Client) -> Result<(), String> {
     let rows = client
         .query(
-            "SELECT operation_id,target_memory_id,target_version,operation_binding_sha256,
-                    content_sha256,receipt_sha256,provider_id,model_id,state,vector_json,metadata_json,
-                    created_at,updated_at
+            "SELECT operation_id,target_memory_id,target_version,tenant_id,workspace_id,agent_id,run_id,
+                    task_id,source_id,source_sha256,operation_binding_sha256,content_sha256,
+                    contract_json,contract_sha256,receipt_sha256,provider_id,model_id,state,
+                    attempt_count,vector_json,metadata_json,created_at,updated_at
              FROM provider_embedding_operations ORDER BY operation_id",
             &[],
         )
@@ -344,16 +366,26 @@ fn validate_pg_provider_embedding_operations(client: &mut postgres::Client) -> R
             operation_id: row.get(0),
             target_memory_id: row.get(1),
             target_version: row.get(2),
-            operation_binding_sha256: row.get(3),
-            content_sha256: row.get(4),
-            receipt_sha256: row.get(5),
-            provider_id: row.get(6),
-            model_id: row.get(7),
-            state: row.get(8),
-            vector_json: row.get(9),
-            metadata_json: row.get(10),
-            created_at: row.get(11),
-            updated_at: row.get(12),
+            tenant_id: row.get(3),
+            workspace_id: row.get(4),
+            agent_id: row.get(5),
+            run_id: row.get(6),
+            task_id: row.get(7),
+            source_id: row.get(8),
+            source_sha256: row.get(9),
+            operation_binding_sha256: row.get(10),
+            content_sha256: row.get(11),
+            contract_json: row.get(12),
+            contract_sha256: row.get(13),
+            receipt_sha256: row.get(14),
+            provider_id: row.get(15),
+            model_id: row.get(16),
+            state: row.get(17),
+            attempt_count: row.get(18),
+            vector_json: row.get(19),
+            metadata_json: row.get(20),
+            created_at: row.get(21),
+            updated_at: row.get(22),
         })?;
     }
     Ok(())
@@ -370,8 +402,13 @@ fn validate_provider_embedding_operation_integrity(
     };
     if row.target_memory_id.is_empty()
         || row.target_version <= 0
+        || row.tenant_id.is_empty()
+        || row.workspace_id.is_empty()
+        || row.source_id.is_empty()
+        || !is_sha256(&row.source_sha256)
         || !is_sha256(&row.operation_binding_sha256)
         || !is_sha256(&row.content_sha256)
+        || !is_sha256(&row.contract_sha256)
         || !is_sha256(&row.receipt_sha256)
         || row.operation_id != format!("embedding-operation-{}", row.operation_binding_sha256)
     {
@@ -382,15 +419,34 @@ fn validate_provider_embedding_operation_integrity(
     {
         return Err(failure("provider or model identity is invalid"));
     }
+    let contract: EmbeddingContractEvidence = serde_json::from_str(&row.contract_json)
+        .map_err(|_| failure("contract evidence JSON is malformed"))?;
+    if sha256_bytes(row.contract_json.as_bytes()) != row.contract_sha256
+        || contract.provider_id != row.provider_id
+        || contract.requested_model_id != row.model_id
+        || contract.canonical_model_slug != OPENROUTER_EMBEDDING_CANONICAL_SLUG
+        || contract.resolved_model_id != OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID
+        || contract.dimensions != OPENROUTER_EMBEDDING_DIMENSIONS
+        || contract.pricing.currency != "USD"
+        || contract.pricing.source != "provider_catalog_reported"
+        || contract.pricing.prompt_cost_per_token_usd != 0.0
+        || contract.pricing.completion_cost_per_token_usd != 0.0
+        || chrono::NaiveDate::parse_from_str(&contract.pricing.effective_date, "%Y-%m-%d").is_err()
+    {
+        return Err(failure("contract evidence binding is invalid"));
+    }
     let expected_receipt_sha256 = provider_embedding_operation_receipt_sha256(row)?;
     if row.receipt_sha256 != expected_receipt_sha256 {
         return Err(failure("operation receipt hash binding is invalid"));
     }
     if !matches!(
         row.state.as_str(),
-        "request_sent" | "completed" | "failed" | "outcome_unknown"
+        "request_sent" | "completed" | "failed" | "outcome_unknown" | "retry_authorized"
     ) {
         return Err(failure("operation state is invalid"));
+    }
+    if !(1..=4).contains(&row.attempt_count) {
+        return Err(failure("operation attempt count is invalid"));
     }
     let created_at = chrono::DateTime::parse_from_rfc3339(&row.created_at)
         .map_err(|_| failure("operation timestamp is invalid"))?;
@@ -440,8 +496,16 @@ fn provider_embedding_operation_receipt_sha256(
         "operation_id": row.operation_id,
         "target_memory_id": row.target_memory_id,
         "target_version": row.target_version,
+        "tenant_id":row.tenant_id,
+        "workspace_id":row.workspace_id,
+        "agent_id":row.agent_id,
+        "run_id":row.run_id,
+        "task_id":row.task_id,
+        "source_id":row.source_id,
+        "source_sha256":row.source_sha256,
         "operation_binding_sha256": row.operation_binding_sha256,
         "content_sha256": row.content_sha256,
+        "contract_sha256":row.contract_sha256,
         "provider_id": row.provider_id,
         "model_id": row.model_id,
     }))
@@ -558,10 +622,7 @@ fn validate_provider_embedding_metadata(
     {
         return Err("provider embedding dimension mismatch".to_string());
     }
-    if metadata.provider_id != OPENROUTER_EMBEDDING_PROVIDER_ID
-        || metadata.requested_model_id != OPENROUTER_EMBEDDING_MODEL_ID
-        || metadata.canonical_model_slug != OPENROUTER_EMBEDDING_CANONICAL_SLUG
-        || metadata.resolved_model_id != OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID
+    if !crate::provider::embedding::is_supported_durable_embedding_identity(metadata)
         || metadata.measurement_provenance != "provider_reported"
     {
         return Err("provider embedding identity is invalid".to_string());
@@ -766,12 +827,31 @@ mod tests {
         metadata_json: Option<&str>,
         ignore_checks: bool,
     ) {
+        let contract_json = serde_json::to_string(&EmbeddingContractEvidence::current(
+            crate::provider::embedding::EmbeddingPricingEvidence {
+                prompt_cost_per_token_usd: 0.0,
+                completion_cost_per_token_usd: 0.0,
+                currency: "USD".to_string(),
+                effective_date: "2026-07-15".to_string(),
+                source: "provider_catalog_reported".to_string(),
+            },
+        ))
+        .unwrap();
+        let contract_sha256 = sha256_bytes(contract_json.as_bytes());
         let receipt_sha256 = sha256_json(&json!({
             "operation_id": operation_id,
             "target_memory_id": "memory-operation",
             "target_version": 1,
+            "tenant_id":"tenant",
+            "workspace_id":"workspace",
+            "agent_id":null,
+            "run_id":null,
+            "task_id":null,
+            "source_id":"source",
+            "source_sha256":"d".repeat(64),
             "operation_binding_sha256": binding_sha256,
             "content_sha256": content_sha256,
+            "contract_sha256":contract_sha256,
             "provider_id": provider_id,
             "model_id": model_id,
         }))
@@ -786,15 +866,19 @@ mod tests {
                 connection
                     .execute(
                         "INSERT INTO provider_embedding_operations
-                         (operation_id,target_memory_id,target_version,operation_binding_sha256,
-                          content_sha256,receipt_sha256,provider_id,model_id,state,vector_json,metadata_json,
-                          created_at,updated_at)
-                         VALUES (?1,'memory-operation',1,?2,?3,?4,?5,?6,?7,?8,?9,
+                         (operation_id,target_memory_id,target_version,tenant_id,workspace_id,source_id,
+                          source_sha256,operation_binding_sha256,content_sha256,contract_json,
+                          contract_sha256,receipt_sha256,provider_id,model_id,state,attempt_count,
+                          vector_json,metadata_json,created_at,updated_at)
+                         VALUES (?1,'memory-operation',1,'tenant','workspace','source',?2,?3,?4,?5,?6,?7,?8,?9,?10,1,?11,?12,
                                  '2026-07-15T00:00:00Z','2026-07-15T00:00:01Z')",
                         params![
                             operation_id,
+                            "d".repeat(64),
                             binding_sha256,
                             content_sha256,
+                            contract_json,
+                            contract_sha256,
                             receipt_sha256,
                             provider_id,
                             model_id,

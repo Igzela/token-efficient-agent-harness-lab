@@ -185,6 +185,8 @@ test("memory and production evidence methods preserve bounded request contracts"
   await client.createMemory({ scope, run_id: "run-1", source_id: "source-1", source_sha256: "a".repeat(64), conflict_key: "fact-1", content: { text: "bounded" }, confidence: 0.9 });
   await client.memory("memory/one", "run-1");
   await client.reviseMemory("memory/one", { run_id: "run-1", scope, expected_version: 1, source_id: "source-2", source_sha256: "b".repeat(64), content: { text: "revised" }, confidence: 1 });
+  await client.reembedMemory("memory/one", { run_id: "run-1", scope, expected_version: 2, confirm_reembed: true });
+  await client.reconcileMemoryEmbedding("memory/one", { run_id: "run-1", scope, target_version: 3, expected_attempt_count: 1, action: "retry_failed", confirm_resolution: true });
   await client.invalidateMemory("memory/one", { expected_version: 2, run_id: "run-1", scope });
   await client.forgetMemory("memory/one", { expected_version: 3, run_id: "run-1", scope });
   await client.supersedeMemory("memory/one", { run_id: "run-1", scope, winner_expected_version: 4, loser_memory_id: "memory/two", loser_expected_version: 2, confirm_supersede: true });
@@ -201,6 +203,8 @@ test("memory and production evidence methods preserve bounded request contracts"
     ["POST", "http://127.0.0.1:8080/api/v1/memories"],
     ["GET", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone?run_id=run-1"],
     ["POST", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone/revise"],
+    ["POST", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone/reembed"],
+    ["POST", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone/embedding/reconcile"],
     ["POST", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone/invalidate"],
     ["POST", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone/forget"],
     ["POST", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone/supersede"],
@@ -213,13 +217,14 @@ test("memory and production evidence methods preserve bounded request contracts"
     ["PUT", "http://127.0.0.1:8080/api/v1/offline-replays/production-profile"],
     ["POST", "http://127.0.0.1:8080/api/v1/adaptive-fusion/policies/promote-with-evidence"],
   ]);
-  assert.deepEqual(JSON.parse(calls[3].init.body), { expected_version: 2, run_id: "run-1", scope });
-  assert.equal(JSON.parse(calls[5].init.body).confirm_supersede, true);
-  assert.equal(JSON.parse(calls[6].init.body).confirm_prune, true);
-  assert.equal(JSON.parse(calls[9].init.body).confirm_recompute, true);
-  assert.equal(JSON.parse(calls[10].init.body).confirm_generation, true);
-  assert.equal(JSON.parse(calls[12].init.body).confirm_profile, true);
-  assert.equal(JSON.parse(calls[13].init.body).confirm_promotion, true);
+  assert.equal(JSON.parse(calls[3].init.body).confirm_reembed, true);
+  assert.equal(JSON.parse(calls[4].init.body).action, "retry_failed");
+  assert.equal(JSON.parse(calls[7].init.body).confirm_supersede, true);
+  assert.equal(JSON.parse(calls[8].init.body).confirm_prune, true);
+  assert.equal(JSON.parse(calls[11].init.body).confirm_recompute, true);
+  assert.equal(JSON.parse(calls[12].init.body).confirm_generation, true);
+  assert.equal(JSON.parse(calls[14].init.body).confirm_profile, true);
+  assert.equal(JSON.parse(calls[15].init.body).confirm_promotion, true);
 });
 
 test("operator decision reader uses the bounded read-only endpoint", async () => {

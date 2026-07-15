@@ -222,6 +222,14 @@ fn axum_routes() -> Router<AxumApiState> {
             post(memory::api_revise_memory).options(cors_preflight),
         )
         .route(
+            "/api/v1/memories/:memory_id/reembed",
+            post(memory::api_reembed_memory).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/memories/:memory_id/embedding/reconcile",
+            post(memory::api_reconcile_memory_embedding).options(cors_preflight),
+        )
+        .route(
             "/api/v1/memories/:memory_id/invalidate",
             post(memory::api_invalidate_memory).options(cors_preflight),
         )
