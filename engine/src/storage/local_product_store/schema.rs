@@ -114,7 +114,8 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     },
     SchemaMigration {
         version: 25,
-        description: "bind provider embedding identity and pricing to durable memory versions",
+        description:
+            "bind provider embedding identity, pricing, and restart-safe operation receipts",
     },
 ];
 
@@ -304,6 +305,24 @@ CREATE INDEX IF NOT EXISTS idx_external_runtime_invocations_scope
 pub(super) const V25_DDL: &str = "
 ALTER TABLE durable_memory_versions ADD COLUMN embedding_metadata_json TEXT;
 ALTER TABLE durable_memory_versions ADD COLUMN embedding_binding_sha256 TEXT;
+CREATE TABLE IF NOT EXISTS provider_embedding_operations (
+    operation_id TEXT PRIMARY KEY,
+    target_memory_id TEXT NOT NULL,
+    target_version BIGINT NOT NULL,
+    operation_binding_sha256 TEXT NOT NULL CHECK (length(operation_binding_sha256) = 64),
+    content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+    receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown')),
+    vector_json TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (target_memory_id, target_version)
+);
+CREATE INDEX IF NOT EXISTS idx_provider_embedding_operations_state
+    ON provider_embedding_operations(state, updated_at);
 ";
 
 pub(super) const SQLITE_DDL: &str = "

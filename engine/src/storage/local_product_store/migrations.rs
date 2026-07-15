@@ -576,7 +576,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|error| error.to_string())?;
             require_v25_rollback_source(current_version)?;
-            let occupied: bool = tx
+            let occupied_bindings: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM durable_memory_versions
                      WHERE embedding_metadata_json IS NOT NULL
@@ -585,9 +585,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                     |row| row.get(0),
                 )
                 .map_err(|error| error.to_string())?;
-            require_empty_v25_bindings(occupied)?;
+            let occupied_operations: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            require_empty_v25_bindings(occupied_bindings || occupied_operations)?;
             tx.execute_batch(
-                "ALTER TABLE durable_memory_versions DROP COLUMN embedding_binding_sha256;
+                "DROP TABLE provider_embedding_operations;
+                 ALTER TABLE durable_memory_versions DROP COLUMN embedding_binding_sha256;
                  ALTER TABLE durable_memory_versions DROP COLUMN embedding_metadata_json;",
             )
             .map_err(|error| error.to_string())?;
@@ -994,6 +1002,47 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
                 .map_err(|error| error.to_string())?;
             }
         }
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS provider_embedding_operations (
+                operation_id TEXT PRIMARY KEY,
+                target_memory_id TEXT NOT NULL,
+                target_version BIGINT NOT NULL,
+                operation_binding_sha256 TEXT NOT NULL CHECK (length(operation_binding_sha256) = 64),
+                content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+                receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
+                provider_id TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown')),
+                vector_json TEXT,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (target_memory_id, target_version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_provider_embedding_operations_state
+                ON provider_embedding_operations(state, updated_at);",
+        )
+        .map_err(|error| error.to_string())?;
+        if !column_exists(conn, "provider_embedding_operations", "receipt_sha256")? {
+            let occupied: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if occupied {
+                return Err(
+                    "migration 25 cannot repair an occupied operation table without receipt hashes"
+                        .to_string(),
+                );
+            }
+            conn.execute_batch(
+                "ALTER TABLE provider_embedding_operations
+                 ADD COLUMN receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64);",
+            )
+            .map_err(|error| error.to_string())?;
+        }
         Ok(())
     }
 }
@@ -1051,7 +1100,7 @@ pub(super) fn require_empty_v25_bindings(occupied: bool) -> Result<(), String> {
 }
 
 pub(super) fn v25_rollback_audit_details() -> &'static str {
-    r#"{"from_version":25,"to_version":24,"dropped_empty_columns":["embedding_metadata_json","embedding_binding_sha256"]}"#
+    r#"{"from_version":25,"to_version":24,"dropped_empty_columns":["embedding_metadata_json","embedding_binding_sha256"],"dropped_empty_tables":["provider_embedding_operations"]}"#
 }
 
 pub(super) fn require_empty_v24_tables(occupied: &[String]) -> Result<(), String> {

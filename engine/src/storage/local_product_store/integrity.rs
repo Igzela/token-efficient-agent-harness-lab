@@ -4,7 +4,9 @@ use sha2::{Digest, Sha256};
 
 use super::{count_table, DatabaseConnection, LocalProductStore};
 use crate::provider::embedding::{
-    ProviderEmbeddingMetadata, OPENROUTER_EMBEDDING_DIMENSIONS, OPENROUTER_EMBEDDING_PROVIDER_ID,
+    ProviderEmbeddingMetadata, OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+    OPENROUTER_EMBEDDING_DIMENSIONS, OPENROUTER_EMBEDDING_MODEL_ID,
+    OPENROUTER_EMBEDDING_PROVIDER_ID, OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +60,7 @@ const INTEGRITY_TABLES: &[&str] = &[
     "agent_proposals",
     "offline_replay_artifacts",
     "durable_memory_versions",
+    "provider_embedding_operations",
     "memory_retrieval_events",
     "production_jobs",
     "normalized_usage_observations",
@@ -109,6 +112,23 @@ struct DurableMemoryEmbeddingBinding {
     source_sha256: String,
 }
 
+#[derive(Debug)]
+struct ProviderEmbeddingOperationIntegrityRow {
+    operation_id: String,
+    target_memory_id: String,
+    target_version: i64,
+    operation_binding_sha256: String,
+    content_sha256: String,
+    receipt_sha256: String,
+    provider_id: String,
+    model_id: String,
+    state: String,
+    vector_json: Option<String>,
+    metadata_json: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
 impl LocalProductStore {
     pub fn check_integrity(&self) -> Result<IntegrityReport, String> {
         match &self.db {
@@ -117,6 +137,7 @@ impl LocalProductStore {
                     .query_row("PRAGMA integrity_check", [], |row| row.get(0))
                     .map_err(|e| e.to_string())?;
                 validate_sqlite_durable_memory_rows(conn)?;
+                validate_sqlite_provider_embedding_operations(conn)?;
 
                 let mut table_reports = Vec::new();
                 for table in INTEGRITY_TABLES {
@@ -146,6 +167,7 @@ impl LocalProductStore {
                     .execute("SELECT 1", &[])
                     .map_err(|e| format!("PG basic check failed: {e}"))?;
                 validate_pg_durable_memory_rows(client)?;
+                validate_pg_provider_embedding_operations(client)?;
 
                 let mut table_reports = Vec::new();
                 for table in INTEGRITY_TABLES {
@@ -227,6 +249,42 @@ fn sqlite_durable_memory_integrity_row(
     })
 }
 
+fn validate_sqlite_provider_embedding_operations(
+    conn: &rusqlite::Connection,
+) -> Result<(), String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT operation_id,target_memory_id,target_version,operation_binding_sha256,
+                    content_sha256,receipt_sha256,provider_id,model_id,state,vector_json,metadata_json,
+                    created_at,updated_at
+             FROM provider_embedding_operations ORDER BY operation_id",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(ProviderEmbeddingOperationIntegrityRow {
+                operation_id: row.get(0)?,
+                target_memory_id: row.get(1)?,
+                target_version: row.get(2)?,
+                operation_binding_sha256: row.get(3)?,
+                content_sha256: row.get(4)?,
+                receipt_sha256: row.get(5)?,
+                provider_id: row.get(6)?,
+                model_id: row.get(7)?,
+                state: row.get(8)?,
+                vector_json: row.get(9)?,
+                metadata_json: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        validate_provider_embedding_operation_integrity(&row.map_err(|error| error.to_string())?)?;
+    }
+    Ok(())
+}
+
 #[cfg(feature = "pg")]
 fn validate_pg_durable_memory_rows(client: &mut postgres::Client) -> Result<(), String> {
     let rows = client
@@ -268,6 +326,125 @@ fn validate_pg_durable_memory_rows(client: &mut postgres::Client) -> Result<(), 
         })?;
     }
     Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn validate_pg_provider_embedding_operations(client: &mut postgres::Client) -> Result<(), String> {
+    let rows = client
+        .query(
+            "SELECT operation_id,target_memory_id,target_version,operation_binding_sha256,
+                    content_sha256,receipt_sha256,provider_id,model_id,state,vector_json,metadata_json,
+                    created_at,updated_at
+             FROM provider_embedding_operations ORDER BY operation_id",
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        validate_provider_embedding_operation_integrity(&ProviderEmbeddingOperationIntegrityRow {
+            operation_id: row.get(0),
+            target_memory_id: row.get(1),
+            target_version: row.get(2),
+            operation_binding_sha256: row.get(3),
+            content_sha256: row.get(4),
+            receipt_sha256: row.get(5),
+            provider_id: row.get(6),
+            model_id: row.get(7),
+            state: row.get(8),
+            vector_json: row.get(9),
+            metadata_json: row.get(10),
+            created_at: row.get(11),
+            updated_at: row.get(12),
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_provider_embedding_operation_integrity(
+    row: &ProviderEmbeddingOperationIntegrityRow,
+) -> Result<(), String> {
+    let failure = |detail: &str| {
+        format!(
+            "provider embedding operation integrity failure for {}: {detail}",
+            row.operation_id
+        )
+    };
+    if row.target_memory_id.is_empty()
+        || row.target_version <= 0
+        || !is_sha256(&row.operation_binding_sha256)
+        || !is_sha256(&row.content_sha256)
+        || !is_sha256(&row.receipt_sha256)
+        || row.operation_id != format!("embedding-operation-{}", row.operation_binding_sha256)
+    {
+        return Err(failure("operation identity or hash binding is invalid"));
+    }
+    if row.provider_id != OPENROUTER_EMBEDDING_PROVIDER_ID
+        || row.model_id != OPENROUTER_EMBEDDING_MODEL_ID
+    {
+        return Err(failure("provider or model identity is invalid"));
+    }
+    let expected_receipt_sha256 = provider_embedding_operation_receipt_sha256(row)?;
+    if row.receipt_sha256 != expected_receipt_sha256 {
+        return Err(failure("operation receipt hash binding is invalid"));
+    }
+    if !matches!(
+        row.state.as_str(),
+        "request_sent" | "completed" | "failed" | "outcome_unknown"
+    ) {
+        return Err(failure("operation state is invalid"));
+    }
+    let created_at = chrono::DateTime::parse_from_rfc3339(&row.created_at)
+        .map_err(|_| failure("operation timestamp is invalid"))?;
+    let updated_at = chrono::DateTime::parse_from_rfc3339(&row.updated_at)
+        .map_err(|_| failure("operation timestamp is invalid"))?;
+    if updated_at < created_at {
+        return Err(failure("operation timestamp ordering is invalid"));
+    }
+
+    match (
+        row.state.as_str(),
+        row.vector_json.as_deref(),
+        row.metadata_json.as_deref(),
+    ) {
+        ("completed", Some(vector_json), Some(metadata_json)) => {
+            let values: Vec<f64> = serde_json::from_str(vector_json)
+                .map_err(|_| failure("completed vector JSON is malformed"))?;
+            let metadata: ProviderEmbeddingMetadata = serde_json::from_str(metadata_json)
+                .map_err(|_| failure("completed metadata JSON is malformed"))?;
+            validate_provider_embedding_metadata(&metadata, &values, &row.content_sha256)
+                .map_err(|detail| failure(&detail))?;
+            if metadata.provider_id != row.provider_id
+                || metadata.requested_model_id != row.model_id
+            {
+                return Err(failure(
+                    "completed metadata provider/model does not match operation",
+                ));
+            }
+        }
+        ("completed", _, _) => {
+            return Err(failure("completed operation receipt is incomplete"));
+        }
+        (_, None, None) => {}
+        (_, _, _) => {
+            return Err(failure(
+                "non-completed operation must not retain vector or metadata",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn provider_embedding_operation_receipt_sha256(
+    row: &ProviderEmbeddingOperationIntegrityRow,
+) -> Result<String, String> {
+    sha256_json(&json!({
+        "operation_id": row.operation_id,
+        "target_memory_id": row.target_memory_id,
+        "target_version": row.target_version,
+        "operation_binding_sha256": row.operation_binding_sha256,
+        "content_sha256": row.content_sha256,
+        "provider_id": row.provider_id,
+        "model_id": row.model_id,
+    }))
 }
 
 fn validate_durable_memory_integrity_row(row: &DurableMemoryIntegrityRow) -> Result<(), String> {
@@ -337,39 +514,17 @@ fn validate_provider_embedding_integrity(
             row.memory_id, row.version
         )
     };
-    if values.len() > OPENROUTER_EMBEDDING_DIMENSIONS
-        || metadata.provider.dimensions != values.len()
-    {
-        return Err(failure("provider embedding dimension mismatch"));
-    }
-    if metadata.provider.provider_id != OPENROUTER_EMBEDDING_PROVIDER_ID
-        || metadata.provider.requested_model_id.is_empty()
-        || metadata.provider.requested_model_id.len() > 256
-        || metadata.provider.canonical_model_slug.is_empty()
-        || metadata.provider.canonical_model_slug.len() > 256
-        || metadata.provider.resolved_model_id.is_empty()
-        || metadata.provider.resolved_model_id.len() > 256
-        || metadata.provider.measurement_provenance != "provider_reported"
-    {
-        return Err(failure("provider embedding identity is invalid"));
-    }
-    if metadata.provider.pricing.currency != "USD"
-        || metadata.provider.pricing.source != "provider_catalog_reported"
-        || metadata.provider.pricing.prompt_cost_per_token_usd != 0.0
-        || metadata.provider.pricing.completion_cost_per_token_usd != 0.0
-        || chrono::NaiveDate::parse_from_str(&metadata.provider.pricing.effective_date, "%Y-%m-%d")
-            .is_err()
-        || metadata
-            .provider
-            .input_tokens
-            .is_some_and(|value| value < 0)
-        || metadata
-            .provider
-            .cost_usd
-            .is_some_and(|value| !value.is_finite() || value != 0.0)
-    {
-        return Err(failure("provider embedding pricing or usage is invalid"));
-    }
+    let normalized_content = content
+        .to_string()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    validate_provider_embedding_metadata(
+        &metadata.provider,
+        values,
+        &sha256_bytes(normalized_content.as_bytes()),
+    )
+    .map_err(|detail| failure(&detail))?;
     if metadata.tenant_id != row.tenant_id
         || metadata.workspace_id != row.workspace_id
         || metadata.agent_id != row.agent_id
@@ -384,23 +539,52 @@ fn validate_provider_embedding_integrity(
             "provider embedding scope/source/version binding mismatch",
         ));
     }
-    let normalized_content = content
-        .to_string()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if metadata.provider.normalized_content_sha256 != sha256_bytes(normalized_content.as_bytes()) {
-        return Err(failure("provider embedding content hash mismatch"));
-    }
-    let vector_hash =
-        sha256_json(&serde_json::to_value(values).map_err(|error| error.to_string())?)?;
-    if metadata.provider.vector_sha256 != vector_hash {
-        return Err(failure("provider embedding vector hash mismatch"));
-    }
     let expected_binding =
         sha256_json(&serde_json::to_value(metadata).map_err(|error| error.to_string())?)?;
     if binding != expected_binding {
         return Err(failure("provider embedding metadata binding hash mismatch"));
+    }
+    Ok(())
+}
+
+fn validate_provider_embedding_metadata(
+    metadata: &ProviderEmbeddingMetadata,
+    values: &[f64],
+    content_sha256: &str,
+) -> Result<(), String> {
+    if values.len() != OPENROUTER_EMBEDDING_DIMENSIONS
+        || values.iter().any(|value| !value.is_finite())
+        || metadata.dimensions != OPENROUTER_EMBEDDING_DIMENSIONS
+    {
+        return Err("provider embedding dimension mismatch".to_string());
+    }
+    if metadata.provider_id != OPENROUTER_EMBEDDING_PROVIDER_ID
+        || metadata.requested_model_id != OPENROUTER_EMBEDDING_MODEL_ID
+        || metadata.canonical_model_slug != OPENROUTER_EMBEDDING_CANONICAL_SLUG
+        || metadata.resolved_model_id != OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID
+        || metadata.measurement_provenance != "provider_reported"
+    {
+        return Err("provider embedding identity is invalid".to_string());
+    }
+    if metadata.pricing.currency != "USD"
+        || metadata.pricing.source != "provider_catalog_reported"
+        || metadata.pricing.prompt_cost_per_token_usd != 0.0
+        || metadata.pricing.completion_cost_per_token_usd != 0.0
+        || chrono::NaiveDate::parse_from_str(&metadata.pricing.effective_date, "%Y-%m-%d").is_err()
+        || metadata.input_tokens.is_some_and(|value| value < 0)
+        || metadata
+            .cost_usd
+            .is_some_and(|value| !value.is_finite() || value != 0.0)
+    {
+        return Err("provider embedding pricing or usage is invalid".to_string());
+    }
+    if metadata.normalized_content_sha256 != content_sha256 {
+        return Err("provider embedding content hash mismatch".to_string());
+    }
+    let vector_hash =
+        sha256_json(&serde_json::to_value(values).map_err(|error| error.to_string())?)?;
+    if metadata.vector_sha256 != vector_hash {
+        return Err("provider embedding vector hash mismatch".to_string());
     }
     Ok(())
 }
@@ -476,6 +660,14 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
 fn sha256_json(value: &Value) -> Result<String, String> {
     serde_json::to_vec(value)
         .map(|bytes| sha256_bytes(&bytes))
@@ -485,9 +677,6 @@ fn sha256_json(value: &Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::embedding::{
-        OPENROUTER_EMBEDDING_CANONICAL_SLUG, OPENROUTER_EMBEDDING_MODEL_ID,
-    };
     use rusqlite::params;
     use tempfile::tempdir;
 
@@ -537,8 +726,7 @@ mod tests {
                 provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
                 requested_model_id: OPENROUTER_EMBEDDING_MODEL_ID.to_string(),
                 canonical_model_slug: OPENROUTER_EMBEDDING_CANONICAL_SLUG.to_string(),
-                resolved_model_id: "private/openrouter/nvidia/llama-nemotron-embed-vl-1b-v2"
-                    .to_string(),
+                resolved_model_id: OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID.to_string(),
                 dimensions: OPENROUTER_EMBEDDING_DIMENSIONS,
                 input_tokens: Some(1),
                 cost_usd: Some(0.0),
@@ -563,6 +751,77 @@ mod tests {
             source_id: "source".to_string(),
             source_sha256: "a".repeat(64),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_provider_embedding_operation(
+        store: &LocalProductStore,
+        operation_id: &str,
+        binding_sha256: &str,
+        content_sha256: &str,
+        provider_id: &str,
+        model_id: &str,
+        state: &str,
+        vector_json: Option<&str>,
+        metadata_json: Option<&str>,
+        ignore_checks: bool,
+    ) {
+        let receipt_sha256 = sha256_json(&json!({
+            "operation_id": operation_id,
+            "target_memory_id": "memory-operation",
+            "target_version": 1,
+            "operation_binding_sha256": binding_sha256,
+            "content_sha256": content_sha256,
+            "provider_id": provider_id,
+            "model_id": model_id,
+        }))
+        .unwrap();
+        store
+            .with_conn(|connection| {
+                if ignore_checks {
+                    connection
+                        .execute_batch("PRAGMA ignore_check_constraints = ON;")
+                        .map_err(|error| error.to_string())?;
+                }
+                connection
+                    .execute(
+                        "INSERT INTO provider_embedding_operations
+                         (operation_id,target_memory_id,target_version,operation_binding_sha256,
+                          content_sha256,receipt_sha256,provider_id,model_id,state,vector_json,metadata_json,
+                          created_at,updated_at)
+                         VALUES (?1,'memory-operation',1,?2,?3,?4,?5,?6,?7,?8,?9,
+                                 '2026-07-15T00:00:00Z','2026-07-15T00:00:01Z')",
+                        params![
+                            operation_id,
+                            binding_sha256,
+                            content_sha256,
+                            receipt_sha256,
+                            provider_id,
+                            model_id,
+                            state,
+                            vector_json,
+                            metadata_json,
+                        ],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+    }
+
+    fn valid_operation_receipt() -> (String, String, String, String) {
+        let binding_sha256 = "c".repeat(64);
+        let content_sha256 = "a".repeat(64);
+        let vector_json =
+            serde_json::to_string(&vec![0.25; OPENROUTER_EMBEDDING_DIMENSIONS]).unwrap();
+        let mut metadata = provider_binding(&sha256_bytes(vector_json.as_bytes())).provider;
+        metadata.normalized_content_sha256 = content_sha256.clone();
+        (
+            format!("embedding-operation-{binding_sha256}"),
+            binding_sha256,
+            content_sha256,
+            serde_json::to_string(&metadata).unwrap(),
+        )
     }
 
     #[test]
@@ -618,5 +877,424 @@ mod tests {
             .check_integrity()
             .unwrap_err()
             .contains("metadata binding hash mismatch"));
+    }
+
+    #[test]
+    fn integrity_check_rejects_non_pinned_provider_model_identity() {
+        let vector = vec![0.25; OPENROUTER_EMBEDDING_DIMENSIONS];
+        let vector_json = serde_json::to_string(&vector).unwrap();
+        for identity_field in ["provider", "requested", "canonical", "resolved"] {
+            let mut metadata = provider_binding(&sha256_bytes(vector_json.as_bytes()));
+            match identity_field {
+                "provider" => metadata.provider.provider_id = "another-provider".to_string(),
+                "requested" => {
+                    metadata.provider.requested_model_id =
+                        "nvidia/another-embedding-model:free".to_string()
+                }
+                "canonical" => {
+                    metadata.provider.canonical_model_slug =
+                        "nvidia/another-embedding-model".to_string()
+                }
+                "resolved" => {
+                    metadata.provider.resolved_model_id =
+                        "private/openrouter/nvidia/another-embedding-model".to_string()
+                }
+                _ => unreachable!(),
+            }
+            let metadata_json = serde_json::to_string(&metadata).unwrap();
+            let binding_sha256 = sha256_json(&serde_json::to_value(&metadata).unwrap()).unwrap();
+
+            let (_directory, store) = new_store();
+            insert_embedding_row(
+                &store,
+                identity_field,
+                &vector_json,
+                &metadata_json,
+                &binding_sha256,
+            );
+            assert!(store
+                .check_integrity()
+                .unwrap_err()
+                .contains("provider embedding identity is invalid"));
+        }
+    }
+
+    #[test]
+    fn integrity_check_rejects_provider_vector_below_pinned_dimension() {
+        let vector = vec![0.25; OPENROUTER_EMBEDDING_DIMENSIONS - 1];
+        let vector_json = serde_json::to_string(&vector).unwrap();
+        let mut metadata = provider_binding(&sha256_bytes(vector_json.as_bytes()));
+        metadata.provider.dimensions = vector.len();
+        let metadata_json = serde_json::to_string(&metadata).unwrap();
+        let binding_sha256 = sha256_json(&serde_json::to_value(&metadata).unwrap()).unwrap();
+
+        let (_directory, store) = new_store();
+        insert_embedding_row(
+            &store,
+            "dimension",
+            &vector_json,
+            &metadata_json,
+            &binding_sha256,
+        );
+        assert!(store
+            .check_integrity()
+            .unwrap_err()
+            .contains("provider embedding dimension mismatch"));
+    }
+
+    #[test]
+    fn integrity_check_accepts_valid_completed_provider_embedding_operation() {
+        let (operation_id, binding, content, metadata_json) = valid_operation_receipt();
+        let vector_json =
+            serde_json::to_string(&vec![0.25; OPENROUTER_EMBEDDING_DIMENSIONS]).unwrap();
+        let (_directory, store) = new_store();
+        insert_provider_embedding_operation(
+            &store,
+            &operation_id,
+            &binding,
+            &content,
+            OPENROUTER_EMBEDDING_PROVIDER_ID,
+            OPENROUTER_EMBEDDING_MODEL_ID,
+            "completed",
+            Some(&vector_json),
+            Some(&metadata_json),
+            false,
+        );
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
+    }
+
+    #[test]
+    fn integrity_check_rejects_invalid_provider_embedding_operation_state() {
+        let (operation_id, binding, content, _) = valid_operation_receipt();
+        let (_directory, store) = new_store();
+        insert_provider_embedding_operation(
+            &store,
+            &operation_id,
+            &binding,
+            &content,
+            OPENROUTER_EMBEDDING_PROVIDER_ID,
+            OPENROUTER_EMBEDDING_MODEL_ID,
+            "corrupt",
+            None,
+            None,
+            true,
+        );
+        assert!(store
+            .check_integrity()
+            .unwrap_err()
+            .contains("operation state is invalid"));
+    }
+
+    #[test]
+    fn integrity_check_rejects_provider_embedding_operation_identity_and_hash_corruption() {
+        let (operation_id, binding, content, _) = valid_operation_receipt();
+        for (
+            suffix,
+            corrupt_operation_id,
+            corrupt_binding,
+            corrupt_content,
+            provider_id,
+            model_id,
+        ) in [
+            (
+                "binding",
+                format!("embedding-operation-{}", "d".repeat(64)),
+                binding.clone(),
+                content.clone(),
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                OPENROUTER_EMBEDDING_MODEL_ID,
+            ),
+            (
+                "malformed-binding",
+                format!("embedding-operation-{}", "C".repeat(64)),
+                "C".repeat(64),
+                content.clone(),
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                OPENROUTER_EMBEDDING_MODEL_ID,
+            ),
+            (
+                "malformed-content",
+                operation_id.clone(),
+                binding.clone(),
+                "A".repeat(64),
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                OPENROUTER_EMBEDDING_MODEL_ID,
+            ),
+            (
+                "provider",
+                operation_id.clone(),
+                binding.clone(),
+                content.clone(),
+                "another-provider",
+                OPENROUTER_EMBEDDING_MODEL_ID,
+            ),
+            (
+                "model",
+                operation_id.clone(),
+                binding.clone(),
+                content.clone(),
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                "nvidia/another-embedding-model:free",
+            ),
+        ] {
+            let (_directory, store) = new_store();
+            insert_provider_embedding_operation(
+                &store,
+                &corrupt_operation_id,
+                &corrupt_binding,
+                &corrupt_content,
+                provider_id,
+                model_id,
+                "failed",
+                None,
+                None,
+                false,
+            );
+            let error = store.check_integrity().unwrap_err();
+            assert!(
+                error.contains("identity") || error.contains("hash binding"),
+                "{suffix} corruption returned unexpected error: {error}"
+            );
+        }
+
+        let (_directory, store) = new_store();
+        insert_provider_embedding_operation(
+            &store,
+            &operation_id,
+            &binding,
+            &content,
+            OPENROUTER_EMBEDDING_PROVIDER_ID,
+            OPENROUTER_EMBEDDING_MODEL_ID,
+            "failed",
+            None,
+            None,
+            false,
+        );
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE provider_embedding_operations SET receipt_sha256=?1",
+                        params!["d".repeat(64)],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(store
+            .check_integrity()
+            .unwrap_err()
+            .contains("receipt hash binding is invalid"));
+
+        for mutation in [
+            "UPDATE provider_embedding_operations SET target_memory_id='memory-other'",
+            "UPDATE provider_embedding_operations SET target_version=2",
+        ] {
+            let (_directory, store) = new_store();
+            insert_provider_embedding_operation(
+                &store,
+                &operation_id,
+                &binding,
+                &content,
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                OPENROUTER_EMBEDDING_MODEL_ID,
+                "failed",
+                None,
+                None,
+                false,
+            );
+            store
+                .with_conn(|connection| {
+                    connection
+                        .execute(mutation, [])
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap();
+            assert!(store
+                .check_integrity()
+                .unwrap_err()
+                .contains("receipt hash binding is invalid"));
+        }
+    }
+
+    #[test]
+    fn integrity_check_rejects_malformed_provider_embedding_operation_receipt() {
+        let (operation_id, binding, content, metadata_json) = valid_operation_receipt();
+        for (suffix, vector_json, metadata) in [
+            ("vector", "not-json", metadata_json.as_str()),
+            ("metadata", "[]", "{}"),
+        ] {
+            let (_directory, store) = new_store();
+            insert_provider_embedding_operation(
+                &store,
+                &operation_id,
+                &binding,
+                &content,
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                OPENROUTER_EMBEDDING_MODEL_ID,
+                "completed",
+                Some(vector_json),
+                Some(metadata),
+                false,
+            );
+            let error = store.check_integrity().unwrap_err();
+            assert!(
+                error.contains("malformed"),
+                "{suffix} corruption returned unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn integrity_check_rejects_provider_embedding_operation_receipt_state_mismatch() {
+        let (operation_id, binding, content, metadata_json) = valid_operation_receipt();
+        let vector_json =
+            serde_json::to_string(&vec![0.25; OPENROUTER_EMBEDDING_DIMENSIONS]).unwrap();
+        for (state, vector, metadata, expected) in [
+            ("completed", None, None, "receipt is incomplete"),
+            (
+                "completed",
+                Some(vector_json.as_str()),
+                None,
+                "receipt is incomplete",
+            ),
+            (
+                "completed",
+                None,
+                Some(metadata_json.as_str()),
+                "receipt is incomplete",
+            ),
+            (
+                "request_sent",
+                Some(vector_json.as_str()),
+                Some(metadata_json.as_str()),
+                "must not retain vector or metadata",
+            ),
+        ] {
+            let (_directory, store) = new_store();
+            insert_provider_embedding_operation(
+                &store,
+                &operation_id,
+                &binding,
+                &content,
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                OPENROUTER_EMBEDDING_MODEL_ID,
+                state,
+                vector,
+                metadata,
+                false,
+            );
+            assert!(store.check_integrity().unwrap_err().contains(expected));
+        }
+    }
+
+    #[test]
+    fn integrity_check_rejects_completed_operation_content_and_vector_hash_mismatch() {
+        let (operation_id, binding, content, metadata_json) = valid_operation_receipt();
+        let vector_json =
+            serde_json::to_string(&vec![0.25; OPENROUTER_EMBEDDING_DIMENSIONS]).unwrap();
+        for (suffix, row_content, receipt_vector, metadata, expected) in [
+            (
+                "content",
+                "b".repeat(64),
+                vector_json.clone(),
+                metadata_json.clone(),
+                "content hash mismatch",
+            ),
+            (
+                "vector",
+                content.clone(),
+                serde_json::to_string(&vec![0.5; OPENROUTER_EMBEDDING_DIMENSIONS]).unwrap(),
+                metadata_json.clone(),
+                "vector hash mismatch",
+            ),
+        ] {
+            let (_directory, store) = new_store();
+            insert_provider_embedding_operation(
+                &store,
+                &operation_id,
+                &binding,
+                &row_content,
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                OPENROUTER_EMBEDDING_MODEL_ID,
+                "completed",
+                Some(&receipt_vector),
+                Some(&metadata),
+                false,
+            );
+            let error = store.check_integrity().unwrap_err();
+            assert!(
+                error.contains(expected),
+                "{suffix} corruption returned unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn integrity_check_rejects_completed_operation_metadata_corruption() {
+        let (operation_id, binding, content, metadata_json) = valid_operation_receipt();
+        let vector_json =
+            serde_json::to_string(&vec![0.25; OPENROUTER_EMBEDDING_DIMENSIONS]).unwrap();
+        let base: ProviderEmbeddingMetadata = serde_json::from_str(&metadata_json).unwrap();
+        for (suffix, metadata, receipt_vector, expected) in [
+            (
+                "provider",
+                ProviderEmbeddingMetadata {
+                    provider_id: "another-provider".to_string(),
+                    ..base.clone()
+                },
+                vector_json.clone(),
+                "identity is invalid",
+            ),
+            (
+                "model",
+                ProviderEmbeddingMetadata {
+                    requested_model_id: "nvidia/another-embedding-model:free".to_string(),
+                    ..base.clone()
+                },
+                vector_json.clone(),
+                "identity is invalid",
+            ),
+            (
+                "dimension",
+                ProviderEmbeddingMetadata {
+                    dimensions: OPENROUTER_EMBEDDING_DIMENSIONS - 1,
+                    ..base.clone()
+                },
+                vector_json.clone(),
+                "dimension mismatch",
+            ),
+            (
+                "non-finite",
+                base.clone(),
+                format!(
+                    "[1e400,{}]",
+                    std::iter::repeat_n("0.25", OPENROUTER_EMBEDDING_DIMENSIONS - 1)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+                "vector JSON is malformed",
+            ),
+        ] {
+            let (_directory, store) = new_store();
+            insert_provider_embedding_operation(
+                &store,
+                &operation_id,
+                &binding,
+                &content,
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                OPENROUTER_EMBEDDING_MODEL_ID,
+                "completed",
+                Some(&receipt_vector),
+                Some(&serde_json::to_string(&metadata).unwrap()),
+                false,
+            );
+            let error = store.check_integrity().unwrap_err();
+            assert!(
+                error.contains(expected),
+                "{suffix} corruption returned unexpected error: {error}"
+            );
+        }
     }
 }

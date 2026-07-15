@@ -85,7 +85,7 @@ impl ProviderEmbeddingConfig {
         if std::env::var("ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS").as_deref() != Ok("1") {
             return Err("durable memory embedding gate is disabled".to_string());
         }
-        if std::env::var("ACP_ENABLE_PROVIDER_EXECUTION").as_deref() != Ok("1") {
+        if !crate::trusted_local::EffectiveExecutionGates::from_env().provider_execution {
             return Err("provider execution gate is disabled".to_string());
         }
         if std::env::var("ACP_REQUIRE_AUTH").as_deref() != Ok("1") {
@@ -132,7 +132,8 @@ impl ProviderEmbeddingConfig {
 
 pub(crate) struct ProviderEmbeddingClient {
     transport: Arc<dyn HttpTransport>,
-    circuit_breaker: Arc<CircuitBreaker>,
+    catalog_circuit_breaker: Arc<CircuitBreaker>,
+    embedding_circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl Default for ProviderEmbeddingClient {
@@ -145,8 +146,13 @@ impl ProviderEmbeddingClient {
     pub(crate) fn new(transport: Arc<dyn HttpTransport>) -> Self {
         Self {
             transport,
-            circuit_breaker: Arc::new(CircuitBreaker::new(
-                "openrouter-durable-memory-embedding",
+            catalog_circuit_breaker: Arc::new(CircuitBreaker::new(
+                "openrouter-durable-memory-embedding-catalog",
+                3,
+                30_000,
+            )),
+            embedding_circuit_breaker: Arc::new(CircuitBreaker::new(
+                "openrouter-durable-memory-embedding-post",
                 3,
                 30_000,
             )),
@@ -159,6 +165,7 @@ impl ProviderEmbeddingClient {
         inputs: &[String],
         config: &ProviderEmbeddingConfig,
     ) -> Result<ProviderEmbeddingOutput, String> {
+        validate_inputs(inputs)?;
         let contract = self.verify_contract(config)?;
         self.embed_verified(inputs, config, &contract)
     }
@@ -169,7 +176,7 @@ impl ProviderEmbeddingClient {
     ) -> Result<VerifiedEmbeddingContract, String> {
         let boundary = CredentialBoundary::new("env")?;
         let api_key = boundary.resolve(OPENROUTER_EMBEDDING_CREDENTIAL_ENV)?;
-        let result = self.circuit_breaker.call(|| {
+        let result = self.catalog_circuit_breaker.call(|| {
             let catalog = self.send_catalog_with_retry(
                 HttpRequest {
                     url: format!("{OPENROUTER_EMBEDDING_BASE_URL}/embeddings/models"),
@@ -200,7 +207,7 @@ impl ProviderEmbeddingClient {
             "dimensions": OPENROUTER_EMBEDDING_DIMENSIONS,
             "encoding_format": "float",
         });
-        let result = self.circuit_breaker.call(|| {
+        let result = self.embedding_circuit_breaker.call(|| {
             let response = self.send_embedding_once(HttpRequest {
                 url: format!("{OPENROUTER_EMBEDDING_BASE_URL}/embeddings"),
                 method: "POST".to_string(),
@@ -367,7 +374,6 @@ fn parse_embedding_response(
     if input_tokens.is_some_and(|tokens| tokens < 0) {
         return Err("embedding provider usage is invalid".to_string());
     }
-    let total_cost = input_tokens.map(|tokens| tokens as f64 * pricing.prompt_cost_per_token_usd);
     let mut indexed = vec![None; inputs.len()];
     for item in data {
         let index = item
@@ -385,20 +391,12 @@ fn parse_embedding_response(
             .ok_or_else(|| "embedding provider returned an empty vector".to_string())?
             .iter()
             .map(|value| {
-                value
-                    .as_f64()
-                    .filter(|value| value.is_finite())
-                    .ok_or_else(|| {
-                        "embedding provider returned a non-finite vector value".to_string()
-                    })
+                value.as_f64().ok_or_else(|| {
+                    "embedding provider returned a non-numeric vector value".to_string()
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if values.len() != OPENROUTER_EMBEDDING_DIMENSIONS {
-            return Err(format!(
-                "embedding dimension mismatch: expected {OPENROUTER_EMBEDDING_DIMENSIONS}, got {}",
-                values.len()
-            ));
-        }
+        validate_embedding_vector(&values)?;
         indexed[index] = Some(values);
     }
     let vectors = indexed
@@ -406,7 +404,6 @@ fn parse_embedding_response(
         .map(|value| value.ok_or_else(|| "embedding provider vector index is missing".to_string()))
         .collect::<Result<Vec<_>, _>>()?;
     let per_input_tokens = (inputs.len() == 1).then_some(input_tokens).flatten();
-    let per_input_cost = (inputs.len() == 1).then_some(total_cost).flatten();
     let metadata = inputs
         .iter()
         .zip(&vectors)
@@ -417,17 +414,20 @@ fn parse_embedding_response(
             resolved_model_id: resolved_model_id.to_string(),
             dimensions: vector.len(),
             input_tokens: per_input_tokens,
-            cost_usd: per_input_cost,
+            // The catalog price makes the request reservable, but it is not a
+            // provider-reported billed amount. Keep cost unavailable unless the
+            // response contract gains an explicit provider cost field.
+            cost_usd: None,
             pricing: pricing.clone(),
             measurement_provenance: "provider_reported".to_string(),
-            normalized_content_sha256: sha256_bytes(normalize_input(input).as_bytes()),
+            normalized_content_sha256: normalized_content_sha256(input),
             vector_sha256: sha256_json(&serde_json::to_value(vector).unwrap_or(Value::Null)),
         })
         .collect();
     Ok(ProviderEmbeddingOutput { vectors, metadata })
 }
 
-fn validate_inputs(inputs: &[String]) -> Result<(), String> {
+pub(crate) fn validate_inputs(inputs: &[String]) -> Result<(), String> {
     if inputs.is_empty() || inputs.len() > MAX_BATCH_INPUTS {
         return Err(format!(
             "embedding batch size must be within 1..={MAX_BATCH_INPUTS}"
@@ -444,6 +444,22 @@ fn validate_inputs(inputs: &[String]) -> Result<(), String> {
     })?;
     if total > MAX_INPUT_BYTES {
         return Err(format!("embedding input exceeds {MAX_INPUT_BYTES} bytes"));
+    }
+    Ok(())
+}
+
+fn validate_embedding_vector(values: &[f64]) -> Result<(), String> {
+    if values.is_empty() {
+        return Err("embedding provider returned an empty vector".to_string());
+    }
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err("embedding provider returned a non-finite vector value".to_string());
+    }
+    if values.len() != OPENROUTER_EMBEDDING_DIMENSIONS {
+        return Err(format!(
+            "embedding dimension mismatch: expected {OPENROUTER_EMBEDDING_DIMENSIONS}, got {}",
+            values.len()
+        ));
     }
     Ok(())
 }
@@ -523,6 +539,10 @@ fn positive_f64_env(key: &str, default: f64) -> Result<f64, String> {
 
 fn normalize_input(input: &str) -> String {
     input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+pub(crate) fn normalized_content_sha256(input: &str) -> String {
+    sha256_bytes(normalize_input(input).as_bytes())
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
@@ -629,7 +649,11 @@ mod tests {
         assert_eq!(output.vectors[0].len(), OPENROUTER_EMBEDDING_DIMENSIONS);
         assert_eq!(output.metadata[0].provider_id, "openrouter");
         assert_eq!(output.metadata[0].input_tokens, Some(7));
-        assert_eq!(output.metadata[0].cost_usd, Some(0.0));
+        assert_eq!(output.metadata[0].cost_usd, None);
+        assert_eq!(
+            output.metadata[0].measurement_provenance,
+            "provider_reported"
+        );
     }
 
     #[test]
@@ -670,6 +694,9 @@ mod tests {
         };
         let input = ["memory".to_string()];
         assert!(parse_embedding_response(b"{}", &input, pricing.clone()).is_err());
+        assert!(validate_embedding_vector(&[f64::NAN])
+            .unwrap_err()
+            .contains("non-finite"));
         let empty = json!({"model":OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,"data":[{"index":0,"embedding":[]}],"usage":{}});
         assert!(parse_embedding_response(
             &serde_json::to_vec(&empty).unwrap(),
@@ -677,7 +704,7 @@ mod tests {
             pricing.clone()
         )
         .unwrap_err()
-        .contains("dimension"));
+        .contains("empty vector"));
         let short = json!({"model":OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,"data":[{"index":0,"embedding":[0.1]}],"usage":{}});
         assert!(
             parse_embedding_response(&serde_json::to_vec(&short).unwrap(), &input, pricing)
@@ -771,15 +798,18 @@ mod tests {
     #[test]
     fn repeated_provider_failures_open_the_circuit() {
         let _guard = EnvGuard::enabled();
-        let failures = (0..3)
-            .map(|_| {
-                Err(HttpError::Http {
-                    status: 503,
-                    reason: "unavailable".to_string(),
-                })
-            })
-            .collect();
-        let client = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(failures)));
+        let mut responses = Vec::new();
+        for _ in 0..3 {
+            responses.push(Ok(catalog()));
+            responses.push(Err(HttpError::Http {
+                status: 503,
+                reason: "unavailable".to_string(),
+            }));
+        }
+        // Contract verification remains healthy. Its success must not reset the
+        // independent embedding POST failure count.
+        responses.push(Ok(catalog()));
+        let client = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(responses)));
         for _ in 0..3 {
             assert!(client.embed(&["x".to_string()], &config()).is_err());
         }
@@ -787,5 +817,68 @@ mod tests {
             client.embed(&["x".to_string()], &config()).unwrap_err(),
             "durable memory embedding provider circuit is open"
         );
+    }
+
+    #[test]
+    fn ready_trusted_local_profile_enables_provider_without_legacy_gate() {
+        const KEYS: &[&str] = &[
+            "CI",
+            "ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS",
+            "ACP_ENABLE_PROVIDER_EXECUTION",
+            "ACP_REQUIRE_AUTH",
+            "ACP_TRUSTED_LOCAL_PROFILE",
+            "ACP_ADMIN_API_KEY",
+            "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON",
+            "ACP_COST_PER_DISPATCH_USD",
+            "ACP_COST_DAILY_USD",
+            "ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH",
+            "ACP_DURABLE_MEMORY_EMBEDDING_CREDENTIAL_ENV",
+        ];
+
+        struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl RestoreEnv {
+            fn capture(keys: &'static [&'static str]) -> Self {
+                Self(
+                    keys.iter()
+                        .map(|key| (*key, std::env::var_os(key)))
+                        .collect(),
+                )
+            }
+        }
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                for (key, value) in &self.0 {
+                    if let Some(value) = value {
+                        std::env::set_var(key, value);
+                    } else {
+                        std::env::remove_var(key);
+                    }
+                }
+            }
+        }
+
+        let _lock = EMBEDDING_TEST_ENV_LOCK.lock().unwrap();
+        let _restore = RestoreEnv::capture(KEYS);
+        for key in KEYS {
+            std::env::remove_var(key);
+        }
+        std::env::set_var("ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS", "1");
+        std::env::set_var("ACP_REQUIRE_AUTH", "1");
+        std::env::set_var("ACP_TRUSTED_LOCAL_PROFILE", "1");
+        std::env::set_var("ACP_ADMIN_API_KEY", format!("harness_{}", "a".repeat(64)));
+        std::env::set_var(
+            "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON",
+            r#"[{"endpoint_id":"embedding-gate","provider_type":"stub","model":"fixture","timeout_ms":1000,"input_cost_per_1k_usd":0.001,"output_cost_per_1k_usd":0.001}]"#,
+        );
+        std::env::set_var("ACP_COST_PER_DISPATCH_USD", "0.01");
+        std::env::set_var("ACP_COST_DAILY_USD", "0.10");
+
+        assert!(
+            crate::trusted_local::EffectiveExecutionGates::from_env()
+                .profile
+                .ready
+        );
+        ProviderEmbeddingConfig::from_env()
+            .expect("ready trusted-local profile should authorize provider embeddings");
     }
 }

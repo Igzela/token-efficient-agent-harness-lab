@@ -116,6 +116,47 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
         tx.batch_execute(sql)
             .map_err(|error| format!("migration 25 failed: {error}"))?;
     }
+    tx.batch_execute(
+        "CREATE TABLE IF NOT EXISTS provider_embedding_operations (
+            operation_id TEXT PRIMARY KEY,
+            target_memory_id TEXT NOT NULL,
+            target_version BIGINT NOT NULL,
+            operation_binding_sha256 TEXT NOT NULL CHECK (length(operation_binding_sha256) = 64),
+            content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+            receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
+            provider_id TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown')),
+            vector_json TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (target_memory_id, target_version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_embedding_operations_state
+            ON provider_embedding_operations(state, updated_at);",
+    )
+    .map_err(|error| format!("migration 25 operation receipt failed: {error}"))?;
+    if !pg_column_exists(&mut tx, "provider_embedding_operations", "receipt_sha256")? {
+        let occupied: bool = tx
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
+                &[],
+            )
+            .map(|row| row.get(0))
+            .map_err(|error| format!("failed to inspect partial migration 25 receipts: {error}"))?;
+        if occupied {
+            return Err(
+                "migration 25 cannot repair an occupied operation table without receipt hashes"
+                    .to_string(),
+            );
+        }
+        tx.batch_execute(
+            "ALTER TABLE provider_embedding_operations
+             ADD COLUMN receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64);",
+        )
+        .map_err(|error| format!("migration 25 receipt hash repair failed: {error}"))?;
+    }
     tx.execute(
         "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
         &[&version],
@@ -132,6 +173,9 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
         "embedding_binding_sha256",
     )? {
         return Err("migration 25 column verification failed".to_string());
+    }
+    if !pg_column_exists(&mut tx, "provider_embedding_operations", "receipt_sha256")? {
+        return Err("migration 25 operation receipt verification failed".to_string());
     }
     tx.commit()
         .map_err(|error| format!("failed to commit migration 25: {error}"))
@@ -428,7 +472,8 @@ impl LocalProductStore {
             let mut tx = client.transaction().map_err(|error| error.to_string())?;
             tx.batch_execute(
                 "LOCK TABLE schema_migrations IN ACCESS EXCLUSIVE MODE;
-                 LOCK TABLE durable_memory_versions IN ACCESS EXCLUSIVE MODE;",
+                 LOCK TABLE durable_memory_versions IN ACCESS EXCLUSIVE MODE;
+                 LOCK TABLE provider_embedding_operations IN ACCESS EXCLUSIVE MODE;",
             )
             .map_err(|error| error.to_string())?;
             let current_version = tx
@@ -439,7 +484,7 @@ impl LocalProductStore {
                 .map(|row| row.get::<_, i64>(0))
                 .map_err(|error| error.to_string())?;
             super::super::migrations::require_v25_rollback_source(current_version)?;
-            let occupied = tx
+            let occupied_bindings = tx
                 .query_one(
                     "SELECT EXISTS(SELECT 1 FROM durable_memory_versions
                      WHERE embedding_metadata_json IS NOT NULL
@@ -448,9 +493,19 @@ impl LocalProductStore {
                 )
                 .map(|row| row.get::<_, bool>(0))
                 .map_err(|error| error.to_string())?;
-            super::super::migrations::require_empty_v25_bindings(occupied)?;
+            let occupied_operations = tx
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
+                    &[],
+                )
+                .map(|row| row.get::<_, bool>(0))
+                .map_err(|error| error.to_string())?;
+            super::super::migrations::require_empty_v25_bindings(
+                occupied_bindings || occupied_operations,
+            )?;
             tx.batch_execute(
-                "ALTER TABLE durable_memory_versions DROP COLUMN embedding_binding_sha256;
+                "DROP TABLE provider_embedding_operations;
+                 ALTER TABLE durable_memory_versions DROP COLUMN embedding_binding_sha256;
                  ALTER TABLE durable_memory_versions DROP COLUMN embedding_metadata_json;",
             )
             .map_err(|error| error.to_string())?;
