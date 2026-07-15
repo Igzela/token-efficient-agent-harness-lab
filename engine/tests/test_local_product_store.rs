@@ -3,7 +3,7 @@ use engine::provider::audit::{
     ProviderAuditEvent, ProviderAuditRecorder, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION,
 };
 use engine::read_only_planner::ReadOnlyPlanner;
-use engine::storage::local_product_store::LocalProductStore;
+use engine::storage::local_product_store::{DurableMemoryCreate, LocalProductStore, MemoryScope};
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
 use serde_json::{json, Value};
 use std::sync::{Arc, Barrier, Mutex};
@@ -226,6 +226,31 @@ fn provider_audit_events_respects_limit() {
 
     let events = store.provider_audit_events(3).unwrap();
     assert_eq!(events.len(), 3);
+}
+
+#[test]
+fn provider_audit_events_have_stable_same_timestamp_ordering() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    for event_id in ["evt-a", "evt-c", "evt-b"] {
+        store
+            .record_provider_audit_event(&make_event(event_id, "disp-stable", "response_received"))
+            .unwrap();
+    }
+    let first = store
+        .provider_audit_events_for_dispatch("disp-stable")
+        .unwrap();
+    let second = store
+        .provider_audit_events_for_dispatch("disp-stable")
+        .unwrap();
+    assert_eq!(first, second);
+    assert_eq!(
+        first
+            .iter()
+            .map(|event| event["event_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["evt-c", "evt-b", "evt-a"]
+    );
 }
 
 #[test]
@@ -3560,7 +3585,7 @@ fn context_assembly_no_predecessor_no_injection() {
 fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("ACP_CONTEXT_ASSEMBLY_ENABLED", "1");
-    std::env::set_var("ACP_CONTEXT_ASSEMBLY_MAX_TOKENS", "4");
+    std::env::set_var("ACP_CONTEXT_ASSEMBLY_MAX_TOKENS", "32");
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("ctx_agent_memory.db")).unwrap();
     let plan = store
@@ -3570,6 +3595,28 @@ fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
         .unwrap();
     store
         .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+    store
+        .create_durable_memory(
+            &DurableMemoryCreate {
+                scope: MemoryScope {
+                    tenant_id: "local".into(),
+                    workspace_id: "local".into(),
+                    agent_id: Some("agent-memory".into()),
+                    task_id: None,
+                },
+                run_id: Some("run-before-0001".into()),
+                source_id: "source-before-0001".into(),
+                source_sha256: "a".repeat(64),
+                conflict_key: "agent-node-memory-fact".into(),
+                content: json!({"text":"agent node memory durable fact"}),
+                confidence: 0.9,
+                fresh_until: None,
+                expires_at: None,
+                supersedes_memory_id: None,
+            },
+            "actor",
+        )
         .unwrap();
     store
         .update_agent_state(
@@ -3610,7 +3657,19 @@ fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
         injection["memory_context"]["included_tokens"]
             .as_i64()
             .unwrap()
-            <= 4
+            <= 32
+    );
+    assert_eq!(
+        injection["memory_context"]["retrieved_references"][0]["source_id"], "source-before-0001",
+        "unexpected scheduler memory injection: {injection}"
+    );
+    assert_eq!(
+        injection["memory_context"]["retrieved_references"][0]["source_sha256"],
+        "a".repeat(64)
+    );
+    assert_eq!(
+        injection["total_estimated_tokens"],
+        injection["memory_context"]["estimated_tokens"]
     );
     let rendered = injection.to_string();
     assert!(!rendered.contains("raw objective"));

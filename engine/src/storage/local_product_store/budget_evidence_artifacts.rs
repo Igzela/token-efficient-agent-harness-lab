@@ -1,4 +1,4 @@
-use rusqlite::{params, Row};
+use rusqlite::{params, OptionalExtension, Row};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -10,6 +10,19 @@ use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProduc
 const BUDGET_EVIDENCE_ARTIFACT_SCHEMA_VERSION: &str = "budget_evidence_artifact.v1";
 
 impl LocalProductStore {
+    pub(crate) fn recent_budget_anomaly_artifacts(&self, limit: i64) -> Result<Vec<Value>, String> {
+        let limit = limit.clamp(1, 100);
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut statement = conn.prepare("SELECT artifact_json FROM budget_evidence_artifacts WHERE artifact_kind='anomaly' ORDER BY artifact_sequence DESC LIMIT ?1").map_err(|error|error.to_string())?;
+                let rows=statement.query_map(params![limit],budget_evidence_artifact_row).map_err(|error|error.to_string())?;
+                collect_values(rows)
+            }),
+            #[cfg(feature="pg")]
+            DatabaseConnection::Pg(_)=>self.with_pg_conn(|client|client.query("SELECT artifact_json FROM budget_evidence_artifacts WHERE artifact_kind='anomaly' ORDER BY artifact_sequence DESC LIMIT $1",&[&limit]).map_err(|error|error.to_string())?.iter().map(|row|parse_stored_artifact(&row.get::<_,String>(0))).collect()),
+        }
+    }
+
     pub fn record_budget_forecast_evidence(
         &self,
         evidence: &BudgetForecastEvidence,
@@ -136,9 +149,6 @@ impl LocalProductStore {
         actor: &str,
     ) -> Result<Value, String> {
         let artifact_id = format!("budget-{kind}-{evidence_sha256}");
-        if let Some(existing) = self.get_budget_evidence_artifact(&artifact_id)? {
-            return Ok(existing);
-        }
         let evidence = serde_json::to_value(evidence).map_err(|error| error.to_string())?;
         let created_at = self.now();
         let stored = json!({
@@ -160,30 +170,54 @@ impl LocalProductStore {
         let artifact_json = stored.to_string();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let sequence = next_sequence(conn)?;
-                conn.execute(
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
+                let existing: Option<String> = tx
+                    .query_row(
+                        "SELECT artifact_json FROM budget_evidence_artifacts WHERE artifact_id=?1",
+                        params![artifact_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                if let Some(existing) = existing {
+                    return parse_stored_artifact(&existing);
+                }
+                let sequence = next_sequence(&tx)?;
+                tx.execute(
                     "INSERT INTO budget_evidence_artifacts
                      (artifact_sequence, artifact_id, artifact_kind, evidence_id, evidence_sha256, created_at, artifact_json)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     params![sequence, artifact_id, kind, evidence_id, evidence_sha256, created_at, artifact_json],
                 ).map_err(|error| error.to_string())?;
-                append_audit_locked(conn, &created_at, actor, "budget_evidence_artifact.record", &format!("budget-evidence/{artifact_id}"), &audit_details(&stored))?;
-                Ok(())
-            })?,
+                append_audit_locked(&tx, &created_at, actor, "budget_evidence_artifact.record", &format!("budget-evidence/{artifact_id}"), &audit_details(&stored))?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(stored.clone())
+            }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                let sequence = pg_next_sequence(client)?;
-                client.execute(
-                    "INSERT INTO budget_evidence_artifacts
-                     (artifact_sequence, artifact_id, artifact_kind, evidence_id, evidence_sha256, created_at, artifact_json)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                    &[&sequence, &artifact_id, &kind, &evidence_id, &evidence_sha256, &created_at, &artifact_json],
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let existing = tx.query_opt(
+                    "SELECT artifact_json FROM budget_evidence_artifacts WHERE artifact_id=$1 FOR UPDATE",
+                    &[&artifact_id],
                 ).map_err(|error| error.to_string())?;
-                pg_append_audit(client, &created_at, actor, "budget_evidence_artifact.record", &format!("budget-evidence/{artifact_id}"), &audit_details(&stored).to_string())
-            })?,
+                if let Some(existing) = existing {
+                    return parse_stored_artifact(&existing.get::<_, String>(0));
+                }
+                tx.execute(
+                    "INSERT INTO budget_evidence_artifacts
+                     (artifact_id, artifact_kind, evidence_id, evidence_sha256, created_at, artifact_json)
+                     VALUES ($1, $2, $3, $4, $5, $6)",
+                    &[&artifact_id, &kind, &evidence_id, &evidence_sha256, &created_at, &artifact_json],
+                ).map_err(|error| error.to_string())?;
+                pg_append_audit(&mut tx, &created_at, actor, "budget_evidence_artifact.record", &format!("budget-evidence/{artifact_id}"), &audit_details(&stored).to_string())?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(stored.clone())
+            }),
         }
-        self.get_budget_evidence_artifact(&artifact_id)?
-            .ok_or_else(|| "budget evidence artifact not found after insert".to_string())
     }
 }
 
@@ -268,19 +302,8 @@ fn next_sequence(conn: &rusqlite::Connection) -> Result<i64, String> {
 }
 
 #[cfg(feature = "pg")]
-fn pg_next_sequence(client: &mut postgres::Client) -> Result<i64, String> {
-    client
-        .query_one(
-            "SELECT COALESCE(MAX(artifact_sequence), 0) + 1 FROM budget_evidence_artifacts",
-            &[],
-        )
-        .map(|row| row.get(0))
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(feature = "pg")]
 fn pg_append_audit(
-    client: &mut postgres::Client,
+    client: &mut impl postgres::GenericClient,
     timestamp: &str,
     actor: &str,
     action: &str,

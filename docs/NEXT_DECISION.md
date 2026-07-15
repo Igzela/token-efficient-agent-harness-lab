@@ -12,11 +12,16 @@ The explicitly authorized bounded three-PR production-integration program is the
 
 The GitHub/Vader path remains disabled and emergency-stopped until PR 3 repairs and proves it. Local Rust control-plane integration does not authorize that orchestrator, auto-merge, protected-branch writes, or a public release.
 
+## Active Routing
+
+`PR2-MEMORY-BUDGET-POLICY-LOOP-1` is the sole active branch/PR owner. Its first component packet, `PR2-DURABLE-MEMORY-RETRIEVAL-1`, is active on the same branch; the dependent PE-2 and PE-4 packet states remain blocked until their predecessor state can be closed by the merged aggregate PR. Do not start PR 3 or either repository-agent smoke packet.
+
 Do not create another roadmap, phase, status, policy, or closeout document. This file is the normative forward plan. Current facts belong in `docs/CURRENT_STATUS.md`; ownership belongs in `docs/MODULE_MAP.md`.
 
 ## Verified Baseline
 
-- the three-PR program starts from refreshed `main` `83480b23421892e3a5dd99a48e07b68776bcf802`; local and `origin/main` were identical when `AR-RUNTIME-INTEGRATION-1` branched;
+- PR #220 (`PR1-AR-RUNTIME-INTEGRATION-1`) merged from exact head `6ec486df3bb6fb57e93e0f2b1a5fee662abf2bb2` as `936b05c226ab64576c0e2d4146d3f8ca3d0c3e47`; its exact-head and post-merge canonical CI each completed all seven required jobs successfully;
+- `PR2-MEMORY-BUDGET-POLICY-LOOP-1` branched from `936b05c226ab64576c0e2d4146d3f8ca3d0c3e47`; refreshed `origin/main` still equals that exact base while this packet is in progress;
 
 - PR #214 merged the PE-5/PE-6 post-seal repair at `0d8127e3d779e54c58caf5d93e7589dd1a6df616`;
 - PR #207 merged the event-driven repository-maintenance orchestrator at `23187bb83dc32165d8982c79be1a1f7f818380a0`;
@@ -74,7 +79,7 @@ A stale document, a failed first implementation, or a bounded missing design det
 
 ## Packet PR1-AR-RUNTIME-INTEGRATION-1 — Production Agent Runtime and tool policy
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Observable result:** typed `agent_step` plans execute one leased action through the existing Rust scheduler/executor pool; provider decisions are strict/default-off; action application is atomic across retry/restart/concurrency; real Command/CLI callers enforce configured allowlists, bounded hooks, and exact-action workflow approval.
 
@@ -84,13 +89,13 @@ A stale document, a failed first implementation, or a bounded missing design det
 
 ## Packet PR2-MEMORY-BUDGET-POLICY-LOOP-1 — Durable memory and closed-loop evidence
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** `PR1-AR-RUNTIME-INTEGRATION-1` merged with exact-head CI.
 
 **Component acceptance:** `DURABLE-MEMORY-RETRIEVAL-1`, `PE2-RUNTIME-PRODUCER-1`, and `PE4-PROMOTION-OPERATOR-1` form one production chain: scoped versioned memory and bounded semantic retrieval feed runtime context; normalized deduplicated usage automatically produces immutable forecast/anomaly evidence and operator decisions; eligible real traces automatically produce offline replay evidence; explicit authorized promotion and exact-snapshot rollback remain separate typed owners.
 
-**Authority and rollback:** the Rust scheduler and `LocalProductStore` remain sole runtime/state owners. Provider embedding is default-off, cost bounded, and absent from CI. Replay is shadow-only until explicit evidence-chain promotion. Rollback disables producers/retrieval gates and reverts code while additive evidence, memory tombstones, and policy snapshots remain auditable.
+**Authority and rollback:** the Rust scheduler and `LocalProductStore` remain sole runtime/state owners. Harness-derived local embeddings are default-off, explicitly gated, and absent from CI; provider embedding remains explicit `unavailable` until the managed external-provider adapter can reuse provider credentials and cost gates. Replay is shadow-only until explicit evidence-chain promotion. Rollback disables producers/retrieval gates and reverts code while additive evidence, memory tombstones, and policy snapshots remain auditable.
 
 ## Packet PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1 — Managed adapter, benchmark, and acceptance
 
@@ -104,7 +109,7 @@ A stale document, a failed first implementation, or a bounded missing design det
 
 ## Packet PR2-DURABLE-MEMORY-RETRIEVAL-1 — Cross-run durable memory
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** `PR1-AR-RUNTIME-INTEGRATION-1` merged with exact-head CI.
 

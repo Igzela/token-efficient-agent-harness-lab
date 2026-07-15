@@ -3,11 +3,20 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use super::{schema, DatabaseConnection, LocalProductStore};
 
 pub(super) const V22_SCHEMA_VERSION: i64 = 22;
+pub(super) const V23_SCHEMA_VERSION: i64 = 23;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
     "tool_allowlist_profiles",
     "tool_execution_authorizations",
+];
+pub(super) const V23_TABLES: [&str; 6] = [
+    "durable_memory_versions",
+    "memory_retrieval_events",
+    "production_jobs",
+    "normalized_usage_observations",
+    "replay_producer_bindings",
+    "operator_acknowledgements",
 ];
 
 #[allow(dead_code)]
@@ -47,6 +56,7 @@ impl LocalProductStore {
                     20 => Self::migrate_v20_add_offline_replay_artifacts(conn)?,
                     21 => Self::migrate_v21_add_dispatch_trace_provenance(conn)?,
                     22 => Self::migrate_v22_add_agent_action_receipts_and_tool_profiles(conn)?,
+                    23 => Self::migrate_v23_add_durable_memory_and_production_jobs(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -500,6 +510,64 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
         }
     }
 
+    /// Roll back the additive v23 schema to v22 only when no v23 authority rows exist.
+    ///
+    /// Runtime writers must be stopped before this operation. The version marker, empty
+    /// table removal, and rollback audit are committed atomically.
+    pub fn rollback_v23_to_v22(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v23 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v23 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v23_to_v22(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v23_to_v22_internal(actor, &now),
+        }
+    }
+
+    fn rollback_sqlite_v23_to_v22(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            require_v23_rollback_source(current_version)?;
+            let occupied = occupied_sqlite_tables(&tx, &V23_TABLES)?;
+            require_empty_v23_tables(&occupied)?;
+
+            tx.execute_batch(
+                "DROP TABLE operator_acknowledgements;
+                 DROP TABLE replay_producer_bindings;
+                 DROP TABLE normalized_usage_observations;
+                 DROP TABLE production_jobs;
+                 DROP TABLE memory_retrieval_events;
+                 DROP TABLE durable_memory_versions;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v23_to_v22', 'local_product_store', ?3)",
+                rusqlite::params![now, actor, v23_rollback_audit_details()],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V22_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
+
     fn rollback_sqlite_v22_to_v21(&self, actor: &str, now: &str) -> Result<(), String> {
         self.with_conn(|conn| {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
@@ -778,6 +846,50 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         )
         .map_err(|error| error.to_string())
     }
+
+    fn migrate_v23_add_durable_memory_and_production_jobs(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(schema::V23_DDL)
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn occupied_sqlite_tables(tx: &Transaction<'_>, tables: &[&str]) -> Result<Vec<String>, String> {
+    tables
+        .iter()
+        .filter_map(|table| {
+            let sql = format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)");
+            match tx.query_row(&sql, [], |row| row.get::<_, bool>(0)) {
+                Ok(true) => Some(Ok((*table).to_string())),
+                Ok(false) => None,
+                Err(error) => Some(Err(error.to_string())),
+            }
+        })
+        .collect()
+}
+
+pub(super) fn require_v23_rollback_source(current_version: i64) -> Result<(), String> {
+    if current_version == V23_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(format!(
+            "v23 rollback requires current schema version 23; found {current_version}"
+        ))
+    }
+}
+
+pub(super) fn require_empty_v23_tables(occupied: &[String]) -> Result<(), String> {
+    if occupied.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "v23 rollback blocked: authoritative v23 data exists in {}",
+            occupied.join(", ")
+        ))
+    }
+}
+
+pub(super) fn v23_rollback_audit_details() -> &'static str {
+    r#"{"from_version":23,"to_version":22,"dropped_empty_tables":["durable_memory_versions","memory_retrieval_events","production_jobs","normalized_usage_observations","replay_producer_bindings","operator_acknowledgements"]}"#
 }
 
 pub(super) fn require_v22_rollback_source(current_version: i64) -> Result<(), String> {
@@ -836,11 +948,17 @@ mod tests {
             .unwrap()
     }
 
+    fn store_at_v22(path: impl AsRef<std::path::Path>) -> LocalProductStore {
+        let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v23_to_v22("migration-test", true).unwrap();
+        store
+    }
+
     #[test]
     fn sqlite_v22_rollback_is_atomic_and_can_be_migrated_forward_again() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("rollback.db");
-        let store = LocalProductStore::new(&path).unwrap();
+        let store = store_at_v22(&path);
         assert_eq!(store.schema_version().unwrap(), V22_SCHEMA_VERSION);
 
         store.rollback_v22_to_v21("migration-test", true).unwrap();
@@ -882,7 +1000,7 @@ mod tests {
 
         drop(store);
         let upgraded = LocalProductStore::new(&path).unwrap();
-        assert_eq!(upgraded.schema_version().unwrap(), V22_SCHEMA_VERSION);
+        assert_eq!(upgraded.schema_version().unwrap(), V23_SCHEMA_VERSION);
         for table in V22_TABLES {
             assert!(table_exists(&upgraded, table), "{table} should be restored");
         }
@@ -891,7 +1009,7 @@ mod tests {
     #[test]
     fn sqlite_v22_rollback_refuses_authoritative_rows_without_moving_marker() {
         let dir = tempdir().unwrap();
-        let store = LocalProductStore::new(dir.path().join("occupied.db")).unwrap();
+        let store = store_at_v22(dir.path().join("occupied.db"));
         store
             .configure_tool_allowlist("migration-test", "configured-empty", &[], None)
             .unwrap();
@@ -940,7 +1058,7 @@ mod tests {
     #[test]
     fn sqlite_v22_rollback_requires_explicit_confirmation() {
         let dir = tempdir().unwrap();
-        let store = LocalProductStore::new(dir.path().join("confirmation.db")).unwrap();
+        let store = store_at_v22(dir.path().join("confirmation.db"));
         let error = store
             .rollback_v22_to_v21("migration-test", false)
             .unwrap_err();
@@ -951,7 +1069,7 @@ mod tests {
     #[test]
     fn sqlite_v22_rollback_audit_failure_rolls_back_tables_and_version_marker() {
         let dir = tempdir().unwrap();
-        let store = LocalProductStore::new(dir.path().join("audit-failure.db")).unwrap();
+        let store = store_at_v22(dir.path().join("audit-failure.db"));
         store
             .with_conn(|conn| {
                 conn.execute_batch(
@@ -998,7 +1116,7 @@ mod tests {
     fn sqlite_v22_rollback_fails_closed_while_another_writer_holds_the_database() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("concurrent-writer.db");
-        let store = LocalProductStore::new(&path).unwrap();
+        let store = store_at_v22(&path);
         let blocker = Connection::open(&path).unwrap();
         blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
 
@@ -1018,5 +1136,43 @@ mod tests {
         }
 
         blocker.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn sqlite_v23_rollback_refuses_authority_and_can_upgrade_empty_schema() {
+        let dir = tempdir().unwrap();
+        let occupied_path = dir.path().join("v23-occupied.db");
+        let occupied = LocalProductStore::new(&occupied_path).unwrap();
+        occupied
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO production_jobs
+                     (job_key,job_kind,scope_sha256,input_sha256,state,created_at,updated_at)
+                     VALUES ('job','budget',?1,?1,'failed','2026-07-14T00:00:00Z','2026-07-14T00:00:00Z')",
+                    ["a".repeat(64)],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let error = occupied
+            .rollback_v23_to_v22("migration-test", true)
+            .unwrap_err();
+        assert!(error.contains("authoritative v23 data exists in production_jobs"));
+        assert_eq!(occupied.schema_version().unwrap(), V23_SCHEMA_VERSION);
+
+        let empty_path = dir.path().join("v23-empty.db");
+        let empty = LocalProductStore::new(&empty_path).unwrap();
+        empty.rollback_v23_to_v22("migration-test", true).unwrap();
+        assert_eq!(empty.schema_version().unwrap(), V22_SCHEMA_VERSION);
+        for table in V23_TABLES {
+            assert!(!table_exists(&empty, table));
+        }
+        drop(empty);
+        let upgraded = LocalProductStore::new(&empty_path).unwrap();
+        assert_eq!(upgraded.schema_version().unwrap(), V23_SCHEMA_VERSION);
+        for table in V23_TABLES {
+            assert!(table_exists(&upgraded, table));
+        }
     }
 }

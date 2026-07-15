@@ -3,6 +3,7 @@ import {
   ApiError,
   cancelWorkflowRun,
   fetchOperatorEvidence,
+  fetchUsageObservations,
   fetchWorkflowRunApprovals,
   fetchWorkflowRunDetail,
   fetchWorkflowRunEvents,
@@ -16,6 +17,7 @@ import type {
   WorkflowRunEvent,
   WorkflowRunNode,
   ScorecardArtifact,
+  UsageObservation,
 } from "@/lib/types";
 import { ConfirmDialog, type ConfirmAction } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
@@ -216,6 +218,44 @@ function ApprovalList({ approvals }: { approvals: WorkflowRunApproval[] }) {
   );
 }
 
+function UsageEvidence({ observations, error }: { observations: UsageObservation[]; error: string | null }) {
+  if (error) {
+    return <StateBanner title="Usage provenance unavailable" tone="risk"><p>{error}</p></StateBanner>;
+  }
+  if (observations.length === 0) {
+    return (
+      <EmptyState
+        title="No normalized usage observations"
+        description="Usage appears after a run emits reliable dispatch, provider-audit, workflow, or native-scorecard evidence. Missing metrics remain unavailable and are never displayed as zero."
+        tone="info"
+      />
+    );
+  }
+  return (
+    <div className="subcard stack">
+      <div className="heading-row">
+        <h4>Normalized usage provenance ({observations.length})</h4>
+        <span className="pill info">metadata only</span>
+      </div>
+      {observations.map((observation) => (
+        <div className="subcard stack" key={observation.observation_id}>
+          <div className="heading-row">
+            <span className={`pill ${observation.completeness === "complete" ? "ok" : "warn"}`}>{observation.completeness}</span>
+            <span>{observation.source_kind}</span>
+            <span className="mono" style={{ fontSize: "0.75rem" }}>{observation.source_sha256.slice(0, 12)}</span>
+          </div>
+          <div className="kv-row"><span className="muted">Provider / model</span><span>{observation.provider_id ?? "unavailable"} / {observation.model_id ?? "unavailable"}</span></div>
+          <div className="kv-row"><span className="muted">Pricing identity / effective date</span><span>{observation.pricing_identity ?? "unavailable"} / {observation.pricing_effective_date ?? "unavailable"}</span></div>
+          <div className="kv-row"><span className="muted">Input / output / cached / reasoning</span><span>{observation.input_tokens ?? "—"} / {observation.output_tokens ?? "—"} / {observation.cached_tokens ?? "—"} / {observation.reasoning_tokens ?? "—"}</span></div>
+          <div className="kv-row"><span className="muted">Cost / latency / retries</span><span>{observation.cost == null ? "—" : `${observation.currency ?? "currency unavailable"} ${observation.cost}`} / {observation.latency_ms == null ? "—" : `${observation.latency_ms}ms`} / {observation.retry_count ?? "—"}</span></div>
+          <div className="kv-row"><span className="muted">Confidence</span><span>{observation.confidence.toFixed(2)}</span></div>
+          <div className="kv-row"><span className="muted">Metric provenance</span><span className="mono" style={{ fontSize: "0.75rem" }}>{Object.entries(observation.metric_provenance).map(([metric, source]) => `${metric}:${source}`).join(", ")}</span></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RunDetail({
   run,
   onBack,
@@ -229,6 +269,8 @@ function RunDetail({
   const [approvals, setApprovals] = useState<WorkflowRunApproval[]>([]);
   const [scorecards, setScorecards] = useState<ScorecardArtifact[]>([]);
   const [scorecardError, setScorecardError] = useState<string | null>(null);
+  const [usageObservations, setUsageObservations] = useState<UsageObservation[]>([]);
+  const [usageError, setUsageError] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<WorkflowRunNode | null>(null);
   const [loadingExtra, setLoadingExtra] = useState(true);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
@@ -243,7 +285,8 @@ function RunDetail({
       fetchWorkflowRunEvents(run.run_id, { limit: 100 }),
       fetchWorkflowRunApprovals(run.run_id, { limit: 100 }),
       fetchOperatorEvidence(run.run_id),
-    ]).then(([evResult, apResult, evidenceResult]) => {
+      fetchUsageObservations(run.run_id),
+    ]).then(([evResult, apResult, evidenceResult, usageResult]) => {
       if (evResult.status === "fulfilled") setEvents(evResult.value.events);
       if (apResult.status === "fulfilled") setApprovals(apResult.value.approvals);
       if (evidenceResult.status === "fulfilled") {
@@ -252,6 +295,13 @@ function RunDetail({
       } else {
         setScorecards([]);
         setScorecardError(evidenceResult.reason instanceof Error ? evidenceResult.reason.message : "Failed to load scorecard evidence");
+      }
+      if (usageResult.status === "fulfilled") {
+        setUsageObservations(usageResult.value.observations);
+        setUsageError(null);
+      } else {
+        setUsageObservations([]);
+        setUsageError(usageResult.reason instanceof Error ? usageResult.reason.message : "Failed to load usage provenance");
       }
     }).finally(() => setLoadingExtra(false));
   }, [run.run_id]);
@@ -333,6 +383,8 @@ function RunDetail({
       <div className="subcard stack">
         <ScorecardEvidence artifacts={scorecards} loading={loadingExtra} error={scorecardError} />
       </div>
+
+      {!loadingExtra && <UsageEvidence observations={usageObservations} error={usageError} />}
 
       <div className="subcard stack">
         <h4>Details</h4>

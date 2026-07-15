@@ -1,4 +1,4 @@
-use rusqlite::{params, Row};
+use rusqlite::{params, OptionalExtension, Row};
 use serde_json::{json, Value};
 
 use crate::feedback::{
@@ -43,9 +43,11 @@ impl LocalProductStore {
         let created_at = required_str(&stored, "created_at")?.to_string();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let sequence = next_sequence(conn)?;
-                let changed = conn
-                    .execute(
+                let tx=rusqlite::Transaction::new_unchecked(conn,rusqlite::TransactionBehavior::Immediate).map_err(|error|error.to_string())?;
+                let existing:Option<String>=tx.query_row("SELECT artifact_json FROM offline_replay_artifacts WHERE artifact_id=?1",params![artifact_id],|row|row.get(0)).optional().map_err(|error|error.to_string())?;
+                if let Some(existing)=existing{return parse_stored_artifact(&existing)}
+                let sequence = next_sequence(&tx)?;
+                tx.execute(
                         "INSERT INTO offline_replay_artifacts
                          (artifact_sequence, artifact_id, report_schema_version, status,
                           eligibility_content_sha256, content_sha256, created_at, artifact_json)
@@ -63,28 +65,28 @@ impl LocalProductStore {
                         ],
                     )
                     .map_err(|error| error.to_string())?;
-                if changed == 1 {
-                    append_audit_locked(
-                        conn,
+                append_audit_locked(
+                        &tx,
                         &created_at,
                         actor,
                         "offline_replay_artifact.record",
                         &format!("offline-replay/{artifact_id}"),
                         &audit_details(&stored),
                     )?;
-                }
-                Ok(())
-            })?,
+                tx.commit().map_err(|error|error.to_string())?;
+                Ok(stored.clone())
+            }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                let row = client
-                    .query_opt(
+                let mut tx=client.transaction().map_err(|error|error.to_string())?;
+                let existing=tx.query_opt("SELECT artifact_json FROM offline_replay_artifacts WHERE artifact_id=$1 FOR UPDATE",&[&artifact_id]).map_err(|error|error.to_string())?;
+                if let Some(existing)=existing{return parse_stored_artifact(&existing.get::<_,String>(0))}
+                tx.execute(
                         "INSERT INTO offline_replay_artifacts
                          (artifact_id, report_schema_version, status,
                           eligibility_content_sha256, content_sha256, created_at, artifact_json)
                          VALUES ($1, $2, $3, $4, $5, $6, $7)
-                         ON CONFLICT (artifact_id) DO NOTHING
-                         RETURNING artifact_sequence",
+                         ON CONFLICT (artifact_id) DO NOTHING",
                         &[
                             &artifact_id,
                             &report_schema_version,
@@ -96,21 +98,18 @@ impl LocalProductStore {
                         ],
                     )
                     .map_err(|error| error.to_string())?;
-                if row.is_some() {
-                    pg_append_audit(
-                        client,
+                pg_append_audit(
+                        &mut tx,
                         &created_at,
                         actor,
                         "offline_replay_artifact.record",
                         &format!("offline-replay/{artifact_id}"),
                         &audit_details(&stored).to_string(),
                     )?;
-                }
-                Ok(())
-            })?,
+                tx.commit().map_err(|error|error.to_string())?;
+                Ok(stored.clone())
+            }),
         }
-        self.get_offline_replay_artifact(&artifact_id)?
-            .ok_or_else(|| "offline replay artifact not found after insert".to_string())
     }
 
     pub fn offline_replay_artifacts(
@@ -461,7 +460,7 @@ fn next_sequence(conn: &rusqlite::Connection) -> Result<i64, String> {
 
 #[cfg(feature = "pg")]
 fn pg_append_audit(
-    client: &mut postgres::Client,
+    client: &mut impl postgres::GenericClient,
     timestamp: &str,
     actor: &str,
     action: &str,

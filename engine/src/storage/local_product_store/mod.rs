@@ -7,11 +7,13 @@ mod audit;
 mod auto_adjustments;
 mod boundaries;
 mod budget_evidence_artifacts;
+mod budget_intelligence;
 mod budget_pause_decisions;
 mod config;
 mod costs;
 mod decisions;
 mod dispatch;
+mod durable_memory;
 mod executor_pool_store;
 mod export_import;
 pub mod feedback;
@@ -21,11 +23,13 @@ mod keys;
 mod migrations;
 mod native_scorecard_artifacts;
 mod offline_replay_artifacts;
+mod operator_acknowledgements;
 mod operator_decision_queue;
 #[cfg(feature = "pg")]
 pub mod pg_backend;
 mod plans;
 mod policy_proposals;
+mod policy_replay_producer;
 mod provider_audit;
 mod regression_report_artifacts;
 mod schema;
@@ -43,6 +47,7 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 #[cfg(feature = "pg")]
 use postgres::NoTls;
@@ -57,9 +62,21 @@ pub use adaptive_observation::{
 };
 pub(crate) use agent_action_receipts::{AgentActionMutation, AgentMutationOp};
 pub use boundaries::local_boundaries;
+pub use budget_intelligence::{
+    NormalizedUsageObservation, BUDGET_PRODUCER_SCHEMA_VERSION, NORMALIZED_USAGE_SCHEMA_VERSION,
+};
 pub use budget_pause_decisions::{BudgetAutoPausePolicy, BUDGET_AUTO_PAUSE_POLICY_SCHEMA_VERSION};
+pub use durable_memory::{
+    DurableMemoryCreate, DurableMemoryRevision, MemoryReference, MemoryRetrievalRequest,
+    MemoryRetrievalResult, MemoryScope, DURABLE_MEMORY_SCHEMA_VERSION,
+    MEMORY_RETRIEVAL_SCHEMA_VERSION,
+};
 pub use export_import::{ImportCounts, ImportResult, LOCAL_IMPORT_SCHEMA_VERSION};
 pub use integrity::{IntegrityReport, TableIntegrity};
+pub use policy_replay_producer::{
+    EvidenceChainPromotionRequest, ReplayProductionProfile, ReplayProductionRequest,
+    REPLAY_PRODUCER_SCHEMA_VERSION,
+};
 pub(crate) use tool_execution_policy::ToolExecutionGate;
 pub(crate) use workflow_runs::is_execution_owner_conflict;
 
@@ -185,6 +202,57 @@ impl LocalProductStore {
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => Ok(()),
+        }
+    }
+
+    /// Restore a verified SQLite backup into the connection owned by this
+    /// store. Replacing the database path while the connection is open would
+    /// leave the process attached to the old inode, so live restore must use
+    /// SQLite's online backup API under the store mutex.
+    pub(crate) fn restore_verified_sqlite_backup(&self, backup_path: &Path) -> Result<(), String> {
+        if self.is_memory() {
+            return Err("file-backed local store is required for restore".to_string());
+        }
+        match &self.db {
+            DatabaseConnection::Sqlite(connection) => {
+                let source = Connection::open_with_flags(
+                    backup_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .map_err(|error| format!("failed to open verified backup: {error}"))?;
+                let source_integrity: String = source
+                    .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+                    .map_err(|error| format!("failed to check verified backup: {error}"))?;
+                if source_integrity != "ok" {
+                    return Err(format!(
+                        "verified backup integrity changed before restore: {source_integrity}"
+                    ));
+                }
+
+                let mut destination = connection.lock().map_err(|error| error.to_string())?;
+                let backup = rusqlite::backup::Backup::new(&source, &mut destination)
+                    .map_err(|error| format!("failed to initialize live restore: {error}"))?;
+                backup
+                    .run_to_completion(64, Duration::from_millis(5), None)
+                    .map_err(|error| format!("live restore failed: {error}"))?;
+                drop(backup);
+                destination
+                    .execute_batch("PRAGMA foreign_keys=ON; PRAGMA wal_checkpoint(TRUNCATE);")
+                    .map_err(|error| format!("failed to finalize live restore: {error}"))?;
+                let restored_integrity: String = destination
+                    .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+                    .map_err(|error| format!("failed to verify restored database: {error}"))?;
+                if restored_integrity != "ok" {
+                    return Err(format!(
+                        "restored database integrity check failed: {restored_integrity}"
+                    ));
+                }
+                Ok(())
+            }
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => Err(
+                "PostgreSQL restore requires the external PostgreSQL recovery owner".to_string(),
+            ),
         }
     }
 

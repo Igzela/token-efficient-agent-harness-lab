@@ -72,6 +72,15 @@ impl LocalProductStore {
             .map_err(|error| format!("invalid budget anomaly evidence: {error}"))?;
         finding.validate()?;
         validate_pause_eligibility(&finding, run_id, policy)?;
+        let now = self.now();
+        let generated = chrono::DateTime::parse_from_rfc3339(&finding.window.generated_at)
+            .map_err(|_| "budget anomaly generated_at is invalid".to_string())?;
+        let current = chrono::DateTime::parse_from_rfc3339(&now)
+            .map_err(|_| "store clock is not RFC3339".to_string())?;
+        let age_seconds = (current - generated).num_seconds();
+        if age_seconds < -1 || age_seconds.max(0) as u64 > policy.maximum_freshness_seconds {
+            return Err("budget anomaly is stale at mutation time".to_string());
+        }
         let evidence_sha256 = finding.evidence_sha256.clone();
         let decision_id = pause_decision_id(run_id, artifact_id, &evidence_sha256);
         let anomaly_kind =
@@ -82,7 +91,6 @@ impl LocalProductStore {
                 .to_string();
         let cause = format!("{anomaly_kind}:{}", finding.reason_codes.join(","));
         let policy_json = serde_json::to_string(policy).map_err(|error| error.to_string())?;
-        let now = self.now();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = conn.unchecked_transaction().map_err(|error| error.to_string())?;

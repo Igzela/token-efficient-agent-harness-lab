@@ -37,7 +37,7 @@ pub(crate) async fn api_apply_operator_decision_action(
     Path(decision_id): Path<String>,
     Json(request): Json<OperatorDecisionActionRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    if !request.confirm_action {
+    if !request.confirm_action && !matches!(request.action, OperatorDecisionAction::Inspect) {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
             "operator_decision_confirmation_required",
@@ -59,17 +59,6 @@ pub(crate) async fn api_apply_operator_decision_action(
         ));
     }
     let actor = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?.api_key_id;
-    if matches!(
-        request.action,
-        OperatorDecisionAction::Rollback
-            | OperatorDecisionAction::Inspect
-            | OperatorDecisionAction::Acknowledge
-    ) {
-        return Err(unsupported(
-            "no compatible existing action owner is available",
-        ));
-    }
-
     let store = require_store(&state)?;
     let current_time = store.operator_decision_now();
     validate_mutation_time(
@@ -300,12 +289,40 @@ pub(crate) async fn api_apply_operator_decision_action(
                     )
                 })?
         }
-        OperatorDecisionAction::Rollback
-        | OperatorDecisionAction::Inspect
-        | OperatorDecisionAction::Acknowledge => {
-            return Err(unsupported(
-                "no compatible existing action owner is available",
-            ))
+        OperatorDecisionAction::Rollback => {
+            authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+            require_source_kind(
+                &current_source,
+                "adaptive_policy_snapshot",
+                "adaptive policy snapshot source is required",
+            )?;
+            store
+                .rollback_adaptive_fusion_policy(&current_source.evidence_id, true, &actor)
+                .map_err(internal)?
+        }
+        OperatorDecisionAction::Inspect => inspect_source(&store, &current_source)?,
+        OperatorDecisionAction::Acknowledge => {
+            authorize(
+                &state,
+                &headers,
+                "dispatch:execute",
+                uri.path(),
+                &request_id.0,
+            )?;
+            let source_sha256 = current_source
+                .content_sha256
+                .as_deref()
+                .ok_or_else(|| source_changed("acknowledgement source hash is unavailable"))?;
+            store
+                .acknowledge_operator_source(
+                    &decision_id,
+                    &current_source.evidence_type,
+                    &current_source.evidence_id,
+                    source_sha256,
+                    request.reason.as_deref(),
+                    &actor,
+                )
+                .map_err(internal)?
         }
     };
 
@@ -321,6 +338,29 @@ pub(crate) async fn api_apply_operator_decision_action(
             "owner_result": result,
         })),
     ))
+}
+
+fn inspect_source(
+    store: &crate::storage::local_product_store::LocalProductStore,
+    source: &OperatorDecisionEvidenceReference,
+) -> Result<Value, ApiError> {
+    let value = match source.evidence_type.as_str() {
+        "budget_anomaly_finding" => store
+            .get_budget_evidence_artifact(&source.evidence_id)
+            .map_err(internal)?,
+        "token_efficiency_regression_artifact" => store
+            .get_regression_report_artifact(&source.evidence_id)
+            .map_err(internal)?,
+        "policy_proposal" => store
+            .get_policy_proposal(&source.evidence_id)
+            .map_err(internal)?,
+        "scheduler_heartbeat" => store
+            .read_heartbeat()
+            .map_err(internal)?
+            .map(|heartbeat| serde_json::to_value(heartbeat).unwrap_or(Value::Null)),
+        _ => return Err(unsupported("source type has no typed inspect owner")),
+    };
+    value.ok_or_else(|| source_changed("inspect source is no longer available"))
 }
 
 fn validate_mutation_time(

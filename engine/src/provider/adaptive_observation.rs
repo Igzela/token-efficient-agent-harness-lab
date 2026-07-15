@@ -9,9 +9,9 @@ use super::adaptive_execution::{
 };
 use super::cost_gate::CostGateConfig;
 use crate::feedback::{
-    AdaptiveAutoPromotionGate, AdaptiveAutoPromotionPolicy, AdaptiveAutoPromotionRequest,
-    AdaptiveExperimentGate, AdaptiveExperimentPolicy, AdaptiveExplorationGate,
-    ContextualBanditObservation, ContextualPolicyRequest, ObjectiveProfile, TaskClassEvaluation,
+    AdaptiveAutoPromotionGate, AdaptiveExperimentGate, AdaptiveExperimentPolicy,
+    AdaptiveExplorationGate, ContextualBanditObservation, ContextualPolicyRequest,
+    ObjectiveProfile, TaskClassEvaluation,
 };
 use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
 use crate::storage::local_product_store::{
@@ -164,7 +164,7 @@ pub fn persist_adaptive_observation_with_gate(
     };
     match store.record_adaptive_observation(&input, actor) {
         Ok(observation) => {
-            maybe_auto_promote_from_observation_with_gate(store, &observation, actor, gate)
+            record_evidence_chain_candidate_with_gate(store, &observation, actor, gate)
         }
         Err(_) => {
             let _ = store.append_audit(
@@ -177,16 +177,16 @@ pub fn persist_adaptive_observation_with_gate(
     }
 }
 
-pub fn maybe_auto_promote_from_observation(
+pub fn record_evidence_chain_candidate(
     store: &LocalProductStore,
     observation: &AdaptiveObservationSummary,
     actor: &str,
 ) {
     let gate = AdaptiveAutoPromotionGate::from_env();
-    maybe_auto_promote_from_observation_with_gate(store, observation, actor, &gate);
+    record_evidence_chain_candidate_with_gate(store, observation, actor, &gate);
 }
 
-pub fn maybe_auto_promote_from_observation_with_gate(
+pub fn record_evidence_chain_candidate_with_gate(
     store: &LocalProductStore,
     observation: &AdaptiveObservationSummary,
     actor: &str,
@@ -206,19 +206,23 @@ pub fn maybe_auto_promote_from_observation_with_gate(
     if active.candidate_id == observation.candidate_id {
         return;
     }
-    let request = AdaptiveAutoPromotionRequest::from_env(
-        &observation.task_class,
-        observation.objective,
-        &observation.risk_level,
-        &observation.candidate_id,
-        &active.candidate_id,
-        Some(active.policy_hash),
-    );
-    let _ = store.auto_promote_adaptive_fusion_policy(
-        &request,
-        &AdaptiveAutoPromotionPolicy::from_env(),
-        gate,
+    let _ = store.append_audit(
         actor,
+        "adaptive_policy.evidence_chain_candidate",
+        &format!("{}:{}", observation.task_class, observation.candidate_id),
+        &serde_json::json!({
+            "run_id": observation.run_id,
+            "task_class": observation.task_class,
+            "objective": observation.objective,
+            "risk_level": observation.risk_level,
+            "candidate_id": observation.candidate_id,
+            "candidate_hash": observation.candidate_hash,
+            "active_candidate_id": active.candidate_id,
+            "active_policy_hash": active.policy_hash,
+            "required_next_owner": "offline_replay_evidence_chain_operator",
+            "mutation_authority": "none",
+            "provider_calls": "disabled",
+        }),
     );
 }
 

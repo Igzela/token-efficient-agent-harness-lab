@@ -9,6 +9,7 @@ pub(crate) mod dispatch;
 pub(crate) mod executor_pool;
 pub(crate) mod health;
 pub(crate) mod keys;
+pub(crate) mod memory;
 pub(crate) mod operations;
 pub(crate) mod operator_decision_actions;
 pub(crate) mod operator_decisions;

@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::Value;
+use serde_json::{json, Value};
+
+use crate::feedback::policy_snapshot::stable_hash;
 
 use crate::operator_decision::{
     derive_operator_decision_item, OperatorDecisionAction, OperatorDecisionEvidenceReference,
@@ -55,6 +57,50 @@ impl LocalProductStore {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let mut acknowledgement_applied = false;
+        for item in &items {
+            if item.recommended_action != Some(OperatorDecisionAction::Acknowledge) {
+                continue;
+            }
+            let Some(reference) = &item.selected_source else {
+                continue;
+            };
+            let Some(source_sha256) = reference.content_sha256.as_deref() else {
+                continue;
+            };
+            if !self.is_operator_source_acknowledged(
+                &reference.evidence_type,
+                &reference.evidence_id,
+                source_sha256,
+            )? {
+                continue;
+            }
+            if let Some(source) = sources.iter_mut().find(|source| {
+                source.source_kind.as_identifier() == reference.evidence_type
+                    && source.source_id == reference.evidence_id
+                    && reference.content_sha256.as_deref() == Some(&source.evidence_sha256)
+            }) {
+                source.state = OperatorDecisionSourceState::Resolved;
+                source
+                    .reason_codes
+                    .push("operator_source_hash_acknowledged".to_string());
+                source.seal()?;
+                acknowledgement_applied = true;
+            }
+        }
+        if acknowledgement_applied {
+            items = conflict_keys
+                .iter()
+                .map(|key| {
+                    derive_operator_decision_item(
+                        key,
+                        &sources,
+                        generated_at,
+                        maximum_freshness_seconds,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+        }
         items.sort_by(|left, right| {
             right
                 .severity
@@ -332,7 +378,7 @@ fn collect_budget_sources(
     store: &LocalProductStore,
     sources: &mut Vec<OperatorDecisionSource>,
 ) -> Result<(), String> {
-    for artifact in store.budget_evidence_artifacts(Some("anomaly"), SOURCE_READ_LIMIT, 0)? {
+    for artifact in store.recent_budget_anomaly_artifacts(SOURCE_READ_LIMIT)? {
         let Some(artifact_id) = string(&artifact, "artifact_id") else {
             continue;
         };
@@ -371,7 +417,7 @@ fn collect_budget_sources(
         } else if outcome == "supported" && detected {
             (
                 OperatorDecisionAction::Inspect,
-                OperatorDecisionSourceState::Informational,
+                OperatorDecisionSourceState::Actionable,
                 OperatorDecisionSeverity::Warning,
                 "budget_noncritical_anomaly_observed",
             )
@@ -439,7 +485,7 @@ fn collect_benchmark_sources(
             .unwrap_or("incomparable");
         let (state, severity, reason) = match outcome {
             "regression" | "quality_failure" => (
-                OperatorDecisionSourceState::Informational,
+                OperatorDecisionSourceState::Actionable,
                 OperatorDecisionSeverity::Warning,
                 "benchmark_regression_observed",
             ),
@@ -510,7 +556,7 @@ fn collect_policy_sources(
         let state = if matches!(status, "rejected" | "rolled_back" | "deactivated") {
             OperatorDecisionSourceState::Resolved
         } else {
-            OperatorDecisionSourceState::Informational
+            OperatorDecisionSourceState::Actionable
         };
         let reason = if matches!(state, OperatorDecisionSourceState::Resolved) {
             "policy_proposal_resolved"
@@ -532,6 +578,42 @@ fn collect_policy_sources(
                 expires_at: None,
                 reason,
                 evidence_references: vec![original_reference("policy_proposal", id, None)],
+            },
+        )?;
+    }
+    let active_policy_hashes = store
+        .active_adaptive_fusion_policies()?
+        .into_iter()
+        .map(|policy| (policy.policy_key, policy.policy_hash))
+        .collect::<BTreeMap<_, _>>();
+    for snapshot in store.adaptive_fusion_policy_snapshots()? {
+        if snapshot.status != "active" || !snapshot.hash_is_valid() {
+            continue;
+        }
+        if active_policy_hashes.get(&snapshot.policy_key)
+            != Some(&snapshot.promoted_policy.policy_hash)
+        {
+            continue;
+        }
+        push_source(
+            sources,
+            SourceInput {
+                kind: OperatorDecisionSourceKind::Rollback,
+                id: snapshot.adjustment_id.clone(),
+                resource: snapshot.adjustment_id.clone(),
+                conflict_key: format!("adaptive-policy:{}:rollback", snapshot.policy_key),
+                action: OperatorDecisionAction::Rollback,
+                state: OperatorDecisionSourceState::Actionable,
+                severity: OperatorDecisionSeverity::Warning,
+                confidence: 1.0,
+                observed_at: &snapshot.updated_at,
+                expires_at: None,
+                reason: "active_adaptive_policy_snapshot_can_rollback",
+                evidence_references: vec![original_reference(
+                    "adaptive_policy_snapshot",
+                    &snapshot.adjustment_id,
+                    Some(snapshot.safety_hash.clone()),
+                )],
             },
         )?;
     }
@@ -559,8 +641,16 @@ fn collect_scheduler_sources(
             id: heartbeat_id.clone(),
             resource: "scheduler".to_string(),
             conflict_key: "scheduler:control".to_string(),
-            action: OperatorDecisionAction::Inspect,
-            state: OperatorDecisionSourceState::Informational,
+            action: if heartbeat.error_count > 0 {
+                OperatorDecisionAction::Acknowledge
+            } else {
+                OperatorDecisionAction::Inspect
+            },
+            state: if heartbeat.error_count > 0 {
+                OperatorDecisionSourceState::Actionable
+            } else {
+                OperatorDecisionSourceState::Resolved
+            },
             severity: if heartbeat.error_count > 0 {
                 OperatorDecisionSeverity::Warning
             } else {
@@ -577,7 +667,11 @@ fn collect_scheduler_sources(
             evidence_references: vec![original_reference(
                 "scheduler_heartbeat",
                 &heartbeat_id,
-                None,
+                Some(stable_hash(&json!({
+                    "updated_at": heartbeat.updated_at,
+                    "tick_count": heartbeat.tick_count,
+                    "error_count": heartbeat.error_count,
+                }))),
             )],
         },
     )?;
@@ -998,5 +1092,40 @@ mod tests {
             .unwrap();
 
         assert!(store.operator_decision_queue(NOW, 300, 100, 0).is_err());
+    }
+
+    #[test]
+    fn scheduler_acknowledgement_resolves_exact_hash_without_approving() {
+        let directory = tempdir().unwrap();
+        let store = test_store(directory.path().join("store.db"));
+        store.write_heartbeat(4, 1, 10.0, "{}").unwrap();
+        let queue = store.operator_decision_queue(NOW, 300, 100, 0).unwrap();
+        let item = queue
+            .items
+            .iter()
+            .find(|item| item.conflict_key == "scheduler:control")
+            .unwrap();
+        assert_eq!(
+            item.recommended_action,
+            Some(OperatorDecisionAction::Acknowledge)
+        );
+        let reference = item.selected_source.as_ref().unwrap();
+        let acknowledgement = store
+            .acknowledge_operator_source(
+                &item.decision_id,
+                &reference.evidence_type,
+                &reference.evidence_id,
+                reference.content_sha256.as_deref().unwrap(),
+                Some("observed, not approved"),
+                "operator",
+            )
+            .unwrap();
+        assert_eq!(acknowledgement["approval_granted"], false);
+
+        let after = store.operator_decision_queue(NOW, 300, 100, 0).unwrap();
+        assert!(after.items.iter().all(|candidate| {
+            candidate.conflict_key != "scheduler:control"
+                || candidate.recommended_action != Some(OperatorDecisionAction::Acknowledge)
+        }));
     }
 }

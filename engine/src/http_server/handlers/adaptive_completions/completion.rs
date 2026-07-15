@@ -20,7 +20,7 @@ use crate::provider::adaptive_execution::{
     AdaptiveExecutionLimits, AdaptiveExecutionPlan, AdaptiveExecutionRequest,
     ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY,
 };
-use crate::provider::adaptive_observation::maybe_auto_promote_from_observation_with_gate;
+use crate::provider::adaptive_observation::record_evidence_chain_candidate_with_gate;
 use crate::provider::{check_cost_gates, CostGateConfig};
 use crate::storage::local_product_store::{
     AdaptiveObservationInput, AdaptiveObservationSummary, LocalProductStore,
@@ -524,7 +524,7 @@ fn record_observation(
                 effective_gates.auto_promotion_active,
                 env_enabled("ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH"),
             );
-            maybe_auto_promote_from_observation_with_gate(store, &observation, actor, &gate);
+            record_evidence_chain_candidate_with_gate(store, &observation, actor, &gate);
             Some(observation)
         }
         Err(_) => {

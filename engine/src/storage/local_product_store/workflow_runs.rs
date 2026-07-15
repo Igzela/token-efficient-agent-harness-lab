@@ -1,7 +1,11 @@
 use rusqlite::{params, Row};
 use serde_json::{json, Value};
+use sha2::Digest;
 
-use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
+use super::{
+    append_audit_locked, collect_values, DatabaseConnection, LocalProductStore,
+    MemoryRetrievalRequest, MemoryScope,
+};
 use crate::agent_memory::build_memory_context_for_node;
 use crate::provider::redaction::contains_sensitive_patterns;
 use crate::workflow::context_pack::{
@@ -64,6 +68,19 @@ impl LocalProductStore {
         plan_id: &str,
         actor: &str,
     ) -> Result<Value, String> {
+        self.create_workflow_run_from_plan_scoped(plan_id, actor, "local", "local")
+    }
+
+    pub fn create_workflow_run_from_plan_scoped(
+        &self,
+        plan_id: &str,
+        actor: &str,
+        tenant_id: &str,
+        workspace_id: &str,
+    ) -> Result<Value, String> {
+        if !valid_scope_identifier(tenant_id) || !valid_scope_identifier(workspace_id) {
+            return Err("workflow run tenant/workspace scope is invalid".to_string());
+        }
         let plan = self
             .get_workflow_plan(plan_id)?
             .ok_or_else(|| format!("plan not found: {plan_id}"))?;
@@ -87,7 +104,12 @@ impl LocalProductStore {
             .and_then(Value::as_array)
             .ok_or_else(|| format!("plan {plan_id} graph missing edges"))?;
         let executable = workflow_plan_has_execution_authority(&plan);
-        let run_boundaries = workflow_run_boundaries_for_plan(&plan)?;
+        let mut run_boundaries = workflow_run_boundaries_for_plan(&plan)?;
+        let boundaries_object = run_boundaries
+            .as_object_mut()
+            .ok_or_else(|| "workflow run boundaries must be an object".to_string())?;
+        boundaries_object.insert("tenant_id".to_string(), json!(tenant_id));
+        boundaries_object.insert("workspace_id".to_string(), json!(workspace_id));
         let execution_authority = run_boundaries
             .get("execution_authority")
             .and_then(Value::as_str)
@@ -118,6 +140,8 @@ impl LocalProductStore {
                     "result": null,
                     "graph": graph,
                     "boundaries": boundaries,
+                    "tenant_id": tenant_id,
+                    "workspace_id": workspace_id,
                 });
                 tx.execute(
                     "INSERT INTO workflow_runs
@@ -125,7 +149,7 @@ impl LocalProductStore {
                       dispatch_id, started_at, completed_at, result_json, boundaries_json, run_json,
                       priority, deadline_at, sla_ms, tenant_id, queue_position, pause_reason, degrade_mode)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL, ?9, ?10,
-                             5, NULL, NULL, NULL, NULL, NULL, NULL)",
+                             5, NULL, NULL, ?11, NULL, NULL, NULL)",
                     params![
                         sequence,
                         run_id,
@@ -137,6 +161,7 @@ impl LocalProductStore {
                         null_if_empty(dispatch_id),
                         boundaries.to_string(),
                         run.to_string(),
+                        tenant_id,
                     ],
                 )
                 .map_err(|e| e.to_string())?;
@@ -160,6 +185,8 @@ impl LocalProductStore {
                         "dispatch_id": dispatch_id,
                         "metadata_only": !executable,
                         "execution_authority": execution_authority,
+                        "tenant_id": tenant_id,
+                        "workspace_id": workspace_id,
                     }),
                     &created_at,
                 )?;
@@ -175,6 +202,8 @@ impl LocalProductStore {
                         "dispatch_id": dispatch_id,
                         "metadata_only": !executable,
                         "execution_authority": execution_authority,
+                        "tenant_id": tenant_id,
+                        "workspace_id": workspace_id,
                     }),
                 )?;
                 tx.commit().map_err(|error| error.to_string())?;
@@ -202,6 +231,8 @@ impl LocalProductStore {
                     "result": null,
                     "graph": graph,
                     "boundaries": boundaries,
+                    "tenant_id": tenant_id,
+                    "workspace_id": workspace_id,
                 });
                 let boundaries_json = boundaries.to_string();
                 let run_json = run.to_string();
@@ -221,6 +252,7 @@ impl LocalProductStore {
                     &dispatch_opt,
                     &boundaries_json,
                     &run_json,
+                    &tenant_id,
                 ];
                 tx.execute(
                     "INSERT INTO workflow_runs
@@ -228,7 +260,7 @@ impl LocalProductStore {
                       dispatch_id, started_at, completed_at, result_json, boundaries_json, run_json,
                       priority, deadline_at, sla_ms, tenant_id, queue_position, pause_reason, degrade_mode)
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, NULL, $9, $10,
-                             5, NULL, NULL, NULL, NULL, NULL, NULL)",
+                             5, NULL, NULL, $11, NULL, NULL, NULL)",
                     &params,
                 )
                 .map_err(|e| e.to_string())?;
@@ -258,6 +290,8 @@ impl LocalProductStore {
                         "dispatch_id": dispatch_id,
                         "metadata_only": !executable,
                         "execution_authority": execution_authority,
+                        "tenant_id": tenant_id,
+                        "workspace_id": workspace_id,
                     }),
                     &created_at,
                 )?;
@@ -273,6 +307,8 @@ impl LocalProductStore {
                         "dispatch_id": dispatch_id,
                         "metadata_only": !executable,
                         "execution_authority": execution_authority,
+                        "tenant_id": tenant_id,
+                        "workspace_id": workspace_id,
                     }),
                 )?;
                 tx.commit().map_err(|e| e.to_string())?;
@@ -1915,6 +1951,20 @@ impl LocalProductStore {
                     output.error_domain.as_deref(),
                 );
 
+                if let Err(error) = self.produce_budget_intelligence_for_run(run_id, "scheduler") {
+                    let _ = self.append_audit(
+                        "scheduler",
+                        "budget_intelligence.production_failed",
+                        run_id,
+                        &json!({
+                            "run_id": run_id,
+                            "error_sha256": format!("{:x}", sha2::Sha256::digest(error.as_bytes())),
+                            "raw_error_stored": false,
+                            "workflow_result_preserved": true,
+                        }),
+                    );
+                }
+
                 Ok(tick_result)
             }
         }
@@ -2104,14 +2154,119 @@ impl LocalProductStore {
         else {
             return Ok(None);
         };
-        let Some(agent_state) = self.get_agent_state(agent_id, run_id)? else {
-            return Ok(None);
+        let digest_budget = (max_context_tokens / 2).max(1);
+        let memory_digest = self
+            .get_agent_state(agent_id, run_id)?
+            .and_then(|state| build_memory_context_for_node(&state, digest_budget));
+        let tenant_id = run
+            .get("tenant_id")
+            .and_then(Value::as_str)
+            .or_else(|| run.pointer("/boundaries/tenant_id").and_then(Value::as_str))
+            .ok_or_else(|| "workflow run has no immutable tenant memory scope".to_string())?;
+        let workspace_id = run
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                run.pointer("/boundaries/workspace_id")
+                    .and_then(Value::as_str)
+            })
+            .ok_or_else(|| "workflow run has no immutable workspace memory scope".to_string())?;
+        let query = node
+            .get("objective")
+            .and_then(Value::as_str)
+            .or_else(|| node.pointer("/metadata/objective").and_then(Value::as_str))
+            .unwrap_or(node_id);
+        let retrieval_budget = max_context_tokens.saturating_sub(
+            memory_digest
+                .as_ref()
+                .and_then(|value| value.get("included_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+        );
+        let retrieval = if retrieval_budget == 0 {
+            None
+        } else {
+            Some(self.retrieve_durable_memories(
+                &MemoryRetrievalRequest {
+                    scope: MemoryScope {
+                        tenant_id: tenant_id.to_string(),
+                        workspace_id: workspace_id.to_string(),
+                        agent_id: Some(agent_id.to_string()),
+                        task_id: None,
+                    },
+                    run_id: run_id.to_string(),
+                    node_id: node_id.to_string(),
+                    query: query.to_string(),
+                    top_k: 5,
+                    max_tokens: retrieval_budget,
+                    max_bytes: retrieval_budget.saturating_mul(4),
+                    allow_lexical_fallback: true,
+                },
+                "scheduler",
+            )?)
         };
-
-        Ok(build_memory_context_for_node(
-            &agent_state,
-            max_context_tokens,
-        ))
+        if memory_digest.is_none()
+            && retrieval
+                .as_ref()
+                .is_none_or(|value| value.selected.is_empty())
+        {
+            return Ok(None);
+        }
+        let digest_tokens = memory_digest
+            .as_ref()
+            .and_then(|value| value.get("included_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let retrieval_tokens = retrieval.as_ref().map_or(0, |value| value.estimated_tokens);
+        let references = retrieval.as_ref().map_or_else(Vec::new, |result| {
+            result
+                .selected
+                .iter()
+                .map(|reference| {
+                    json!({
+                        "memory_id": reference.memory_id,
+                        "version": reference.version,
+                        "source_id": reference.source_id,
+                        "source_sha256": reference.source_sha256,
+                        "record_sha256": reference.record_sha256,
+                        "score": reference.score,
+                        "confidence": reference.confidence,
+                        "estimated_tokens": reference.estimated_tokens,
+                        "content": reference.content,
+                    })
+                })
+                .collect()
+        });
+        Ok(Some(json!({
+            "schema_version": "agent_memory_context.v2",
+            "source": "run_digest_plus_durable_retrieval",
+            "injection_surface": "node_metadata_only",
+            "max_context_tokens": max_context_tokens,
+            "estimated_tokens": digest_tokens.saturating_add(retrieval_tokens),
+            "included_tokens": digest_tokens.saturating_add(retrieval_tokens),
+            "truncated": memory_digest.as_ref().and_then(|value| value.get("truncated")).and_then(Value::as_bool).unwrap_or(false)
+                || retrieval.as_ref().is_some_and(|value| value.truncated),
+            "memory_digest": memory_digest.as_ref().and_then(|value| value.get("memory_digest")).cloned(),
+            "retrieval": retrieval.as_ref().map(|value| json!({
+                "retrieval_id": value.retrieval_id,
+                "mode": value.mode,
+                "embedding_provenance": value.embedding_provenance,
+                "candidate_count": value.candidate_count,
+                "selected_count": value.selected.len(),
+                "stale_excluded": value.stale_excluded,
+                "state_excluded": value.state_excluded,
+                "request_sha256": value.request_sha256,
+                "result_sha256": value.result_sha256,
+                "read_bytes": value.read_bytes,
+            })),
+            "retrieved_references": references,
+            "context_layers": {
+                "durable_state": {"tenant_id": tenant_id, "workspace_id": workspace_id},
+                "bounded_recent": [],
+                "memory_digest": memory_digest.as_ref().and_then(|value| value.get("memory_digest")).cloned(),
+                "retrieved_references": references,
+            },
+        })))
     }
 
     fn persist_context_injection(
@@ -2518,6 +2673,11 @@ impl LocalProductStore {
     }
 
     pub fn update_run_priority(&self, run_id: &str, priority: i64) -> Result<(), String> {
+        let pg_priority =
+            i32::try_from(priority).map_err(|_| "priority must be between 1 and 10".to_string())?;
+        if !(1..=10).contains(&pg_priority) {
+            return Err("priority must be between 1 and 10".to_string());
+        }
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 ensure_run_exists_locked(conn, run_id)?;
@@ -2540,7 +2700,7 @@ impl LocalProductStore {
                 let rows = client
                     .execute(
                         "UPDATE workflow_runs SET priority = $1, updated_at = $2 WHERE run_id = $3",
-                        &[&priority, &updated, &run_id],
+                        &[&pg_priority, &updated, &run_id],
                     )
                     .map_err(|e| e.to_string())?;
                 if rows == 0 {
@@ -2812,6 +2972,19 @@ impl LocalProductStore {
         sla_ms: Option<i64>,
         tenant_id: Option<&str>,
     ) -> Result<Value, String> {
+        let pg_priority =
+            i32::try_from(priority).map_err(|_| "priority must be between 1 and 10".to_string())?;
+        if !(1..=10).contains(&pg_priority) {
+            return Err("priority must be between 1 and 10".to_string());
+        }
+        let pg_sla_ms = sla_ms
+            .map(|value| {
+                i32::try_from(value).map_err(|_| "sla_ms must fit a non-negative INT4".to_string())
+            })
+            .transpose()?;
+        if pg_sla_ms.is_some_and(|value| value < 0) {
+            return Err("sla_ms must fit a non-negative INT4".to_string());
+        }
         let plan = self
             .get_workflow_plan(plan_id)?
             .ok_or_else(|| format!("plan not found: {plan_id}"))?;
@@ -2834,13 +3007,21 @@ impl LocalProductStore {
             .get("edges")
             .and_then(Value::as_array)
             .ok_or_else(|| format!("plan {plan_id} graph missing edges"))?;
+        let tenant_id = tenant_id.unwrap_or("local");
+        let workspace_id = "local";
+        let mut run_boundaries = workflow_run_boundaries_for_plan(&plan)?;
+        let boundaries_object = run_boundaries
+            .as_object_mut()
+            .ok_or_else(|| "workflow run boundaries must be an object".to_string())?;
+        boundaries_object.insert("tenant_id".to_string(), json!(tenant_id));
+        boundaries_object.insert("workspace_id".to_string(), json!(workspace_id));
 
         let run_id = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let sequence = next_sequence(conn, "workflow_runs", "run_sequence")?;
                 let run_id = format!("run-{sequence:04}");
                 let created_at = self.now();
-                let boundaries = workflow_run_boundaries();
+                let boundaries = run_boundaries.clone();
                 let run = json!({
                     "schema_version": WORKFLOW_RUN_SCHEMA_VERSION,
                     "run_sequence": sequence,
@@ -2860,6 +3041,7 @@ impl LocalProductStore {
                     "deadline_at": deadline_at,
                     "sla_ms": sla_ms,
                     "tenant_id": tenant_id,
+                    "workspace_id": workspace_id,
                     "queue_position": null,
                     "pause_reason": null,
                     "degrade_mode": null,
@@ -2908,6 +3090,7 @@ impl LocalProductStore {
                         "dispatch_id": dispatch_id,
                         "priority": priority,
                         "tenant_id": tenant_id,
+                        "workspace_id": workspace_id,
                         "metadata_only": true,
                     }),
                     &created_at,
@@ -2924,6 +3107,7 @@ impl LocalProductStore {
                         "dispatch_id": dispatch_id,
                         "priority": priority,
                         "tenant_id": tenant_id,
+                        "workspace_id": workspace_id,
                         "metadata_only": true,
                     }),
                 )?;
@@ -2935,7 +3119,7 @@ impl LocalProductStore {
                 let sequence = pg_next_sequence(&mut tx, "workflow_runs", "run_sequence")?;
                 let run_id = format!("run-{sequence:04}");
                 let created_at = self.now();
-                let boundaries = workflow_run_boundaries();
+                let boundaries = run_boundaries.clone();
                 let run = json!({
                     "schema_version": WORKFLOW_RUN_SCHEMA_VERSION,
                     "run_sequence": sequence,
@@ -2955,6 +3139,7 @@ impl LocalProductStore {
                     "deadline_at": deadline_at,
                     "sla_ms": sla_ms,
                     "tenant_id": tenant_id,
+                    "workspace_id": workspace_id,
                     "queue_position": null,
                     "pause_reason": null,
                     "degrade_mode": null,
@@ -2977,9 +3162,9 @@ impl LocalProductStore {
                         &null_if_empty(dispatch_id),
                         &boundaries.to_string(),
                         &run.to_string(),
-                        &priority,
+                        &pg_priority,
                         &deadline_at,
-                        &sla_ms,
+                        &pg_sla_ms,
                         &tenant_id,
                     ],
                 )
@@ -3003,6 +3188,7 @@ impl LocalProductStore {
                         "dispatch_id": dispatch_id,
                         "priority": priority,
                         "tenant_id": tenant_id,
+                        "workspace_id": workspace_id,
                         "metadata_only": true,
                     }),
                     &created_at,
@@ -3019,6 +3205,7 @@ impl LocalProductStore {
                         "dispatch_id": dispatch_id,
                         "priority": priority,
                         "tenant_id": tenant_id,
+                        "workspace_id": workspace_id,
                         "metadata_only": true,
                     }),
                 )?;
@@ -3321,6 +3508,14 @@ impl LocalProductStore {
         self.get_workflow_run(run_id)?
             .ok_or_else(|| format!("workflow run not found after update: {run_id}"))
     }
+}
+
+fn valid_scope_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+        })
 }
 
 fn insert_workflow_run_event_locked(
@@ -3733,15 +3928,9 @@ fn merge_memory_context_injection(
             "source": "agent_state_memory_digest",
             "injection_surface": "node_metadata_only",
             "max_context_tokens": config.max_context_tokens,
-            "total_estimated_tokens": memory_context
-                .get("estimated_tokens")
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
+            "total_estimated_tokens": 0,
             "included_source_count": 0,
-            "truncated": memory_context
-                .get("truncated")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            "truncated": false,
             "sources": [],
         })
     });

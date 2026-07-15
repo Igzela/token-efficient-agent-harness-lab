@@ -151,6 +151,17 @@ class AgentControlPlaneClient:
             f"/api/v1/budget-evidence/{_quote_path_segment(artifact_id)}"
         )
 
+    def recompute_budget_evidence(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/api/v1/budget-evidence/recompute", request)
+
+    def usage_observations(
+        self, run_id: str, limit: int | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"run_id": run_id}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(_query_path("/api/v1/usage-observations", params))
+
     def offline_replay_artifacts(
         self,
         status: str | None = None,
@@ -170,6 +181,68 @@ class AgentControlPlaneClient:
         return self._get(
             f"/api/v1/offline-replays/{_quote_path_segment(artifact_id)}"
         )
+
+    def generate_offline_replay(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/api/v1/offline-replays/generate", request)
+
+    def replay_production_profile(self) -> dict[str, Any]:
+        return self._get("/api/v1/offline-replays/production-profile")
+
+    def configure_replay_production_profile(
+        self, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._put("/api/v1/offline-replays/production-profile", request)
+
+    def promote_adaptive_policy_with_evidence(
+        self, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._post(
+            "/api/v1/adaptive-fusion/policies/promote-with-evidence", request
+        )
+
+    def create_memory(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/api/v1/memories", request)
+
+    def memory(self, memory_id: str, run_id: str) -> dict[str, Any]:
+        return self._get(
+            f"/api/v1/memories/{_quote_path_segment(memory_id)}?run_id={_quote_path_segment(run_id)}"
+        )
+
+    def revise_memory(
+        self, memory_id: str, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/memories/{_quote_path_segment(memory_id)}/revise", request
+        )
+
+    def invalidate_memory(
+        self, memory_id: str, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/memories/{_quote_path_segment(memory_id)}/invalidate",
+            request,
+        )
+
+    def forget_memory(
+        self, memory_id: str, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/memories/{_quote_path_segment(memory_id)}/forget",
+            request,
+        )
+
+    def supersede_memory(
+        self, memory_id: str, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/memories/{_quote_path_segment(memory_id)}/supersede", request
+        )
+
+    def prune_memories(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/api/v1/memories/prune", request)
+
+    def retrieve_memories(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/api/v1/memories/retrieve", request)
 
     def operator_decisions(
         self,
@@ -483,11 +556,16 @@ class AgentControlPlaneClient:
         return self._get(_query_path("/api/v1/workflow-runs", params))
 
     def create_workflow_run(
-        self, plan_id: str, confirm_execution: bool | None = None
+        self,
+        plan_id: str,
+        confirm_execution: bool | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"plan_id": plan_id}
         if confirm_execution is not None:
             payload["confirm_execution"] = confirm_execution
+        if workspace_id is not None:
+            payload["workspace_id"] = workspace_id
         return self._post("/api/v1/workflow-runs", payload)
 
     def workflow_run(self, run_id: str) -> dict[str, Any]:

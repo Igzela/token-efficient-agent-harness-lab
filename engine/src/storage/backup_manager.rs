@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 pub const BACKUP_MANAGER_SCHEMA_VERSION: &str = "backup_manager.v1";
 
@@ -79,21 +80,40 @@ impl BackupManager {
         now: &str,
         encryption_key: Option<&str>,
     ) -> Result<BackupRecord, String> {
+        let _guard = self
+            ._lock
+            .lock()
+            .map_err(|_| "backup manager lock poisoned".to_string())?;
         if !source_path.exists() {
             return Err(format!("source file not found: {}", source_path.display()));
         }
 
         let dest = self.backup_dir.join(format!("{backup_id}.db"));
-        fs::copy(source_path, &dest).map_err(|e| e.to_string())?;
-
-        // Checkpoint WAL if present
-        let wal_path = source_path.with_extension("db-wal");
-        if wal_path.exists() {
-            let _ = fs::copy(
-                &wal_path,
-                self.backup_dir.join(format!("{backup_id}.db-wal")),
-            );
+        if dest.exists() {
+            fs::remove_file(&dest).map_err(|error| error.to_string())?;
         }
+        let source = Connection::open(source_path).map_err(|error| error.to_string())?;
+        let mut destination = Connection::open(&dest).map_err(|error| error.to_string())?;
+        if let Some(key) = encryption_key {
+            let escaped = key.replace('\'', "''");
+            source
+                .execute_batch(&format!("PRAGMA key = '{escaped}';"))
+                .map_err(|error| format!("failed to unlock backup source: {error}"))?;
+            destination
+                .execute_batch(&format!("PRAGMA key = '{escaped}';"))
+                .map_err(|error| format!("failed to configure encrypted backup: {error}"))?;
+        }
+        let backup = rusqlite::backup::Backup::new(&source, &mut destination)
+            .map_err(|error| error.to_string())?;
+        backup
+            .run_to_completion(64, Duration::from_millis(5), None)
+            .map_err(|error| error.to_string())?;
+        drop(backup);
+        destination
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|error| error.to_string())?;
+        drop(destination);
+        drop(source);
 
         let size = fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
 
@@ -215,22 +235,15 @@ impl BackupManager {
                     return Ok(result);
                 }
 
-                let tables = [
-                    "dispatch_history",
-                    "local_config",
-                    "team_members",
-                    "api_key_metadata",
-                    "audit_log",
-                    "provider_audit_events",
-                ];
-                let mut total: i64 = 0;
-                for table in &tables {
-                    let sql = format!("SELECT COUNT(*) FROM {table}");
-                    if let Ok(count) = conn.query_row(&sql, [], |row| row.get::<_, i64>(0)) {
-                        total += count;
+                match count_all_user_records(&conn) {
+                    Ok(total) => result.records_restored = total,
+                    Err(error) => {
+                        result
+                            .errors
+                            .push(format!("post-restore record verification failed: {error}"));
+                        result.success = false;
                     }
                 }
-                result.records_restored = total;
             }
             Err(e) => {
                 result
@@ -295,18 +308,9 @@ impl BackupManager {
                         errors.push(format!("integrity check failed: {integrity}"));
                     }
 
-                    for table in [
-                        "dispatch_history",
-                        "local_config",
-                        "team_members",
-                        "api_key_metadata",
-                        "audit_log",
-                        "provider_audit_events",
-                    ] {
-                        let sql = format!("SELECT COUNT(*) FROM {table}");
-                        if let Ok(count) = conn.query_row(&sql, [], |row| row.get::<_, i64>(0)) {
-                            records_checked += count;
-                        }
+                    match count_all_user_records(&conn) {
+                        Ok(count) => records_checked = count,
+                        Err(error) => errors.push(format!("record verification failed: {error}")),
                     }
                 }
                 Err(e) => errors.push(format!("backup open failed: {e}")),
@@ -416,6 +420,34 @@ impl BackupManager {
         fs::rename(&tmp_path, &meta_path).map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+fn count_all_user_records(conn: &Connection) -> Result<i64, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT name FROM sqlite_schema
+             WHERE type='table' AND name NOT LIKE 'sqlite_%'
+             ORDER BY name",
+        )
+        .map_err(|error| error.to_string())?;
+    let tables = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+    let mut total = 0_i64;
+    for table in tables {
+        let quoted = table.replace('"', "\"\"");
+        let sql = format!("SELECT COUNT(*) FROM \"{quoted}\"");
+        total = total
+            .checked_add(
+                conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
+                    .map_err(|error| error.to_string())?,
+            )
+            .ok_or_else(|| "backup record count overflow".to_string())?;
+    }
+    Ok(total)
 }
 
 fn compute_checksum(path: &Path) -> Result<String, String> {

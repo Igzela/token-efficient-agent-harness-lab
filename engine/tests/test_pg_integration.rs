@@ -30,7 +30,10 @@ use engine::orchestration::schemas::{
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::BudgetAutoPausePolicy;
 #[cfg(feature = "pg-tests")]
-use engine::storage::local_product_store::LocalProductStore;
+use engine::storage::local_product_store::{
+    DurableMemoryCreate, DurableMemoryRevision, LocalProductStore, MemoryRetrievalRequest,
+    MemoryScope,
+};
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
 #[cfg(feature = "pg-tests")]
@@ -445,7 +448,11 @@ fn pg_atomic_requested_approval_resolution_allows_one_winner() {
         .into_iter()
         .map(|handle| handle.join().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "concurrent durable-memory revisions: {results:?}"
+    );
     assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
     let resolved = store
         .workflow_run_approvals(&run_id, 100)
@@ -664,7 +671,15 @@ fn pg_agent_global_cap_is_atomic_across_runs() {
             1,
         )
     });
-    entered_rx.recv().unwrap();
+    if entered_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .is_err()
+    {
+        panic!(
+            "first PostgreSQL agent claim exited before executor entry: {:?}",
+            first.join().unwrap()
+        );
+    }
 
     let second_calls = Arc::new(AtomicUsize::new(0));
     let second = store
@@ -1972,7 +1987,12 @@ fn pg_implicit_tool_receipt_is_atomic_across_concurrent_callers() {
 #[test]
 #[cfg(feature = "pg-tests")]
 fn pg_budget_auto_pause_and_recovery_are_atomic_and_idempotent() {
-    let Some(store) = test_store() else { return };
+    let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        eprintln!("ACP_TEST_DATABASE_URL not set; skipping pg-tests");
+        return;
+    };
+    let store =
+        LocalProductStore::new_postgres(&url, || "2026-07-11T00:10:20Z".to_string()).unwrap();
     let tag = uuid_tag();
     let plan = store.create_workflow_plan(&format!("pause {tag}"), "pg-test", "pg-test", |ids, _| Ok(json!({"status":"planned_read_only","graph":{"nodes":[],"edges":[],"workflow_id":ids.workflow_id,"dispatch_id":ids.dispatch_id},"analysis":{},"boundaries":{"execution_authority":"disabled"}}))).unwrap();
     let run = store
@@ -2524,4 +2544,217 @@ fn pg_auto_adjustment_apply_and_rollback_cycle() {
     // Clean up env vars.
     std::env::remove_var("ACP_ENABLE_AUTO_ADJUSTMENT");
     std::env::remove_var("ACP_AUTO_ADJUSTMENT_ACTIVE");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_durable_memory_is_scope_bound_restart_safe_and_concurrency_safe() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let scope = MemoryScope {
+        tenant_id: "local".to_string(),
+        workspace_id: format!("pg-memory-{tag}"),
+        agent_id: Some(format!("agent-{tag}")),
+        task_id: None,
+    };
+    let created = store
+        .create_durable_memory(
+            &DurableMemoryCreate {
+                scope: scope.clone(),
+                run_id: None,
+                source_id: format!("source-{tag}"),
+                source_sha256: "88".repeat(32),
+                conflict_key: format!("fact-{tag}"),
+                content: json!({"fact":"postgres durable memory"}),
+                confidence: 0.9,
+                fresh_until: None,
+                expires_at: None,
+                supersedes_memory_id: None,
+            },
+            "pg-memory-test",
+        )
+        .unwrap();
+    let memory_id = created["memory_id"].as_str().unwrap().to_string();
+    let url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let first_store = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+    let second_store = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let revise = |suffix: &str| DurableMemoryRevision {
+        expected_version: 1,
+        source_id: format!("revision-{suffix}-{tag}"),
+        source_sha256: if suffix == "a" {
+            "99".repeat(32)
+        } else {
+            "aa".repeat(32)
+        },
+        content: json!({"winner":suffix}),
+        confidence: 1.0,
+        fresh_until: None,
+        expires_at: None,
+    };
+    let first_id = memory_id.clone();
+    let first_barrier = barrier.clone();
+    let first_revision = revise("a");
+    let first = std::thread::spawn(move || {
+        first_barrier.wait();
+        first_store.revise_durable_memory(&first_id, &first_revision, "pg-memory-writer-a")
+    });
+    let second_id = memory_id.clone();
+    let second_barrier = barrier.clone();
+    let second_revision = revise("b");
+    let second = std::thread::spawn(move || {
+        second_barrier.wait();
+        second_store.revise_durable_memory(&second_id, &second_revision, "pg-memory-writer-b")
+    });
+    let results = [first.join().unwrap(), second.join().unwrap()];
+    assert_eq!(
+        results.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "concurrent durable-memory revisions: {results:?}"
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result
+                .as_ref()
+                .is_err_and(|error| error.contains("version conflict")))
+            .count(),
+        1,
+        "concurrent durable-memory revisions: {results:?}"
+    );
+
+    let restarted = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+    let history = restarted.inspect_durable_memory(&memory_id).unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history.last().unwrap()["version"], 2);
+    let retrieval = restarted
+        .retrieve_durable_memories(
+            &MemoryRetrievalRequest {
+                scope: scope.clone(),
+                run_id: format!("run-{tag}"),
+                node_id: format!("node-{tag}"),
+                query: "postgres durable memory".to_string(),
+                top_k: 5,
+                max_tokens: 100,
+                max_bytes: 400,
+                allow_lexical_fallback: true,
+            },
+            "pg-memory-reader",
+        )
+        .unwrap();
+    assert_eq!(retrieval.mode, "lexical_fallback");
+    assert_eq!(retrieval.selected.len(), 1);
+    assert_eq!(retrieval.selected[0].memory_id, memory_id);
+
+    let cross_scope = restarted
+        .retrieve_durable_memories(
+            &MemoryRetrievalRequest {
+                scope: MemoryScope {
+                    workspace_id: format!("other-{tag}"),
+                    ..scope.clone()
+                },
+                run_id: format!("run-{tag}"),
+                node_id: format!("node-{tag}"),
+                query: "postgres durable memory".to_string(),
+                top_k: 5,
+                max_tokens: 100,
+                max_bytes: 400,
+                allow_lexical_fallback: true,
+            },
+            "pg-memory-reader",
+        )
+        .unwrap();
+    assert!(cross_scope.selected.is_empty());
+
+    let conflict_key = format!("pg-conflict-{tag}");
+    let conflict_memory = |source: &str, hash: &str, value: &str| DurableMemoryCreate {
+        scope: scope.clone(),
+        run_id: None,
+        source_id: format!("{source}-{tag}"),
+        source_sha256: hash.repeat(32),
+        conflict_key: conflict_key.clone(),
+        content: json!({"value":value}),
+        confidence: 0.9,
+        fresh_until: None,
+        expires_at: None,
+        supersedes_memory_id: None,
+    };
+    let first_conflict = restarted
+        .create_durable_memory(&conflict_memory("conflict-a", "11", "a"), "pg-memory-test")
+        .unwrap();
+    let second_conflict = restarted
+        .create_durable_memory(&conflict_memory("conflict-b", "22", "b"), "pg-memory-test")
+        .unwrap();
+    assert!(restarted
+        .create_durable_memory(&conflict_memory("conflict-c", "33", "c"), "pg-memory-test",)
+        .unwrap_err()
+        .contains("conflict set is full"));
+    let resolved = restarted
+        .supersede_durable_memory(
+            second_conflict["memory_id"].as_str().unwrap(),
+            1,
+            first_conflict["memory_id"].as_str().unwrap(),
+            2,
+            "pg-memory-test",
+        )
+        .unwrap();
+    assert_eq!(resolved["winner"]["state"], "current");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_active_queue_numeric_types_match_sqlite_contract() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let tenant_id = format!("pg-queue-tenant-{tag}");
+    let plan = store
+        .create_workflow_plan(
+            &format!("pg-queue-{tag}"),
+            "pg queue type parity",
+            "pg-queue-test",
+            |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "graph": {
+                        "nodes": [],
+                        "edges": [],
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "disabled"}
+                }))
+            },
+        )
+        .unwrap();
+    let run = store
+        .create_workflow_run_with_queue_metadata(
+            plan["plan_id"].as_str().unwrap(),
+            "pg-queue-test",
+            2,
+            None,
+            Some(1_200),
+            Some(&tenant_id),
+        )
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap();
+
+    let active = store.list_active_workflow_runs_prioritized().unwrap();
+    let queued = active
+        .iter()
+        .find(|item| item["run_id"] == run_id)
+        .expect("created PostgreSQL run should be readable from prioritized queue");
+    assert_eq!(queued["priority"], 2);
+    assert_eq!(queued["sla_ms"], 1_200);
+    assert_eq!(queued["tenant_id"], tenant_id);
+
+    let tenant = store
+        .list_tenants_with_quota()
+        .unwrap()
+        .into_iter()
+        .find(|item| item["tenant_id"] == tenant_id)
+        .expect("tenant quota aggregation should decode PostgreSQL AVG");
+    assert_eq!(tenant["run_count"], 1);
+    assert_eq!(tenant["avg_priority"], 2.0);
+    assert!(store.get_queue_status().unwrap()["avg_priority"].is_number());
 }

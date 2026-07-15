@@ -9,7 +9,9 @@ use crate::http_server::middleware::{
     authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
-use crate::storage::local_product_store::BudgetAutoPausePolicy;
+use crate::storage::local_product_store::{
+    BudgetAutoPausePolicy, ReplayProductionProfile, ReplayProductionRequest,
+};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ScorecardQuery {
@@ -45,6 +47,154 @@ pub(crate) struct OfflineReplayQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct UsageObservationQuery {
+    run_id: String,
+    limit: Option<i64>,
+}
+
+pub(crate) async fn api_usage_observations(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Query(query): Query<UsageObservationQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let run = store
+        .get_workflow_run(&query.run_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            ApiError::with_code(StatusCode::NOT_FOUND, "run_not_found", "run not found")
+        })?;
+    if run.get("tenant_id").and_then(serde_json::Value::as_str) != Some(context.tenant_id.as_str())
+    {
+        return Err(ApiError::with_code(
+            StatusCode::NOT_FOUND,
+            "run_not_found",
+            "run not found",
+        ));
+    }
+    let limit = query.limit.unwrap_or(64).clamp(1, 64);
+    let observations = store
+        .normalized_usage_observations_for_run(&query.run_id, limit)
+        .map_err(internal_error)?;
+    let count = observations.len();
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": "normalized_usage_read.v1",
+            "run_id": query.run_id,
+            "observations": observations,
+            "count": count,
+            "limit": limit,
+            "read_only": true,
+            "metadata_only": true,
+            "raw_provider_content": "excluded",
+        })),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OfflineReplayGenerateRequest {
+    replay: ReplayProductionRequest,
+    confirm_generation: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReplayProductionProfileRequest {
+    profile: ReplayProductionProfile,
+    confirm_profile: bool,
+}
+
+pub(crate) async fn api_replay_production_profile(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let profile = require_store(&state)?
+        .replay_production_profile()
+        .map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": "offline_replay_production_profile_read.v1",
+            "configured": profile.is_some(),
+            "profile": profile,
+            "provider_calls": "disabled",
+            "mutation_authority": "none",
+        })),
+    ))
+}
+
+pub(crate) async fn api_configure_replay_production_profile(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Json(request): Json<ReplayProductionProfileRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.tenant_resolver.is_none() {
+        return Err(ApiError::with_code(
+            StatusCode::FORBIDDEN,
+            "auth_required_for_replay_profile",
+            "replay production profile mutation requires configured authentication",
+        ));
+    }
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    if !request.confirm_profile {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "replay_profile_confirmation_required",
+            "confirm_profile must be true",
+        ));
+    }
+    let configured = require_store(&state)?
+        .configure_replay_production_profile(&request.profile, &context.api_key_id)
+        .map_err(|error| {
+            ApiError::with_code(StatusCode::BAD_REQUEST, "replay_profile_rejected", error)
+        })?;
+    Ok((cors_headers(), Json(json!({"configured": configured}))))
+}
+
+pub(crate) async fn api_generate_offline_replay(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Json(request): Json<OfflineReplayGenerateRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    if !request.confirm_generation {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "offline_replay_confirmation_required",
+            "confirm_generation must be true",
+        ));
+    }
+    let result = require_store(&state)?
+        .produce_offline_replay(&request.replay, &context.api_key_id)
+        .map_err(|error| {
+            ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "offline_replay_generation_rejected",
+                error,
+            )
+        })?;
+    Ok((cors_headers(), Json(json!({"producer": result}))))
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct BudgetAutoPauseRequest {
     run_id: String,
     confirm_auto_pause: bool,
@@ -57,6 +207,61 @@ pub(crate) struct BudgetPauseRecoveryRequest {
     recovery: String,
     reason: String,
     confirm_recovery: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BudgetRecomputeRequest {
+    run_id: String,
+    confirm_recompute: bool,
+}
+
+pub(crate) async fn api_recompute_budget_evidence(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Json(request): Json<BudgetRecomputeRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    if !request.confirm_recompute {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "budget_recompute_confirmation_required",
+            "confirm_recompute must be true",
+        ));
+    }
+    let store = require_store(&state)?;
+    let run = store
+        .get_workflow_run(&request.run_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            ApiError::with_code(StatusCode::NOT_FOUND, "run_not_found", "run not found")
+        })?;
+    if run.get("tenant_id").and_then(serde_json::Value::as_str) != Some(context.tenant_id.as_str())
+    {
+        return Err(ApiError::with_code(
+            StatusCode::NOT_FOUND,
+            "run_not_found",
+            "run not found",
+        ));
+    }
+    let result = store
+        .produce_budget_intelligence_for_run(&request.run_id, &context.api_key_id)
+        .map_err(internal_error)?;
+    let observations = store
+        .normalized_usage_observations_for_run(&request.run_id, 64)
+        .map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({"producer": result, "usage_observations": observations})),
+    ))
 }
 
 pub(crate) async fn api_scorecard_artifacts(

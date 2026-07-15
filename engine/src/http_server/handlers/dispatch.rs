@@ -3,6 +3,7 @@ use axum::http::{HeaderMap, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 use crate::http_server::middleware::{
@@ -180,7 +181,25 @@ fn record_dispatch_and_decision(
     actor: &str,
 ) -> Result<(), String> {
     store.record_dispatch(raw_request, request_source, bundle, actor)?;
-    record_dispatch_routing_decision(store, raw_request, request_source, bundle)
+    record_dispatch_routing_decision(store, raw_request, request_source, bundle)?;
+    let dispatch_id = bundle
+        .pointer("/record/dispatch_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    if let Err(error) = store.produce_registered_offline_replay_for_dispatch(dispatch_id, actor) {
+        store.append_audit(
+            actor,
+            "offline_replay.automatic_production_failed",
+            dispatch_id,
+            &json!({
+                "dispatch_id": dispatch_id,
+                "reason_code": "automatic_replay_producer_failed",
+                "error_sha256": format!("{:x}", Sha256::digest(error.as_bytes())),
+                "raw_error_stored": false,
+            }),
+        )?;
+    }
+    Ok(())
 }
 
 fn record_dispatch_routing_decision(
@@ -771,63 +790,30 @@ pub(crate) async fn api_promote_adaptive_fusion_policy(
     uri: Uri,
     Extension(request_id): Extension<RequestId>,
     Json(request): Json<AdaptivePolicyPromotionApiRequest>,
+) -> Result<(HeaderMap, Json<Value>), ApiError> {
+    require_auth_for_policy_override(&state)?;
+    authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    let _ = request;
+    Err(ApiError::with_code(
+        axum::http::StatusCode::GONE,
+        "legacy_adaptive_policy_promotion_deprecated",
+        "caller-asserted promotion is deprecated; use promote-with-evidence",
+    ))
+}
+
+pub(crate) async fn api_promote_adaptive_fusion_policy_with_evidence(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    Json(request): Json<crate::storage::local_product_store::EvidenceChainPromotionRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_auth_for_policy_override(&state)?;
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
-    let store = require_store(&state)?;
-    let actor = request
-        .actor
-        .as_deref()
-        .unwrap_or(context.api_key_id.as_str());
-    let mut decision =
-        crate::feedback::ContextualPolicyPromotionGate::from_env().evaluate(&request.promotion);
-    if decision.eligible {
-        let missing_evidence_count = request
-            .promotion
-            .evidence_run_ids
-            .iter()
-            .map(|dispatch_id| store.get_dispatch(dispatch_id))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(internal_error)?
-            .into_iter()
-            .filter(Option::is_none)
-            .count();
-        if missing_evidence_count > 0 {
-            decision.eligible = false;
-            decision.policy = None;
-            decision
-                .blocked_reasons
-                .push("local adaptive policy evidence is unavailable".to_string());
-            store
-                .apply_adaptive_fusion_policy(&decision, actor)
-                .map_err(bad_policy_request)?;
-            return Err(ApiError::with_code(
-                axum::http::StatusCode::BAD_REQUEST,
-                "adaptive_policy_evidence_missing",
-                format!(
-                    "{missing_evidence_count} adaptive policy evidence dispatches are unavailable"
-                ),
-            ));
-        }
-    }
-    let result = store
-        .apply_adaptive_fusion_policy(&decision, actor)
+    let result = require_store(&state)?
+        .promote_replay_with_evidence_chain(&request, &context.api_key_id, true)
         .map_err(bad_policy_request)?;
-    if !decision.eligible {
-        return Err(ApiError::with_code(
-            axum::http::StatusCode::BAD_REQUEST,
-            "adaptive_policy_promotion_blocked",
-            serde_json::to_string(&result).unwrap_or_else(|_| "adaptive policy blocked".into()),
-        ));
-    }
-    Ok((
-        cors_headers(),
-        Json(json!({
-            "schema_version": AXUM_API_SCHEMA_VERSION,
-            "decision": decision,
-            "result": result,
-        })),
-    ))
+    Ok((cors_headers(), Json(result)))
 }
 
 pub(crate) async fn api_rollback_adaptive_fusion_policy(

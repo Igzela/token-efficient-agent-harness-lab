@@ -78,7 +78,7 @@ impl AdaptivePolicySnapshot {
         }))
     }
 
-    fn hash_is_valid(&self) -> bool {
+    pub(crate) fn hash_is_valid(&self) -> bool {
         self.safety_hash == self.compute_hash()
             && self.promoted_policy.is_valid()
             && self
@@ -157,33 +157,6 @@ impl LocalProductStore {
         }
 
         self.apply_accepted_adaptive_fusion_policy(policy, actor)
-    }
-
-    pub fn auto_promote_adaptive_fusion_policy(
-        &self,
-        request: &AdaptiveAutoPromotionRequest,
-        _policy: &AdaptiveAutoPromotionPolicy,
-        _gate: &AdaptiveAutoPromotionGate,
-        actor: &str,
-    ) -> Result<Value, String> {
-        self.audit_adaptive_policy(
-            actor,
-            "adaptive_policy.apply.rejected",
-            &format!("{}:{}", request.task_class, request.candidate_id),
-            &json!({
-                "actor": actor,
-                "blocked_reasons": ["complete_evidence_chain_required"],
-                "source": "adaptive_fusion",
-            }),
-        )?;
-        Ok(apply_result(
-            None,
-            None,
-            None,
-            "blocked",
-            false,
-            vec!["complete_evidence_chain_required".to_string()],
-        ))
     }
 
     pub fn promote_adaptive_fusion_policy_with_evidence_chain(

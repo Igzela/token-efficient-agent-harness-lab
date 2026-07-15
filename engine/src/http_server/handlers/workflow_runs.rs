@@ -60,14 +60,25 @@ pub(crate) async fn api_create_workflow_run(
         )?
         .api_key_id
     } else {
-        read_context.api_key_id
+        read_context.api_key_id.clone()
     };
-    match store.create_workflow_run_from_plan(&request.plan_id, &actor) {
+    let workspace_id = request.workspace_id.as_deref().unwrap_or("local");
+    match store.create_workflow_run_from_plan_scoped(
+        &request.plan_id,
+        &actor,
+        &read_context.tenant_id,
+        workspace_id,
+    ) {
         Ok(run) => Ok((cors_headers(), Json(json_response("run", run)))),
         Err(e) if e.starts_with("plan not found:") => Err(ApiError::with_code(
             StatusCode::NOT_FOUND,
             "plan_not_found",
             "plan not found",
+        )),
+        Err(e) if e.contains("tenant/workspace scope is invalid") => Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "workflow_run_scope_invalid",
+            e,
         )),
         Err(e) => Err(internal_error(e)),
     }

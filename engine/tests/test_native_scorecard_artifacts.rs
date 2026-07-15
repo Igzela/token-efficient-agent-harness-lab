@@ -7,6 +7,7 @@ use engine::local_scorecard_import::import_scorecard_artifacts;
 use engine::storage::local_product_store::{LocalProductStore, WorkflowPlanIds};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 use tower::ServiceExt;
 
@@ -825,6 +826,52 @@ fn successful_native_run_automatically_persists_scorecard_artifact() {
     );
     assert_eq!(artifacts[0]["read_only"], true);
     assert_eq!(artifacts[0]["target_repository_writes"], "disabled");
+}
+
+#[test]
+fn terminal_native_run_automatically_produces_restart_safe_budget_evidence() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("automatic-budget.db");
+    let clock = Arc::new(Mutex::new("2026-07-14T00:00:00Z".to_string()));
+    let clock_reader = Arc::clone(&clock);
+    let store =
+        LocalProductStore::new_with_clock(&path, move || clock_reader.lock().unwrap().clone())
+            .unwrap();
+    let run_id = create_single_node_run(&store, "safe automatic budget evidence");
+
+    let tick = store.tick_workflow_run(&run_id, "tester").unwrap();
+    assert_eq!(tick["run"]["status"], "completed");
+    let observations = store
+        .normalized_usage_observations_for_run(&run_id, 64)
+        .unwrap();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0]["source_kind"], "native_scorecard");
+    assert_eq!(observations[0]["completeness"], "partial");
+    assert!(observations[0]["provider_id"].is_null());
+    assert!(observations[0]["pricing_identity"].is_null());
+    let artifacts = store.budget_evidence_artifacts(None, 10, 0).unwrap();
+    assert_eq!(artifacts.len(), 2);
+    assert!(artifacts
+        .iter()
+        .all(|artifact| artifact["evidence"]["outcome"].is_string()));
+
+    *clock.lock().unwrap() = "2026-07-14T00:01:01Z".to_string();
+    let first = store
+        .produce_budget_intelligence_for_run(&run_id, "scheduler")
+        .unwrap();
+    drop(store);
+    let restarted = LocalProductStore::new(&path).unwrap();
+    let repeated = restarted
+        .produce_budget_intelligence_for_run(&run_id, "scheduler")
+        .unwrap();
+    assert_eq!(repeated, first);
+    assert_eq!(
+        restarted
+            .budget_evidence_artifacts(None, 10, 0)
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[test]

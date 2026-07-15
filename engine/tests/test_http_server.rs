@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,8 +7,8 @@ use std::sync::{Arc, OnceLock};
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
 use engine::feedback::{
-    offline_replay_report_sha256, OfflinePolicyDefinition, OfflineReplayReport,
-    OfflineReplayStatus, OFFLINE_REPLAY_SCHEMA_VERSION,
+    offline_replay_report_sha256, OfflinePolicyDefinition, OfflinePolicySelection,
+    OfflineReplayReport, OfflineReplayStatus, ReplayEvidenceScope, OFFLINE_REPLAY_SCHEMA_VERSION,
 };
 use engine::http_server::{
     build_axum_router, build_axum_router_with_dashboard, AxumApiState, CliCapability,
@@ -16,7 +16,7 @@ use engine::http_server::{
 use engine::infrastructure::auth::{Tenant, TenantResolver};
 use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::provider::audit::{ProviderAuditEvent, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION};
-use engine::storage::local_product_store::LocalProductStore;
+use engine::storage::local_product_store::{LocalProductStore, ReplayProductionProfile};
 use serde_json::{json, Value};
 use tempfile::{tempdir, TempDir};
 use tokio::sync::Mutex;
@@ -30,6 +30,20 @@ async fn response_json(response: axum::response::Response) -> Value {
 async fn response_text(response: axum::response::Response) -> String {
     let bytes = to_bytes(response.into_body(), 1_048_576).await.unwrap();
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+async fn post_json(app: &axum::Router, uri: &str, body: Value) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
 }
 
 fn auto_adjustment_env_lock() -> &'static Mutex<()> {
@@ -3676,6 +3690,8 @@ async fn axum_backup_verify_and_restore_dry_run_are_non_destructive() {
         "backup:admin".to_string(),
         "audit:read".to_string(),
         "health:read".to_string(),
+        "dispatch:execute".to_string(),
+        "dispatch:read".to_string(),
     ]);
     resolver.add_tenant(Tenant {
         tenant_id: "local-team".to_string(),
@@ -3761,6 +3777,69 @@ async fn axum_backup_verify_and_restore_dry_run_are_non_destructive() {
         dry_run_body["restore_dry_run"]["restore_would_overwrite"],
         true
     );
+
+    let later_dispatch = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/dispatch")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "post-backup row", "request_source": "api"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(later_dispatch.status(), StatusCode::OK);
+
+    let restore = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/backups/{backup_id}/restore"))
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"confirm_restore": true}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(restore.status(), StatusCode::OK);
+    let restore_body = response_json(restore).await;
+    assert_eq!(restore_body["restore"]["success"], true);
+    assert_eq!(
+        restore_body["restore"]["restore_transport"],
+        "sqlite_online_backup_api"
+    );
+
+    let dispatches = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dispatches")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dispatches.status(), StatusCode::OK);
+    let dispatches_body = response_json(dispatches).await;
+    assert!(dispatches_body["dispatches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|dispatch| dispatch["dispatch_id"] == "disp-backup-verify"));
+    assert!(!dispatches_body["dispatches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|dispatch| dispatch["raw_request"] == "post-backup row"));
 
     let integrity = app
         .oneshot(
@@ -3951,6 +4030,423 @@ async fn axum_offline_replay_read_surface_is_bounded_and_read_only() {
         .await
         .unwrap();
     assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn axum_dispatch_automatically_produces_profile_bound_offline_replay() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("replay-producer.db")).unwrap());
+    let current = OfflinePolicyDefinition::new(
+        "current",
+        "policy-current-v1",
+        BTreeMap::from([(
+            "repo_ops".to_string(),
+            OfflinePolicySelection {
+                candidate_id: "balanced_worker".to_string(),
+                candidate_version: "candidate-v1".to_string(),
+                candidate_definition_sha256: "55".repeat(32),
+            },
+        )]),
+    )
+    .unwrap();
+    let candidate = OfflinePolicyDefinition::new(
+        "candidate",
+        "policy-candidate-v1",
+        BTreeMap::from([(
+            "repo_ops".to_string(),
+            OfflinePolicySelection {
+                candidate_id: "cheap_executor".to_string(),
+                candidate_version: "candidate-v1".to_string(),
+                candidate_definition_sha256: "66".repeat(32),
+            },
+        )]),
+    )
+    .unwrap();
+    store
+        .configure_replay_production_profile(
+            &ReplayProductionProfile {
+                enabled: true,
+                bounded_dispatch_window: 10,
+                maximum_trace_age_seconds: 300,
+                scope: ReplayEvidenceScope::default(),
+                current_policy: current.clone(),
+                candidate_policies: vec![candidate.clone()],
+            },
+            "operator",
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store_arc(store.clone()));
+    let response = post_json(
+        &app,
+        "/api/v1/dispatch",
+        json!({"raw_request":"bounded replay producer smoke","request_source":"test"}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let dispatch_id = body["record"]["dispatch_id"].as_str().unwrap().to_string();
+    let first = store.offline_replay_artifacts(None, 10, 0).unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        first[0]["report_schema_version"],
+        "offline_policy_replay.v2"
+    );
+    assert_eq!(first[0]["report"]["shadow_only"], true);
+    assert!(store
+        .produce_registered_offline_replay_for_dispatch(&dispatch_id, "scheduler")
+        .unwrap()
+        .is_some());
+    let repeated = store.offline_replay_artifacts(None, 10, 0).unwrap();
+    assert_eq!(repeated.len(), 1);
+    assert_eq!(repeated[0]["artifact_id"], first[0]["artifact_id"]);
+
+    let missing_confirmation = post_json(
+        &app,
+        "/api/v1/offline-replays/generate",
+        json!({
+            "replay": {
+                "dispatch_ids": [dispatch_id],
+                "maximum_trace_age_seconds": 300,
+                "scope": ReplayEvidenceScope::default(),
+                "current_policy": current,
+                "candidate_policies": [candidate]
+            },
+            "confirm_generation": false
+        }),
+    )
+    .await;
+    assert_eq!(missing_confirmation.status(), StatusCode::BAD_REQUEST);
+    let generated = post_json(
+        &app,
+        "/api/v1/offline-replays/generate",
+        json!({
+            "replay": {
+                "dispatch_ids": [dispatch_id],
+                "maximum_trace_age_seconds": 300,
+                "scope": ReplayEvidenceScope::default(),
+                "current_policy": current,
+                "candidate_policies": [candidate]
+            },
+            "confirm_generation": true
+        }),
+    )
+    .await;
+    assert_eq!(generated.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(generated).await["producer"]["artifact_id"],
+        first[0]["artifact_id"]
+    );
+
+    let mut unprocessed_bundle = body;
+    unprocessed_bundle["record"]["dispatch_id"] = json!("dispatch-recovery-after-restart");
+    store
+        .record_dispatch(
+            "persisted before replay producer",
+            "test",
+            &unprocessed_bundle,
+            "test",
+        )
+        .unwrap();
+    drop(app);
+    drop(store);
+
+    let restarted = LocalProductStore::new(dir.path().join("replay-producer.db")).unwrap();
+    let recovery = restarted
+        .recover_registered_offline_replays(32, "scheduler")
+        .unwrap();
+    assert_eq!(recovery["deferred"], 0);
+    assert_eq!(recovery["pending"], 0);
+    let recovered = restarted.offline_replay_artifacts(None, 10, 0).unwrap();
+    assert_eq!(recovered.len(), 2);
+}
+
+#[tokio::test]
+async fn axum_durable_memory_routes_enforce_scope_and_survive_restart() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("memory-http.db");
+    let store = Arc::new(LocalProductStore::new(&db_path).unwrap());
+    store
+        .create_workflow_plan("memory route test", "test", "test", |ids, _| {
+            Ok(json!({
+                "schema_version": "read_only_plan.v1",
+                "plan_id": ids.plan_id,
+                "workflow_id": ids.workflow_id,
+                "dispatch_id": ids.dispatch_id,
+                "status": "planned_read_only",
+                "analysis": {"analysis_id":"analysis-memory","task_domain":"test"},
+                "graph": {
+                    "schema_version": "workflow_graph.v1",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "status": "decomposed",
+                    "created_at": "2026-07-14T00:00:00Z",
+                    "updated_at": "2026-07-14T00:00:00Z",
+                    "nodes": [{"node_id":"node-memory","task_type":"implementation","status":"pending"}],
+                    "edges": []
+                },
+                "boundaries": {"execution_authority":"disabled","target_repository_writes":"disabled","runtime_workers":"disabled"}
+            }))
+        })
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan_scoped("plan-0001", "test", "local", "ws-memory")
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store_arc(store.clone()));
+    let scope = json!({
+        "tenant_id": "local",
+        "workspace_id": "ws-memory",
+        "agent_id": null,
+        "task_id": null
+    });
+    let create = |source_id: &str,
+                  source_sha256: &str,
+                  conflict_key: &str,
+                  content: Value,
+                  expires_at: Option<&str>| {
+        json!({
+            "scope": scope,
+            "run_id": run_id,
+            "source_id": source_id,
+            "source_sha256": source_sha256,
+            "conflict_key": conflict_key,
+            "content": content,
+            "confidence": 0.9,
+            "fresh_until": null,
+            "expires_at": expires_at,
+            "supersedes_memory_id": null
+        })
+    };
+
+    let created = post_json(
+        &app,
+        "/api/v1/memories",
+        create(
+            "source-retrieve",
+            &"11".repeat(32),
+            "retrievable",
+            json!({"fact":"bounded rust scheduler"}),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let retrievable_id = response_json(created).await["memory"]["memory_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let retrieved = post_json(
+        &app,
+        "/api/v1/memories/retrieve",
+        json!({
+            "scope": scope,
+            "run_id": run_id,
+            "node_id": "node-memory",
+            "query": "rust scheduler",
+            "top_k": 5,
+            "max_tokens": 100,
+            "max_bytes": 400,
+            "allow_lexical_fallback": true
+        }),
+    )
+    .await;
+    assert_eq!(retrieved.status(), StatusCode::OK);
+    let retrieval = response_json(retrieved).await;
+    assert_eq!(retrieval["retrieval"]["mode"], "lexical_fallback");
+    assert_eq!(
+        retrieval["retrieval"]["selected"][0]["memory_id"],
+        retrievable_id
+    );
+
+    let cross_workspace = post_json(
+        &app,
+        "/api/v1/memories/retrieve",
+        json!({
+            "scope": {"tenant_id":"local","workspace_id":"ws-other","agent_id":null,"task_id":null},
+            "run_id": run_id,
+            "node_id": "node-memory",
+            "query": "rust scheduler",
+            "top_k": 5,
+            "max_tokens": 100,
+            "max_bytes": 400,
+            "allow_lexical_fallback": true
+        }),
+    )
+    .await;
+    assert_eq!(cross_workspace.status(), StatusCode::FORBIDDEN);
+
+    let cross_workspace_mutation = post_json(
+        &app,
+        &format!("/api/v1/memories/{retrievable_id}/forget"),
+        json!({
+            "run_id": run_id,
+            "scope": {"tenant_id":"local","workspace_id":"ws-other","agent_id":null,"task_id":null},
+            "expected_version": 1
+        }),
+    )
+    .await;
+    assert_eq!(cross_workspace_mutation.status(), StatusCode::FORBIDDEN);
+
+    let detail = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/memories/{retrievable_id}?run_id={run_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), StatusCode::OK);
+
+    let first = post_json(
+        &app,
+        "/api/v1/memories",
+        create(
+            "source-conflict-a",
+            &"22".repeat(32),
+            "same-fact",
+            json!({"value":"a"}),
+            None,
+        ),
+    )
+    .await;
+    let first_id = response_json(first).await["memory"]["memory_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let second = post_json(
+        &app,
+        "/api/v1/memories",
+        create(
+            "source-conflict-b",
+            &"33".repeat(32),
+            "same-fact",
+            json!({"value":"b"}),
+            None,
+        ),
+    )
+    .await;
+    let second_id = response_json(second).await["memory"]["memory_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let superseded = post_json(
+        &app,
+        &format!("/api/v1/memories/{second_id}/supersede"),
+        json!({
+            "run_id": run_id,
+            "scope": scope,
+            "winner_expected_version": 1,
+            "loser_memory_id": first_id,
+            "loser_expected_version": 2,
+            "confirm_supersede": true
+        }),
+    )
+    .await;
+    assert_eq!(superseded.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(superseded).await["winner"]["state"],
+        "current"
+    );
+
+    let expired = post_json(
+        &app,
+        "/api/v1/memories",
+        create(
+            "source-expired",
+            &"44".repeat(32),
+            "expired-fact",
+            json!({"value":"expired"}),
+            Some("2020-01-01T00:00:00Z"),
+        ),
+    )
+    .await;
+    assert_eq!(expired.status(), StatusCode::CREATED);
+    let pruned = post_json(
+        &app,
+        "/api/v1/memories/prune",
+        json!({"run_id":run_id,"scope":scope,"confirm_prune":true}),
+    )
+    .await;
+    assert_eq!(pruned.status(), StatusCode::OK);
+    assert_eq!(response_json(pruned).await["pruned_count"], 1);
+
+    let forgotten = post_json(
+        &app,
+        &format!("/api/v1/memories/{retrievable_id}/forget"),
+        json!({"run_id":run_id,"scope":scope,"expected_version":1}),
+    )
+    .await;
+    assert_eq!(forgotten.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(forgotten).await["memory"]["content"]["forgotten"],
+        true
+    );
+
+    let unconfirmed_recompute = post_json(
+        &app,
+        "/api/v1/budget-evidence/recompute",
+        json!({"run_id":run_id,"confirm_recompute":false}),
+    )
+    .await;
+    assert_eq!(unconfirmed_recompute.status(), StatusCode::BAD_REQUEST);
+    let first_recompute = post_json(
+        &app,
+        "/api/v1/budget-evidence/recompute",
+        json!({"run_id":run_id,"confirm_recompute":true}),
+    )
+    .await;
+    assert_eq!(first_recompute.status(), StatusCode::OK);
+    let first_recompute = response_json(first_recompute).await;
+    let repeated_recompute = post_json(
+        &app,
+        "/api/v1/budget-evidence/recompute",
+        json!({"run_id":run_id,"confirm_recompute":true}),
+    )
+    .await;
+    assert_eq!(repeated_recompute.status(), StatusCode::OK);
+    let repeated_recompute = response_json(repeated_recompute).await;
+    assert_eq!(
+        repeated_recompute["producer"]["forecast_artifact_id"],
+        first_recompute["producer"]["forecast_artifact_id"]
+    );
+    assert_eq!(
+        repeated_recompute["producer"]["anomaly_artifact_id"],
+        first_recompute["producer"]["anomaly_artifact_id"]
+    );
+    let usage = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!(
+                    "/api/v1/usage-observations?run_id={run_id}&limit=64"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(usage.status(), StatusCode::OK);
+    assert_eq!(response_json(usage).await["metadata_only"], true);
+
+    drop(app);
+    drop(store);
+    let reopened = LocalProductStore::new(&db_path).unwrap();
+    let forgotten_history = reopened.inspect_durable_memory(&retrievable_id).unwrap();
+    assert_eq!(forgotten_history.len(), 1);
+    assert_eq!(forgotten_history[0]["state"], "tombstoned");
+    assert_eq!(
+        reopened
+            .inspect_durable_memory(&second_id)
+            .unwrap()
+            .last()
+            .unwrap()["state"],
+        "current"
+    );
 }
 
 #[tokio::test]
@@ -11056,9 +11552,12 @@ async fn axum_adaptive_policy_promote_get_and_rollback_cycle() {
         )
         .await
         .unwrap();
-    assert_eq!(missing_evidence.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(missing_evidence.status(), StatusCode::GONE);
     let missing_body = response_json(missing_evidence).await;
-    assert_eq!(missing_body["code"], "adaptive_policy_evidence_missing");
+    assert_eq!(
+        missing_body["code"],
+        "legacy_adaptive_policy_promotion_deprecated"
+    );
 
     let evidence_run_ids = (0..30).map(|index| format!("run-{index}")).collect();
     let promoted = app
@@ -11074,15 +11573,12 @@ async fn axum_adaptive_policy_promote_get_and_rollback_cycle() {
         )
         .await
         .unwrap();
-    assert_eq!(promoted.status(), StatusCode::OK);
+    assert_eq!(promoted.status(), StatusCode::GONE);
     let promoted_body = response_json(promoted).await;
-    assert_eq!(promoted_body["decision"]["eligible"], true);
-    assert_eq!(promoted_body["result"]["applied"], true);
-    assert_eq!(promoted_body["result"]["live_execution_authority"], false);
-    let adjustment_id = promoted_body["result"]["adjustment_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    assert_eq!(
+        promoted_body["code"],
+        "legacy_adaptive_policy_promotion_deprecated"
+    );
 
     let listed = app
         .clone()
@@ -11098,44 +11594,9 @@ async fn axum_adaptive_policy_promote_get_and_rollback_cycle() {
         .unwrap();
     assert_eq!(listed.status(), StatusCode::OK);
     let listed_body = response_json(listed).await;
-    assert_eq!(listed_body["policies"].as_array().unwrap().len(), 1);
+    assert!(listed_body["policies"].as_array().unwrap().is_empty());
     assert_eq!(listed_body["live_execution_authority"], false);
     assert_eq!(listed_body["requires_explicit_adaptive_plan"], true);
-
-    let rollback = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri(format!(
-                    "/api/v1/adaptive-fusion/policies/{adjustment_id}/rollback"
-                ))
-                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({"confirm_adaptive_policy_rollback": true}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(rollback.status(), StatusCode::OK);
-    let rollback_body = response_json(rollback).await;
-    assert_eq!(rollback_body["rolled_back"], true);
-
-    let listed_after = app
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/api/v1/adaptive-fusion/policies")
-                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let listed_after_body = response_json(listed_after).await;
-    assert!(listed_after_body["policies"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

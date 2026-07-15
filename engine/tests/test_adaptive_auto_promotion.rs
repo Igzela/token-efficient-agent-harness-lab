@@ -10,6 +10,7 @@ use engine::feedback::{
     ADAPTIVE_PROMOTION_EVIDENCE_CHAIN_SCHEMA_VERSION, CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
     OFFLINE_REPLAY_SCHEMA_VERSION,
 };
+use engine::provider::adaptive_observation::record_evidence_chain_candidate_with_gate;
 use engine::storage::local_product_store::{
     AdaptiveObservationInput, LocalProductStore, ADAPTIVE_OBSERVATION_SCHEMA_VERSION,
 };
@@ -225,7 +226,7 @@ fn observation_input(
 }
 
 #[test]
-fn local_evidence_auto_promotion_snapshots_and_rolls_back() {
+fn local_observations_only_record_an_evidence_chain_candidate() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
     let baseline = baseline_verdict();
@@ -233,6 +234,7 @@ fn local_evidence_auto_promotion_snapshots_and_rolls_back() {
         .apply_adaptive_fusion_policy(&baseline, "operator")
         .unwrap();
     let active = store.active_adaptive_fusion_policies().unwrap().remove(0);
+    let mut candidate = None;
     for index in 0..3 {
         store
             .record_adaptive_observation(
@@ -240,34 +242,34 @@ fn local_evidence_auto_promotion_snapshots_and_rolls_back() {
                 "operator",
             )
             .unwrap();
-        store
-            .record_adaptive_observation(
-                &observation_input(&format!("strong-{index}"), "strong", 0.92, 0.05, 500),
-                "operator",
-            )
-            .unwrap();
+        candidate = Some(
+            store
+                .record_adaptive_observation(
+                    &observation_input(&format!("strong-{index}"), "strong", 0.92, 0.05, 500),
+                    "operator",
+                )
+                .unwrap(),
+        );
     }
 
-    let applied = store
-        .auto_promote_adaptive_fusion_policy(
-            &request(Some(active.policy_hash.clone())),
-            &AdaptiveAutoPromotionPolicy {
-                min_samples_per_candidate: 3,
-                min_confidence: 0.7,
-                ..Default::default()
-            },
-            &AdaptiveAutoPromotionGate::from_flags(true, true, false),
-            "operator",
-        )
-        .unwrap();
-    assert_eq!(applied["applied"], false);
-    assert_eq!(applied["status"], "blocked");
-    assert_eq!(
-        applied["blocked_reasons"][0],
-        "complete_evidence_chain_required"
+    record_evidence_chain_candidate_with_gate(
+        &store,
+        &candidate.unwrap(),
+        "operator",
+        &AdaptiveAutoPromotionGate::from_flags(true, true, false),
     );
-    let restored = store.active_adaptive_fusion_policies().unwrap().remove(0);
-    assert_eq!(restored.policy_hash, active.policy_hash);
+    let unchanged = store.active_adaptive_fusion_policies().unwrap().remove(0);
+    assert_eq!(unchanged.policy_hash, active.policy_hash);
+    let audit = store.audit_events(100).unwrap();
+    let candidate_event = audit
+        .iter()
+        .find(|event| event["action"] == "adaptive_policy.evidence_chain_candidate")
+        .expect("evidence-chain candidate audit");
+    assert_eq!(candidate_event["details"]["mutation_authority"], "none");
+    assert_eq!(
+        candidate_event["details"]["required_next_owner"],
+        "offline_replay_evidence_chain_operator"
+    );
 }
 
 fn replay_report_for_promotion() -> OfflineReplayReport {

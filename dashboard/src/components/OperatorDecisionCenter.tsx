@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, fetchOperatorDecisions } from "@/lib/api-client";
+import { ApiError, applyOperatorDecisionAction, fetchOperatorDecisions } from "@/lib/api-client";
 import type { OperatorDecisionItem, OperatorDecisionQueueResponse } from "@/lib/types";
 import { EmptyState } from "./EmptyState";
 import { StateBanner } from "./StateBanner";
@@ -20,6 +20,8 @@ function message(error: unknown): string {
 export function OperatorDecisionCenter() {
   const [data, setData] = useState<OperatorDecisionQueueResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [actionStatus, setActionStatus] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -27,6 +29,35 @@ export function OperatorDecisionCenter() {
     catch (cause) { setError(message(cause)); }
     finally { setLoading(false); }
   }, []);
+  const apply = useCallback(async (item: OperatorDecisionItem, action: "rollback" | "inspect" | "acknowledge") => {
+    if (!data) return;
+    const queue = data.queue;
+    let reason: string | undefined;
+    if (action === "acknowledge") {
+      reason = window.prompt("Optional acknowledgement reason (this is not approval):") ?? undefined;
+    }
+    if (action !== "inspect" && !window.confirm(`Confirm ${action} for ${item.resource_id}?`)) return;
+    setActionBusy(`${item.decision_id}:${action}`);
+    setActionStatus(null);
+    try {
+      const result = await applyOperatorDecisionAction(item.decision_id, {
+        queue_sha256: queue.queue_sha256,
+        generated_at: queue.generated_at,
+        maximum_freshness_seconds: queue.maximum_freshness_seconds,
+        limit: queue.limit,
+        offset: queue.offset,
+        action,
+        confirm_action: action !== "inspect",
+        reason,
+      });
+      setActionStatus(`${result.action} completed through its typed owner for ${item.resource_id}.`);
+      if (action !== "inspect") await load();
+    } catch (cause) {
+      setActionStatus(message(cause));
+    } finally {
+      setActionBusy(null);
+    }
+  }, [data, load]);
   useEffect(() => { void load(); }, [load]);
   if (loading) return <StateBanner title="Loading Decision Center" tone="info"><p>Recomputing bounded evidence from existing owners.</p></StateBanner>;
   if (error) return <StateBanner title="Decision Center unavailable" tone="risk"><p>{error}</p><button type="button" onClick={() => void load()}>Retry</button></StateBanner>;
@@ -34,13 +65,19 @@ export function OperatorDecisionCenter() {
   if (queue.items.length === 0) return <EmptyState title="No operator decisions" description="No fresh actionable, conflicting, expired, insufficient, or resolved evidence is currently available." />;
   return <section className="stack">
     <div className="heading-row"><div><p className="eyebrow">Derived evidence</p><h2>Decision Center</h2></div><span className="pill info">{queue.total} items</span></div>
-    <p className="muted">Read-only queue. Suggested actions are not controls and require their existing guarded owners.</p>
+    <p className="muted">The queue is read-only. Controls below rebind the exact queue hash and invoke only the existing guarded typed owner.</p>
+    {actionStatus && <StateBanner title="Operator action" tone="info"><p>{actionStatus}</p></StateBanner>}
     <div className="detail-summary"><div className="summary-tile"><span className="metric-label">Freshness bound</span><strong>{queue.maximum_freshness_seconds}s</strong></div><div className="summary-tile"><span className="metric-label">Queue hash</span><strong><code>{queue.queue_sha256.slice(0, 12)}</code></strong></div></div>
     {queue.items.map((item) => <article className="card stack" key={item.decision_id}>
       <div className="heading-row"><div><h3>{item.resource_id}</h3><p className="muted">{item.conflict_key}</p></div><span className={`pill ${tone(item)}`}>{item.outcome}</span></div>
       <div className="detail-summary"><div className="summary-tile"><span className="metric-label">Suggested action</span><strong>{item.recommended_action ?? "None"}</strong></div><div className="summary-tile"><span className="metric-label">Confidence</span><strong>{(item.confidence * 100).toFixed(0)}%</strong></div><div className="summary-tile"><span className="metric-label">Evidence</span><strong>{item.evidence_references.length}</strong></div></div>
       <p className="muted">{item.reason_codes.join(", ")}</p>
       {item.selected_source && <p className="muted">Selected source: <code>{item.selected_source.evidence_type}/{item.selected_source.evidence_id}</code></p>}
+      <div className="button-row">
+        <button type="button" disabled={actionBusy !== null} onClick={() => void apply(item, "inspect")}>Inspect</button>
+        {item.selected_source && item.outcome !== "resolved" && <button type="button" disabled={actionBusy !== null} onClick={() => void apply(item, "acknowledge")}>Acknowledge (not approve)</button>}
+        {item.recommended_action === "rollback" && <button type="button" disabled={actionBusy !== null} onClick={() => void apply(item, "rollback")}>Rollback exact snapshot</button>}
+      </div>
     </article>)}
   </section>;
 }

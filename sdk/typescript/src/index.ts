@@ -55,8 +55,6 @@ import type {
   ProviderAuditResponse,
   DispatchMetricsResponse,
   AdaptiveFusionPoliciesResponse,
-  AdaptivePolicyPromotionRequest,
-  AdaptivePolicyPromotionResponse,
   AdaptivePolicyRollbackRequest,
   AdaptivePolicyRollbackResponse,
   FeedbackCostOfPassResponse,
@@ -110,6 +108,26 @@ import type {
   ToolHookPolicyRequest,
   ToolHookPolicyValue,
   ToolPolicyResponse,
+  BudgetRecomputeRequest,
+  BudgetRecomputeResponse,
+  DurableMemoryCreateRequest,
+  MemoryPruneRequest,
+  MemoryPruneResponse,
+  MemorySupersedeRequest,
+  MemorySupersedeResponse,
+  DurableMemoryHistoryResponse,
+  DurableMemoryResponse,
+  DurableMemoryRevisionRequest,
+  MemoryVersionTransitionRequest,
+  EvidenceChainPromotionRequest,
+  MemoryRetrievalRequest,
+  MemoryRetrievalResponse,
+  OfflineReplayGenerateRequest,
+  OfflineReplayGenerateResponse,
+  ReplayProductionProfileRequest,
+  ReplayProductionProfileResponse,
+  ReplayProductionProfileUpdateResponse,
+  UsageObservationListResponse,
 } from "./wire-types.js";
 
 export interface AgentControlPlaneClientOptions {
@@ -272,6 +290,17 @@ export class AgentControlPlaneClient {
     );
   }
 
+  recomputeBudgetEvidence(request: BudgetRecomputeRequest): Promise<BudgetRecomputeResponse> {
+    return this.postJson<BudgetRecomputeResponse>("/api/v1/budget-evidence/recompute", request);
+  }
+
+  usageObservations(runId: string, limit?: number): Promise<UsageObservationListResponse> {
+    return this.getJson<UsageObservationListResponse>(`/api/v1/usage-observations${queryString({
+      run_id: runId,
+      limit,
+    })}`);
+  }
+
   offlineReplayArtifacts(options: OfflineReplayListOptions = {}): Promise<OfflineReplayArtifactListResponse> {
     return this.getJson<OfflineReplayArtifactListResponse>(`/api/v1/offline-replays${queryString({
       status: options.status,
@@ -284,6 +313,74 @@ export class AgentControlPlaneClient {
     return this.getJson<OfflineReplayArtifactResponse>(
       `/api/v1/offline-replays/${encodeURIComponent(artifactId)}`,
     );
+  }
+
+  generateOfflineReplay(request: OfflineReplayGenerateRequest): Promise<OfflineReplayGenerateResponse> {
+    return this.postJson<OfflineReplayGenerateResponse>("/api/v1/offline-replays/generate", request);
+  }
+
+  replayProductionProfile(): Promise<ReplayProductionProfileResponse> {
+    return this.getJson<ReplayProductionProfileResponse>("/api/v1/offline-replays/production-profile");
+  }
+
+  configureReplayProductionProfile(
+    request: ReplayProductionProfileRequest,
+  ): Promise<ReplayProductionProfileUpdateResponse> {
+    return this.putJson<ReplayProductionProfileUpdateResponse>(
+      "/api/v1/offline-replays/production-profile",
+      request,
+    );
+  }
+
+  promoteAdaptivePolicyWithEvidence(request: EvidenceChainPromotionRequest): Promise<Record<string, unknown>> {
+    return this.postJson<Record<string, unknown>>(
+      "/api/v1/adaptive-fusion/policies/promote-with-evidence",
+      request,
+    );
+  }
+
+  createMemory(request: DurableMemoryCreateRequest): Promise<DurableMemoryResponse> {
+    return this.postJson<DurableMemoryResponse>("/api/v1/memories", request);
+  }
+
+  memory(memoryId: string, runId: string): Promise<DurableMemoryHistoryResponse> {
+    return this.getJson<DurableMemoryHistoryResponse>(`/api/v1/memories/${encodeURIComponent(memoryId)}?run_id=${encodeURIComponent(runId)}`);
+  }
+
+  reviseMemory(memoryId: string, request: DurableMemoryRevisionRequest): Promise<DurableMemoryResponse> {
+    return this.postJson<DurableMemoryResponse>(
+      `/api/v1/memories/${encodeURIComponent(memoryId)}/revise`,
+      request,
+    );
+  }
+
+  invalidateMemory(memoryId: string, request: MemoryVersionTransitionRequest): Promise<DurableMemoryResponse> {
+    return this.postJson<DurableMemoryResponse>(
+      `/api/v1/memories/${encodeURIComponent(memoryId)}/invalidate`,
+      request,
+    );
+  }
+
+  forgetMemory(memoryId: string, request: MemoryVersionTransitionRequest): Promise<DurableMemoryResponse> {
+    return this.postJson<DurableMemoryResponse>(
+      `/api/v1/memories/${encodeURIComponent(memoryId)}/forget`,
+      request,
+    );
+  }
+
+  supersedeMemory(memoryId: string, request: MemorySupersedeRequest): Promise<MemorySupersedeResponse> {
+    return this.postJson<MemorySupersedeResponse>(
+      `/api/v1/memories/${encodeURIComponent(memoryId)}/supersede`,
+      request,
+    );
+  }
+
+  pruneMemories(request: MemoryPruneRequest): Promise<MemoryPruneResponse> {
+    return this.postJson<MemoryPruneResponse>("/api/v1/memories/prune", request);
+  }
+
+  retrieveMemories(request: MemoryRetrievalRequest): Promise<MemoryRetrievalResponse> {
+    return this.postJson<MemoryRetrievalResponse>("/api/v1/memories/retrieve", request);
   }
 
   operatorDecisions(options: OperatorDecisionQueueOptions = {}): Promise<OperatorDecisionQueueResponse> {
@@ -438,18 +535,6 @@ export class AgentControlPlaneClient {
     return this.getJson<AdaptiveFusionPoliciesResponse>("/api/v1/adaptive-fusion/policies");
   }
 
-  promoteAdaptiveFusionPolicy(
-    request: AdaptivePolicyPromotionRequest,
-  ): Promise<AdaptivePolicyPromotionResponse> {
-    return this.postJson<AdaptivePolicyPromotionResponse>(
-      "/api/v1/adaptive-fusion/policies/promote",
-      {
-        actor: request.actor,
-        promotion: request.promotion,
-      },
-    );
-  }
-
   rollbackAdaptiveFusionPolicy(
     adjustmentId: string,
     request: AdaptivePolicyRollbackRequest = {},
@@ -560,6 +645,7 @@ export class AgentControlPlaneClient {
       ...(request.confirm_execution === undefined
         ? {}
         : { confirm_execution: request.confirm_execution }),
+      ...(request.workspace_id === undefined ? {} : { workspace_id: request.workspace_id }),
     });
   }
 

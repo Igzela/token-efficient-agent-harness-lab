@@ -12,7 +12,7 @@ impl LocalProductStore {
     ) -> Result<(), String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                conn.execute(
+                let changed = conn.execute(
                     "INSERT OR IGNORE INTO provider_audit_events
                      (event_id, dispatch_id, provider_id, event_type,
                       input_token_count, output_token_count, cost, currency,
@@ -34,6 +34,16 @@ impl LocalProductStore {
                     ],
                 )
                 .map_err(|e| e.to_string())?;
+                if changed == 0 {
+                    let existing = conn.query_row(
+                        "SELECT event_id,dispatch_id,provider_id,event_type,input_token_count,output_token_count,cost,currency,latency_ms,error_domain,redaction_status,created_at FROM provider_audit_events WHERE event_id=?1",
+                        params![event.event_id],
+                        provider_event_binding_sqlite,
+                    ).map_err(|error|error.to_string())?;
+                    if existing != provider_event_binding(event) {
+                        return Err("provider audit event id binding conflict".to_string());
+                    }
+                }
                 Ok(())
             }),
             #[cfg(feature = "pg")]
@@ -53,7 +63,7 @@ impl LocalProductStore {
                 let params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
                     &eid, &did, &pid, &etype, &itc, &otc, &cost, &cur, &lat, &edom, &rs, &cat,
                 ];
-                client
+                let changed = client
                     .execute(
                         "INSERT INTO provider_audit_events
                      (event_id, dispatch_id, provider_id, event_type,
@@ -64,6 +74,10 @@ impl LocalProductStore {
                         &params,
                     )
                     .map_err(|e| e.to_string())?;
+                if changed == 0 {
+                    let row=client.query_one("SELECT event_id,dispatch_id,provider_id,event_type,input_token_count,output_token_count,cost,currency,latency_ms,error_domain,redaction_status,created_at FROM provider_audit_events WHERE event_id=$1",&[&event.event_id]).map_err(|error|error.to_string())?;
+                    if provider_event_binding_pg(&row)!=provider_event_binding(event){return Err("provider audit event id binding conflict".to_string())}
+                }
                 Ok(())
             }),
         }
@@ -320,7 +334,7 @@ impl LocalProductStore {
                                 input_token_count, output_token_count, cost, currency,
                                 latency_ms, error_domain, redaction_status, created_at
                          FROM provider_audit_events
-                         ORDER BY created_at DESC
+                         ORDER BY created_at DESC, event_id DESC
                          LIMIT ?1 OFFSET ?2",
                     )
                     .map_err(|e| e.to_string())?;
@@ -352,7 +366,7 @@ impl LocalProductStore {
                                 input_token_count, output_token_count, cost, currency,
                                 latency_ms, error_domain, redaction_status, created_at
                          FROM provider_audit_events
-                         ORDER BY created_at DESC
+                         ORDER BY created_at DESC, event_id DESC
                          LIMIT $1 OFFSET $2",
                         &[&limit, &offset],
                     )
@@ -375,7 +389,7 @@ impl LocalProductStore {
                                 latency_ms, error_domain, redaction_status, created_at
                          FROM provider_audit_events
                          WHERE dispatch_id = ?1
-                         ORDER BY created_at DESC",
+                         ORDER BY created_at DESC, event_id DESC",
                     )
                     .map_err(|e| e.to_string())?;
                 let rows = stmt
@@ -408,7 +422,7 @@ impl LocalProductStore {
                                 latency_ms, error_domain, redaction_status, created_at
                          FROM provider_audit_events
                          WHERE dispatch_id = $1
-                         ORDER BY created_at DESC",
+                         ORDER BY created_at DESC, event_id DESC",
                         &[&p1],
                     )
                     .map_err(|e| e.to_string())?;
@@ -416,6 +430,21 @@ impl LocalProductStore {
             }),
         }
     }
+}
+
+fn provider_event_binding(event: &crate::provider::ProviderAuditEvent) -> Value {
+    json!({"event_id":event.event_id,"dispatch_id":event.dispatch_id,"provider_id":event.provider_id,"event_type":event.event_type,"input_token_count":event.input_token_count,"output_token_count":event.output_token_count,"cost":event.cost,"currency":event.currency,"latency_ms":event.latency_ms,"error_domain":event.error_domain,"redaction_status":event.redaction_status,"created_at":event.created_at})
+}
+
+fn provider_event_binding_sqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    Ok(
+        json!({"event_id":row.get::<_,String>(0)?,"dispatch_id":row.get::<_,String>(1)?,"provider_id":row.get::<_,String>(2)?,"event_type":row.get::<_,String>(3)?,"input_token_count":row.get::<_,Option<i64>>(4)?,"output_token_count":row.get::<_,Option<i64>>(5)?,"cost":row.get::<_,Option<f64>>(6)?,"currency":row.get::<_,Option<String>>(7)?,"latency_ms":row.get::<_,Option<i64>>(8)?,"error_domain":row.get::<_,Option<String>>(9)?,"redaction_status":row.get::<_,String>(10)?,"created_at":row.get::<_,String>(11)?}),
+    )
+}
+
+#[cfg(feature = "pg")]
+fn provider_event_binding_pg(row: &postgres::Row) -> Value {
+    json!({"event_id":row.get::<_,String>(0),"dispatch_id":row.get::<_,String>(1),"provider_id":row.get::<_,String>(2),"event_type":row.get::<_,String>(3),"input_token_count":row.get::<_,Option<i32>>(4).map(i64::from),"output_token_count":row.get::<_,Option<i32>>(5).map(i64::from),"cost":row.get::<_,Option<f64>>(6),"currency":row.get::<_,Option<String>>(7),"latency_ms":row.get::<_,Option<i32>>(8).map(i64::from),"error_domain":row.get::<_,Option<String>>(9),"redaction_status":row.get::<_,String>(10),"created_at":row.get::<_,String>(11)})
 }
 
 fn validate_existing_reservation(

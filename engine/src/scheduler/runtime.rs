@@ -103,6 +103,11 @@ fn scheduler_tick_with_limit(
     pool: &Arc<ExecutorPool>,
     tick_limit: usize,
 ) -> Result<TickResult, String> {
+    // Production evidence recovery shares the scheduler tick; it does not
+    // introduce another queue or authority owner. Terminal runs are retried
+    // idempotently after process restart, including ticks with no active work.
+    store.recover_budget_intelligence_for_terminal_runs(32, "scheduler")?;
+    store.recover_registered_offline_replays(32, "scheduler")?;
     if dynamic_workflow_enabled(config) {
         return dynamic_scheduler_tick(store, config, executor_arc, pool, tick_limit);
     }
