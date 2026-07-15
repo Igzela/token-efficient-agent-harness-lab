@@ -323,7 +323,7 @@ CREATE TABLE IF NOT EXISTS provider_embedding_operations (
     receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
     provider_id TEXT NOT NULL,
     model_id TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown','retry_authorized')),
+    state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown','outcome_unknown_acknowledged','retry_authorized')),
     attempt_count BIGINT NOT NULL DEFAULT 1 CHECK (attempt_count BETWEEN 1 AND 4),
     vector_json TEXT,
     metadata_json TEXT,

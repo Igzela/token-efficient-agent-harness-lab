@@ -3051,7 +3051,7 @@ fn pg_provider_embedding_failure_audit_and_retry_authority_are_atomic() {
         assert_eq!(row.get::<_, i64>(2), 1);
         let error_events:i64=client.query_one(
             "SELECT COUNT(*) FROM provider_audit_events WHERE dispatch_id LIKE $1 AND event_type='error'",
-            &[&format!("memory-embedding-%")],
+            &[&"memory-embedding-%".to_string()],
         ).map_err(|error|error.to_string())?.get(0);
         assert!(error_events >= 1);
         let resolution = ProviderEmbeddingResolutionRequest {

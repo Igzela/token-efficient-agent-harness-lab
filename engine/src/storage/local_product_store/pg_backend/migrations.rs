@@ -104,7 +104,10 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
     )?;
     let sql = match (metadata, binding) {
         (true, true) => "",
-        (false, false) => schema::V25_DDL,
+        (false, false) => {
+            "ALTER TABLE durable_memory_versions ADD COLUMN embedding_metadata_json TEXT;
+             ALTER TABLE durable_memory_versions ADD COLUMN embedding_binding_sha256 TEXT;"
+        }
         (false, true) => {
             "ALTER TABLE durable_memory_versions ADD COLUMN embedding_metadata_json TEXT;"
         }
@@ -116,8 +119,7 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
         tx.batch_execute(sql)
             .map_err(|error| format!("migration 25 failed: {error}"))?;
     }
-    tx.batch_execute(
-        "CREATE TABLE IF NOT EXISTS provider_embedding_operations (
+    let operation_ddl = "CREATE TABLE IF NOT EXISTS provider_embedding_operations (
             operation_id TEXT PRIMARY KEY,
             target_memory_id TEXT NOT NULL,
             target_version BIGINT NOT NULL,
@@ -135,19 +137,48 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
             receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
             provider_id TEXT NOT NULL,
             model_id TEXT NOT NULL,
-            state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown','retry_authorized')),
+            state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown','outcome_unknown_acknowledged','retry_authorized')),
             attempt_count BIGINT NOT NULL DEFAULT 1 CHECK (attempt_count BETWEEN 1 AND 4),
             vector_json TEXT,
             metadata_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE (target_memory_id, target_version)
-        );
-        CREATE INDEX IF NOT EXISTS idx_provider_embedding_operations_state
-            ON provider_embedding_operations(state, updated_at);",
-    )
-    .map_err(|error| format!("migration 25 operation receipt failed: {error}"))?;
-    if !pg_column_exists(&mut tx, "provider_embedding_operations", "receipt_sha256")? {
+        );";
+    tx.batch_execute(operation_ddl)
+        .map_err(|error| format!("migration 25 operation receipt failed: {error}"))?;
+    let required_columns = [
+        "operation_id",
+        "target_memory_id",
+        "target_version",
+        "tenant_id",
+        "workspace_id",
+        "agent_id",
+        "run_id",
+        "task_id",
+        "source_id",
+        "source_sha256",
+        "operation_binding_sha256",
+        "content_sha256",
+        "contract_json",
+        "contract_sha256",
+        "receipt_sha256",
+        "provider_id",
+        "model_id",
+        "state",
+        "attempt_count",
+        "vector_json",
+        "metadata_json",
+        "created_at",
+        "updated_at",
+    ];
+    let mut missing_columns = Vec::new();
+    for column in required_columns {
+        if !pg_column_exists(&mut tx, "provider_embedding_operations", column)? {
+            missing_columns.push(column);
+        }
+    }
+    if !missing_columns.is_empty() {
         let occupied: bool = tx
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
@@ -156,16 +187,15 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
             .map(|row| row.get(0))
             .map_err(|error| format!("failed to inspect partial migration 25 receipts: {error}"))?;
         if occupied {
-            return Err(
-                "migration 25 cannot repair an occupied operation table without receipt hashes"
-                    .to_string(),
-            );
+            return Err(format!(
+                "migration 25 cannot repair an occupied partial operation table; missing {}",
+                missing_columns.join(",")
+            ));
         }
-        tx.batch_execute(
-            "ALTER TABLE provider_embedding_operations
-             ADD COLUMN receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64);",
-        )
-        .map_err(|error| format!("migration 25 receipt hash repair failed: {error}"))?;
+        tx.batch_execute("DROP TABLE provider_embedding_operations;")
+            .map_err(|error| format!("migration 25 partial table cleanup failed: {error}"))?;
+        tx.batch_execute(operation_ddl)
+            .map_err(|error| format!("migration 25 partial table repair failed: {error}"))?;
     }
     tx.execute(
         "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
@@ -184,9 +214,18 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
     )? {
         return Err("migration 25 column verification failed".to_string());
     }
-    if !pg_column_exists(&mut tx, "provider_embedding_operations", "receipt_sha256")? {
-        return Err("migration 25 operation receipt verification failed".to_string());
+    for column in required_columns {
+        if !pg_column_exists(&mut tx, "provider_embedding_operations", column)? {
+            return Err(format!(
+                "migration 25 operation table verification failed: missing {column}"
+            ));
+        }
     }
+    tx.batch_execute(
+        "CREATE INDEX IF NOT EXISTS idx_provider_embedding_operations_state
+         ON provider_embedding_operations(state, updated_at);",
+    )
+    .map_err(|error| format!("migration 25 operation index failed: {error}"))?;
     tx.commit()
         .map_err(|error| format!("failed to commit migration 25: {error}"))
 }

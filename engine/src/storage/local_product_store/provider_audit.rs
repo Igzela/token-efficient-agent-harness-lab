@@ -69,7 +69,7 @@ struct StoredEmbeddingOperation {
 #[serde(rename_all = "snake_case")]
 pub enum ProviderEmbeddingResolutionAction {
     RetryFailed,
-    ConfirmUnknownNoEffectAndRetry,
+    AcknowledgeUnknown,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -109,20 +109,26 @@ impl LocalProductStore {
                 }
                 None
             }
-            ProviderEmbeddingResolutionAction::ConfirmUnknownNoEffectAndRetry => {
+            ProviderEmbeddingResolutionAction::AcknowledgeUnknown => {
                 let source = request
                     .evidence_source_id
                     .as_deref()
-                    .filter(|value| !value.is_empty())
+                    .filter(|value| {
+                        !value.is_empty()
+                            && value.len() <= 256
+                            && !value.chars().any(char::is_control)
+                            && !crate::provider::redaction::contains_sensitive_patterns(value)
+                    })
                     .ok_or_else(|| {
-                        "unknown-outcome retry requires an evidence source".to_string()
+                        "unknown-outcome acknowledgement requires an evidence source".to_string()
                     })?;
                 let hash = request
                     .evidence_sha256
                     .as_deref()
                     .filter(|value| is_sha256(value))
                     .ok_or_else(|| {
-                        "unknown-outcome retry requires a SHA-256 evidence binding".to_string()
+                        "unknown-outcome acknowledgement requires a SHA-256 evidence binding"
+                            .to_string()
                     })?;
                 Some((source, hash))
             }
@@ -149,21 +155,23 @@ impl LocalProductStore {
                 let row=sqlite_embedding_operation_for_resolution(&tx,memory_id,request.target_version)?
                     .ok_or_else(||"provider embedding operation not found".to_string())?;
                 validate_resolution_scope(&row,request)?;
-                if row.state=="retry_authorized" && row.attempt_count==request.expected_attempt_count+1 {
+                if resolution_is_idempotent(&row,request) {
+                    let action=resolution_audit_action(&request.action);
+                    let expected=audit_evidence(&row.operation_id,resolution_prior_state(&request.action),row.attempt_count);
+                    validate_idempotent_resolution_sqlite(&tx,&format!("provider-embedding/{}",row.operation_id),action,&expected)?;
                     return Ok(json!({"operation_id":row.operation_id,"state":row.state,"attempt_count":row.attempt_count,"idempotent":true}));
                 }
-                validate_resolution_transition(&row,request)?;
-                let next_attempt=row.attempt_count+1;
+                let transition=resolution_transition(&row,request)?;
                 let changed=tx.execute(
-                    "UPDATE provider_embedding_operations SET state='retry_authorized',attempt_count=?1,updated_at=?2
-                     WHERE operation_id=?3 AND state=?4 AND attempt_count=?5",
-                    params![next_attempt,now,row.operation_id,row.state,row.attempt_count],
+                    "UPDATE provider_embedding_operations SET state=?1,attempt_count=?2,updated_at=?3
+                     WHERE operation_id=?4 AND state=?5 AND attempt_count=?6",
+                    params![transition.next_state,transition.next_attempt,now,row.operation_id,row.state,row.attempt_count],
                 ).map_err(|error|error.to_string())?;
                 require_single_embedding_operation_update(changed)?;
-                append_audit_locked(&tx,&now,actor,"provider_embedding.retry_authorized",
-                    &format!("provider-embedding/{}",row.operation_id),&audit_evidence(&row.operation_id,&row.state,next_attempt))?;
+                append_audit_locked(&tx,&now,actor,transition.audit_action,
+                    &format!("provider-embedding/{}",row.operation_id),&audit_evidence(&row.operation_id,&row.state,transition.next_attempt))?;
                 tx.commit().map_err(|error|error.to_string())?;
-                Ok(json!({"operation_id":row.operation_id,"state":"retry_authorized","attempt_count":next_attempt,"idempotent":false}))
+                Ok(json!({"operation_id":row.operation_id,"state":transition.next_state,"attempt_count":transition.next_attempt,"idempotent":false}))
             }),
             #[cfg(feature="pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
@@ -173,21 +181,23 @@ impl LocalProductStore {
                 let row=pg_embedding_operation_for_resolution(&mut tx,memory_id,request.target_version)?
                     .ok_or_else(||"provider embedding operation not found".to_string())?;
                 validate_resolution_scope(&row,request)?;
-                if row.state=="retry_authorized" && row.attempt_count==request.expected_attempt_count+1 {
+                if resolution_is_idempotent(&row,request) {
+                    let action=resolution_audit_action(&request.action);
+                    let expected=audit_evidence(&row.operation_id,resolution_prior_state(&request.action),row.attempt_count);
+                    validate_idempotent_resolution_pg(&mut tx,&format!("provider-embedding/{}",row.operation_id),action,&expected)?;
                     return Ok(json!({"operation_id":row.operation_id,"state":row.state,"attempt_count":row.attempt_count,"idempotent":true}));
                 }
-                validate_resolution_transition(&row,request)?;
-                let next_attempt=row.attempt_count+1;
+                let transition=resolution_transition(&row,request)?;
                 let changed=tx.execute(
-                    "UPDATE provider_embedding_operations SET state='retry_authorized',attempt_count=$1,updated_at=$2
-                     WHERE operation_id=$3 AND state=$4 AND attempt_count=$5",
-                    &[&next_attempt,&now,&row.operation_id,&row.state,&row.attempt_count],
+                    "UPDATE provider_embedding_operations SET state=$1,attempt_count=$2,updated_at=$3
+                     WHERE operation_id=$4 AND state=$5 AND attempt_count=$6",
+                    &[&transition.next_state,&transition.next_attempt,&now,&row.operation_id,&row.state,&row.attempt_count],
                 ).map_err(|error|error.to_string())?;
                 require_single_embedding_operation_update(changed as usize)?;
-                append_provider_embedding_resolution_audit_pg(&mut tx,&now,actor,"provider_embedding.retry_authorized",
-                    &format!("provider-embedding/{}",row.operation_id),&audit_evidence(&row.operation_id,&row.state,next_attempt))?;
+                append_provider_embedding_resolution_audit_pg(&mut tx,&now,actor,transition.audit_action,
+                    &format!("provider-embedding/{}",row.operation_id),&audit_evidence(&row.operation_id,&row.state,transition.next_attempt))?;
                 tx.commit().map_err(|error|error.to_string())?;
-                Ok(json!({"operation_id":row.operation_id,"state":"retry_authorized","attempt_count":next_attempt,"idempotent":false}))
+                Ok(json!({"operation_id":row.operation_id,"state":transition.next_state,"attempt_count":transition.next_attempt,"idempotent":false}))
             }),
         }
     }
@@ -294,7 +304,7 @@ impl LocalProductStore {
             || pricing.prompt_cost_per_token_usd != 0.0
             || pricing.completion_cost_per_token_usd != 0.0
             || pricing.currency != "USD"
-            || pricing.source != "provider_catalog_reported"
+            || pricing.source != crate::provider::embedding::OPENROUTER_EMBEDDING_PRICING_SOURCE
         {
             return Err(
                 "zero-cost provider reservation requires verified free embedding pricing"
@@ -985,6 +995,9 @@ impl LocalProductStore {
 }
 
 fn validate_embedding_operation(operation: &ProviderEmbeddingOperation) -> Result<(), String> {
+    let contract: crate::provider::embedding::EmbeddingContractEvidence =
+        serde_json::from_str(&operation.contract_json)
+            .map_err(|_| "invalid provider embedding operation binding".to_string())?;
     if operation.operation_id.is_empty()
         || operation.target_memory_id.is_empty()
         || operation.target_version <= 0
@@ -1000,8 +1013,9 @@ fn validate_embedding_operation(operation: &ProviderEmbeddingOperation) -> Resul
             sha2::Sha256::digest(operation.contract_json.as_bytes())
         ) != operation.contract_sha256
         || operation.receipt_sha256 != provider_embedding_operation_receipt_sha256(operation)?
-        || operation.provider_id != crate::provider::embedding::OPENROUTER_EMBEDDING_PROVIDER_ID
-        || operation.model_id != crate::provider::embedding::OPENROUTER_EMBEDDING_MODEL_ID
+        || contract.provider_id != operation.provider_id
+        || contract.requested_model_id != operation.model_id
+        || !crate::provider::embedding::is_supported_durable_embedding_contract(&contract)
         || operation.created_at.len() < 10
     {
         return Err("invalid provider embedding operation binding".to_string());
@@ -1058,7 +1072,7 @@ fn validate_verified_free_embedding_reservation(
         || pricing.prompt_cost_per_token_usd != 0.0
         || pricing.completion_cost_per_token_usd != 0.0
         || pricing.currency != "USD"
-        || pricing.source != "provider_catalog_reported"
+        || pricing.source != crate::provider::embedding::OPENROUTER_EMBEDDING_PRICING_SOURCE
     {
         return Err(
             "zero-cost provider reservation requires verified free embedding pricing".to_string(),
@@ -1101,7 +1115,7 @@ fn validate_stored_embedding_operation(
             }
             _ => Err("completed provider embedding receipt is incomplete".to_string()),
         },
-        "request_sent" | "outcome_unknown" => {
+        "request_sent" | "outcome_unknown" | "outcome_unknown_acknowledged" => {
             Err("provider embedding outcome is unknown; automatic replay is forbidden".to_string())
         }
         "failed" => Err(
@@ -1248,17 +1262,109 @@ fn validate_resolution_scope(
     Ok(())
 }
 
-fn validate_resolution_transition(
+struct ResolutionTransition {
+    next_state: &'static str,
+    next_attempt: i64,
+    audit_action: &'static str,
+}
+
+fn resolution_is_idempotent(
     row: &StoredEmbeddingOperation,
     request: &ProviderEmbeddingResolutionRequest,
+) -> bool {
+    match request.action {
+        ProviderEmbeddingResolutionAction::RetryFailed => {
+            row.state == "retry_authorized"
+                && row.attempt_count == request.expected_attempt_count + 1
+        }
+        ProviderEmbeddingResolutionAction::AcknowledgeUnknown => {
+            row.state == "outcome_unknown_acknowledged"
+                && row.attempt_count == request.expected_attempt_count
+        }
+    }
+}
+
+fn resolution_audit_action(action: &ProviderEmbeddingResolutionAction) -> &'static str {
+    match action {
+        ProviderEmbeddingResolutionAction::RetryFailed => "provider_embedding.retry_authorized",
+        ProviderEmbeddingResolutionAction::AcknowledgeUnknown => {
+            "provider_embedding.outcome_unknown_acknowledged"
+        }
+    }
+}
+
+fn resolution_prior_state(action: &ProviderEmbeddingResolutionAction) -> &'static str {
+    match action {
+        ProviderEmbeddingResolutionAction::RetryFailed => "failed",
+        ProviderEmbeddingResolutionAction::AcknowledgeUnknown => "outcome_unknown",
+    }
+}
+
+fn validate_idempotent_resolution_sqlite(
+    tx: &rusqlite::Transaction<'_>,
+    resource: &str,
+    action: &str,
+    expected: &Value,
 ) -> Result<(), String> {
-    if row.attempt_count != request.expected_attempt_count || row.attempt_count >= 4 {
+    let details: String = tx
+        .query_row(
+            "SELECT details_json FROM audit_log WHERE resource=?1 AND action=?2 ORDER BY audit_id DESC LIMIT 1",
+            params![resource, action],
+            |row| row.get(0),
+        )
+        .map_err(|_| "provider embedding reconciliation audit binding is missing".to_string())?;
+    let actual: Value = serde_json::from_str(&details)
+        .map_err(|_| "provider embedding reconciliation audit binding is malformed".to_string())?;
+    if actual != *expected {
+        return Err("provider embedding reconciliation idempotency binding mismatch".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn validate_idempotent_resolution_pg(
+    tx: &mut postgres::Transaction<'_>,
+    resource: &str,
+    action: &str,
+    expected: &Value,
+) -> Result<(), String> {
+    let details: String = tx
+        .query_opt(
+            "SELECT details_json FROM audit_log WHERE resource=$1 AND action=$2 ORDER BY audit_id DESC LIMIT 1",
+            &[&resource, &action],
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "provider embedding reconciliation audit binding is missing".to_string())?
+        .get(0);
+    let actual: Value = serde_json::from_str(&details)
+        .map_err(|_| "provider embedding reconciliation audit binding is malformed".to_string())?;
+    if actual != *expected {
+        return Err("provider embedding reconciliation idempotency binding mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn resolution_transition(
+    row: &StoredEmbeddingOperation,
+    request: &ProviderEmbeddingResolutionRequest,
+) -> Result<ResolutionTransition, String> {
+    if row.attempt_count != request.expected_attempt_count {
         return Err("provider embedding reconciliation attempt conflict".to_string());
     }
     match (&request.action, row.state.as_str()) {
-        (ProviderEmbeddingResolutionAction::RetryFailed, "failed") => Ok(()),
-        (ProviderEmbeddingResolutionAction::ConfirmUnknownNoEffectAndRetry, "outcome_unknown") => {
-            Ok(())
+        (ProviderEmbeddingResolutionAction::RetryFailed, "failed") if row.attempt_count < 4 => {
+            Ok(ResolutionTransition {
+                next_state: "retry_authorized",
+                next_attempt: row.attempt_count + 1,
+                audit_action: "provider_embedding.retry_authorized",
+            })
+        }
+        (ProviderEmbeddingResolutionAction::AcknowledgeUnknown, "outcome_unknown") => {
+            Ok(ResolutionTransition {
+                next_state: "outcome_unknown_acknowledged",
+                next_attempt: row.attempt_count,
+                audit_action: "provider_embedding.outcome_unknown_acknowledged",
+            })
         }
         _ => Err("provider embedding reconciliation state/action conflict".to_string()),
     }

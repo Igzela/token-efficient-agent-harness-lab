@@ -1007,8 +1007,7 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
                 .map_err(|error| error.to_string())?;
             }
         }
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS provider_embedding_operations (
+        let operation_ddl = "CREATE TABLE IF NOT EXISTS provider_embedding_operations (
                 operation_id TEXT PRIMARY KEY,
                 target_memory_id TEXT NOT NULL,
                 target_version BIGINT NOT NULL,
@@ -1026,19 +1025,48 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
                 receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
                 provider_id TEXT NOT NULL,
                 model_id TEXT NOT NULL,
-                state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown','retry_authorized')),
+                state TEXT NOT NULL CHECK (state IN ('request_sent','completed','failed','outcome_unknown','outcome_unknown_acknowledged','retry_authorized')),
                 attempt_count BIGINT NOT NULL DEFAULT 1 CHECK (attempt_count BETWEEN 1 AND 4),
                 vector_json TEXT,
                 metadata_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE (target_memory_id, target_version)
-            );
-            CREATE INDEX IF NOT EXISTS idx_provider_embedding_operations_state
-                ON provider_embedding_operations(state, updated_at);",
-        )
-        .map_err(|error| error.to_string())?;
-        if !column_exists(&tx, "provider_embedding_operations", "receipt_sha256")? {
+            );";
+        tx.execute_batch(operation_ddl)
+            .map_err(|error| error.to_string())?;
+        let required_columns = [
+            "operation_id",
+            "target_memory_id",
+            "target_version",
+            "tenant_id",
+            "workspace_id",
+            "agent_id",
+            "run_id",
+            "task_id",
+            "source_id",
+            "source_sha256",
+            "operation_binding_sha256",
+            "content_sha256",
+            "contract_json",
+            "contract_sha256",
+            "receipt_sha256",
+            "provider_id",
+            "model_id",
+            "state",
+            "attempt_count",
+            "vector_json",
+            "metadata_json",
+            "created_at",
+            "updated_at",
+        ];
+        let mut missing_columns = Vec::new();
+        for column in required_columns {
+            if !column_exists(&tx, "provider_embedding_operations", column)? {
+                missing_columns.push(column);
+            }
+        }
+        if !missing_columns.is_empty() {
             let occupied: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
@@ -1047,17 +1075,28 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
                 )
                 .map_err(|error| error.to_string())?;
             if occupied {
-                return Err(
-                    "migration 25 cannot repair an occupied operation table without receipt hashes"
-                        .to_string(),
-                );
+                return Err(format!(
+                    "migration 25 cannot repair an occupied partial operation table; missing {}",
+                    missing_columns.join(",")
+                ));
             }
-            tx.execute_batch(
-                "ALTER TABLE provider_embedding_operations
-                 ADD COLUMN receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64);",
-            )
-            .map_err(|error| error.to_string())?;
+            tx.execute_batch("DROP TABLE provider_embedding_operations;")
+                .map_err(|error| error.to_string())?;
+            tx.execute_batch(operation_ddl)
+                .map_err(|error| error.to_string())?;
         }
+        for column in required_columns {
+            if !column_exists(&tx, "provider_embedding_operations", column)? {
+                return Err(format!(
+                    "migration 25 operation table verification failed: missing {column}"
+                ));
+            }
+        }
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_provider_embedding_operations_state
+             ON provider_embedding_operations(state, updated_at);",
+        )
+        .map_err(|error| error.to_string())?;
         tx.execute_batch("PRAGMA user_version = 25")
             .map_err(|error| error.to_string())?;
         tx.commit().map_err(|error| error.to_string())
@@ -1573,6 +1612,37 @@ mod tests {
         assert_eq!(left.unwrap(), V25_SCHEMA_VERSION);
         assert_eq!(right.unwrap(), V25_SCHEMA_VERSION);
 
+        let repair_path = dir.path().join("v25-empty-partial.db");
+        let repair = LocalProductStore::new(&repair_path).unwrap();
+        repair.rollback_v25_to_v24("migration-test", true).unwrap();
+        repair
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE provider_embedding_operations (
+                        operation_id TEXT PRIMARY KEY,target_memory_id TEXT NOT NULL,target_version BIGINT NOT NULL
+                     );",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        repair.run_migrations().unwrap();
+        assert_eq!(repair.schema_version().unwrap(), V25_SCHEMA_VERSION);
+        repair
+            .with_conn(|conn| {
+                assert!(column_exists(
+                    conn,
+                    "provider_embedding_operations",
+                    "contract_sha256"
+                )?);
+                assert!(column_exists(
+                    conn,
+                    "provider_embedding_operations",
+                    "receipt_sha256"
+                )?);
+                Ok(())
+            })
+            .unwrap();
+
         let failure_path = dir.path().join("v25-atomic-failure.db");
         let failure = LocalProductStore::new(&failure_path).unwrap();
         failure.rollback_v25_to_v24("migration-test", true).unwrap();
@@ -1584,7 +1654,7 @@ mod tests {
         ).map_err(|error|error.to_string())).unwrap();
         let error = failure.run_migrations().unwrap_err();
         assert!(
-            error.contains("occupied operation table") || error.contains("no such column"),
+            error.contains("occupied partial operation table") || error.contains("no such column"),
             "unexpected partial-v25 failure: {error}"
         );
         assert_eq!(failure.schema_version().unwrap(), V24_SCHEMA_VERSION);

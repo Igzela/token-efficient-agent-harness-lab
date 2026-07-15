@@ -1369,6 +1369,8 @@ impl LocalProductStore {
                 })
             }
             Err(error) => {
+                let outcome_unknown = error.outcome_unknown();
+                let error = error.to_string();
                 let error_event = ProviderAuditEvent {
                     schema_version: "provider_audit_event.v1".to_string(),
                     event_id: format!("paudit-error-{dispatch_suffix}"),
@@ -1387,7 +1389,7 @@ impl LocalProductStore {
                 if let Some(operation) = &operation {
                     self.fail_provider_embedding_operation(
                         operation,
-                        error.contains("outcome unknown"),
+                        outcome_unknown,
                         &error_event,
                     )?;
                 } else {
@@ -1627,9 +1629,7 @@ fn validate_embedding_material(
             if !crate::provider::embedding::is_supported_durable_embedding_identity(provider) {
                 return Err("embedding provider identity mismatch".to_string());
             }
-            if provider.dimensions != MAX_VECTOR_DIMENSIONS
-                || material.values.len() != MAX_VECTOR_DIMENSIONS
-            {
+            if material.values.len() != provider.dimensions {
                 return Err("embedding provider metadata dimension mismatch".to_string());
             }
             let normalized_content = content
@@ -1647,17 +1647,11 @@ fn validate_embedding_material(
             {
                 return Err("embedding vector binding mismatch".to_string());
             }
-            if provider.pricing.currency != "USD"
-                || provider.pricing.source != "provider_catalog_reported"
-                || provider.pricing.prompt_cost_per_token_usd != 0.0
-                || provider.pricing.completion_cost_per_token_usd != 0.0
-                || chrono::NaiveDate::parse_from_str(&provider.pricing.effective_date, "%Y-%m-%d")
-                    .is_err()
-                || provider.measurement_provenance != "provider_reported"
+            if provider.measurement_provenance != "provider_reported"
                 || provider.input_tokens.is_some_and(|value| value < 0)
                 || provider
                     .cost_usd
-                    .is_some_and(|value| !value.is_finite() || value != 0.0)
+                    .is_some_and(|value| !value.is_finite() || value < 0.0)
             {
                 return Err("embedding provider pricing binding is invalid".to_string());
             }
@@ -1670,21 +1664,7 @@ fn validate_embedding_material(
 }
 
 fn validate_contract_evidence(contract: &EmbeddingContractEvidence) -> Result<(), String> {
-    if contract.provider_id != OPENROUTER_EMBEDDING_PROVIDER_ID
-        || contract.requested_model_id != OPENROUTER_EMBEDDING_MODEL_ID
-        || contract.canonical_model_slug
-            != crate::provider::embedding::OPENROUTER_EMBEDDING_CANONICAL_SLUG
-        || contract.resolved_model_id
-            != crate::provider::embedding::OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID
-        || contract.dimensions != crate::provider::embedding::OPENROUTER_EMBEDDING_DIMENSIONS
-        || contract.context_length
-            != crate::provider::embedding::OPENROUTER_EMBEDDING_CONTEXT_LENGTH
-        || contract.pricing.currency != "USD"
-        || contract.pricing.source != "provider_catalog_reported"
-        || contract.pricing.prompt_cost_per_token_usd != 0.0
-        || contract.pricing.completion_cost_per_token_usd != 0.0
-        || chrono::NaiveDate::parse_from_str(&contract.pricing.effective_date, "%Y-%m-%d").is_err()
-    {
+    if !crate::provider::embedding::is_supported_durable_embedding_contract(contract) {
         return Err("provider embedding contract evidence is invalid".to_string());
     }
     Ok(())
@@ -2880,7 +2860,7 @@ mod tests {
         assert!(created["embedding"]["provider"]["cost_usd"].is_null());
         assert_eq!(
             created["embedding"]["provider"]["pricing"]["source"],
-            "provider_catalog_reported"
+            crate::provider::embedding::OPENROUTER_EMBEDDING_PRICING_SOURCE
         );
         assert_eq!(
             created["embedding"]["binding_sha256"]
@@ -3371,7 +3351,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_embedding_outcome_requires_hash_bound_operator_evidence() {
+    fn unknown_embedding_outcome_can_be_acknowledged_but_never_retried() {
         use super::super::provider_audit::{
             ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
         };
@@ -3389,7 +3369,6 @@ mod tests {
                 Ok(provider_catalog_response()),
                 Err(HttpError::Timeout("fixture timeout".into())),
                 Ok(provider_catalog_response()),
-                Ok(provider_vector_response()),
             ])),
         )
         .unwrap();
@@ -3403,7 +3382,7 @@ mod tests {
             expected_attempt_count: 1,
             scope: request.scope.clone(),
             run_id: request.run_id.clone(),
-            action: ProviderEmbeddingResolutionAction::ConfirmUnknownNoEffectAndRetry,
+            action: ProviderEmbeddingResolutionAction::AcknowledgeUnknown,
             evidence_source_id: None,
             evidence_sha256: None,
             confirm_resolution: true,
@@ -3412,15 +3391,98 @@ mod tests {
             .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
             .unwrap_err()
             .contains("evidence source"));
-        resolution.evidence_source_id = Some("openrouter-request-status-20260715".into());
+        resolution.evidence_source_id = Some("operator-incident-20260715".into());
         resolution.evidence_sha256 = Some("e".repeat(64));
-        store
+        let acknowledged = store
             .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
             .unwrap();
+        assert_eq!(acknowledged["state"], "outcome_unknown_acknowledged");
+        assert_eq!(acknowledged["attempt_count"], 1);
         assert_eq!(
-            store.create_durable_memory(&request, "test").unwrap()["version"],
-            1
+            store
+                .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
+                .unwrap()["idempotent"],
+            true
         );
+        let mut competing = resolution.clone();
+        competing.evidence_sha256 = Some("d".repeat(64));
+        assert!(store
+            .reconcile_provider_embedding_operation(&memory_id, &competing, "operator")
+            .unwrap_err()
+            .contains("idempotency binding mismatch"));
+        assert!(store
+            .create_durable_memory(&request, "test")
+            .unwrap_err()
+            .contains("outcome is unknown"));
+    }
+
+    #[test]
+    fn post_send_non_authoritative_results_persist_as_outcome_unknown() {
+        use super::super::provider_audit::{
+            ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
+        };
+        let _env = ProviderEnvGuard::enabled();
+        let cases = vec![
+            Ok(HttpResponse {
+                status: 200,
+                body: b"not-json".to_vec(),
+            }),
+            Err(HttpError::Http {
+                status: 500,
+                reason: "fixture server failure".into(),
+            }),
+            Err(HttpError::Http {
+                status: 408,
+                reason: "fixture request timeout".into(),
+            }),
+        ];
+        for (index, response) in cases.into_iter().enumerate() {
+            let dir = TempDir::new().unwrap();
+            let request = create(
+                &format!("ws-provider-unknown-{index}"),
+                &format!("source-unknown-{index}"),
+                "post send unknown fact",
+            );
+            let store = LocalProductStore::new_with_embedding_transport(
+                dir.path().join("provider-post-send-unknown.db"),
+                || "2026-07-15T00:00:00Z".to_string(),
+                Arc::new(MockTransport::new(vec![
+                    Ok(provider_catalog_response()),
+                    response,
+                ])),
+            )
+            .unwrap();
+            assert!(store
+                .create_durable_memory(&request, "test")
+                .unwrap_err()
+                .contains("outcome unknown"));
+            let memory_id = memory_id(&request).unwrap();
+            let state: String = store
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT state FROM provider_embedding_operations WHERE target_memory_id=?1",
+                        [&memory_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())
+                })
+                .unwrap();
+            assert_eq!(state, "outcome_unknown");
+            let retry = ProviderEmbeddingResolutionRequest {
+                target_version: 1,
+                expected_attempt_count: 1,
+                scope: request.scope.clone(),
+                run_id: request.run_id.clone(),
+                action: ProviderEmbeddingResolutionAction::RetryFailed,
+                evidence_source_id: None,
+                evidence_sha256: None,
+                confirm_resolution: true,
+            };
+            assert!(store
+                .reconcile_provider_embedding_operation(&memory_id, &retry, "operator")
+                .unwrap_err()
+                .contains("state/action conflict"));
+        }
     }
 
     #[test]

@@ -1624,7 +1624,7 @@ export interface ProviderEmbeddingResolutionRequest {
   expected_attempt_count: number;
   scope: MemoryScope;
   run_id: string;
-  action: "retry_failed" | "confirm_unknown_no_effect_and_retry";
+  action: "retry_failed" | "acknowledge_unknown";
   evidence_source_id?: string | null;
   evidence_sha256?: string | null;
   confirm_resolution: true;

@@ -20,18 +20,41 @@ pub const OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID: &str =
 pub const OPENROUTER_EMBEDDING_DIMENSIONS: usize = 1_536;
 pub const OPENROUTER_EMBEDDING_CONTEXT_LENGTH: u64 = 131_072;
 pub const OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE: &str = "2026-07-15";
+pub const OPENROUTER_EMBEDDING_PRICING_SOURCE: &str =
+    "provider_catalog_reported_prices+harness_pinned_effective_date";
 pub const OPENROUTER_EMBEDDING_CREDENTIAL_ENV: &str = "OPENROUTER_API_KEY";
 
 /// Append-only registry for durable provider-vector identities. When the
 /// current contract rotates, retain the prior tuple here so historical rows
 /// remain inspectable and can be re-embedded through the bounded owner.
-const SUPPORTED_DURABLE_EMBEDDING_IDENTITIES: &[(&str, &str, &str, &str, usize)] = &[(
-    OPENROUTER_EMBEDDING_PROVIDER_ID,
-    OPENROUTER_EMBEDDING_MODEL_ID,
-    OPENROUTER_EMBEDDING_CANONICAL_SLUG,
-    OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
-    OPENROUTER_EMBEDDING_DIMENSIONS,
-)];
+const SUPPORTED_DURABLE_EMBEDDING_IDENTITIES: &[DurableEmbeddingIdentity] =
+    &[DurableEmbeddingIdentity {
+        provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID,
+        requested_model_id: OPENROUTER_EMBEDDING_MODEL_ID,
+        canonical_model_slug: OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+        resolved_model_id: OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
+        dimensions: OPENROUTER_EMBEDDING_DIMENSIONS,
+        context_length: OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
+        prompt_cost_per_token_usd: 0.0,
+        completion_cost_per_token_usd: 0.0,
+        currency: "USD",
+        pricing_effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE,
+        pricing_source: OPENROUTER_EMBEDDING_PRICING_SOURCE,
+    }];
+
+struct DurableEmbeddingIdentity {
+    provider_id: &'static str,
+    requested_model_id: &'static str,
+    canonical_model_slug: &'static str,
+    resolved_model_id: &'static str,
+    dimensions: usize,
+    context_length: u64,
+    prompt_cost_per_token_usd: f64,
+    completion_cost_per_token_usd: f64,
+    currency: &'static str,
+    pricing_effective_date: &'static str,
+    pricing_source: &'static str,
+}
 
 const MAX_BATCH_INPUTS: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -98,15 +121,65 @@ pub struct ProviderEmbeddingMetadata {
 pub(crate) fn is_supported_durable_embedding_identity(
     metadata: &ProviderEmbeddingMetadata,
 ) -> bool {
-    SUPPORTED_DURABLE_EMBEDDING_IDENTITIES.iter().any(
-        |(provider, requested, canonical, resolved, dimensions)| {
-            metadata.provider_id == *provider
-                && metadata.requested_model_id == *requested
-                && metadata.canonical_model_slug == *canonical
-                && metadata.resolved_model_id == *resolved
-                && metadata.dimensions == *dimensions
-        },
-    )
+    SUPPORTED_DURABLE_EMBEDDING_IDENTITIES
+        .iter()
+        .any(|identity| {
+            metadata.provider_id == identity.provider_id
+                && metadata.requested_model_id == identity.requested_model_id
+                && metadata.canonical_model_slug == identity.canonical_model_slug
+                && metadata.resolved_model_id == identity.resolved_model_id
+                && metadata.dimensions == identity.dimensions
+                && pricing_matches_identity(&metadata.pricing, identity)
+        })
+}
+
+pub(crate) fn is_supported_durable_embedding_contract(
+    contract: &EmbeddingContractEvidence,
+) -> bool {
+    SUPPORTED_DURABLE_EMBEDDING_IDENTITIES
+        .iter()
+        .any(|identity| {
+            contract.provider_id == identity.provider_id
+                && contract.requested_model_id == identity.requested_model_id
+                && contract.canonical_model_slug == identity.canonical_model_slug
+                && contract.resolved_model_id == identity.resolved_model_id
+                && contract.dimensions == identity.dimensions
+                && contract.context_length == identity.context_length
+                && pricing_matches_identity(&contract.pricing, identity)
+        })
+}
+
+fn pricing_matches_identity(
+    pricing: &EmbeddingPricingEvidence,
+    identity: &DurableEmbeddingIdentity,
+) -> bool {
+    pricing.prompt_cost_per_token_usd == identity.prompt_cost_per_token_usd
+        && pricing.completion_cost_per_token_usd == identity.completion_cost_per_token_usd
+        && pricing.currency == identity.currency
+        && pricing.effective_date == identity.pricing_effective_date
+        && pricing.source == identity.pricing_source
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ProviderEmbeddingAttemptError {
+    Definitive(String),
+    OutcomeUnknown(String),
+}
+
+impl ProviderEmbeddingAttemptError {
+    pub(crate) fn outcome_unknown(&self) -> bool {
+        matches!(self, Self::OutcomeUnknown(_))
+    }
+}
+
+impl std::fmt::Display for ProviderEmbeddingAttemptError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Definitive(message) | Self::OutcomeUnknown(message) => {
+                formatter.write_str(message)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -225,6 +298,7 @@ impl ProviderEmbeddingClient {
         validate_inputs(inputs)?;
         let contract = self.verify_contract(config)?;
         self.embed_verified(inputs, config, &contract)
+            .map_err(|error| error.to_string())
     }
 
     pub(crate) fn verify_contract(
@@ -254,10 +328,13 @@ impl ProviderEmbeddingClient {
         inputs: &[String],
         config: &ProviderEmbeddingConfig,
         contract: &VerifiedEmbeddingContract,
-    ) -> Result<ProviderEmbeddingOutput, String> {
-        validate_inputs(inputs)?;
-        let boundary = CredentialBoundary::new("env")?;
-        let api_key = boundary.resolve(OPENROUTER_EMBEDDING_CREDENTIAL_ENV)?;
+    ) -> Result<ProviderEmbeddingOutput, ProviderEmbeddingAttemptError> {
+        validate_inputs(inputs).map_err(ProviderEmbeddingAttemptError::Definitive)?;
+        let boundary =
+            CredentialBoundary::new("env").map_err(ProviderEmbeddingAttemptError::Definitive)?;
+        let api_key = boundary
+            .resolve(OPENROUTER_EMBEDDING_CREDENTIAL_ENV)
+            .map_err(ProviderEmbeddingAttemptError::Definitive)?;
         let body = json!({
             "model": OPENROUTER_EMBEDDING_MODEL_ID,
             "input": inputs,
@@ -269,12 +346,30 @@ impl ProviderEmbeddingClient {
                 url: format!("{OPENROUTER_EMBEDDING_BASE_URL}/embeddings"),
                 method: "POST".to_string(),
                 headers: authorization_headers(&api_key),
-                body: Some(serde_json::to_vec(&body).map_err(|error| error.to_string())?),
+                body: Some(
+                    serde_json::to_vec(&body).map_err(|error| {
+                        ProviderEmbeddingAttemptError::Definitive(error.to_string())
+                    })?,
+                ),
                 timeout_secs: Some(config.timeout_ms as f64 / 1000.0),
             })?;
-            parse_embedding_response(&response.body, inputs, contract.pricing.clone())
+            parse_embedding_response(&response.body, inputs, contract.pricing.clone()).map_err(
+                |detail| {
+                    ProviderEmbeddingAttemptError::OutcomeUnknown(format!(
+                        "embedding provider outcome unknown; automatic replay is forbidden ({detail})"
+                    ))
+                },
+            )
         });
-        map_circuit_result(result)
+        match result {
+            Ok(output) => Ok(output),
+            Err(CircuitBreakerError::CircuitOpen) => {
+                Err(ProviderEmbeddingAttemptError::Definitive(
+                    "durable memory embedding provider circuit is open".to_string(),
+                ))
+            }
+            Err(CircuitBreakerError::Inner(error)) => Err(error),
+        }
     }
 
     fn send_catalog_with_retry(
@@ -308,17 +403,40 @@ impl ProviderEmbeddingClient {
     fn send_embedding_once(
         &self,
         request: HttpRequest,
-    ) -> Result<super::transport::HttpResponse, String> {
+    ) -> Result<super::transport::HttpResponse, ProviderEmbeddingAttemptError> {
         if std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH").as_deref() == Ok("1") {
-            return Err("durable memory embedding kill switch became active".to_string());
+            return Err(ProviderEmbeddingAttemptError::Definitive(
+                "durable memory embedding kill switch became active".to_string(),
+            ));
         }
-        send_blocking(Arc::clone(&self.transport), request).map_err(|error| match error {
-            HttpError::Timeout(_) | HttpError::Connection(_) => {
-                "embedding provider outcome unknown; automatic replay is forbidden".to_string()
+        match send_blocking(Arc::clone(&self.transport), request) {
+            Ok(response) if (200..=299).contains(&response.status) => Ok(response),
+            Ok(response) if definitive_refusal_status(response.status) => Err(
+                ProviderEmbeddingAttemptError::Definitive(redacted_http_error(&HttpError::Http {
+                    status: response.status,
+                    reason: String::new(),
+                })),
+            ),
+            Ok(_) => Err(ProviderEmbeddingAttemptError::OutcomeUnknown(
+                "embedding provider outcome unknown; automatic replay is forbidden".to_string(),
+            )),
+            Err(error @ HttpError::Http { status, .. }) if definitive_refusal_status(status) => {
+                Err(ProviderEmbeddingAttemptError::Definitive(
+                    redacted_http_error(&error),
+                ))
             }
-            other => redacted_http_error(&other),
-        })
+            Err(_) => Err(ProviderEmbeddingAttemptError::OutcomeUnknown(
+                "embedding provider outcome unknown; automatic replay is forbidden".to_string(),
+            )),
+        }
     }
+}
+
+fn definitive_refusal_status(status: u16) -> bool {
+    matches!(
+        status,
+        400..=407 | 409..=451
+    )
 }
 
 fn map_circuit_result<T>(result: Result<T, CircuitBreakerError<String>>) -> Result<T, String> {
@@ -398,8 +516,8 @@ fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
         prompt_cost_per_token_usd: prompt,
         completion_cost_per_token_usd: completion,
         currency: "USD".to_string(),
-        effective_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
-        source: "provider_catalog_reported".to_string(),
+        effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
+        source: OPENROUTER_EMBEDDING_PRICING_SOURCE.to_string(),
     })
 }
 
@@ -708,6 +826,14 @@ mod tests {
         assert_eq!(output.metadata[0].input_tokens, Some(7));
         assert_eq!(output.metadata[0].cost_usd, None);
         assert_eq!(
+            output.metadata[0].pricing.effective_date,
+            OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE
+        );
+        assert_eq!(
+            output.metadata[0].pricing.source,
+            OPENROUTER_EMBEDDING_PRICING_SOURCE
+        );
+        assert_eq!(
             output.metadata[0].measurement_provenance,
             "provider_reported"
         );
@@ -747,7 +873,7 @@ mod tests {
             completion_cost_per_token_usd: 0.0,
             currency: "USD".to_string(),
             effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
-            source: "provider_catalog_reported".to_string(),
+            source: OPENROUTER_EMBEDDING_PRICING_SOURCE.to_string(),
         };
         let input = ["memory".to_string()];
         assert!(parse_embedding_response(b"{}", &input, pricing.clone()).is_err());
@@ -781,7 +907,7 @@ mod tests {
                 completion_cost_per_token_usd: 0.0,
                 currency: "USD".to_string(),
                 effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
-                source: "provider_catalog_reported".to_string(),
+                source: OPENROUTER_EMBEDDING_PRICING_SOURCE.to_string(),
             },
         )
         .unwrap_err()

@@ -4,8 +4,12 @@ use sha2::{Digest, Sha256};
 
 use super::{count_table, DatabaseConnection, LocalProductStore};
 use crate::provider::embedding::{
-    EmbeddingContractEvidence, ProviderEmbeddingMetadata, OPENROUTER_EMBEDDING_CANONICAL_SLUG,
-    OPENROUTER_EMBEDDING_DIMENSIONS, OPENROUTER_EMBEDDING_MODEL_ID,
+    is_supported_durable_embedding_contract, EmbeddingContractEvidence, ProviderEmbeddingMetadata,
+};
+#[cfg(test)]
+use crate::provider::embedding::{
+    OPENROUTER_EMBEDDING_CANONICAL_SLUG, OPENROUTER_EMBEDDING_DIMENSIONS,
+    OPENROUTER_EMBEDDING_MODEL_ID, OPENROUTER_EMBEDDING_PRICING_SOURCE,
     OPENROUTER_EMBEDDING_PROVIDER_ID, OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
 };
 
@@ -414,24 +418,12 @@ fn validate_provider_embedding_operation_integrity(
     {
         return Err(failure("operation identity or hash binding is invalid"));
     }
-    if row.provider_id != OPENROUTER_EMBEDDING_PROVIDER_ID
-        || row.model_id != OPENROUTER_EMBEDDING_MODEL_ID
-    {
-        return Err(failure("provider or model identity is invalid"));
-    }
     let contract: EmbeddingContractEvidence = serde_json::from_str(&row.contract_json)
         .map_err(|_| failure("contract evidence JSON is malformed"))?;
     if sha256_bytes(row.contract_json.as_bytes()) != row.contract_sha256
         || contract.provider_id != row.provider_id
         || contract.requested_model_id != row.model_id
-        || contract.canonical_model_slug != OPENROUTER_EMBEDDING_CANONICAL_SLUG
-        || contract.resolved_model_id != OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID
-        || contract.dimensions != OPENROUTER_EMBEDDING_DIMENSIONS
-        || contract.pricing.currency != "USD"
-        || contract.pricing.source != "provider_catalog_reported"
-        || contract.pricing.prompt_cost_per_token_usd != 0.0
-        || contract.pricing.completion_cost_per_token_usd != 0.0
-        || chrono::NaiveDate::parse_from_str(&contract.pricing.effective_date, "%Y-%m-%d").is_err()
+        || !is_supported_durable_embedding_contract(&contract)
     {
         return Err(failure("contract evidence binding is invalid"));
     }
@@ -441,7 +433,12 @@ fn validate_provider_embedding_operation_integrity(
     }
     if !matches!(
         row.state.as_str(),
-        "request_sent" | "completed" | "failed" | "outcome_unknown" | "retry_authorized"
+        "request_sent"
+            | "completed"
+            | "failed"
+            | "outcome_unknown"
+            | "outcome_unknown_acknowledged"
+            | "retry_authorized"
     ) {
         return Err(failure("operation state is invalid"));
     }
@@ -616,10 +613,7 @@ fn validate_provider_embedding_metadata(
     values: &[f64],
     content_sha256: &str,
 ) -> Result<(), String> {
-    if values.len() != OPENROUTER_EMBEDDING_DIMENSIONS
-        || values.iter().any(|value| !value.is_finite())
-        || metadata.dimensions != OPENROUTER_EMBEDDING_DIMENSIONS
-    {
+    if values.len() != metadata.dimensions || values.iter().any(|value| !value.is_finite()) {
         return Err("provider embedding dimension mismatch".to_string());
     }
     if !crate::provider::embedding::is_supported_durable_embedding_identity(metadata)
@@ -627,15 +621,10 @@ fn validate_provider_embedding_metadata(
     {
         return Err("provider embedding identity is invalid".to_string());
     }
-    if metadata.pricing.currency != "USD"
-        || metadata.pricing.source != "provider_catalog_reported"
-        || metadata.pricing.prompt_cost_per_token_usd != 0.0
-        || metadata.pricing.completion_cost_per_token_usd != 0.0
-        || chrono::NaiveDate::parse_from_str(&metadata.pricing.effective_date, "%Y-%m-%d").is_err()
-        || metadata.input_tokens.is_some_and(|value| value < 0)
+    if metadata.input_tokens.is_some_and(|value| value < 0)
         || metadata
             .cost_usd
-            .is_some_and(|value| !value.is_finite() || value != 0.0)
+            .is_some_and(|value| !value.is_finite() || value < 0.0)
     {
         return Err("provider embedding pricing or usage is invalid".to_string());
     }
@@ -796,7 +785,7 @@ mod tests {
                     completion_cost_per_token_usd: 0.0,
                     currency: "USD".to_string(),
                     effective_date: "2026-07-15".to_string(),
-                    source: "provider_catalog_reported".to_string(),
+                    source: OPENROUTER_EMBEDDING_PRICING_SOURCE.to_string(),
                 },
                 measurement_provenance: "provider_reported".to_string(),
                 normalized_content_sha256: sha256_bytes(b"{}"),
@@ -833,7 +822,7 @@ mod tests {
                 completion_cost_per_token_usd: 0.0,
                 currency: "USD".to_string(),
                 effective_date: "2026-07-15".to_string(),
-                source: "provider_catalog_reported".to_string(),
+                source: OPENROUTER_EMBEDDING_PRICING_SOURCE.to_string(),
             },
         ))
         .unwrap();
@@ -1136,7 +1125,9 @@ mod tests {
             );
             let error = store.check_integrity().unwrap_err();
             assert!(
-                error.contains("identity") || error.contains("hash binding"),
+                error.contains("identity")
+                    || error.contains("hash binding")
+                    || error.contains("contract evidence binding"),
                 "{suffix} corruption returned unexpected error: {error}"
             );
         }
