@@ -1172,12 +1172,23 @@ fn sqlite_v25_operation_schema_valid(tx: &Transaction<'_>) -> Result<bool, Strin
         .split_whitespace()
         .collect::<String>();
     for fragment in [
+        "operation_idtextprimarykey",
+        "unique(target_memory_id,target_version)",
         "check(operation_kindin('memory_version','retrieval_query'))",
-        "'result_erased'",
-        "'failed_before_send'",
-        "'outcome_unknown_acknowledged'",
+        "check(length(source_sha256)=64)",
+        "check(query_sha256isnullorlength(query_sha256)=64)",
+        "check(length(request_identity_sha256)=64)",
+        "check(length(operation_binding_sha256)=64)",
+        "check(length(content_sha256)=64)",
+        "check(length(contract_sha256)=64)",
+        "check(length(receipt_sha256)=64)",
         "check(dimensions>0)",
+        "check(result_kindisnullorresult_kindin('memory_version','retrieval_event'))",
+        "check(result_sha256isnullorlength(result_sha256)=64)",
+        "check(statein('preflight_reserved','reserved','sending','network_succeeded','succeeded','result_erased','failed_before_send','failed_known_outcome','outcome_unknown','outcome_unknown_acknowledged','retry_authorized'))",
         "check(attempt_countbetween1and4)",
+        "check((result_kindisnullandresult_idisnullandresult_sha256isnull)or(result_kindisnotnullandresult_idisnotnullandresult_sha256isnotnull))",
+        "check((operation_kind='memory_version'andnode_idisnullandquery_sha256isnull)or(operation_kind='retrieval_query'andrun_idisnotnullandnode_idisnotnullandquery_sha256isnotnullandquery_sha256=source_sha256))",
         "foreignkey(reservation_event_id)referencesprovider_audit_events(event_id)",
         "foreignkey(send_event_id)referencesprovider_audit_events(event_id)",
         "foreignkey(outcome_event_id)referencesprovider_audit_events(event_id)",
@@ -1227,25 +1238,34 @@ fn sqlite_v25_operation_schema_valid(tx: &Transaction<'_>) -> Result<bool, Strin
             return Ok(false);
         }
     }
-    let state_index: bool = tx
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index'
-         AND name='idx_provider_embedding_operations_state'
-         AND lower(replace(sql,' ','')) LIKE '%(state,updated_at)%')",
-            [],
-            |row| row.get(0),
+    let normalized_index = |name: &str| -> Result<Option<String>, String> {
+        tx.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+            [name],
+            |row| row.get::<_, Option<String>>(0),
         )
-        .map_err(|error| error.to_string())?;
-    let retrieval_index: bool = tx
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index'
-         AND name='idx_provider_embedding_operations_retrieval_identity'
-         AND lower(sql) LIKE 'create unique index%'
-         AND lower(replace(sql,' ','')) LIKE '%whereoperation_kind=''retrieval_query''%')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| error.to_string())?;
+        .optional()
+        .map(|sql| {
+            sql.flatten().map(|sql| {
+                sql.to_ascii_lowercase()
+                    .split_whitespace()
+                    .collect::<String>()
+            })
+        })
+        .map_err(|error| error.to_string())
+    };
+    let state_index = normalized_index("idx_provider_embedding_operations_state")?
+        .is_some_and(|sql| sql.contains("onprovider_embedding_operations(state,updated_at)"));
+    let retrieval_index = normalized_index(
+        "idx_provider_embedding_operations_retrieval_identity",
+    )?
+    .is_some_and(|sql| {
+        sql.starts_with("createuniqueindex")
+            && sql.contains(
+                "onprovider_embedding_operations(tenant_id,workspace_id,run_id,node_id,query_sha256,provider_id,requested_model_id,resolved_model_id,dimensions,request_identity_sha256)",
+            )
+            && sql.ends_with("whereoperation_kind='retrieval_query'")
+    });
     let target_unique: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_index_list('provider_embedding_operations')
@@ -1836,6 +1856,33 @@ mod tests {
                 tx.rollback().map_err(|error| error.to_string())
             })
             .unwrap();
+
+        let occupied_constraint_path = dir.path().join("v25-occupied-constraint-partial.db");
+        let occupied_constraint = LocalProductStore::new(&occupied_constraint_path).unwrap();
+        occupied_constraint
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "PRAGMA foreign_keys=OFF;
+                     ALTER TABLE provider_embedding_operations RENAME TO provider_embedding_operations_valid;
+                     CREATE TABLE provider_embedding_operations AS
+                         SELECT * FROM provider_embedding_operations_valid WHERE 0;
+                     DROP TABLE provider_embedding_operations_valid;
+                     INSERT INTO provider_embedding_operations (operation_id) VALUES ('occupied-malformed');
+                     PRAGMA user_version=24;
+                     PRAGMA foreign_keys=ON;",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let occupied_error = occupied_constraint.run_migrations().unwrap_err();
+        assert!(
+            occupied_error.contains("occupied partial operation table"),
+            "unexpected occupied constraint failure: {occupied_error}"
+        );
+        assert_eq!(
+            occupied_constraint.schema_version().unwrap(),
+            V24_SCHEMA_VERSION
+        );
 
         let failure_path = dir.path().join("v25-atomic-failure.db");
         let failure = LocalProductStore::new(&failure_path).unwrap();

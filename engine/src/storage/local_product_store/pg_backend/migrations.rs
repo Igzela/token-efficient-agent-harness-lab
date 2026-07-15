@@ -339,12 +339,45 @@ fn pg_v25_operation_schema_valid(
     for fragment in [
         "primary key (operation_id)",
         "unique (target_memory_id, target_version)",
-        "operation_kind",
-        "result_erased",
-        "failed_before_send",
-        "outcome_unknown_acknowledged",
+        "'memory_version'::text",
+        "'retrieval_query'::text",
+        "length(source_sha256) = 64",
+        "query_sha256 is null",
+        "length(query_sha256) = 64",
+        "length(request_identity_sha256) = 64",
+        "length(operation_binding_sha256) = 64",
+        "length(content_sha256) = 64",
+        "length(contract_sha256) = 64",
+        "length(receipt_sha256) = 64",
         "dimensions > 0",
-        "attempt_count",
+        "'memory_version'::text, 'retrieval_event'::text",
+        "result_sha256 is null",
+        "length(result_sha256) = 64",
+        "'preflight_reserved'::text",
+        "'reserved'::text",
+        "'sending'::text",
+        "'network_succeeded'::text",
+        "'succeeded'::text",
+        "'result_erased'::text",
+        "'failed_before_send'::text",
+        "'failed_known_outcome'::text",
+        "'outcome_unknown'::text",
+        "'outcome_unknown_acknowledged'::text",
+        "'retry_authorized'::text",
+        "attempt_count >= 1",
+        "attempt_count <= 4",
+        "result_kind is null",
+        "result_id is null",
+        "result_kind is not null",
+        "result_id is not null",
+        "result_sha256 is not null",
+        "operation_kind = 'memory_version'::text",
+        "node_id is null",
+        "operation_kind = 'retrieval_query'::text",
+        "run_id is not null",
+        "node_id is not null",
+        "query_sha256 is not null",
+        "query_sha256 = source_sha256",
         "foreign key (reservation_event_id) references provider_audit_events(event_id)",
         "foreign key (send_event_id) references provider_audit_events(event_id)",
         "foreign key (outcome_event_id) references provider_audit_events(event_id)",
@@ -363,15 +396,29 @@ fn pg_v25_operation_schema_valid(
     let indexes = indexes
         .iter()
         .map(|row| {
-            format!("{}:{}", row.get::<_, String>(0), row.get::<_, String>(1)).to_ascii_lowercase()
+            (
+                row.get::<_, String>(0).to_ascii_lowercase(),
+                row.get::<_, String>(1).to_ascii_lowercase(),
+            )
         })
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(indexes.contains("idx_provider_embedding_operations_state")
-        && indexes.contains("(state, updated_at)")
-        && indexes.contains("idx_provider_embedding_operations_retrieval_identity")
-        && indexes.contains("unique")
-        && indexes.contains("operation_kind = 'retrieval_query'"))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let state_index = indexes
+        .get("idx_provider_embedding_operations_state")
+        .is_some_and(|definition| {
+            definition.contains("using btree (state, updated_at)")
+                && !definition.contains(" where ")
+        });
+    let retrieval_index = indexes
+        .get("idx_provider_embedding_operations_retrieval_identity")
+        .is_some_and(|definition| {
+            definition.starts_with("create unique index")
+                && definition.contains(
+                    "using btree (tenant_id, workspace_id, run_id, node_id, query_sha256, provider_id, requested_model_id, resolved_model_id, dimensions, request_identity_sha256)",
+                )
+                && definition
+                    .ends_with("where (operation_kind = 'retrieval_query'::text)")
+        });
+    Ok(state_index && retrieval_index)
 }
 
 impl LocalProductStore {
@@ -1059,6 +1106,29 @@ mod tests {
 
         store.run_pg_migrations_internal().unwrap();
         assert_eq!(store.schema_version().unwrap(), 25);
+
+        store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "DELETE FROM schema_migrations WHERE version=25;
+                         ALTER TABLE provider_embedding_operations
+                             RENAME TO provider_embedding_operations_valid;
+                         CREATE TABLE provider_embedding_operations AS
+                             SELECT * FROM provider_embedding_operations_valid WHERE FALSE;
+                         DROP TABLE provider_embedding_operations_valid;
+                         INSERT INTO provider_embedding_operations (operation_id)
+                             VALUES ('occupied-malformed');",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let occupied_error = store.run_pg_migrations_internal().unwrap_err();
+        assert!(
+            occupied_error.contains("occupied partial operation table"),
+            "unexpected occupied constraint failure: {occupied_error}"
+        );
+        assert_eq!(store.schema_version().unwrap(), 24);
     }
 
     #[test]

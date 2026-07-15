@@ -469,18 +469,34 @@ impl ProviderEmbeddingClient {
                     reason: String::new(),
                 })),
             ),
-            Ok(_) => Err(ProviderEmbeddingAttemptError::OutcomeUnknown(
-                "embedding provider outcome unknown; automatic replay is forbidden".to_string(),
-            )),
+            Ok(response) => Err(ProviderEmbeddingAttemptError::OutcomeUnknown(format!(
+                "embedding provider outcome unknown; automatic replay is forbidden (unexpected HTTP status {})",
+                response.status
+            ))),
             Err(error @ HttpError::Http { status, .. }) if definitive_refusal_status(status) => {
                 Err(ProviderEmbeddingAttemptError::Definitive(
                     redacted_http_error(&error),
                 ))
             }
-            Err(_) => Err(ProviderEmbeddingAttemptError::OutcomeUnknown(
-                "embedding provider outcome unknown; automatic replay is forbidden".to_string(),
-            )),
+            Err(error) => Err(ProviderEmbeddingAttemptError::OutcomeUnknown(format!(
+                "embedding provider outcome unknown; automatic replay is forbidden ({})",
+                outcome_unknown_transport_class(&error)
+            ))),
         }
+    }
+}
+
+fn outcome_unknown_transport_class(error: &HttpError) -> &'static str {
+    match error {
+        HttpError::Timeout(_) => "timeout after send",
+        HttpError::Connection(_) => "connection lost after send",
+        HttpError::Http {
+            status: 300..=399, ..
+        } => "redirect refused",
+        HttpError::Http { .. } => "unexpected HTTP outcome",
+        HttpError::Parse(detail) if detail.contains("body limit exceeded") => "oversized response",
+        HttpError::Parse(detail) if detail.contains("failed to read body") => "truncated response",
+        HttpError::Parse(_) => "malformed response",
     }
 }
 
@@ -1016,7 +1032,7 @@ mod tests {
             timeout
                 .embed(&["x".to_string()], &retrying_config)
                 .unwrap_err(),
-            "embedding provider outcome unknown; automatic replay is forbidden"
+            "embedding provider outcome unknown; automatic replay is forbidden (timeout after send)"
         );
 
         std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH", "1");
@@ -1096,6 +1112,46 @@ mod tests {
             },
         )
         .is_err());
+    }
+
+    #[test]
+    fn post_send_transport_failures_preserve_bounded_audit_classes() {
+        let _guard = EnvGuard::enabled();
+        for (error, expected) in [
+            (
+                HttpError::Http {
+                    status: 302,
+                    reason: "redirect refused".to_string(),
+                },
+                "redirect refused",
+            ),
+            (
+                HttpError::Parse("response body limit exceeded".to_string()),
+                "oversized response",
+            ),
+            (
+                HttpError::Parse("failed to read body: incomplete message".to_string()),
+                "truncated response",
+            ),
+            (
+                HttpError::Parse("invalid response framing".to_string()),
+                "malformed response",
+            ),
+        ] {
+            let client =
+                ProviderEmbeddingClient::new(Arc::new(MockTransport::new(vec![Err(error)])));
+            let failure = client
+                .send_embedding_once(HttpRequest {
+                    url: "https://example.invalid/embeddings".to_string(),
+                    method: "POST".to_string(),
+                    headers: Vec::new(),
+                    body: Some(Vec::new()),
+                    timeout_secs: Some(1.0),
+                })
+                .unwrap_err();
+            assert!(failure.outcome_unknown());
+            assert!(failure.to_string().contains(expected));
+        }
     }
 
     #[test]

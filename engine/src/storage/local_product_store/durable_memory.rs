@@ -848,16 +848,7 @@ impl LocalProductStore {
         validate_retrieval(request)?;
         validate_identifier(actor, "actor")?;
         let query_sha256 = sha256_bytes(request.query.as_bytes());
-        let request_identity_sha256 = sha256_json(&json!({
-            "scope": request.scope,
-            "run_id": request.run_id,
-            "node_id": request.node_id,
-            "query_sha256": query_sha256,
-            "top_k": request.top_k,
-            "max_tokens": request.max_tokens,
-            "max_bytes": request.max_bytes,
-            "allow_lexical_fallback": request.allow_lexical_fallback,
-        }))?;
+        let request_identity_sha256 = retrieval_request_identity_sha256(request)?;
         let query_operation_binding_sha256 = sha256_json(&json!({
             "operation_kind": "retrieval_query",
             "tenant_id": request.scope.tenant_id,
@@ -964,6 +955,7 @@ impl LocalProductStore {
             "scope": request.scope, "run_id": request.run_id, "node_id": request.node_id,
             "query_sha256": sha256_bytes(request.query.as_bytes()), "top_k": request.top_k,
             "max_tokens": request.max_tokens, "max_bytes": request.max_bytes, "mode": mode,
+            "request_identity_sha256": request_identity_sha256,
             "embedding_provider": query_embedding.as_ref().and_then(|material| material.provider.as_ref()).map(provider_retrieval_evidence),
         }))?;
         let evidence = retrieval_evidence(&selected);
@@ -1049,10 +1041,12 @@ impl LocalProductStore {
         query_embedding: Option<&EmbeddingMaterial>,
         actor: &str,
     ) -> Result<(), String> {
+        let request_identity_sha256 = retrieval_request_identity_sha256(request)?;
         let evidence = json!({
             "schema_version": MEMORY_RETRIEVAL_SCHEMA_VERSION,
             "retrieval_id": result.retrieval_id,
             "request_sha256": result.request_sha256,
+            "request_identity_sha256": request_identity_sha256,
             "result_sha256": result.result_sha256,
             "mode": result.mode,
             "embedding_provenance": result.embedding_provenance,
@@ -1107,6 +1101,19 @@ impl LocalProductStore {
             }),
         }
     }
+}
+
+fn retrieval_request_identity_sha256(request: &MemoryRetrievalRequest) -> Result<String, String> {
+    sha256_json(&json!({
+        "scope": request.scope,
+        "run_id": request.run_id,
+        "node_id": request.node_id,
+        "query_sha256": sha256_bytes(request.query.as_bytes()),
+        "top_k": request.top_k,
+        "max_tokens": request.max_tokens,
+        "max_bytes": request.max_bytes,
+        "allow_lexical_fallback": request.allow_lexical_fallback,
+    }))
 }
 
 fn validate_create(request: &DurableMemoryCreate) -> Result<(), String> {
@@ -1542,7 +1549,19 @@ fn preflight_failure_event(
 }
 
 fn provider_error_domain(error: &str) -> &'static str {
-    if error.contains("authentication") || error.contains("Credential") {
+    if error.contains("redirect refused") {
+        "provider_outcome_unknown_redirect"
+    } else if error.contains("oversized response") {
+        "provider_outcome_unknown_oversized"
+    } else if error.contains("truncated response") {
+        "provider_outcome_unknown_truncated"
+    } else if error.contains("malformed response") {
+        "provider_outcome_unknown_malformed"
+    } else if error.contains("timeout after send") {
+        "provider_outcome_unknown_timeout"
+    } else if error.contains("connection lost after send") {
+        "provider_outcome_unknown_connection"
+    } else if error.contains("authentication") || error.contains("Credential") {
         "provider_auth"
     } else if error.contains("timed out") {
         "provider_timeout"
@@ -3709,6 +3728,46 @@ mod tests {
             })
             .unwrap();
         assert_eq!(reopened.check_integrity().unwrap().status, "ok");
+        let original_evidence: String = reopened
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT evidence_json FROM memory_retrieval_events WHERE retrieval_id=?1",
+                        [&restarted.retrieval_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let mut corrupted_evidence: Value = serde_json::from_str(&original_evidence).unwrap();
+        corrupted_evidence["request_identity_sha256"] = json!("e".repeat(64));
+        reopened
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE memory_retrieval_events SET evidence_json=?1 WHERE retrieval_id=?2",
+                        params![corrupted_evidence.to_string(), restarted.retrieval_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(reopened
+            .check_integrity()
+            .unwrap_err()
+            .contains("retrieval result cross-owner binding is invalid"));
+        reopened
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE memory_retrieval_events SET evidence_json=?1 WHERE retrieval_id=?2",
+                        params![original_evidence, restarted.retrieval_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(reopened.check_integrity().unwrap().status, "ok");
     }
 
     #[test]
@@ -3804,6 +3863,56 @@ mod tests {
             .unwrap();
         assert_eq!(receipt_count, 5);
         assert_eq!(store.check_integrity().unwrap().status, "ok");
+        let (operation_id, original_reservation, foreign_reservation): (String, String, String) =
+            store
+                .with_conn(|connection| {
+                    let mut statement = connection
+                        .prepare(
+                            "SELECT operation_id,reservation_event_id
+                             FROM provider_embedding_operations
+                             WHERE operation_kind='retrieval_query'
+                             ORDER BY operation_id LIMIT 2",
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let rows = statement
+                        .query_map([], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })
+                        .map_err(|error| error.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| error.to_string())?;
+                    Ok((rows[0].0.clone(), rows[0].1.clone(), rows[1].1.clone()))
+                })
+                .unwrap();
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE provider_embedding_operations SET reservation_event_id=?1
+                         WHERE operation_id=?2",
+                        params![foreign_reservation, operation_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(store
+            .check_integrity()
+            .unwrap_err()
+            .contains("audit cross-owner binding is invalid"));
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE provider_embedding_operations SET reservation_event_id=?1
+                         WHERE operation_id=?2",
+                        params![original_reservation, operation_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
     }
 
     #[test]
@@ -3861,7 +3970,8 @@ mod tests {
             1
         );
         assert!(events.iter().any(|event| {
-            event["event_type"] == "error" && event["error_domain"] == "provider_outcome_unknown"
+            event["event_type"] == "error"
+                && event["error_domain"] == "provider_outcome_unknown_timeout"
         }));
 
         let capped = LocalProductStore::new_with_embedding_transport(

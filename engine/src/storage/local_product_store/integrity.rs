@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -446,23 +446,18 @@ fn validate_sqlite_provider_embedding_cross_owner(
 ) -> Result<(), String> {
     validate_sqlite_provider_event_binding(
         conn,
+        row,
         &row.reservation_event_id,
-        &row.provider_id,
         &["contract_check_reserved", "request_reserved"],
     )?;
     if let Some(event_id) = row.send_event_id.as_deref() {
-        validate_sqlite_provider_event_binding(
-            conn,
-            event_id,
-            &row.provider_id,
-            &["request_sent"],
-        )?;
+        validate_sqlite_provider_event_binding(conn, row, event_id, &["request_sent"])?;
     }
     if let Some(event_id) = row.outcome_event_id.as_deref() {
         validate_sqlite_provider_event_binding(
             conn,
+            row,
             event_id,
-            &row.provider_id,
             &["response_received", "error"],
         )?;
     }
@@ -514,11 +509,11 @@ fn validate_sqlite_provider_embedding_cross_owner(
             }
         }
         (Some("retrieval_event"), Some(result_id), Some(result_sha256)) => {
-            let matches: bool = conn
+            let owner = conn
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM memory_retrieval_events
+                    "SELECT request_sha256,evidence_json FROM memory_retrieval_events
                  WHERE retrieval_id=?1 AND tenant_id=?2 AND workspace_id=?3 AND run_id=?4
-                   AND node_id=?5 AND result_sha256=?6)",
+                   AND node_id=?5 AND result_sha256=?6",
                     params![
                         result_id,
                         row.tenant_id,
@@ -527,10 +522,22 @@ fn validate_sqlite_provider_embedding_cross_owner(
                         row.node_id,
                         result_sha256
                     ],
-                    |value| value.get(0),
+                    |value| Ok((value.get::<_, String>(0)?, value.get::<_, String>(1)?)),
                 )
+                .optional()
                 .map_err(|error| error.to_string())?;
-            if !matches {
+            if owner
+                .as_ref()
+                .is_none_or(|(request_sha256, evidence_json)| {
+                    !retrieval_owner_evidence_matches(
+                        row,
+                        result_id,
+                        request_sha256,
+                        result_sha256,
+                        evidence_json,
+                    )
+                })
+            {
                 return Err(
                     "provider embedding retrieval result cross-owner binding is invalid"
                         .to_string(),
@@ -545,21 +552,40 @@ fn validate_sqlite_provider_embedding_cross_owner(
 
 fn validate_sqlite_provider_event_binding(
     conn: &rusqlite::Connection,
+    operation: &ProviderEmbeddingOperationIntegrityRow,
     event_id: &str,
-    provider_id: &str,
     event_types: &[&str],
 ) -> Result<(), String> {
     let binding = conn
         .query_row(
-            "SELECT provider_id,event_type FROM provider_audit_events WHERE event_id=?1",
+            "SELECT provider_id,event_type,dispatch_id,cost,currency,error_domain,redaction_status
+             FROM provider_audit_events WHERE event_id=?1",
             [event_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<f64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
         )
         .map_err(|_| "provider embedding audit cross-owner binding is missing".to_string())?;
-    if binding.0 != provider_id || !event_types.contains(&binding.1.as_str()) {
-        return Err("provider embedding audit cross-owner binding is invalid".to_string());
-    }
-    Ok(())
+    validate_provider_event_cross_owner(
+        operation,
+        event_id,
+        &binding.0,
+        &binding.1,
+        &binding.2,
+        binding.3,
+        binding.4.as_deref(),
+        binding.5.as_deref(),
+        &binding.6,
+        event_types,
+    )
 }
 
 #[cfg(feature = "pg")]
@@ -581,7 +607,8 @@ fn validate_pg_provider_embedding_cross_owner(
         if let Some(event_id) = event_id {
             let event = client
                 .query_opt(
-                    "SELECT provider_id,event_type FROM provider_audit_events WHERE event_id=$1",
+                    "SELECT provider_id,event_type,dispatch_id,cost::DOUBLE PRECISION,currency,error_domain,redaction_status
+                     FROM provider_audit_events WHERE event_id=$1",
                     &[&event_id],
                 )
                 .map_err(|error| error.to_string())?
@@ -590,9 +617,18 @@ fn validate_pg_provider_embedding_cross_owner(
                 })?;
             let provider: String = event.get(0);
             let event_type: String = event.get(1);
-            if provider != row.provider_id || !event_types.contains(&event_type.as_str()) {
-                return Err("provider embedding audit cross-owner binding is invalid".to_string());
-            }
+            validate_provider_event_cross_owner(
+                row,
+                event_id,
+                &provider,
+                &event_type,
+                &event.get::<_, String>(2),
+                event.get::<_, Option<f64>>(3),
+                event.get::<_, Option<String>>(4).as_deref(),
+                event.get::<_, Option<String>>(5).as_deref(),
+                &event.get::<_, String>(6),
+                event_types,
+            )?;
         }
     }
     if row.state == super::provider_audit::ProviderEmbeddingReceiptState::ResultErased.as_str() {
@@ -644,11 +680,11 @@ fn validate_pg_provider_embedding_cross_owner(
             }
         }
         (Some("retrieval_event"), Some(result_id), Some(result_sha256)) => {
-            let matches: bool = client
-                .query_one(
-                    "SELECT EXISTS(SELECT 1 FROM memory_retrieval_events
+            let owner = client
+                .query_opt(
+                    "SELECT request_sha256,evidence_json FROM memory_retrieval_events
                  WHERE retrieval_id=$1 AND tenant_id=$2 AND workspace_id=$3 AND run_id=$4
-                   AND node_id=$5 AND result_sha256=$6)",
+                   AND node_id=$5 AND result_sha256=$6",
                     &[
                         &result_id,
                         &row.tenant_id,
@@ -658,9 +694,16 @@ fn validate_pg_provider_embedding_cross_owner(
                         &result_sha256,
                     ],
                 )
-                .map_err(|error| error.to_string())?
-                .get(0);
-            if !matches {
+                .map_err(|error| error.to_string())?;
+            if owner.as_ref().is_none_or(|owner| {
+                !retrieval_owner_evidence_matches(
+                    row,
+                    result_id,
+                    &owner.get::<_, String>(0),
+                    result_sha256,
+                    &owner.get::<_, String>(1),
+                )
+            }) {
                 return Err(
                     "provider embedding retrieval result cross-owner binding is invalid"
                         .to_string(),
@@ -671,6 +714,79 @@ fn validate_pg_provider_embedding_cross_owner(
         _ => return Err("provider embedding result cross-owner binding is invalid".to_string()),
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_provider_event_cross_owner(
+    operation: &ProviderEmbeddingOperationIntegrityRow,
+    event_id: &str,
+    provider_id: &str,
+    event_type: &str,
+    dispatch_id: &str,
+    cost: Option<f64>,
+    currency: Option<&str>,
+    error_domain: Option<&str>,
+    redaction_status: &str,
+    event_types: &[&str],
+) -> Result<(), String> {
+    let prefix = match event_type {
+        "contract_check_reserved" => "paudit-preflight-",
+        "request_reserved" => "paudit-reservation-",
+        "request_sent" => "paudit-request-",
+        "response_received" => "paudit-response-",
+        "error" if event_id.starts_with("paudit-contract-error-") => "paudit-contract-error-",
+        "error" => "paudit-error-",
+        _ => "",
+    };
+    let suffix = event_id.strip_prefix(prefix).unwrap_or_default();
+    let suffix_is_owned = suffix == operation.operation_binding_sha256
+        || (2..=operation.attempt_count).any(|attempt| {
+            suffix == format!("{}-attempt-{attempt}", operation.operation_binding_sha256)
+        });
+    let cost_binding_valid = match event_type {
+        "contract_check_reserved" => cost.is_none() && currency.is_none() && error_domain.is_none(),
+        "request_reserved" | "request_sent" => {
+            cost == Some(0.0) && currency == Some("USD") && error_domain.is_none()
+        }
+        "response_received" => {
+            cost.is_none_or(|value| value == 0.0)
+                && currency == Some("USD")
+                && error_domain.is_none()
+        }
+        "error" => cost.is_none() && currency == Some("USD") && error_domain.is_some(),
+        _ => false,
+    };
+    if provider_id != operation.provider_id
+        || !event_types.contains(&event_type)
+        || prefix.is_empty()
+        || !suffix_is_owned
+        || dispatch_id != format!("memory-embedding-{suffix}")
+        || redaction_status != "redacted"
+        || !cost_binding_valid
+    {
+        return Err("provider embedding audit cross-owner binding is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn retrieval_owner_evidence_matches(
+    operation: &ProviderEmbeddingOperationIntegrityRow,
+    retrieval_id: &str,
+    request_sha256: &str,
+    result_sha256: &str,
+    evidence_json: &str,
+) -> bool {
+    serde_json::from_str::<Value>(evidence_json)
+        .ok()
+        .is_some_and(|evidence| {
+            evidence.get("retrieval_id").and_then(Value::as_str) == Some(retrieval_id)
+                && evidence.get("request_sha256").and_then(Value::as_str) == Some(request_sha256)
+                && evidence.get("result_sha256").and_then(Value::as_str) == Some(result_sha256)
+                && evidence
+                    .get("request_identity_sha256")
+                    .and_then(Value::as_str)
+                    == Some(operation.request_identity_sha256.as_str())
+        })
 }
 
 fn validate_provider_embedding_operation_integrity(
@@ -1206,9 +1322,14 @@ mod tests {
             "dimensions": OPENROUTER_EMBEDDING_DIMENSIONS as i64,
         }))
         .unwrap();
-        let reservation_event_id = format!("fixture-reservation-{operation_id}");
-        let send_event_id = format!("fixture-send-{operation_id}");
-        let outcome_event_id = format!("fixture-outcome-{operation_id}");
+        let reservation_event_id = format!("paudit-reservation-{binding_sha256}");
+        let send_event_id = format!("paudit-request-{binding_sha256}");
+        let outcome_event_id = if matches!(state, "failed_known_outcome" | "outcome_unknown") {
+            format!("paudit-error-{binding_sha256}")
+        } else {
+            format!("paudit-response-{binding_sha256}")
+        };
+        let dispatch_id = format!("memory-embedding-{binding_sha256}");
         let has_send = state != "reserved";
         let has_outcome = matches!(
             state,
@@ -1222,16 +1343,27 @@ mod tests {
                         .execute_batch("PRAGMA ignore_check_constraints = ON;")
                         .map_err(|error| error.to_string())?;
                 }
-                for (event_id, event_type) in [
-                    (&reservation_event_id, "request_reserved"),
-                    (&send_event_id, "request_sent"),
-                    (&outcome_event_id, "response_received"),
+                for (event_id, event_type, cost, error_domain) in [
+                    (&reservation_event_id, "request_reserved", Some(0.0), None),
+                    (&send_event_id, "request_sent", Some(0.0), None),
+                    (
+                        &outcome_event_id,
+                        if matches!(state, "failed_known_outcome" | "outcome_unknown") {
+                            "error"
+                        } else {
+                            "response_received"
+                        },
+                        None,
+                        matches!(state, "failed_known_outcome" | "outcome_unknown")
+                            .then_some("provider_outcome_unknown"),
+                    ),
                 ] {
                     connection.execute(
                         "INSERT INTO provider_audit_events
-                         (event_id,dispatch_id,provider_id,event_type,redaction_status,created_at)
-                         VALUES (?1,?2,?3,?4,'redacted','2026-07-15T00:00:00Z')",
-                        params![event_id, operation_id, provider_id, event_type],
+                         (event_id,dispatch_id,provider_id,event_type,cost,currency,error_domain,
+                          redaction_status,created_at)
+                         VALUES (?1,?2,?3,?4,?5,'USD',?6,'redacted','2026-07-15T00:00:00Z')",
+                        params![event_id, dispatch_id, provider_id, event_type, cost, error_domain],
                     ).map_err(|error| error.to_string())?;
                 }
                 connection

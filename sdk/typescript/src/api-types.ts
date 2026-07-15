@@ -536,7 +536,7 @@ export interface ProviderEmbeddingReceiptEvidence {
   readonly requested_model_id: string;
   readonly resolved_model_id: string;
   readonly dimensions: number;
-  readonly state: string;
+  readonly state: ProviderEmbeddingReceiptState;
   readonly attempt_count: number;
   readonly receipt_sha256: string;
   readonly request_identity_sha256: string;
@@ -551,6 +551,19 @@ export interface ProviderEmbeddingReceiptEvidence {
   readonly updated_at: string;
   readonly redacted: true;
 }
+
+export type ProviderEmbeddingReceiptState =
+  | "preflight_reserved"
+  | "reserved"
+  | "sending"
+  | "network_succeeded"
+  | "succeeded"
+  | "result_erased"
+  | "failed_before_send"
+  | "failed_known_outcome"
+  | "outcome_unknown"
+  | "outcome_unknown_acknowledged"
+  | "retry_authorized";
 
 export interface LocalCliCapability {
   enabled: boolean;
@@ -1657,7 +1670,15 @@ export interface ProviderEmbeddingResolutionRequest {
   evidence_sha256?: string | null;
   confirm_resolution: true;
 }
-export interface ProviderEmbeddingResolutionResponse { resolution: Record<string, unknown>; }
+export interface ProviderEmbeddingResolutionResult {
+  readonly operation_id: string;
+  readonly state: "retry_authorized" | "outcome_unknown_acknowledged";
+  readonly attempt_count: number;
+  readonly idempotent: boolean;
+}
+export interface ProviderEmbeddingResolutionResponse {
+  readonly resolution: ProviderEmbeddingResolutionResult;
+}
 export interface MemoryRetrievalRequest {
   scope: MemoryScope;
   run_id: string;

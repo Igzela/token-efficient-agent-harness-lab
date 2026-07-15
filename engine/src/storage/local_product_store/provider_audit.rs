@@ -1832,8 +1832,13 @@ fn retry_audit_event(
     attempt_count: i64,
 ) -> crate::provider::ProviderAuditEvent {
     let mut event = event.clone();
-    event.event_id = format!("{}-attempt-{attempt_count}", event.event_id);
-    event.dispatch_id = format!("{}-attempt-{attempt_count}", event.dispatch_id);
+    let suffix = format!("-attempt-{attempt_count}");
+    if !event.event_id.ends_with(&suffix) {
+        event.event_id.push_str(&suffix);
+    }
+    if !event.dispatch_id.ends_with(&suffix) {
+        event.dispatch_id.push_str(&suffix);
+    }
     event
 }
 

@@ -301,9 +301,13 @@ pub(crate) async fn api_reconcile_memory_embedding(
         )
     })?;
     require_run_scope(&state, run_id, &request.scope)?;
-    let resolution = require_store(&state)?
-        .reconcile_provider_embedding_operation(&memory_id, &request, &context.api_key_id)
-        .map_err(bad_memory_request)?;
+    let store = require_store(&state)?;
+    let actor = context.api_key_id;
+    let resolution = run_store_blocking(move || {
+        store.reconcile_provider_embedding_operation(&memory_id, &request, &actor)
+    })
+    .await?
+    .map_err(bad_memory_request)?;
     Ok((cors_headers(), Json(json!({"resolution":resolution}))))
 }
 
