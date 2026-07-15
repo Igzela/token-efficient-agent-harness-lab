@@ -310,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn reqwest_transport_rejects_oversized_chunked_body() {
         let first = vec![b'a'; TEST_RESPONSE_LIMIT];
-        let second = [b'b'];
+        let second = *b"b";
         let mut response =
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_vec();
         response.extend_from_slice(format!("{:x}\r\n", first.len()).as_bytes());
