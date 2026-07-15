@@ -21,6 +21,7 @@ WORKTREE_BASE = pathlib.Path(os.environ.get("AGENT_WORKTREE_BASE", "/tmp/agent-w
 ORCHESTRATOR_PREFIXES = ("issue-",)
 ORCHESTRATOR_BRANCH_PREFIX = "agent/issue-"
 ACTIVE_LABELS = {"agent-running", "ci-repairing", "review-running"}
+TERMINAL_LABELS = {"agent-complete", "agent-blocked", "agent-review-blocked"}
 LAST_CLEANUP_REPORT: list[dict[str, str]] = []
 
 
@@ -219,9 +220,11 @@ def _active_issue_or_workflow(issue: int, branch: str) -> bool | None:
     if issue_data is None:
         return None
     labels = {item.get("name") for item in issue_data.get("labels", [])}
-    # An open Issue is active for cleanup purposes even if its labels are
-    # malformed or temporarily incomplete. Cleanup must fail closed.
-    if issue_data.get("state") == "OPEN":
+    # Open non-terminal Issues remain protected. A terminal-labelled Issue can
+    # be cleaned only after the workflow query below proves no run is active.
+    if issue_data.get("state") == "OPEN" and not (
+        labels & TERMINAL_LABELS and not labels & ACTIVE_LABELS
+    ):
         return True
     runs = _gh_json(
         "run",

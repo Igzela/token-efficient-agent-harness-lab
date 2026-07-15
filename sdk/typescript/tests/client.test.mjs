@@ -381,6 +381,7 @@ test("workflow run methods call inert runtime state endpoints", async () => {
   await client.createWorkflowRun({ plan_id: "plan-0001" });
   await client.workflowRuns({ limit: 25, offset: 50, search: "run plan" });
   await client.workflowRun("run/0001");
+  await client.externalRuntimeCheckpoint("run/0001", "node/a", "thread 1");
   await client.recordWorkflowRunEvent("run/0001", {
     node_id: "node-a",
     event_type: "node_status_observed",
@@ -401,26 +402,27 @@ test("workflow run methods call inert runtime state endpoints", async () => {
   assert.deepEqual(JSON.parse(calls[0].init.body), { plan_id: "plan-0001" });
   assert.equal(calls[1].url, "http://127.0.0.1:8080/api/v1/workflow-runs?limit=25&offset=50&search=run+plan");
   assert.equal(calls[2].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001");
-  assert.equal(calls[3].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/events");
-  assert.equal(calls[3].init.method, "POST");
-  assert.deepEqual(JSON.parse(calls[3].init.body), {
+  assert.equal(calls[3].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/nodes/node%2Fa/external-runtime-checkpoint?thread_id=thread%201");
+  assert.equal(calls[4].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/events");
+  assert.equal(calls[4].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[4].init.body), {
     node_id: "node-a",
     event_type: "node_status_observed",
     details: { status: "ready" },
   });
-  assert.equal(calls[4].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/events?limit=10");
-  assert.equal(calls[5].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/approvals");
-  assert.equal(calls[5].init.method, "POST");
-  assert.deepEqual(JSON.parse(calls[5].init.body), {
+  assert.equal(calls[5].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/events?limit=10");
+  assert.equal(calls[6].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/approvals");
+  assert.equal(calls[6].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[6].init.body), {
     node_id: "node-a",
     decision: "approved",
     reason: "metadata only",
   });
-  assert.equal(calls[6].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/approvals?limit=10");
-  assert.equal(calls[7].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/resume");
-  assert.deepEqual(JSON.parse(calls[7].init.body), { reason: "metadata resume" });
-  assert.equal(calls[8].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/cancel");
-  assert.deepEqual(JSON.parse(calls[8].init.body), { reason: "metadata cancel" });
+  assert.equal(calls[7].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/approvals?limit=10");
+  assert.equal(calls[8].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/resume");
+  assert.deepEqual(JSON.parse(calls[8].init.body), { reason: "metadata resume" });
+  assert.equal(calls[9].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/cancel");
+  assert.deepEqual(JSON.parse(calls[9].init.body), { reason: "metadata cancel" });
 });
 
 test("supervised patch methods call read-only metadata endpoints", async () => {

@@ -42,9 +42,9 @@ Full Agent Autonomy Mode is active for repository-scoped work that remains testa
 | PE-4 replay persistence/read | `offline_replay_artifacts.rs`, `replay_producer_bindings`, scorecard HTTP handlers, SDK/Dashboard reads | automatic eligible artifacts and exact immutable producer bindings are connected |
 | PE-4 shadow/canary/promotion validation | `shadow_router.rs`, adaptive experiment/canary owners, `adaptive_auto_promotion.rs`, `adaptive_policy.rs` | validators and atomic policy/snapshot/rollback owner exist |
 | PE-4 safe promotion entry | replay generation API/profile, `promote_adaptive_fusion_policy_with_evidence_chain`, typed operator rollback | connected through exact evidence/current-state binding, explicit permission and confirmation; observation-summary mutation path removed |
-| Native/local/LangGraph evidence | native scorecard export, local runner, provider-gated runner, LangGraph capture/import, fixtures, existing scorecard store/API | connected for importer/manual/local paths; ordinary workflow local runner remains Stub/Fake-only |
+| Native/local/LangGraph evidence | `engine/src/external_runtime.rs`, `engine/src/storage/local_product_store/external_runtime.rs`, `adapters/langgraph/`, native scorecard owners, provider-gated runner, capture/import compatibility paths | managed `langgraph_external` nodes are leased by Rust; scoped receipts/checkpoints and scorecards are app-owned; fixture is network-free and live is explicitly gated |
 | Tool registry | existing tool capability/descriptor registry, configured-profile allowlist owner, hook owner, and execution authorization owner | active production policy owner; no deterministic Top-K discovery benchmark yet |
-| Tool discovery benchmark | future `TOOL-DISCOVERY-BENCH-1` under existing benchmark and PE-1 owners | not connected; benchmark only, no production dynamic-tool authority |
+| Efficiency and tool discovery benchmark | `scripts/efficiency_live_benchmark.py`, `engine/src/efficiency_benchmark_runtime.rs`, `efficiency_{native,langgraph}_runtime`, scorecard matrix API/Dashboard | four exact memory strategies and static-all/Top-K evidence; fixture and guarded live operator paths; no dynamic production-tool authority |
 
 ## Integration Repair Ownership
 

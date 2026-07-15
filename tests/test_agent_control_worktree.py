@@ -12,9 +12,11 @@ import os
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control"))
 import worktree_manager as wtm
+import cleanup
 
 
 class TestWorktreeManagerLogic(unittest.TestCase):
@@ -121,6 +123,44 @@ class TestFunctionSignatures(unittest.TestCase):
     def test_remove_worktree_exists(self):
         self.assertTrue(hasattr(wtm, "remove_worktree"))
         self.assertTrue(callable(wtm.remove_worktree))
+
+
+class TestCleanupActivityState(unittest.TestCase):
+    def test_active_worktree_is_safely_deferred_but_unverified_worktree_blocks(self):
+        manual, deferred = cleanup.summarize_cleanup_report([
+            {"path": "/private/one", "reason": "active_issue_or_workflow"},
+            {"path": "/private/two", "reason": "unverified_registration_or_branch"},
+        ])
+        self.assertEqual(deferred, {"active_issue_or_workflow": 1})
+        self.assertEqual(manual, {"unverified_registration_or_branch": 1})
+
+    def test_open_terminal_issue_without_active_run_is_not_active(self):
+        issue = {
+            "state": "OPEN",
+            "labels": [{"name": "agent-blocked"}],
+        }
+        with mock.patch.object(wtm, "_gh_json", side_effect=[issue, []]):
+            self.assertFalse(wtm._active_issue_or_workflow(42, "agent/issue-42"))
+
+    def test_open_terminal_issue_with_active_run_remains_active(self):
+        issue = {
+            "state": "OPEN",
+            "labels": [{"name": "agent-blocked"}],
+        }
+        runs = [{
+            "status": "in_progress",
+            "headBranch": "agent/issue-42",
+            "displayTitle": "worker",
+            "workflowName": "agent-worker",
+        }]
+        with mock.patch.object(wtm, "_gh_json", side_effect=[issue, runs]):
+            self.assertTrue(wtm._active_issue_or_workflow(42, "agent/issue-42"))
+
+    def test_open_nonterminal_issue_remains_active_without_workflow_query(self):
+        issue = {"state": "OPEN", "labels": [{"name": "agent-ready"}]}
+        with mock.patch.object(wtm, "_gh_json", return_value=issue) as query:
+            self.assertTrue(wtm._active_issue_or_workflow(42, "agent/issue-42"))
+        query.assert_called_once()
 
 
 if __name__ == "__main__":

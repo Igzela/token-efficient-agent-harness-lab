@@ -419,6 +419,107 @@ class TestStateReadFromIssueComments(unittest.TestCase):
 
 
 class TestCapacityRelease(unittest.TestCase):
+    def test_workflow_failure_details_bind_pr_creation_step_without_logs(self):
+        jobs = {
+            "total_count": 2,
+            "jobs": [
+                {"name": "vader-implementation", "conclusion": "success", "steps": []},
+                {
+                    "name": "finalize",
+                    "conclusion": "failure",
+                    "steps": [{
+                        "name": "Create or update Issue-bound PR using github.token",
+                        "conclusion": "failure",
+                    }],
+                },
+            ],
+        }
+        with mock.patch.object(sm, "_gh", return_value=json.dumps(jobs)):
+            details = sm._workflow_failure_details(
+                "implementation", 123, "acme/repo"
+            )
+        self.assertEqual(details, ("finalize", "pr_creation", "pr_creation_failure"))
+
+    def test_release_and_record_failure_persists_bounded_capacity_outcome(self):
+        with mock.patch.object(
+            sm, "release_failed_capacity", return_value=(True, "released")
+        ), mock.patch.object(
+            sm,
+            "_workflow_failure_details",
+            return_value=("vader-implementation", "model_execution", "model_execution_failure"),
+        ), mock.patch.object(
+            sm, "get_issue_comments", return_value=[]
+        ), mock.patch.object(sm, "comment_on_issue", return_value=True) as comment:
+            ok, reason = sm.release_and_record_failure(
+                42,
+                sm.LABEL_RUNNING,
+                sm.LABEL_BLOCKED,
+                "implementation",
+                123,
+                repo="acme/repo",
+            )
+        self.assertTrue(ok, reason)
+        evidence = json.loads(comment.call_args.args[1])
+        self.assertEqual(evidence["kind"], "agent-orchestrator-worker-failure")
+        self.assertEqual(evidence["workflow_run_id"], 123)
+        self.assertEqual(evidence["failed_job"], "vader-implementation")
+        self.assertEqual(evidence["failed_phase"], "model_execution")
+        self.assertEqual(evidence["reason_code"], "model_execution_failure")
+        self.assertEqual(evidence["capacity_release_outcome"], "released")
+        self.assertNotIn("log", evidence)
+
+    def test_rejected_worker_records_fixed_repository_preflight_reason(self):
+        with mock.patch.object(
+            sm, "release_failed_capacity", return_value=(True, "released")
+        ), mock.patch.object(sm, "get_issue_comments", return_value=[]), mock.patch.object(
+            sm, "comment_on_issue", return_value=True
+        ) as comment:
+            ok, reason = sm.release_rejected_worker(
+                42,
+                "true",
+                "success",
+                "false",
+                "acme/repo",
+                123,
+                "github_actions_pr_creation_disabled",
+            )
+        self.assertTrue(ok, reason)
+        evidence = json.loads(comment.call_args.args[1])
+        self.assertEqual(evidence["reason_code"], "github_actions_pr_creation_disabled")
+
+    def test_changed_capacity_outcome_appends_correction_for_same_run(self):
+        prior = sm.WorkflowFailureState(
+            42,
+            "implementation",
+            123,
+            "unknown",
+            "workflow",
+            "workflow_failure_details_unavailable",
+            "failed",
+            "label_state_unavailable",
+        ).to_wire()
+        comments = [{
+            "author": {"login": "github-actions"},
+            "body": json.dumps(prior),
+        }]
+        with mock.patch.object(sm, "get_issue_comments", return_value=comments), mock.patch.object(
+            sm, "comment_on_issue", return_value=True
+        ) as comment:
+            ok, reason = sm._record_workflow_failure(
+                42,
+                "implementation",
+                123,
+                "unknown",
+                "workflow",
+                "workflow_failure_details_unavailable",
+                True,
+                "released",
+                "acme/repo",
+            )
+        self.assertTrue(ok, reason)
+        corrected = json.loads(comment.call_args.args[1])
+        self.assertEqual(corrected["capacity_release_outcome"], "released")
+
     def test_review_repair_and_worker_failures_release_only_current_capacity(self):
         sha = "a" * 40
         cases = (

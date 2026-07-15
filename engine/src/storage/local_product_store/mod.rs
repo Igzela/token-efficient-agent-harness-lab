@@ -16,6 +16,7 @@ mod dispatch;
 mod durable_memory;
 mod executor_pool_store;
 mod export_import;
+mod external_runtime;
 pub mod feedback;
 mod heartbeat;
 mod integrity;
@@ -72,6 +73,11 @@ pub use durable_memory::{
     MEMORY_RETRIEVAL_SCHEMA_VERSION,
 };
 pub use export_import::{ImportCounts, ImportResult, LOCAL_IMPORT_SCHEMA_VERSION};
+pub use external_runtime::{
+    validate_memory_strategy, ExternalRuntimeInvocationClaim, ExternalRuntimeScope,
+    EXTERNAL_RUNTIME_CHECKPOINT_SCHEMA_VERSION, EXTERNAL_RUNTIME_INVOCATION_SCHEMA_VERSION,
+    MEMORY_STRATEGIES,
+};
 pub use integrity::{IntegrityReport, TableIntegrity};
 pub use policy_replay_producer::{
     EvidenceChainPromotionRequest, ReplayProductionProfile, ReplayProductionRequest,

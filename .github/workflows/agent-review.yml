@@ -29,6 +29,7 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       actions: write
       contents: read
@@ -76,6 +77,7 @@ jobs:
   vader-review:
     needs: prepare
     runs-on: [self-hosted, vader, agent-worker]
+    timeout-minutes: 35
     permissions:
       actions: write
       contents: read
@@ -87,6 +89,12 @@ jobs:
           ref: ${{ inputs.head_sha }}
           persist-credentials: false
           fetch-depth: 1
+      - name: Clean only verified stale terminal worktrees
+        env:
+          AGENT_REPO_PATH: ${{ github.workspace }}
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/cleanup.py
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: review-input-${{ github.run_id }}-${{ inputs.pr_number }}
@@ -119,6 +127,7 @@ jobs:
     needs: vader-review
     if: needs.vader-review.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       actions: write
       contents: read
@@ -189,7 +198,9 @@ jobs:
     needs: [prepare, vader-review, finalize]
     if: failure()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
+      actions: read
       contents: read
       issues: write
     steps:
@@ -203,5 +214,6 @@ jobs:
         run: |
           python3 scripts/agent-control/state_manager.py record-review-infrastructure-failure \
             "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
-          python3 scripts/agent-control/state_manager.py release-failed \
-            "${{ inputs.issue_number }}" review-running agent-review-blocked "$INPUT_HEAD_SHA"
+          python3 scripts/agent-control/state_manager.py release-failed-evidence \
+            "${{ inputs.issue_number }}" review-running agent-review-blocked review \
+            "${{ github.run_id }}" "$INPUT_HEAD_SHA" "" ""

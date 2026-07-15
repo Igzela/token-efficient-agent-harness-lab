@@ -302,9 +302,53 @@ Acceptance:
 - `GET /api/v1/scorecards?run_id=...` and `GET /api/v1/scorecards/{artifact_id}` expose app-owned artifacts;
 - `GET /api/v1/operator/evidence/:run_id` exposes bounded scorecard metadata and derived metrics, not `steps`, raw traces, prompts, outputs, transcripts, or unbounded content.
 
+## Managed LangGraph External Runtime
+
+Install the separate locked adapter package and point the Rust engine at its stable file entrypoint. The scheduler remains the only lease/run owner; do not run the adapter as a daemon or queue worker.
+
+```bash
+uv sync --frozen --project adapters/langgraph
+export ACP_ENABLE_LANGGRAPH_RUNTIME=1
+export ACP_LANGGRAPH_MODE=fixture
+export ACP_LANGGRAPH_PYTHON="$PWD/adapters/langgraph/.venv/bin/python"
+export ACP_LANGGRAPH_ADAPTER_PATH="$PWD/adapters/langgraph/runner.py"
+export ACP_LANGGRAPH_TIMEOUT_MS=30000
+export ACP_LANGGRAPH_TOKEN_CAP=20000
+export ACP_LANGGRAPH_PER_CALL_COST_CAP_USD=0.01
+export ACP_LANGGRAPH_RUN_COST_CAP_USD=0.05
+export ACP_LANGGRAPH_DAILY_COST_CAP_USD=0.10
+```
+
+Create a workflow node with task and executor `langgraph_external`, an `external_runtime_node.v1` metadata object, one of the four exact memory strategies, a bounded thread ID, and a hash-bound benchmark. Each lease performs one invocation. Inspect metadata only with `GET /api/v1/workflow-runs/{run}/nodes/{node}/external-runtime-checkpoint?thread_id=...`; the endpoint requires `dispatch:read` and exact tenant scope.
+
+Live mode additionally requires the existing authenticated provider configuration, symbolic credential, positive pricing, provider gates, and exact confirmation:
+
+```bash
+export ACP_LANGGRAPH_MODE=live
+export ACP_LANGGRAPH_LIVE_CONFIRM=I_UNDERSTAND_THIS_CALLS_A_PAID_PROVIDER
+```
+
+Never set live mode in CI. Set `ACP_LANGGRAPH_KILL_SWITCH=1` to refuse new work and terminate an active adapter child. A `provider_outcome_unknown` result requires operator inspection and must not be retried automatically.
+
+Build and run the deterministic canonical benchmark without provider calls:
+
+```bash
+cargo build -p engine --bin efficiency_native_runtime --bin efficiency_langgraph_runtime
+uv run --no-project python scripts/efficiency_live_benchmark.py \
+  --mode fixture \
+  --native-cli "$PWD/target/debug/efficiency_native_runtime" \
+  --langgraph-adapter "$PWD/target/debug/efficiency_langgraph_runtime" \
+  --output-root /tmp/acp-efficiency-fixture \
+  --benchmark-run-id fixture-acceptance
+```
+
+For a live run, use `--mode live`, exact `--live-confirmation I_CONFIRM_BOUNDED_LIVE_PROVIDER_COSTS`, `--provider openai_compatible`, an HTTPS base URL, fixed model/tokenizer, `--credential-env`, `--kill-switch-env`, explicit pricing identity/effective date/rates, low per-call/run/daily caps, an existing audit-store parent, and a private output root. The command refuses CI, incomplete provider token usage, missing audit evidence, missing provider calls, incomparable identities, and quality regression. Each runtime persists its four memory and two tool-discovery scorecards into that app-owned store; inspect the two scenario matrices through the existing scorecard API/Dashboard. It never writes a credential, raw prompt, raw provider response, transcript, or repository content to the report.
+
+Rollback: set both kill switches, stop scheduler admission, inspect active leases/blocked receipts, restore a verified database backup if destructive v24 removal is required, and revert the implementation. Leaving v24 rows inert is preferred.
+
 ## Bounded LangGraph Scorecard Import
 
-The LangGraph adapter accepts summary-level JSON only. It does not import LangGraph, run a graph, call a provider, or read a repository. Prepare stateless and stateful summaries outside the product runtime with the same comparison contract: scenario/task digests, runtime/version, provider/model, tokenizer, pricing, quality method/threshold, evaluator version, redaction/retry policy, and seed.
+The legacy importer accepts summary-level JSON only and remains a compatibility/operator path. It does not itself run a graph or call a provider. Prepare stateless and stateful summaries outside the product runtime with the same comparison contract: scenario/task digests, runtime/version, provider/model, tokenizer, pricing, quality method/threshold, evaluator version, redaction/retry policy, and seed.
 
 The checked pilot can be recaptured explicitly with the development-only tool below. This transient command does not add LangGraph to the engine/app dependency graph, call a model/provider, or persist graph state; it writes only the two bounded summaries. The tool's SHA-256 is bound in each fixture's `evidence_provenance.source_capture_sha256`:
 
@@ -386,7 +430,7 @@ For normal local engine operation, use the existing dashboard build, engine star
 
 ## Event-Driven Agent Orchestrator Push Credential
 
-The implementation and CI-repair finalizers require the repository secret `AGENT_PUSH_TOKEN`: a fine-grained repository PAT with **Contents: Read and write** only. It is used only by the GitHub-hosted finalizer's `Push branch with isolated temporary credentials` step. PR creation/update, labels, comments, dispatch, control reads, review, and merge use the workflow `${{ github.token }}` with explicit least-privilege permissions.
+The implementation and CI-repair finalizers require the repository secret `AGENT_PUSH_TOKEN`: a fine-grained repository PAT with **Contents: Read and write** only. It is used only by the GitHub-hosted finalizer's `Push branch with isolated temporary credentials` step. The worker preflight separately requires `AGENT_SETTINGS_READ_TOKEN` with repository **Administration: read** only so it can verify that Actions is allowed to create pull requests before consuming Vader capacity. Neither token is copied to Vader. PR creation/update, labels, comments, dispatch, control reads, review, and merge otherwise use the workflow `${{ github.token }}` with explicit least-privilege permissions.
 
 The PAT is never copied to Vader, artifacts, or remote URLs. The push step fails closed if it is missing and uses a temporary `GIT_ASKPASS` directory below `RUNNER_TEMP`; cleanup removes only that directory. It never calls `gh auth setup-git` and never changes the runner user's global Git credential helper. Rotate or revoke the PAT immediately after any suspected exposure.
 

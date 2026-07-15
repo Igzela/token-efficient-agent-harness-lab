@@ -941,6 +941,26 @@ export interface ScorecardScenarioComparisonSummary {
   cost_reduction_usd: number | null;
 }
 
+export interface ScorecardMatrixRowSummary {
+  artifact_id: string;
+  runtime_kind: string;
+  runtime_version: string;
+  strategy: string;
+  status: string;
+  quality_score: number | null;
+  total_tokens: number | null;
+  estimated_cost_usd: number | null;
+  duration_ms: number | null;
+  measurement_confidence: string | null;
+}
+
+export interface ScorecardMatrixSummary {
+  scenario_id: string;
+  comparison_status: "comparable" | "incomparable";
+  incomparable_reasons: string[];
+  rows: ScorecardMatrixRowSummary[];
+}
+
 export interface ScorecardArtifactListResponse {
   metadata_only: true;
   read_only: true;

@@ -1,7 +1,7 @@
 #![allow(clippy::derivable_impls)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::unnecessary_map_or)]
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 pub mod agent_memory;
 pub mod budget_anomaly;
@@ -13,12 +13,14 @@ pub mod dispatch_engine;
 pub mod dispatch_ledger;
 pub mod doc_generator;
 pub mod ecosystem;
+pub mod efficiency_benchmark_runtime;
 pub mod errors;
 pub mod evaluation_stub;
 pub mod event_schema;
 pub(crate) mod event_source;
 pub mod executor_adapter;
 pub mod executor_pool;
+pub mod external_runtime;
 pub mod feedback;
 pub(crate) mod harness;
 pub mod http_server;

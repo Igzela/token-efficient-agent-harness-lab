@@ -48,7 +48,7 @@ The GPT Web assistant owns the internal translation:
 5. inspect the final diff and evidence and merge only under the user's explicit authority;
 6. restore emergency stop on scope drift, credential exposure, contradictory state, duplicate dispatch, stale binding, or unexpected mutation.
 
-**Current restriction:** this interface is documented but not yet accepted for production repository tasks. Live smoke Issue #217 reached intake, dispatcher claim, and the Vader worker, then ended `agent-blocked` before creating a branch or PR. Issue #208 is emergency-stopped and both enable labels are absent. `PR207-SMOKE-REPAIR-1` must diagnose and repair the worker failure, and `PR207-SMOKE-VERIFY-1` must complete a replacement smoke through PR creation, exact-head CI, and independent review before normal use resumes.
+**Current restriction:** this interface is documented but not yet accepted for production repository tasks. Live smoke Issue #217 reached Vader, artifact validation, and branch push; PR creation then failed because the repository does not permit GitHub Actions to create pull requests. Issue #208 is emergency-stopped, both enable labels are absent, and the Vader runner is currently offline. The final repair must merge and a replacement smoke must complete PR creation, exact-head CI, and independent review before normal use resumes.
 
 Machine-facing behavior is normative in [`AGENTS.md`](AGENTS.md); current evidence and restrictions are in [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md); the repair sequence is in [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md); operator recovery details remain in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 

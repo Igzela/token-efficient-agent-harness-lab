@@ -72,6 +72,7 @@ pub struct AxumApiState {
     pub(crate) provider: Option<Arc<dyn Provider>>,
     pub(crate) adaptive_provider_executor: Option<Arc<AdaptiveExecutionExecutor>>,
     pub(crate) agent_step_executor: Option<Arc<dyn NodeExecutor>>,
+    pub(crate) external_runtime_executor: Option<Arc<dyn NodeExecutor>>,
     pub(crate) adaptive_registry_snapshot: Option<Arc<ModelEndpointRegistrySnapshot>>,
     pub(crate) adaptive_local_config_runtime: Arc<Mutex<Option<AdaptiveProviderRuntime>>>,
     pub(crate) scheduler: Option<Arc<Mutex<WorkflowScheduler>>>,
@@ -101,6 +102,7 @@ impl AxumApiState {
             provider: None,
             adaptive_provider_executor: None,
             agent_step_executor: None,
+            external_runtime_executor: None,
             adaptive_registry_snapshot: None,
             adaptive_local_config_runtime: Arc::new(Mutex::new(None)),
             scheduler: None,
@@ -229,6 +231,11 @@ impl AxumApiState {
 
     pub fn with_agent_step_executor(mut self, executor: Arc<dyn NodeExecutor>) -> Self {
         self.agent_step_executor = Some(executor);
+        self
+    }
+
+    pub fn with_external_runtime_executor(mut self, executor: Arc<dyn NodeExecutor>) -> Self {
+        self.external_runtime_executor = Some(executor);
         self
     }
 

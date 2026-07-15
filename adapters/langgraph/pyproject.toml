@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools==80.10.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acp-langgraph-adapter"
+version = "0.1.0"
+description = "Bounded LangGraph external-runtime adapter for the local Agent Control Plane"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph==1.2.9",
+]
+
+[project.scripts]
+acp-langgraph-adapter = "acp_langgraph_adapter.adapter:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

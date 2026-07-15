@@ -128,6 +128,7 @@ For each coherent packet or slice:
 - [ ] Start from latest `main` or audit the current owned PR
 - [ ] Inspect open PRs, recent merges, branch state, and CI
 - [ ] Read `AGENTS.md`, `CURRENT_STATUS`, `NEXT_DECISION`, and `MODULE_MAP`
+- [ ] For a repository-agent smoke, verify `AGENT_SETTINGS_READ_TOKEN` has Administration read only, Actions PR creation is enabled, the named disposable runner is online/idle, and emergency stop remains authoritative until dispatch
 - [ ] Select the highest-value eligible packet, prerequisite repair, or bounded decision
 - [ ] Audit existing code and recent merged work before assuming capability is absent
 - [ ] Restate goal, prerequisites, owners, allowed/forbidden changes, risk, acceptance, rollback, and hard stops

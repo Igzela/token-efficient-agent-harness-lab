@@ -653,6 +653,15 @@ export class AgentControlPlaneClient {
     return this.getJson<WorkflowRunResponse>(`/api/v1/workflow-runs/${encodeURIComponent(runId)}`);
   }
 
+  externalRuntimeCheckpoint(
+    runId: string,
+    nodeId: string,
+    threadId: string,
+  ): Promise<Record<string, unknown>> {
+    const path = `/api/v1/workflow-runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/external-runtime-checkpoint?thread_id=${encodeURIComponent(threadId)}`;
+    return this.getJson<Record<string, unknown>>(path);
+  }
+
   workflowRunEvents(
     runId: string,
     options: WorkflowRunChildListOptions = {},

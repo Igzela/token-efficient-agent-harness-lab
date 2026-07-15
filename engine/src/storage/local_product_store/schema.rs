@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 23;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 23;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 24;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 24;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -107,6 +107,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 23,
         description: "add durable memory, retrieval evidence, and production job ownership",
+    },
+    SchemaMigration {
+        version: 24,
+        description: "add scoped external runtime checkpoints and invocation receipts",
     },
 ];
 
@@ -245,6 +249,52 @@ CREATE TABLE IF NOT EXISTS operator_acknowledgements (
 );
 CREATE INDEX IF NOT EXISTS idx_operator_acknowledgements_source
     ON operator_acknowledgements(source_type, source_id, created_at);
+";
+
+pub(super) const V24_DDL: &str = "
+CREATE TABLE IF NOT EXISTS external_runtime_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    runtime_kind TEXT NOT NULL CHECK (runtime_kind = 'langgraph'),
+    adapter_version TEXT NOT NULL,
+    runtime_version TEXT NOT NULL,
+    memory_strategy TEXT NOT NULL,
+    checkpoint_summary_json TEXT NOT NULL,
+    state_sha256 TEXT NOT NULL CHECK (length(state_sha256) = 64),
+    status TEXT NOT NULL CHECK (status IN ('active','completed','tombstoned')),
+    version BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (tenant_id, workspace_id, run_id, node_id, thread_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_runtime_checkpoints_scope
+    ON external_runtime_checkpoints(tenant_id, workspace_id, run_id, node_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS external_runtime_invocations (
+    invocation_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    idempotency_sha256 TEXT NOT NULL CHECK (length(idempotency_sha256) = 64),
+    checkpoint_id TEXT NOT NULL,
+    lease_token TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('started','completed','failed','blocked')),
+    result_summary_json TEXT,
+    artifact_id TEXT,
+    failure_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE (tenant_id, workspace_id, run_id, node_id, idempotency_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_external_runtime_invocations_scope
+    ON external_runtime_invocations(tenant_id, workspace_id, run_id, node_id, updated_at);
 ";
 
 pub(super) const SQLITE_DDL: &str = "
@@ -869,6 +919,50 @@ CREATE TABLE IF NOT EXISTS tool_execution_authorizations (
 );
 CREATE INDEX IF NOT EXISTS idx_tool_execution_authorizations_status
     ON tool_execution_authorizations(status, run_id);
+
+CREATE TABLE IF NOT EXISTS external_runtime_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    runtime_kind TEXT NOT NULL CHECK (runtime_kind = 'langgraph'),
+    adapter_version TEXT NOT NULL,
+    runtime_version TEXT NOT NULL,
+    memory_strategy TEXT NOT NULL,
+    checkpoint_summary_json TEXT NOT NULL,
+    state_sha256 TEXT NOT NULL CHECK (length(state_sha256) = 64),
+    status TEXT NOT NULL CHECK (status IN ('active','completed','tombstoned')),
+    version INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (tenant_id, workspace_id, run_id, node_id, thread_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_runtime_checkpoints_scope
+    ON external_runtime_checkpoints(tenant_id, workspace_id, run_id, node_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS external_runtime_invocations (
+    invocation_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    idempotency_sha256 TEXT NOT NULL CHECK (length(idempotency_sha256) = 64),
+    checkpoint_id TEXT NOT NULL,
+    lease_token TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('started','completed','failed','blocked')),
+    result_summary_json TEXT,
+    artifact_id TEXT,
+    failure_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE (tenant_id, workspace_id, run_id, node_id, idempotency_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_external_runtime_invocations_scope
+    ON external_runtime_invocations(tenant_id, workspace_id, run_id, node_id, updated_at);
 ";
 
 pub(crate) const POSTGRES_DDL: &str = "
@@ -1528,6 +1622,50 @@ CREATE TABLE IF NOT EXISTS tool_execution_authorizations (
 );
 CREATE INDEX IF NOT EXISTS idx_tool_execution_authorizations_status
     ON tool_execution_authorizations(status, run_id);
+
+CREATE TABLE IF NOT EXISTS external_runtime_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    runtime_kind TEXT NOT NULL CHECK (runtime_kind = 'langgraph'),
+    adapter_version TEXT NOT NULL,
+    runtime_version TEXT NOT NULL,
+    memory_strategy TEXT NOT NULL,
+    checkpoint_summary_json TEXT NOT NULL,
+    state_sha256 TEXT NOT NULL CHECK (length(state_sha256) = 64),
+    status TEXT NOT NULL CHECK (status IN ('active','completed','tombstoned')),
+    version BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (tenant_id, workspace_id, run_id, node_id, thread_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_runtime_checkpoints_scope
+    ON external_runtime_checkpoints(tenant_id, workspace_id, run_id, node_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS external_runtime_invocations (
+    invocation_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    idempotency_sha256 TEXT NOT NULL CHECK (length(idempotency_sha256) = 64),
+    checkpoint_id TEXT NOT NULL,
+    lease_token TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('started','completed','failed','blocked')),
+    result_summary_json TEXT,
+    artifact_id TEXT,
+    failure_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE (tenant_id, workspace_id, run_id, node_id, idempotency_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_external_runtime_invocations_scope
+    ON external_runtime_invocations(tenant_id, workspace_id, run_id, node_id, updated_at);
 ";
 
 #[cfg(test)]

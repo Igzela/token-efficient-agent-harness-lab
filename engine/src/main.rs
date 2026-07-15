@@ -1,5 +1,9 @@
 use engine::cli::CliConfig;
 use engine::dispatch_engine::DispatchEngine;
+use engine::external_runtime::{
+    ExternalRuntimeConfig, ExternalRuntimeMode, ExternalRuntimeNodeExecutor,
+    LangGraphProcessInvoker,
+};
 use engine::http_server::{
     build_axum_router, build_axum_router_with_dashboard, AxumApiState, CliCapability,
 };
@@ -24,6 +28,7 @@ use engine::provider::circuit_breaker_provider::CircuitBreakerProvider;
 use engine::provider::config::CredentialRef;
 use engine::provider::config::{provider_pricing_from_env, ProviderConfig};
 use engine::provider::credential::CredentialBoundary;
+use engine::provider::executor::ProviderNodeExecutor;
 use engine::provider::openai::OpenAiProvider;
 use engine::provider::stub::StubProvider;
 use engine::provider::transport::ReqwestTransport;
@@ -260,10 +265,70 @@ async fn main() {
         }
     }
 
+    let mut external_runtime_executor_for_runtime: Option<Arc<dyn NodeExecutor>> = None;
+    let external_runtime_config = ExternalRuntimeConfig::from_env(
+        execution_gates.provider_execution,
+        require_auth,
+        state.configured_provider().is_some(),
+    )
+    .unwrap_or_else(|error| panic!("managed LangGraph runtime configuration failed: {error}"));
+    let external_runtime_live = external_runtime_config
+        .as_ref()
+        .is_some_and(|config| config.mode == ExternalRuntimeMode::Live);
+    if let Some(mut config) = external_runtime_config {
+        let provider_executor: Option<Arc<dyn NodeExecutor>> =
+            if config.mode == ExternalRuntimeMode::Live {
+                let provider = state
+                    .configured_provider()
+                    .expect("live external runtime provider validated above");
+                let provider_id = provider.provider_id().to_string();
+                let model_id = provider
+                    .default_model()
+                    .expect("live external runtime provider must expose a fixed model")
+                    .to_string();
+                config = config
+                    .bind_provider_identity(provider_id, model_id)
+                    .expect("live external runtime provider identity must be bounded");
+                let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                let daily_cost = store_arc.daily_estimated_cost_usd(&today).unwrap_or(0.0)
+                    + store_arc
+                        .daily_adaptive_observation_cost_usd(&today)
+                        .unwrap_or(0.0);
+                Some(Arc::new(
+                    ProviderNodeExecutor::new(provider)
+                        .with_audit_recorder(Arc::new(ProviderAuditRecorder::with_store(
+                            store_arc.clone(),
+                        )))
+                        .with_cost_gate(
+                            engine::provider::CostGateConfig::new(
+                                Some(config.per_call_cost_cap_usd),
+                                Some(config.daily_cost_cap_usd),
+                            ),
+                            daily_cost,
+                        )
+                        .with_max_retries(1),
+                ))
+            } else {
+                None
+            };
+        let timeout_ms = config.timeout_ms;
+        let invoker = Arc::new(LangGraphProcessInvoker::new(&config));
+        let executor: Arc<dyn NodeExecutor> = Arc::new(
+            ExternalRuntimeNodeExecutor::new(store_arc.clone(), config, invoker, provider_executor)
+                .expect("managed LangGraph runtime executor configuration failed"),
+        );
+        state = state.with_external_runtime_executor(executor.clone());
+        external_runtime_executor_for_runtime = Some(executor);
+        println!(
+            "[acp-startup] external_runtime=langgraph timeout_ms={timeout_ms} live={external_runtime_live}"
+        );
+    }
+
     let may_use_provider = provider_execution_requires_auth(
         state.executor_type(),
         adaptive_execution_enabled,
         agent_step_executor_for_runtime.is_some(),
+        external_runtime_live,
     );
     if may_use_provider && !require_auth {
         panic!(
@@ -356,6 +421,14 @@ async fn main() {
         let mut scheduler = WorkflowScheduler::new(store_for_scheduler, scheduler_config);
         if let Some(agent_step_executor) = agent_step_executor_for_runtime.clone() {
             scheduler = scheduler.with_agent_step_executor(agent_step_executor);
+        }
+        if let Some(external_runtime_executor) = external_runtime_executor_for_runtime.clone() {
+            let timeout_ms = std::env::var(engine::external_runtime::TIMEOUT_MS_ENV)
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(300_000);
+            scheduler =
+                scheduler.with_external_runtime_executor(external_runtime_executor, timeout_ms);
         }
         if let Some(adaptive_executor) = adaptive_executor_for_workers.clone() {
             let worker_executor = build_trusted_adaptive_worker_executor(
@@ -578,8 +651,12 @@ fn provider_execution_requires_auth(
     executor_type: &str,
     adaptive_execution_enabled: bool,
     agent_provider_available: bool,
+    external_runtime_live: bool,
 ) -> bool {
-    executor_type == "provider" || adaptive_execution_enabled || agent_provider_available
+    executor_type == "provider"
+        || adaptive_execution_enabled
+        || agent_provider_available
+        || external_runtime_live
 }
 
 fn validate_adaptive_single_provider_from_env() -> Result<(), String> {
@@ -1002,8 +1079,11 @@ mod tests {
 
     #[test]
     fn provider_backed_agent_runtime_requires_auth_even_with_noop_primary_executor() {
-        assert!(provider_execution_requires_auth("noop", false, true));
-        assert!(!provider_execution_requires_auth("noop", false, false));
+        assert!(provider_execution_requires_auth("noop", false, true, false));
+        assert!(provider_execution_requires_auth("noop", false, false, true));
+        assert!(!provider_execution_requires_auth(
+            "noop", false, false, false
+        ));
     }
 
     #[test]

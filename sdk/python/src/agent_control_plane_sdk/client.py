@@ -571,6 +571,15 @@ class AgentControlPlaneClient:
     def workflow_run(self, run_id: str) -> dict[str, Any]:
         return self._get(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}")
 
+    def external_runtime_checkpoint(
+        self, run_id: str, node_id: str, thread_id: str
+    ) -> dict[str, Any]:
+        path = (
+            f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}"
+            f"/nodes/{_quote_path_segment(node_id)}/external-runtime-checkpoint"
+        )
+        return self._get(_query_path(path, {"thread_id": thread_id}))
+
     def workflow_run_events(self, run_id: str, limit: int | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if limit is not None:

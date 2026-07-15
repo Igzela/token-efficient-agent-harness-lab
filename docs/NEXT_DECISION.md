@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-07-14.
+Last updated: 2026-07-15.
 
 ## Current Direction
 
@@ -14,21 +14,22 @@ The GitHub/Vader path remains disabled and emergency-stopped until PR 3 repairs 
 
 ## Active Routing
 
-`PR2-MEMORY-BUDGET-POLICY-LOOP-1` is the sole active branch/PR owner. Its first component packet, `PR2-DURABLE-MEMORY-RETRIEVAL-1`, is active on the same branch; the dependent PE-2 and PE-4 packet states remain blocked until their predecessor state can be closed by the merged aggregate PR. Do not start PR 3 or either repository-agent smoke packet.
+`PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is the sole active branch/PR owner. PR #220 and PR #221 are merged. Repository-agent code repair belongs to this branch, but external smoke dispatch remains blocked until the repair is merged, the PR-creation setting is enabled, and the named disposable runner is online.
 
 Do not create another roadmap, phase, status, policy, or closeout document. This file is the normative forward plan. Current facts belong in `docs/CURRENT_STATUS.md`; ownership belongs in `docs/MODULE_MAP.md`.
 
 ## Verified Baseline
 
 - PR #220 (`PR1-AR-RUNTIME-INTEGRATION-1`) merged from exact head `6ec486df3bb6fb57e93e0f2b1a5fee662abf2bb2` as `936b05c226ab64576c0e2d4146d3f8ca3d0c3e47`; its exact-head and post-merge canonical CI each completed all seven required jobs successfully;
-- `PR2-MEMORY-BUDGET-POLICY-LOOP-1` branched from `936b05c226ab64576c0e2d4146d3f8ca3d0c3e47`; refreshed `origin/main` still equals that exact base while this packet is in progress;
+- PR #221 (`PR2-MEMORY-BUDGET-POLICY-LOOP-1`) merged exact head `f75d07b4e7656817fabf65cc26a0f3b05c7c4605` as `f821d366359e1b68376df6dd1eae7a10c9519058`; exact-head CI run `29383755592` and post-merge run `29384216781` each passed all seven required jobs;
 
 - PR #214 merged the PE-5/PE-6 post-seal repair at `0d8127e3d779e54c58caf5d93e7589dd1a6df616`;
 - PR #207 merged the event-driven repository-maintenance orchestrator at `23187bb83dc32165d8982c79be1a1f7f818380a0`;
 - PR #216 merged the Codex output and runner-readiness compatibility repair at `2a42c011164765ba6c2dbe940c5a73900a7bb4b1`;
 - PR #216 exact head `7210cd1943b075ef07c561f4804bca8230cffd60` passed canonical CI run `29308693744` with all seven required jobs successful;
-- the first GPT Web smoke Issue #217 was claimed, dispatched, and entered `agent-running`, then ended `agent-blocked` without an agent branch or PR;
-- the issue evidence does not identify the exact failed workflow step or bounded terminal reason, so the root cause remains unresolved;
+- the first GPT Web smoke Issue #217 reached Vader, produced and finalized an artifact, and pushed its branch; PR creation failed with HTTP 403 because GitHub Actions PR creation is disabled;
+- Issue comments do not identify the terminal step or workflow run, so durable failure attribution also requires repair;
+- the Vader runner is currently offline and the repository setting reports `can_approve_pull_request_reviews=false`;
 - Issue #208 is emergency-stopped with both enable labels absent;
 - auto-merge was never enabled and no smoke PR was merged.
 
@@ -89,7 +90,7 @@ A stale document, a failed first implementation, or a bounded missing design det
 
 ## Packet PR2-MEMORY-BUDGET-POLICY-LOOP-1 — Durable memory and closed-loop evidence
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** `PR1-AR-RUNTIME-INTEGRATION-1` merged with exact-head CI.
 
@@ -99,7 +100,7 @@ A stale document, a failed first implementation, or a bounded missing design det
 
 ## Packet PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1 — Managed adapter, benchmark, and acceptance
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** `PR2-MEMORY-BUDGET-POLICY-LOOP-1` merged with exact-head CI.
 
@@ -109,7 +110,7 @@ A stale document, a failed first implementation, or a bounded missing design det
 
 ## Packet PR2-DURABLE-MEMORY-RETRIEVAL-1 — Cross-run durable memory
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** `PR1-AR-RUNTIME-INTEGRATION-1` merged with exact-head CI.
 
@@ -136,7 +137,7 @@ This packet establishes the implementation baseline only. Live end-to-end accept
 
 ## Packet PR207-SMOKE-REPAIR-1 — Diagnose and repair the blocked live worker path
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** `EFFICIENCY-LIVE-BENCH-1`; repair is owned by `LIVE-ACCEPTANCE-SEAL-1`
 
@@ -147,7 +148,9 @@ This packet establishes the implementation baseline only. Live end-to-end accept
 - Issue #217 had one valid narrow path and was accepted by intake;
 - dispatcher state recorded `claimed` and `dispatched` for `agent-worker.yml`;
 - the Issue reached `agent-running` and later `agent-blocked`;
-- no `agent/issue-217` branch, PR, exact-head CI binding, or durable terminal reason was produced;
+- Actions diagnostics show Vader completion, artifact finalization, and branch push succeeded;
+- PR creation failed with HTTP 403 because the repository Actions PR-creation setting is disabled;
+- the Issue retained no bounded workflow-run/failed-phase terminal reason;
 - Issue #208 has been returned to emergency stop.
 
 **Required investigation:**
@@ -214,7 +217,7 @@ GPT Web natural-language request
 
 ## Packet PE2-RUNTIME-PRODUCER-1 — Connect budget evidence production
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** `PR2-DURABLE-MEMORY-RETRIEVAL-1`
 
@@ -247,7 +250,7 @@ provider audit and workflow usage owners
 
 ## Packet PE4-EVIDENCE-ENTRY-1 — Connect replay and safe promotion
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE2-RUNTIME-PRODUCER-1
 
@@ -281,7 +284,7 @@ owner-backed dispatch_history provenance
 
 ## Packet TOOL-DISCOVERY-BENCH-1 — Static-all versus retrieve-Top-K benchmark
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** PE4-EVIDENCE-ENTRY-1
 

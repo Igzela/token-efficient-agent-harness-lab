@@ -174,6 +174,10 @@ fn axum_routes() -> Router<AxumApiState> {
             get(workflow_runs::api_workflow_run_detail).options(cors_preflight),
         )
         .route(
+            "/api/v1/workflow-runs/:run_id/nodes/:node_id/external-runtime-checkpoint",
+            get(workflow_runs::api_external_runtime_checkpoint).options(cors_preflight),
+        )
+        .route(
             "/api/v1/workflow-runs/:run_id/events",
             get(workflow_runs::api_workflow_run_events)
                 .post(workflow_runs::api_create_workflow_run_event)

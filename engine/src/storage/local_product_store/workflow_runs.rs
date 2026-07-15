@@ -865,10 +865,16 @@ impl LocalProductStore {
         expected_execution_owner: Option<&str>,
     ) -> Result<Value, String> {
         let agent_executor = executor.executor_type_name() == "agent_step";
-        // Phase 1: Lease a ready node (inside lock)
+        // Phase 1: Lease a ready node. SQLite needs an immediate transaction here:
+        // the in-process mutex only protects one LocalProductStore connection, while
+        // production restarts and concurrent API owners can open the same database
+        // through independent connections.
         let leased = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                ensure_run_exists_locked(conn, run_id)?;
+                conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")
+                    .map_err(|error| error.to_string())?;
+                let lease_result = (|| {
+                    ensure_run_exists_locked(conn, run_id)?;
 
                 let (run_status, execution_owner): (String, Option<String>) = conn
                     .query_row(
@@ -1128,13 +1134,25 @@ impl LocalProductStore {
                     )?;
                 }
 
-                Ok(LeaseResult::Leased {
-                    node_id,
-                    task_type,
-                    workflow_id,
-                    attempt,
-                    node_metadata,
-                })
+                    Ok(LeaseResult::Leased {
+                        node_id,
+                        task_type,
+                        workflow_id,
+                        attempt,
+                        node_metadata,
+                    })
+                })();
+                match lease_result {
+                    Ok(leased) => {
+                        conn.execute_batch("COMMIT")
+                            .map_err(|error| error.to_string())?;
+                        Ok(leased)
+                    }
+                    Err(error) => {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        Err(error)
+                    }
+                }
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
@@ -1418,6 +1436,7 @@ impl LocalProductStore {
                     obj.insert("execution_attempt".to_string(), json!(attempt));
                 }
                 if command_override.is_none()
+                    && task_type != crate::external_runtime::LANGGRAPH_TASK_TYPE
                     && node_metadata.get("prompt").is_none()
                     && node_metadata.get("command").is_none()
                 {
@@ -1438,11 +1457,15 @@ impl LocalProductStore {
                     }
                 }
                 // Inject workspace_path from supervised_patch_workspaces if available
-                if let Ok(Some(workspace)) = self.get_supervised_patch_workspace_for_run(run_id) {
-                    if let Some(ws_path) = workspace.get("workspace_path").and_then(|v| v.as_str())
+                if task_type != crate::external_runtime::LANGGRAPH_TASK_TYPE {
+                    if let Ok(Some(workspace)) = self.get_supervised_patch_workspace_for_run(run_id)
                     {
-                        if let Some(obj) = node_metadata.as_object_mut() {
-                            obj.insert("workspace_path".to_string(), json!(ws_path));
+                        if let Some(ws_path) =
+                            workspace.get("workspace_path").and_then(|v| v.as_str())
+                        {
+                            if let Some(obj) = node_metadata.as_object_mut() {
+                                obj.insert("workspace_path".to_string(), json!(ws_path));
+                            }
                         }
                     }
                 }
@@ -1481,7 +1504,20 @@ impl LocalProductStore {
                         }),
                     );
                 }
-                let output = if (task_type == "agent_step") != agent_executor {
+                let reserved_executor_mismatch = match task_type.as_str() {
+                    "agent_step" => executor.executor_type_name() != "agent_step",
+                    crate::external_runtime::LANGGRAPH_TASK_TYPE => {
+                        executor.executor_type_name()
+                            != crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE
+                    }
+                    _ => matches!(
+                        executor.executor_type_name(),
+                        "agent_step" | crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE
+                    ),
+                };
+                let output = if reserved_executor_mismatch
+                    || (task_type == "agent_step") != agent_executor
+                {
                     crate::node_executor::NodeExecutionOutput {
                         status: "failed".to_string(),
                         executor_type: executor.executor_type_name().to_string(),
@@ -4487,6 +4523,7 @@ fn retryable_node_failure(output: &crate::node_executor::NodeExecutionOutput) ->
                 | "tool_execution_outcome_unknown"
                 | "tool_execution_receipt_invalid"
                 | "tool_execution_receipt_error"
+                | "provider_outcome_unknown"
         )
     )
 }
