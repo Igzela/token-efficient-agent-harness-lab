@@ -12,7 +12,12 @@ const BASE_COOLDOWN_MS: u64 = 10_000;
 fn task_type_requires_exact_capability(task_type: &str) -> bool {
     matches!(
         task_type,
-        "agent_step" | "adaptive_provider" | "command" | "claude_code_cli" | "codex_cli"
+        "agent_step"
+            | "adaptive_provider"
+            | "command"
+            | "claude_code_cli"
+            | "codex_cli"
+            | crate::external_runtime::LANGGRAPH_TASK_TYPE
     )
 }
 
@@ -548,6 +553,31 @@ pub fn register_agent_step_executor(
         },
         status: ExecutorStatus {
             concurrency_limit: concurrency_limit as u64,
+            ..Default::default()
+        },
+        cost_profile: CostProfile::default(),
+        metrics: ExecutorMetrics::default(),
+    });
+}
+
+pub fn register_external_runtime_executor(
+    pool: &ExecutorPool,
+    executor: Arc<dyn NodeExecutor>,
+    concurrency_limit: usize,
+    timeout_ms: u64,
+) {
+    pool.register(ExecutorEntry {
+        executor_type: crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE.to_string(),
+        executor,
+        capabilities: ExecutorCapabilities {
+            supported_task_types: vec![crate::external_runtime::LANGGRAPH_TASK_TYPE.to_string()],
+            supported_task_domains: vec!["external_runtime".to_string(), "benchmark".to_string()],
+            requires_auth: true,
+            requires_cli: false,
+            max_timeout_ms: timeout_ms,
+        },
+        status: ExecutorStatus {
+            concurrency_limit: concurrency_limit.max(1) as u64,
             ..Default::default()
         },
         cost_profile: CostProfile::default(),

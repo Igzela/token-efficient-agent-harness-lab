@@ -88,7 +88,7 @@ fn workflow_plan_requires_execution_authority(plan: &serde_json::Value) -> bool 
     if matches!(
         plan.pointer("/advisory/requires_executor")
             .and_then(serde_json::Value::as_str),
-        Some("agent_step" | "adaptive_provider")
+        Some("agent_step" | "adaptive_provider" | crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE)
     ) {
         return true;
     }
@@ -97,6 +97,8 @@ fn workflow_plan_requires_execution_authority(plan: &serde_json::Value) -> bool 
         .is_some_and(|nodes| {
             nodes.iter().any(|node| {
                 node.get("task_type").and_then(serde_json::Value::as_str) == Some("agent_step")
+                    || node.get("task_type").and_then(serde_json::Value::as_str)
+                        == Some(crate::external_runtime::LANGGRAPH_TASK_TYPE)
                     || node.get("adaptive_execution").is_some()
             })
         })
@@ -136,6 +138,57 @@ pub(crate) async fn api_workflow_run_detail(
         Some(run) => Ok((cors_headers(), Json(json_response("run", run)))),
         None => Err(not_found()),
     }
+}
+
+pub(crate) async fn api_external_runtime_checkpoint(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath((run_id, node_id)): AxumPath<(String, String)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let thread_id = params
+        .get("thread_id")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "external_runtime_thread_required",
+                "thread_id is required",
+            )
+        })?;
+    let store = require_store(&state)?;
+    let scope = store
+        .external_runtime_scope_for_node(&run_id, &node_id, thread_id)
+        .map_err(|error| {
+            ApiError::with_code(
+                StatusCode::NOT_FOUND,
+                "external_runtime_scope_not_found",
+                error,
+            )
+        })?;
+    if scope.tenant_id != context.tenant_id {
+        return Err(ApiError::with_code(
+            StatusCode::NOT_FOUND,
+            "external_runtime_scope_not_found",
+            "external runtime scope not found",
+        ));
+    }
+    let checkpoint = store
+        .external_runtime_checkpoint(&scope)
+        .map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version":"external_runtime_checkpoint_read.v1",
+            "read_only":true,
+            "metadata_only":true,
+            "raw_content_persisted":false,
+            "checkpoint":checkpoint,
+        })),
+    ))
 }
 
 pub(crate) async fn api_create_workflow_run_event(
@@ -317,6 +370,47 @@ pub(crate) async fn api_tick_workflow_run(
     let timeout_ms = request.timeout_ms.unwrap_or(30_000).clamp(1000, 300_000);
 
     match executor_type {
+        crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE => {
+            authorize(
+                &state,
+                &headers,
+                "dispatch:execute",
+                uri.path(),
+                &request_id.0,
+            )?;
+            if max_retries != 0 {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "external_runtime_retry_owned",
+                    "external runtime retries are owned by the scheduler and invocation receipt",
+                ));
+            }
+            let Some(executor) = state.external_runtime_executor.clone() else {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "external_runtime_not_available",
+                    "managed LangGraph external runtime is not configured",
+                ));
+            };
+            match store.tick_with_executor_and_command(&run_id, actor, 0, executor.as_ref(), None) {
+                Ok(result) => {
+                    record_tick_decision(&store, &run_id, &result, executor_type);
+                    Ok((cors_headers(), Json(json_response("tick", result))))
+                }
+                Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                Err(e) if is_execution_owner_conflict(&e) => Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "run_execution_owner_conflict",
+                    &e,
+                )),
+                Err(e) if e.contains("terminal") => Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "run_terminal",
+                    &e,
+                )),
+                Err(e) => Err(internal_error(e)),
+            }
+        }
         "agent_step" => {
             authorize(
                 &state,

@@ -385,6 +385,7 @@ class ClientLocalStateTest(unittest.TestCase):
         client.create_workflow_run("plan-0001")
         client.workflow_runs(limit=25, offset=50, search="run plan")
         client.workflow_run("run/0001")
+        client.external_runtime_checkpoint("run/0001", "node/a", "thread 1")
         client.record_workflow_run_event(
             "run/0001",
             event_type="node_status_observed",
@@ -410,26 +411,27 @@ class ClientLocalStateTest(unittest.TestCase):
         self.assertEqual(calls[1].full_url, "http://localhost:8080/api/v1/workflow-runs?limit=25&offset=50&search=run+plan")
         self.assertEqual(calls[2].method, "GET")
         self.assertIn("/api/v1/workflow-runs/run%2F0001", calls[2].full_url)
-        self.assertEqual(calls[3].method, "POST")
-        self.assertIn("/api/v1/workflow-runs/run%2F0001/events", calls[3].full_url)
-        self.assertEqual(json.loads(calls[3].data), {
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/nodes/node%2Fa/external-runtime-checkpoint?thread_id=thread+1", calls[3].full_url)
+        self.assertEqual(calls[4].method, "POST")
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/events", calls[4].full_url)
+        self.assertEqual(json.loads(calls[4].data), {
             "node_id": "node-a",
             "event_type": "node_status_observed",
             "details": {"status": "ready"},
         })
-        self.assertIn("/api/v1/workflow-runs/run%2F0001/events?limit=10", calls[4].full_url)
-        self.assertEqual(calls[5].method, "POST")
-        self.assertIn("/api/v1/workflow-runs/run%2F0001/approvals", calls[5].full_url)
-        self.assertEqual(json.loads(calls[5].data), {
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/events?limit=10", calls[5].full_url)
+        self.assertEqual(calls[6].method, "POST")
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/approvals", calls[6].full_url)
+        self.assertEqual(json.loads(calls[6].data), {
             "node_id": "node-a",
             "decision": "approved",
             "reason": "metadata only",
         })
-        self.assertIn("/api/v1/workflow-runs/run%2F0001/approvals?limit=10", calls[6].full_url)
-        self.assertIn("/api/v1/workflow-runs/run%2F0001/resume", calls[7].full_url)
-        self.assertEqual(json.loads(calls[7].data), {"reason": "metadata resume"})
-        self.assertIn("/api/v1/workflow-runs/run%2F0001/cancel", calls[8].full_url)
-        self.assertEqual(json.loads(calls[8].data), {"reason": "metadata cancel"})
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/approvals?limit=10", calls[7].full_url)
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/resume", calls[8].full_url)
+        self.assertEqual(json.loads(calls[8].data), {"reason": "metadata resume"})
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/cancel", calls[9].full_url)
+        self.assertEqual(json.loads(calls[9].data), {"reason": "metadata cancel"})
 
     @patch("agent_control_plane_sdk.client.urlopen")
     def test_supervised_patch_methods_call_read_only_metadata_endpoints(self, mock_urlopen):

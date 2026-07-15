@@ -56,6 +56,8 @@ const INTEGRITY_TABLES: &[&str] = &[
     "normalized_usage_observations",
     "replay_producer_bindings",
     "operator_acknowledgements",
+    "external_runtime_checkpoints",
+    "external_runtime_invocations",
 ];
 
 impl LocalProductStore {

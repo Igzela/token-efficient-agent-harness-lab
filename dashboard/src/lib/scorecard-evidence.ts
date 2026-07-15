@@ -2,11 +2,49 @@ import type {
   ScorecardArtifact,
   ScorecardComparisonRowSummary,
   ScorecardEvidenceSummary,
+  ScorecardMatrixSummary,
   ScorecardScenarioComparisonSummary,
 } from "./types";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function summarizeScorecardMatrix(value: unknown): ScorecardMatrixSummary | null {
+  const matrix = asRecord(value);
+  if (matrix.schema_version !== "token_efficiency_scorecard_matrix.v1") return null;
+  const scenarioId = stringOrNull(matrix.scenario_id);
+  const comparisonStatus = stringOrNull(matrix.comparison_status);
+  if (!scenarioId || (comparisonStatus !== "comparable" && comparisonStatus !== "incomparable")) return null;
+  if (!Array.isArray(matrix.rows) || !Array.isArray(matrix.incomparable_reasons)) return null;
+  const rows = matrix.rows.map((value) => {
+    const row = asRecord(value);
+    const artifactId = stringOrNull(row.artifact_id);
+    const runtimeKind = stringOrNull(row.runtime_kind);
+    const runtimeVersion = stringOrNull(row.runtime_version);
+    const strategy = stringOrNull(row.benchmark_strategy) ?? stringOrNull(row.state_strategy);
+    if (!artifactId || !runtimeKind || !runtimeVersion || !strategy) return null;
+    return {
+      artifact_id: artifactId,
+      runtime_kind: runtimeKind,
+      runtime_version: runtimeVersion,
+      strategy,
+      status: stringOrNull(row.status) ?? "unknown",
+      quality_score: numberOrNull(row.quality_score),
+      total_tokens: numberOrNull(row.total_tokens),
+      estimated_cost_usd: numberOrNull(row.estimated_cost_usd),
+      duration_ms: numberOrNull(row.duration_ms),
+      measurement_confidence: stringOrNull(row.measurement_confidence),
+    };
+  });
+  if (rows.some((row) => row === null)) return null;
+  const reasons = matrix.incomparable_reasons.filter((reason): reason is string => typeof reason === "string");
+  return {
+    scenario_id: scenarioId,
+    comparison_status: comparisonStatus,
+    incomparable_reasons: reasons,
+    rows: rows.filter((row): row is NonNullable<typeof row> => row !== null),
+  };
 }
 
 function numberOrNull(value: unknown): number | null {

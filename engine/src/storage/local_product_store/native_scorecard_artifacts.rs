@@ -39,6 +39,101 @@ impl LocalProductStore {
         self.record_scorecard_artifact(artifact, actor)
     }
 
+    /// Validate and persist one bounded scorecard emitted by a managed external
+    /// runtime. The caller supplies summary-only evidence; this owner recomputes
+    /// derived metrics and the immutable artifact hash before storage.
+    pub fn record_external_runtime_scorecard(
+        &self,
+        summary: &Value,
+        invocation_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if summary.get("runtime_kind").and_then(Value::as_str) != Some("langgraph") {
+            return Err("managed external runtime scorecard must identify langgraph".to_string());
+        }
+        let strategy = required_str(summary, "memory_strategy")?;
+        let state_strategy = match strategy {
+            "full_history" => "full_history",
+            "summary_memory" => "memory_digest",
+            "retrieval_memory" => "retrieval_refs",
+            "durable_state_bounded_recent" => "mixed",
+            _ => return Err("managed external runtime memory strategy is unsupported".to_string()),
+        };
+        let status = required_str(summary, "status")?;
+        let quality_method_detail = required_str(summary, "quality_method")?;
+        let scorecard = json!({
+            "schema_version": TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION,
+            "adapter_run_id": invocation_id,
+            "runtime_kind": "langgraph",
+            "runtime_version": summary.get("runtime_version"),
+            "adapter_version": summary.get("adapter_version"),
+            "scenario_id": summary.get("scenario_id"),
+            "mode": "external_runtime",
+            "state_strategy": state_strategy,
+            "benchmark_strategy": strategy,
+            "status": status,
+            "pass_fail_reason": if status == "pass" { "bounded external runtime quality gate passed" } else { "bounded external runtime quality gate did not pass" },
+            "quality_score": summary.get("quality_score"),
+            "quality_method": "rule",
+            "quality_method_detail": quality_method_detail,
+            "input_token_total": summary.get("input_tokens"),
+            "output_token_total": summary.get("output_tokens"),
+            "context_token_total": summary.get("context_tokens"),
+            "repeated_context_token_total": summary.get("repeated_context_tokens"),
+            "retrieved_ref_token_total": Value::Null,
+            "tool_call_count": summary.get("tool_call_count"),
+            "redundant_tool_call_count": summary.get("redundant_tool_call_count"),
+            "retry_count": summary.get("retry_count"),
+            "step_count": 1,
+            "duration_ms": summary.get("latency_ms"),
+            "estimated_cost_usd": summary.get("estimated_cost_usd"),
+            "raw_trace_artifact_id": format!("external-runtime-summary-{invocation_id}"),
+            "redaction_status": "not_needed",
+            "measurement_provenance": summary.get("metric_provenance"),
+            "measurement_completeness": summary.get("measurement_completeness"),
+            "measurement_confidence": summary.get("measurement_confidence"),
+            "external_runtime_metrics": summary,
+        });
+        self.record_managed_scorecard_value(scorecard, actor, false)
+    }
+
+    /// Persist one canonical scorecard emitted by the guarded efficiency
+    /// benchmark through the existing app-owned artifact owner.
+    pub fn record_benchmark_scorecard(
+        &self,
+        scorecard: &Value,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.record_managed_scorecard_value(scorecard.clone(), actor, true)
+    }
+
+    fn record_managed_scorecard_value(
+        &self,
+        mut scorecard: Value,
+        actor: &str,
+        require_comparison_contract: bool,
+    ) -> Result<Value, String> {
+        scorecard["derived_metrics"] = derived_metrics(&scorecard);
+        validate_scorecard_scorecard(&scorecard, false, require_comparison_contract)?;
+        let canonical = serde_json::to_string(&scorecard).map_err(|error| error.to_string())?;
+        let content_sha256 = hex::encode(Sha256::digest(canonical.as_bytes()));
+        let run_id = required_str(&scorecard, "adapter_run_id")?;
+        let runtime_kind = required_str(&scorecard, "runtime_kind")?;
+        let artifact = json!({
+            "schema_version": SCORECARD_ARTIFACT_SCHEMA_VERSION,
+            "artifact_kind": "token_efficiency_scorecard",
+            "runtime_kind": runtime_kind,
+            "storage": "app_owned_artifact_json_export",
+            "read_only": true,
+            "created_at": self.now(),
+            "artifact_id": format!("scorecard-{run_id}-{}", &content_sha256[..12]),
+            "content_sha256": content_sha256,
+            "scorecard_schema_version": TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION,
+            "scorecard": scorecard,
+        });
+        self.record_scorecard_artifact(&artifact, actor)
+    }
+
     pub fn record_scorecard_artifact(
         &self,
         artifact: &Value,
@@ -333,7 +428,20 @@ impl LocalProductStore {
 
     pub fn scorecard_comparison_by_scenario(&self, scenario_id: &str) -> Result<Value, String> {
         let artifacts = self.scorecard_artifacts_by_scenario(scenario_id, 100)?;
-        build_scorecard_comparison(&artifacts)
+        let legacy_pair = artifacts.len() == 2
+            && artifacts.iter().any(|artifact| {
+                artifact.pointer("/scorecard/mode").and_then(Value::as_str)
+                    == Some("stateless_reread")
+            })
+            && artifacts.iter().any(|artifact| {
+                artifact.pointer("/scorecard/mode").and_then(Value::as_str)
+                    == Some("stateful_store")
+            });
+        if legacy_pair {
+            build_scorecard_comparison(&artifacts)
+        } else {
+            build_scorecard_matrix(scenario_id, &artifacts)
+        }
     }
 }
 
@@ -563,6 +671,7 @@ fn validate_scorecard_scorecard(
     require_comparison_contract: bool,
 ) -> Result<(), String> {
     validate_no_raw_trace_keys(scorecard)?;
+    let nullable_external_measurements = required_str(scorecard, "mode")? == "external_runtime";
     for key in [
         "adapter_run_id",
         "runtime_kind",
@@ -642,36 +751,52 @@ fn validate_scorecard_scorecard(
         "step_count",
         "duration_ms",
     ] {
-        require_nonnegative_number(scorecard, key)?;
+        if nullable_external_measurements {
+            require_nullable_nonnegative_number(scorecard, key)?;
+        } else {
+            require_nonnegative_number(scorecard, key)?;
+        }
     }
     if scorecard.get("estimated_cost_usd").is_some() && !scorecard["estimated_cost_usd"].is_null() {
         require_nonnegative_number(scorecard, "estimated_cost_usd")?;
     }
-    if number_i64(scorecard, "redundant_tool_call_count") > number_i64(scorecard, "tool_call_count")
+    if optional_i64(scorecard, "redundant_tool_call_count")
+        .zip(optional_i64(scorecard, "tool_call_count"))
+        .is_some_and(|(redundant, total)| redundant > total)
     {
         return Err("redundant_tool_call_count cannot exceed tool_call_count".to_string());
     }
-    if number_i64(scorecard, "repeated_context_token_total")
-        > number_i64(scorecard, "context_token_total")
+    if optional_i64(scorecard, "repeated_context_token_total")
+        .zip(optional_i64(scorecard, "context_token_total"))
+        .is_some_and(|(repeated, context)| repeated > context)
     {
         return Err("repeated_context_token_total cannot exceed context_token_total".to_string());
     }
-    if number_i64(scorecard, "retrieved_ref_token_total")
-        > number_i64(scorecard, "context_token_total")
+    if optional_i64(scorecard, "retrieved_ref_token_total")
+        .zip(optional_i64(scorecard, "context_token_total"))
+        .is_some_and(|(retrieved, context)| retrieved > context)
     {
         return Err("retrieved_ref_token_total cannot exceed context_token_total".to_string());
     }
     let derived = scorecard
         .get("derived_metrics")
         .ok_or_else(|| "scorecard.derived_metrics must be present".to_string())?;
-    require_nonnegative_number(derived, "total_tokens")?;
+    if nullable_external_measurements {
+        require_nullable_nonnegative_number(derived, "total_tokens")?;
+    } else {
+        require_nonnegative_number(derived, "total_tokens")?;
+    }
     for key in [
         "context_share",
         "repeated_context_ratio",
         "tool_redundancy_ratio",
         "step_retry_ratio",
     ] {
-        require_nonnegative_number(derived, key)?;
+        if nullable_external_measurements {
+            require_nullable_nonnegative_number(derived, key)?;
+        } else {
+            require_nonnegative_number(derived, key)?;
+        }
     }
     let recomputed_derived = derived_metrics(scorecard);
     if derived != &recomputed_derived {
@@ -762,22 +887,23 @@ fn validate_scorecard_step(step: &Value, run_id: &str, index: usize) -> Result<(
 }
 
 fn derived_metrics(scorecard: &Value) -> Value {
-    let total_tokens =
-        number_i64(scorecard, "input_token_total") + number_i64(scorecard, "output_token_total");
+    let total_tokens = optional_i64(scorecard, "input_token_total")
+        .zip(optional_i64(scorecard, "output_token_total"))
+        .map(|(input, output)| input + output);
     let status = scorecard
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("");
     json!({
         "total_tokens": total_tokens,
-        "context_share": ratio(number_i64(scorecard, "context_token_total"), total_tokens),
-        "repeated_context_ratio": ratio(
-            number_i64(scorecard, "repeated_context_token_total"),
-            number_i64(scorecard, "context_token_total"),
+        "context_share": optional_ratio(optional_i64(scorecard, "context_token_total"), total_tokens),
+        "repeated_context_ratio": optional_ratio(
+            optional_i64(scorecard, "repeated_context_token_total"),
+            optional_i64(scorecard, "context_token_total"),
         ),
-        "tool_redundancy_ratio": ratio(
-            number_i64(scorecard, "redundant_tool_call_count"),
-            number_i64(scorecard, "tool_call_count"),
+        "tool_redundancy_ratio": optional_ratio(
+            optional_i64(scorecard, "redundant_tool_call_count"),
+            optional_i64(scorecard, "tool_call_count"),
         ),
         "tokens_per_passing_run": if status == "pass" { json!(total_tokens) } else { Value::Null },
         "cost_per_passing_run": if status == "pass" {
@@ -785,7 +911,7 @@ fn derived_metrics(scorecard: &Value) -> Value {
         } else {
             Value::Null
         },
-        "step_retry_ratio": ratio(number_i64(scorecard, "retry_count"), number_i64(scorecard, "step_count")),
+        "step_retry_ratio": optional_ratio(optional_i64(scorecard, "retry_count"), optional_i64(scorecard, "step_count")),
     })
 }
 
@@ -833,7 +959,13 @@ fn validate_scorecard_artifact(artifact: &Value) -> Result<(), String> {
         .get("scorecard")
         .ok_or_else(|| "scorecard artifact missing scorecard".to_string())?;
     let is_v2 = schema_version == SCORECARD_ARTIFACT_SCHEMA_VERSION;
-    validate_scorecard_scorecard(scorecard, !is_v2, is_v2)?;
+    let managed_external =
+        scorecard.get("mode").and_then(Value::as_str) == Some("external_runtime");
+    validate_scorecard_scorecard(
+        scorecard,
+        !is_v2 && !managed_external,
+        is_v2 && !managed_external,
+    )?;
     if is_v2 {
         let envelope_runtime = required_str(artifact, "runtime_kind")?;
         if envelope_runtime != required_str(scorecard, "runtime_kind")? {
@@ -1022,6 +1154,116 @@ fn build_scorecard_comparison(artifacts: &[Value]) -> Result<Value, String> {
         },
         "rows": [baseline_row, candidate_row],
     }))
+}
+
+fn build_scorecard_matrix(scenario_id: &str, artifacts: &[Value]) -> Result<Value, String> {
+    if artifacts.is_empty() {
+        return Err("comparison requires at least one scorecard artifact".to_string());
+    }
+    let mut rows = Vec::with_capacity(artifacts.len());
+    let mut reasons = Vec::new();
+    let mut comparison_basis: Option<Value> = None;
+    for artifact in artifacts {
+        validate_scorecard_artifact(artifact)?;
+        let scorecard = artifact
+            .get("scorecard")
+            .ok_or_else(|| "scorecard artifact missing scorecard".to_string())?;
+        let contract = scorecard.get("comparison_contract");
+        let shared_contract = contract.map(matrix_shared_contract);
+        if let Some(shared) = shared_contract.as_ref() {
+            if let Some(expected) = comparison_basis.as_ref() {
+                if shared != expected {
+                    reasons.push("comparison_contract_mismatch".to_string());
+                }
+            } else {
+                comparison_basis = Some(shared.clone());
+            }
+        } else {
+            reasons.push("comparison_contract_unavailable".to_string());
+        }
+        let total_tokens = scorecard
+            .pointer("/derived_metrics/total_tokens")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let quality_score = scorecard
+            .get("quality_score")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let cost = scorecard
+            .get("estimated_cost_usd")
+            .cloned()
+            .unwrap_or(Value::Null);
+        if total_tokens.is_null() {
+            reasons.push("total_tokens_unavailable".to_string());
+        }
+        if quality_score.is_null() {
+            reasons.push("quality_unavailable".to_string());
+        }
+        if cost.is_null() {
+            reasons.push("cost_unavailable".to_string());
+        }
+        rows.push(json!({
+            "artifact_id":artifact.get("artifact_id"),
+            "adapter_run_id":scorecard.get("adapter_run_id"),
+            "runtime_kind":scorecard.get("runtime_kind"),
+            "runtime_version":scorecard.get("runtime_version"),
+            "mode":scorecard.get("mode"),
+            "state_strategy":scorecard.get("state_strategy"),
+            "benchmark_strategy":scorecard.get("benchmark_strategy"),
+            "status":scorecard.get("status"),
+            "quality_score":quality_score,
+            "total_tokens":total_tokens,
+            "context_tokens":scorecard.get("context_token_total"),
+            "repeated_context_ratio":scorecard.pointer("/derived_metrics/repeated_context_ratio"),
+            "estimated_cost_usd":cost,
+            "duration_ms":scorecard.get("duration_ms"),
+            "measurement_provenance":scorecard.get("measurement_provenance"),
+            "measurement_completeness":scorecard.get("measurement_completeness"),
+            "measurement_confidence":scorecard.get("measurement_confidence"),
+        }));
+    }
+    reasons.sort();
+    reasons.dedup();
+    if artifacts.len() < 2 {
+        reasons.push("insufficient_scorecard_count".to_string());
+    }
+    Ok(json!({
+        "schema_version":"token_efficiency_scorecard_matrix.v1",
+        "comparison_kind":"token_efficiency_scorecard_read_only_matrix",
+        "read_only":true,
+        "scenario_id":scenario_id,
+        "artifact_count":artifacts.len(),
+        "comparison_status":if reasons.is_empty(){"comparable"}else{"incomparable"},
+        "incomparable_reasons":reasons,
+        "comparison_basis":comparison_basis,
+        "rows":rows,
+    }))
+}
+
+fn matrix_shared_contract(contract: &Value) -> Value {
+    let mut shared = serde_json::Map::new();
+    for field in [
+        "definition_sha256",
+        "scenario_digest",
+        "task_digest",
+        "provider_id",
+        "model_id",
+        "tokenizer_id",
+        "pricing_id",
+        "input_cost_per_1k_usd",
+        "output_cost_per_1k_usd",
+        "quality_method",
+        "quality_threshold",
+        "evaluator_version",
+        "retry_policy",
+        "seed",
+    ] {
+        shared.insert(
+            field.to_string(),
+            contract.get(field).cloned().unwrap_or(Value::Null),
+        );
+    }
+    Value::Object(shared)
 }
 
 fn matching_comparison_contract<'a>(
@@ -1296,6 +1538,25 @@ fn require_nonnegative_number(value: &Value, key: &str) -> Result<(), String> {
     }
 }
 
+fn require_nullable_nonnegative_number(value: &Value, key: &str) -> Result<(), String> {
+    match value.get(key) {
+        Some(Value::Null) => Ok(()),
+        Some(Value::Number(number)) if number.as_f64().is_some_and(|number| number >= 0.0) => {
+            Ok(())
+        }
+        _ => Err(format!(
+            "missing required nullable non-negative number field: {key}"
+        )),
+    }
+}
+
+fn optional_i64(value: &Value, key: &str) -> Option<i64> {
+    value
+        .get(key)
+        .and_then(Value::as_i64)
+        .filter(|value| *value >= 0)
+}
+
 fn number_i64(value: &Value, key: &str) -> i64 {
     positive_i64(value.get(key))
 }
@@ -1311,6 +1572,13 @@ fn number_f64(value: &Value, key: &str) -> Result<f64, String> {
 fn ratio(numerator: i64, denominator: i64) -> f64 {
     let denominator = denominator.max(1) as f64;
     round_six(numerator as f64 / denominator)
+}
+
+fn optional_ratio(numerator: Option<i64>, denominator: Option<i64>) -> Value {
+    numerator
+        .zip(denominator)
+        .map(|(numerator, denominator)| json!(ratio(numerator, denominator)))
+        .unwrap_or(Value::Null)
 }
 
 fn round_six(value: f64) -> f64 {

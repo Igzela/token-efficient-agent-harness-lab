@@ -194,6 +194,34 @@ fn local_runner_artifact(run_id: &str, mode: &str) -> Value {
     })
 }
 
+#[test]
+fn scenario_with_more_than_two_scorecards_returns_read_only_matrix() {
+    let store = LocalProductStore::new(":memory:").unwrap();
+    for (run_id, mode) in [
+        ("matrix-full", "stateless_reread"),
+        ("matrix-summary", "stateful_store"),
+        ("matrix-retrieval", "stateful_store"),
+    ] {
+        store
+            .record_scorecard_artifact(&local_runner_artifact(run_id, mode), "test")
+            .unwrap();
+    }
+    let matrix = store
+        .scorecard_comparison_by_scenario("provider_gated_remember_dont_reread_runner")
+        .unwrap();
+    assert_eq!(
+        matrix["schema_version"],
+        "token_efficiency_scorecard_matrix.v1"
+    );
+    assert_eq!(matrix["comparison_status"], "incomparable");
+    assert_eq!(
+        matrix["incomparable_reasons"],
+        json!(["comparison_contract_unavailable"])
+    );
+    assert_eq!(matrix["artifact_count"], 3);
+    assert_eq!(matrix["rows"].as_array().unwrap().len(), 3);
+}
+
 fn langgraph_artifact(run_id: &str, mode: &str) -> Value {
     let stateful = mode == "stateful_store";
     let input_tokens = if stateful { 7_200 } else { 12_000 };

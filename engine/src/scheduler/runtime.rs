@@ -871,6 +871,9 @@ fn scheduler_route_for_run(
     let suggested_executor = if task_type == "agent_step" {
         required = true;
         Some("agent_step".to_string())
+    } else if task_type == crate::external_runtime::LANGGRAPH_TASK_TYPE {
+        required = true;
+        Some(crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE.to_string())
     } else if matches!(
         task_type.as_str(),
         "adaptive_provider" | "claude_code_cli" | "codex_cli"

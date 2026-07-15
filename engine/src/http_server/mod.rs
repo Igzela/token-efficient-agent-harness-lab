@@ -664,6 +664,18 @@ pub fn openapi_document() -> serde_json::Value {
                     }
                 }
             },
+            "/api/v1/workflow-runs/{run_id}/nodes/{node_id}/external-runtime-checkpoint": {
+                "get": {
+                    "summary": "Inspect bounded managed external-runtime checkpoint metadata",
+                    "description": "Returns scope-bound hashes, counters, IDs, versions, and summary-only checkpoint state. Raw prompts, outputs, transcripts, repository content, credentials, and private paths are excluded.",
+                    "parameters": [path_parameter("run_id"), path_parameter("node_id"), {"name":"thread_id","in":"query","required":true,"schema":{"type":"string"}}],
+                    "responses": {
+                        "200": {"description": "Read-only external-runtime checkpoint metadata"},
+                        "400": {"description": "thread_id is required"},
+                        "404": {"description": "Authorized external-runtime scope not found"}
+                    }
+                }
+            },
             "/api/v1/workflow-runs/{run_id}/events": {
                 "get": {
                     "summary": "List workflow run metadata events",

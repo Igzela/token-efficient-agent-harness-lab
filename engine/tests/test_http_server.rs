@@ -18,6 +18,7 @@ use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::provider::audit::{ProviderAuditEvent, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION};
 use engine::storage::local_product_store::{LocalProductStore, ReplayProductionProfile};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tempfile::{tempdir, TempDir};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
@@ -1994,6 +1995,105 @@ async fn axum_workflow_run_child_lists_return_404_for_missing_run() {
     assert_eq!(approvals.status(), StatusCode::NOT_FOUND);
     let approvals_body = response_json(approvals).await;
     assert_eq!(approvals_body["code"], "workflow_run_not_found");
+}
+
+#[tokio::test]
+async fn axum_external_runtime_checkpoint_is_metadata_only_and_scope_bound() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("external-checkpoint.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("external fixture", "test", "test", |ids, _| {
+            Ok(json!({
+                "schema_version":"read_only_plan.v1",
+                "plan_id":ids.plan_id,
+                "status":"planned_read_only",
+                "workflow_id":ids.workflow_id,
+                "dispatch_id":ids.dispatch_id,
+                "analysis":{"analysis_id":"analysis-http-external","task_domain":"benchmark"},
+                "graph":{"schema_version":"workflow_graph.v1","workflow_id":ids.workflow_id,"dispatch_id":ids.dispatch_id,"status":"decomposed","nodes":[{
+                    "schema_version":"workflow_node.v1","node_id":"node-external","workflow_id":ids.workflow_id,
+                    "task_type":"langgraph_external","executor":"langgraph_external","status":"pending","input_refs":[]
+                }],"edges":[]},
+                "boundaries":{"execution_authority":"bounded_local","target_repository_writes":"disabled","runtime_workers":"managed_external_runtime"}
+            }))
+        })
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan_scoped(
+            plan["plan_id"].as_str().unwrap(),
+            "test",
+            "local",
+            "workspace-http",
+        )
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap();
+    let scope = store
+        .external_runtime_scope_for_node(run_id, "node-external", "thread-http")
+        .unwrap();
+    let claim = store
+        .claim_external_runtime_invocation(&scope, &"a".repeat(64), "lease-http", 60, "test")
+        .unwrap();
+    let invocation_id = match claim {
+        engine::storage::local_product_store::ExternalRuntimeInvocationClaim::Claimed {
+            invocation_id,
+            ..
+        } => invocation_id,
+        other => panic!("unexpected claim: {other:?}"),
+    };
+    let state = json!({
+        "memory_digest":"1".repeat(64),"summary_digest":"2".repeat(64),"fact_ids":[],
+        "selected_reference_ids":[],"recent_event_hashes":[],"turn_count":1,
+        "conflict_count":0,"correction_count":0
+    });
+    let state_sha = hex::encode(Sha256::digest(
+        engine::event_schema::canonical_event_json(&state)
+            .unwrap()
+            .as_bytes(),
+    ));
+    store
+        .complete_external_runtime_invocation(
+            &scope,
+            &invocation_id,
+            "lease-http",
+            "0.1.0",
+            "1.2.9",
+            "summary_memory",
+            &json!({"checkpoint_id":scope.checkpoint_id(),"version":1,"parent_checkpoint_id":Value::Null,"state_summary":state,"state_sha256":state_sha}),
+            &json!({"schema_version":"external_runtime_result.v1","raw_content_persisted":false}),
+            "artifact-http",
+            "test",
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/nodes/node-external/external-runtime-checkpoint?thread_id=thread-http"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["metadata_only"], true);
+    assert_eq!(body["raw_content_persisted"], false);
+    assert_eq!(body["checkpoint"]["version"], 1);
+    assert!(body["checkpoint"].get("state_summary").is_none());
+
+    let missing_thread = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/nodes/node-external/external-runtime-checkpoint"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_thread.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

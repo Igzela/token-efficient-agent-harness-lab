@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hasRawTraceLeak, summarizeScorecardArtifact, summarizeScorecardComparison } from "./scorecard-evidence";
+import { hasRawTraceLeak, summarizeScorecardArtifact, summarizeScorecardComparison, summarizeScorecardMatrix } from "./scorecard-evidence";
 
 const baseArtifact = {
   artifact_id: "scorecard-run-1-abc123",
@@ -116,6 +116,33 @@ describe("scorecard scenario comparison summaries", () => {
 
   test("rejects incomplete comparison objects", () => {
     expect(summarizeScorecardComparison({ scenario_id: "missing-rows" })).toBeNull();
+  });
+});
+
+describe("scorecard strategy matrix summaries", () => {
+  test("keeps unavailable measurements null and exposes incomparable reasons", () => {
+    const summary = summarizeScorecardMatrix({
+      schema_version: "token_efficiency_scorecard_matrix.v1",
+      scenario_id: "memory-benchmark",
+      comparison_status: "incomparable",
+      incomparable_reasons: ["cost_unavailable"],
+      rows: [{
+        artifact_id: "artifact-1",
+        runtime_kind: "langgraph",
+        runtime_version: "1.2.9",
+        benchmark_strategy: "retrieval_memory",
+        status: "pass",
+        quality_score: 1,
+        total_tokens: 42,
+        estimated_cost_usd: null,
+        duration_ms: 5,
+        measurement_confidence: "medium",
+      }],
+    });
+    expect(summary?.comparison_status).toBe("incomparable");
+    expect(summary?.incomparable_reasons).toEqual(["cost_unavailable"]);
+    expect(summary?.rows[0].strategy).toBe("retrieval_memory");
+    expect(summary?.rows[0].estimated_cost_usd).toBeNull();
   });
 });
 

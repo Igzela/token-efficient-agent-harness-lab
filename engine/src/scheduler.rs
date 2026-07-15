@@ -317,6 +317,7 @@ pub struct WorkflowScheduler {
     backup_db_path: Option<String>,
     worker_executor: Option<Arc<dyn NodeExecutor>>,
     agent_step_executor: Option<Arc<dyn NodeExecutor>>,
+    external_runtime_executor: Option<(Arc<dyn NodeExecutor>, u64)>,
 }
 
 impl WorkflowScheduler {
@@ -348,6 +349,7 @@ impl WorkflowScheduler {
             backup_db_path: None,
             worker_executor: None,
             agent_step_executor: None,
+            external_runtime_executor: None,
         }
     }
 
@@ -380,6 +382,15 @@ impl WorkflowScheduler {
 
     pub fn with_agent_step_executor(mut self, executor: Arc<dyn NodeExecutor>) -> Self {
         self.agent_step_executor = Some(executor);
+        self
+    }
+
+    pub fn with_external_runtime_executor(
+        mut self,
+        executor: Arc<dyn NodeExecutor>,
+        timeout_ms: u64,
+    ) -> Self {
+        self.external_runtime_executor = Some((executor, timeout_ms));
         self
     }
 
@@ -432,6 +443,11 @@ impl WorkflowScheduler {
         } else {
             configured_execution_timeout_ms
         };
+        let max_execution_timeout_ms = self
+            .external_runtime_executor
+            .as_ref()
+            .map(|(_, timeout_ms)| max_execution_timeout_ms.max(*timeout_ms))
+            .unwrap_or(max_execution_timeout_ms);
         self.config
             .validate_lease_exceeds_execution_timeout(max_execution_timeout_ms)?;
         if env_flag_enabled("ACP_SUPERVISED_WORKERS_KILL_SWITCH") {
@@ -462,6 +478,14 @@ impl WorkflowScheduler {
                 &self.executor_pool,
                 executor,
                 self.config.agent_max_concurrent_global,
+            );
+        }
+        if let Some((executor, timeout_ms)) = self.external_runtime_executor.clone() {
+            executor_pool::register_external_runtime_executor(
+                &self.executor_pool,
+                executor,
+                self.config.max_concurrent,
+                timeout_ms,
             );
         }
         let worker_count = if self.config.supervised_workers_enabled {

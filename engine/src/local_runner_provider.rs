@@ -249,10 +249,15 @@ fn summarize_state(history: &[Value]) -> String {
 fn make_prompt(mode: &str, iteration: usize, history: &[Value]) -> String {
     let task =
         "Find an integer candidate from 0 to 25 that maximizes a hidden deterministic score.";
-    if mode == "stateless_reread" {
+    if matches!(mode, "stateless_reread" | "full_history") {
         let history_text = serde_json::to_string(history).unwrap_or_else(|_| "[]".to_string());
         format!(
             "Task: {task}\nIteration: {iteration}\nFull prior compact history: {history_text}\nReturn candidate=<number>."
+        )
+    } else if mode == "retrieval_memory" {
+        let best = summarize_state(history);
+        format!(
+            "Task: {task}\nIteration: {iteration}\nRetrieved bounded reference: {best}\nReturn candidate=<number>."
         )
     } else {
         let state_summary = summarize_state(history);
@@ -273,7 +278,7 @@ fn provider_request_model<'a>(
 
 fn compute_context_tokens(mode: &str, prompt: &str, history: &[Value]) -> (i64, i64) {
     let context_tokens = estimate_tokens(prompt);
-    let repeated = if mode == "stateless_reread" {
+    let repeated = if matches!(mode, "stateless_reread" | "full_history") {
         if history.is_empty() {
             0
         } else {
@@ -299,17 +304,18 @@ fn build_step(
     candidate: i64,
     score_val: f64,
 ) -> Value {
-    let retrieved_refs_count = if mode == "stateful_store" && iteration > 0 {
-        1
-    } else {
-        0
-    };
-    let retrieved_ref_tokens = if mode == "stateful_store" && iteration > 0 {
+    let retrieves = matches!(mode, "stateful_store" | "retrieval_memory") && iteration > 0;
+    let durable = matches!(
+        mode,
+        "stateful_store" | "summary_memory" | "retrieval_memory" | "durable_state_bounded_recent"
+    );
+    let retrieved_refs_count = if retrieves { 1 } else { 0 };
+    let retrieved_ref_tokens = if retrieves {
         std::cmp::min(context_tokens, std::cmp::max(0, context_tokens / 5))
     } else {
         0
     };
-    let state_read_bytes = if mode == "stateful_store" {
+    let state_read_bytes = if durable {
         (candidate.to_string().len() + score_val.to_string().len()) as i64
     } else {
         0
@@ -332,7 +338,7 @@ fn build_step(
         "status": "pass",
         "error_kind": "none",
         "state_read_bytes": state_read_bytes,
-        "state_write_bytes": if mode == "stateful_store" { 96 } else { 0 },
+        "state_write_bytes": if durable { 96 } else { 0 },
     })
 }
 
@@ -342,6 +348,7 @@ struct RunnerUsage {
     tokens: i64,
     run_cost_usd: f64,
     prior_daily_cost_usd: f64,
+    per_call_cost_cap_usd: Option<f64>,
 }
 
 pub fn run_mode(
@@ -383,7 +390,15 @@ fn run_mode_with_usage(
     provider: &Arc<dyn Provider>,
     usage: &mut RunnerUsage,
 ) -> Result<Value, String> {
-    if mode != "stateless_reread" && mode != "stateful_store" {
+    if !matches!(
+        mode,
+        "stateless_reread"
+            | "stateful_store"
+            | "full_history"
+            | "summary_memory"
+            | "retrieval_memory"
+            | "durable_state_bounded_recent"
+    ) {
         return Err(format!("unsupported mode: {mode}"));
     }
     let started = Instant::now();
@@ -435,6 +450,12 @@ fn run_mode_with_usage(
             let reserved_cost = (reserved_input_tokens as f64 / 1_000.0)
                 * pricing.input_cost_per_1k
                 + (request_max_output_tokens as f64 / 1_000.0) * pricing.output_cost_per_1k;
+            if usage
+                .per_call_cost_cap_usd
+                .is_some_and(|cap| reserved_cost > cap)
+            {
+                return Err("call cost reservation would exceed per-call cost cap".to_string());
+            }
             if usage.run_cost_usd + reserved_cost > config.limits.run_cost_cap_usd {
                 return Err("call cost reservation would exceed run cost cap".to_string());
             }
@@ -478,8 +499,20 @@ fn run_mode_with_usage(
             }
         };
 
-        let input_tokens = resp.input_tokens.unwrap_or(estimate_tokens(&prompt));
-        let output_tokens = resp.output_tokens.unwrap_or(0);
+        let input_tokens = match resp.input_tokens {
+            Some(value) => value,
+            None if config.provider_kind == ProviderKind::Live => {
+                return Err("live provider response is missing input token usage".to_string())
+            }
+            None => estimate_tokens(&prompt),
+        };
+        let output_tokens = match resp.output_tokens {
+            Some(value) => value,
+            None if config.provider_kind == ProviderKind::Live => {
+                return Err("live provider response is missing output token usage".to_string())
+            }
+            None => 0,
+        };
         usage.tokens += input_tokens + output_tokens;
         let call_cost = match resp.estimated_cost {
             Some(cost) if cost.is_finite() && cost >= 0.0 => cost,
@@ -491,6 +524,13 @@ fn run_mode_with_usage(
         };
         usage.run_cost_usd += call_cost;
         mode_cost += call_cost;
+
+        if usage
+            .per_call_cost_cap_usd
+            .is_some_and(|cap| call_cost > cap)
+        {
+            return Err("provider call cost exceeded per-call cost cap".to_string());
+        }
 
         if usage.tokens > config.limits.max_tokens {
             return Err("token limit exceeded".to_string());
@@ -572,7 +612,14 @@ fn run_mode_with_usage(
         "runtime_version": RUNTIME_VERSION,
         "scenario_id": SCENARIO_ID,
         "mode": mode,
-        "state_strategy": if mode == "stateful_store" { "durable_state" } else { "full_history" },
+        "state_strategy": match mode {
+            "stateful_store" => "durable_state",
+            "full_history" | "stateless_reread" => "full_history",
+            "summary_memory" => "memory_digest",
+            "retrieval_memory" => "retrieval_refs",
+            "durable_state_bounded_recent" => "mixed",
+            _ => unreachable!(),
+        },
         "status": status,
         "pass_fail_reason": if status == "pass" {
             "same score threshold met"
@@ -604,10 +651,12 @@ fn run_mode_with_usage(
             "model": request_model,
             "external_calls": steps.len() as i64,
             "final_best_score": best_score_val,
-            "context_protocol": if mode == "stateless_reread" {
-                "full_history_reread"
-            } else {
-                "compact_summary_plus_recent_window"
+            "context_protocol": match mode {
+                "stateless_reread" | "full_history" => "full_history_reread",
+                "summary_memory" => "summary_memory",
+                "retrieval_memory" => "bounded_retrieval",
+                "stateful_store" | "durable_state_bounded_recent" => "durable_state_bounded_recent",
+                _ => unreachable!(),
             },
         },
         "steps": steps,
@@ -882,6 +931,41 @@ pub fn run_live_pair_with_store(
     run_pair_with_daily_cost(config, provider, prior_daily_cost_usd)
 }
 
+/// Runs a bounded list of live memory strategies under one shared call, token,
+/// run-cost, daily-cost, and per-call-cost budget. The provider remains the
+/// existing audited/circuit-broken owner; this function adds no provider path.
+pub fn run_live_modes_with_store(
+    config: &RunnerConfig,
+    provider: &Arc<dyn Provider>,
+    store: &LocalProductStore,
+    modes: &[&str],
+    per_call_cost_cap_usd: f64,
+) -> Result<Vec<Value>, String> {
+    if config.provider_kind != ProviderKind::Live {
+        return Err("bounded live modes require live provider kind".to_string());
+    }
+    if modes.is_empty() || modes.len() > 8 {
+        return Err("bounded live modes require between one and eight strategies".to_string());
+    }
+    if !per_call_cost_cap_usd.is_finite()
+        || per_call_cost_cap_usd <= 0.0
+        || per_call_cost_cap_usd > config.limits.run_cost_cap_usd
+    {
+        return Err("per-call cost cap must be positive and no greater than run cap".to_string());
+    }
+    let date_prefix = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let prior_daily_cost_usd = store.daily_provider_audit_cost_usd(&date_prefix)?;
+    let mut usage = RunnerUsage {
+        prior_daily_cost_usd,
+        per_call_cost_cap_usd: Some(per_call_cost_cap_usd),
+        ..RunnerUsage::default()
+    };
+    modes
+        .iter()
+        .map(|mode| run_mode_with_usage(mode, config, provider, &mut usage))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -904,6 +988,10 @@ mod tests {
         calls: Arc<AtomicUsize>,
     }
 
+    struct MissingUsageProvider {
+        missing_input: bool,
+    }
+
     #[async_trait::async_trait]
     impl Provider for CountingProvider {
         fn provider_id(&self) -> &str {
@@ -923,6 +1011,34 @@ mod tests {
                 output: "candidate=17".to_string(),
                 input_tokens: Some(10),
                 output_tokens: Some(2),
+                estimated_cost: Some(0.01),
+                provider_request_id: None,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for MissingUsageProvider {
+        fn provider_id(&self) -> &str {
+            "missing-usage-provider"
+        }
+
+        fn is_enabled(&self) -> bool {
+            true
+        }
+
+        fn default_model(&self) -> Option<&str> {
+            Some("actual-request-model")
+        }
+
+        async fn invoke(&self, request: &ProviderRequest) -> ProviderResult {
+            Ok(ProviderResponse {
+                schema_version: "provider_response.v1".to_string(),
+                provider_id: self.provider_id().to_string(),
+                model: request.model.clone(),
+                output: "candidate=17".to_string(),
+                input_tokens: (!self.missing_input).then_some(10),
+                output_tokens: self.missing_input.then_some(2),
                 estimated_cost: Some(0.01),
                 provider_request_id: None,
             })
@@ -1318,6 +1434,56 @@ mod tests {
     }
 
     #[test]
+    fn live_modes_share_limits_and_persist_audit_without_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::storage::local_product_store::LocalProductStore::new(
+                dir.path().join("benchmark-audit.db"),
+            )
+            .unwrap(),
+        );
+        let (mut config, _provider) = scripted_runner(Duration::ZERO, 0.001, 1.0, 0.25);
+        config.limits.max_calls = 4;
+        let provider =
+            build_live_provider(&config, Some(&gates_with_provider()), store.clone()).unwrap();
+        let results = run_live_modes_with_store(
+            &config,
+            &provider,
+            &store,
+            &[
+                "full_history",
+                "summary_memory",
+                "retrieval_memory",
+                "durable_state_bounded_recent",
+            ],
+            0.05,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 4);
+        assert_eq!(store.provider_audit_events(100).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn live_modes_fail_closed_when_actual_call_cost_exceeds_per_call_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::storage::local_product_store::LocalProductStore::new(
+                dir.path().join("benchmark-cap.db"),
+            )
+            .unwrap(),
+        );
+        let (config, _provider) = scripted_runner(Duration::ZERO, 0.15, 1.0, 0.25);
+        let provider =
+            build_live_provider(&config, Some(&gates_with_provider()), store.clone()).unwrap();
+        let error = run_live_modes_with_store(&config, &provider, &store, &["full_history"], 0.10)
+            .unwrap_err();
+        assert!(
+            error.contains("per-call cost cap"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn live_run_fails_closed_when_provider_cost_is_unknown() {
         let (mut config, _) = scripted_runner(Duration::ZERO, 0.0, 1.0, 0.25);
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider {
@@ -1331,6 +1497,19 @@ mod tests {
             run_mode_with_daily_cost("stateless_reread", &config, &provider, 0.0).unwrap_err();
 
         assert!(error.contains("cost"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn live_run_fails_closed_when_provider_token_usage_is_incomplete() {
+        for (missing_input, expected) in [(true, "input token"), (false, "output token")] {
+            let (mut config, _) = scripted_runner(Duration::ZERO, 0.01, 1.0, 0.25);
+            let provider: Arc<dyn Provider> = Arc::new(MissingUsageProvider { missing_input });
+            config.provider = Some(provider.clone());
+
+            let error =
+                run_mode_with_daily_cost("full_history", &config, &provider, 0.0).unwrap_err();
+            assert!(error.contains(expected), "unexpected error: {error}");
+        }
     }
 
     #[test]

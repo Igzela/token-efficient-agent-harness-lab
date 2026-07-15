@@ -12,8 +12,8 @@ import {
   type RegressionReportSummary,
   type RegressionTrendSummary,
 } from "@/lib/regression-evidence";
-import { summarizeScorecardComparison } from "@/lib/scorecard-evidence";
-import type { BudgetEvidenceArtifact, ScorecardScenarioComparisonSummary } from "@/lib/types";
+import { summarizeScorecardComparison, summarizeScorecardMatrix } from "@/lib/scorecard-evidence";
+import type { BudgetEvidenceArtifact, ScorecardMatrixSummary, ScorecardScenarioComparisonSummary } from "@/lib/types";
 import { StateBanner } from "./StateBanner";
 
 const DEFAULT_SCENARIO = "langgraph_offline_state_retention_pilot_2026_07_10";
@@ -224,6 +224,7 @@ function RegressionHistory({ trend }: { trend: RegressionTrendSummary }) {
 export function BenchmarkScorecards() {
   const [scenarioId, setScenarioId] = useState(DEFAULT_SCENARIO);
   const [comparison, setComparison] = useState<ScorecardScenarioComparisonSummary | null>(null);
+  const [matrix, setMatrix] = useState<ScorecardMatrixSummary | null>(null);
   const [regression, setRegression] = useState<RegressionReportSummary | null>(null);
   const [trend, setTrend] = useState<RegressionTrendSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -252,10 +253,13 @@ export function BenchmarkScorecards() {
 
     if (scorecardsResult.status === "fulfilled") {
       const summary = summarizeScorecardComparison(scorecardsResult.value.comparison);
+      const matrixSummary = summarizeScorecardMatrix(scorecardsResult.value.comparison);
       setComparison(summary);
-      if (!summary) setBenchmarkError("The scenario does not contain one comparable baseline/candidate pair.");
+      setMatrix(matrixSummary);
+      if (!summary && !matrixSummary) setBenchmarkError("The scenario does not contain valid bounded comparison evidence.");
     } else {
       setComparison(null);
+      setMatrix(null);
       setBenchmarkError(scorecardsResult.reason instanceof Error ? scorecardsResult.reason.message : "Failed to load benchmark scenario.");
     }
 
@@ -334,6 +338,22 @@ export function BenchmarkScorecards() {
           <div className="heading-row">
             <span className={`pill ${comparison.token_advantage_reported ? "ok" : "info"}`}>token advantage {comparison.token_advantage_reported ? "reported" : "not reported"}</span>
             <span className={`pill ${comparison.cost_advantage_reported ? "ok" : "info"}`}>cost advantage {comparison.cost_advantage_reported ? "reported" : "not reported"}</span>
+          </div>
+        </div>
+      )}
+
+      {matrix && (
+        <div className="card stack">
+          <div className="heading-row">
+            <div><p className="eyebrow">{matrix.scenario_id}</p><h3>Native / external strategy matrix</h3></div>
+            <span className={`pill ${matrix.comparison_status === "comparable" ? "ok" : "risk"}`}>{matrix.comparison_status}</span>
+          </div>
+          {matrix.incomparable_reasons.length > 0 && <p className="muted">Reasons: {matrix.incomparable_reasons.join(", ")}</p>}
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Runtime</th><th scope="col">Strategy</th><th scope="col">Status</th><th scope="col">Quality</th><th scope="col">Tokens</th><th scope="col">Cost</th><th scope="col">Latency</th><th scope="col">Confidence</th></tr></thead>
+              <tbody>{matrix.rows.map((row) => <tr key={row.artifact_id}><td>{row.runtime_kind} {row.runtime_version}</td><td>{row.strategy}</td><td>{row.status}</td><td>{formatNumber(row.quality_score)}</td><td>{formatNumber(row.total_tokens)}</td><td>{formatCost(row.estimated_cost_usd)}</td><td>{formatNumber(row.duration_ms)} ms</td><td>{row.measurement_confidence ?? "—"}</td></tr>)}</tbody>
+            </table>
           </div>
         </div>
       )}

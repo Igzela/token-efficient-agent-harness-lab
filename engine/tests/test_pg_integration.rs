@@ -31,8 +31,8 @@ use engine::orchestration::schemas::{
 use engine::storage::local_product_store::BudgetAutoPausePolicy;
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::{
-    DurableMemoryCreate, DurableMemoryRevision, LocalProductStore, MemoryRetrievalRequest,
-    MemoryScope,
+    DurableMemoryCreate, DurableMemoryRevision, ExternalRuntimeInvocationClaim,
+    ExternalRuntimeScope, LocalProductStore, MemoryRetrievalRequest, MemoryScope,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -2757,4 +2757,133 @@ fn pg_active_queue_numeric_types_match_sqlite_contract() {
     assert_eq!(tenant["run_count"], 1);
     assert_eq!(tenant["avg_priority"], 2.0);
     assert!(store.get_queue_status().unwrap()["avg_priority"].is_number());
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_external_runtime_receipts_are_concurrent_restart_safe_and_scope_bound() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let scope = ExternalRuntimeScope {
+        tenant_id: format!("tenant-{tag}"),
+        workspace_id: format!("workspace-{tag}"),
+        run_id: format!("run-{tag}"),
+        node_id: format!("node-{tag}"),
+        thread_id: format!("thread-{tag}"),
+    };
+    let request_sha = "a".repeat(64);
+    let first = store
+        .claim_external_runtime_invocation(&scope, &request_sha, "lease-first", 60, "pg-test")
+        .unwrap();
+    let (invocation_id, lease_token) = match first {
+        ExternalRuntimeInvocationClaim::Claimed { invocation_id, .. } => {
+            (invocation_id, "lease-first")
+        }
+        other => panic!("expected first claim, got {other:?}"),
+    };
+    assert!(matches!(
+        store
+            .claim_external_runtime_invocation(&scope, &request_sha, "lease-second", 60, "pg-test")
+            .unwrap(),
+        ExternalRuntimeInvocationClaim::Busy { .. }
+    ));
+
+    let state = json!({
+        "memory_digest":"1".repeat(64),
+        "summary_digest":"2".repeat(64),
+        "fact_ids":[],
+        "selected_reference_ids":[],
+        "recent_event_hashes":[],
+        "turn_count":1,
+        "conflict_count":0,
+        "correction_count":0,
+    });
+    let state_sha = hex::encode(Sha256::digest(
+        canonical_event_json(&state).unwrap().as_bytes(),
+    ));
+    let checkpoint = json!({
+        "checkpoint_id":format!("ckpt-{tag}"),
+        "version":1,
+        "parent_checkpoint_id":Value::Null,
+        "state_summary":state,
+        "state_sha256":state_sha,
+    });
+    store
+        .complete_external_runtime_invocation(
+            &scope,
+            &invocation_id,
+            lease_token,
+            "0.1.0",
+            "1.2.9",
+            "summary_memory",
+            &checkpoint,
+            &json!({"schema_version":"external_runtime_result.v1","raw_content_persisted":false}),
+            "artifact-pg",
+            "pg-test",
+        )
+        .unwrap();
+    assert!(matches!(
+        store
+            .claim_external_runtime_invocation(&scope, &request_sha, "lease-third", 60, "pg-test")
+            .unwrap(),
+        ExternalRuntimeInvocationClaim::Completed { .. }
+    ));
+    let mut cross_scope = scope.clone();
+    cross_scope.workspace_id = format!("other-{tag}");
+    assert!(store
+        .external_runtime_checkpoint(&cross_scope)
+        .unwrap()
+        .is_none());
+    let restarted = test_store().unwrap();
+    assert_eq!(
+        restarted
+            .external_runtime_checkpoint(&scope)
+            .unwrap()
+            .unwrap()["version"],
+        1
+    );
+
+    let concurrent_scope = ExternalRuntimeScope {
+        run_id: format!("concurrent-run-{tag}"),
+        node_id: format!("concurrent-node-{tag}"),
+        ..scope
+    };
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for index in 0..2 {
+        let url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+        let scope = concurrent_scope.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            let store = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+            barrier.wait();
+            store
+                .claim_external_runtime_invocation(
+                    &scope,
+                    &"b".repeat(64),
+                    &format!("lease-{index}"),
+                    60,
+                    "pg-test",
+                )
+                .unwrap()
+        }));
+    }
+    let outcomes = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, ExternalRuntimeInvocationClaim::Claimed { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, ExternalRuntimeInvocationClaim::Busy { .. }))
+            .count(),
+        1
+    );
 }

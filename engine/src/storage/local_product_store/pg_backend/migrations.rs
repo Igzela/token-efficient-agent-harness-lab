@@ -151,6 +151,7 @@ impl LocalProductStore {
                              ON tool_execution_authorizations(status, run_id);"
                     }
                     23 => schema::V23_DDL,
+                    24 => schema::V24_DDL,
                     _ => {
                         return Err(format!(
                             "unknown pg migration version: {}",
@@ -334,6 +335,69 @@ impl LocalProductStore {
             tx.commit().map_err(|error| error.to_string())
         })
     }
+
+    pub(in crate::storage::local_product_store) fn rollback_pg_v24_to_v23_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.with_pg_conn(|client| {
+            let mut tx = client.transaction().map_err(|error| error.to_string())?;
+            tx.batch_execute(
+                "LOCK TABLE schema_migrations IN ACCESS EXCLUSIVE MODE;
+                 LOCK TABLE external_runtime_checkpoints IN ACCESS EXCLUSIVE MODE;
+                 LOCK TABLE external_runtime_invocations IN ACCESS EXCLUSIVE MODE;",
+            )
+            .map_err(|error| error.to_string())?;
+            let current_version = tx
+                .query_one(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                    &[],
+                )
+                .map(|row| row.get::<_, i64>(0))
+                .map_err(|error| error.to_string())?;
+            super::super::migrations::require_v24_rollback_source(current_version)?;
+            let mut occupied = Vec::new();
+            for table in super::super::migrations::V24_TABLES {
+                let sql = format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)");
+                if tx
+                    .query_one(&sql, &[])
+                    .map(|row| row.get::<_, bool>(0))
+                    .map_err(|error| error.to_string())?
+                {
+                    occupied.push(table.to_string());
+                }
+            }
+            super::super::migrations::require_empty_v24_tables(&occupied)?;
+            tx.batch_execute(
+                "DROP TABLE external_runtime_invocations;
+                 DROP TABLE external_runtime_checkpoints;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1, $2, 'schema.rollback.v24_to_v23', 'local_product_store', $3)",
+                &[
+                    &now,
+                    &actor,
+                    &super::super::migrations::v24_rollback_audit_details(),
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            let removed = tx
+                .execute(
+                    "DELETE FROM schema_migrations WHERE version = $1",
+                    &[&super::super::migrations::V24_SCHEMA_VERSION],
+                )
+                .map_err(|error| error.to_string())?;
+            if removed != 1 {
+                return Err(format!(
+                    "v24 rollback expected one version marker, removed {removed}"
+                ));
+            }
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -462,12 +526,64 @@ mod tests {
     }
 
     #[cfg(feature = "pg-tests")]
-    fn prepare_v22_rollback_fixture(store: &LocalProductStore) {
+    fn prepare_v23_rollback_fixture(store: &LocalProductStore) {
+        assert_eq!(store.schema_version().unwrap(), 24);
+        store
+            .rollback_v24_to_v23("migration-test-setup", true)
+            .unwrap();
         assert_eq!(store.schema_version().unwrap(), 23);
+    }
+
+    #[cfg(feature = "pg-tests")]
+    fn prepare_v22_rollback_fixture(store: &LocalProductStore) {
+        prepare_v23_rollback_fixture(store);
         store
             .rollback_v23_to_v22("migration-test-setup", true)
             .unwrap();
         assert_eq!(store.schema_version().unwrap(), 22);
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn pg_v24_rollback_is_atomic_and_can_be_migrated_forward_again() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        let store = &fixture.store;
+        store.rollback_v24_to_v23("migration-test", true).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 23);
+        for table in super::super::super::migrations::V24_TABLES {
+            assert!(!pg_table_exists(store, table), "{table} should be removed");
+        }
+        let rollback_audit = store
+            .with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT actor, details_json FROM audit_log
+                         WHERE action = 'schema.rollback.v24_to_v23'",
+                        &[],
+                    )
+                    .map(|row| (row.get::<_, String>(0), row.get::<_, String>(1)))
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(rollback_audit.0, "migration-test");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rollback_audit.1).unwrap(),
+            serde_json::json!({
+                "from_version":24,
+                "to_version":23,
+                "dropped_empty_tables":[
+                    "external_runtime_checkpoints",
+                    "external_runtime_invocations"
+                ]
+            })
+        );
+        store.run_pg_migrations_internal().unwrap();
+        assert_eq!(store.schema_version().unwrap(), 24);
+        for table in super::super::super::migrations::V24_TABLES {
+            assert!(pg_table_exists(store, table), "{table} should be restored");
+        }
     }
 
     #[test]
@@ -478,6 +594,7 @@ mod tests {
         };
         let store = &fixture.store;
 
+        prepare_v23_rollback_fixture(store);
         store.rollback_v23_to_v22("migration-test", true).unwrap();
         assert_eq!(store.schema_version().unwrap(), 22);
         for table in super::super::super::migrations::V23_TABLES {
@@ -513,7 +630,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 23);
+        assert_eq!(store.schema_version().unwrap(), 24);
         for table in super::super::super::migrations::V23_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -526,6 +643,7 @@ mod tests {
             return;
         };
         let store = &fixture.store;
+        prepare_v23_rollback_fixture(store);
         store
             .with_pg_conn(|client| {
                 client
@@ -621,7 +739,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 23);
+        assert_eq!(store.schema_version().unwrap(), 24);
         for table in super::super::super::migrations::V22_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }

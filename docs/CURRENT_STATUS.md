@@ -1,12 +1,12 @@
 # Current Status
 
-Last updated: 2026-07-14.
+Last updated: 2026-07-15.
 
 ## Summary
 
 This repository is a local/small-team self-hosted agent workflow control plane. Rust `engine/` remains the sole runtime, API, and application-owned storage implementation. Active documents describe current facts and forward execution; merged PRs and repository history retain detailed stage history.
 
-The repository has broad feature coverage, but several existing capabilities still require integration repair. In addition, the GitHub Issues/Actions → Vader Codex repository-maintenance orchestrator is merged but is not yet accepted for production task use: the first live GPT Web smoke reached the Vader worker and then failed closed before branch or PR creation.
+PR #220 and PR #221 closed the production Agent Runtime, durable memory, PE-2, and PE-4 ownership gaps. The final managed-external-runtime and acceptance slice is in progress. The GitHub Issues/Actions → Vader Codex repository-maintenance orchestrator remains unaccepted for production task use.
 
 ## Verified Repository State
 
@@ -15,6 +15,8 @@ The repository has broad feature coverage, but several existing capabilities sti
 - PR #207 merged the disabled-by-default event-driven repository-maintenance orchestrator at `23187bb83dc32165d8982c79be1a1f7f818380a0`;
 - PR #216 repaired Codex last-message handling and runner-readiness validation and merged at `2a42c011164765ba6c2dbe940c5a73900a7bb4b1`;
 - PR #216 exact head `7210cd1943b075ef07c561f4804bca8230cffd60` passed canonical CI run `29308693744` with all seven required jobs successful;
+- PR #220 merged Agent Runtime integration as `936b05c226ab64576c0e2d4146d3f8ca3d0c3e47` after exact-head CI passed all seven required jobs;
+- PR #221 merged durable memory plus the PE-2/PE-4 production loop as `f821d366359e1b68376df6dd1eae7a10c9519058`; exact PR-head CI run `29383755592` and post-merge CI run `29384216781` each passed all seven required jobs;
 - Issue #208 currently has only `agent-control` and `agent-emergency-stop`; orchestration and auto-merge enable labels are absent.
 
 ## Repository-Agent Smoke Status
@@ -30,16 +32,16 @@ GPT Web request
 → agent-running / Vader worker entry
 ```
 
-The task then transitioned to `agent-blocked` without creating `agent/issue-217`, a pull request, or exact-head CI evidence. The control Issue was returned to emergency stop and orchestration was disabled.
+The task then transitioned to `agent-blocked`. Bounded Actions diagnostics established that Vader produced the artifact, the GitHub-hosted finalizer validated it, and the branch push completed; PR creation then failed with HTTP 403 because the repository does not permit GitHub Actions to create or approve pull requests. The Issue comments do not retain that terminal detail. The control Issue was returned to emergency stop and orchestration was disabled.
 
-The exact worker failure cause is not yet established from durable repository evidence. Issue comments record only the claimed and dispatched states; they do not contain the workflow run/job identity or a bounded terminal failure reason. Do not infer a Codex, runner, network, token, or finalizer cause without reading the actual Actions and runner diagnostics.
+The demonstrated failure cause is established from Actions diagnostics, but the required repository setting is still disabled, the Vader runner is currently offline, and Issue comments do not contain the workflow run/job identity or bounded terminal reason. A repaired preflight now checks the setting through a separate least-privilege administration-read credential before dispatch and records bounded terminal evidence, but a replacement smoke has not run.
 
 Operational consequence:
 
 - do not dispatch a production repository task through this orchestrator yet;
 - keep Issue #208 emergency-stopped;
-- repair timeout/failure observability and the demonstrated worker failure through `PR207-SMOKE-REPAIR-1`;
-- run `PR207-SMOKE-VERIFY-1` through PR creation, exact-head CI, and independent review before declaring the GPT Web path operational.
+- configure the documented administration-read preflight credential, enable the repository PR-creation setting, and restore the named disposable Vader runner;
+- merge the final repair slice, then run a new bounded smoke through PR creation, exact-head CI, and independent review before declaring the GPT Web path operational.
 
 The intended user interface remains natural language in GPT Web. The assistant, not the user, owns creation of the bounded Issue and the internal workflow parameters. This contract is documented in `README.md` and `AGENTS.md`, but activation remains blocked by the failed smoke.
 
@@ -58,7 +60,9 @@ The intended user interface remains natural language in GPT Web. The assistant, 
 | PE-4 Trace-backed Policy Replay | Eligible dispatch traces produce immutable replay artifacts; explicit evidence-chain promotion and exact-snapshot rollback are connected |
 | PE-5 Release Provenance | Post-seal repair merged in PR #214; exact-head CI passed; no real public release or production installation was exercised |
 | PE-6 Fault Injection and Recovery Drills | Post-seal repair merged in PR #214; owner-emitted drills are wired into existing test/CI paths; no destructive external testing is authorized |
-| GitHub/Vader repository orchestrator | Code merged and runner path reached; first live smoke #217 blocked before branch/PR creation, so production use is disabled |
+| Managed LangGraph external runtime | Final integration slice in progress: one Rust-leased node, scoped checkpoint/receipt store, fixture/live gates, automatic scorecard persistence, and bounded inspection |
+| Native/LangGraph efficiency benchmark | Final integration slice in progress: canonical four-strategy and tool-discovery contract with fixture and guarded-live modes; no provider-backed result is yet verified |
+| GitHub/Vader repository orchestrator | Repair implemented locally; smoke #217 failed after branch push because Actions PR creation is disabled; replacement smoke remains blocked and production use is disabled |
 | Post-R7 wire/type governance | Implemented through `scripts/check_wire_codegen_drift.sh` |
 
 ## Connected Production Chains
@@ -83,11 +87,17 @@ Terminal workflow production and the explicit authenticated recompute API normal
 
 An app-owned replay production profile lets normal dispatch persistence automatically evaluate eligible traces without provider calls and record immutable offline replay artifacts; an authenticated generate endpoint provides deterministic operator recomputation. The scheduler also owns a persisted bounded dispatch-history cursor and rotating retry set, so an immediate producer failure or restart cannot strand a trace and later rows cannot be starved by a permanently bad row. Replay remains shadow-only. Evidence-chain promotion requires the exact replay binding, candidate and active-policy identity, freshness, current-state rebinding, confirmation, and permission before snapshot-backed mutation. The caller-asserted observation-summary promotion shortcut and its Dashboard mutation control are removed. Typed operator `inspect` is read-only, `acknowledge` records no approval and resolves only the exact source kind/ID/hash, and `rollback` binds the exact adaptive-policy snapshot and current state.
 
+### Managed external runtime and benchmark boundary
+
+Migration v24 adds app-owned, scope-bound external-runtime invocation receipts and LangGraph checkpoint metadata for SQLite and PostgreSQL. The Rust scheduler remains the only owner of workflow admission, lease, retry, pause/resume, concurrency, and authority. A `langgraph_external` node launches exactly one bounded adapter invocation. The Python package owns no queue or product store, receives a content-free typed provider exchange from Rust, and returns only a versioned summary. Fixture mode is network-free. Live mode is default-off and requires authentication, symbolic credentials, exact provider/model identity, pricing and cost gates, timeout, token cap, kill switch, and non-CI execution. `provider_outcome_unknown` is blocked and non-retryable.
+
+The canonical efficiency benchmark compares exactly `full_history`, `summary_memory`, `retrieval_memory`, and `durable_state_bounded_recent` for native and LangGraph runtimes, plus static-all versus deterministic Top-K tool discovery. Every material metric carries provenance, completeness, and confidence; unavailable provider fields remain null. Fixture execution is CI-safe. Provider-backed evidence is not yet verified and must not be inferred from fixture output.
+
 ## Confirmed Integration Gaps
 
 ### Repository-agent worker completion and evidence
 
-The control, intake, dispatcher, and worker-entry path are live, but the first bounded task did not reach a branch or PR. The repair must identify the actual failed workflow step and add enough bounded evidence to distinguish queue delay, runner loss, Codex timeout/nonzero exit, artifact rejection, finalizer failure, and control-state interruption without exposing raw prompts, model output, credentials, or unbounded logs.
+The control, intake, dispatcher, Vader implementation, artifact finalizer, and branch push were exercised, but the first bounded task could not create a PR because the repository Actions PR-creation setting is disabled. The repair adds preflight and bounded failure evidence; external acceptance still requires the repository setting, an online disposable Vader runner, and a replacement smoke.
 
 Required chain:
 
@@ -102,21 +112,9 @@ bounded task
 → independent review
 ```
 
-### Tool discovery benchmark
+### External live acceptance
 
-The tool registry and PE-1 regression evidence exist independently. There is no deterministic static-all versus retrieve-Top-K tool selection benchmark, no required-tool recall/selection precision evidence, and no bridge from tool discovery results into PE-1 scorecards and regression reports.
-
-Required chain:
-
-```text
-existing tool descriptors
-→ deterministic bounded retrieval/Top-K selection
-→ paired static-all and retrieved-tool runs
-→ quality, recall, precision, token, latency, and cost evidence
-→ existing PE-1 scorecard/regression owners
-```
-
-This is a benchmark and evidence feature first. It does not authorize dynamic production tool execution.
+No paid provider call, disposable-target repository acceptance, replacement orchestrator smoke, staging-only external fault drill, public tag, or public release has been performed by the final slice. Those states remain `BLOCKED` or `RELEASE_READY_NOT_PUBLISHED` according to their actual prerequisites; fixture evidence is not live evidence.
 
 ### Local runner boundary
 
@@ -129,8 +127,8 @@ The explicitly authorized bounded three-PR production-integration program consol
 ## Active Execution Order
 
 1. `PR1-AR-RUNTIME-INTEGRATION-1` — production Agent Runtime and tool-policy routing (merged as PR #220).
-2. `PR2-MEMORY-BUDGET-POLICY-LOOP-1` — durable memory, automatic normalized usage/budget evidence, and trace-replay/evidence-chain policy operations (current slice).
-3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — managed LangGraph adapter, comparable native/LangGraph benchmark, orchestrator/target-output/recovery, and guarded live acceptance.
+2. `PR2-MEMORY-BUDGET-POLICY-LOOP-1` — merged as PR #221.
+3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — current slice: managed LangGraph adapter, comparable native/LangGraph benchmark, orchestrator/target-output/recovery, and guarded live acceptance.
 
 Keep real release publication, destructive production faults, persistent signing secrets, and unguarded provider execution unauthorized. Without separate publication authority the terminal release state is `RELEASE_READY_NOT_PUBLISHED`, or `BLOCKED` when an external prerequisite cannot be verified.
 
