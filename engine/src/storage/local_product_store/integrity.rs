@@ -739,10 +739,22 @@ fn validate_provider_event_cross_owner(
         _ => "",
     };
     let suffix = event_id.strip_prefix(prefix).unwrap_or_default();
-    let suffix_is_owned = suffix == operation.operation_binding_sha256
-        || (2..=operation.attempt_count).any(|attempt| {
-            suffix == format!("{}-attempt-{attempt}", operation.operation_binding_sha256)
-        });
+    let event_attempt = if operation.state
+        == super::provider_audit::ProviderEmbeddingReceiptState::RetryAuthorized.as_str()
+    {
+        operation.attempt_count - 1
+    } else {
+        operation.attempt_count
+    };
+    let expected_suffix = if event_attempt == 1 {
+        operation.operation_binding_sha256.clone()
+    } else {
+        format!(
+            "{}-attempt-{event_attempt}",
+            operation.operation_binding_sha256
+        )
+    };
+    let suffix_is_owned = suffix == expected_suffix;
     let cost_binding_valid = match event_type {
         "contract_check_reserved" => cost.is_none() && currency.is_none() && error_domain.is_none(),
         "request_reserved" | "request_sent" => {
@@ -756,6 +768,50 @@ fn validate_provider_event_cross_owner(
         "error" => cost.is_none() && currency == Some("USD") && error_domain.is_some(),
         _ => false,
     };
+    let known_error_domain = error_domain.is_some_and(|domain| {
+        domain != "provider_failed_before_send" && !domain.starts_with("provider_outcome_unknown")
+    });
+    let unknown_error_domain =
+        error_domain.is_some_and(|domain| domain.starts_with("provider_outcome_unknown"));
+    let retry_from_preflight = operation.state
+        == super::provider_audit::ProviderEmbeddingReceiptState::RetryAuthorized.as_str()
+        && operation.send_event_id.is_none();
+    let retry_from_post = operation.state
+        == super::provider_audit::ProviderEmbeddingReceiptState::RetryAuthorized.as_str()
+        && operation.send_event_id.is_some();
+    let state_event_binding_valid = match (operation.state.as_str(), event_type) {
+        ("preflight_reserved", "contract_check_reserved")
+        | ("failed_before_send", "contract_check_reserved")
+        | ("reserved", "request_reserved")
+        | ("sending", "request_reserved" | "request_sent")
+        | (
+            "network_succeeded" | "succeeded" | "result_erased",
+            "request_reserved" | "request_sent" | "response_received",
+        )
+        | ("failed_known_outcome", "request_reserved" | "request_sent")
+        | (
+            "outcome_unknown" | "outcome_unknown_acknowledged",
+            "request_reserved" | "request_sent",
+        ) => true,
+        ("failed_before_send", "error") => {
+            prefix == "paudit-contract-error-"
+                && error_domain == Some("provider_failed_before_send")
+        }
+        ("failed_known_outcome", "error") => prefix == "paudit-error-" && known_error_domain,
+        ("outcome_unknown" | "outcome_unknown_acknowledged", "error") => {
+            prefix == "paudit-error-" && unknown_error_domain
+        }
+        ("retry_authorized", "contract_check_reserved") if retry_from_preflight => true,
+        ("retry_authorized", "request_reserved" | "request_sent") if retry_from_post => true,
+        ("retry_authorized", "error") if retry_from_preflight => {
+            prefix == "paudit-contract-error-"
+                && error_domain == Some("provider_failed_before_send")
+        }
+        ("retry_authorized", "error") if retry_from_post => {
+            prefix == "paudit-error-" && known_error_domain
+        }
+        _ => false,
+    };
     if provider_id != operation.provider_id
         || !event_types.contains(&event_type)
         || prefix.is_empty()
@@ -763,6 +819,7 @@ fn validate_provider_event_cross_owner(
         || dispatch_id != format!("memory-embedding-{suffix}")
         || redaction_status != "redacted"
         || !cost_binding_valid
+        || !state_event_binding_valid
     {
         return Err("provider embedding audit cross-owner binding is invalid".to_string());
     }
@@ -888,6 +945,18 @@ fn validate_provider_embedding_operation_integrity(
             ));
         }
     }
+    if state != super::provider_audit::ProviderEmbeddingReceiptState::Succeeded
+        && (row.result_kind.is_some() || row.result_id.is_some() || row.result_sha256.is_some())
+    {
+        return Err(failure(
+            "non-succeeded operation must not retain a result binding",
+        ));
+    }
+    if state == super::provider_audit::ProviderEmbeddingReceiptState::RetryAuthorized
+        && row.attempt_count < 2
+    {
+        return Err(failure("retry authorization attempt binding is invalid"));
+    }
     match state {
         super::provider_audit::ProviderEmbeddingReceiptState::PreflightReserved
         | super::provider_audit::ProviderEmbeddingReceiptState::Reserved => {
@@ -902,7 +971,8 @@ fn validate_provider_embedding_operation_integrity(
         }
         super::provider_audit::ProviderEmbeddingReceiptState::NetworkSucceeded
         | super::provider_audit::ProviderEmbeddingReceiptState::FailedKnownOutcome
-        | super::provider_audit::ProviderEmbeddingReceiptState::OutcomeUnknown => {
+        | super::provider_audit::ProviderEmbeddingReceiptState::OutcomeUnknown
+        | super::provider_audit::ProviderEmbeddingReceiptState::OutcomeUnknownAcknowledged => {
             if row.send_event_id.is_none() || row.outcome_event_id.is_none() {
                 return Err(failure(
                     "completed network phase audit binding is incomplete",
@@ -938,6 +1008,11 @@ fn validate_provider_embedding_operation_integrity(
             if row.send_event_id.is_some() || row.outcome_event_id.is_none() =>
         {
             return Err(failure("failed-before-send audit binding is invalid"));
+        }
+        super::provider_audit::ProviderEmbeddingReceiptState::RetryAuthorized
+            if row.outcome_event_id.is_none() =>
+        {
+            return Err(failure("retry authorization audit binding is incomplete"));
         }
         _ => {}
     }
@@ -1354,8 +1429,11 @@ mod tests {
                             "response_received"
                         },
                         None,
-                        matches!(state, "failed_known_outcome" | "outcome_unknown")
-                            .then_some("provider_outcome_unknown"),
+                        match state {
+                            "failed_known_outcome" => Some("provider_auth"),
+                            "outcome_unknown" => Some("provider_outcome_unknown"),
+                            _ => None,
+                        },
                     ),
                 ] {
                     connection.execute(
@@ -1788,6 +1866,124 @@ mod tests {
             );
             assert!(store.check_integrity().unwrap_err().contains(expected));
         }
+    }
+
+    #[test]
+    fn integrity_check_rejects_unknown_outcome_reclassified_as_known_failure() {
+        let (operation_id, binding, content, _) = valid_operation_receipt();
+        let (_directory, store) = new_store();
+        insert_provider_embedding_operation(
+            &store,
+            &operation_id,
+            &binding,
+            &content,
+            OPENROUTER_EMBEDDING_PROVIDER_ID,
+            OPENROUTER_EMBEDDING_MODEL_ID,
+            "outcome_unknown",
+            None,
+            None,
+            false,
+        );
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE provider_embedding_operations SET state='failed_known_outcome'",
+                        [],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(store
+            .check_integrity()
+            .unwrap_err()
+            .contains("audit cross-owner binding is invalid"));
+    }
+
+    #[test]
+    fn integrity_check_rejects_provider_events_from_an_old_attempt() {
+        let (operation_id, binding, content, metadata_json) = valid_operation_receipt();
+        let vector_json =
+            serde_json::to_string(&vec![0.25; OPENROUTER_EMBEDDING_DIMENSIONS]).unwrap();
+        let (_directory, store) = new_store();
+        insert_provider_embedding_operation(
+            &store,
+            &operation_id,
+            &binding,
+            &content,
+            OPENROUTER_EMBEDDING_PROVIDER_ID,
+            OPENROUTER_EMBEDDING_MODEL_ID,
+            "network_succeeded",
+            Some(&vector_json),
+            Some(&metadata_json),
+            false,
+        );
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE provider_embedding_operations SET attempt_count=2",
+                        [],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(store
+            .check_integrity()
+            .unwrap_err()
+            .contains("audit cross-owner binding is invalid"));
+    }
+
+    #[test]
+    fn integrity_check_rejects_reservation_from_the_wrong_phase() {
+        let (operation_id, binding, content, _) = valid_operation_receipt();
+        let (_directory, store) = new_store();
+        insert_provider_embedding_operation(
+            &store,
+            &operation_id,
+            &binding,
+            &content,
+            OPENROUTER_EMBEDDING_PROVIDER_ID,
+            OPENROUTER_EMBEDDING_MODEL_ID,
+            "sending",
+            None,
+            None,
+            false,
+        );
+        let preflight_event_id = format!("paudit-preflight-{binding}");
+        let dispatch_id = format!("memory-embedding-{binding}");
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO provider_audit_events
+                     (event_id,dispatch_id,provider_id,event_type,cost,currency,error_domain,
+                      redaction_status,created_at)
+                     VALUES (?1,?2,?3,'contract_check_reserved',NULL,NULL,NULL,
+                             'redacted','2026-07-15T00:00:00Z')",
+                        params![
+                            preflight_event_id,
+                            dispatch_id,
+                            OPENROUTER_EMBEDDING_PROVIDER_ID
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        "UPDATE provider_embedding_operations SET reservation_event_id=?1",
+                        [&preflight_event_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(store
+            .check_integrity()
+            .unwrap_err()
+            .contains("audit cross-owner binding is invalid"));
     }
 
     #[test]

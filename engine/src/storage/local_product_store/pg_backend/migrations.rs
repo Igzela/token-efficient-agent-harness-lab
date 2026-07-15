@@ -329,62 +329,53 @@ fn pg_v25_operation_schema_valid(
             &[],
         )
         .map_err(|error| error.to_string())?;
-    let rendered = constraints
+    let normalize_constraint = |value: &str| {
+        value
+            .to_ascii_lowercase()
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+    };
+    let actual_constraints = constraints
         .iter()
         .map(|row| {
-            format!("{}:{}", row.get::<_, String>(0), row.get::<_, String>(1)).to_ascii_lowercase()
+            format!(
+                "{}:{}",
+                row.get::<_, String>(0),
+                normalize_constraint(&row.get::<_, String>(1))
+            )
         })
-        .collect::<Vec<_>>()
-        .join("\n");
-    for fragment in [
-        "primary key (operation_id)",
-        "unique (target_memory_id, target_version)",
-        "'memory_version'::text",
-        "'retrieval_query'::text",
-        "length(source_sha256) = 64",
-        "query_sha256 is null",
-        "length(query_sha256) = 64",
-        "length(request_identity_sha256) = 64",
-        "length(operation_binding_sha256) = 64",
-        "length(content_sha256) = 64",
-        "length(contract_sha256) = 64",
-        "length(receipt_sha256) = 64",
-        "dimensions > 0",
-        "'memory_version'::text, 'retrieval_event'::text",
-        "result_sha256 is null",
-        "length(result_sha256) = 64",
-        "'preflight_reserved'::text",
-        "'reserved'::text",
-        "'sending'::text",
-        "'network_succeeded'::text",
-        "'succeeded'::text",
-        "'result_erased'::text",
-        "'failed_before_send'::text",
-        "'failed_known_outcome'::text",
-        "'outcome_unknown'::text",
-        "'outcome_unknown_acknowledged'::text",
-        "'retry_authorized'::text",
-        "attempt_count >= 1",
-        "attempt_count <= 4",
-        "result_kind is null",
-        "result_id is null",
-        "result_kind is not null",
-        "result_id is not null",
-        "result_sha256 is not null",
-        "operation_kind = 'memory_version'::text",
-        "node_id is null",
-        "operation_kind = 'retrieval_query'::text",
-        "run_id is not null",
-        "node_id is not null",
-        "query_sha256 is not null",
-        "query_sha256 = source_sha256",
-        "foreign key (reservation_event_id) references provider_audit_events(event_id)",
-        "foreign key (send_event_id) references provider_audit_events(event_id)",
-        "foreign key (outcome_event_id) references provider_audit_events(event_id)",
-    ] {
-        if !rendered.contains(fragment) {
-            return Ok(false);
-        }
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_constraints = [
+        "p:PRIMARY KEY (operation_id)",
+        "u:UNIQUE (target_memory_id, target_version)",
+        "f:FOREIGN KEY (reservation_event_id) REFERENCES provider_audit_events(event_id)",
+        "f:FOREIGN KEY (send_event_id) REFERENCES provider_audit_events(event_id)",
+        "f:FOREIGN KEY (outcome_event_id) REFERENCES provider_audit_events(event_id)",
+        "c:CHECK (((attempt_count >= 1) AND (attempt_count <= 4)))",
+        "c:CHECK ((dimensions > 0))",
+        "c:CHECK ((length(content_sha256) = 64))",
+        "c:CHECK ((length(contract_sha256) = 64))",
+        "c:CHECK ((length(operation_binding_sha256) = 64))",
+        "c:CHECK ((length(receipt_sha256) = 64))",
+        "c:CHECK ((length(request_identity_sha256) = 64))",
+        "c:CHECK ((length(source_sha256) = 64))",
+        "c:CHECK ((operation_kind = ANY (ARRAY['memory_version'::text, 'retrieval_query'::text])))",
+        "c:CHECK ((((operation_kind = 'memory_version'::text) AND (node_id IS NULL) AND (query_sha256 IS NULL)) OR ((operation_kind = 'retrieval_query'::text) AND (run_id IS NOT NULL) AND (node_id IS NOT NULL) AND (query_sha256 IS NOT NULL) AND (query_sha256 = source_sha256))))",
+        "c:CHECK (((query_sha256 IS NULL) OR (length(query_sha256) = 64)))",
+        "c:CHECK ((((result_kind IS NULL) AND (result_id IS NULL) AND (result_sha256 IS NULL)) OR ((result_kind IS NOT NULL) AND (result_id IS NOT NULL) AND (result_sha256 IS NOT NULL))))",
+        "c:CHECK (((result_kind IS NULL) OR (result_kind = ANY (ARRAY['memory_version'::text, 'retrieval_event'::text]))))",
+        "c:CHECK (((result_sha256 IS NULL) OR (length(result_sha256) = 64)))",
+        "c:CHECK ((state = ANY (ARRAY['preflight_reserved'::text, 'reserved'::text, 'sending'::text, 'network_succeeded'::text, 'succeeded'::text, 'result_erased'::text, 'failed_before_send'::text, 'failed_known_outcome'::text, 'outcome_unknown'::text, 'outcome_unknown_acknowledged'::text, 'retry_authorized'::text])))",
+    ]
+    .into_iter()
+    .map(|constraint| {
+        let (kind, definition) = constraint.split_once(':').expect("constraint kind");
+        format!("{kind}:{}", normalize_constraint(definition))
+    })
+    .collect::<std::collections::BTreeSet<_>>();
+    if actual_constraints != expected_constraints {
+        return Ok(false);
     }
     let indexes = client
         .query(
@@ -1128,6 +1119,58 @@ mod tests {
             occupied_error.contains("occupied partial operation table"),
             "unexpected occupied constraint failure: {occupied_error}"
         );
+        assert_eq!(store.schema_version().unwrap(), 24);
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn pg_v25_migration_refuses_occupied_weakened_state_constraint() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        let store = &fixture.store;
+        store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(&format!(
+                        r#"INSERT INTO provider_audit_events
+                           (event_id,dispatch_id,provider_id,event_type,redaction_status,created_at)
+                           VALUES ('paudit-preflight-{hash}','memory-embedding-{hash}','openrouter',
+                                   'contract_check_reserved','redacted','2026-07-15T00:00:00Z');
+                           INSERT INTO provider_embedding_operations
+                           (operation_id,operation_kind,target_memory_id,target_version,tenant_id,workspace_id,
+                            source_id,source_sha256,request_identity_sha256,operation_binding_sha256,
+                            content_sha256,contract_json,contract_sha256,receipt_sha256,provider_id,
+                            requested_model_id,resolved_model_id,dimensions,reservation_event_id,state,
+                            attempt_count,created_at,updated_at)
+                           VALUES ('embedding-operation-{hash}','memory_version','memory',1,'tenant','workspace',
+                                   'source','{hash}','{hash}','{hash}','{hash}','{{}}','{hash}','{hash}',
+                                   'openrouter','model:free','model:free',1,'paudit-preflight-{hash}',
+                                   'preflight_reserved',1,'2026-07-15T00:00:00Z','2026-07-15T00:00:00Z');
+                           DO $do$
+                           DECLARE state_constraint TEXT;
+                           BEGIN
+                             SELECT conname INTO state_constraint
+                             FROM pg_constraint
+                             WHERE conrelid='provider_embedding_operations'::regclass
+                               AND contype='c'
+                               AND pg_get_constraintdef(oid) LIKE '%preflight_reserved%';
+                             EXECUTE format('ALTER TABLE provider_embedding_operations DROP CONSTRAINT %I',
+                                            state_constraint);
+                           END $do$;
+                           ALTER TABLE provider_embedding_operations
+                             ADD CONSTRAINT weakened_state_check CHECK (state IN
+                               ('preflight_reserved','reserved','sending','network_succeeded','succeeded',
+                                'result_erased','failed_before_send','failed_known_outcome','outcome_unknown',
+                                'outcome_unknown_acknowledged','retry_authorized','bogus'));
+                           DELETE FROM schema_migrations WHERE version=25;"#,
+                        hash = "a".repeat(64),
+                    ))
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let error = store.run_pg_migrations_internal().unwrap_err();
+        assert!(error.contains("occupied partial operation table"));
         assert_eq!(store.schema_version().unwrap(), 24);
     }
 

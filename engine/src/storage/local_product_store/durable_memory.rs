@@ -1555,7 +1555,7 @@ fn provider_error_domain(error: &str) -> &'static str {
         "provider_outcome_unknown_oversized"
     } else if error.contains("truncated response") {
         "provider_outcome_unknown_truncated"
-    } else if error.contains("malformed response") {
+    } else if error.contains("malformed response") || error.contains("response is malformed") {
         "provider_outcome_unknown_malformed"
     } else if error.contains("timeout after send") {
         "provider_outcome_unknown_timeout"
@@ -4013,7 +4013,10 @@ mod tests {
     }
 
     #[test]
-    fn provider_embedding_catalog_failures_are_failed_before_send_and_never_replayed() {
+    fn provider_embedding_catalog_failures_require_explicit_retry_before_one_post() {
+        use super::super::provider_audit::{
+            ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
+        };
         let _env = ProviderEnvGuard::enabled();
         let cases = vec![
             Ok(HttpResponse {
@@ -4042,6 +4045,7 @@ mod tests {
                 Arc::new(MockTransport::new(vec![
                     catalog_result,
                     Ok(provider_catalog_response()),
+                    Ok(provider_vector_response()),
                 ])),
             )
             .unwrap();
@@ -4076,6 +4080,52 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|event| event["event_type"] == "request_sent"));
+            let resolution = ProviderEmbeddingResolutionRequest {
+                target_version: 1,
+                expected_attempt_count: 1,
+                scope: request.scope.clone(),
+                run_id: request.run_id.clone(),
+                action: ProviderEmbeddingResolutionAction::RetryFailed,
+                evidence_source_id: None,
+                evidence_sha256: None,
+                confirm_resolution: true,
+            };
+            let authorized = store
+                .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
+                .unwrap();
+            assert_eq!(authorized["state"], "retry_authorized");
+            assert_eq!(authorized["attempt_count"], 2);
+            let authorized_again = store
+                .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
+                .unwrap();
+            assert_eq!(authorized_again["state"], "retry_authorized");
+            assert_eq!(authorized_again["attempt_count"], 2);
+            assert_eq!(authorized_again["idempotent"], true);
+            assert_eq!(
+                store
+                    .with_conn(|connection| {
+                        connection
+                            .query_row(
+                                "SELECT COUNT(*) FROM audit_log
+                                 WHERE action='provider_embedding.retry_authorized'",
+                                [],
+                                |row| row.get::<_, i64>(0),
+                            )
+                            .map_err(|error| error.to_string())
+                    })
+                    .unwrap(),
+                1
+            );
+            store.create_durable_memory(&request, "test").unwrap();
+            assert_eq!(
+                store
+                    .provider_audit_events(20)
+                    .unwrap()
+                    .iter()
+                    .filter(|event| event["event_type"] == "request_sent")
+                    .count(),
+                1
+            );
         }
     }
 
@@ -4297,6 +4347,13 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(state, "outcome_unknown");
+            if index == 0 {
+                assert!(store
+                    .provider_audit_events(20)
+                    .unwrap()
+                    .iter()
+                    .any(|event| event["error_domain"] == "provider_outcome_unknown_malformed"));
+            }
             let retry = ProviderEmbeddingResolutionRequest {
                 target_version: 1,
                 expected_attempt_count: 1,

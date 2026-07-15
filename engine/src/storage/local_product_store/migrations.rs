@@ -1255,7 +1255,13 @@ fn sqlite_v25_operation_schema_valid(tx: &Transaction<'_>) -> Result<bool, Strin
         .map_err(|error| error.to_string())
     };
     let state_index = normalized_index("idx_provider_embedding_operations_state")?
-        .is_some_and(|sql| sql.contains("onprovider_embedding_operations(state,updated_at)"));
+        .is_some_and(|sql| {
+            matches!(
+                sql.as_str(),
+                "createindexidx_provider_embedding_operations_stateonprovider_embedding_operations(state,updated_at)"
+                    | "createindexifnotexistsidx_provider_embedding_operations_stateonprovider_embedding_operations(state,updated_at)"
+            )
+        });
     let retrieval_index = normalized_index(
         "idx_provider_embedding_operations_retrieval_identity",
     )?
@@ -1883,6 +1889,39 @@ mod tests {
             occupied_constraint.schema_version().unwrap(),
             V24_SCHEMA_VERSION
         );
+
+        let partial_index_path = dir.path().join("v25-occupied-partial-index.db");
+        let partial_index = LocalProductStore::new(&partial_index_path).unwrap();
+        partial_index
+            .with_conn(|conn| {
+                conn.execute_batch(&format!(
+                    "INSERT INTO provider_audit_events
+                     (event_id,dispatch_id,provider_id,event_type,redaction_status,created_at)
+                     VALUES ('paudit-preflight-{hash}','memory-embedding-{hash}','openrouter',
+                             'contract_check_reserved','redacted','2026-07-15T00:00:00Z');
+                     INSERT INTO provider_embedding_operations
+                     (operation_id,operation_kind,target_memory_id,target_version,tenant_id,workspace_id,
+                      source_id,source_sha256,request_identity_sha256,operation_binding_sha256,
+                      content_sha256,contract_json,contract_sha256,receipt_sha256,provider_id,
+                      requested_model_id,resolved_model_id,dimensions,reservation_event_id,state,
+                      attempt_count,created_at,updated_at)
+                     VALUES ('embedding-operation-{hash}','memory_version','memory',1,'tenant','workspace',
+                             'source','{hash}','{hash}','{hash}','{hash}','{{}}','{hash}','{hash}',
+                             'openrouter','model:free','model:free',1,'paudit-preflight-{hash}',
+                             'preflight_reserved',1,'2026-07-15T00:00:00Z','2026-07-15T00:00:00Z');
+                     DROP INDEX idx_provider_embedding_operations_state;
+                     CREATE INDEX idx_provider_embedding_operations_state
+                       ON provider_embedding_operations(state,updated_at)
+                       WHERE state='succeeded';
+                     PRAGMA user_version=24;",
+                    hash = "a".repeat(64),
+                ))
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let partial_index_error = partial_index.run_migrations().unwrap_err();
+        assert!(partial_index_error.contains("occupied partial operation table"));
+        assert_eq!(partial_index.schema_version().unwrap(), V24_SCHEMA_VERSION);
 
         let failure_path = dir.path().join("v25-atomic-failure.db");
         let failure = LocalProductStore::new(&failure_path).unwrap();

@@ -364,7 +364,9 @@ impl LocalProductStore {
                 validate_resolution_scope(&row,request)?;
                 if resolution_is_idempotent(&row,request) {
                     let action=resolution_audit_action(&request.action);
-                    let expected=audit_evidence(&row.operation_id,resolution_prior_state(&request.action),row.attempt_count);
+                    let expected=resolution_prior_states(&request.action).iter()
+                        .map(|prior_state|audit_evidence(&row.operation_id,prior_state,row.attempt_count))
+                        .collect::<Vec<_>>();
                     validate_idempotent_resolution_sqlite(&tx,&format!("provider-embedding/{}",row.operation_id),action,&expected)?;
                     return Ok(json!({"operation_id":row.operation_id,"state":row.state,"attempt_count":row.attempt_count,"idempotent":true}));
                 }
@@ -392,7 +394,9 @@ impl LocalProductStore {
                 validate_resolution_scope(&row,request)?;
                 if resolution_is_idempotent(&row,request) {
                     let action=resolution_audit_action(&request.action);
-                    let expected=audit_evidence(&row.operation_id,resolution_prior_state(&request.action),row.attempt_count);
+                    let expected=resolution_prior_states(&request.action).iter()
+                        .map(|prior_state|audit_evidence(&row.operation_id,prior_state,row.attempt_count))
+                        .collect::<Vec<_>>();
                     validate_idempotent_resolution_pg(&mut tx,&format!("provider-embedding/{}",row.operation_id),action,&expected)?;
                     return Ok(json!({"operation_id":row.operation_id,"state":row.state,"attempt_count":row.attempt_count,"idempotent":true}));
                 }
@@ -1748,10 +1752,12 @@ fn resolution_audit_action(action: &ProviderEmbeddingResolutionAction) -> &'stat
     }
 }
 
-fn resolution_prior_state(action: &ProviderEmbeddingResolutionAction) -> &'static str {
+fn resolution_prior_states(action: &ProviderEmbeddingResolutionAction) -> &'static [&'static str] {
     match action {
-        ProviderEmbeddingResolutionAction::RetryFailed => "failed_known_outcome",
-        ProviderEmbeddingResolutionAction::AcknowledgeUnknown => "outcome_unknown",
+        ProviderEmbeddingResolutionAction::RetryFailed => {
+            &["failed_before_send", "failed_known_outcome"]
+        }
+        ProviderEmbeddingResolutionAction::AcknowledgeUnknown => &["outcome_unknown"],
     }
 }
 
@@ -1759,7 +1765,7 @@ fn validate_idempotent_resolution_sqlite(
     tx: &rusqlite::Transaction<'_>,
     resource: &str,
     action: &str,
-    expected: &Value,
+    expected: &[Value],
 ) -> Result<(), String> {
     let details: String = tx
         .query_row(
@@ -1770,7 +1776,7 @@ fn validate_idempotent_resolution_sqlite(
         .map_err(|_| "provider embedding reconciliation audit binding is missing".to_string())?;
     let actual: Value = serde_json::from_str(&details)
         .map_err(|_| "provider embedding reconciliation audit binding is malformed".to_string())?;
-    if actual != *expected {
+    if !expected.contains(&actual) {
         return Err("provider embedding reconciliation idempotency binding mismatch".to_string());
     }
     Ok(())
@@ -1781,7 +1787,7 @@ fn validate_idempotent_resolution_pg(
     tx: &mut postgres::Transaction<'_>,
     resource: &str,
     action: &str,
-    expected: &Value,
+    expected: &[Value],
 ) -> Result<(), String> {
     let details: String = tx
         .query_opt(
@@ -1793,7 +1799,7 @@ fn validate_idempotent_resolution_pg(
         .get(0);
     let actual: Value = serde_json::from_str(&details)
         .map_err(|_| "provider embedding reconciliation audit binding is malformed".to_string())?;
-    if actual != *expected {
+    if !expected.contains(&actual) {
         return Err("provider embedding reconciliation idempotency binding mismatch".to_string());
     }
     Ok(())
@@ -1809,7 +1815,8 @@ fn resolution_transition(
     match (&request.action, row.state) {
         (
             ProviderEmbeddingResolutionAction::RetryFailed,
-            ProviderEmbeddingReceiptState::FailedKnownOutcome,
+            ProviderEmbeddingReceiptState::FailedBeforeSend
+            | ProviderEmbeddingReceiptState::FailedKnownOutcome,
         ) if row.attempt_count < 4 => Ok(ResolutionTransition {
             next_state: ProviderEmbeddingReceiptState::RetryAuthorized,
             next_attempt: row.attempt_count + 1,

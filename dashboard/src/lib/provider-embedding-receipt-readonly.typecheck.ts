@@ -12,4 +12,3 @@ receipt.state = "failed_known_outcome";
 dashboard.provider_embedding_receipts.push(receipt);
 // @ts-expect-error Modified dashboard DTO fields remain read-only.
 dashboard.status = "mutated";
-
