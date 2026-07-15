@@ -15,7 +15,9 @@ use crate::provider::embedding::{
 use crate::provider::ProviderAuditEvent;
 
 use super::provider_audit::provider_embedding_operation_receipt_sha256;
-use super::provider_audit::{ProviderEmbeddingOperation, ProviderEmbeddingOperationClaim};
+use super::provider_audit::{
+    ProviderEmbeddingErrorDomain, ProviderEmbeddingOperation, ProviderEmbeddingOperationClaim,
+};
 
 pub const DURABLE_MEMORY_SCHEMA_VERSION: &str = "durable_memory.v1";
 pub const MEMORY_RETRIEVAL_SCHEMA_VERSION: &str = "memory_retrieval_result.v1";
@@ -1497,7 +1499,7 @@ impl LocalProductStore {
                     cost: None,
                     currency: Some("USD".to_string()),
                     latency_ms: Some(started.elapsed().as_millis().min(i64::MAX as u128) as i64),
-                    error_domain: Some(provider_error_domain(&error).to_string()),
+                    error_domain: Some(provider_error_domain(&error).as_str().to_string()),
                     redaction_status: "redacted".to_string(),
                     created_at: self.now(),
                 };
@@ -1542,39 +1544,43 @@ fn preflight_failure_event(
         cost: None,
         currency: Some("USD".to_string()),
         latency_ms: None,
-        error_domain: Some("provider_failed_before_send".to_string()),
+        error_domain: Some(
+            ProviderEmbeddingErrorDomain::FailedBeforeSend
+                .as_str()
+                .to_string(),
+        ),
         redaction_status: "redacted".to_string(),
         created_at,
     }
 }
 
-fn provider_error_domain(error: &str) -> &'static str {
+fn provider_error_domain(error: &str) -> ProviderEmbeddingErrorDomain {
     if error.contains("redirect refused") {
-        "provider_outcome_unknown_redirect"
+        ProviderEmbeddingErrorDomain::OutcomeUnknownRedirect
     } else if error.contains("oversized response") {
-        "provider_outcome_unknown_oversized"
+        ProviderEmbeddingErrorDomain::OutcomeUnknownOversized
     } else if error.contains("truncated response") {
-        "provider_outcome_unknown_truncated"
+        ProviderEmbeddingErrorDomain::OutcomeUnknownTruncated
     } else if error.contains("malformed response") || error.contains("response is malformed") {
-        "provider_outcome_unknown_malformed"
+        ProviderEmbeddingErrorDomain::OutcomeUnknownMalformed
     } else if error.contains("timeout after send") {
-        "provider_outcome_unknown_timeout"
+        ProviderEmbeddingErrorDomain::OutcomeUnknownTimeout
     } else if error.contains("connection lost after send") {
-        "provider_outcome_unknown_connection"
+        ProviderEmbeddingErrorDomain::OutcomeUnknownConnection
     } else if error.contains("authentication") || error.contains("Credential") {
-        "provider_auth"
+        ProviderEmbeddingErrorDomain::Auth
     } else if error.contains("timed out") {
-        "provider_timeout"
+        ProviderEmbeddingErrorDomain::Timeout
     } else if error.contains("outcome unknown") {
-        "provider_outcome_unknown"
+        ProviderEmbeddingErrorDomain::OutcomeUnknown
     } else if error.contains("circuit") {
-        "provider_circuit_open"
+        ProviderEmbeddingErrorDomain::CircuitOpen
     } else if error.contains("kill switch") {
-        "provider_kill_switch"
+        ProviderEmbeddingErrorDomain::KillSwitch
     } else if error.contains("pricing") {
-        "provider_pricing"
+        ProviderEmbeddingErrorDomain::Pricing
     } else {
-        "provider_error"
+        ProviderEmbeddingErrorDomain::Error
     }
 }
 

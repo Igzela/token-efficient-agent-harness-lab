@@ -768,11 +768,12 @@ fn validate_provider_event_cross_owner(
         "error" => cost.is_none() && currency == Some("USD") && error_domain.is_some(),
         _ => false,
     };
-    let known_error_domain = error_domain.is_some_and(|domain| {
-        domain != "provider_failed_before_send" && !domain.starts_with("provider_outcome_unknown")
-    });
-    let unknown_error_domain =
-        error_domain.is_some_and(|domain| domain.starts_with("provider_outcome_unknown"));
+    let typed_error_domain =
+        error_domain.and_then(super::provider_audit::ProviderEmbeddingErrorDomain::parse);
+    let known_error_domain = typed_error_domain
+        .is_some_and(super::provider_audit::ProviderEmbeddingErrorDomain::is_known_outcome);
+    let unknown_error_domain = typed_error_domain
+        .is_some_and(super::provider_audit::ProviderEmbeddingErrorDomain::is_unknown_outcome);
     let retry_from_preflight = operation.state
         == super::provider_audit::ProviderEmbeddingReceiptState::RetryAuthorized.as_str()
         && operation.send_event_id.is_none();
@@ -795,7 +796,8 @@ fn validate_provider_event_cross_owner(
         ) => true,
         ("failed_before_send", "error") => {
             prefix == "paudit-contract-error-"
-                && error_domain == Some("provider_failed_before_send")
+                && typed_error_domain
+                    == Some(super::provider_audit::ProviderEmbeddingErrorDomain::FailedBeforeSend)
         }
         ("failed_known_outcome", "error") => prefix == "paudit-error-" && known_error_domain,
         ("outcome_unknown" | "outcome_unknown_acknowledged", "error") => {
@@ -805,7 +807,8 @@ fn validate_provider_event_cross_owner(
         ("retry_authorized", "request_reserved" | "request_sent") if retry_from_post => true,
         ("retry_authorized", "error") if retry_from_preflight => {
             prefix == "paudit-contract-error-"
-                && error_domain == Some("provider_failed_before_send")
+                && typed_error_domain
+                    == Some(super::provider_audit::ProviderEmbeddingErrorDomain::FailedBeforeSend)
         }
         ("retry_authorized", "error") if retry_from_post => {
             prefix == "paudit-error-" && known_error_domain
@@ -1900,6 +1903,46 @@ mod tests {
             .check_integrity()
             .unwrap_err()
             .contains("audit cross-owner binding is invalid"));
+    }
+
+    #[test]
+    fn integrity_check_rejects_unrecognized_provider_error_domains() {
+        let (operation_id, binding, content, _) = valid_operation_receipt();
+        for (state, corrupt_domain) in [
+            ("failed_known_outcome", "bogus"),
+            ("outcome_unknown", "provider_outcome_unknown_corrupt"),
+        ] {
+            let (_directory, store) = new_store();
+            insert_provider_embedding_operation(
+                &store,
+                &operation_id,
+                &binding,
+                &content,
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                OPENROUTER_EMBEDDING_MODEL_ID,
+                state,
+                None,
+                None,
+                false,
+            );
+            assert_eq!(store.check_integrity().unwrap().status, "ok");
+            store
+                .with_conn(|connection| {
+                    connection
+                        .execute(
+                            "UPDATE provider_audit_events SET error_domain=?1
+                             WHERE event_type='error'",
+                            [corrupt_domain],
+                        )
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap();
+            assert!(store
+                .check_integrity()
+                .unwrap_err()
+                .contains("audit cross-owner binding is invalid"));
+        }
     }
 
     #[test]

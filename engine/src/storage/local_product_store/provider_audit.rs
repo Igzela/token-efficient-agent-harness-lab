@@ -57,6 +57,91 @@ impl ProviderEmbeddingReceiptState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderEmbeddingErrorDomain {
+    FailedBeforeSend,
+    OutcomeUnknown,
+    OutcomeUnknownRedirect,
+    OutcomeUnknownOversized,
+    OutcomeUnknownTruncated,
+    OutcomeUnknownMalformed,
+    OutcomeUnknownTimeout,
+    OutcomeUnknownConnection,
+    Auth,
+    Timeout,
+    CircuitOpen,
+    KillSwitch,
+    Pricing,
+    Error,
+}
+
+impl ProviderEmbeddingErrorDomain {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::FailedBeforeSend => "provider_failed_before_send",
+            Self::OutcomeUnknown => "provider_outcome_unknown",
+            Self::OutcomeUnknownRedirect => "provider_outcome_unknown_redirect",
+            Self::OutcomeUnknownOversized => "provider_outcome_unknown_oversized",
+            Self::OutcomeUnknownTruncated => "provider_outcome_unknown_truncated",
+            Self::OutcomeUnknownMalformed => "provider_outcome_unknown_malformed",
+            Self::OutcomeUnknownTimeout => "provider_outcome_unknown_timeout",
+            Self::OutcomeUnknownConnection => "provider_outcome_unknown_connection",
+            Self::Auth => "provider_auth",
+            Self::Timeout => "provider_timeout",
+            Self::CircuitOpen => "provider_circuit_open",
+            Self::KillSwitch => "provider_kill_switch",
+            Self::Pricing => "provider_pricing",
+            Self::Error => "provider_error",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "provider_failed_before_send" => Some(Self::FailedBeforeSend),
+            "provider_outcome_unknown" => Some(Self::OutcomeUnknown),
+            "provider_outcome_unknown_redirect" => Some(Self::OutcomeUnknownRedirect),
+            "provider_outcome_unknown_oversized" => Some(Self::OutcomeUnknownOversized),
+            "provider_outcome_unknown_truncated" => Some(Self::OutcomeUnknownTruncated),
+            "provider_outcome_unknown_malformed" => Some(Self::OutcomeUnknownMalformed),
+            "provider_outcome_unknown_timeout" => Some(Self::OutcomeUnknownTimeout),
+            "provider_outcome_unknown_connection" => Some(Self::OutcomeUnknownConnection),
+            "provider_auth" => Some(Self::Auth),
+            "provider_timeout" => Some(Self::Timeout),
+            "provider_circuit_open" => Some(Self::CircuitOpen),
+            "provider_kill_switch" => Some(Self::KillSwitch),
+            "provider_pricing" => Some(Self::Pricing),
+            "provider_error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_unknown_outcome(self) -> bool {
+        matches!(
+            self,
+            Self::OutcomeUnknown
+                | Self::OutcomeUnknownRedirect
+                | Self::OutcomeUnknownOversized
+                | Self::OutcomeUnknownTruncated
+                | Self::OutcomeUnknownMalformed
+                | Self::OutcomeUnknownTimeout
+                | Self::OutcomeUnknownConnection
+        )
+    }
+
+    pub(crate) fn is_known_outcome(self) -> bool {
+        matches!(
+            self,
+            Self::Auth
+                | Self::Timeout
+                | Self::CircuitOpen
+                | Self::KillSwitch
+                | Self::Pricing
+                | Self::Error
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ProviderEmbeddingOperation {
     pub operation_id: String,
@@ -800,7 +885,8 @@ impl LocalProductStore {
         validate_embedding_operation(operation)?;
         if error_event.event_type != "error"
             || error_event.provider_id != operation.provider_id
-            || error_event.error_domain.as_deref() != Some("provider_failed_before_send")
+            || error_event.error_domain.as_deref()
+                != Some(ProviderEmbeddingErrorDomain::FailedBeforeSend.as_str())
             || error_event.redaction_status != "redacted"
         {
             return Err("invalid provider embedding preflight failure audit event".to_string());
