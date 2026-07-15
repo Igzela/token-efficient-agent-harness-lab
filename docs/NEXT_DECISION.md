@@ -4,17 +4,17 @@ Last updated: 2026-07-15.
 
 ## Current Direction
 
-The explicitly authorized bounded three-PR production-integration program is the current execution order. It consolidates the original seven capability packets without removing their acceptance requirements or weakening any authority or gate:
+The explicitly authorized bounded three-PR production-integration program is merged. It consolidated the original seven capability packets without removing their acceptance requirements or weakening any authority or gate:
 
 1. `PR1-AR-RUNTIME-INTEGRATION-1` — production Agent Runtime and tool-policy routing;
 2. `PR2-MEMORY-BUDGET-POLICY-LOOP-1` — durable memory plus the PE-2 usage/budget producer and PE-4 replay/promotion operator loop;
 3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — managed LangGraph adapter, native/LangGraph efficiency benchmark, and final live acceptance seal.
 
-The GitHub/Vader path remains disabled and emergency-stopped until PR 3 repairs and proves it. Local Rust control-plane integration does not authorize that orchestrator, auto-merge, protected-branch writes, or a public release.
+The local implementation is complete, but the GitHub/Vader path remains disabled and emergency-stopped until its external prerequisites are restored and a replacement smoke proves the full chain. Local Rust control-plane integration does not authorize that orchestrator, auto-merge, protected-branch writes, or a public release.
 
 ## Active Routing
 
-`PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is the sole active branch/PR owner. PR #220 and PR #221 are merged. Repository-agent code repair belongs to this branch, but external smoke dispatch remains blocked until the repair is merged, the PR-creation setting is enabled, and the named disposable runner is online.
+`PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remains the active acceptance packet in `BLOCKED_PREREQUISITE`, with no active implementation branch or PR. PR #220, PR #221, and PR #222 are merged. External smoke dispatch remains blocked until the PR-creation setting is enabled, the separate administration-read preflight credential is configured, and the named disposable Vader runner is online. Provider-backed benchmarking and disposable-target/staging acceptance remain blocked on separately supplied bounded environments and credentials.
 
 Do not create another roadmap, phase, status, policy, or closeout document. This file is the normative forward plan. Current facts belong in `docs/CURRENT_STATUS.md`; ownership belongs in `docs/MODULE_MAP.md`.
 
@@ -22,6 +22,7 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 - PR #220 (`PR1-AR-RUNTIME-INTEGRATION-1`) merged from exact head `6ec486df3bb6fb57e93e0f2b1a5fee662abf2bb2` as `936b05c226ab64576c0e2d4146d3f8ca3d0c3e47`; its exact-head and post-merge canonical CI each completed all seven required jobs successfully;
 - PR #221 (`PR2-MEMORY-BUDGET-POLICY-LOOP-1`) merged exact head `f75d07b4e7656817fabf65cc26a0f3b05c7c4605` as `f821d366359e1b68376df6dd1eae7a10c9519058`; exact-head CI run `29383755592` and post-merge run `29384216781` each passed all seven required jobs;
+- PR #222 (`PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`) merged exact head `646118bffa1e2c9c56aead2616cb9526a8457032` as `49a5948c4527ba741569f673696cf462db7ac092`; exact-head CI run `29390757467` passed all seven required jobs;
 
 - PR #214 merged the PE-5/PE-6 post-seal repair at `0d8127e3d779e54c58caf5d93e7589dd1a6df616`;
 - PR #207 merged the event-driven repository-maintenance orchestrator at `23187bb83dc32165d8982c79be1a1f7f818380a0`;
@@ -100,11 +101,13 @@ A stale document, a failed first implementation, or a bounded missing design det
 
 ## Packet PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1 — Managed adapter, benchmark, and acceptance
 
-**State:** `IN_PROGRESS`
+**State:** `BLOCKED_PREREQUISITE`
 
 **Prerequisite:** `PR2-MEMORY-BUDGET-POLICY-LOOP-1` merged with exact-head CI.
 
 **Component acceptance:** `LANGGRAPH-MANAGED-ADAPTER-1`, `EFFICIENCY-LIVE-BENCH-1`, and `LIVE-ACCEPTANCE-SEAL-1` form one final chain: one Rust-leased node launches one bounded external invocation with scoped checkpoints; native and LangGraph adapters run the same four-strategy and tool-discovery benchmark contract; guarded live acceptance verifies orchestrator, target-output, install/upgrade/rollback, backup/restore, restart/concurrency/idempotency/recovery, fault drills, provider controls, and the PE-2/PE-4 closed loop.
+
+**Merged implementation:** PR #222 connected the managed adapter, scoped checkpoints, fixture and guarded-live benchmark commands, automatic scorecards, tool-discovery comparison, orchestrator preflight/terminal evidence repair, and local acceptance seal. Fixture, SQLite/PostgreSQL, recovery, and fault-drill evidence is complete. External live acceptance is not complete: no provider-backed benchmark, replacement repository-agent smoke, disposable target-output repository run, or staging-only external drill was performed.
 
 **Authority and release:** no second scheduler, task queue, permission system, authoritative product store, direct protected-branch write, paid CI call, or cloud multi-tenant claim is permitted. Unsupported external environments are `BLOCKED`. Unless publication is explicitly authorized in-session after every gate passes, the terminal release state is `RELEASE_READY_NOT_PUBLISHED`.
 
@@ -137,9 +140,9 @@ This packet establishes the implementation baseline only. Live end-to-end accept
 
 ## Packet PR207-SMOKE-REPAIR-1 — Diagnose and repair the blocked live worker path
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-**Prerequisite:** `EFFICIENCY-LIVE-BENCH-1`; repair is owned by `LIVE-ACCEPTANCE-SEAL-1`
+**Prerequisite:** completed in PR #222 as part of `LIVE-ACCEPTANCE-SEAL-1`
 
 **Goal:** Determine why smoke Issue #217 entered the Vader worker and then became `agent-blocked` before branch/PR creation, repair the actual root cause, and make future failures bounded, attributable, and capacity-safe.
 
@@ -153,12 +156,7 @@ This packet establishes the implementation baseline only. Live end-to-end accept
 - the Issue retained no bounded workflow-run/failed-phase terminal reason;
 - Issue #208 has been returned to emergency stop.
 
-**Required investigation:**
-
-- retrieve the exact `agent-worker` workflow run and every job/step conclusion;
-- inspect bounded GitHub job logs and Vader runner diagnostics without publishing prompts, raw model output, credentials, or unrelated environment data;
-- distinguish queue/runner loss, setup failure, worktree failure, prompt construction, Codex timeout/nonzero exit, artifact construction/upload, finalizer validation, PAT push, PR binding, CI acquisition, and control-state interruption;
-- do not guess from the terminal Issue label alone.
+**Completion evidence:** PR #222 recorded the exact #217 failure boundary, added a least-privilege repository-setting preflight, bounded Codex timeout ownership, durable failed-phase/reason/capacity-release evidence, and cleanup-safe tests. Exact-head CI run `29390757467` passed all seven jobs. Issue #208 remained emergency-stopped and no replacement smoke was dispatched.
 
 **Required behavior:**
 
@@ -284,7 +282,7 @@ owner-backed dispatch_history provenance
 
 ## Packet TOOL-DISCOVERY-BENCH-1 — Static-all versus retrieve-Top-K benchmark
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE4-EVIDENCE-ENTRY-1
 

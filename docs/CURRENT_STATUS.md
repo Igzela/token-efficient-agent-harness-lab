@@ -6,7 +6,7 @@ Last updated: 2026-07-15.
 
 This repository is a local/small-team self-hosted agent workflow control plane. Rust `engine/` remains the sole runtime, API, and application-owned storage implementation. Active documents describe current facts and forward execution; merged PRs and repository history retain detailed stage history.
 
-PR #220 and PR #221 closed the production Agent Runtime, durable memory, PE-2, and PE-4 ownership gaps. The final managed-external-runtime and acceptance slice is in progress. The GitHub Issues/Actions → Vader Codex repository-maintenance orchestrator remains unaccepted for production task use.
+PR #220, PR #221, and PR #222 closed the local production-call gaps for Agent Runtime, durable memory, PE-2/PE-4, the managed external runtime, and fixture/guarded-live efficiency measurement. External live acceptance is incomplete. The GitHub Issues/Actions → Vader Codex repository-maintenance orchestrator remains unaccepted for production task use.
 
 ## Verified Repository State
 
@@ -17,6 +17,7 @@ PR #220 and PR #221 closed the production Agent Runtime, durable memory, PE-2, a
 - PR #216 exact head `7210cd1943b075ef07c561f4804bca8230cffd60` passed canonical CI run `29308693744` with all seven required jobs successful;
 - PR #220 merged Agent Runtime integration as `936b05c226ab64576c0e2d4146d3f8ca3d0c3e47` after exact-head CI passed all seven required jobs;
 - PR #221 merged durable memory plus the PE-2/PE-4 production loop as `f821d366359e1b68376df6dd1eae7a10c9519058`; exact PR-head CI run `29383755592` and post-merge CI run `29384216781` each passed all seven required jobs;
+- PR #222 merged the managed external runtime, benchmark, orchestrator repair, and local acceptance seal as `49a5948c4527ba741569f673696cf462db7ac092`; exact head `646118bffa1e2c9c56aead2616cb9526a8457032` passed all seven jobs in CI run `29390757467`;
 - Issue #208 currently has only `agent-control` and `agent-emergency-stop`; orchestration and auto-merge enable labels are absent.
 
 ## Repository-Agent Smoke Status
@@ -41,7 +42,7 @@ Operational consequence:
 - do not dispatch a production repository task through this orchestrator yet;
 - keep Issue #208 emergency-stopped;
 - configure the documented administration-read preflight credential, enable the repository PR-creation setting, and restore the named disposable Vader runner;
-- merge the final repair slice, then run a new bounded smoke through PR creation, exact-head CI, and independent review before declaring the GPT Web path operational.
+- run a new bounded smoke through PR creation, exact-head CI, and independent review before declaring the GPT Web path operational.
 
 The intended user interface remains natural language in GPT Web. The assistant, not the user, owns creation of the bounded Issue and the internal workflow parameters. This contract is documented in `README.md` and `AGENTS.md`, but activation remains blocked by the failed smoke.
 
@@ -60,9 +61,9 @@ The intended user interface remains natural language in GPT Web. The assistant, 
 | PE-4 Trace-backed Policy Replay | Eligible dispatch traces produce immutable replay artifacts; explicit evidence-chain promotion and exact-snapshot rollback are connected |
 | PE-5 Release Provenance | Post-seal repair merged in PR #214; exact-head CI passed; no real public release or production installation was exercised |
 | PE-6 Fault Injection and Recovery Drills | Post-seal repair merged in PR #214; owner-emitted drills are wired into existing test/CI paths; no destructive external testing is authorized |
-| Managed LangGraph external runtime | Final integration slice in progress: one Rust-leased node, scoped checkpoint/receipt store, fixture/live gates, automatic scorecard persistence, and bounded inspection |
-| Native/LangGraph efficiency benchmark | Final integration slice in progress: canonical four-strategy and tool-discovery contract with fixture and guarded-live modes; no provider-backed result is yet verified |
-| GitHub/Vader repository orchestrator | Repair implemented locally; smoke #217 failed after branch push because Actions PR creation is disabled; replacement smoke remains blocked and production use is disabled |
+| Managed LangGraph external runtime | Production-managed by one Rust-leased node with scoped checkpoint/receipt storage, fixture/live gates, automatic scorecard persistence, and bounded inspection; live mode remains default-off |
+| Native/LangGraph efficiency benchmark | Canonical four-strategy and tool-discovery contract is connected in fixture and guarded-live modes; deterministic fixture evidence passed, but no provider-backed result is verified |
+| GitHub/Vader repository orchestrator | Repair merged in PR #222; smoke #217 failed after branch push because Actions PR creation is disabled; replacement smoke remains blocked and production use is disabled |
 | Post-R7 wire/type governance | Implemented through `scripts/check_wire_codegen_drift.sh` |
 
 ## Connected Production Chains
@@ -79,7 +80,7 @@ This Agent Runtime is an engine workflow capability. It is independent from the 
 
 Migration v23 adds app-owned versioned durable memory, retrieval events, normalized usage, fenced production jobs, replay bindings, and operator acknowledgements for SQLite and PostgreSQL. Memory identity and updates bind tenant, workspace, optional agent/task, source ID/hash, version, state, freshness, expiry, confidence, conflict, supersession, tombstone, actor, and record hash. Create, revise, supersede, invalidate, forget, prune, inspect, and retrieve are authenticated production APIs with SDK coverage; every call is rebound to an authoritative run and exact stored tenant/workspace/scope before access. Conflicting, superseded, stale, expired, invalid, and tombstoned records are excluded from current truth; concurrent revisions serialize by memory identity and stale versions fail explicitly.
 
-The scheduler assembles each real node context from durable run state, bounded recent history, the run-scoped digest, and immutable retrieved references before execution. Top-K, bytes, estimated tokens, candidate evidence, selection scores, truncation, and source hashes are bounded and audited without copying raw memory into scorecards. `local_hash_v1` vector generation is default-off, prohibited in CI, explicitly gated, and labeled `harness_derived`; deterministic fixture vectors are test-only. Provider embedding mode is explicitly unavailable until the managed external-provider adapter exists. Lexical retrieval runs only when the request explicitly permits the labeled degradation. The canonical SQLite online backup includes all app tables while the source connection remains open; the older export/import snapshot does not claim durable-memory coverage.
+The scheduler assembles each real node context from durable run state, bounded recent history, the run-scoped digest, and immutable retrieved references before execution. Top-K, bytes, estimated tokens, candidate evidence, selection scores, truncation, and source hashes are bounded and audited without copying raw memory into scorecards. `local_hash_v1` vector generation is default-off, prohibited in CI, explicitly gated, and labeled `harness_derived`; deterministic fixture vectors are test-only. Provider embedding mode is not connected to the durable-memory owner and remains explicitly unavailable. Lexical retrieval runs only when the request explicitly permits the labeled degradation. The canonical SQLite online backup includes all app tables while the source connection remains open; the older export/import snapshot does not claim durable-memory coverage.
 
 ### Automatic budget evidence and trace-backed policy operations
 
@@ -122,13 +123,13 @@ The workflow-owned `LocalRunnerValidationExecutor` intentionally uses the Stub p
 
 ## Open Work Coordination
 
-The explicitly authorized bounded three-PR production-integration program consolidates the original seven capability packets without dropping any acceptance requirement or safety boundary. The GitHub/Vader repair and replacement smoke are owned by the final `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` slice; they remain disabled until that slice and do not block the local Rust control-plane integration PRs.
+The bounded three-PR implementation program is merged without dropping any acceptance requirement or safety boundary. PR #222 contains the GitHub/Vader repair, but the replacement smoke and other external live acceptance remain blocked on their named prerequisites; they do not invalidate the verified local Rust control-plane integration.
 
 ## Active Execution Order
 
 1. `PR1-AR-RUNTIME-INTEGRATION-1` — production Agent Runtime and tool-policy routing (merged as PR #220).
 2. `PR2-MEMORY-BUDGET-POLICY-LOOP-1` — merged as PR #221.
-3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — current slice: managed LangGraph adapter, comparable native/LangGraph benchmark, orchestrator/target-output/recovery, and guarded live acceptance.
+3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — merged as PR #222; local/fixture implementation is complete, external live acceptance remains blocked.
 
 Keep real release publication, destructive production faults, persistent signing secrets, and unguarded provider execution unauthorized. Without separate publication authority the terminal release state is `RELEASE_READY_NOT_PUBLISHED`, or `BLOCKED` when an external prerequisite cannot be verified.
 
