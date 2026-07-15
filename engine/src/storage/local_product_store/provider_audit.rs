@@ -89,12 +89,48 @@ impl LocalProductStore {
         per_call_cap_usd: f64,
         daily_cap_usd: f64,
     ) -> Result<(), String> {
+        self.reserve_provider_audit_cost_inner(event, per_call_cap_usd, daily_cap_usd, false)
+            .map(|_| ())
+    }
+
+    pub(crate) fn reserve_verified_free_embedding_cost(
+        &self,
+        event: &crate::provider::ProviderAuditEvent,
+        per_call_cap_usd: f64,
+        daily_cap_usd: f64,
+        pricing: &crate::provider::embedding::EmbeddingPricingEvidence,
+    ) -> Result<bool, String> {
+        use crate::provider::embedding::OPENROUTER_EMBEDDING_PROVIDER_ID;
+
+        if event.provider_id != OPENROUTER_EMBEDDING_PROVIDER_ID
+            || event.cost != Some(0.0)
+            || event.currency.as_deref() != Some("USD")
+            || pricing.prompt_cost_per_token_usd != 0.0
+            || pricing.completion_cost_per_token_usd != 0.0
+            || pricing.currency != "USD"
+            || pricing.source != "provider_catalog_reported"
+        {
+            return Err(
+                "zero-cost provider reservation requires verified free embedding pricing"
+                    .to_string(),
+            );
+        }
+        self.reserve_provider_audit_cost_inner(event, per_call_cap_usd, daily_cap_usd, true)
+    }
+
+    fn reserve_provider_audit_cost_inner(
+        &self,
+        event: &crate::provider::ProviderAuditEvent,
+        per_call_cap_usd: f64,
+        daily_cap_usd: f64,
+        allow_verified_zero: bool,
+    ) -> Result<bool, String> {
         let reserved_cost = event
             .cost
-            .filter(|value| value.is_finite() && *value >= 0.0)
-            .ok_or_else(|| {
-                "provider cost reservation must be finite and non-negative".to_string()
-            })?;
+            .filter(|value| {
+                value.is_finite() && (*value > 0.0 || allow_verified_zero && *value == 0.0)
+            })
+            .ok_or_else(|| "provider cost reservation must be finite and positive".to_string())?;
         if !per_call_cap_usd.is_finite()
             || per_call_cap_usd <= 0.0
             || !daily_cap_usd.is_finite()
@@ -139,7 +175,8 @@ impl LocalProductStore {
                     .optional()
                     .map_err(|error| error.to_string())?;
                 if let Some(existing) = existing {
-                    return validate_existing_reservation(event, &existing);
+                    validate_existing_reservation(event, &existing)?;
+                    return Ok(false);
                 }
                 let dispatch_cost: f64 = tx
                     .query_row(
@@ -192,7 +229,8 @@ impl LocalProductStore {
                     ],
                 )
                 .map_err(|error| error.to_string())?;
-                tx.commit().map_err(|error| error.to_string())
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(true)
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
@@ -218,7 +256,8 @@ impl LocalProductStore {
                         )
                     });
                 if let Some(existing) = existing {
-                    return validate_existing_reservation(event, &existing);
+                    validate_existing_reservation(event, &existing)?;
+                    return Ok(false);
                 }
                 let dispatch_cost: f64 = tx
                     .query_one(
@@ -274,7 +313,8 @@ impl LocalProductStore {
                     ],
                 )
                 .map_err(|error| error.to_string())?;
-                tx.commit().map_err(|error| error.to_string())
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(true)
             }),
         }
     }

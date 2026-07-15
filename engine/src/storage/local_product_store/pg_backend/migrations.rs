@@ -42,7 +42,7 @@ fn apply_pg_migration(
 }
 
 fn pg_column_exists(
-    client: &mut postgres::Client,
+    client: &mut impl postgres::GenericClient,
     table: &str,
     column: &str,
 ) -> Result<bool, String> {
@@ -59,6 +59,84 @@ fn pg_column_exists(
     Ok(row.get::<_, bool>(0))
 }
 
+fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V25_SCHEMA_VERSION;
+    let mut tx = client
+        .transaction()
+        .map_err(|error| format!("failed to start migration 25 transaction: {error}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(
+             hashtext(current_database()), hashtext(current_schema())
+         )",
+        &[],
+    )
+    .map_err(|error| format!("failed to lock migration 25: {error}"))?;
+
+    let current_version = tx
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map(|row| row.get::<_, i64>(0))
+        .map_err(|error| format!("failed to re-read version for migration 25: {error}"))?;
+    let marker_exists = tx
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)",
+            &[&version],
+        )
+        .map(|row| row.get::<_, bool>(0))
+        .map_err(|error| format!("failed to read migration 25 marker: {error}"))?;
+    if current_version < 24 || (current_version > 25 && !marker_exists) {
+        return Err(format!(
+            "migration 25 requires a contiguous version 24 predecessor; found {current_version}"
+        ));
+    }
+
+    let metadata = pg_column_exists(
+        &mut tx,
+        "durable_memory_versions",
+        "embedding_metadata_json",
+    )?;
+    let binding = pg_column_exists(
+        &mut tx,
+        "durable_memory_versions",
+        "embedding_binding_sha256",
+    )?;
+    let sql = match (metadata, binding) {
+        (true, true) => "",
+        (false, false) => schema::V25_DDL,
+        (false, true) => {
+            "ALTER TABLE durable_memory_versions ADD COLUMN embedding_metadata_json TEXT;"
+        }
+        (true, false) => {
+            "ALTER TABLE durable_memory_versions ADD COLUMN embedding_binding_sha256 TEXT;"
+        }
+    };
+    if !sql.is_empty() {
+        tx.batch_execute(sql)
+            .map_err(|error| format!("migration 25 failed: {error}"))?;
+    }
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|error| format!("failed to record migration 25: {error}"))?;
+
+    if !pg_column_exists(
+        &mut tx,
+        "durable_memory_versions",
+        "embedding_metadata_json",
+    )? || !pg_column_exists(
+        &mut tx,
+        "durable_memory_versions",
+        "embedding_binding_sha256",
+    )? {
+        return Err("migration 25 column verification failed".to_string());
+    }
+    tx.commit()
+        .map_err(|error| format!("failed to commit migration 25: {error}"))
+}
+
 impl LocalProductStore {
     pub(crate) fn run_pg_migrations_internal(&self) -> Result<(), String> {
         self.with_pg_conn(|client: &mut postgres::Client| {
@@ -66,6 +144,10 @@ impl LocalProductStore {
             let current = current_pg_version(client)?;
 
             for migration in schema::POSTGRES_MIGRATIONS {
+                if migration.version == 25 {
+                    apply_pg_v25_migration(client)?;
+                    continue;
+                }
                 if migration.version <= current {
                     continue;
                 }
@@ -153,24 +235,6 @@ impl LocalProductStore {
                     }
                     23 => schema::V23_DDL,
                     24 => schema::V24_DDL,
-                    25 => {
-                        let metadata = pg_column_exists(
-                            client,
-                            "durable_memory_versions",
-                            "embedding_metadata_json",
-                        )?;
-                        let binding = pg_column_exists(
-                            client,
-                            "durable_memory_versions",
-                            "embedding_binding_sha256",
-                        )?;
-                        match (metadata, binding) {
-                            (true, true) => "",
-                            (false, false) => schema::V25_DDL,
-                            (false, true) => "ALTER TABLE durable_memory_versions ADD COLUMN embedding_metadata_json TEXT;",
-                            (true, false) => "ALTER TABLE durable_memory_versions ADD COLUMN embedding_binding_sha256 TEXT;",
-                        }
-                    }
                     _ => {
                         return Err(format!(
                             "unknown pg migration version: {}",
@@ -681,6 +745,72 @@ mod tests {
                     .map_err(|error| error.to_string())
             })
             .unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn pg_v25_migration_is_concurrent_restart_safe_with_partial_columns() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        let store = &fixture.store;
+        store
+            .rollback_v25_to_v24("migration-test-setup", true)
+            .unwrap();
+        store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "ALTER TABLE durable_memory_versions
+                         ADD COLUMN embedding_metadata_json TEXT;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(store.schema_version().unwrap(), 24);
+
+        let barrier = std::sync::Barrier::new(2);
+        let (left, right) = std::thread::scope(|scope| {
+            let left = scope.spawn(|| {
+                barrier.wait();
+                store.run_pg_migrations_internal()
+            });
+            let right = scope.spawn(|| {
+                barrier.wait();
+                store.run_pg_migrations_internal()
+            });
+            (left.join().unwrap(), right.join().unwrap())
+        });
+        left.unwrap();
+        right.unwrap();
+
+        assert_eq!(store.schema_version().unwrap(), 25);
+        store
+            .with_pg_conn(|client| {
+                assert!(pg_column_exists(
+                    client,
+                    "durable_memory_versions",
+                    "embedding_metadata_json"
+                )?);
+                assert!(pg_column_exists(
+                    client,
+                    "durable_memory_versions",
+                    "embedding_binding_sha256"
+                )?);
+                let marker_count = client
+                    .query_one(
+                        "SELECT COUNT(*) FROM schema_migrations WHERE version = $1",
+                        &[&super::super::super::migrations::V25_SCHEMA_VERSION],
+                    )
+                    .map(|row| row.get::<_, i64>(0))
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(marker_count, 1);
+                Ok(())
+            })
+            .unwrap();
+
+        store.run_pg_migrations_internal().unwrap();
+        assert_eq!(store.schema_version().unwrap(), 25);
     }
 
     #[test]

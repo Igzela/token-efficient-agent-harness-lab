@@ -189,8 +189,21 @@ impl LocalProductStore {
     ) -> Result<Value, String> {
         validate_create(request)?;
         validate_identifier(actor, "actor")?;
-        let embedding = self.embedding_for_text(&request.content.to_string())?;
         let memory_id = memory_id(request)?;
+        if let Some(existing) = self.latest_memory_preflight(&memory_id)? {
+            validate_idempotent_create(&existing, request)?;
+            return memory_to_value(&existing);
+        }
+        let operation_binding = sha256_json(&json!({
+            "operation":"create",
+            "memory_id":memory_id,
+            "version":1,
+            "source_id":request.source_id,
+            "source_sha256":request.source_sha256,
+            "content_sha256":sha256_json(&request.content)?,
+        }))?;
+        let embedding =
+            self.embedding_for_text(&request.content.to_string(), Some(&operation_binding))?;
         let now = self.now();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -298,7 +311,22 @@ impl LocalProductStore {
         validate_identifier(memory_id, "memory_id")?;
         validate_identifier(actor, "actor")?;
         validate_revision(revision)?;
-        let embedding = self.embedding_for_text(&revision.content.to_string())?;
+        let prior = self
+            .latest_memory_preflight(memory_id)?
+            .ok_or_else(|| "durable memory not found".to_string())?;
+        require_version(&prior, revision.expected_version)?;
+        revisable_state(&prior)?;
+        let operation_binding = sha256_json(&json!({
+            "operation":"revise",
+            "memory_id":memory_id,
+            "expected_version":revision.expected_version,
+            "next_version":revision.expected_version + 1,
+            "source_id":revision.source_id,
+            "source_sha256":revision.source_sha256,
+            "content_sha256":sha256_json(&revision.content)?,
+        }))?;
+        let embedding =
+            self.embedding_for_text(&revision.content.to_string(), Some(&operation_binding))?;
         self.append_memory_version(
             memory_id,
             revision.expected_version,
@@ -679,7 +707,7 @@ impl LocalProductStore {
     ) -> Result<MemoryRetrievalResult, String> {
         validate_retrieval(request)?;
         validate_identifier(actor, "actor")?;
-        let query_embedding = self.embedding_for_text(&request.query)?;
+        let query_embedding = self.embedding_for_text(&request.query, None)?;
         let (mode, provenance) = match &query_embedding {
             Some(material) => ("semantic_vector", material.provenance.clone()),
             None if request.allow_lexical_fallback => {
@@ -1002,7 +1030,37 @@ fn validate_time_bounds(fresh_until: Option<&str>, expires_at: Option<&str>) -> 
 }
 
 impl LocalProductStore {
-    fn embedding_for_text(&self, text: &str) -> Result<Option<EmbeddingMaterial>, String> {
+    fn latest_memory_preflight(&self, memory_id: &str) -> Result<Option<StoredMemory>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,embedding_metadata_json,embedding_binding_sha256,record_sha256,created_at,created_by FROM durable_memory_versions WHERE memory_id=?1 ORDER BY version DESC LIMIT 1",
+                    params![memory_id],
+                    sqlite_memory_row,
+                )
+                .optional()
+                .map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence::DOUBLE PRECISION,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,embedding_metadata_json,embedding_binding_sha256,record_sha256,created_at,created_by FROM durable_memory_versions WHERE memory_id=$1 ORDER BY version DESC LIMIT 1",
+                        &[&memory_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .as_ref()
+                    .map(pg_memory_row)
+                    .transpose()
+            }),
+        }
+    }
+
+    fn embedding_for_text(
+        &self,
+        text: &str,
+        operation_binding: Option<&str>,
+    ) -> Result<Option<EmbeddingMaterial>, String> {
         let mode = std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_MODE")
             .unwrap_or_else(|_| "disabled".to_string());
         match mode.as_str() {
@@ -1026,18 +1084,34 @@ impl LocalProductStore {
                     provider: None,
                 }))
             }
-            "provider" => self.provider_embedding_for_text(text).map(Some),
+            "provider" => self
+                .provider_embedding_for_text(text, operation_binding)
+                .map(Some),
             _ => Err("unsupported durable memory embedding mode".to_string()),
         }
     }
 
-    fn provider_embedding_for_text(&self, text: &str) -> Result<EmbeddingMaterial, String> {
+    fn provider_embedding_for_text(
+        &self,
+        text: &str,
+        operation_binding: Option<&str>,
+    ) -> Result<EmbeddingMaterial, String> {
         let config = ProviderEmbeddingConfig::from_env()?;
-        let dispatch_id = format!("memory-embedding-{}", uuid::Uuid::new_v4().simple());
+        let dispatch_suffix = operation_binding
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+        let dispatch_id = format!("memory-embedding-{dispatch_suffix}");
         let now = self.now();
+        let contract = match self.embedding_client.verify_contract(&config) {
+            Ok(contract) => contract,
+            Err(error) => {
+                self.record_embedding_error(&dispatch_id, &error, None)?;
+                return Err(error);
+            }
+        };
         let reservation = ProviderAuditEvent {
             schema_version: "provider_audit_event.v1".to_string(),
-            event_id: format!("paudit-reservation-{}", uuid::Uuid::new_v4().simple()),
+            event_id: format!("paudit-reservation-{dispatch_suffix}"),
             dispatch_id: dispatch_id.clone(),
             provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
             event_type: "request_reserved".to_string(),
@@ -1050,13 +1124,37 @@ impl LocalProductStore {
             redaction_status: "redacted".to_string(),
             created_at: now.clone(),
         };
-        self.reserve_provider_audit_cost(
+        let claimed = self.reserve_verified_free_embedding_cost(
             &reservation,
             config.per_call_cap_usd,
             config.daily_cap_usd,
+            &contract.pricing,
         )?;
+        if !claimed {
+            return Err(
+                "provider embedding operation is already reserved; refresh authoritative state"
+                    .to_string(),
+            );
+        }
+        self.record_provider_audit_event(&ProviderAuditEvent {
+            schema_version: "provider_audit_event.v1".to_string(),
+            event_id: format!("paudit-request-{dispatch_suffix}"),
+            dispatch_id: dispatch_id.clone(),
+            provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            event_type: "request_sent".to_string(),
+            input_token_count: None,
+            output_token_count: None,
+            cost: Some(0.0),
+            currency: Some("USD".to_string()),
+            latency_ms: None,
+            error_domain: None,
+            redaction_status: "redacted".to_string(),
+            created_at: self.now(),
+        })?;
         let started = std::time::Instant::now();
-        let result = self.embedding_client.embed(&[text.to_string()], &config);
+        let result = self
+            .embedding_client
+            .embed_verified(&[text.to_string()], &config, &contract);
         match result {
             Ok(mut output) => {
                 let values = output
@@ -1069,7 +1167,7 @@ impl LocalProductStore {
                     .ok_or_else(|| "embedding provider outcome has no metadata".to_string())?;
                 let event = ProviderAuditEvent {
                     schema_version: "provider_audit_event.v1".to_string(),
-                    event_id: format!("paudit-response-{}", uuid::Uuid::new_v4().simple()),
+                    event_id: format!("paudit-response-{dispatch_suffix}"),
                     dispatch_id,
                     provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
                     event_type: "response_received".to_string(),
@@ -1090,25 +1188,37 @@ impl LocalProductStore {
                 })
             }
             Err(error) => {
-                let event = ProviderAuditEvent {
-                    schema_version: "provider_audit_event.v1".to_string(),
-                    event_id: format!("paudit-error-{}", uuid::Uuid::new_v4().simple()),
-                    dispatch_id,
-                    provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
-                    event_type: "error".to_string(),
-                    input_token_count: None,
-                    output_token_count: None,
-                    cost: None,
-                    currency: Some("USD".to_string()),
-                    latency_ms: Some(started.elapsed().as_millis().min(i64::MAX as u128) as i64),
-                    error_domain: Some(provider_error_domain(&error).to_string()),
-                    redaction_status: "redacted".to_string(),
-                    created_at: self.now(),
-                };
-                self.record_provider_audit_event(&event)?;
+                self.record_embedding_error(
+                    &dispatch_id,
+                    &error,
+                    Some(started.elapsed().as_millis().min(i64::MAX as u128) as i64),
+                )?;
                 Err(error)
             }
         }
+    }
+
+    fn record_embedding_error(
+        &self,
+        dispatch_id: &str,
+        error: &str,
+        latency_ms: Option<i64>,
+    ) -> Result<(), String> {
+        self.record_provider_audit_event(&ProviderAuditEvent {
+            schema_version: "provider_audit_event.v1".to_string(),
+            event_id: format!("paudit-error-{}", uuid::Uuid::new_v4().simple()),
+            dispatch_id: dispatch_id.to_string(),
+            provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            event_type: "error".to_string(),
+            input_token_count: None,
+            output_token_count: None,
+            cost: None,
+            currency: Some("USD".to_string()),
+            latency_ms,
+            error_domain: Some(provider_error_domain(error).to_string()),
+            redaction_status: "redacted".to_string(),
+            created_at: self.now(),
+        })
     }
 }
 
@@ -1117,6 +1227,8 @@ fn provider_error_domain(error: &str) -> &'static str {
         "provider_auth"
     } else if error.contains("timed out") {
         "provider_timeout"
+    } else if error.contains("outcome unknown") {
+        "provider_outcome_unknown"
     } else if error.contains("circuit") {
         "provider_circuit_open"
     } else if error.contains("kill switch") {
@@ -2188,11 +2300,15 @@ fn pg_append_audit(
 mod tests {
     use super::*;
     use crate::provider::embedding::{
-        OPENROUTER_EMBEDDING_CANONICAL_SLUG, OPENROUTER_EMBEDDING_DIMENSIONS,
-        OPENROUTER_EMBEDDING_MODEL_ID,
+        OPENROUTER_EMBEDDING_CANONICAL_SLUG, OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
+        OPENROUTER_EMBEDDING_DIMENSIONS, OPENROUTER_EMBEDDING_MODEL_ID,
+        OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
     };
-    use crate::provider::transport::{HttpResponse, MockTransport};
+    use crate::provider::transport::{
+        HttpError, HttpRequest, HttpResponse, HttpTransport, MockTransport,
+    };
     use crate::storage::backup_manager::BackupManager;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::sync::MutexGuard;
     use tempfile::TempDir;
@@ -2234,15 +2350,19 @@ mod tests {
                 "ACP_DURABLE_MEMORY_EMBEDDING_MODE",
                 "ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS",
                 "ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH",
+                "ACP_ENABLE_PROVIDER_EXECUTION",
+                "ACP_REQUIRE_AUTH",
             ];
             let prior = keys
                 .into_iter()
                 .map(|key| (key, std::env::var(key).ok()))
                 .collect();
             std::env::remove_var("CI");
-            std::env::set_var("OPENROUTER_API_KEY", "test-only-secret");
+            std::env::set_var("OPENROUTER_API_KEY", "fixture-credential");
             std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_MODE", "provider");
             std::env::set_var("ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS", "1");
+            std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+            std::env::set_var("ACP_REQUIRE_AUTH", "1");
             std::env::remove_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH");
             Self { _lock: lock, prior }
         }
@@ -2265,8 +2385,9 @@ mod tests {
             body: serde_json::to_vec(&json!({"data":[{
                 "id":OPENROUTER_EMBEDDING_MODEL_ID,
                 "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+                "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
                 "pricing":{"prompt":"0","completion":"0"},
-                "architecture":{"output_modalities":["embeddings"]}
+                "architecture":{"input_modalities":["text","image"],"output_modalities":["embeddings"]}
             }]}))
             .unwrap(),
         }
@@ -2276,7 +2397,7 @@ mod tests {
         HttpResponse {
             status: 200,
             body: serde_json::to_vec(&json!({
-                "model":"private/openrouter/nvidia/llama-nemotron-embed-vl-1b-v2",
+                "model":OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
                 "data":[{"index":0,"embedding":vec![0.125;OPENROUTER_EMBEDDING_DIMENSIONS]}],
                 "usage":{"prompt_tokens":5}
             }))
@@ -2295,6 +2416,26 @@ mod tests {
                 ]
             })
             .collect()
+    }
+
+    struct CountingEmbeddingTransport {
+        posts: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for CountingEmbeddingTransport {
+        async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            if request.url.ends_with("/embeddings/models") {
+                Ok(provider_catalog_response())
+            } else if request.url.ends_with("/embeddings") && request.method == "POST" {
+                self.posts.fetch_add(1, Ordering::SeqCst);
+                Ok(provider_vector_response())
+            } else {
+                Err(HttpError::Connection(
+                    "unexpected fixture endpoint".to_string(),
+                ))
+            }
+        }
     }
 
     fn store() -> (TempDir, LocalProductStore) {
@@ -2669,5 +2810,174 @@ mod tests {
             reopened.inspect_durable_memory(&memory_id).unwrap().len(),
             2
         );
+    }
+
+    #[test]
+    fn provider_embedding_create_retry_and_concurrent_revision_call_once() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let transport = Arc::new(CountingEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let store = Arc::new(
+            LocalProductStore::new_with_embedding_transport(
+                dir.path().join("provider-idempotency.db"),
+                || "2026-07-15T00:00:00Z".to_string(),
+                transport.clone(),
+            )
+            .unwrap(),
+        );
+        let request = create(
+            "ws-provider-idempotency",
+            "provider-source-idempotency",
+            "bounded provider memory",
+        );
+        let created = store.create_durable_memory(&request, "test").unwrap();
+        let memory_id = created["memory_id"].as_str().unwrap().to_string();
+        let duplicate = store.create_durable_memory(&request, "test").unwrap();
+        assert_eq!(duplicate["record_sha256"], created["record_sha256"]);
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+
+        let revision = DurableMemoryRevision {
+            expected_version: 1,
+            source_id: "provider-source-idempotency-v2".into(),
+            source_sha256: sha256_bytes(b"bounded provider memory v2"),
+            content: json!({"text":"bounded provider memory v2"}),
+            confidence: 0.95,
+            fresh_until: None,
+            expires_at: None,
+        };
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let results = std::thread::scope(|scope| {
+            let handles = (0..2)
+                .map(|_| {
+                    let store = Arc::clone(&store);
+                    let barrier = Arc::clone(&barrier);
+                    let revision = revision.clone();
+                    let memory_id = memory_id.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        store.revise_durable_memory(&memory_id, &revision, "test")
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert!(results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .all(|error| {
+                error.contains("already reserved") || error.contains("version conflict")
+            }));
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 2);
+        assert_eq!(store.inspect_durable_memory(&memory_id).unwrap().len(), 2);
+        let request_events = store
+            .provider_audit_events(100)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event["event_type"] == "request_sent")
+            .count();
+        assert_eq!(request_events, 2);
+    }
+
+    #[test]
+    fn provider_embedding_gates_and_unknown_outcome_fail_closed() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
+        let gated = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-gated.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            Arc::new(MockTransport::empty()),
+        )
+        .unwrap();
+        assert!(gated
+            .create_durable_memory(
+                &create("ws-provider-gated", "source-gated", "bounded fact"),
+                "test",
+            )
+            .unwrap_err()
+            .contains("provider execution gate"));
+        std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+        std::env::remove_var("ACP_REQUIRE_AUTH");
+        assert!(gated
+            .create_durable_memory(
+                &create("ws-provider-auth", "source-auth", "bounded fact"),
+                "test",
+            )
+            .unwrap_err()
+            .contains("authenticated runtime"));
+        std::env::set_var("ACP_REQUIRE_AUTH", "1");
+
+        let unknown = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-unknown.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            Arc::new(MockTransport::new(vec![
+                Ok(provider_catalog_response()),
+                Err(HttpError::Timeout("fixture timeout".to_string())),
+                Ok(provider_vector_response()),
+            ])),
+        )
+        .unwrap();
+        let error = unknown
+            .create_durable_memory(
+                &create("ws-provider-unknown", "source-unknown", "bounded fact"),
+                "test",
+            )
+            .unwrap_err();
+        assert!(error.contains("outcome unknown"));
+        let events = unknown.provider_audit_events(10).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event_type"] == "request_sent")
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| {
+            event["event_type"] == "error" && event["error_domain"] == "provider_outcome_unknown"
+        }));
+
+        let capped = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-capped.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            Arc::new(MockTransport::new(vec![Ok(provider_catalog_response())])),
+        )
+        .unwrap();
+        let prior_cost = ProviderAuditEvent {
+            schema_version: "provider_audit_event.v1".to_string(),
+            event_id: "fixture-prior-reservation".to_string(),
+            dispatch_id: "fixture-prior-dispatch".to_string(),
+            provider_id: "fixture-provider".to_string(),
+            event_type: "request_reserved".to_string(),
+            input_token_count: None,
+            output_token_count: None,
+            cost: Some(0.2),
+            currency: Some("USD".to_string()),
+            latency_ms: None,
+            error_domain: None,
+            redaction_status: "redacted".to_string(),
+            created_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        capped
+            .reserve_provider_audit_cost(&prior_cost, 1.0, 1.0)
+            .unwrap();
+        assert!(capped
+            .create_durable_memory(
+                &create("ws-provider-capped", "source-capped", "bounded fact"),
+                "test",
+            )
+            .unwrap_err()
+            .contains("daily cost cap exceeded"));
+        assert!(!capped
+            .provider_audit_events(10)
+            .unwrap()
+            .iter()
+            .any(|event| event["event_type"] == "request_sent"));
     }
 }

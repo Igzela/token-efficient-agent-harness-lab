@@ -100,13 +100,15 @@ export ACP_DURABLE_MEMORY_EMBEDDING_MODE=disabled
 # export ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS=1
 ```
 
-Provider embeddings are separately default-off and use the existing symbolic credential, provider audit/cost reservation, timeout/retry, circuit-breaker, and kill-switch boundaries. The production contract is pinned to OpenRouter's embedding endpoint, `nvidia/llama-nemotron-embed-vl-1b-v2:free`, and 1,536 dimensions. Every call revalidates the current OpenRouter embedding catalog, exact canonical model identity, embedding capability, and complete zero-price prompt/completion record before the embedding request. A catalog/model/pricing change fails closed and requires a reviewed contract update; it never falls back to local hashing or lexical retrieval.
+Provider embeddings are separately default-off and require the authoritative provider-execution gate plus authenticated runtime mode. They reuse the existing symbolic credential, provider audit/cost reservation, timeout, circuit-breaker, and kill-switch boundaries. The production contract is pinned to OpenRouter's embedding endpoint, `nvidia/llama-nemotron-embed-vl-1b-v2:free`, and 1,536 dimensions. Every call revalidates the current OpenRouter embedding catalog, exact canonical and resolved model identity, text input capability, 131,072-token context contract, and complete zero-price prompt/completion record before the embedding request. Only the read-only catalog request has bounded retry; the embedding POST is sent once, and connection loss or timeout is recorded as non-retryable `provider_outcome_unknown`. Secret-shaped outbound content fails before the request. A catalog/model/pricing change fails closed and requires a reviewed contract update; it never falls back to local hashing or lexical retrieval.
 
 ```bash
 # OPENROUTER_API_KEY must already exist in this process-private environment.
 test -n "${OPENROUTER_API_KEY:-}"
 export ACP_DURABLE_MEMORY_EMBEDDING_MODE=provider
 export ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS=1
+export ACP_ENABLE_PROVIDER_EXECUTION=1
+export ACP_REQUIRE_AUTH=1
 export ACP_DURABLE_MEMORY_EMBEDDING_CREDENTIAL_ENV=OPENROUTER_API_KEY
 export ACP_DURABLE_MEMORY_EMBEDDING_TIMEOUT_MS=20000
 export ACP_DURABLE_MEMORY_EMBEDDING_MAX_RETRIES=2
