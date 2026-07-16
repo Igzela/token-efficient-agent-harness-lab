@@ -414,6 +414,72 @@ pub(crate) async fn api_target_repo_output(
             "target repo output requires valid approval binding",
         ));
     }
+    let effective_branch = request
+        .branch_name
+        .clone()
+        .unwrap_or_else(|| format!("acp/{artifact_id}"));
+    let effective_remote = request
+        .remote
+        .clone()
+        .unwrap_or_else(|| "origin".to_string());
+    let effective_commit_message = request
+        .commit_message
+        .clone()
+        .unwrap_or_else(|| format!("feat: apply approved artifact {artifact_id}"));
+    let effective_pr_title = request
+        .pr_title
+        .clone()
+        .unwrap_or_else(|| format!("Apply approved artifact {artifact_id}"));
+    let request_binding = json!({
+        "schema_version": "target_repo_output_request.v1",
+        "artifact_id": artifact_id,
+        "run_id": request.run_id,
+        "mode": request.mode,
+        "patch_hash": artifact.get("patch_hash"),
+        "source_revision": artifact.get("source_revision"),
+        "approval_id": binding.get("approving_approval").and_then(|value| value.get("approval_id")),
+        "branch_name": if request.mode == "push_branch" { Some(effective_branch.as_str()) } else { None },
+        "remote": if request.mode == "push_branch" { Some(effective_remote.as_str()) } else { None },
+        "commit_message": if request.mode == "push_branch" { Some(effective_commit_message.as_str()) } else { None },
+        "pr_title": if request.mode == "push_branch" { Some(effective_pr_title.as_str()) } else { None },
+        "create_pull_request": request.create_pull_request == Some(true),
+    });
+    let request_sha256 = hex::encode(Sha256::digest(
+        serde_json::to_vec(&request_binding).map_err(|error| internal_error(error.to_string()))?,
+    ));
+    if let Some(receipt) = artifact.get("target_output_receipt") {
+        if receipt.get("state").and_then(serde_json::Value::as_str) == Some("completed")
+            && receipt
+                .get("request_sha256")
+                .and_then(serde_json::Value::as_str)
+                == Some(request_sha256.as_str())
+            && receipt.get("request_binding") == Some(&request_binding)
+        {
+            let output = receipt.get("output").cloned().ok_or_else(|| {
+                internal_error("completed target output receipt is missing output".to_string())
+            })?;
+            let _ = store.append_audit(
+                &context.api_key_id,
+                "supervised_patch.target_output_reused",
+                &artifact_id,
+                &json!({"request_sha256": request_sha256, "receipt_state": "completed"}),
+            );
+            return Ok((
+                cors_headers(),
+                Json(json!({
+                    "schema_version": AXUM_API_SCHEMA_VERSION,
+                    "output": output,
+                    "approval_binding": binding,
+                    "reused": true,
+                })),
+            ));
+        }
+        return Err(ApiError::with_code(
+            StatusCode::CONFLICT,
+            "target_output_request_mismatch",
+            "artifact already completed under a different target output request",
+        ));
+    }
     let integrity = store
         .validate_artifact_integrity(&artifact_id)
         .map_err(internal_error)?;
@@ -514,16 +580,10 @@ pub(crate) async fn api_target_repo_output(
             serde_json::to_value(output).map_err(|error| internal_error(error.to_string()))?
         }
         "push_branch" => {
-            let branch_name = request
-                .branch_name
-                .unwrap_or_else(|| format!("acp/{artifact_id}"));
-            let remote = request.remote.unwrap_or_else(|| "origin".to_string());
-            let commit_message = request
-                .commit_message
-                .unwrap_or_else(|| format!("feat: apply approved artifact {artifact_id}"));
-            let pr_title = request
-                .pr_title
-                .unwrap_or_else(|| format!("Apply approved artifact {artifact_id}"));
+            let branch_name = effective_branch;
+            let remote = effective_remote;
+            let commit_message = effective_commit_message;
+            let pr_title = effective_pr_title;
             let pr_body = build_pr_body(&artifact);
             let publish_branch = branch_name.clone();
             let publish_remote = remote.clone();
@@ -668,20 +728,29 @@ pub(crate) async fn api_target_repo_output(
         }
     };
 
-    let _ = store.append_audit(
-        &context.api_key_id,
-        "supervised_patch.target_output_success",
-        &artifact_id,
-        &json!({
-            "run_id": request.run_id,
-            "mode": request.mode,
-            "patch_hash": expected_patch_hash,
-            "branch_name": output.get("branch_name"),
-            "commit_sha": output.get("commit_sha"),
-            "approval_id": binding.get("approving_approval").and_then(|value| value.get("approval_id")),
-            "kill_path": "ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1",
-        }),
-    );
+    if request.mode == "push_branch" {
+        store
+            .record_target_output_receipt(
+                &artifact_id,
+                &request_binding,
+                &request_sha256,
+                &output,
+                &context.api_key_id,
+            )
+            .map_err(internal_error)?;
+    } else {
+        let _ = store.append_audit(
+            &context.api_key_id,
+            "supervised_patch.target_output_success",
+            &artifact_id,
+            &json!({
+                "run_id": request.run_id,
+                "mode": request.mode,
+                "patch_hash": expected_patch_hash,
+                "kill_path": "ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1",
+            }),
+        );
+    }
 
     Ok((
         cors_headers(),
@@ -690,6 +759,7 @@ pub(crate) async fn api_target_repo_output(
             "output": output,
             "approval_binding": binding,
             "integrity": integrity,
+            "reused": false,
         })),
     ))
 }

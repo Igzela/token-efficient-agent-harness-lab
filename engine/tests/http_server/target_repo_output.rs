@@ -590,4 +590,3 @@ async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
                 && event["resource"] == artifact_id
         }));
 }
-

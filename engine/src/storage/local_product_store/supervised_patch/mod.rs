@@ -1741,6 +1741,113 @@ impl LocalProductStore {
         }
     }
 
+    pub fn record_target_output_receipt(
+        &self,
+        artifact_id: &str,
+        request_binding: &Value,
+        request_sha256: &str,
+        output: &Value,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if request_sha256.len() != 64
+            || !request_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err("target output request hash is invalid".to_string());
+        }
+        let completed_at = self.now();
+        let update = |mut artifact: Value| -> Result<(Value, Value), String> {
+            if let Some(existing) = artifact.get("target_output_receipt").cloned() {
+                if existing.get("request_sha256").and_then(Value::as_str) == Some(request_sha256)
+                    && existing.get("request_binding") == Some(request_binding)
+                {
+                    return Ok((artifact, existing));
+                }
+                return Err(
+                    "target output artifact already has a different completed receipt".to_string(),
+                );
+            }
+            let receipt = json!({
+                "schema_version": "target_repo_output_receipt.v1",
+                "state": "completed",
+                "artifact_id": artifact_id,
+                "run_id": artifact.get("run_id"),
+                "source_revision": artifact.get("source_revision"),
+                "patch_hash": artifact.get("patch_hash"),
+                "request_binding": request_binding,
+                "request_sha256": request_sha256,
+                "output": output,
+                "completed_at": completed_at,
+            });
+            artifact
+                .as_object_mut()
+                .ok_or_else(|| "supervised patch artifact must be an object".to_string())?
+                .insert("target_output_receipt".to_string(), receipt.clone());
+            Ok((artifact, receipt))
+        };
+
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                let raw: String = tx
+                    .query_row(
+                        "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = ?1",
+                        params![artifact_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let artifact: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+                let (artifact, receipt) = update(artifact)?;
+                tx.execute(
+                    "UPDATE supervised_patch_artifacts SET artifact_json = ?1 WHERE artifact_id = ?2",
+                    params![artifact.to_string(), artifact_id],
+                )
+                .map_err(|error| error.to_string())?;
+                append_audit_locked(
+                    &tx,
+                    &completed_at,
+                    actor,
+                    "supervised_patch.target_output_success",
+                    artifact_id,
+                    &json!({"request_sha256": request_sha256, "receipt_state": "completed"}),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(receipt)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let row = tx
+                    .query_one(
+                        "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = $1 FOR UPDATE",
+                        &[&artifact_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let raw: String = row.get(0);
+                let artifact: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+                let (artifact, receipt) = update(artifact)?;
+                tx
+                    .execute(
+                        "UPDATE supervised_patch_artifacts SET artifact_json = $1 WHERE artifact_id = $2",
+                        &[&artifact.to_string(), &artifact_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let details = json!({"request_sha256": request_sha256, "receipt_state": "completed"}).to_string();
+                pg_append_audit(
+                    &mut tx,
+                    &completed_at,
+                    actor,
+                    "supervised_patch.target_output_success",
+                    artifact_id,
+                    &details,
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(receipt)
+            }),
+        }
+    }
+
     pub fn supervised_patch_artifacts(&self, limit: i64) -> Result<Vec<Value>, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {

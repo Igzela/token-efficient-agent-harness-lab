@@ -2458,6 +2458,55 @@ fn pg_supervised_patch_metadata() {
         .iter()
         .any(|a| a["artifact_id"].as_str() == Some(artifact_id));
     assert!(found_art, "recorded artifact should appear in list");
+
+    let request_binding = json!({
+        "schema_version": "target_repo_output_request.v1",
+        "artifact_id": artifact_id,
+        "run_id": run_id,
+        "mode": "push_branch",
+        "branch_name": format!("acp/{artifact_id}"),
+    });
+    let request_sha256 = "a".repeat(64);
+    let output = json!({
+        "schema_version": "target_repo_output.v1",
+        "branch_name": format!("acp/{artifact_id}"),
+        "commit_sha": "b".repeat(40),
+    });
+    let receipt = store
+        .record_target_output_receipt(
+            artifact_id,
+            &request_binding,
+            &request_sha256,
+            &output,
+            "test-actor",
+        )
+        .expect("record target output receipt");
+    assert_eq!(receipt["state"], "completed");
+    let reused = store
+        .record_target_output_receipt(
+            artifact_id,
+            &request_binding,
+            &request_sha256,
+            &output,
+            "test-actor",
+        )
+        .expect("reuse target output receipt");
+    assert_eq!(reused, receipt);
+    let stored = store
+        .get_supervised_patch_artifact(artifact_id)
+        .expect("reload target output artifact")
+        .expect("target output artifact exists");
+    assert_eq!(stored["target_output_receipt"], receipt);
+    assert!(store
+        .record_target_output_receipt(
+            artifact_id,
+            &json!({"different": true}),
+            &"c".repeat(64),
+            &output,
+            "test-actor",
+        )
+        .unwrap_err()
+        .contains("different completed receipt"));
 }
 
 /// PostgreSQL active trial: exercises the full auto-adjustment apply + rollback

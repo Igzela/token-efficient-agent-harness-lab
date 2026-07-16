@@ -12913,7 +12913,8 @@ async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
     let main_before = git(target.path(), &["rev-parse", "main"]);
 
     let dir = tempdir().unwrap();
-    let store = LocalProductStore::new(dir.path().join("target-output.db")).unwrap();
+    let store_path = dir.path().join("target-output.db");
+    let store = LocalProductStore::new(&store_path).unwrap();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));
 
     let plan = app
@@ -13284,7 +13285,85 @@ async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
         push_body["output"]["commit_sha"].as_str().unwrap()
     );
 
-    let audit = app
+    let restarted_app = build_axum_router(
+        AxumApiState::new().with_local_store(LocalProductStore::new(&store_path).unwrap()),
+    );
+    let duplicate = restarted_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/artifacts/{artifact_id}/output"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "run_id": run_id,
+                        "mode": "push_branch",
+                        "confirm_target_output": true,
+                        "branch_name": format!("acp/{artifact_id}"),
+                        "remote": "origin",
+                        "commit_message": "feat: apply approved production output",
+                        "pr_title": "Apply approved production output"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let duplicate_status = duplicate.status();
+    let duplicate_body = response_json(duplicate).await;
+    assert_eq!(
+        duplicate_status,
+        StatusCode::OK,
+        "exact duplicate output must reuse its durable result: {duplicate_body}"
+    );
+    assert_eq!(duplicate_body["output"], push_body["output"]);
+    assert_eq!(duplicate_body["reused"], true);
+
+    let mismatched = restarted_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/artifacts/{artifact_id}/output"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "run_id": run_id,
+                        "mode": "push_branch",
+                        "confirm_target_output": true,
+                        "branch_name": format!("acp/{artifact_id}-different"),
+                        "remote": "origin",
+                        "commit_message": "feat: apply approved production output",
+                        "pr_title": "Apply approved production output"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mismatched.status(), StatusCode::CONFLICT);
+    let mismatched_body = response_json(mismatched).await;
+    assert_eq!(mismatched_body["code"], "target_output_request_mismatch");
+    assert!(!Command::new("git")
+        .arg("-C")
+        .arg(remote.path())
+        .args([
+            "rev-parse",
+            &format!("refs/heads/acp/{artifact_id}-different")
+        ])
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    let audit = restarted_app
         .oneshot(
             Request::builder()
                 .method(Method::GET)
@@ -13302,6 +13381,14 @@ async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
         .iter()
         .any(|event| {
             event["action"] == "supervised_patch.target_output_success"
+                && event["resource"] == artifact_id
+        }));
+    assert!(audit_body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event["action"] == "supervised_patch.target_output_reused"
                 && event["resource"] == artifact_id
         }));
 }
