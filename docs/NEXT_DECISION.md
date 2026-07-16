@@ -1,336 +1,314 @@
 # Next Decision
 
-Last updated: 2026-07-16.
+Last updated: 2026-07-17.
 
 ## Current Direction
 
-The explicitly authorized bounded three-PR production-integration program is merged. It consolidated the original seven capability packets without removing their acceptance requirements or weakening any authority or gate:
+The bounded production-integration program is merged. Rust `engine/` remains the sole runtime, API, scheduler, policy, audit, and application-owned storage authority. Disposable staging drills and the repaired target-repository output path passed. External live acceptance is still incomplete:
 
-1. `PR1-AR-RUNTIME-INTEGRATION-1` — production Agent Runtime and tool-policy routing;
-2. `PR2-MEMORY-BUDGET-POLICY-LOOP-1` — durable memory plus the PE-2 usage/budget producer and PE-4 replay/promotion operator loop;
-3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — managed LangGraph adapter, native/LangGraph efficiency benchmark, and final live acceptance seal.
+- the GitHub/Vader repository-maintenance path remains disabled and emergency-stopped until the named Vader runner is online/idle and a replacement smoke reaches PR creation, exact-head CI, and independent review;
+- provider-backed embedding and the native/LangGraph benchmark remain fail-closed because the current OpenRouter catalog does not establish the configured embedding identity or every modeled applicable price dimension;
+- no provider POST, public release, production installation, or protected-branch write is authorized;
+- deletion of the disposable no-value target repository still requires interactive GitHub sudo-mode/2FA.
 
-The local implementation and the provider/target-output safety repairs are complete. Disposable staging drills and target-repository output passed. The GitHub/Vader path remains disabled and emergency-stopped until the Vader runner is online and a replacement smoke proves the full chain. Provider-backed embedding and benchmark execution remain fail-closed until current OpenRouter catalog evidence proves every modeled applicable price dimension. Local Rust control-plane integration does not authorize that orchestrator, auto-merge, protected-branch writes, or a public release.
+A separate research lane is now approved for **bounded recursive execution and evidence-gated Harness evolution**. This lane is not an online self-update mechanism and does not establish recursive self-improvement. It must remain default-off, fixture/local-first, isolated from the active Harness, and subordinate to the existing budget, tool-policy, target-output, review, promotion, and rollback owners.
+
+Do not create another roadmap, phase, status, policy, or closeout document. This file is the single forward plan. Current facts belong in `docs/CURRENT_STATUS.md`; durable architecture belongs in `docs/ARCHITECTURE_BOOK.md`; ownership belongs in `docs/MODULE_MAP.md`; only proven operator procedures belong in `docs/RUNBOOK.md`.
 
 ## Active Routing
 
-`PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remains the active acceptance packet in `BLOCKED_PREREQUISITE`, with no active implementation branch or PR. PR #220, PR #221, PR #222, PR #223, PR #224, and repair PR #226 are merged. Repository Actions PR creation and the administration-read preflight secret are configured; external smoke dispatch is blocked until the named disposable Vader runner is online and idle. Its active current-version service still fails readiness after a safe restart because token exchange to `tokenghub.actions.githubusercontent.com` reproduces TLS EOF. Provider-backed embedding/benchmarking is blocked by the current 342-model OpenRouter catalog (SHA-256 `63eb8db708547399b6c201145d6f254925fdfeadf95a0c7a82f7e5d978c4f087`): the fixed embedding identity is absent and the free Hy3 candidate exposes only prompt/completion prices, not every modeled charge dimension. No provider POST is authorized. Staging acceptance and the functional target-output sequence passed; final target cleanup remains incomplete because deletion of `Igzela/acp-target-accept-20260716-1145` was refused without GitHub sudo-mode/2FA authorization.
+1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE`. No implementation branch is active. Resume only when the external runner/catalog prerequisites can be verified.
+2. `AR7-BOUNDED-RECURSIVE-EXECUTION-1` — `READY_FOR_EXECUTION`. Independent fixture/local lane; it must not enable Issue #208, call a provider, or depend on the Vader runner.
+3. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on AR7. It establishes candidate lineage, equal-budget evaluation, sealed holdout discipline, and PR-only promotion.
+4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result. It may test whether an evolved improver improves `Improvement@K`; it may not modify the authoritative evaluator, permissions, sealed set, or release owner.
+5. PR #225 remains an independent presentation-only Dashboard PR and does not own runtime, recursive execution, evolution, provider, or live-acceptance behavior.
 
-Do not create another roadmap, phase, status, policy, or closeout document. This file is the normative forward plan. Current facts belong in `docs/CURRENT_STATUS.md`; ownership belongs in `docs/MODULE_MAP.md`.
+The recursive/evolution lane is intentionally independent of the blocked external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. Any provider call, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation requires separate authority.
 
 ## Verified Baseline
 
-- PR #220 (`PR1-AR-RUNTIME-INTEGRATION-1`) merged from exact head `6ec486df3bb6fb57e93e0f2b1a5fee662abf2bb2` as `936b05c226ab64576c0e2d4146d3f8ca3d0c3e47`; its exact-head and post-merge canonical CI each completed all seven required jobs successfully;
-- PR #221 (`PR2-MEMORY-BUDGET-POLICY-LOOP-1`) merged exact head `f75d07b4e7656817fabf65cc26a0f3b05c7c4605` as `f821d366359e1b68376df6dd1eae7a10c9519058`; exact-head CI run `29383755592` and post-merge run `29384216781` each passed all seven required jobs;
-- PR #222 (`PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`) merged exact head `646118bffa1e2c9c56aead2616cb9526a8457032` as `49a5948c4527ba741569f673696cf462db7ac092`; exact-head CI run `29390757467` passed all seven required jobs;
-- PR #223 (`DURABLE-MEMORY-PROVIDER-EMBEDDING-REPAIR-1`) merged exact head `2c31912c4e07e182667d68b14fa20472866d01fe` as `f33b7bb0b49ec902c66b170406efa9d8ee60f9a2` after all seven required exact-head jobs passed;
-- PR #224 (`PROVIDER-EMBEDDING-LIVE-SAFETY-REPAIR-1`) merged exact reviewed head `d8df385b9af8d3bfc9e8d09d4b08f892694efe4f` as `8e7cd78be290d51231e58ebc3c70562ec8693961`; exact-head run `29493620726` and post-merge run `29494339424` passed all seven jobs;
-- PR #226 (`TARGET-OUTPUT-IDEMPOTENCY-REPAIR-1`) merged exact reviewed head `c52da4ee49a19acdcb2b102836cc40d12b6eb122` as `f251d7760e80179b1e1798bf6b6f442326028f89`; exact-head run `29499243470` and post-merge run `29500019102` passed all seven jobs;
+The following merged work is the implementation baseline:
 
-- PR #214 merged the PE-5/PE-6 post-seal repair at `0d8127e3d779e54c58caf5d93e7589dd1a6df616`;
-- PR #207 merged the event-driven repository-maintenance orchestrator at `23187bb83dc32165d8982c79be1a1f7f818380a0`;
-- PR #216 merged the Codex output and runner-readiness compatibility repair at `2a42c011164765ba6c2dbe940c5a73900a7bb4b1`;
-- PR #216 exact head `7210cd1943b075ef07c561f4804bca8230cffd60` passed canonical CI run `29308693744` with all seven required jobs successful;
-- the first GPT Web smoke Issue #217 reached Vader, produced and finalized an artifact, and pushed its branch; PR creation failed with HTTP 403 because GitHub Actions PR creation was disabled at that time;
-- Issue comments do not identify the terminal step or workflow run, so durable failure attribution also requires repair;
-- repository workflow permissions are `write`, `can_approve_pull_request_reviews=true`, and the administration-read/push secrets exist by name only;
-- the Vader runner is currently offline despite an active latest-version local service; after a safe restart, readiness still fails because token exchange to `tokenghub.actions.githubusercontent.com` reproduces TLS transport EOF while the broker host itself completes TLS;
-- Issue #208 is emergency-stopped with both enable labels absent;
-- auto-merge was never enabled and no smoke PR was merged.
+- PR #214 repaired PE-5 release provenance and PE-6 fault/recovery evidence;
+- PR #207 and PR #216 delivered and repaired the disabled-by-default GitHub/Vader repository-maintenance orchestrator;
+- PR #220 connected production Agent Runtime and tool-policy routing;
+- PR #221 connected durable memory, budget evidence production, and trace-backed replay/promotion;
+- PR #222 connected the managed external runtime, canonical efficiency benchmark, orchestrator evidence repair, and local acceptance seal;
+- PR #223 and PR #224 repaired provider embedding receipts, transport, authorization, identity, and pricing safety;
+- PR #226 repaired target-output duplicate delivery and restart idempotency;
+- staging recovery drills and disposable target-repository acceptance passed without moving target `main`;
+- the current repository-maintenance orchestrator remains emergency-stopped and no provider-backed benchmark is verified.
 
-Every implementation session must refresh actual GitHub, Actions, runner, and local state before relying on these identifiers.
+Every implementation session must refresh actual `main`, open PRs, CI, Issue #208, runner readiness, provider catalog evidence, and overlapping file ownership before relying on these facts.
 
 ## Packet States
 
-- `READY_FOR_EXECUTION` — prerequisites and contract are sufficient to begin;
-- `BLOCKED_PREREQUISITE` — defined but waiting for an earlier packet or conflicting PR;
-- `DECISION_REQUIRED` — a material authority or product decision cannot be derived safely;
-- `IN_PROGRESS` — one active branch or PR owns the packet;
+- `READY_FOR_EXECUTION` — prerequisites and contract are sufficient to begin.
+- `BLOCKED_PREREQUISITE` — defined but waiting for an earlier packet or external condition.
+- `DECISION_REQUIRED` — a material authority or product decision cannot be derived safely.
+- `IN_PROGRESS` — one branch or PR owns the packet.
 - `COMPLETE` — implementation is merged, required evidence is verified, and active documents are synchronized.
 
 ## Common Execution Protocol
 
-Each packet must:
+Every implementation packet must:
 
-- start from the latest actual `main` or the exact existing PR branch specified by the packet;
-- preserve existing runtime, storage, scheduler, audit, permission, pause, policy, rollback, release, and orchestrator control owners;
-- use one focused branch and PR per implementation packet unless the packet explicitly owns an existing PR;
-- define versioned bounded inputs, outputs, reason codes, identity bindings, and failure states;
-- reject caller-supplied authority where evidence must be derived from existing owners;
-- remain deterministic and fail closed on missing, stale, conflicting, tampered, oversized, or incompatible evidence;
-- add tests that exercise real call paths and state transitions, not only string-presence or isolated constructors;
-- run focused tests, the full applicable local baseline, and fresh exact-head GitHub CI for code/workflow changes;
-- independently review the complete final diff after the last code change;
-- keep auto-merge disabled unless separately and explicitly authorized;
-- merge only when the current user authority covers that PR and every exact-head gate is successful; this bounded three-PR program has implementation and merge authority, but no public-release authority.
+- start from the latest actual `main` or the exact owned PR head;
+- use one focused branch and PR;
+- preserve the existing Rust runtime, scheduler, `LocalProductStore`, auth, budget, audit, tool-policy, pause, target-output, release, and rollback owners;
+- define versioned bounded inputs, outputs, reason codes, identity bindings, limits, and failure states;
+- reject caller-supplied authority where facts must be derived from persisted owners;
+- fail closed on missing, stale, conflicting, tampered, oversized, cyclic, over-budget, or incompatible evidence;
+- add real call-path, restart, concurrency, idempotency, and negative tests where applicable;
+- run focused checks, the applicable full local baseline, exact-head GitHub CI, and independent complete-diff review;
+- keep auto-merge disabled unless separately authorized;
+- update only the smallest necessary active documents;
+- retain an exact rollback path and leave authoritative evidence inert rather than deleting it by default.
 
-Documentation-only factual corrections have standing user authorization to be committed directly to `main` when the final diff is limited to Markdown or plain-text documentation and changes no code, tests, scripts, workflows, configuration, schema, migration, generated artifact, dependency file, executable file, runtime behavior, release state, credential, or external state. They still require final diff review, `git diff --check`, `uv run --no-project python scripts/check_agent_handoff.py`, any applicable documentation or link check, and a clear rollback. A branch or PR is optional for such changes. All other changes require a branch, PR, and complete required CI.
+Strictly documentation-only factual changes may be committed directly to `main` under the existing user authorization when the final diff is documentation-only, reviewed, rollbackable, and passes the handoff and whitespace checks. Documentation cannot claim implementation or CI evidence that does not exist.
 
 ## Hard Stops
 
 Stop and report `BLOCKED` rather than improvising when:
 
-- a secret, private signing key, recovery credential, raw prompt/output, transcript, or unredacted sensitive payload would enter version control or an artifact;
+- a secret, raw prompt/output/transcript, private path, or unredacted sensitive payload would enter version control or an artifact;
 - required tests, CI, exact-head identity, review evidence, or a known failure would be hidden or fabricated;
-- an irreversible external action lacks explicit authority and a tested recovery path;
-- another active PR owns conflicting code that cannot be safely refreshed or separated;
-- an existing authority, audit, compensation, control, or rollback owner would be bypassed or replaced;
-- a destructive fault is not bounded to disposable resources;
-- exact-head CI is failed, queued, in progress, cancelled, action-required, or unexpectedly skipped;
-- a real public release, production installation, destructive external test, production provider call, protected-branch write, or persistent signing identity is needed without explicit authorization;
-- Issue #208 is ambiguous, missing, malformed, or unexpectedly live while a repair requires emergency stop;
-- a worker remains active without bounded progress or terminal evidence and late writes cannot be ruled out.
+- an existing runtime, scheduler, storage, permission, evaluator, promotion, target-output, release, audit, compensation, or rollback owner would be bypassed or duplicated;
+- a candidate can read or modify sealed test labels, evaluator source, promotion thresholds, permissions, credentials, budgets, audit history, or active-version bindings;
+- an irreversible external action lacks explicit authority and tested recovery;
+- another active PR owns conflicting code that cannot be safely reconciled;
+- a recursive run can exceed a deterministic tree, call, token, cost, time, concurrency, retry, or lease bound;
+- a worker or external effect cannot be proven terminal and late writes cannot be ruled out;
+- exact-head CI is failed, queued, in progress, cancelled, action-required, or unexpectedly skipped at merge time.
 
-A stale document, a failed first implementation, or a bounded missing design detail is not itself a hard stop. Audit, repair, test, and continue when the result remains explicit, compatible, observable, and rollbackable.
+## Packet AR7-BOUNDED-RECURSIVE-EXECUTION-1 — Recursive task-tree contract
 
-## Packet PR1-AR-RUNTIME-INTEGRATION-1 — Production Agent Runtime and tool policy
+**State:** `READY_FOR_EXECUTION`
 
-**State:** `COMPLETE`
+**Goal:** Extend the existing Agent Runtime child-task proposal mechanism into a persistent, bounded task tree without adding a second runtime, scheduler, queue, mailbox, or storage authority.
 
-**Observable result:** typed `agent_step` plans execute one leased action through the existing Rust scheduler/executor pool; provider decisions are strict/default-off; action application is atomic across retry/restart/concurrency; real Command/CLI callers enforce configured allowlists, bounded hooks, and exact-action workflow approval.
+**Existing owners to reuse:**
 
-**Owners:** existing plan/run HTTP and storage owners, scheduler, executor pool, `AgentStepExecutor`, provider gates/audit, migration v22 receipt/authorization/profile tables, operator decisions, SDKs, and Dashboard reads. No second runtime, queue, scheduler, permission system, target-output owner, or product store.
+- `AgentStepExecutor`, `AgentAction::ProposeChildTask`, `ChildTaskProposal`, and `agent_proposals`;
+- `WorkflowGraph`, workflow nodes/edges, scheduler leases, executor pool, and AR-4 concurrency caps;
+- `agent_action_receipts` for exactly-once mutation;
+- existing provider/tool-policy gates, Agent Runtime kill switch, operator evidence, audit, and pause/recovery controls;
+- `LocalProductStore` SQLite/PostgreSQL transactions and integrity coverage;
+- existing HTTP, SDK, and Dashboard read surfaces where bounded operator visibility is required.
 
-**Rollback:** activate the Agent Runtime kill switch, pause scheduler admission, drain/inspect leases and approvals, restore tool policy from hash-bound audit snapshots when needed, and revert the merge. Migration v22 may remain inert; destructive local table cleanup requires a verified backup and no active lease/approval.
+**Required contract:**
 
-## Packet PR2-MEMORY-BUDGET-POLICY-LOOP-1 — Durable memory and closed-loop evidence
+Each accepted recursive node must derive and persist a versioned identity containing at least:
 
-**State:** `COMPLETE`
+- root run and workflow identity;
+- parent run/node/proposal identity;
+- recursion depth;
+- deterministic task/objective fingerprint;
+- inherited-and-reduced capability profile;
+- per-node and remaining tree budgets;
+- ancestor fingerprints needed for cycle/duplicate detection;
+- accepted/rejected/blocked reason and exact evidence references.
 
-**Prerequisite:** `PR1-AR-RUNTIME-INTEGRATION-1` merged with exact-head CI.
+The control plane, not the model, derives depth, remaining budgets, scope, authority, and ancestry. A model may only submit a bounded proposal. Acceptance creates ordinary persisted workflow nodes and edges through the existing owners.
 
-**Component acceptance:** `DURABLE-MEMORY-RETRIEVAL-1`, `PE2-RUNTIME-PRODUCER-1`, and `PE4-PROMOTION-OPERATOR-1` form one production chain: scoped versioned memory and bounded semantic retrieval feed runtime context; normalized deduplicated usage automatically produces immutable forecast/anomaly evidence and operator decisions; eligible real traces automatically produce offline replay evidence; explicit authorized promotion and exact-snapshot rollback remain separate typed owners.
+**Initial hard limits:**
 
-**Authority and rollback:** the Rust scheduler and `LocalProductStore` remain sole runtime/state owners. Harness-derived and OpenRouter provider embeddings are independently default-off, explicitly gated, absent from CI, and provenance-distinct. Provider vectors enter only through the existing credential/audit/cost/timeout/circuit-breaker/kill-switch owners and v25 scope/source/version plus operation-receipt bindings; only catalog reads retry, while each embedding POST is sent once. Completed receipts are restart-reusable without a new POST, failure/audit is atomic, and target uniqueness excludes competing revisions. A typed authenticated owner may authorize at most four attempts for definitive failures. Unknown outcomes may be source/hash-acknowledged for audit, but remain permanently ineligible for another POST because no provider status/idempotency contract can prove that the first request had no effect. Contract rotation uses immutable re-embedding and an append-only historical identity-and-pricing registry. There is no fallback on provider failure. Replay is shadow-only until explicit evidence-chain promotion. Rollback first disables producers/provider retrieval, preserves binding evidence by default, and permits v25 removal only when neither a provider binding nor an operation receipt exists.
+- default-off feature gate and independent kill switch;
+- maximum depth 2;
+- maximum 3 accepted children per node;
+- maximum 12 recursive nodes per root run;
+- maximum 3 concurrently leased recursive nodes globally within the feature;
+- maximum one retry per recursive node, subject to existing retryability and outcome-unknown rules;
+- child permissions may only equal a strict subset of the parent permissions;
+- no recursive node may create a new root goal, broaden tenant/workspace/repository scope, or authorize an external mutation.
 
-## Packet PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1 — Managed adapter, benchmark, and acceptance
+These defaults may be changed only through a later evidence-backed packet and versioned configuration contract.
 
-**State:** `BLOCKED_PREREQUISITE`
+**Required failure states:**
 
-**Prerequisite:** `PR2-MEMORY-BUDGET-POLICY-LOOP-1` merged with exact-head CI.
+`recursive_disabled`, `depth_exceeded`, `child_limit_exceeded`, `tree_budget_exhausted`, `duplicate_objective`, `ancestor_cycle`, `capability_escalation`, `scope_mismatch`, `stale_parent`, `proposal_conflict`, `receipt_conflict`, `scheduler_capacity_exhausted`, and `recursive_kill_switch_active` must remain distinguishable and auditable.
 
-**Component acceptance:** `LANGGRAPH-MANAGED-ADAPTER-1`, `EFFICIENCY-LIVE-BENCH-1`, and `LIVE-ACCEPTANCE-SEAL-1` form one final chain: one Rust-leased node launches one bounded external invocation with scoped checkpoints; native and LangGraph adapters run the same four-strategy and tool-discovery benchmark contract; guarded live acceptance verifies orchestrator, target-output, install/upgrade/rollback, backup/restore, restart/concurrency/idempotency/recovery, fault drills, provider controls, and the PE-2/PE-4 closed loop.
+**Verification:**
 
-**Merged implementation and partial external acceptance:** PR #222 connected the managed adapter, scoped checkpoints, fixture and guarded-live benchmark commands, automatic scorecards, tool-discovery comparison, orchestrator preflight/terminal evidence repair, and local acceptance seal. PR #224 hardened provider pricing/transport/receipt authorization and PR #226 repaired target-output duplicate delivery. Disposable staging drills and a disposable target-output repository run passed. External live acceptance is not complete: no provider-backed benchmark or replacement repository-agent smoke was performed. The current catalog does not admit the fixed embedding identity or complete chat pricing, the runner token-exchange TLS path remains externally unavailable, and deletion of the disposable repository awaits GitHub sudo-mode 2FA.
+- deterministic tree construction and ordering;
+- depth, child, total-node, token, cost, time, concurrency, retry, and lease bounds;
+- ancestor-cycle and semantic-duplicate refusal;
+- capability and scope reduction;
+- concurrent proposal acceptance races;
+- restart and exact receipt replay;
+- stale worker completion and late-write refusal;
+- kill/pause/recovery behavior;
+- SQLite/PostgreSQL parity and integrity coverage;
+- bounded read-model output with no raw prompt/output/transcript persistence;
+- full exact-head CI and independent review.
 
-**Authority and release:** no second scheduler, task queue, permission system, authoritative product store, direct protected-branch write, paid CI call, or cloud multi-tenant claim is permitted. Unsupported external environments are `BLOCKED`. Unless publication is explicitly authorized in-session after every gate passes, the terminal release state is `RELEASE_READY_NOT_PUBLISHED`.
+**Non-goals:**
 
-## Packet PR2-DURABLE-MEMORY-RETRIEVAL-1 — Cross-run durable memory
+- no persistent self-modification;
+- no candidate Harness archive;
+- no automatic generation of new root objectives;
+- no online modification of active code, evaluator, permissions, budget policy, provider policy, target-output policy, or release policy;
+- no claim of recursive self-improvement.
 
-**State:** `COMPLETE`
+**Rollback:** Activate the recursive kill switch, pause new admission, drain or terminally block active recursive leases, preserve a verified backup and lineage evidence, then revert the implementation. Additive schema rows remain inert by default. Any destructive downgrade must be explicit, backend-aligned, audited, and refuse non-empty live authority.
 
-**Prerequisite:** `PR1-AR-RUNTIME-INTEGRATION-1` merged with exact-head CI.
+**Completion:** One reviewed PR is merged with the bounded tree contract, production call-path ownership, SQLite/PostgreSQL tests, operator evidence, default-off gates, and exact-head CI. Active docs must state that recursive execution is implemented but Harness evolution remains unavailable.
 
-**Goal:** retain the bounded run-scoped digest while adding app-owned versioned memory, deterministic conflict/tombstone/expiry semantics, gated embeddings, bounded Top-K semantic retrieval with labeled lexical degradation, immutable source binding, and real scheduler context injection across runs.
-
-**Required owners:** existing Rust scheduler/runtime, provider/credential/cost/audit gates, SQLite/PostgreSQL store, API/SDK/Dashboard evidence, backup/integrity, and token/byte budget accounting. No vector SaaS, second runtime store, cloud multi-tenant claim, raw sensitive scorecard content, or CI provider call.
-
-**Verification:** cross-run and cross-scope behavior, restart, concurrent revise, prune, stale/superseded/conflict/tombstone exclusion, deterministic ranking/truncation, token/read/write costs, SQLite/PostgreSQL parity, and full exact-head CI.
-
-## Packet PR207-REPAIR-1 — Repository-maintenance orchestrator implementation and compatibility repair
-
-**State:** `COMPLETE`
-
-**Goal:** Deliver the disabled-by-default GitHub Issues/Actions → Vader Codex → GitHub-hosted finalizer architecture and repair its known pre-deployment compatibility defects.
-
-**Completion evidence:**
-
-- PR #207 merged the orchestrator with exact-head CI and independent review;
-- PR #216 corrected the false JSON assumption for Codex last-message output and replaced unsupported `config.sh --check` readiness logic;
-- the registered Vader runner, scoped `AGENT_PUSH_TOKEN`, and preflight were reported ready before the live smoke;
-- the control Issue retained a separate emergency-stop, orchestrator-enable, and auto-merge-enable contract.
-
-This packet establishes the implementation baseline only. Live end-to-end acceptance is owned by the following smoke packets and is not implied by this `COMPLETE` state.
-
-## Packet PR207-SMOKE-REPAIR-1 — Diagnose and repair the blocked live worker path
-
-**State:** `COMPLETE`
-
-**Prerequisite:** completed in PR #222 as part of `LIVE-ACCEPTANCE-SEAL-1`
-
-**Goal:** Determine why smoke Issue #217 entered the Vader worker and then became `agent-blocked` before branch/PR creation, repair the actual root cause, and make future failures bounded, attributable, and capacity-safe.
-
-**Historical observed evidence:**
-
-- Issue #217 had one valid narrow path and was accepted by intake;
-- dispatcher state recorded `claimed` and `dispatched` for `agent-worker.yml`;
-- the Issue reached `agent-running` and later `agent-blocked`;
-- Actions diagnostics show Vader completion, artifact finalization, and branch push succeeded;
-- PR creation failed with HTTP 403 because the repository Actions PR-creation setting was disabled at that time;
-- the Issue retained no bounded workflow-run/failed-phase terminal reason;
-- Issue #208 has been returned to emergency stop.
-
-**Completion evidence:** PR #222 recorded the exact #217 failure boundary, added a least-privilege repository-setting preflight, bounded Codex timeout ownership, durable failed-phase/reason/capacity-release evidence, and cleanup-safe tests. Exact-head CI run `29390757467` passed all seven jobs. Issue #208 remained emergency-stopped and no replacement smoke was dispatched.
-
-**Required behavior:**
-
-- keep Issue #208 emergency-stopped and both enable labels absent throughout the repair PR;
-- add explicit bounded timeout ownership to the Vader/Codex path so one worker cannot remain unbounded;
-- persist or expose a bounded workflow run identity, failed phase, fixed reason code, and terminal capacity-release result through trusted GitHub-hosted evidence;
-- ensure unexpected cancellation, runner loss, timeout, nonzero Codex exit, malformed artifact, finalizer failure, and emergency stop each end in a deterministic non-active state;
-- preserve raw-output suppression, credential isolation, narrow artifact scope, exact-base/final-head binding, and GitHub-hosted mutation authority;
-- do not weaken the successful Codex text-boundary or runner-readiness repair from PR #216;
-- do not enable auto-merge or run another live smoke from the repair branch.
-
-**Verification:** focused tests for each terminal failure class, timeout behavior, missing/partial run evidence, idempotent release, late completion after stop, duplicate delivery, and secret/output suppression; full orchestrator suite; workflow YAML parsing; security baseline; exact-head canonical seven-job CI; independent complete-diff review.
-
-**Completion:** one focused repair PR is merged with the exact #217 root cause recorded, all required CI green, Issue #208 still emergency-stopped, and no production task or replacement smoke dispatched during implementation.
-
-**Rollback:** restore/add emergency stop, remove both enable labels, disable the affected workflow entry point if necessary, and revert the repair PR while retaining bounded GitHub evidence.
-
-## Packet PR207-SMOKE-VERIFY-1 — Repeat bounded GPT Web end-to-end smoke
+## Packet PE7-HARNESS-EVOLUTION-LAB-1 — Evidence-gated candidate evolution
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PR207-SMOKE-REPAIR-1 and the unique Vader runner online/idle. Repository workflow permission and administration-read secret prerequisites are satisfied.
+**Prerequisite:** AR7 is complete and its recursive bounds have deterministic fixture evidence.
 
-**Goal:** Prove that GPT Web can translate a normal-language repository request into a bounded Issue and drive the complete orchestrator chain without requiring the user to remember workflow parameters.
+**Goal:** Add a default-off laboratory path that proposes, evaluates, archives, and optionally promotes isolated Harness candidates while the active Harness and the complete control plane remain immutable.
 
-**Required sequence:**
-
-```text
-GPT Web natural-language request
-→ bounded Agent Task Issue with exact allowed path
-→ agent-ready intake and unique dispatch
-→ Vader Codex isolated worktree
-→ bounded validated artifact
-→ GitHub-hosted branch push and Issue-bound PR
-→ exact-head canonical seven-job CI
-→ independent schema-valid review
-→ manual merge decision only
-```
-
-**Smoke scope:** create or update one disposable documentation file only. The Issue must forbid every other path, controls, workflows, credentials, source code, and merge action.
-
-**Acceptance:**
-
-- one and only one agent branch and PR are bound to the smoke Issue;
-- changed files exactly equal the allowed path set;
-- worker/finalizer evidence contains bounded run and phase identity but no raw model output or secret;
-- exact-head CI has all seven required jobs successful;
-- independent review is durably bound to the same head;
-- auto-merge remains disabled and the smoke PR remains open until a separate user decision;
-- Issue #208 and the task end in explicit non-active states;
-- README/AGENTS natural-language usage claims match the demonstrated path.
-
-**Failure:** immediately emergency-stop on any scope mismatch, duplicate dispatch, stale binding, credential exposure, missing terminal evidence, unexpected write, or inability to prove exact-head identity.
-
-**Completion:** the smoke evidence is reviewed and accepted, the production-use restriction is removed from active documents, and normal GPT Web requests may use the repository agent with auto-merge off by default.
-
-## Packet PE2-RUNTIME-PRODUCER-1 — Connect budget evidence production
-
-**State:** `COMPLETE`
-
-**Prerequisite:** `PR2-DURABLE-MEMORY-RETRIEVAL-1`
-
-**Goal:** Derive and persist forecast/anomaly evidence from existing posted owner data so the already-implemented read, Dashboard, operator-decision, auto-pause, and recovery paths receive real artifacts.
-
-**Required chain:**
+**Architecture:**
 
 ```text
-provider audit and workflow usage owners
-→ bounded observation projection
-→ build_budget_forecast / detect_budget_anomaly
-→ record_budget_forecast_evidence / record_budget_anomaly_finding
-→ existing read/API/Dashboard surfaces
-→ existing policy-gated pause and recovery owners
+posted traces / scorecards / failures
+        -> bounded failure miner
+        -> structured mutation proposal
+        -> isolated candidate worktree or app-owned workspace
+        -> static checks and deterministic fixture evaluation
+        -> equal-budget validation and sealed holdout
+        -> lineage/Pareto archive
+        -> explicit operator decision and PR-only output
 ```
 
-**Required behavior:**
+**Immutable control plane:**
 
-- choose an existing runtime, explicit operator API, or bounded scheduled owner; do not create a second scheduler;
-- derive timestamps, scope, run/workspace/provider/model identity, token counts, cost, retry, latency, and context evidence from persisted owners rather than caller assertions;
-- preserve exact `(evidence_type, evidence_id)` identity, content hashes where present, deduplication, freshness, sparse-evidence, mixed-dimension, pricing-completeness, and invalid-evidence behavior;
-- persist Supported, InsufficientEvidence, and InvalidEvidence outcomes when the contract permits them; never manufacture Supported evidence;
-- make repeated production requests idempotent by canonical evidence identity/hash;
-- ensure pause mutation still requires supported, fresh, high-confidence, policy-eligible anomaly evidence and explicit existing permissions/confirmation;
-- expose no new generic mutation authority.
+The candidate and evolver may not modify or supply authority for:
 
-**Verification:** SQLite and PostgreSQL end-to-end tests from posted usage → artifact → read API → operator queue/pause consumer; sparse-but-dimension-complete, invalid, duplicate, stale, wrong-scope, incomplete-pricing, and retry/idempotency cases; full CI.
+- auth, credentials, tool allowlists, approval requirements, kill switches, budgets, scheduler/lease ownership, or audit;
+- evaluator implementation, sealed task labels, holdout membership, scoring thresholds, statistical gates, or final test results;
+- target-output, branch/PR binding, review, merge, release, deployment, backup, restore, or rollback owners;
+- active Harness version, production policy snapshots, provider pricing/catalog evidence, or evidence hashes.
 
-**Completion:** a production caller exists, call-site search proves it is not test-only, and generated artifacts are consumable by existing owners without manual fixture insertion.
+**Initially mutable candidate surface:**
 
-## Packet PE4-EVIDENCE-ENTRY-1 — Connect replay and safe promotion
+- prompts and bounded behavioral rules;
+- context selection, summarization, and retrieval configuration;
+- tool descriptions and deterministic tool-selection policy, not tool authority;
+- retry and stop policy within existing limits;
+- model-routing policy within the existing admitted provider/model set;
+- recursive subtask decomposition policy within AR7 limits.
 
-**State:** `COMPLETE`
+Harness source-code mutation is a later sub-stage of the same packet and may begin only after the component-level candidate path has stable lineage, equal-budget baselines, sealed evaluation, and rollback evidence. Model weights, evaluator code, permissions, and production release logic remain out of scope.
 
-**Prerequisite:** PE2-RUNTIME-PRODUCER-1
+**Required persistent evidence:**
 
-**Goal:** Add one explicit, permissioned owner path that derives and persists trace-backed offline replay evidence, derives shadow and canary bindings, and invokes the existing evidence-chain promotion owner.
+Each candidate must bind:
 
-**Required chain:**
+- candidate, parent, lineage, base commit, and active-version identities;
+- exact structured proposal and supporting trace/evidence references;
+- complete patch/content hash and mutable-component declaration;
+- generator/evaluator model and version metadata when applicable;
+- development, validation, sealed-test, and migration-task identities without exposing sealed labels to the proposer;
+- random seed, calls, tokens, trustworthy cost, latency, failures, retries, tool use, and wall time;
+- correctness, safety, regression, integrity, and compatibility results;
+- rejection, archive, PR-ready, promoted, rolled-back, or blocked status and reason.
+
+Raw prompts, outputs, transcripts, repository content, credentials, and private paths must not be persisted in product evidence.
+
+**Evaluation protocol:**
+
+Compare under a predeclared equal total-call or total-token budget:
+
+- static Harness single pass;
+- static Harness plus bounded reflection/retry;
+- parallel or sequential best-of-N;
+- prompt-only optimization;
+- greedy current-best Harness mutation;
+- random candidate generation with the same candidate count;
+- the lineage/archive experiment.
+
+Use task-family splits, not only random instance splits. Search may use development and validation tasks. Only 1–3 preselected candidates may enter the sealed set, and sealed results may not be fed back into further mutation. Primary promotion evidence is sealed task success/non-regression; secondary evidence includes tokens per pass, cost per pass, latency, invalid tool calls, crash rate, permission incidents, old-task sentinel regression, and lineage-average performance rather than best-so-far alone.
+
+**Initial selection model:**
+
+- hard constraints for correctness, safety, integrity, scope, and budget;
+- Pareto archive over quality, token/cost, latency, robustness, and behavior diversity;
+- conservative AIDE²-style sequential promotion first: the active laboratory parent changes only when a candidate clears every hard gate and improves the declared objective under equal budget;
+- DGM/GEA-style multi-lineage parent selection and cross-branch recombination remain disabled until the sequential baseline is measured and a separate packet revision defines the archive policy.
+
+**Output authority:**
+
+A candidate may become `PR_READY` only. Existing app-owned target-output or repository-orchestrator finalizers must independently validate the exact patch, allowed paths, base/head identity, secret scan, verification evidence, and live controls. Auto-merge stays off. No candidate may write active `main`, deploy, publish, or change its own evaluator.
+
+**Fixture-first acceptance:**
+
+The first implementation must pass without a provider call or Vader runner and must include:
+
+- deterministic candidate generation fixtures;
+- lineage/archive persistence and restart/idempotency tests;
+- evaluator and sealed-set access denial tests;
+- equal-budget accounting and incomplete-cost refusal;
+- candidate workspace confinement and target-output non-authority;
+- tamper, duplicate, stale-parent, changed-active-version, and rollback tests;
+- at least three deterministic seeds or equivalent repeated fixture runs;
+- no claim of performance improvement until a separately authorized guarded-live experiment is completed.
+
+**Rollback:** Disable the evolution gate and kill switch, stop candidate admission, preserve candidate and evaluation evidence, discard unpromoted workspaces, and revert code. Promoted code is rolled back only through its ordinary signed commit/PR/release rollback path; the lab must not invent a second rollback authority.
+
+**Completion:** The laboratory can produce auditable fixture candidates and evaluation bundles, but remains default-off and cannot mutate the active Harness. A later guarded-live packet is required before any Level-1 efficiency claim.
+
+## Packet PE7-META-IMPROVER-EXPERIMENT-1 — Bounded second-order test
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisites:** PE7 has a stable Level-1 candidate/evaluation loop, at least one independently reviewed guarded-live result, and no unresolved evaluator-integrity or cost-accounting defect.
+
+**Goal:** Test whether an evolved proposer/parent selector improves the rate or quality of future improvement under a fixed candidate budget.
+
+**Primary metric:**
 
 ```text
-owner-backed dispatch_history provenance
-→ replay eligibility
-→ record_offline_replay
-→ ShadowRouter::compare_replay_report
-→ bounded canary evidence
-→ explicit confirm + permission
-→ promote_adaptive_fusion_policy_with_evidence_chain
-→ existing snapshot/apply/rollback owner
+Improvement@K = sealed-task net improvement produced within exactly K candidate proposals,
+                subject to the same safety, cost, and non-regression gates.
 ```
 
-**Required behavior:**
+Compare a fixed human-designed proposer/selector, the initial Meta Agent, the evolved Meta Agent, random parent selection, and the best fixed archive selector. Use unseen improvement tasks and repeated seeds. Merely changing meta-level code or obtaining a higher best-so-far task score is not evidence that the improvement mechanism became stronger.
 
-- reuse `policy_replay_contract.v3`, `trace_replay_evidence.v2`, `offline_policy_replay.v2`, dispatch-history trace ownership, calibration, coverage, OOD, shadow, canary, policy snapshot, compensation, and rollback contracts;
-- do not permit callers to supply `eligible`, accepted observations, coverage, calibration, content hashes, or current-state authority;
-- keep replay read-only until the separate promotion mutation step receives exact current-state binding, confirmation, and permission;
-- preserve existing rollback-target and active-policy hash checks;
-- retain the old observation-only auto-promotion path as fail-closed or remove its unreachable mutation claim; do not restore it as a shortcut;
-- expose bounded read/report evidence for operator inspection before mutation.
+**Still immutable:** evaluator implementation, sealed set, permissions, budget owner, audit, release/merge authority, and final promotion gate.
 
-**Verification:** end-to-end owner traces → replay artifact → shadow → canary → blocked/accepted promotion; stale/tampered/uncalibrated/OOD/coverage/current-policy/rollback mismatch; concurrent or changed active-policy state; SQLite/PostgreSQL atomicity and compensation; API permission and confirmation tests; full CI.
+**Completion threshold:** statistically supported improvement in `Improvement@K` on unseen improvement tasks, with no safety or cost regression. Without that evidence the project must describe the result as Harness evolution, not recursive self-improvement or ignition.
 
-**Completion:** `record_offline_replay` and `promote_adaptive_fusion_policy_with_evidence_chain` each have a production caller, and no production caller reaches a promotion from observation summaries alone.
+## Deferred Work
 
-## Packet TOOL-DISCOVERY-BENCH-1 — Static-all versus retrieve-Top-K benchmark
+The following remain deferred unless separately activated:
 
-**State:** `COMPLETE`
-
-**Prerequisite:** PE4-EVIDENCE-ENTRY-1
-
-**Goal:** Measure whether deterministic retrieval of a bounded Top-K tool set reduces tool-schema context while preserving required-tool availability and task quality.
-
-**Scope:** benchmark/evidence only. This packet does not authorize dynamic production tool loading or execution.
-
-**Required design:**
-
-- use existing tool descriptors/capabilities as the canonical corpus;
-- define a versioned scenario registry with task text, required/acceptable tool identities, forbidden tools, static-all baseline, retrieval method/version, K, deterministic tie-breaking, and quality method;
-- implement a deterministic retriever or retrieval adapter with bounded corpus, query, K, output size, and no hidden network/provider dependency in CI;
-- run paired static-all and retrieve-Top-K variants under equivalent tasks and quality criteria;
-- record required-tool recall, selection precision, irrelevant-tool count, schema/context bytes or tokens, total input/output tokens, latency, cost when trustworthy, task success, quality, and failure reasons;
-- bind corpus hash, descriptor identity/version, scenario registry hash, retriever version/config, selected tool IDs/order/scores, and scorecard evidence;
-- feed results through existing PE-1 scorecard, report, batch, trend, API, SDK, and Dashboard owners where compatible; extend the existing versioned evidence contract only when required, with compatibility tests;
-- fail closed on missing required tools, nondeterministic ordering, duplicate identity, stale corpus binding, tampered selection, incomparable variants, or quality regression.
-
-**Verification:** deterministic repeated retrieval; tie behavior; K bounds; required-tool miss; distractor-heavy corpus; static baseline parity; scorecard/report tamper; registry/corpus change sensitivity; no raw prompt/output/credential/private-path leakage; full CI.
-
-**Completion:** one checked representative scenario set demonstrates a reproducible paired comparison, but no production routing or tool-execution authority changes.
+- production provider-backed evolution;
+- automatic multi-lineage recombination;
+- model-weight training or self-training;
+- evaluator or task-generator co-evolution;
+- autonomous generation of new root goals;
+- production continuous self-update;
+- automatic merge, deploy, release, or protected-branch mutation;
+- A2A remote-agent execution;
+- complexity/risk-driven Adaptive Fusion unification;
+- behavior-preserving cleanup of oversized provider/integrity modules until current external acceptance is stable.
 
 ## Preserved Boundaries
 
-- Rust `engine/` remains the only runtime/API/storage authority.
-- Existing SQLite/PostgreSQL owners remain authoritative; no second database or event store.
-- Existing workflow scheduler, pause/recovery, adaptive policy, release, audit, target-output, and orchestrator control owners remain authoritative.
-- Vader remains artifact-only; GitHub-hosted finalizers own branch/PR/label/comment mutations.
-- The local runner workflow remains Stub/Fake-only; live provider execution remains explicit local operator/CLI work.
-- PE-5 production release verification requires v2 evidence and immutable attested bootstrap assets; legacy v1 remains fixture-only and non-authorizing.
-- PE-6 faults remain allowlisted and disposable; unsupported environments report unsupported rather than pass.
-- Real tags, public releases, production installation, destructive external faults, production provider calls, target-repository mutation outside the bounded orchestrator, and persistent signing secrets require separate explicit authorization.
+- Rust `engine/` remains the sole runtime/API/storage authority.
+- Existing scheduler, workflow, pause/recovery, budget, provider, tool-policy, audit, target-output, promotion, release, and rollback owners remain authoritative.
+- Recursive nodes are ordinary bounded workflow work, not a new autonomous runtime.
+- Evolution candidates execute only in isolated app-owned workspaces or controlled worktrees.
+- Candidate evidence never grants execution, target-output, merge, deploy, release, or evaluator authority.
+- Vader remains artifact-only; GitHub-hosted finalizers own GitHub mutations when that path is accepted and enabled.
+- Real provider calls, public releases, production installation, destructive faults, and external mutations require separate explicit authorization.
 
 ## Final Reporting Contract
 
-For each packet report:
+Every packet report must include:
 
-- actual starting `main`, branch, PR, and exact final head;
-- files changed and owner paths reused;
-- production call sites added or corrected;
-- focused and full local test commands/results;
-- exact-head CI run and all required job results;
-- independent review findings and repairs;
-- compatibility, security, rollback, and residual risks;
-- control Issue labels and whether auto-merge was enabled;
-- whether the packet is `COMPLETE`, `BLOCKED`, or `MERGE_READY`;
-- no merge unless separately authorized.
+- actual starting `main`, branch/PR, and exact final head;
+- files and existing owners reused;
+- schema, authority, and threat-model decisions;
+- focused and full local tests;
+- exact-head CI and every required job result;
+- independent complete-diff review and repairs;
+- compatibility, cost, security, evaluator-integrity, rollback, and residual risk;
+- whether Issue #208 or any provider/evolution gate was enabled;
+- whether any external call or repository mutation occurred;
+- truthful terminal state: `COMPLETE`, `BLOCKED`, `MERGE_READY`, or `PR_READY`.
