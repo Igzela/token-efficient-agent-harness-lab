@@ -1688,6 +1688,7 @@ mod tests {
 
     #[test]
     fn transport_executor_bounds_concurrency_and_shuts_down_workers() {
+        let _guard = EnvGuard::enabled();
         let executor = Arc::new(BoundedTransportExecutor::new(2, 4).unwrap());
         let liveness = executor.liveness_probe();
         let admission_failures = Arc::new(AtomicUsize::new(0));
@@ -1734,6 +1735,7 @@ mod tests {
 
     #[test]
     fn transport_executor_deadline_includes_worker_execution() {
+        let _guard = EnvGuard::enabled();
         let executor = BoundedTransportExecutor::new(1, 1).unwrap();
         let transport = Arc::new(ConcurrencyProbeTransport {
             calls: AtomicUsize::new(0),
