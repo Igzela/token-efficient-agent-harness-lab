@@ -1281,8 +1281,7 @@ mod tests {
         .contains("provider-selected tool"));
     }
 
-    #[test]
-    fn langgraph_tool_result_binding_consumes_the_provider_selected_tool() {
+    fn langgraph_tool_bridge_fixture() -> (Value, Vec<Value>) {
         let request = json!({
             "benchmark_run_id":"provider-tool-adapter-run",
             "comparison_contract": {
@@ -1309,36 +1308,70 @@ mod tests {
             "runner_metadata": {"selected_tool_ids": ["read", "search"]},
         });
         let raws = vec![raw.clone(), raw];
-        let adapter_results = TOOL_VARIANTS
+        (request, raws)
+    }
+
+    fn langgraph_tool_adapter_results(
+        request: &Value,
+        raws: &[Value],
+        mut invoke: impl FnMut(&Value) -> Result<Value, String>,
+    ) -> Result<Vec<Value>, String> {
+        TOOL_VARIANTS
             .iter()
             .enumerate()
             .map(|(index, variant)| {
-                let adapter_request = tool_adapter_request(&request, variant, index, &raws[index])
+                let adapter_request = tool_adapter_request(request, variant, index, &raws[index])
                     .expect("tool adapter request");
                 assert_eq!(
                     adapter_request.pointer("/provider_exchange/typed_result/selected_tool_ids"),
                     Some(&json!(["read", "search"]))
                 );
-                json!({
-                    "result_sha256": sha256_value(&adapter_request, false)
-                        .expect("bounded adapter result hash")
-                })
+                invoke(&adapter_request)
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    fn assert_langgraph_tool_bridge_results(
+        request: &Value,
+        raws: &[Value],
+        adapter_results: &[Value],
+    ) {
         let results = tool_results(
-            &request,
+            request,
             RuntimeKind::LangGraph,
-            Some(&raws),
-            Some(&adapter_results),
+            Some(raws),
+            Some(adapter_results),
         )
         .expect("LangGraph tool results");
-        for (result, adapter) in results.iter().zip(&adapter_results) {
+        for (result, adapter) in results.iter().zip(adapter_results) {
             assert_eq!(
                 result["provider_selected_tool_ids"],
                 json!(["read", "search"])
             );
             assert_eq!(result["adapter_result_sha256"], adapter["result_sha256"]);
         }
+    }
+
+    #[test]
+    fn langgraph_tool_result_binding_consumes_the_provider_selected_tool() {
+        let (request, raws) = langgraph_tool_bridge_fixture();
+        let adapter_results = langgraph_tool_adapter_results(&request, &raws, |adapter_request| {
+            Ok(json!({
+                    "result_sha256": sha256_value(adapter_request, false)
+                    .expect("bounded adapter result hash")
+            }))
+        })
+        .expect("synthetic adapter results");
+        assert_langgraph_tool_bridge_results(&request, &raws, &adapter_results);
+    }
+
+    #[test]
+    #[ignore = "requires the uv-managed LangGraph adapter"]
+    fn langgraph_tool_bridge_invokes_the_real_adapter() {
+        let (request, raws) = langgraph_tool_bridge_fixture();
+        let adapter_results = langgraph_tool_adapter_results(&request, &raws, invoke_langgraph)
+            .expect("real LangGraph adapter results");
+        assert_langgraph_tool_bridge_results(&request, &raws, &adapter_results);
     }
 
     #[test]
