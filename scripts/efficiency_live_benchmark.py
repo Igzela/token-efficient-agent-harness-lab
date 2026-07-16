@@ -837,7 +837,7 @@ def _normalize_tool_result(
         "retriever_version",
         "descriptor_hashes",
         "selected_tools",
-        "provider_selected_tool_id",
+        "provider_selected_tool_ids",
         "adapter_result_sha256",
     }:
         raise BenchmarkError("tool discovery result has invalid fields")
@@ -849,10 +849,14 @@ def _normalize_tool_result(
     metrics = _normalize_metrics(value.get("metrics"), TOOL_METRICS, "tool discovery metrics")
     _assert_tool_scorecard_metric_consistency(scorecard, metrics)
     descriptors, selected = _normalize_tool_selection(value, variant)
-    provider_selected_tool_id = _identifier(
-        value.get("provider_selected_tool_id"), "provider selected tool id"
-    )
-    if provider_selected_tool_id not in {item["tool_id"] for item in selected}:
+    raw_provider_selected_tool_ids = value.get("provider_selected_tool_ids")
+    if not isinstance(raw_provider_selected_tool_ids, list) or len(raw_provider_selected_tool_ids) != 2:
+        raise BenchmarkError("provider selected tools must cover both canonical tasks")
+    provider_selected_tool_ids = [
+        _identifier(item, f"provider selected tool id[{index}]")
+        for index, item in enumerate(raw_provider_selected_tool_ids)
+    ]
+    if any(item not in {tool["tool_id"] for tool in selected} for item in provider_selected_tool_ids):
         raise BenchmarkError("provider selected a tool outside the exposed descriptor set")
     adapter_result_sha256 = value.get("adapter_result_sha256")
     if adapter_result_sha256 is not None:
@@ -877,7 +881,7 @@ def _normalize_tool_result(
         "retriever_version": retriever_version,
         "descriptor_hashes": descriptors,
         "selected_tools": selected,
-        "provider_selected_tool_id": provider_selected_tool_id,
+        "provider_selected_tool_ids": provider_selected_tool_ids,
         "adapter_result_sha256": adapter_result_sha256,
     }
 

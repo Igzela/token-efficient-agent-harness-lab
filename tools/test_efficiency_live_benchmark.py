@@ -222,7 +222,7 @@ def runtime_result(
                 "retriever_version": MODULE.CANONICAL_DEFINITION["tool_discovery"]["retriever_version"],
                 "descriptor_hashes": descriptors,
                 "selected_tools": selected,
-                "provider_selected_tool_id": "search",
+                "provider_selected_tool_ids": ["read", "search"],
                 "adapter_result_sha256": (
                     "9" * 64
                     if runtime == "langgraph" and mode == "live"

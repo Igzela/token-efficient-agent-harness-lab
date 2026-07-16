@@ -819,7 +819,12 @@ fn validate_provider_event_cross_owner(
                     == Some(super::provider_audit::ProviderEmbeddingErrorDomain::FailedBeforeSend)
         }
         ("retry_authorized", "error") if retry_from_post => {
-            prefix == "paudit-error-" && known_error_domain
+            prefix == "paudit-error-"
+                && (known_error_domain
+                    || typed_error_domain
+                        == Some(
+                            super::provider_audit::ProviderEmbeddingErrorDomain::FailedBeforeSend,
+                        ))
         }
         _ => false,
     };
@@ -1016,7 +1021,7 @@ fn validate_provider_embedding_operation_integrity(
             }
         }
         super::provider_audit::ProviderEmbeddingReceiptState::FailedBeforeSend
-            if row.send_event_id.is_some() || row.outcome_event_id.is_none() =>
+            if row.outcome_event_id.is_none() =>
         {
             return Err(failure("failed-before-send audit binding is invalid"));
         }

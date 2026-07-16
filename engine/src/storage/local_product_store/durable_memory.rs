@@ -1500,7 +1500,15 @@ impl LocalProductStore {
                     cost: None,
                     currency: Some("USD".to_string()),
                     latency_ms: Some(started.elapsed().as_millis().min(i64::MAX as u128) as i64),
-                    error_domain: Some(provider_error_domain(&error).as_str().to_string()),
+                    error_domain: Some(
+                        if failed_before_send {
+                            ProviderEmbeddingErrorDomain::FailedBeforeSend
+                        } else {
+                            provider_error_domain(&error)
+                        }
+                        .as_str()
+                        .to_string(),
+                    ),
                     redaction_status: "redacted".to_string(),
                     created_at: self.now(),
                 };
@@ -3062,6 +3070,23 @@ mod tests {
         status: u16,
     }
 
+    struct KillAfterCatalogTransport {
+        posts: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for KillAfterCatalogTransport {
+        async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            if request.method == "GET" {
+                std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH", "1");
+                Ok(provider_catalog_response())
+            } else {
+                self.posts.fetch_add(1, Ordering::SeqCst);
+                Ok(provider_vector_response())
+            }
+        }
+    }
+
     #[async_trait::async_trait]
     impl HttpTransport for CountingEmbeddingTransport {
         async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
@@ -4197,6 +4222,71 @@ mod tests {
                 1
             );
         }
+    }
+
+    #[test]
+    fn post_claim_kill_switch_is_failed_before_send_and_never_posts() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let transport = Arc::new(KillAfterCatalogTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let request = create(
+            "ws-provider-post-claim-kill",
+            "source-provider-post-claim-kill",
+            "bounded post claim kill switch",
+        );
+        let store = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("post-claim-kill.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            transport.clone(),
+        )
+        .unwrap();
+        let error = store.create_durable_memory(&request, "test").unwrap_err();
+        assert!(error.contains("kill switch"), "unexpected error: {error}");
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 0);
+        let memory_id = memory_id(&request).unwrap();
+        let (state, send_event_id): (String, Option<String>) = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT state,send_event_id FROM provider_embedding_operations WHERE target_memory_id=?1",
+                    [&memory_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(state, "failed_before_send");
+        assert!(send_event_id.is_some());
+        assert!(store
+            .provider_audit_events(10)
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event["event_type"] == "error"
+                    && event["error_domain"] == "provider_failed_before_send"
+            }));
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
+        std::env::remove_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH");
+        let retry = store
+            .reconcile_provider_embedding_operation(
+                &memory_id,
+                &super::super::provider_audit::ProviderEmbeddingResolutionRequest {
+                    target_version: 1,
+                    expected_attempt_count: 1,
+                    scope: request.scope.clone(),
+                    run_id: request.run_id.clone(),
+                    action: super::super::provider_audit::ProviderEmbeddingResolutionAction::RetryFailed,
+                    evidence_source_id: None,
+                    evidence_sha256: None,
+                    confirm_resolution: true,
+                },
+                "operator",
+            )
+            .unwrap();
+        assert_eq!(retry["state"], "retry_authorized");
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 0);
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
     }
 
     #[test]

@@ -255,8 +255,13 @@ fn make_prompt(mode: &str, iteration: usize, history: &[Value]) -> String {
         } else {
             "read, search, summarize"
         };
+        let (task, required_tool) = if iteration == 0 {
+            ("inspect bounded evidence", "read")
+        } else {
+            ("locate an approved source identifier", "search")
+        };
         format!(
-            "Task: locate an approved source identifier. Required capability: search.\nIteration: {iteration}\nAvailable tool descriptors: {descriptors}\nInvoke exactly one available tool."
+            "Task: {task}. Required capability: {required_tool}.\nCanonical task index: {iteration}\nAvailable tool descriptors: {descriptors}\nInvoke exactly one available tool."
         )
     } else {
         let task =
@@ -467,6 +472,7 @@ fn run_mode_with_usage(
     let mut best_score_val: f64 = 0.0;
     let mut status = "fail";
     let mut selected_tool_ids = Vec::new();
+    let mut correct_tool_selections = 0_i64;
 
     for iteration in 0..config.limits.iterations {
         if config.provider_kind == ProviderKind::Live
@@ -616,8 +622,11 @@ fn run_mode_with_usage(
         let fallback_candidate = std::cmp::min(17, 3 + (iteration as i64) * 2);
         let tool_id = selected_tool(&resp.output);
         let candidate = parse_candidate(&resp.output, fallback_candidate);
-        let score_val = if matches!(mode, "static_all" | "deterministic_top_k") {
-            if tool_id.as_deref() == Some("search") {
+        let tool_mode = matches!(mode, "static_all" | "deterministic_top_k");
+        let score_val = if tool_mode {
+            let required_tool = if iteration == 0 { "read" } else { "search" };
+            if tool_id.as_deref() == Some(required_tool) {
+                correct_tool_selections += 1;
                 1.0
             } else {
                 0.0
@@ -625,7 +634,11 @@ fn run_mode_with_usage(
         } else {
             score(candidate)
         };
-        best_score_val = best_score_val.max(score_val);
+        best_score_val = if tool_mode {
+            correct_tool_selections as f64 / (iteration + 1) as f64
+        } else {
+            best_score_val.max(score_val)
+        };
         if let Some(tool_id) = &tool_id {
             selected_tool_ids.push(tool_id.clone());
         }
@@ -652,7 +665,14 @@ fn run_mode_with_usage(
         }
         steps.push(step);
 
-        if best_score_val >= config.limits.pass_threshold {
+        if tool_mode {
+            if iteration == 1 {
+                if best_score_val >= config.limits.pass_threshold {
+                    status = "pass";
+                }
+                break;
+            }
+        } else if best_score_val >= config.limits.pass_threshold {
             status = "pass";
             break;
         }
@@ -1187,11 +1207,16 @@ mod tests {
 
         async fn invoke(&self, request: &ProviderRequest) -> ProviderResult {
             tokio::time::sleep(self.delay).await;
+            let selected_tool = if request.prompt.contains("Required capability: read") {
+                "read"
+            } else {
+                "search"
+            };
             Ok(ProviderResponse {
                 schema_version: "provider_response.v1".to_string(),
                 provider_id: self.provider_id().to_string(),
                 model: request.model.clone(),
-                output: "tool=search;candidate=17".to_string(),
+                output: format!("tool={selected_tool};candidate=17"),
                 input_tokens: Some(10),
                 output_tokens: Some(2),
                 estimated_cost: self.estimated_cost,
@@ -1628,7 +1653,7 @@ mod tests {
             .unwrap(),
         );
         let (mut config, _provider) = scripted_runner(Duration::ZERO, 0.001, 1.0, 0.25);
-        config.limits.max_calls = 6;
+        config.limits.max_calls = 8;
         let provider =
             build_live_provider(&config, Some(&gates_with_provider()), store.clone()).unwrap();
         let results = run_live_modes_with_store(
@@ -1649,7 +1674,15 @@ mod tests {
         assert_eq!(results.len(), 6);
         assert_eq!(results[4]["mode"], "static_all");
         assert_eq!(results[5]["mode"], "deterministic_top_k");
-        assert_eq!(store.provider_audit_events(100).unwrap().len(), 12);
+        assert_eq!(
+            results[4].pointer("/runner_metadata/selected_tool_ids"),
+            Some(&json!(["read", "search"]))
+        );
+        assert_eq!(
+            results[5].pointer("/runner_metadata/selected_tool_ids"),
+            Some(&json!(["read", "search"]))
+        );
+        assert_eq!(store.provider_audit_events(100).unwrap().len(), 16);
     }
 
     #[test]

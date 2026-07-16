@@ -909,23 +909,30 @@ fn tool_results(
                 json!({"tool_id": "summarize", "score": 0.7}),
             ]
         };
-        let provider_selected_tool_id = match raw {
+        let provider_selected_tool_ids = match raw {
             Some(value) => value
                 .pointer("/runner_metadata/selected_tool_ids")
                 .and_then(Value::as_array)
-                .and_then(|values| values.last())
-                .and_then(Value::as_str)
+                .filter(|values| values.len() == 2)
+                .and_then(|values| {
+                    values
+                        .iter()
+                        .map(|value| value.as_str().map(str::to_string))
+                        .collect::<Option<Vec<_>>>()
+                })
                 .ok_or_else(|| {
-                    "live tool discovery is missing the provider-selected tool".to_string()
+                    "live tool discovery requires two provider-selected tools".to_string()
                 })?,
-            None => "search",
+            None => vec!["read".to_string(), "search".to_string()],
         };
-        let required_tool_recall = if provider_selected_tool_id == "search" {
-            1.0
-        } else {
-            0.0
-        };
-        let incorrect_tool_selection = i64::from(provider_selected_tool_id != "search");
+        let required_tools = ["read", "search"];
+        let correct_tool_selections = provider_selected_tool_ids
+            .iter()
+            .zip(required_tools)
+            .filter(|(selected, required)| selected.as_str() == *required)
+            .count();
+        let required_tool_recall = correct_tool_selections as f64 / required_tools.len() as f64;
+        let incorrect_tool_selection = (required_tools.len() - correct_tool_selections) as i64;
         let prompt_reduction = if index == 0 {
             0.0
         } else {
@@ -955,7 +962,7 @@ fn tool_results(
             "retriever_version": "deterministic_descriptor_overlap.v1",
             "descriptor_hashes": descriptor_hashes,
             "selected_tools": selected,
-            "provider_selected_tool_id": provider_selected_tool_id,
+            "provider_selected_tool_ids": provider_selected_tool_ids,
             "adapter_result_sha256": adapter_result_sha256,
         }));
     }
@@ -1247,8 +1254,8 @@ mod tests {
             }
         });
         let raw = [
-            json!({"input_token_total":80,"output_token_total":7,"duration_ms":21,"estimated_cost_usd":0.0,"status":"pass","pass_fail_reason":"provider quality passed","quality_score":1.0,"runner_metadata":{"selected_tool_ids":["search"]}}),
-            json!({"input_token_total":50,"output_token_total":6,"duration_ms":17,"estimated_cost_usd":0.0,"status":"pass","pass_fail_reason":"provider quality passed","quality_score":1.0,"runner_metadata":{"selected_tool_ids":["search"]}}),
+            json!({"input_token_total":80,"output_token_total":7,"duration_ms":21,"estimated_cost_usd":0.0,"status":"pass","pass_fail_reason":"provider quality passed","quality_score":1.0,"runner_metadata":{"selected_tool_ids":["read","search"]}}),
+            json!({"input_token_total":50,"output_token_total":6,"duration_ms":17,"estimated_cost_usd":0.0,"status":"pass","pass_fail_reason":"provider quality passed","quality_score":1.0,"runner_metadata":{"selected_tool_ids":["read","search"]}}),
         ];
         let results = tool_results(&request, RuntimeKind::Native, Some(&raw), None).unwrap();
         assert_eq!(results[0]["metrics"]["prompt_tokens"]["value"], 80);
@@ -1299,7 +1306,7 @@ mod tests {
             "retry_count": 0,
             "status": "pass",
             "quality_score": 1.0,
-            "runner_metadata": {"selected_tool_ids": ["search"]},
+            "runner_metadata": {"selected_tool_ids": ["read", "search"]},
         });
         let raws = vec![raw.clone(), raw];
         let adapter_results = TOOL_VARIANTS
@@ -1310,7 +1317,7 @@ mod tests {
                     .expect("tool adapter request");
                 assert_eq!(
                     adapter_request.pointer("/provider_exchange/typed_result/selected_tool_ids"),
-                    Some(&json!(["search"]))
+                    Some(&json!(["read", "search"]))
                 );
                 invoke_langgraph(&adapter_request).expect("LangGraph tool adapter")
             })
@@ -1323,7 +1330,10 @@ mod tests {
         )
         .expect("LangGraph tool results");
         for (result, adapter) in results.iter().zip(&adapter_results) {
-            assert_eq!(result["provider_selected_tool_id"], "search");
+            assert_eq!(
+                result["provider_selected_tool_ids"],
+                json!(["read", "search"])
+            );
             assert_eq!(result["adapter_result_sha256"], adapter["result_sha256"]);
         }
     }

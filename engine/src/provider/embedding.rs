@@ -410,12 +410,12 @@ impl ProviderEmbeddingClient {
         config: &ProviderEmbeddingConfig,
         contract: &VerifiedEmbeddingContract,
     ) -> Result<ProviderEmbeddingOutput, ProviderEmbeddingAttemptError> {
-        validate_inputs(inputs).map_err(ProviderEmbeddingAttemptError::Definitive)?;
-        let boundary =
-            CredentialBoundary::new("env").map_err(ProviderEmbeddingAttemptError::Definitive)?;
+        validate_inputs(inputs).map_err(ProviderEmbeddingAttemptError::FailedBeforeSend)?;
+        let boundary = CredentialBoundary::new("env")
+            .map_err(ProviderEmbeddingAttemptError::FailedBeforeSend)?;
         let api_key = boundary
             .resolve(OPENROUTER_EMBEDDING_CREDENTIAL_ENV)
-            .map_err(ProviderEmbeddingAttemptError::Definitive)?;
+            .map_err(ProviderEmbeddingAttemptError::FailedBeforeSend)?;
         let body = json!({
             "model": OPENROUTER_EMBEDDING_MODEL_ID,
             "input": inputs,
@@ -439,7 +439,7 @@ impl ProviderEmbeddingClient {
                 headers: authorization_headers(&api_key),
                 body: Some(
                     serde_json::to_vec(&body).map_err(|error| {
-                        ProviderEmbeddingAttemptError::Definitive(error.to_string())
+                        ProviderEmbeddingAttemptError::FailedBeforeSend(error.to_string())
                     })?,
                 ),
                 timeout_secs: Some(config.timeout_ms as f64 / 1000.0),
@@ -455,7 +455,7 @@ impl ProviderEmbeddingClient {
         match result {
             Ok(output) => Ok(output),
             Err(CircuitBreakerError::CircuitOpen) => {
-                Err(ProviderEmbeddingAttemptError::Definitive(
+                Err(ProviderEmbeddingAttemptError::FailedBeforeSend(
                     "durable memory embedding provider circuit is open".to_string(),
                 ))
             }
@@ -500,7 +500,7 @@ impl ProviderEmbeddingClient {
         request: HttpRequest,
     ) -> Result<super::transport::HttpResponse, ProviderEmbeddingAttemptError> {
         if std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH").as_deref() == Ok("1") {
-            return Err(ProviderEmbeddingAttemptError::Definitive(
+            return Err(ProviderEmbeddingAttemptError::FailedBeforeSend(
                 "durable memory embedding kill switch became active".to_string(),
             ));
         }
@@ -739,7 +739,9 @@ impl BoundedTransportExecutor {
         self.sender
             .as_ref()
             .ok_or_else(|| {
-                HttpError::Connection("embedding transport executor stopped".to_string())
+                HttpError::PreSend(
+                    "embedding transport executor stopped before admission".to_string(),
+                )
             })?
             .try_send(TransportTask::Send {
                 transport,
@@ -751,9 +753,9 @@ impl BoundedTransportExecutor {
                 mpsc::TrySendError::Full(_) => HttpError::PreSend(
                     "embedding transport queue is full before network send".to_string(),
                 ),
-                mpsc::TrySendError::Disconnected(_) => {
-                    HttpError::Connection("embedding transport executor stopped".to_string())
-                }
+                mpsc::TrySendError::Disconnected(_) => HttpError::PreSend(
+                    "embedding transport executor stopped before admission".to_string(),
+                ),
             })?;
         response_receiver
             .recv_timeout(timeout)
@@ -855,6 +857,7 @@ fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
         "internal_reasoning",
         "input_cache_read",
         "input_cache_write",
+        "discount",
     ];
     if pricing
         .keys()
@@ -872,6 +875,10 @@ fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
     let internal_reasoning = parse_price(pricing.get("internal_reasoning"))?;
     let input_cache_read = parse_price(pricing.get("input_cache_read"))?;
     let input_cache_write = parse_price(pricing.get("input_cache_write"))?;
+    let discount = pricing
+        .get("discount")
+        .map(|value| parse_price(Some(value)))
+        .transpose()?;
     if [
         prompt,
         completion,
@@ -884,6 +891,7 @@ fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
     ]
     .into_iter()
     .any(|price| price != 0.0)
+        || discount.is_some_and(|price| price != 0.0)
     {
         return Err("pinned free embedding model pricing changed".to_string());
     }
@@ -1414,6 +1422,14 @@ mod tests {
             validate_catalog(&serde_json::to_vec(&documented_zero_fields).unwrap()).is_ok(),
             "documented zero-price dimensions must not break a free catalog contract"
         );
+        let mut zero_discount = documented_zero_fields.clone();
+        zero_discount["data"][0]["pricing"]["discount"] = json!("0");
+        assert!(validate_catalog(&serde_json::to_vec(&zero_discount).unwrap()).is_ok());
+        for discount in [json!("0.01"), json!("free"), Value::Null] {
+            let mut invalid_discount = documented_zero_fields.clone();
+            invalid_discount["data"][0]["pricing"]["discount"] = discount;
+            assert!(validate_catalog(&serde_json::to_vec(&invalid_discount).unwrap()).is_err());
+        }
         let mut underflow_price = documented_zero_fields.clone();
         underflow_price["data"][0]["pricing"]["request"] = json!("1e-9999");
         assert!(
@@ -1739,6 +1755,25 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, HttpError::Timeout(_)));
         assert!(started.elapsed() < Duration::from_millis(20));
+    }
+
+    #[test]
+    fn stopped_executor_before_admission_is_typed_pre_send() {
+        let mut executor = BoundedTransportExecutor::new(1, 1).unwrap();
+        executor.sender.take();
+        let error = executor
+            .send(
+                Arc::new(MockTransport::empty()),
+                HttpRequest {
+                    url: "https://example.invalid/embeddings".to_string(),
+                    method: "POST".to_string(),
+                    headers: Vec::new(),
+                    body: Some(Vec::new()),
+                    timeout_secs: Some(1.0),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, HttpError::PreSend(_)));
     }
 
     #[test]
