@@ -8,7 +8,7 @@ This repository is a local/small-team self-hosted Agent workflow control plane a
 
 Controlled staging drills and the repaired disposable target-repository path passed. External live acceptance is still incomplete because the GitHub/Vader runner is offline on its token-exchange TLS path and the current OpenRouter catalog does not admit the configured embedding identity or every modeled applicable price dimension. No provider POST, provider-backed benchmark, replacement repository-agent smoke, public release, or production installation has been completed.
 
-A new research direction is now documented: bounded recursive execution followed by an evidence-gated Harness evolution laboratory. This is an approved forward plan only. AR7 and PE7 are not implemented, no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
+A new research direction is documented: bounded recursive execution followed by an evidence-gated Harness evolution laboratory. This is an approved forward plan only. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (the AR7 runtime-extension slice) and the later PE7 packets are not implemented, no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
 
 ## Verified Repository State
 
@@ -68,17 +68,18 @@ The intended interface remains ordinary language in GPT Web. The assistant, not 
 | PE-3 Operator Decision Center | Connected to typed inspect, acknowledge, approval, retry, pause/recovery, and exact-snapshot rollback owners; no generic executor |
 | PE-4 Trace-backed Policy Replay | Connected to recorder-owned traces, immutable replay, shadow/canary evidence, explicit evidence-chain promotion, and rollback |
 | PE-5 Release Provenance | Repaired v2 boundary merged; no new public release or production installation was exercised by the repair |
-| PE-6 Fault Injection and Recovery | Repaired owner-evidence boundary merged; controlled disposable staging drills passed; no production resource was targeted |
+| PE-6 Fault Injection and Recovery Drills | Repaired owner-evidence boundary merged; controlled disposable staging drills passed; no production resource was targeted |
 | Managed LangGraph external runtime | One bounded adapter invocation per Rust-leased node; fixture/guarded-live modes; Python owns no queue or product authority |
 | Native/LangGraph efficiency benchmark | Deterministic fixture evidence connected; no provider-backed result verified |
 | Target-repository output | Disposable acceptance passed after PR #226 with unchanged target `main`, one external delivery, and duplicate/restart reuse |
 | GitHub/Vader repository orchestrator | Implemented/default-off; production use blocked by the offline runner and missing replacement smoke |
 | Dashboard | Functional; PR #225 is an independent presentation-only redesign |
-| AR7 bounded recursive execution | Approved in active documents; not implemented; no recursive tree admission or lineage schema exists yet |
-| PE7 Harness evolution laboratory | Approved as a future default-off fixture/local lane; blocked on AR7; no candidate archive, evaluator vault, or promotion path exists yet |
+| Post-R7 wire/type governance | Implemented through `scripts/check_wire_codegen_drift.sh` |
+| PE7 bounded recursive execution | Approved in active documents; not implemented; no recursive tree admission or lineage schema exists yet |
+| PE7 Harness evolution laboratory | Approved as a future default-off fixture/local lane; blocked on recursive execution; no candidate archive, evaluator vault, or promotion path exists yet |
 | PE7 meta-improver experiment | Deferred/blocked; no Level-2 or `Improvement@K` evidence exists |
 
-## Existing Architecture Relevant to AR7/PE7
+## Existing Architecture Relevant to PE7
 
 The repository already has most of the control-plane prerequisites:
 
@@ -90,9 +91,9 @@ The repository already has most of the control-plane prerequisites:
 - isolated app-owned workspaces/worktrees, verification, approval, patch/branch output, and compensation;
 - explicit operator decisions, snapshots, promotion, rollback, kill switches, and audit.
 
-The missing AR7 capabilities are persistent root/parent/depth identity, whole-tree budgets, ancestor-cycle and duplicate-objective detection, strict child capability reduction, recursive-specific gates/reason codes, and bounded tree evidence.
+The missing recursive-execution capabilities are persistent root/parent/depth identity, whole-tree budgets, ancestor-cycle and duplicate-objective detection, strict child capability reduction, recursive-specific gates/reason codes, and bounded tree evidence.
 
-The missing PE7 capabilities are structured mutation proposals, isolated candidate version identity, lineage/archive storage, equal-budget baselines, sealed holdout discipline, evaluator-integrity enforcement, candidate Pareto selection, and PR-only promotion binding. These gaps are planned in `docs/NEXT_DECISION.md`; they must not be described as implemented.
+The missing Harness-evolution capabilities are structured mutation proposals, isolated candidate version identity, lineage/archive storage, equal-budget baselines, sealed holdout discipline, evaluator-integrity enforcement, candidate Pareto selection, and PR-only promotion binding. These gaps are planned in `docs/NEXT_DECISION.md`; they must not be described as implemented.
 
 ## Connected Production Boundaries
 
@@ -110,21 +111,22 @@ A `langgraph_external` node performs one adapter invocation under a Rust lease. 
 
 ### Recursive/evolution boundary
 
-AR7 work may proceed independently only in deterministic local/fixture mode. It may not enable Issue #208, use the offline Vader runner, call a provider, mutate a real target repository, or alter the evaluator/permission/release boundaries. PE7 remains blocked until AR7 is implemented and verified.
+`PE7-BOUNDED-RECURSIVE-EXECUTION-1` may proceed independently only in deterministic local/fixture mode. It may not enable Issue #208, use the offline Vader runner, call a provider, mutate a real target repository, or alter evaluator, permission, budget, audit, target-output, merge, release, or rollback boundaries. The Harness-evolution packet remains blocked until recursive execution is implemented and verified.
 
-## Confirmed External Blockers
+## Confirmed Integration Gaps
 
 1. Restore the named Vader runner to uniquely registered, online, and idle state and complete the replacement smoke.
 2. Obtain current provider catalog evidence that satisfies exact model identity and every modeled applicable charge dimension before any provider POST.
 3. Complete interactive deletion of the no-value disposable repository when convenient.
+4. Implement and verify `PE7-BOUNDED-RECURSIVE-EXECUTION-1` before starting Harness evolution.
 
-These blockers do not prevent fixture/local AR7 implementation, but they continue to block production repository-agent use and provider-backed acceptance.
+The first three gaps continue to block production repository-agent use and provider-backed acceptance. They do not prevent fixture/local recursive-execution implementation.
 
 ## Open Work Coordination
 
 - PR #225 is the only known open PR and is presentation-only.
-- `AR7-BOUNDED-RECURSIVE-EXECUTION-1` is the first eligible independent implementation packet.
-- `PE7-HARNESS-EVOLUTION-LAB-1` follows only after AR7 merges and active state is refreshed.
+- `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is the first eligible independent implementation packet.
+- `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the recursive packet merges and active state is refreshed.
 - provider-backed evolution, model-weight updates, evaluator/task-generator co-evolution, automatic multi-lineage recombination, and production continuous self-update remain deferred.
 - no new public tag, release, deployment, production installation, destructive production fault, provider call, protected-branch write, or persistent signing secret is authorized by this direction.
 
