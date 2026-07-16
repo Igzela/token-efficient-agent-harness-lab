@@ -231,6 +231,7 @@ fn pricing_matches_identity(
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ProviderEmbeddingAttemptError {
+    FailedBeforeSend(String),
     Definitive(String),
     OutcomeUnknown(String),
 }
@@ -239,14 +240,18 @@ impl ProviderEmbeddingAttemptError {
     pub(crate) fn outcome_unknown(&self) -> bool {
         matches!(self, Self::OutcomeUnknown(_))
     }
+
+    pub(crate) fn failed_before_send(&self) -> bool {
+        matches!(self, Self::FailedBeforeSend(_))
+    }
 }
 
 impl std::fmt::Display for ProviderEmbeddingAttemptError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Definitive(message) | Self::OutcomeUnknown(message) => {
-                formatter.write_str(message)
-            }
+            Self::FailedBeforeSend(message)
+            | Self::Definitive(message)
+            | Self::OutcomeUnknown(message) => formatter.write_str(message),
         }
     }
 }
@@ -523,6 +528,9 @@ impl ProviderEmbeddingClient {
             Err(error) if proved_pre_effect_refusal(&error) => Err(
                 ProviderEmbeddingAttemptError::Definitive(redacted_http_error(&error)),
             ),
+            Err(HttpError::PreSend(_)) => Err(ProviderEmbeddingAttemptError::FailedBeforeSend(
+                "embedding provider request was not sent".to_string(),
+            )),
             Err(error) => Err(ProviderEmbeddingAttemptError::OutcomeUnknown(format!(
                 "embedding provider outcome unknown; automatic replay is forbidden ({})",
                 outcome_unknown_transport_class(&error)
@@ -533,6 +541,7 @@ impl ProviderEmbeddingClient {
 
 fn outcome_unknown_transport_class(error: &HttpError) -> &'static str {
     match error {
+        HttpError::PreSend(_) => "request not sent",
         HttpError::Timeout(_) => "timeout after send",
         HttpError::Connection(_) => "connection lost after send",
         HttpError::Http {
@@ -600,6 +609,7 @@ enum TransportTask {
     Send {
         transport: Arc<dyn HttpTransport>,
         request: HttpRequest,
+        deadline: std::time::Instant,
         response: mpsc::Sender<Result<super::transport::HttpResponse, HttpError>>,
     },
     Shutdown,
@@ -652,16 +662,33 @@ impl BoundedTransportExecutor {
                         match task {
                             Ok(TransportTask::Send {
                                 transport,
-                                request,
+                                mut request,
+                                deadline,
                                 response,
                             }) => {
                                 if shutdown.load(std::sync::atomic::Ordering::SeqCst) {
-                                    let _ = response.send(Err(HttpError::Connection(
+                                    let _ = response.send(Err(HttpError::PreSend(
                                         "embedding transport executor is shutting down".to_string(),
                                     )));
-                                } else {
+                                } else if std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH")
+                                    .as_deref()
+                                    == Ok("1")
+                                {
+                                    let _ = response.send(Err(HttpError::PreSend(
+                                        "embedding kill switch became active before network send"
+                                            .to_string(),
+                                    )));
+                                } else if let Some(remaining) =
+                                    deadline.checked_duration_since(std::time::Instant::now())
+                                {
+                                    request.timeout_secs = Some(remaining.as_secs_f64());
                                     let _ =
                                         response.send(runtime.block_on(transport.send(&request)));
+                                } else {
+                                    let _ = response.send(Err(HttpError::PreSend(
+                                        "embedding transport deadline expired before network send"
+                                            .to_string(),
+                                    )));
                                 }
                             }
                             Ok(TransportTask::Shutdown) | Err(_) => break,
@@ -705,6 +732,9 @@ impl BoundedTransportExecutor {
                 .unwrap_or(DEFAULT_TIMEOUT_MS as f64 / 1000.0),
         )
         .map_err(|_| HttpError::Timeout("invalid embedding overall timeout".to_string()))?;
+        let deadline = std::time::Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| HttpError::Timeout("invalid embedding overall timeout".to_string()))?;
         let (response_sender, response_receiver) = mpsc::channel();
         self.sender
             .as_ref()
@@ -714,11 +744,12 @@ impl BoundedTransportExecutor {
             .try_send(TransportTask::Send {
                 transport,
                 request,
+                deadline,
                 response: response_sender,
             })
             .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => HttpError::Timeout(
-                    "embedding transport queue admission deadline exceeded".to_string(),
+                mpsc::TrySendError::Full(_) => HttpError::PreSend(
+                    "embedding transport queue is full before network send".to_string(),
                 ),
                 mpsc::TrySendError::Disconnected(_) => {
                     HttpError::Connection("embedding transport executor stopped".to_string())
@@ -1001,7 +1032,8 @@ fn authorization_headers(api_key: &str) -> Vec<(String, String)> {
 fn retryable_http_error(error: &HttpError) -> bool {
     matches!(
         error,
-        HttpError::Timeout(_)
+        HttpError::PreSend(_)
+            | HttpError::Timeout(_)
             | HttpError::Connection(_)
             | HttpError::Http {
                 status: 429 | 500..=599,
@@ -1012,6 +1044,7 @@ fn retryable_http_error(error: &HttpError) -> bool {
 
 fn redacted_http_error(error: &HttpError) -> String {
     match error {
+        HttpError::PreSend(_) => "embedding provider request was not sent".to_string(),
         HttpError::Http {
             status: 401 | 403, ..
         } => "embedding provider authentication refused".to_string(),
@@ -1617,6 +1650,7 @@ mod tests {
     }
 
     struct ConcurrencyProbeTransport {
+        calls: AtomicUsize,
         active: AtomicUsize,
         maximum: AtomicUsize,
     }
@@ -1624,6 +1658,7 @@ mod tests {
     #[async_trait::async_trait]
     impl HttpTransport for ConcurrencyProbeTransport {
         async fn send(&self, _request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.maximum.fetch_max(active, Ordering::SeqCst);
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1640,7 +1675,9 @@ mod tests {
         let executor = Arc::new(BoundedTransportExecutor::new(2, 4).unwrap());
         let liveness = executor.liveness_probe();
         let admission_failures = Arc::new(AtomicUsize::new(0));
+        let unexpected_failures = Arc::new(AtomicUsize::new(0));
         let transport = Arc::new(ConcurrencyProbeTransport {
+            calls: AtomicUsize::new(0),
             active: AtomicUsize::new(0),
             maximum: AtomicUsize::new(0),
         });
@@ -1649,21 +1686,23 @@ mod tests {
                 let executor = Arc::clone(&executor);
                 let transport = Arc::clone(&transport);
                 let admission_failures = Arc::clone(&admission_failures);
+                let unexpected_failures = Arc::clone(&unexpected_failures);
                 scope.spawn(move || {
-                    if executor
-                        .send(
-                            transport,
-                            HttpRequest {
-                                url: "https://example.invalid/embeddings".to_string(),
-                                method: "POST".to_string(),
-                                headers: Vec::new(),
-                                body: Some(Vec::new()),
-                                timeout_secs: Some(1.0),
-                            },
-                        )
-                        .is_err()
-                    {
-                        admission_failures.fetch_add(1, Ordering::SeqCst);
+                    if let Err(error) = executor.send(
+                        transport,
+                        HttpRequest {
+                            url: "https://example.invalid/embeddings".to_string(),
+                            method: "POST".to_string(),
+                            headers: Vec::new(),
+                            body: Some(Vec::new()),
+                            timeout_secs: Some(1.0),
+                        },
+                    ) {
+                        if matches!(error, HttpError::PreSend(_)) {
+                            admission_failures.fetch_add(1, Ordering::SeqCst);
+                        } else {
+                            unexpected_failures.fetch_add(1, Ordering::SeqCst);
+                        }
                     }
                 });
             }
@@ -1671,6 +1710,7 @@ mod tests {
         let observed_maximum = transport.maximum.load(Ordering::SeqCst);
         assert!((1..=2).contains(&observed_maximum));
         assert!(admission_failures.load(Ordering::SeqCst) > 0);
+        assert_eq!(unexpected_failures.load(Ordering::SeqCst), 0);
         assert_eq!(liveness.load(Ordering::SeqCst), 2);
         drop(executor);
         assert_eq!(liveness.load(Ordering::SeqCst), 0);
@@ -1680,6 +1720,7 @@ mod tests {
     fn transport_executor_deadline_includes_worker_execution() {
         let executor = BoundedTransportExecutor::new(1, 1).unwrap();
         let transport = Arc::new(ConcurrencyProbeTransport {
+            calls: AtomicUsize::new(0),
             active: AtomicUsize::new(0),
             maximum: AtomicUsize::new(0),
         });
@@ -1698,6 +1739,54 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, HttpError::Timeout(_)));
         assert!(started.elapsed() < Duration::from_millis(20));
+    }
+
+    #[test]
+    fn expired_queued_transport_task_never_sends_after_caller_timeout() {
+        let executor = Arc::new(BoundedTransportExecutor::new(1, 2).unwrap());
+        let transport = Arc::new(ConcurrencyProbeTransport {
+            calls: AtomicUsize::new(0),
+            active: AtomicUsize::new(0),
+            maximum: AtomicUsize::new(0),
+        });
+        std::thread::scope(|scope| {
+            let thread_executor = Arc::clone(&executor);
+            let thread_transport = Arc::clone(&transport);
+            scope.spawn(move || {
+                thread_executor
+                    .send(
+                        thread_transport,
+                        HttpRequest {
+                            url: "https://example.invalid/embeddings".to_string(),
+                            method: "POST".to_string(),
+                            headers: Vec::new(),
+                            body: Some(Vec::new()),
+                            timeout_secs: Some(1.0),
+                        },
+                    )
+                    .unwrap();
+            });
+            while transport.active.load(Ordering::SeqCst) == 0 {
+                std::thread::yield_now();
+            }
+            let error = executor
+                .send(
+                    Arc::clone(&transport) as Arc<dyn HttpTransport>,
+                    HttpRequest {
+                        url: "https://example.invalid/embeddings".to_string(),
+                        method: "POST".to_string(),
+                        headers: Vec::new(),
+                        body: Some(Vec::new()),
+                        timeout_secs: Some(0.005),
+                    },
+                )
+                .unwrap_err();
+            assert!(matches!(error, HttpError::Timeout(_)));
+        });
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.maximum.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.active.load(Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -782,7 +782,6 @@ fn validate_provider_event_cross_owner(
         && operation.send_event_id.is_some();
     let state_event_binding_valid = match (operation.state.as_str(), event_type) {
         ("preflight_reserved", "contract_check_reserved")
-        | ("failed_before_send", "contract_check_reserved")
         | ("reserved", "request_reserved")
         | ("sending", "request_reserved" | "request_sent")
         | (
@@ -794,8 +793,17 @@ fn validate_provider_event_cross_owner(
             "outcome_unknown" | "outcome_unknown_acknowledged",
             "request_reserved" | "request_sent",
         ) => true,
+        ("failed_before_send", "contract_check_reserved") => operation.send_event_id.is_none(),
+        ("failed_before_send", "request_reserved" | "request_sent") => {
+            operation.send_event_id.is_some()
+        }
         ("failed_before_send", "error") => {
-            prefix == "paudit-contract-error-"
+            prefix
+                == if operation.send_event_id.is_some() {
+                    "paudit-error-"
+                } else {
+                    "paudit-contract-error-"
+                }
                 && typed_error_domain
                     == Some(super::provider_audit::ProviderEmbeddingErrorDomain::FailedBeforeSend)
         }

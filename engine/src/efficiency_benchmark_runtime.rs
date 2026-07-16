@@ -658,7 +658,7 @@ fn adapter_request(
             "typed_result":{
                 "status":raw.get("status").cloned().unwrap_or(json!("fail")),
                 "decision_code":if raw.get("status").and_then(Value::as_str)==Some("pass") { "quality-gate-pass" } else { "quality-gate-fail" },
-                "selected_tool_ids":[],
+                "selected_tool_ids":raw.pointer("/runner_metadata/selected_tool_ids").cloned().unwrap_or(json!([])),
                 "quality_score":raw.get("quality_score").cloned().unwrap_or(Value::Null),
                 "quality_method":"bounded-rule-v1",
             },
@@ -676,6 +676,48 @@ fn adapter_request(
             },
         });
     }
+    let mut material = value.clone();
+    material.as_object_mut().unwrap().remove("request_sha256");
+    material.as_object_mut().unwrap().remove("invocation_id");
+    material
+        .as_object_mut()
+        .unwrap()
+        .remove("provider_exchange");
+    value["request_sha256"] = json!(sha256_value(&material, false)?);
+    Ok(value)
+}
+
+fn tool_adapter_request(
+    request: &Value,
+    variant: &str,
+    index: usize,
+    raw: &Value,
+) -> Result<Value, String> {
+    let mut value = adapter_request(request, "durable_state_bounded_recent", index, Some(raw))?;
+    let benchmark_run_id = required_str(request, "benchmark_run_id")?;
+    value["invocation_id"] = json!(format!("inv-{benchmark_run_id}-tool-{index}"));
+    value["node_id"] = json!(format!("tool-{index}"));
+    value["thread_id"] = json!(format!("tool-thread-{index}"));
+    let scope_material = json!({
+        "tenant_id":value["tenant_id"],
+        "workspace_id":value["workspace_id"],
+        "run_id":value["run_id"],
+        "workflow_id":value["workflow_id"],
+        "node_id":value["node_id"],
+        "thread_id":value["thread_id"],
+    });
+    value["scope_binding_sha256"] = json!(sha256_value(&scope_material, false)?);
+    value["benchmark"]["scenario_id"] = json!("bounded-tool-discovery");
+    value["benchmark"]["scenario_sha256"] = json!(sha256_bytes(b"bounded-tool-discovery"));
+    value["benchmark"]["task_sha256"] = json!(sha256_bytes(
+        format!("bounded-tool-discovery:{variant}").as_bytes()
+    ));
+    value["benchmark"]["required_reference_ids"] = json!([]);
+    value["benchmark"]["candidate_reference_ids"] = json!([]);
+    value["benchmark"]["selected_reference_ids"] = json!([]);
+    value["benchmark"]["stale_reference_ids"] = json!([]);
+    value["provider_exchange"]["invocation_id"] = value["invocation_id"].clone();
+    value["provider_exchange"]["scope_binding_sha256"] = value["scope_binding_sha256"].clone();
     let mut material = value.clone();
     material.as_object_mut().unwrap().remove("request_sha256");
     material.as_object_mut().unwrap().remove("invocation_id");
@@ -779,6 +821,7 @@ fn tool_results(
     request: &Value,
     runtime: RuntimeKind,
     live_results: Option<&[Value]>,
+    adapter_results: Option<&[Value]>,
 ) -> Result<Vec<Value>, String> {
     let benchmark_run_id = required_str(request, "benchmark_run_id")?;
     let descriptors = [
@@ -796,6 +839,9 @@ fn tool_results(
     if live_results.is_some_and(|values| values.len() != TOOL_VARIANTS.len()) {
         return Err("live tool discovery requires exactly two provider results".to_string());
     }
+    if adapter_results.is_some_and(|values| values.len() != TOOL_VARIANTS.len()) {
+        return Err("LangGraph tool discovery requires exactly two adapter results".to_string());
+    }
     let prompt_tokens = live_results.map_or_else(
         || vec![100, 55],
         |values| {
@@ -811,6 +857,13 @@ fn tool_results(
     let mut results = Vec::new();
     for (index, variant) in ["static_all", "deterministic_top_k"].iter().enumerate() {
         let raw = live_results.map(|values| &values[index]);
+        let adapter_result_sha256 = adapter_results
+            .map(|values| {
+                values[index]["result_sha256"]
+                    .as_str()
+                    .ok_or_else(|| "LangGraph tool result hash is missing".to_string())
+            })
+            .transpose()?;
         let prompt = prompt_tokens[index];
         let output = raw
             .and_then(|value| value["output_token_total"].as_i64())
@@ -856,6 +909,23 @@ fn tool_results(
                 json!({"tool_id": "summarize", "score": 0.7}),
             ]
         };
+        let provider_selected_tool_id = match raw {
+            Some(value) => value
+                .pointer("/runner_metadata/selected_tool_ids")
+                .and_then(Value::as_array)
+                .and_then(|values| values.last())
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    "live tool discovery is missing the provider-selected tool".to_string()
+                })?,
+            None => "search",
+        };
+        let required_tool_recall = if provider_selected_tool_id == "search" {
+            1.0
+        } else {
+            0.0
+        };
+        let incorrect_tool_selection = i64::from(provider_selected_tool_id != "search");
         let prompt_reduction = if index == 0 {
             0.0
         } else {
@@ -872,8 +942,8 @@ fn tool_results(
             "variant": variant,
             "scorecard": card,
             "metrics": {
-                "required_tool_recall": measured(json!(1.0), "harness_derived"),
-                "incorrect_tool_selection": measured(json!(0), "harness_derived"),
+                "required_tool_recall": measured(json!(required_tool_recall), "harness_derived"),
+                "incorrect_tool_selection": measured(json!(incorrect_tool_selection), "harness_derived"),
                 "prompt_tokens": measured(json!(prompt), token_provenance),
                 "prompt_token_reduction": measured(json!(prompt_reduction), "harness_derived"),
                 "quality": measured(card["quality_score"].clone(), "harness_derived"),
@@ -885,6 +955,8 @@ fn tool_results(
             "retriever_version": "deterministic_descriptor_overlap.v1",
             "descriptor_hashes": descriptor_hashes,
             "selected_tools": selected,
+            "provider_selected_tool_id": provider_selected_tool_id,
+            "adapter_result_sha256": adapter_result_sha256,
         }));
     }
     Ok(results)
@@ -934,8 +1006,31 @@ pub fn execute(request: &Value, runtime: RuntimeKind) -> Result<Value, String> {
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let tool_discovery_results =
-                tool_results(request, runtime, Some(&raw_results[STRATEGIES.len()..]))?;
+            let tool_raw = &raw_results[STRATEGIES.len()..];
+            let adapter_tool_results = if runtime == RuntimeKind::LangGraph {
+                Some(
+                    tool_raw
+                        .iter()
+                        .enumerate()
+                        .map(|(index, raw)| {
+                            invoke_langgraph(&tool_adapter_request(
+                                request,
+                                TOOL_VARIANTS[index],
+                                index,
+                                raw,
+                            )?)
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                )
+            } else {
+                None
+            };
+            let tool_discovery_results = tool_results(
+                request,
+                runtime,
+                Some(tool_raw),
+                adapter_tool_results.as_deref(),
+            )?;
             let external_provider_calls = raw_results
                 .iter()
                 .filter_map(|raw| {
@@ -985,7 +1080,7 @@ pub fn execute(request: &Value, runtime: RuntimeKind) -> Result<Value, String> {
                     RuntimeKind::LangGraph => langgraph_strategy(request, strategy, index),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let tool_discovery_results = tool_results(request, runtime, None)?;
+            let tool_discovery_results = tool_results(request, runtime, None, None)?;
             (
                 (strategy_results, tool_discovery_results),
                 0,
@@ -1152,10 +1247,10 @@ mod tests {
             }
         });
         let raw = [
-            json!({"input_token_total":80,"output_token_total":7,"duration_ms":21,"estimated_cost_usd":0.0,"status":"pass","pass_fail_reason":"provider quality passed","quality_score":1.0}),
-            json!({"input_token_total":50,"output_token_total":6,"duration_ms":17,"estimated_cost_usd":0.0,"status":"pass","pass_fail_reason":"provider quality passed","quality_score":1.0}),
+            json!({"input_token_total":80,"output_token_total":7,"duration_ms":21,"estimated_cost_usd":0.0,"status":"pass","pass_fail_reason":"provider quality passed","quality_score":1.0,"runner_metadata":{"selected_tool_ids":["search"]}}),
+            json!({"input_token_total":50,"output_token_total":6,"duration_ms":17,"estimated_cost_usd":0.0,"status":"pass","pass_fail_reason":"provider quality passed","quality_score":1.0,"runner_metadata":{"selected_tool_ids":["search"]}}),
         ];
-        let results = tool_results(&request, RuntimeKind::Native, Some(&raw)).unwrap();
+        let results = tool_results(&request, RuntimeKind::Native, Some(&raw), None).unwrap();
         assert_eq!(results[0]["metrics"]["prompt_tokens"]["value"], 80);
         assert_eq!(
             results[0]["metrics"]["prompt_tokens"]["provenance"],
@@ -1166,6 +1261,71 @@ mod tests {
             0.375
         );
         assert_eq!(results[1]["scorecard"]["duration_ms"], 17);
+
+        let mut missing_selection = raw.clone();
+        missing_selection[0]["runner_metadata"] = Value::Null;
+        assert!(tool_results(
+            &request,
+            RuntimeKind::Native,
+            Some(&missing_selection),
+            None
+        )
+        .unwrap_err()
+        .contains("provider-selected tool"));
+    }
+
+    #[test]
+    fn langgraph_tool_adapter_consumes_the_provider_selected_tool() {
+        let request = json!({
+            "benchmark_run_id":"provider-tool-adapter-run",
+            "comparison_contract": {
+                "provider_id": "openai_compatible",
+                "model_id": "fixed-free-model",
+                "tokenizer_id": "provider-reported",
+                "pricing_id": "catalog-bound-zero",
+                "input_cost_per_1k_usd": 0.0,
+                "output_cost_per_1k_usd": 0.0,
+                "quality_threshold": 0.9,
+                "evaluator_version": "bounded-rule-v1",
+                "retry_policy": "no-retry.v1",
+                "seed": 165,
+            }
+        });
+        let raw = json!({
+            "input_token_total": 50,
+            "output_token_total": 6,
+            "duration_ms": 17,
+            "estimated_cost_usd": 0.0,
+            "retry_count": 0,
+            "status": "pass",
+            "quality_score": 1.0,
+            "runner_metadata": {"selected_tool_ids": ["search"]},
+        });
+        let raws = vec![raw.clone(), raw];
+        let adapter_results = TOOL_VARIANTS
+            .iter()
+            .enumerate()
+            .map(|(index, variant)| {
+                let adapter_request = tool_adapter_request(&request, variant, index, &raws[index])
+                    .expect("tool adapter request");
+                assert_eq!(
+                    adapter_request.pointer("/provider_exchange/typed_result/selected_tool_ids"),
+                    Some(&json!(["search"]))
+                );
+                invoke_langgraph(&adapter_request).expect("LangGraph tool adapter")
+            })
+            .collect::<Vec<_>>();
+        let results = tool_results(
+            &request,
+            RuntimeKind::LangGraph,
+            Some(&raws),
+            Some(&adapter_results),
+        )
+        .expect("LangGraph tool results");
+        for (result, adapter) in results.iter().zip(&adapter_results) {
+            assert_eq!(result["provider_selected_tool_id"], "search");
+            assert_eq!(result["adapter_result_sha256"], adapter["result_sha256"]);
+        }
     }
 
     #[test]

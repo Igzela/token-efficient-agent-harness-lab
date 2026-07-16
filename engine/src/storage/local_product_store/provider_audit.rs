@@ -1040,10 +1040,16 @@ impl LocalProductStore {
     pub(crate) fn fail_provider_embedding_operation(
         &self,
         operation: &ProviderEmbeddingOperation,
+        failed_before_send: bool,
         outcome_unknown: bool,
         error_event: &crate::provider::ProviderAuditEvent,
     ) -> Result<(), String> {
-        let state = if outcome_unknown {
+        if failed_before_send && outcome_unknown {
+            return Err("provider embedding failure classification is contradictory".to_string());
+        }
+        let state = if failed_before_send {
+            ProviderEmbeddingReceiptState::FailedBeforeSend
+        } else if outcome_unknown {
             ProviderEmbeddingReceiptState::OutcomeUnknown
         } else {
             ProviderEmbeddingReceiptState::FailedKnownOutcome
@@ -1060,7 +1066,19 @@ impl LocalProductStore {
             || error_event.provider_id != operation.provider_id
             || expected_error_id.as_deref() != Some(error_event.event_id.as_str())
             || error_event.redaction_status != "redacted"
-            || error_event.error_domain.is_none()
+            || error_event
+                .error_domain
+                .as_deref()
+                .and_then(ProviderEmbeddingErrorDomain::parse)
+                .is_none_or(|domain| {
+                    if failed_before_send {
+                        domain != ProviderEmbeddingErrorDomain::FailedBeforeSend
+                    } else if outcome_unknown {
+                        !domain.is_unknown_outcome()
+                    } else {
+                        !domain.is_known_outcome()
+                    }
+                })
         {
             return Err("invalid provider embedding failure audit event".to_string());
         }

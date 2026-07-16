@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::audit::ProviderAuditRecorder;
 use super::config::CredentialRef;
@@ -44,6 +44,7 @@ impl OpenAiProvider {
 
     fn map_http_error(&self, err: HttpError) -> ProviderError {
         let (domain, message, retryable) = match &err {
+            HttpError::PreSend(msg) => ("provider_pre_send", msg.clone(), true),
             HttpError::Http { status, reason } => match *status {
                 401 | 403 => ("provider_auth", reason.clone(), false),
                 429 => ("provider_rate_limit", reason.clone(), true),
@@ -129,6 +130,44 @@ impl Provider for OpenAiProvider {
             "messages": [{"role": "user", "content": request.prompt}],
             "max_tokens": max_tokens,
         });
+        if let Some(tools) = request.metadata.get("tools") {
+            let valid = tools.as_array().is_some_and(|items| {
+                !items.is_empty()
+                    && items.len() <= 8
+                    && items.iter().all(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function")
+                            && item
+                                .pointer("/function/name")
+                                .and_then(Value::as_str)
+                                .is_some_and(|name| {
+                                    matches!(name, "read" | "search" | "summarize" | "write")
+                                })
+                            && item
+                                .pointer("/function/description")
+                                .and_then(Value::as_str)
+                                .is_some_and(|description| {
+                                    !description.is_empty() && description.len() <= 256
+                                })
+                            && item
+                                .pointer("/function/parameters/type")
+                                .and_then(Value::as_str)
+                                == Some("object")
+                    })
+            });
+            if !valid
+                || request.metadata.get("tool_choice").and_then(Value::as_str) != Some("required")
+            {
+                return Err(ProviderError {
+                    schema_version: "provider_error.v1".to_string(),
+                    provider_id: self.config.provider_id.clone(),
+                    error_domain: "provider_request".to_string(),
+                    message: "bounded tool request metadata is invalid".to_string(),
+                    retryable: false,
+                });
+            }
+            body["tools"] = tools.clone();
+            body["tool_choice"] = json!("required");
+        }
         if self.config.base_url.trim_end_matches('/') == "https://openrouter.ai/api/v1"
             && self.config.input_cost_per_1k == Some(0.0)
             && self.config.output_cost_per_1k == Some(0.0)
@@ -195,10 +234,37 @@ impl Provider for OpenAiProvider {
             }
         }
 
-        let output = response_json["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let message = &response_json["choices"][0]["message"];
+        let content = message["content"].as_str().unwrap_or("");
+        let tool_calls = message["tool_calls"].as_array();
+        let selected_tool = tool_calls
+            .and_then(|calls| (calls.len() == 1).then(|| &calls[0]))
+            .and_then(|call| call.pointer("/function/name"))
+            .and_then(Value::as_str);
+        let valid_selected_tool = selected_tool.is_some_and(|selected| {
+            request
+                .metadata
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|tools| {
+                    tools.iter().any(|tool| {
+                        tool.pointer("/function/name").and_then(Value::as_str) == Some(selected)
+                    })
+                })
+        });
+        if request.metadata.get("tools").is_some() && !valid_selected_tool {
+            return Err(ProviderError {
+                schema_version: "provider_error.v1".to_string(),
+                provider_id: self.config.provider_id.clone(),
+                error_domain: "provider_response".to_string(),
+                message: "provider did not return the required bounded tool call".to_string(),
+                retryable: false,
+            });
+        }
+        let output = selected_tool.map_or_else(
+            || content.to_string(),
+            |name| format!("tool={name};{content}"),
+        );
 
         let input_tokens = response_json["usage"]["prompt_tokens"].as_i64();
         let output_tokens = response_json["usage"]["completion_tokens"].as_i64();
@@ -246,6 +312,7 @@ mod tests {
 
     struct CapturingTransport {
         request: Mutex<Option<HttpRequest>>,
+        response: Value,
     }
 
     #[async_trait::async_trait]
@@ -254,7 +321,7 @@ mod tests {
             *self.request.lock().unwrap() = Some(request.clone());
             Ok(HttpResponse {
                 status: 200,
-                body: make_response_json().to_string().into_bytes(),
+                body: self.response.to_string().into_bytes(),
             })
         }
     }
@@ -339,6 +406,7 @@ mod tests {
         std::env::set_var("TEST_OPENROUTER_FREE_KEY", "opaque-test-key");
         let transport = Arc::new(CapturingTransport {
             request: Mutex::new(None),
+            response: make_response_json(),
         });
         let mut config = make_config();
         config.base_url = "https://openrouter.ai/api/v1".to_string();
@@ -380,6 +448,102 @@ mod tests {
             json!({"prompt":0,"completion":0,"request":0,"image":0})
         );
         std::env::remove_var("TEST_OPENROUTER_FREE_KEY");
+    }
+
+    #[tokio::test]
+    async fn openrouter_free_tool_request_is_bounded_and_uses_the_provider_selection() {
+        std::env::set_var("TEST_OPENROUTER_TOOL_KEY", "opaque-test-key");
+        let mut response = make_response_json();
+        response["choices"][0]["message"]["content"] = Value::Null;
+        response["choices"][0]["message"]["tool_calls"] = json!([{
+            "id":"call-bounded",
+            "type":"function",
+            "function":{"name":"search","arguments":"{}"}
+        }]);
+        let transport = Arc::new(CapturingTransport {
+            request: Mutex::new(None),
+            response,
+        });
+        let mut config = make_config();
+        config.base_url = "https://openrouter.ai/api/v1".to_string();
+        config.model_id = "tencent/hy3:free".to_string();
+        config.credential_ref = "TEST_OPENROUTER_TOOL_KEY".to_string();
+        config.input_cost_per_1k = Some(0.0);
+        config.output_cost_per_1k = Some(0.0);
+        let provider = OpenAiProvider::new(
+            config,
+            CredentialBoundary::new("env").unwrap(),
+            CredentialRef::new(
+                "TEST_OPENROUTER_TOOL_KEY",
+                "env",
+                "***",
+                "provider:openrouter",
+                "2026-01-01T00:00:00Z",
+            ),
+            transport.clone(),
+            None,
+        );
+        let mut request =
+            ProviderRequest::local_stub("openrouter-tool-test", "tencent/hy3:free", "bounded");
+        request.metadata["tools"] = json!([{
+            "type":"function",
+            "function":{
+                "name":"search",
+                "description":"Search approved source identifiers",
+                "parameters":{"type":"object","properties":{},"additionalProperties":false}
+            }
+        }]);
+        request.metadata["tool_choice"] = json!("required");
+        let result = provider.invoke(&request).await.unwrap();
+        assert_eq!(result.output, "tool=search;");
+        let captured = transport.request.lock().unwrap().clone().unwrap();
+        let body: Value = serde_json::from_slice(&captured.body.unwrap()).unwrap();
+        assert_eq!(body["tool_choice"], "required");
+        assert_eq!(body["tools"][0]["function"]["name"], "search");
+        std::env::remove_var("TEST_OPENROUTER_TOOL_KEY");
+    }
+
+    #[tokio::test]
+    async fn openrouter_tool_response_rejects_a_selection_outside_the_request() {
+        std::env::set_var("TEST_OPENROUTER_TOOL_SCOPE_KEY", "opaque-test-key");
+        let mut response = make_response_json();
+        response["choices"][0]["message"]["tool_calls"] = json!([{
+            "id":"call-out-of-scope",
+            "type":"function",
+            "function":{"name":"write","arguments":"{}"}
+        }]);
+        let transport = Arc::new(CapturingTransport {
+            request: Mutex::new(None),
+            response,
+        });
+        let mut config = make_config();
+        config.credential_ref = "TEST_OPENROUTER_TOOL_SCOPE_KEY".to_string();
+        let provider = OpenAiProvider::new(
+            config,
+            CredentialBoundary::new("env").unwrap(),
+            CredentialRef::new(
+                "TEST_OPENROUTER_TOOL_SCOPE_KEY",
+                "env",
+                "***",
+                "provider:openai",
+                "2026-01-01T00:00:00Z",
+            ),
+            transport,
+            None,
+        );
+        let mut request = ProviderRequest::local_stub("tool-scope-test", "test-model", "bounded");
+        request.metadata["tools"] = json!([{
+            "type":"function",
+            "function":{
+                "name":"search",
+                "description":"Search approved source identifiers",
+                "parameters":{"type":"object","properties":{},"additionalProperties":false}
+            }
+        }]);
+        request.metadata["tool_choice"] = json!("required");
+        let error = provider.invoke(&request).await.unwrap_err();
+        assert_eq!(error.error_domain, "provider_response");
+        std::env::remove_var("TEST_OPENROUTER_TOOL_SCOPE_KEY");
     }
 
     #[tokio::test]

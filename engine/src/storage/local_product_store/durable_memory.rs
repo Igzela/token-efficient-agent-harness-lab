@@ -1486,6 +1486,7 @@ impl LocalProductStore {
                 })
             }
             Err(error) => {
+                let failed_before_send = error.failed_before_send();
                 let outcome_unknown = error.outcome_unknown();
                 let error = error.to_string();
                 let error_event = ProviderAuditEvent {
@@ -1503,7 +1504,12 @@ impl LocalProductStore {
                     redaction_status: "redacted".to_string(),
                     created_at: self.now(),
                 };
-                self.fail_provider_embedding_operation(&operation, outcome_unknown, &error_event)?;
+                self.fail_provider_embedding_operation(
+                    &operation,
+                    failed_before_send,
+                    outcome_unknown,
+                    &error_event,
+                )?;
                 Err(error)
             }
         }
@@ -1555,7 +1561,9 @@ fn preflight_failure_event(
 }
 
 fn provider_error_domain(error: &str) -> ProviderEmbeddingErrorDomain {
-    if error.contains("redirect refused") {
+    if error.contains("request was not sent") {
+        ProviderEmbeddingErrorDomain::FailedBeforeSend
+    } else if error.contains("redirect refused") {
         ProviderEmbeddingErrorDomain::OutcomeUnknownRedirect
     } else if error.contains("oversized response") {
         ProviderEmbeddingErrorDomain::OutcomeUnknownOversized

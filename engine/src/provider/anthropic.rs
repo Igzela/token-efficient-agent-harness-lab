@@ -44,6 +44,7 @@ impl AnthropicProvider {
 
     fn map_http_error(&self, err: HttpError) -> ProviderError {
         let (domain, message, retryable) = match &err {
+            HttpError::PreSend(msg) => ("provider_pre_send", msg.clone(), true),
             HttpError::Http { status, reason } => match *status {
                 401 | 403 => ("provider_auth", reason.clone(), false),
                 429 => ("provider_rate_limit", reason.clone(), true),

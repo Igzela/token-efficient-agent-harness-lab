@@ -249,8 +249,6 @@ fn summarize_state(history: &[Value]) -> String {
 }
 
 fn make_prompt(mode: &str, iteration: usize, history: &[Value]) -> String {
-    let task =
-        "Find an integer candidate from 0 to 25 that maximizes a hidden deterministic score.";
     if matches!(mode, "static_all" | "deterministic_top_k") {
         let descriptors = if mode == "static_all" {
             "read, search, summarize, write"
@@ -258,26 +256,69 @@ fn make_prompt(mode: &str, iteration: usize, history: &[Value]) -> String {
             "read, search, summarize"
         };
         format!(
-            "Task: {task}\nIteration: {iteration}\nAvailable tool descriptors: {descriptors}\nReturn candidate=<number>."
-        )
-    } else if matches!(mode, "stateless_reread" | "full_history") {
-        let history_text = serde_json::to_string(history).unwrap_or_else(|_| "[]".to_string());
-        format!(
-            "Task: {task}\nIteration: {iteration}\nFull prior compact history: {history_text}\nReturn candidate=<number>."
-        )
-    } else if mode == "retrieval_memory" {
-        let best = summarize_state(history);
-        format!(
-            "Task: {task}\nIteration: {iteration}\nRetrieved bounded reference: {best}\nReturn candidate=<number>."
+            "Task: locate an approved source identifier. Required capability: search.\nIteration: {iteration}\nAvailable tool descriptors: {descriptors}\nInvoke exactly one available tool."
         )
     } else {
-        let state_summary = summarize_state(history);
-        let recent: Vec<&Value> = history.iter().rev().take(2).collect();
-        let recent_json = serde_json::to_string(&recent).unwrap_or_else(|_| "[]".to_string());
-        format!(
-            "Task: {task}\nIteration: {iteration}\nState summary: {state_summary}\nRecent window: {recent_json}\nReturn candidate=<number>."
+        let task =
+            "Find an integer candidate from 0 to 25 that maximizes a hidden deterministic score.";
+        if matches!(mode, "stateless_reread" | "full_history") {
+            let history_text = serde_json::to_string(history).unwrap_or_else(|_| "[]".to_string());
+            format!(
+            "Task: {task}\nIteration: {iteration}\nFull prior compact history: {history_text}\nReturn candidate=<number>."
         )
+        } else if mode == "retrieval_memory" {
+            let best = summarize_state(history);
+            format!(
+                "Task: {task}\nIteration: {iteration}\nRetrieved bounded reference: {best}\nReturn candidate=<number>."
+            )
+        } else {
+            let state_summary = summarize_state(history);
+            let recent: Vec<&Value> = history.iter().rev().take(2).collect();
+            let recent_json = serde_json::to_string(&recent).unwrap_or_else(|_| "[]".to_string());
+            format!(
+                "Task: {task}\nIteration: {iteration}\nState summary: {state_summary}\nRecent window: {recent_json}\nReturn candidate=<number>."
+            )
+        }
     }
+}
+
+fn tool_descriptors(mode: &str) -> Option<Value> {
+    let names: &[(&str, &str)] = match mode {
+        "static_all" => &[
+            ("read", "Read one approved bounded source"),
+            ("search", "Search approved source identifiers"),
+            ("summarize", "Summarize bounded approved evidence"),
+            ("write", "Write one approved bounded output"),
+        ],
+        "deterministic_top_k" => &[
+            ("read", "Read one approved bounded source"),
+            ("search", "Search approved source identifiers"),
+            ("summarize", "Summarize bounded approved evidence"),
+        ],
+        _ => return None,
+    };
+    Some(Value::Array(
+        names
+            .iter()
+            .map(|(name, description)| {
+                json!({
+                    "type":"function",
+                    "function":{
+                        "name":name,
+                        "description":description,
+                        "parameters":{"type":"object","properties":{},"additionalProperties":false}
+                    }
+                })
+            })
+            .collect(),
+    ))
+}
+
+fn selected_tool(output: &str) -> Option<String> {
+    let captures = regex::Regex::new(r"(?:^|;)tool=(read|search|summarize|write)(?:;|$)")
+        .expect("bounded tool regex")
+        .captures(output)?;
+    Some(captures[1].to_string())
 }
 
 fn provider_request_model<'a>(
@@ -425,6 +466,7 @@ fn run_mode_with_usage(
     let mut mode_cost: f64 = 0.0;
     let mut best_score_val: f64 = 0.0;
     let mut status = "fail";
+    let mut selected_tool_ids = Vec::new();
 
     for iteration in 0..config.limits.iterations {
         if config.provider_kind == ProviderKind::Live
@@ -489,6 +531,10 @@ fn run_mode_with_usage(
             "dispatch_id": format!("local-runner:{mode}:{iteration}"),
             "max_tokens": request_max_output_tokens,
         });
+        if let Some(tools) = tool_descriptors(mode) {
+            provider_req.metadata["tools"] = tools;
+            provider_req.metadata["tool_choice"] = json!("required");
+        }
 
         let timeout = Duration::try_from_secs_f64(config.limits.timeout_seconds)
             .map_err(|_| "timeout must be finite and positive".to_string())?;
@@ -523,6 +569,9 @@ fn run_mode_with_usage(
             }
             None => estimate_tokens(&prompt),
         };
+        if input_tokens < 0 {
+            return Err("provider returned negative input token usage".to_string());
+        }
         let output_tokens = match resp.output_tokens {
             Some(value) => value,
             None if config.provider_kind == ProviderKind::Live => {
@@ -530,6 +579,11 @@ fn run_mode_with_usage(
             }
             None => 0,
         };
+        if output_tokens < 0 || output_tokens > request_max_output_tokens {
+            return Err(
+                "provider output token usage exceeded the per-call output limit".to_string(),
+            );
+        }
         usage.tokens += input_tokens + output_tokens;
         let call_cost = match resp.estimated_cost {
             Some(cost) if cost.is_finite() && cost >= 0.0 => cost,
@@ -560,9 +614,21 @@ fn run_mode_with_usage(
         }
 
         let fallback_candidate = std::cmp::min(17, 3 + (iteration as i64) * 2);
+        let tool_id = selected_tool(&resp.output);
         let candidate = parse_candidate(&resp.output, fallback_candidate);
-        let score_val = score(candidate);
+        let score_val = if matches!(mode, "static_all" | "deterministic_top_k") {
+            if tool_id.as_deref() == Some("search") {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            score(candidate)
+        };
         best_score_val = best_score_val.max(score_val);
+        if let Some(tool_id) = &tool_id {
+            selected_tool_ids.push(tool_id.clone());
+        }
 
         history.push(json!({
             "iteration": iteration as i64,
@@ -570,7 +636,7 @@ fn run_mode_with_usage(
             "score": score_val,
         }));
 
-        steps.push(build_step(
+        let mut step = build_step(
             mode,
             &run_id,
             iteration,
@@ -580,7 +646,11 @@ fn run_mode_with_usage(
             repeated_context_tokens,
             candidate,
             score_val,
-        ));
+        );
+        if let Some(tool_id) = tool_id {
+            step["selected_tool_id"] = json!(tool_id);
+        }
+        steps.push(step);
 
         if best_score_val >= config.limits.pass_threshold {
             status = "pass";
@@ -669,6 +739,7 @@ fn run_mode_with_usage(
             "model": request_model,
             "external_calls": steps.len() as i64,
             "final_best_score": best_score_val,
+            "selected_tool_ids": selected_tool_ids,
             "context_protocol": match mode {
                 "stateless_reread" | "full_history" => "full_history_reread",
                 "summary_memory" => "summary_memory",
@@ -1012,6 +1083,7 @@ mod tests {
 
     struct OutputLimitProvider {
         observed_max_tokens: Arc<std::sync::atomic::AtomicI64>,
+        returned_output_tokens: i64,
     }
 
     struct MissingUsageProvider {
@@ -1064,7 +1136,7 @@ mod tests {
                 model: request.model.clone(),
                 output: "candidate=17".to_string(),
                 input_tokens: Some(10),
-                output_tokens: Some(2),
+                output_tokens: Some(self.returned_output_tokens),
                 estimated_cost: Some(0.0),
                 provider_request_id: None,
             })
@@ -1090,7 +1162,7 @@ mod tests {
                 schema_version: "provider_response.v1".to_string(),
                 provider_id: self.provider_id().to_string(),
                 model: request.model.clone(),
-                output: "candidate=17".to_string(),
+                output: "tool=search;candidate=17".to_string(),
                 input_tokens: (!self.missing_input).then_some(10),
                 output_tokens: self.missing_input.then_some(2),
                 estimated_cost: Some(0.01),
@@ -1119,7 +1191,7 @@ mod tests {
                 schema_version: "provider_response.v1".to_string(),
                 provider_id: self.provider_id().to_string(),
                 model: request.model.clone(),
-                output: "candidate=17".to_string(),
+                output: "tool=search;candidate=17".to_string(),
                 input_tokens: Some(10),
                 output_tokens: Some(2),
                 estimated_cost: self.estimated_cost,
@@ -1514,11 +1586,24 @@ mod tests {
         let observed = Arc::new(std::sync::atomic::AtomicI64::new(0));
         let provider: Arc<dyn Provider> = Arc::new(OutputLimitProvider {
             observed_max_tokens: Arc::clone(&observed),
+            returned_output_tokens: 2,
         });
         let (mut config, _) = scripted_runner(Duration::ZERO, 0.0, 1.0, 0.25);
         config.limits.max_output_tokens = 256;
         run_mode_with_daily_cost("full_history", &config, &provider, 0.0).unwrap();
         assert_eq!(observed.load(Ordering::SeqCst), 256);
+    }
+
+    #[test]
+    fn live_response_rejects_usage_above_the_configured_output_limit() {
+        let provider: Arc<dyn Provider> = Arc::new(OutputLimitProvider {
+            observed_max_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            returned_output_tokens: 257,
+        });
+        let (mut config, _) = scripted_runner(Duration::ZERO, 0.0, 1.0, 0.25);
+        config.limits.max_output_tokens = 256;
+        let error = run_mode_with_daily_cost("full_history", &config, &provider, 0.0).unwrap_err();
+        assert!(error.contains("output token usage exceeded"));
     }
 
     #[test]

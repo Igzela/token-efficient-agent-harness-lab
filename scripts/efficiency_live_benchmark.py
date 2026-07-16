@@ -837,6 +837,8 @@ def _normalize_tool_result(
         "retriever_version",
         "descriptor_hashes",
         "selected_tools",
+        "provider_selected_tool_id",
+        "adapter_result_sha256",
     }:
         raise BenchmarkError("tool discovery result has invalid fields")
     variant = value.get("variant")
@@ -847,6 +849,17 @@ def _normalize_tool_result(
     metrics = _normalize_metrics(value.get("metrics"), TOOL_METRICS, "tool discovery metrics")
     _assert_tool_scorecard_metric_consistency(scorecard, metrics)
     descriptors, selected = _normalize_tool_selection(value, variant)
+    provider_selected_tool_id = _identifier(
+        value.get("provider_selected_tool_id"), "provider selected tool id"
+    )
+    if provider_selected_tool_id not in {item["tool_id"] for item in selected}:
+        raise BenchmarkError("provider selected a tool outside the exposed descriptor set")
+    adapter_result_sha256 = value.get("adapter_result_sha256")
+    if adapter_result_sha256 is not None:
+        adapter_result_sha256 = _sha(adapter_result_sha256, "tool adapter_result_sha256")
+    if expected_runtime == "langgraph" and shared_contract["provider_id"] != "fixture":
+        if adapter_result_sha256 is None:
+            raise BenchmarkError("live LangGraph tool result is missing adapter evidence")
     corpus_sha256 = _sha(value.get("corpus_sha256"), "tool corpus_sha256")
     registry_sha256 = _sha(value.get("registry_sha256"), "tool registry_sha256")
     retriever_version = _bounded_string(value.get("retriever_version"), "retriever_version", maximum=128)
@@ -864,6 +877,8 @@ def _normalize_tool_result(
         "retriever_version": retriever_version,
         "descriptor_hashes": descriptors,
         "selected_tools": selected,
+        "provider_selected_tool_id": provider_selected_tool_id,
+        "adapter_result_sha256": adapter_result_sha256,
     }
 
 
