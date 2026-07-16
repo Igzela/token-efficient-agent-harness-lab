@@ -1371,6 +1371,16 @@ mod tests {
         let (request, raws) = langgraph_tool_bridge_fixture();
         let adapter_results = langgraph_tool_adapter_results(&request, &raws, invoke_langgraph)
             .expect("real LangGraph adapter results");
+        for adapter in &adapter_results {
+            assert_eq!(
+                adapter.pointer("/scorecard_summary/selected_tool_count"),
+                Some(&json!(2))
+            );
+            assert_eq!(
+                adapter.pointer("/trace_summary/provider_exchanges_consumed"),
+                Some(&json!(1))
+            );
+        }
         assert_langgraph_tool_bridge_results(&request, &raws, &adapter_results);
     }
 
