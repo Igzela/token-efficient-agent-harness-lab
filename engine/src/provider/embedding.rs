@@ -88,13 +88,9 @@ pub struct EmbeddingPricingEvidence {
     pub completion_cost_per_token_usd: f64,
     pub request_cost_per_request_usd: f64,
     pub image_cost_per_image_usd: f64,
-    #[serde(default)]
     pub web_search_cost_per_request_usd: f64,
-    #[serde(default)]
     pub internal_reasoning_cost_per_token_usd: f64,
-    #[serde(default)]
     pub input_cache_read_cost_per_token_usd: f64,
-    #[serde(default)]
     pub input_cache_write_cost_per_token_usd: f64,
     pub request_max_price: EmbeddingPricingOverrides,
     pub currency: String,
@@ -610,9 +606,9 @@ enum TransportTask {
 }
 
 struct BoundedTransportExecutor {
-    sender: mpsc::SyncSender<TransportTask>,
+    sender: Option<mpsc::SyncSender<TransportTask>>,
     workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
-    worker_count: usize,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(test)]
     liveness: Arc<AtomicUsize>,
 }
@@ -624,12 +620,14 @@ impl BoundedTransportExecutor {
         }
         let (sender, receiver) = mpsc::sync_channel(queue_capacity);
         let receiver = Arc::new(Mutex::new(receiver));
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         #[cfg(test)]
         let liveness = Arc::new(AtomicUsize::new(0));
         let mut workers = Vec::with_capacity(worker_count);
         let (startup_sender, startup_receiver) = mpsc::channel();
         for index in 0..worker_count {
             let receiver = Arc::clone(&receiver);
+            let shutdown = Arc::clone(&shutdown);
             #[cfg(test)]
             let liveness = Arc::clone(&liveness);
             let startup_sender = startup_sender.clone();
@@ -657,7 +655,14 @@ impl BoundedTransportExecutor {
                                 request,
                                 response,
                             }) => {
-                                let _ = response.send(runtime.block_on(transport.send(&request)));
+                                if shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                                    let _ = response.send(Err(HttpError::Connection(
+                                        "embedding transport executor is shutting down".to_string(),
+                                    )));
+                                } else {
+                                    let _ =
+                                        response.send(runtime.block_on(transport.send(&request)));
+                                }
                             }
                             Ok(TransportTask::Shutdown) | Err(_) => break,
                         }
@@ -681,9 +686,9 @@ impl BoundedTransportExecutor {
             }
         }
         Ok(Self {
-            sender,
+            sender: Some(sender),
             workers: Mutex::new(workers),
-            worker_count,
+            shutdown,
             #[cfg(test)]
             liveness,
         })
@@ -694,19 +699,41 @@ impl BoundedTransportExecutor {
         transport: Arc<dyn HttpTransport>,
         request: HttpRequest,
     ) -> Result<super::transport::HttpResponse, HttpError> {
+        let timeout = std::time::Duration::try_from_secs_f64(
+            request
+                .timeout_secs
+                .unwrap_or(DEFAULT_TIMEOUT_MS as f64 / 1000.0),
+        )
+        .map_err(|_| HttpError::Timeout("invalid embedding overall timeout".to_string()))?;
         let (response_sender, response_receiver) = mpsc::channel();
         self.sender
-            .send(TransportTask::Send {
+            .as_ref()
+            .ok_or_else(|| {
+                HttpError::Connection("embedding transport executor stopped".to_string())
+            })?
+            .try_send(TransportTask::Send {
                 transport,
                 request,
                 response: response_sender,
             })
-            .map_err(|_| {
-                HttpError::Connection("embedding transport executor stopped".to_string())
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => HttpError::Timeout(
+                    "embedding transport queue admission deadline exceeded".to_string(),
+                ),
+                mpsc::TrySendError::Disconnected(_) => {
+                    HttpError::Connection("embedding transport executor stopped".to_string())
+                }
             })?;
-        response_receiver.recv().map_err(|_| {
-            HttpError::Connection("embedding transport worker stopped before response".to_string())
-        })?
+        response_receiver
+            .recv_timeout(timeout)
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => {
+                    HttpError::Timeout("embedding transport overall deadline exceeded".to_string())
+                }
+                mpsc::RecvTimeoutError::Disconnected => HttpError::Connection(
+                    "embedding transport worker stopped before response".to_string(),
+                ),
+            })?
     }
 
     #[cfg(test)]
@@ -717,9 +744,9 @@ impl BoundedTransportExecutor {
 
 impl Drop for BoundedTransportExecutor {
     fn drop(&mut self) {
-        for _ in 0..self.worker_count {
-            let _ = self.sender.send(TransportTask::Shutdown);
-        }
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.sender.take();
         let workers = self
             .workers
             .get_mut()
@@ -997,11 +1024,20 @@ fn redacted_http_error(error: &HttpError) -> String {
 }
 
 fn parse_price(value: Option<&Value>) -> Result<f64, String> {
-    let parsed = value
+    let raw = value
         .and_then(Value::as_str)
-        .and_then(|value| value.parse::<f64>().ok())
+        .ok_or_else(|| "embedding provider pricing is unknown or incomplete".to_string())?;
+    let parsed = raw
+        .parse::<f64>()
+        .ok()
         .filter(|value| value.is_finite() && *value >= 0.0)
         .ok_or_else(|| "embedding provider pricing is unknown or incomplete".to_string())?;
+    let significand = raw
+        .split_once(['e', 'E'])
+        .map_or(raw, |(significand, _)| significand);
+    if parsed == 0.0 && significand.bytes().any(|byte| matches!(byte, b'1'..=b'9')) {
+        return Err("embedding provider pricing underflowed exact zero".to_string());
+    }
     Ok(parsed)
 }
 
@@ -1313,6 +1349,16 @@ mod tests {
 
     #[test]
     fn request_pricing_and_all_catalog_charge_fields_fail_closed() {
+        let mut incomplete_persisted =
+            serde_json::to_value(pinned_free_embedding_contract_evidence()).unwrap();
+        incomplete_persisted["pricing"]
+            .as_object_mut()
+            .unwrap()
+            .remove("web_search_cost_per_request_usd");
+        assert!(
+            serde_json::from_value::<EmbeddingContractEvidence>(incomplete_persisted).is_err(),
+            "persisted pricing evidence must not default a missing modeled dimension to zero"
+        );
         let base = json!({"data":[{
             "id":OPENROUTER_EMBEDDING_MODEL_ID,
             "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
@@ -1334,6 +1380,12 @@ mod tests {
         assert!(
             validate_catalog(&serde_json::to_vec(&documented_zero_fields).unwrap()).is_ok(),
             "documented zero-price dimensions must not break a free catalog contract"
+        );
+        let mut underflow_price = documented_zero_fields.clone();
+        underflow_price["data"][0]["pricing"]["request"] = json!("1e-9999");
+        assert!(
+            validate_catalog(&serde_json::to_vec(&underflow_price).unwrap()).is_err(),
+            "positive decimal prices must not underflow into free evidence"
         );
 
         for (name, pricing) in [
@@ -1587,6 +1639,7 @@ mod tests {
     fn transport_executor_bounds_concurrency_and_shuts_down_workers() {
         let executor = Arc::new(BoundedTransportExecutor::new(2, 4).unwrap());
         let liveness = executor.liveness_probe();
+        let admission_failures = Arc::new(AtomicUsize::new(0));
         let transport = Arc::new(ConcurrencyProbeTransport {
             active: AtomicUsize::new(0),
             maximum: AtomicUsize::new(0),
@@ -1595,8 +1648,9 @@ mod tests {
             for _ in 0..24 {
                 let executor = Arc::clone(&executor);
                 let transport = Arc::clone(&transport);
+                let admission_failures = Arc::clone(&admission_failures);
                 scope.spawn(move || {
-                    executor
+                    if executor
                         .send(
                             transport,
                             HttpRequest {
@@ -1607,15 +1661,43 @@ mod tests {
                                 timeout_secs: Some(1.0),
                             },
                         )
-                        .unwrap();
+                        .is_err()
+                    {
+                        admission_failures.fetch_add(1, Ordering::SeqCst);
+                    }
                 });
             }
         });
         let observed_maximum = transport.maximum.load(Ordering::SeqCst);
         assert!((1..=2).contains(&observed_maximum));
+        assert!(admission_failures.load(Ordering::SeqCst) > 0);
         assert_eq!(liveness.load(Ordering::SeqCst), 2);
         drop(executor);
         assert_eq!(liveness.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn transport_executor_deadline_includes_worker_execution() {
+        let executor = BoundedTransportExecutor::new(1, 1).unwrap();
+        let transport = Arc::new(ConcurrencyProbeTransport {
+            active: AtomicUsize::new(0),
+            maximum: AtomicUsize::new(0),
+        });
+        let started = std::time::Instant::now();
+        let error = executor
+            .send(
+                transport,
+                HttpRequest {
+                    url: "https://example.invalid/embeddings".to_string(),
+                    method: "POST".to_string(),
+                    headers: Vec::new(),
+                    body: Some(Vec::new()),
+                    timeout_secs: Some(0.005),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, HttpError::Timeout(_)));
+        assert!(started.elapsed() < Duration::from_millis(20));
     }
 
     #[test]

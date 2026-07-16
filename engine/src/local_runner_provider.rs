@@ -128,6 +128,7 @@ pub struct RunnerLimits {
     pub iterations: usize,
     pub max_calls: usize,
     pub max_tokens: i64,
+    pub max_output_tokens: i64,
     pub timeout_seconds: f64,
     pub run_cost_cap_usd: f64,
     pub daily_cost_cap_usd: f64,
@@ -140,6 +141,7 @@ impl Default for RunnerLimits {
             iterations: 10,
             max_calls: 40,
             max_tokens: 120000,
+            max_output_tokens: 1024,
             timeout_seconds: 30.0,
             run_cost_cap_usd: 0.25,
             daily_cost_cap_usd: 1.0,
@@ -249,7 +251,16 @@ fn summarize_state(history: &[Value]) -> String {
 fn make_prompt(mode: &str, iteration: usize, history: &[Value]) -> String {
     let task =
         "Find an integer candidate from 0 to 25 that maximizes a hidden deterministic score.";
-    if matches!(mode, "stateless_reread" | "full_history") {
+    if matches!(mode, "static_all" | "deterministic_top_k") {
+        let descriptors = if mode == "static_all" {
+            "read, search, summarize, write"
+        } else {
+            "read, search, summarize"
+        };
+        format!(
+            "Task: {task}\nIteration: {iteration}\nAvailable tool descriptors: {descriptors}\nReturn candidate=<number>."
+        )
+    } else if matches!(mode, "stateless_reread" | "full_history") {
         let history_text = serde_json::to_string(history).unwrap_or_else(|_| "[]".to_string());
         format!(
             "Task: {task}\nIteration: {iteration}\nFull prior compact history: {history_text}\nReturn candidate=<number>."
@@ -390,6 +401,9 @@ fn run_mode_with_usage(
     provider: &Arc<dyn Provider>,
     usage: &mut RunnerUsage,
 ) -> Result<Value, String> {
+    if config.limits.max_output_tokens <= 0 {
+        return Err("output token limit must be positive".to_string());
+    }
     if !matches!(
         mode,
         "stateless_reread"
@@ -398,6 +412,8 @@ fn run_mode_with_usage(
             | "summary_memory"
             | "retrieval_memory"
             | "durable_state_bounded_recent"
+            | "static_all"
+            | "deterministic_top_k"
     ) {
         return Err(format!("unsupported mode: {mode}"));
     }
@@ -441,7 +457,8 @@ fn run_mode_with_usage(
         if remaining_output_tokens <= 0 {
             return Err("token reservation would exceed run token limit".to_string());
         }
-        let request_max_output_tokens = std::cmp::min(1024, remaining_output_tokens);
+        let request_max_output_tokens =
+            std::cmp::min(config.limits.max_output_tokens, remaining_output_tokens);
 
         if config.provider_kind == ProviderKind::Live {
             let pricing = config.pricing.ok_or_else(|| {
@@ -618,6 +635,7 @@ fn run_mode_with_usage(
             "summary_memory" => "memory_digest",
             "retrieval_memory" => "retrieval_refs",
             "durable_state_bounded_recent" => "mixed",
+            "static_all" | "deterministic_top_k" => "none",
             _ => unreachable!(),
         },
         "status": status,
@@ -656,6 +674,8 @@ fn run_mode_with_usage(
                 "summary_memory" => "summary_memory",
                 "retrieval_memory" => "bounded_retrieval",
                 "stateful_store" | "durable_state_bounded_recent" => "durable_state_bounded_recent",
+                "static_all" => "static_all_tool_descriptors",
+                "deterministic_top_k" => "deterministic_top_k_tool_descriptors",
                 _ => unreachable!(),
             },
         },
@@ -825,6 +845,7 @@ pub fn build_config(
             iterations,
             max_calls,
             max_tokens,
+            max_output_tokens: 1024,
             timeout_seconds,
             run_cost_cap_usd,
             daily_cost_cap_usd,
@@ -989,6 +1010,10 @@ mod tests {
         calls: Arc<AtomicUsize>,
     }
 
+    struct OutputLimitProvider {
+        observed_max_tokens: Arc<std::sync::atomic::AtomicI64>,
+    }
+
     struct MissingUsageProvider {
         missing_input: bool,
     }
@@ -1013,6 +1038,34 @@ mod tests {
                 input_tokens: Some(10),
                 output_tokens: Some(2),
                 estimated_cost: Some(0.01),
+                provider_request_id: None,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for OutputLimitProvider {
+        fn provider_id(&self) -> &str {
+            "output-limit-provider"
+        }
+
+        fn is_enabled(&self) -> bool {
+            true
+        }
+
+        async fn invoke(&self, request: &ProviderRequest) -> ProviderResult {
+            self.observed_max_tokens.store(
+                request.metadata["max_tokens"].as_i64().unwrap_or_default(),
+                Ordering::SeqCst,
+            );
+            Ok(ProviderResponse {
+                schema_version: "provider_response.v1".to_string(),
+                provider_id: self.provider_id().to_string(),
+                model: request.model.clone(),
+                output: "candidate=17".to_string(),
+                input_tokens: Some(10),
+                output_tokens: Some(2),
+                estimated_cost: Some(0.0),
                 provider_request_id: None,
             })
         }
@@ -1093,6 +1146,7 @@ mod tests {
                 iterations: 2,
                 max_calls: 4,
                 max_tokens: 1_000,
+                max_output_tokens: 1024,
                 timeout_seconds,
                 run_cost_cap_usd,
                 daily_cost_cap_usd: 1.0,
@@ -1456,6 +1510,18 @@ mod tests {
     }
 
     #[test]
+    fn live_request_enforces_the_configured_output_limit() {
+        let observed = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let provider: Arc<dyn Provider> = Arc::new(OutputLimitProvider {
+            observed_max_tokens: Arc::clone(&observed),
+        });
+        let (mut config, _) = scripted_runner(Duration::ZERO, 0.0, 1.0, 0.25);
+        config.limits.max_output_tokens = 256;
+        run_mode_with_daily_cost("full_history", &config, &provider, 0.0).unwrap();
+        assert_eq!(observed.load(Ordering::SeqCst), 256);
+    }
+
+    #[test]
     fn run_pair_shares_the_run_cost_cap_across_modes() {
         let (config, provider) = scripted_runner(Duration::ZERO, 0.15, 1.0, 0.25);
 
@@ -1477,7 +1543,7 @@ mod tests {
             .unwrap(),
         );
         let (mut config, _provider) = scripted_runner(Duration::ZERO, 0.001, 1.0, 0.25);
-        config.limits.max_calls = 4;
+        config.limits.max_calls = 6;
         let provider =
             build_live_provider(&config, Some(&gates_with_provider()), store.clone()).unwrap();
         let results = run_live_modes_with_store(
@@ -1489,12 +1555,16 @@ mod tests {
                 "summary_memory",
                 "retrieval_memory",
                 "durable_state_bounded_recent",
+                "static_all",
+                "deterministic_top_k",
             ],
             0.05,
         )
         .unwrap();
-        assert_eq!(results.len(), 4);
-        assert_eq!(store.provider_audit_events(100).unwrap().len(), 8);
+        assert_eq!(results.len(), 6);
+        assert_eq!(results[4]["mode"], "static_all");
+        assert_eq!(results[5]["mode"], "deterministic_top_k");
+        assert_eq!(store.provider_audit_events(100).unwrap().len(), 12);
     }
 
     #[test]

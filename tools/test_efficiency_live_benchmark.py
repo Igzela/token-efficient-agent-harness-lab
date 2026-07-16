@@ -296,7 +296,10 @@ class EfficiencyLiveBenchmarkTests(unittest.TestCase):
                         "canonical_slug": MODULE.OPENROUTER_HY3_CANONICAL_ID,
                         "context_length": 262_144,
                         "supported_parameters": sorted(MODULE.OPENROUTER_REQUIRED_PARAMETERS),
-                        "pricing": {"prompt": "0", "completion": "0"},
+                        "pricing": {
+                            field: "0"
+                            for field in sorted(MODULE.OPENROUTER_REQUIRED_PRICE_FIELDS)
+                        },
                     }
                 ]
             }
@@ -310,7 +313,13 @@ class EfficiencyLiveBenchmarkTests(unittest.TestCase):
                             "status": 0,
                             "context_length": 262_144,
                             "supported_parameters": sorted(MODULE.OPENROUTER_REQUIRED_PARAMETERS),
-                            "pricing": {"prompt": "0", "completion": "0", "discount": 0},
+                            "pricing": {
+                                **{
+                                    field: "0"
+                                    for field in sorted(MODULE.OPENROUTER_REQUIRED_PRICE_FIELDS)
+                                },
+                                "discount": 0,
+                            },
                         }
                     ],
                 }
@@ -627,7 +636,7 @@ class EfficiencyLiveBenchmarkTests(unittest.TestCase):
                 document["data"][0]["pricing"] = {"prompt": "0"}
             return document
 
-        with self.assertRaisesRegex(MODULE.BenchmarkError, "missing prompt or completion"):
+        with self.assertRaisesRegex(MODULE.BenchmarkError, "missing modeled charge dimensions"):
             MODULE._openrouter_hy3_catalog_evidence(self.live_args(), incomplete)
 
     def test_live_mode_rejects_negative_token_prices(self) -> None:

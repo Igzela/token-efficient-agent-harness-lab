@@ -13742,15 +13742,71 @@ async fn axum_managed_supervised_patch_run_rejects_authenticated_generic_mutatio
 #[tokio::test]
 async fn axum_dashboard_receipts_are_tenant_scoped_and_require_tenant_admin() {
     let dir = tempdir().unwrap();
-    let store = LocalProductStore::new(dir.path().join("dashboard-auth.db")).unwrap();
+    let db_path = dir.path().join("dashboard-auth.db");
+    let store = LocalProductStore::new(&db_path).unwrap();
+    for (tenant_id, suffix) in [("tenant-a", "a"), ("tenant-b", "b")] {
+        let event_id = format!("dashboard-reservation-{suffix}");
+        store
+            .record_provider_audit_event(&ProviderAuditEvent {
+                schema_version: PROVIDER_AUDIT_EVENT_SCHEMA_VERSION.to_string(),
+                event_id: event_id.clone(),
+                dispatch_id: format!("dashboard-dispatch-{suffix}"),
+                provider_id: "openrouter".to_string(),
+                event_type: "contract_check_reserved".to_string(),
+                input_token_count: None,
+                output_token_count: None,
+                cost: Some(0.0),
+                currency: Some("USD".to_string()),
+                latency_ms: None,
+                error_domain: None,
+                redaction_status: "redacted".to_string(),
+                created_at: "2026-07-16T00:00:00Z".to_string(),
+            })
+            .unwrap();
+        let contract_json = format!(r#"{{"raw_query":"forbidden-query-{suffix}"}}"#);
+        let contract_sha256 = format!("{:x}", Sha256::digest(contract_json.as_bytes()));
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO provider_embedding_operations
+                 (operation_id,operation_kind,target_memory_id,target_version,tenant_id,workspace_id,
+                  source_id,source_sha256,request_identity_sha256,operation_binding_sha256,
+                  content_sha256,contract_json,contract_sha256,receipt_sha256,provider_id,
+                  requested_model_id,resolved_model_id,dimensions,reservation_event_id,state,
+                  attempt_count,vector_json,created_at,updated_at)
+                 VALUES (?1,'memory_version',?2,1,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,
+                         'openrouter','public/free-model','public/free-model',8,?13,
+                         'failed_before_send',1,?14,?15,?15)",
+                rusqlite::params![
+                    format!("dashboard-operation-{suffix}"),
+                    format!("dashboard-memory-{suffix}"),
+                    tenant_id,
+                    format!("workspace-{suffix}"),
+                    format!("source-{suffix}"),
+                    suffix.repeat(64),
+                    format!("{}{}", suffix, "1".repeat(63)),
+                    format!("{}{}", suffix, "2".repeat(63)),
+                    format!("{}{}", suffix, "3".repeat(63)),
+                    contract_json,
+                    contract_sha256,
+                    format!("{}{}", suffix, "4".repeat(63)),
+                    event_id,
+                    format!("[\"forbidden-vector-{suffix}\"]"),
+                    "2026-07-16T00:00:00Z",
+                ],
+            )
+            .unwrap();
+    }
     let mut resolver = TenantResolver::new();
     let available_scopes = HashSet::from(["health:read".to_string(), "team:admin".to_string()]);
-    resolver.add_tenant(Tenant {
-        tenant_id: "tenant-a".to_string(),
-        name: "Tenant A".to_string(),
-        scopes: available_scopes.clone(),
-        rate_limit: Some(100),
-    });
+    for (tenant_id, name) in [("tenant-a", "Tenant A"), ("tenant-b", "Tenant B")] {
+        resolver.add_tenant(Tenant {
+            tenant_id: tenant_id.to_string(),
+            name: name.to_string(),
+            scopes: available_scopes.clone(),
+            rate_limit: Some(100),
+        });
+    }
     let (_, health_key) = resolver
         .create_api_key(
             "tenant-a",
@@ -13760,7 +13816,10 @@ async fn axum_dashboard_receipts_are_tenant_scoped_and_require_tenant_admin() {
         )
         .unwrap();
     let (_, admin_key) = resolver
-        .create_api_key("tenant-a", Some(available_scopes), None, 1.0)
+        .create_api_key("tenant-a", Some(available_scopes.clone()), None, 1.0)
+        .unwrap();
+    let (_, tenant_b_admin_key) = resolver
+        .create_api_key("tenant-b", Some(available_scopes), None, 1.0)
         .unwrap();
     let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
         resolver,
@@ -13784,4 +13843,32 @@ async fn axum_dashboard_receipts_are_tenant_scoped_and_require_tenant_admin() {
     assert_eq!(health_body["provider_embedding_receipts_authorized"], false);
     let admin_body = response_json(dashboard(admin_key).await.unwrap()).await;
     assert_eq!(admin_body["provider_embedding_receipts_authorized"], true);
+    assert_eq!(
+        admin_body["provider_embedding_receipts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        admin_body["provider_embedding_receipts"][0]["operation_id"],
+        "dashboard-operation-a"
+    );
+    assert_eq!(
+        admin_body["provider_embedding_receipts"][0]["tenant_id"],
+        "tenant-a"
+    );
+    let admin_json = admin_body.to_string();
+    assert!(!admin_json.contains("forbidden-query"));
+    assert!(!admin_json.contains("forbidden-vector"));
+
+    let tenant_b_body = response_json(dashboard(tenant_b_admin_key).await.unwrap()).await;
+    assert_eq!(
+        tenant_b_body["provider_embedding_receipts"][0]["operation_id"],
+        "dashboard-operation-b"
+    );
+    assert_eq!(
+        tenant_b_body["provider_embedding_receipts"][0]["tenant_id"],
+        "tenant-b"
+    );
 }

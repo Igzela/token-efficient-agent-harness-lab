@@ -1579,6 +1579,10 @@ fn validate_verified_free_embedding_reservation(
         || pricing.completion_cost_per_token_usd != 0.0
         || pricing.request_cost_per_request_usd != 0.0
         || pricing.image_cost_per_image_usd != 0.0
+        || pricing.web_search_cost_per_request_usd != 0.0
+        || pricing.internal_reasoning_cost_per_token_usd != 0.0
+        || pricing.input_cache_read_cost_per_token_usd != 0.0
+        || pricing.input_cache_write_cost_per_token_usd != 0.0
         || pricing.request_max_price
             != crate::provider::embedding::EmbeddingPricingOverrides::zero()
         || pricing.currency != "USD"
@@ -2249,4 +2253,54 @@ fn pg_provider_audit_rows(rows: Vec<postgres::Row>) -> Result<Vec<Value>, String
         }));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn zero_reservation() -> crate::provider::ProviderAuditEvent {
+        crate::provider::ProviderAuditEvent {
+            schema_version: "provider_audit_event.v1".to_string(),
+            event_id: "paudit-reservation-test".to_string(),
+            dispatch_id: "memory-embedding-test".to_string(),
+            provider_id: crate::provider::embedding::OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            event_type: "request_reserved".to_string(),
+            input_token_count: None,
+            output_token_count: None,
+            cost: Some(0.0),
+            currency: Some("USD".to_string()),
+            latency_ms: None,
+            error_domain: None,
+            redaction_status: "redacted".to_string(),
+            created_at: "2026-07-16T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn free_embedding_reservation_owner_checks_every_modeled_charge_dimension() {
+        let event = zero_reservation();
+        let mut pricing =
+            crate::provider::embedding::pinned_free_embedding_contract_evidence().pricing;
+        assert!(validate_verified_free_embedding_reservation(&event, &pricing).is_ok());
+        for mutate in [
+            |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
+                value.web_search_cost_per_request_usd = 0.000_001;
+            },
+            |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
+                value.internal_reasoning_cost_per_token_usd = 0.000_001;
+            },
+            |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
+                value.input_cache_read_cost_per_token_usd = 0.000_001;
+            },
+            |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
+                value.input_cache_write_cost_per_token_usd = 0.000_001;
+            },
+        ] {
+            let original = pricing.clone();
+            mutate(&mut pricing);
+            assert!(validate_verified_free_embedding_reservation(&event, &pricing).is_err());
+            pricing = original;
+        }
+    }
 }

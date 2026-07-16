@@ -85,6 +85,7 @@ OPENROUTER_KNOWN_PRICE_FIELDS = {
     "input_cache_write",
     "discount",
 }
+OPENROUTER_REQUIRED_PRICE_FIELDS = OPENROUTER_KNOWN_PRICE_FIELDS - {"discount"}
 
 PRIMARY_STRATEGIES = (
     "full_history",
@@ -312,8 +313,9 @@ def _zero_pricing(value: Any, field: str) -> dict[str, float]:
     unknown = set(value) - OPENROUTER_KNOWN_PRICE_FIELDS
     if unknown:
         raise BenchmarkError(f"{field} pricing contains unknown charge dimensions")
-    if not {"prompt", "completion"}.issubset(value):
-        raise BenchmarkError(f"{field} pricing is missing prompt or completion")
+    missing = OPENROUTER_REQUIRED_PRICE_FIELDS - set(value)
+    if missing:
+        raise BenchmarkError(f"{field} pricing is missing modeled charge dimensions")
     normalized: dict[str, float] = {}
     for name, raw in value.items():
         if isinstance(raw, bool):
