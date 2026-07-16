@@ -237,7 +237,20 @@ pub struct ProviderEmbeddingResolutionRequest {
 }
 
 impl LocalProductStore {
-    pub fn provider_embedding_receipt_evidence(&self, limit: i64) -> Result<Vec<Value>, String> {
+    pub fn authorized_provider_embedding_receipt_evidence(
+        &self,
+        limit: i64,
+        visibility: super::ProviderEmbeddingReceiptVisibility,
+    ) -> Result<Vec<Value>, String> {
+        match visibility {
+            super::ProviderEmbeddingReceiptVisibility::GlobalOperator => {
+                self.provider_embedding_receipt_evidence(limit)
+            }
+            super::ProviderEmbeddingReceiptVisibility::Hidden => Ok(Vec::new()),
+        }
+    }
+
+    fn provider_embedding_receipt_evidence(&self, limit: i64) -> Result<Vec<Value>, String> {
         let limit = limit.clamp(1, 100);
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {

@@ -3,6 +3,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,6 +18,7 @@ pub(crate) struct ApiRequestContext {
     pub tenant_id: String,
     pub api_key_id: String,
     pub request_id: String,
+    pub scopes: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -88,6 +90,7 @@ pub(crate) fn authorize(
             tenant_id: "local".to_string(),
             api_key_id: "none".to_string(),
             request_id: request_id.to_string(),
+            scopes: HashSet::from([required_scope.to_string(), "team:admin".to_string()]),
         });
     };
 
@@ -100,6 +103,7 @@ pub(crate) fn authorize(
             tenant_id: "local".to_string(),
             api_key_id: "health-bypass".to_string(),
             request_id: request_id.to_string(),
+            scopes: HashSet::from([required_scope.to_string()]),
         });
     }
 
@@ -182,6 +186,7 @@ fn auth_context_from_decision(
         tenant_id: decision.tenant_id.unwrap_or_else(|| "unknown".to_string()),
         api_key_id: decision.api_key_id.unwrap_or_else(|| "unknown".to_string()),
         request_id: request_id.to_string(),
+        scopes: decision.scopes,
     })
 }
 

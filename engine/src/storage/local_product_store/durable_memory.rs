@@ -3049,6 +3049,11 @@ mod tests {
         posts: AtomicUsize,
     }
 
+    struct AmbiguousEmbeddingTransport {
+        posts: AtomicUsize,
+        status: u16,
+    }
+
     #[async_trait::async_trait]
     impl HttpTransport for CountingEmbeddingTransport {
         async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
@@ -3057,6 +3062,25 @@ mod tests {
             } else if request.url.ends_with("/embeddings") && request.method == "POST" {
                 self.posts.fetch_add(1, Ordering::SeqCst);
                 Ok(provider_vector_response())
+            } else {
+                Err(HttpError::Connection(
+                    "unexpected fixture endpoint".to_string(),
+                ))
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for AmbiguousEmbeddingTransport {
+        async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            if request.url.ends_with("/embeddings/models") {
+                Ok(provider_catalog_response())
+            } else if request.url.ends_with("/embeddings") && request.method == "POST" {
+                self.posts.fetch_add(1, Ordering::SeqCst);
+                Err(HttpError::Http {
+                    status: self.status,
+                    reason: "untrusted ambiguous response".to_string(),
+                })
             } else {
                 Err(HttpError::Connection(
                     "unexpected fixture endpoint".to_string(),
@@ -3672,7 +3696,23 @@ mod tests {
             })
             .unwrap();
         assert_eq!(receipt_state, "succeeded");
-        let dashboard = store.dashboard_snapshot(20, "noop", false).unwrap();
+        let hidden_dashboard = store
+            .dashboard_snapshot(
+                20,
+                "noop",
+                false,
+                crate::storage::local_product_store::ProviderEmbeddingReceiptVisibility::Hidden,
+            )
+            .unwrap();
+        assert_eq!(hidden_dashboard["provider_embedding_receipts"], json!([]));
+        let dashboard = store
+            .dashboard_snapshot(
+                20,
+                "noop",
+                false,
+                crate::storage::local_product_store::ProviderEmbeddingReceiptVisibility::GlobalOperator,
+            )
+            .unwrap();
         let receipt = &dashboard["provider_embedding_receipts"][0];
         assert_eq!(receipt["state"], "succeeded");
         assert_eq!(receipt["operation_kind"], "retrieval_query");
@@ -4151,7 +4191,7 @@ mod tests {
             Ok(provider_catalog_response()),
             Ok(HttpResponse {
                 status: 401,
-                body: br#"{"error":"fixture refusal"}"#.to_vec(),
+                body: br#"{"error":{"code":401,"message":"redacted","metadata":{"error_type":"authentication"}}}"#.to_vec(),
             }),
             Ok(provider_catalog_response()),
             Ok(provider_vector_response()),
@@ -4374,6 +4414,79 @@ mod tests {
                 .reconcile_provider_embedding_operation(&memory_id, &retry, "operator")
                 .unwrap_err()
                 .contains("state/action conflict"));
+        }
+    }
+
+    #[test]
+    fn ambiguous_post_is_not_replayed_by_concurrency_restart_or_reconciliation() {
+        use super::super::provider_audit::{
+            ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
+        };
+        let _env = ProviderEnvGuard::enabled();
+        for status in [400, 408, 429, 500, 502, 503, 504, 529] {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join(format!("provider-ambiguous-{status}.db"));
+            let request = create(
+                &format!("ws-provider-ambiguous-{status}"),
+                &format!("source-provider-ambiguous-{status}"),
+                "ambiguous provider outcome",
+            );
+            let transport = Arc::new(AmbiguousEmbeddingTransport {
+                posts: AtomicUsize::new(0),
+                status,
+            });
+            let store = Arc::new(
+                LocalProductStore::new_with_embedding_transport(
+                    &path,
+                    || "2026-07-15T00:00:00Z".to_string(),
+                    transport.clone(),
+                )
+                .unwrap(),
+            );
+            assert!(store
+                .create_durable_memory(&request, "test")
+                .unwrap_err()
+                .contains("outcome unknown"));
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    let store = Arc::clone(&store);
+                    let request = request.clone();
+                    scope.spawn(move || {
+                        assert!(store
+                            .create_durable_memory(&request, "test")
+                            .unwrap_err()
+                            .contains("outcome is unknown"));
+                    });
+                }
+            });
+            assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+            let memory_id = memory_id(&request).unwrap();
+            let retry = ProviderEmbeddingResolutionRequest {
+                target_version: 1,
+                expected_attempt_count: 1,
+                scope: request.scope.clone(),
+                run_id: request.run_id.clone(),
+                action: ProviderEmbeddingResolutionAction::RetryFailed,
+                evidence_source_id: None,
+                evidence_sha256: None,
+                confirm_resolution: true,
+            };
+            assert!(store
+                .reconcile_provider_embedding_operation(&memory_id, &retry, "operator")
+                .unwrap_err()
+                .contains("state/action conflict"));
+            drop(store);
+            let restarted = LocalProductStore::new_with_embedding_transport(
+                &path,
+                || "2026-07-16T00:00:00Z".to_string(),
+                transport.clone(),
+            )
+            .unwrap();
+            assert!(restarted
+                .create_durable_memory(&request, "test")
+                .unwrap_err()
+                .contains("outcome is unknown"));
+            assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
         }
     }
 

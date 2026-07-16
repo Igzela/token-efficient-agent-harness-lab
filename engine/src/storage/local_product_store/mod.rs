@@ -466,13 +466,15 @@ impl LocalProductStore {
         limit: i64,
         executor_type: &str,
         provider_enabled: bool,
+        receipt_visibility: ProviderEmbeddingReceiptVisibility,
     ) -> Result<Value, String> {
         let dispatches = self.list_dispatches(limit)?;
         let team = self.team_snapshot()?;
         let config = self.config_snapshot()?;
         let costs = self.cost_summary()?;
         let counts = self.stats()?;
-        let provider_embedding_receipts = self.provider_embedding_receipt_evidence(limit)?;
+        let provider_embedding_receipts =
+            self.authorized_provider_embedding_receipt_evidence(limit, receipt_visibility)?;
         Ok(json!({
             "schema_version": LOCAL_DASHBOARD_SCHEMA_VERSION,
             "status": "ready",
@@ -485,6 +487,12 @@ impl LocalProductStore {
             "boundaries": local_boundaries(executor_type, provider_enabled),
         }))
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderEmbeddingReceiptVisibility {
+    GlobalOperator,
+    Hidden,
 }
 
 pub(super) fn append_audit_locked(

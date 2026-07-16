@@ -13739,3 +13739,49 @@ async fn axum_managed_supervised_patch_run_rejects_authenticated_generic_mutatio
     let preserved = store.get_workflow_run(&run_id).unwrap().unwrap();
     assert_eq!(preserved["pause_reason"], "api_owned_supervised_patch");
 }
+#[tokio::test]
+async fn axum_dashboard_receipts_require_global_operator_scope() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("dashboard-auth.db")).unwrap();
+    let mut resolver = TenantResolver::new();
+    let available_scopes = HashSet::from(["health:read".to_string(), "team:admin".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "tenant-a".to_string(),
+        name: "Tenant A".to_string(),
+        scopes: available_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_, health_key) = resolver
+        .create_api_key(
+            "tenant-a",
+            Some(HashSet::from(["health:read".to_string()])),
+            None,
+            1.0,
+        )
+        .unwrap();
+    let (_, admin_key) = resolver
+        .create_api_key("tenant-a", Some(available_scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+
+    let dashboard = |key: String| {
+        app.clone().oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dashboard")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    let health_body = response_json(dashboard(health_key).await.unwrap()).await;
+    assert_eq!(health_body["provider_embedding_receipts"], json!([]));
+    assert_eq!(health_body["provider_embedding_receipts_authorized"], false);
+    let admin_body = response_json(dashboard(admin_key).await.unwrap()).await;
+    assert_eq!(admin_body["provider_embedding_receipts_authorized"], true);
+}

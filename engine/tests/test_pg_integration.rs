@@ -84,7 +84,7 @@ impl HttpTransport for PgFailOnceEmbeddingTransport {
             if self.posts.fetch_add(1, Ordering::SeqCst) == 0 {
                 return Ok(HttpResponse {
                     status: 401,
-                    body: br#"{"error":"fixture refusal"}"#.to_vec(),
+                    body: br#"{"error":{"code":401,"message":"redacted","metadata":{"error_type":"authentication"}}}"#.to_vec(),
                 });
             }
             return Ok(HttpResponse {
@@ -2966,12 +2966,20 @@ fn pg_provider_embedding_metadata_is_atomic_and_restart_safe() {
             restarted.retrieve_durable_memories(&retrieval_request, "pg-provider-memory-test")?;
         assert_eq!(duplicate.result_sha256, retrieval.result_sha256);
         assert_eq!(transport.posts.load(Ordering::SeqCst), 3);
-        let receipts = restarted.provider_embedding_receipt_evidence(100)?;
+        let receipts = restarted.authorized_provider_embedding_receipt_evidence(
+            100,
+            engine::storage::local_product_store::ProviderEmbeddingReceiptVisibility::GlobalOperator,
+        )?;
         assert!(receipts.iter().any(|receipt| {
             receipt["operation_kind"] == "retrieval_query"
                 && receipt["state"] == "succeeded"
                 && receipt["redacted"] == true
         }));
+        let hidden_receipts = restarted.authorized_provider_embedding_receipt_evidence(
+            100,
+            engine::storage::local_product_store::ProviderEmbeddingReceiptVisibility::Hidden,
+        )?;
+        assert!(hidden_receipts.is_empty());
         assert_eq!(restarted.check_integrity()?.status, "ok");
         let mut client =
             postgres::Client::connect(&url, postgres::NoTls).map_err(|error| error.to_string())?;

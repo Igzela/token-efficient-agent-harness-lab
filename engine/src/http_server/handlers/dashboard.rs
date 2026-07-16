@@ -12,6 +12,7 @@ use crate::http_server::state::AxumApiState;
 use crate::provider::config::provider_pricing_from_env;
 use crate::provider::cost_gate::CostGateConfig;
 use crate::storage::local_product_store::local_boundaries;
+use crate::storage::local_product_store::ProviderEmbeddingReceiptVisibility;
 
 const ADAPTIVE_FUSION_OPERATOR_STATUS_SCHEMA_VERSION: &str = "adaptive_fusion_operator_status.v1";
 
@@ -21,14 +22,19 @@ pub(crate) async fn api_dashboard(
     uri: Uri,
     Extension(request_id): Extension<RequestId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
+    let context = authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
+    let receipt_visibility = if context.scopes.contains("team:admin") {
+        ProviderEmbeddingReceiptVisibility::GlobalOperator
+    } else {
+        ProviderEmbeddingReceiptVisibility::Hidden
+    };
     let exec_type = state.executor_type();
     let execution_gates = state.effective_execution_gates();
     let prov_enabled = state.provider_enabled()
         || (execution_gates.provider_execution && state.adaptive_provider_executor.is_some());
     let mut body = if let Some(store) = &state.local_store {
         store
-            .dashboard_snapshot(20, exec_type, prov_enabled)
+            .dashboard_snapshot(20, exec_type, prov_enabled, receipt_visibility)
             .map_err(internal_error)?
     } else {
         json!({
@@ -79,6 +85,13 @@ pub(crate) async fn api_dashboard(
         }
     }
     if let Some(object) = body.as_object_mut() {
+        object.insert(
+            "provider_embedding_receipts_authorized".to_string(),
+            json!(receipt_visibility == ProviderEmbeddingReceiptVisibility::GlobalOperator),
+        );
+        object
+            .entry("provider_embedding_receipts".to_string())
+            .or_insert_with(|| json!([]));
         object.insert("cli".to_string(), json!(state.cli_capability()));
         object.insert(
             "adaptive_fusion".to_string(),
