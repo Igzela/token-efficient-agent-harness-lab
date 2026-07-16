@@ -13,11 +13,13 @@ The production-integration program and provider/target-output safety repairs are
 
 A new forward lane is documented but not implemented:
 
-- `AR7-BOUNDED-RECURSIVE-EXECUTION-1` — bounded persistent recursive task trees using the existing Agent Runtime and scheduler;
+- `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — the AR7 runtime-extension slice for bounded persistent recursive task trees using the existing Agent Runtime and scheduler;
 - `PE7-HARNESS-EVOLUTION-LAB-1` — default-off, fixture/local, evidence-gated candidate Harness evolution;
 - `PE7-META-IMPROVER-EXPERIMENT-1` — later second-order `Improvement@K` experiment, blocked until a stable Level-1 result exists.
 
 Do not claim that recursive execution, Harness evolution, recursive self-improvement, or an evolution gate is implemented until the corresponding packet is merged with verified evidence. Later work is governed by `docs/NEXT_DECISION.md`.
+
+Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`.
 
 ## Autonomous Operating Model
 
@@ -122,10 +124,10 @@ Use current code, merged history, tests, and CI as authoritative evidence. Recon
 Stop rather than work around any of these:
 
 - do not commit real secrets, raw prompts/outputs/transcripts, private paths, or unredacted sensitive payloads;
-- do not falsify tests, CI, benchmark, cost, evaluator, lineage, or implementation evidence;
+- do not falsify test or CI evidence; benchmark, cost, evaluator, lineage, and implementation evidence are subject to the same rule;
 - do not intentionally hide failures, rejected candidates, outcome-unknown effects, or safety regressions;
-- do not remove rollback or recovery without a tested replacement;
-- do not perform irreversible external destruction without explicit authority and recovery;
+- do not remove rollback paths without a tested replacement; recovery paths are subject to the same rule;
+- do not perform irreversible external destruction without a recovery path and explicit authority;
 - do not bypass required human approval, external credentials, or sealed evaluation boundaries;
 - do not modify or expose evaluator source, sealed labels, promotion thresholds, permissions, budgets, or audit to a candidate/evolver;
 - do not merge code, tests, scripts, workflows, configuration, schemas, migrations, generated artifacts, dependencies, runtime behavior, authority, evaluator, release, or external-action changes while required CI is failed, queued, in progress, cancelled, action-required, or unexpectedly skipped;
@@ -181,7 +183,7 @@ git diff --check
 
 Add migration, evaluator-integrity, benchmark, browser, Docker, release, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces. Strictly documentation-only changes use the targeted checks required by the direct-main/merge exception.
 
-## Documentation Maintenance
+## Documentation Maintenance Rule
 
 Keep the documentation set small. Authoritative surfaces are:
 
@@ -193,4 +195,4 @@ Keep the documentation set small. Authoritative surfaces are:
 - `docs/RUNBOOK.md` — proven operator procedures only;
 - `README.md`, `CLAUDE.md`, `AGENTS.md` — entrypoints and agent boundaries.
 
-Prefer editing, shortening, or deleting stale text over adding another roadmap, policy, status, packet, or closeout document. Planned behavior belongs in `NEXT_DECISION`; do not place unproven AR7/PE7 commands in the runbook or describe them as current architecture.
+Prefer editing, shortening, or deleting stale text over adding another roadmap, policy, status, packet, or closeout document. Planned behavior belongs in `NEXT_DECISION`; do not place unproven PE7 commands in the runbook or describe them as current architecture.
