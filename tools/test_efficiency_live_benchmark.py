@@ -521,6 +521,30 @@ class EfficiencyLiveBenchmarkTests(unittest.TestCase):
                 runner=FakeRuntimeRunner(),
             )
 
+    def test_live_mode_accepts_explicit_zero_token_prices(self) -> None:
+        report, _ = MODULE.execute(
+            self.live_args(
+                "--input-cost-per-1k-usd",
+                "0",
+                "--output-cost-per-1k-usd",
+                "0",
+            ),
+            env={"TEST_PROVIDER_KEY": "opaque", "TEST_KILL_SWITCH": "0"},
+            runner=FakeRuntimeRunner(),
+        )
+
+        contract = report["runtime_evidence"]["native_harness"]["comparison_contract"]
+        self.assertEqual(contract["input_cost_per_1k_usd"], 0.0)
+        self.assertEqual(contract["output_cost_per_1k_usd"], 0.0)
+
+    def test_live_mode_rejects_negative_token_prices(self) -> None:
+        with self.assertRaisesRegex(MODULE.BenchmarkError, "input price"):
+            MODULE.execute(
+                self.live_args("--input-cost-per-1k-usd", "-0.001"),
+                env={"TEST_PROVIDER_KEY": "opaque", "TEST_KILL_SWITCH": "0"},
+                runner=FakeRuntimeRunner(),
+            )
+
     def test_bounded_live_execution_forwards_secret_only_to_children_and_not_report(self) -> None:
         runner = FakeRuntimeRunner()
         opaque_value = "opaque-test-provider-value"

@@ -1010,6 +1010,13 @@ def _positive_float(value: Any, name: str, maximum: float) -> float:
     return parsed
 
 
+def _nonnegative_float(value: Any, name: str, maximum: float) -> float:
+    parsed = float(_finite_number(value, name, minimum=0.0))
+    if parsed > maximum:
+        raise BenchmarkError(f"{name} must be non-negative and at most {maximum}")
+    return parsed
+
+
 def _positive_int(value: Any, name: str, maximum: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= maximum:
         raise BenchmarkError(f"{name} must be between 1 and {maximum}")
@@ -1066,8 +1073,8 @@ def _validate_live_args(args: argparse.Namespace, env: Mapping[str, str]) -> Non
         raise BenchmarkError("live execution requires an explicit non-fixture pricing identity")
     if args.pricing_effective_date == FIXTURE_PRICING_EFFECTIVE_DATE:
         raise BenchmarkError("live execution requires an explicit pricing effective date")
-    _positive_float(args.input_cost_per_1k_usd, "input price", 100.0)
-    _positive_float(args.output_cost_per_1k_usd, "output price", 100.0)
+    _nonnegative_float(args.input_cost_per_1k_usd, "input price", 100.0)
+    _nonnegative_float(args.output_cost_per_1k_usd, "output price", 100.0)
 
 
 def _validate_common_args(args: argparse.Namespace) -> None:

@@ -656,8 +656,12 @@ fn workflow_node_to_scorecard_step(
             .unwrap_or(if status == "pass" { "none" } else { status }),
         "state_read_bytes": state_read_bytes,
         "state_write_bytes": state_write_bytes,
-        "duration_ms": positive_i64(result.get("latency_ms"))
-            .max(node_duration_ms(node).unwrap_or(0)),
+        "duration_ms": result
+            .get("latency_ms")
+            .and_then(Value::as_i64)
+            .filter(|latency_ms| *latency_ms >= 0)
+            .or_else(|| node_duration_ms(node))
+            .unwrap_or(0),
     }))
 }
 
@@ -1641,4 +1645,32 @@ fn pg_append_audit(
         )
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workflow_node_to_scorecard_step;
+    use serde_json::json;
+
+    #[test]
+    fn executor_latency_precedes_coarse_node_wall_clock_duration() {
+        let node = json!({
+            "node_id": "model-1",
+            "name": "model evidence node",
+            "task_type": "analysis",
+            "db_status": "completed",
+            "started_at": "2026-07-16T00:00:00Z",
+            "completed_at": "2026-07-16T00:00:01Z",
+            "result": {
+                "executor_type": "provider",
+                "latency_ms": 33,
+                "input_tokens": 120,
+                "output_tokens": 40
+            }
+        });
+
+        let step = workflow_node_to_scorecard_step(&node, "run-1", 0).unwrap();
+
+        assert_eq!(step["duration_ms"], 33);
+    }
 }
