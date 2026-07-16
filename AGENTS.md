@@ -1,156 +1,170 @@
 # Agent Instructions
 
-This repository is the Token-Efficient Agent Harness Lab: a local deterministic harness and self-hosted workflow control plane for studying token-efficient agent systems.
+This repository is the Token-Efficient Agent Harness Lab: a local deterministic Harness and self-hosted workflow control plane for studying token-efficient, auditable Agent systems.
 
 ## Current State
 
-The Rust `engine/` is the sole runtime, API, and storage implementation. The dispatch kernel, V2 output track, Adaptive Fusion through AF-7, Agent Runtime through AR-6, Trusted Local Autonomous Execution through IAE-3, the importer-first benchmark path, and major PE-1 through PE-6 implementation are present. Confirmed PE-2 and PE-4 integration gaps remain active. PR #207 merged the disabled-by-default GitHub Issues/Actions → Vader Codex repository-maintenance orchestrator, and PR #216 repaired its Codex output and runner-readiness compatibility boundaries.
+Rust `engine/` is the sole runtime, API, scheduler, policy, and application-owned storage implementation. The dispatch kernel, V2 real output, Adaptive Fusion through AF-7, Agent Runtime through AR-6, Trusted Local Autonomous Execution through IAE-3, durable memory, the managed external-runtime path, and PE-1 through PE-6 implementation are present.
 
-The first live GPT Web smoke, Issue #217, proved intake, claim, controller dispatch, and transition into the Vader worker, but ended `agent-blocked` before creating a branch or PR. Issue #208 is therefore emergency-stopped and both enable labels are absent. Do not claim the repository-agent path is operational or dispatch another production task until the worker failure is diagnosed, repaired through a reviewed PR, and a new bounded smoke completes through PR creation, exact-head CI, and independent review.
+The production-integration program and provider/target-output safety repairs are merged. Controlled staging drills and disposable target-repository acceptance passed. Two external acceptance paths remain blocked:
 
-Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`. Later work remains governed by `docs/NEXT_DECISION.md`.
+- the GitHub Issues/Actions -> Vader repository-maintenance orchestrator remains disabled and emergency-stopped until the named runner is online/idle and a replacement smoke reaches PR creation, exact-head CI, and independent review;
+- provider-backed embedding and benchmarking remain fail-closed until current catalog evidence establishes the exact admitted model identity and every modeled applicable price dimension.
+
+A new forward lane is documented but not implemented:
+
+- `AR7-BOUNDED-RECURSIVE-EXECUTION-1` — bounded persistent recursive task trees using the existing Agent Runtime and scheduler;
+- `PE7-HARNESS-EVOLUTION-LAB-1` — default-off, fixture/local, evidence-gated candidate Harness evolution;
+- `PE7-META-IMPROVER-EXPERIMENT-1` — later second-order `Improvement@K` experiment, blocked until a stable Level-1 result exists.
+
+Do not claim that recursive execution, Harness evolution, recursive self-improvement, or an evolution gate is implemented until the corresponding packet is merged with verified evidence. Later work is governed by `docs/NEXT_DECISION.md`.
 
 ## Autonomous Operating Model
 
-The coding agent may act as planner, implementer, reviewer, and maintainer for repository-scoped work. It may inspect the repository, resolve bounded design gaps, update authoritative contracts, implement code, add tests, create branches and PRs, repair CI, merge eligible changes, and continue to the next approved slice.
+The coding agent may act as planner, implementer, reviewer, and maintainer for repository-scoped work. It may inspect current code, resolve bounded design gaps, update authoritative contracts, implement code, add tests, create branches and PRs, repair CI, merge eligible changes, and continue to the next approved slice.
 
-The task packets in `docs/NEXT_DECISION.md` are the default execution structure. They preserve sequence, scope, acceptance, compatibility, and rollback evidence; they are not a prohibition on agent judgment.
+Execution-ready packets in `docs/NEXT_DECISION.md` are the default work units. They preserve sequence, scope, authority, acceptance, compatibility, rollback, and evidence; they do not prohibit agent judgment. When repository evidence is sufficient, choose the smallest compatible, testable, observable, and rollbackable design rather than stopping for an external planner.
 
-When current code, merged history, and active documents provide enough evidence, the agent may choose the smallest compatible and rollbackable design rather than stopping for an external planner. Record material architecture, authority, schema, migration, security, release, or recovery decisions in an existing authoritative document before or with the implementation.
+Material architecture, authority, schema, migration, security, evaluator-integrity, release, or recovery decisions must be recorded in an existing authoritative document before or with implementation. Do not silently create parallel runtimes, schedulers, queues, stores, policy owners, evaluator authorities, target-output owners, or rollback systems.
 
 ## GPT Web Repository-Agent Entry
 
-A user working in GPT Web does not need to remember workflow names, issue numbers, dispatch IDs, PR numbers, head SHAs, CI run IDs, or retry parameters. A normal-language request such as “use the repository agent to implement this task, keep auto-merge off, review the PR, and ask before merging” is sufficient.
+A user working in GPT Web should not need to remember workflow names, Issue numbers, dispatch IDs, PR numbers, head SHAs, CI run IDs, or retry parameters. When the repository-agent path is operational, a normal-language request is sufficient.
 
-When the repository-agent path is operational, the GPT Web assistant owns the control-plane translation:
+The GPT Web assistant then owns the internal translation:
 
 1. refresh actual `main`, open PRs, CI, Issue #208, runner readiness, and relevant active documents;
-2. convert the request into one bounded Agent Task Issue with measurable acceptance criteria and an explicit `agent-orchestrator-scope:v1` marker;
-3. choose the narrowest coherent `allowed_paths`; never use `.` or wildcard scope;
-4. keep `agent-auto-merge-enabled` absent unless the user explicitly authorizes auto-merge;
-5. ensure Issue #208 is live, then apply `agent-ready`; `agent-intake.yml` owns dispatch to `agent-controller.yml` and `agent-worker.yml`;
-6. observe the worker, artifact finalizer, branch/PR binding, exact-head CI, repair/review state, and final control labels;
-7. independently inspect the resulting diff and evidence; merge only with authority permitted by the current user request and repository playbook;
-8. restore `agent-emergency-stop` immediately on scope drift, secret exposure, contradictory state, duplicate dispatch, stale binding, unexpected mutation, or a worker that fails to reach a bounded terminal state.
+2. create one bounded Agent Task Issue with measurable acceptance and an exact `agent-orchestrator-scope:v1` allowed-path list;
+3. keep auto-merge disabled unless the user explicitly authorizes it;
+4. enable only the authority required for the bounded task;
+5. observe worker, artifact finalizer, branch/PR binding, exact-head CI, repair/review state, and terminal labels;
+6. independently inspect the final diff and evidence;
+7. merge only under authority permitted by the user request and repository playbook;
+8. restore emergency stop immediately on scope drift, secret exposure, contradictory state, duplicate dispatch, stale binding, unexpected mutation, or a worker that fails to reach a bounded terminal state.
 
-Do not ask the user to manually pass internal workflow parameters when the GitHub connector exposes enough state to derive them. Do not manufacture success from an `agent-running` or `dispatched` label. The path is successful only when the expected PR exists, its changed files remain in scope, exact-head CI and review evidence are verified, and auto-merge/merge behavior matches the user's authority.
+Current restriction: Issue #208 must remain emergency-stopped. The runner is offline on its GitHub token-exchange TLS path, so no production repository task may be dispatched through this orchestrator. A replacement documentation-only smoke is required before normal use resumes.
 
-Current temporary restriction: because Issue #217 ended blocked before PR creation, keep the orchestrator emergency-stopped until `PR207-SMOKE-REPAIR-1` and `PR207-SMOKE-VERIFY-1` are complete.
+## Recursive and Evolution Boundary
+
+The recursive/evolution lane must obey these additional rules:
+
+- Recursive tasks are ordinary bounded workflow nodes under the existing scheduler, not a recursive function loop or second Agent runtime.
+- A model may propose a child task; the control plane derives root, parent, depth, ancestry, remaining budgets, scope, and authority.
+- Child capabilities may only remain equal or become narrower; capability or repository-scope escalation fails closed.
+- Whole-tree depth, child count, node count, call, token, cost, time, concurrency, retry, and lease limits are mandatory.
+- Ancestor cycles, semantic duplicate objectives, stale parents, changed active versions, and receipt conflicts must remain explicit failures.
+- Evolution candidates run only in isolated app-owned workspaces/worktrees and may become `PR_READY` only.
+- The evaluator, sealed set, permissions, credentials, budgets, audit, active-version binding, promotion thresholds, target-output, merge, release, deployment, and rollback owners are immutable to the candidate and evolver.
+- Initial evolution work is deterministic fixture/local-only. It may not enable Issue #208, use the unavailable Vader runner, call a provider, mutate a real target repository, or infer live evidence from fixtures.
+- No result may be called recursive self-improvement unless an independently evaluated meta-improver shows statistically supported improvement in `Improvement@K` on unseen improvement tasks.
 
 ## Model Selection
 
-Model and reasoning-effort selection are user/tool settings, not repository policy. The repository does not require, forbid, or validate a particular model tier. Do not change model configuration files unless the user explicitly requests it.
-
-Quality gates do not change with model choice: claims must be evidence-backed, tests must be real, and risky changes must retain review, CI, audit, compatibility, compensation, and rollback. A strictly documentation-only PR may use the targeted merge exception defined in `docs/REAL_WORLD_TESTING_PLAYBOOK.md`; that exception does not weaken evidence required for any implementation claim recorded by the documentation.
+Model and reasoning-effort selection are user/tool settings, not repository policy. Do not change model configuration merely to satisfy repository instructions. Model choice never weakens testing, review, CI, audit, cost, evaluator-integrity, compatibility, compensation, or rollback requirements.
 
 ## Execution-Ready Task Packets
 
-Use packets in `docs/NEXT_DECISION.md` as the primary work queue. Packet states are:
+Packet states are:
 
-- `READY_FOR_EXECUTION` — prerequisites are satisfied and implementation may begin.
-- `BLOCKED_PREREQUISITE` — an earlier dependency must complete first.
-- `DECISION_REQUIRED` — the contract needs a material decision before implementation; the agent may resolve it when repository evidence is sufficient.
-- `IN_PROGRESS` — one active branch or PR owns the packet.
-- `COMPLETE` — acceptance evidence is merged and active docs are updated.
+- `READY_FOR_EXECUTION` — prerequisites and contract are sufficient to begin.
+- `BLOCKED_PREREQUISITE` — an earlier dependency or external condition must complete first.
+- `DECISION_REQUIRED` — a material decision cannot be derived safely.
+- `IN_PROGRESS` — one branch or PR owns the packet.
+- `COMPLETE` — implementation is merged, required evidence is verified, and active documents are synchronized.
 
 Every packet should state:
 
-- packet ID and stage
-- goal and observable result
-- prerequisites
-- owning paths
-- allowed changes
-- forbidden changes and non-goals
-- input/output or schema contract
-- failure states
-- focused and full verification
-- compatibility requirements
-- rollback path
-- completion evidence
-- stop triggers
+- packet ID and state;
+- goal and observable result;
+- prerequisites;
+- owning paths and existing owners to reuse;
+- allowed changes, forbidden changes, and non-goals;
+- versioned input/output, schema, identity, budget, and failure contracts;
+- focused and full verification;
+- compatibility, migration, and rollback requirements;
+- completion evidence;
+- stop triggers.
 
-Prefer the earliest eligible packet in the normative sequence. The agent may first repair a prerequisite defect, documentation conflict, or missing bounded contract when that is necessary to execute the packet correctly. Do not begin a later product stage before the current stage closeout unless the forward plan explicitly activates an independent lane.
+Prefer the earliest eligible packet in the normative sequence. An explicitly independent lane may proceed only when its prerequisites and isolation are documented. Do not begin later product behavior before its predecessor is accepted.
 
 ## Full Agent Autonomy Mode
 
-Full Agent Autonomy Mode is active for repo-scoped, testable, observable, verification-gated, and rollbackable work. Runtime, code, configuration, schema, workflow, release, and authority changes remain full-CI-gated; strictly documentation-only changes may use the targeted exception below.
+Full Agent Autonomy Mode is active for repository-scoped, testable, observable, verification-gated, and rollbackable work. It permits:
 
-Allowed autonomous work includes:
+- execute and close ready packets;
+- audit current code before assuming a capability is absent;
+- resolve bounded missing decisions from repository evidence;
+- update existing authoritative architecture, authority, schema, migration, security, evaluator, release, or recovery contracts;
+- implement cross-module code, migrations, APIs, SDKs, Dashboard changes, policy adapters, release tooling, and recovery tests when boundaries are explicit;
+- repair deterministic tests, CI, lint, security-baseline, action-pin, handoff, or wire-codegen failures at the root cause;
+- create branches, commits, PRs, reviews, and eligible green merges;
+- continue across packets after refreshing `main`;
+- perform narrow maintenance and remove stale or misleading documentation.
 
-- execute and close execution-ready packets
-- audit current code before assuming a capability is absent
-- define the smallest compatible design for a bounded missing decision
-- update architecture, authority, schema, migration, security, release, or recovery contracts in existing authoritative documents
-- implement cross-module code, migrations, APIs, SDKs, Dashboard changes, policy adapters, release tooling, and recovery tests when their boundaries are explicit
-- repair deterministic tests, CI, lint, security-baseline, action-pin, handoff, or wire-codegen failures at their actual root cause
-- create branches, commits, PRs, reviews, and green merges
-- continue across packets after refreshing `main` and reconciling repository state
-- perform narrow maintenance and remove stale or misleading documentation
-
-Autonomy does not authorize bypassing established runtime authority, inventing evidence, weakening audit or fail-closed behavior, silently changing external state, or creating parallel owners without a documented replacement and migration path.
+Autonomy does not authorize inventing evidence, weakening fail-closed behavior, bypassing existing authority, silently changing external state, modifying sealed evaluation data, or creating parallel owners.
 
 ## Minimal Reading Model
 
-Before implementation, read:
+Before implementation read:
 
 1. `AGENTS.md`
 2. `docs/CURRENT_STATUS.md`
 3. `docs/NEXT_DECISION.md`
 4. `docs/MODULE_MAP.md`
-5. `docs/REAL_WORLD_TESTING_PLAYBOOK.md` when creating or merging a PR
-6. `docs/ARCHITECTURE_BOOK.md` when work touches architecture, storage, authority, security, release, or recovery
+5. `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for branch, PR, CI, review, and merge work
+6. `docs/ARCHITECTURE_BOOK.md` for architecture, storage, authority, security, evaluator, release, or recovery work
 7. `docs/RUNBOOK.md` only for proven operator procedures
 
-Treat current code, merged history, and CI as authoritative evidence. When active documents conflict with them, reconcile the conflict explicitly instead of silently following stale prose.
+Use current code, merged history, tests, and CI as authoritative evidence. Reconcile stale documentation explicitly rather than silently following it.
 
 ## Hard Stops
 
 Stop rather than work around any of these:
 
-- do not commit real secrets
-- do not falsify test or CI evidence
-- do not intentionally hide failures
-- do not remove rollback paths without a tested replacement
-- do not perform irreversible external destruction without a recovery path and explicit authority
-- do not bypass required human approval or external credentials
-- do not merge code, tests, scripts, workflows, configuration, schemas, migrations, generated artifacts, dependency files, runtime behavior, authority changes, release changes, or external-action changes with failed, queued, in-progress, or unexpectedly skipped required CI
-- do not overwrite another agent's in-progress work without reconciling branch ownership
-- stop when materially contradictory requirements cannot be resolved from repository evidence
+- do not commit real secrets, raw prompts/outputs/transcripts, private paths, or unredacted sensitive payloads;
+- do not falsify tests, CI, benchmark, cost, evaluator, lineage, or implementation evidence;
+- do not intentionally hide failures, rejected candidates, outcome-unknown effects, or safety regressions;
+- do not remove rollback or recovery without a tested replacement;
+- do not perform irreversible external destruction without explicit authority and recovery;
+- do not bypass required human approval, external credentials, or sealed evaluation boundaries;
+- do not modify or expose evaluator source, sealed labels, promotion thresholds, permissions, budgets, or audit to a candidate/evolver;
+- do not merge code, tests, scripts, workflows, configuration, schemas, migrations, generated artifacts, dependencies, runtime behavior, authority, evaluator, release, or external-action changes while required CI is failed, queued, in progress, cancelled, action-required, or unexpectedly skipped;
+- do not overwrite another agent's in-progress work without reconciling ownership;
+- stop when materially contradictory requirements cannot be resolved from repository evidence;
+- stop any recursive/evolution run whose complete bounded terminal state or external-effect status cannot be proven.
 
-A difficult implementation, failed first attempt, or missing bounded design detail is not by itself a hard stop. Diagnose, revise the plan, and continue while each repair cycle is evidence-driven and remains inside repository safety boundaries.
+A difficult implementation, failed first attempt, or bounded missing design detail is not by itself a hard stop. Diagnose, revise, and continue while each repair remains evidence-driven and inside the documented boundaries.
 
 ## Documentation-Only Direct-Main Rule
 
-Standing user authorization permits a change to be committed directly to `main` when its final diff is limited to Markdown or plain-text documentation and changes no code, tests, scripts, workflows, configuration, schema, migration, generated artifact, dependency manifest or lockfile, executable file, release artifact, runtime behavior, credential, tag, deployment, provider call, target-repository write, or other external state. A branch and PR are optional for such a change, not mandatory.
+Standing user authorization permits a commit directly to `main` when the final diff is limited to Markdown or plain-text documentation and changes no code, tests, scripts, workflows, configuration, schema, migration, generated artifact, dependency, executable, runtime behavior, release artifact, credential, tag, deployment, provider call, target-repository write, or other external state.
 
-A qualifying direct-main documentation change still requires final diff review, `git diff --check`, `uv run --no-project python scripts/check_agent_handoff.py`, any applicable documentation or link check, a clear rollback, and no fabricated implementation or CI claim. If the scope is mixed, generated, executable, security-sensitive outside prose, or uncertain, use the normal branch, PR, and complete required CI path.
-
-When a qualifying documentation-only change is already on a PR, it may use the targeted merge exception without waiting for the full CI matrix, subject to the same checks and branch-protection rules. A later docs-specific CI failure must be repaired promptly, but the documentation change is not implementation evidence.
+A qualifying direct-main documentation change still requires final diff review, `git diff --check`, `uv run --no-project python scripts/check_agent_handoff.py`, any applicable documentation/link check, a clear revert rollback, and no fabricated implementation or CI claim. If the scope is mixed, executable, generated, security-sensitive outside prose, or uncertain, use a branch, PR, and complete required CI.
 
 ## Autonomous Advancement Loop
 
 For every autonomous session:
 
-1. Inspect branch, working-tree, open PR, recent merge, and CI state; start from latest `main` unless continuing an owned PR.
-2. Read active docs and select the highest-value eligible packet or prerequisite repair.
-3. Audit existing code and tests before planning changes.
-4. Restate scope, non-goals, owners, risk, acceptance, and rollback.
-5. Resolve bounded missing decisions from repository evidence and record material decisions.
-6. Add or update focused tests before behavior changes when practical.
-7. Implement one coherent reviewable slice; do not mix unrelated packets.
-8. Run focused checks and applicable full verification.
-9. Review the diff against architecture, authority, compatibility, security, audit, and rollback boundaries.
-10. Repair failures at the root cause; do not weaken tests or guards to obtain green CI.
-11. Update only the smallest necessary active docs.
-12. Run `uv run --no-project python scripts/check_agent_handoff.py`.
-13. Commit in English. Qualifying documentation-only changes may be committed directly to `main`; all other changes require a branch and PR, and must wait for complete required CI.
-14. Merge only when the playbook classifier or its documentation-only exception permits it and no unresolved human objection exists.
-15. Refresh `main`, update packet states, and continue when the bounded objective includes later packets.
-16. Report packet/slice, decisions, files, tests, CI run or documentation-only targeted checks, compatibility, residual risk, rollback, and next state.
+1. inspect latest `main`, open PRs, recent merges, CI, and external control state;
+2. read active documents and select the highest-value eligible packet or prerequisite repair;
+3. audit existing code and tests;
+4. restate scope, non-goals, owners, risk, acceptance, rollback, and hard stops;
+5. resolve bounded decisions from evidence and record material ones;
+6. add or update focused tests before behavior changes where practical;
+7. implement one coherent reviewable slice;
+8. run focused checks and applicable full verification;
+9. review architecture, authority, evaluator integrity, compatibility, security, audit, cost, and rollback;
+10. repair failures at the root cause without weakening guards;
+11. update only the smallest necessary active documents;
+12. run `uv run --no-project python scripts/check_agent_handoff.py`;
+13. commit in English; documentation-only direct-main changes require explicit user authority, all other changes require a branch and PR;
+14. merge only when the playbook permits it and no unresolved human objection exists;
+15. refresh `main`, update packet states, and continue only within the authorized objective;
+16. report exact packet/slice, files, decisions, tests, CI or docs-only checks, compatibility, residual risk, rollback, external effects, and next state.
 
 ## Verification Baseline
 
-Run focused checks plus applicable repository checks:
+Use focused checks plus applicable repository checks:
 
 ```bash
 cargo fmt --all -- --check
@@ -165,20 +179,18 @@ uv run --no-project python scripts/check_agent_handoff.py
 git diff --check
 ```
 
-Add release, browser, Docker, migration, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces. Strictly documentation-only changes use the targeted checks specified above rather than the full baseline unless their content requires an additional check.
+Add migration, evaluator-integrity, benchmark, browser, Docker, release, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces. Strictly documentation-only changes use the targeted checks required by the direct-main/merge exception.
 
-## Documentation Maintenance Rule
+## Documentation Maintenance
 
-Keep the documentation set small. Do not create new roadmap, status, policy, closeout, or productization documents by default.
+Keep the documentation set small. Authoritative surfaces are:
 
-Authoritative surfaces:
+- `docs/ARCHITECTURE_BOOK.md` — implemented architecture, data ownership, and durable boundaries;
+- `docs/CURRENT_STATUS.md` — current facts, limitations, and implementation status;
+- `docs/NEXT_DECISION.md` — single forward plan and packet definitions;
+- `docs/MODULE_MAP.md` — source/test ownership and approved connection points;
+- `docs/REAL_WORLD_TESTING_PLAYBOOK.md` — branch, PR, CI, evidence, and merge discipline;
+- `docs/RUNBOOK.md` — proven operator procedures only;
+- `README.md`, `CLAUDE.md`, `AGENTS.md` — entrypoints and agent boundaries.
 
-- `docs/ARCHITECTURE_BOOK.md` — current architecture, data ownership, and durable boundaries
-- `docs/CURRENT_STATUS.md` — current facts and limitations
-- `docs/NEXT_DECISION.md` — single forward plan and execution-ready packets
-- `docs/MODULE_MAP.md` — source/test ownership
-- `docs/REAL_WORLD_TESTING_PLAYBOOK.md` — PR, CI, evidence, and merge discipline
-- `docs/RUNBOOK.md` — proven operator procedures
-- `AGENTS.md` — autonomous coding-agent contract
-
-Prefer editing, shortening, or deleting stale text over adding another document. When facts change, update only the smallest necessary authoritative surfaces.
+Prefer editing, shortening, or deleting stale text over adding another roadmap, policy, status, packet, or closeout document. Planned behavior belongs in `NEXT_DECISION`; do not place unproven AR7/PE7 commands in the runbook or describe them as current architecture.
