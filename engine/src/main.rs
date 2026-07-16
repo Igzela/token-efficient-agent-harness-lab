@@ -43,8 +43,7 @@ use std::sync::{Arc, Mutex};
 const ACP_CLAUDE_CODE_CONFIG_PATH: &str = "ACP_CLAUDE_CODE_CONFIG_PATH";
 const DEFAULT_PROVIDER_MODEL: &str = "default";
 
-#[tokio::main]
-async fn main() {
+fn main() {
     tracing_subscriber::fmt::init();
     let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
@@ -491,57 +490,61 @@ async fn main() {
         std::process::exit(1);
     }
 
-    match (tls_cert_path, tls_key_path) {
-        (Some(cert_path), Some(key_path)) => {
-            let tls_config =
-                axum_server::tls_rustls::RustlsConfig::from_pem_chain_file(&cert_path, &key_path)
-                    .await
-                    .unwrap_or_else(|e| {
-                        eprintln!(
-                            "[acp-fatal] Failed to load TLS cert/key: cert={}, key={}, error={}",
-                            cert_path, key_path, e
-                        );
-                        std::process::exit(1);
-                    });
-            println!(
-                "[acp-startup] TLS enabled, cert={}, key={}",
-                cert_path, key_path
-            );
-            println!("engine listening on {} (HTTPS)", addr);
-            let handle = axum_server::Handle::new();
-            tokio::spawn({
-                let handle = handle.clone();
-                async move {
-                    shutdown_signal().await;
-                    handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
-                }
-            });
-            let socket_addr: std::net::SocketAddr = addr.parse().unwrap_or_else(|e| {
-                eprintln!("[acp-fatal] Invalid bind address '{}': {}", addr, e);
-                std::process::exit(1);
-            });
-            axum_server::bind_rustls(socket_addr, tls_config)
-                .handle(handle)
-                .serve(router.into_make_service())
+    let runtime = tokio::runtime::Runtime::new().expect("failed to create server runtime");
+    runtime.block_on(async move {
+        match (tls_cert_path, tls_key_path) {
+            (Some(cert_path), Some(key_path)) => {
+                let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_chain_file(
+                    &cert_path, &key_path,
+                )
                 .await
                 .unwrap_or_else(|e| {
-                    eprintln!("[acp-fatal] TLS server error: {}", e);
+                    eprintln!(
+                        "[acp-fatal] Failed to load TLS cert/key: cert={}, key={}, error={}",
+                        cert_path, key_path, e
+                    );
                     std::process::exit(1);
                 });
-        }
-        (None, None) => {
-            println!(
+                println!(
+                    "[acp-startup] TLS enabled, cert={}, key={}",
+                    cert_path, key_path
+                );
+                println!("engine listening on {} (HTTPS)", addr);
+                let handle = axum_server::Handle::new();
+                tokio::spawn({
+                    let handle = handle.clone();
+                    async move {
+                        shutdown_signal().await;
+                        handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+                    }
+                });
+                let socket_addr: std::net::SocketAddr = addr.parse().unwrap_or_else(|e| {
+                    eprintln!("[acp-fatal] Invalid bind address '{}': {}", addr, e);
+                    std::process::exit(1);
+                });
+                axum_server::bind_rustls(socket_addr, tls_config)
+                    .handle(handle)
+                    .serve(router.into_make_service())
+                    .await
+                    .unwrap_or_else(|e| {
+                        eprintln!("[acp-fatal] TLS server error: {}", e);
+                        std::process::exit(1);
+                    });
+            }
+            (None, None) => {
+                println!(
                 "[acp-startup] TLS disabled (neither ACP_TLS_CERT_PATH nor ACP_TLS_KEY_PATH set)"
             );
-            println!("engine listening on {}", addr);
-            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-            axum::serve(listener, router)
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-                .unwrap();
+                println!("engine listening on {}", addr);
+                let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(shutdown_signal())
+                    .await
+                    .unwrap();
+            }
+            _ => unreachable!("validate_tls_config already rejected single-sided TLS env vars"),
         }
-        _ => unreachable!("validate_tls_config already rejected single-sided TLS env vars"),
-    }
+    });
     println!("[acp-shutdown] engine stopped gracefully");
 }
 

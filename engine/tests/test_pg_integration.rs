@@ -84,7 +84,11 @@ impl HttpTransport for PgFailOnceEmbeddingTransport {
             if self.posts.fetch_add(1, Ordering::SeqCst) == 0 {
                 return Ok(HttpResponse {
                     status: 401,
-                    body: br#"{"error":"fixture refusal"}"#.to_vec(),
+                    body: format!(
+                        r#"{{"error":{{"code":401,"message":"redacted","metadata":{{"error_type":"authentication"}}}},"openrouter_metadata":{{"attempt":0,"requested":"{}"}}}}"#,
+                        engine::provider::embedding::OPENROUTER_EMBEDDING_MODEL_ID
+                    )
+                    .into_bytes(),
                 });
             }
             return Ok(HttpResponse {
@@ -114,7 +118,7 @@ impl HttpTransport for PgCountingEmbeddingTransport {
                     "id":OPENROUTER_EMBEDDING_MODEL_ID,
                     "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
                     "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-                    "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
+                    "pricing":{"prompt":"0","completion":"0","request":"0","image":"0","web_search":"0","internal_reasoning":"0","input_cache_read":"0","input_cache_write":"0"},
                     "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
                 }]}))
                 .unwrap(),
@@ -2944,6 +2948,7 @@ fn pg_provider_embedding_metadata_is_atomic_and_restart_safe() {
             history[0]["embedding"]["binding_sha256"],
             created["embedding"]["binding_sha256"]
         );
+        let receipt_tenant_id = scope.tenant_id.clone();
         let retrieval_request = MemoryRetrievalRequest {
             scope,
             run_id: format!("run-retrieve-{tag}"),
@@ -2966,12 +2971,29 @@ fn pg_provider_embedding_metadata_is_atomic_and_restart_safe() {
             restarted.retrieve_durable_memories(&retrieval_request, "pg-provider-memory-test")?;
         assert_eq!(duplicate.result_sha256, retrieval.result_sha256);
         assert_eq!(transport.posts.load(Ordering::SeqCst), 3);
-        let receipts = restarted.provider_embedding_receipt_evidence(100)?;
+        let receipts = restarted.authorized_provider_embedding_receipt_evidence(
+            100,
+            engine::storage::local_product_store::ProviderEmbeddingReceiptVisibility::TenantOperator {
+                tenant_id: receipt_tenant_id,
+            },
+        )?;
         assert!(receipts.iter().any(|receipt| {
             receipt["operation_kind"] == "retrieval_query"
                 && receipt["state"] == "succeeded"
                 && receipt["redacted"] == true
         }));
+        let hidden_receipts = restarted.authorized_provider_embedding_receipt_evidence(
+            100,
+            engine::storage::local_product_store::ProviderEmbeddingReceiptVisibility::Hidden,
+        )?;
+        assert!(hidden_receipts.is_empty());
+        let cross_tenant_receipts = restarted.authorized_provider_embedding_receipt_evidence(
+            100,
+            engine::storage::local_product_store::ProviderEmbeddingReceiptVisibility::TenantOperator {
+                tenant_id: "tenant-other".to_string(),
+            },
+        )?;
+        assert!(cross_tenant_receipts.is_empty());
         assert_eq!(restarted.check_integrity()?.status, "ok");
         let mut client =
             postgres::Client::connect(&url, postgres::NoTls).map_err(|error| error.to_string())?;

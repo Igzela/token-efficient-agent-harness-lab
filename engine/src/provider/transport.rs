@@ -22,6 +22,7 @@ pub struct HttpResponse {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum HttpError {
+    PreSend(String),
     Connection(String),
     Timeout(String),
     Http { status: u16, reason: String },
@@ -31,6 +32,7 @@ pub enum HttpError {
 impl std::fmt::Display for HttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            HttpError::PreSend(msg) => write!(f, "pre-send error: {msg}"),
             HttpError::Connection(msg) => write!(f, "connection error: {msg}"),
             HttpError::Timeout(msg) => write!(f, "timeout: {msg}"),
             HttpError::Http { status, reason } => write!(f, "HTTP {status}: {reason}"),

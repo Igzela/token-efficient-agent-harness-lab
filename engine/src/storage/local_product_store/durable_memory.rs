@@ -1486,6 +1486,7 @@ impl LocalProductStore {
                 })
             }
             Err(error) => {
+                let failed_before_send = error.failed_before_send();
                 let outcome_unknown = error.outcome_unknown();
                 let error = error.to_string();
                 let error_event = ProviderAuditEvent {
@@ -1499,11 +1500,24 @@ impl LocalProductStore {
                     cost: None,
                     currency: Some("USD".to_string()),
                     latency_ms: Some(started.elapsed().as_millis().min(i64::MAX as u128) as i64),
-                    error_domain: Some(provider_error_domain(&error).as_str().to_string()),
+                    error_domain: Some(
+                        if failed_before_send {
+                            ProviderEmbeddingErrorDomain::FailedBeforeSend
+                        } else {
+                            provider_error_domain(&error)
+                        }
+                        .as_str()
+                        .to_string(),
+                    ),
                     redaction_status: "redacted".to_string(),
                     created_at: self.now(),
                 };
-                self.fail_provider_embedding_operation(&operation, outcome_unknown, &error_event)?;
+                self.fail_provider_embedding_operation(
+                    &operation,
+                    failed_before_send,
+                    outcome_unknown,
+                    &error_event,
+                )?;
                 Err(error)
             }
         }
@@ -1555,7 +1569,9 @@ fn preflight_failure_event(
 }
 
 fn provider_error_domain(error: &str) -> ProviderEmbeddingErrorDomain {
-    if error.contains("redirect refused") {
+    if error.contains("request was not sent") {
+        ProviderEmbeddingErrorDomain::FailedBeforeSend
+    } else if error.contains("redirect refused") {
         ProviderEmbeddingErrorDomain::OutcomeUnknownRedirect
     } else if error.contains("oversized response") {
         ProviderEmbeddingErrorDomain::OutcomeUnknownOversized
@@ -3013,7 +3029,7 @@ mod tests {
                 "id":OPENROUTER_EMBEDDING_MODEL_ID,
                 "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
                 "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
+                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0","web_search":"0","internal_reasoning":"0","input_cache_read":"0","input_cache_write":"0"},
                 "architecture":{"input_modalities":["text","image"],"output_modalities":["embeddings"]}
             }]}))
             .unwrap(),
@@ -3049,6 +3065,28 @@ mod tests {
         posts: AtomicUsize,
     }
 
+    struct AmbiguousEmbeddingTransport {
+        posts: AtomicUsize,
+        status: u16,
+    }
+
+    struct KillAfterCatalogTransport {
+        posts: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for KillAfterCatalogTransport {
+        async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            if request.method == "GET" {
+                std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH", "1");
+                Ok(provider_catalog_response())
+            } else {
+                self.posts.fetch_add(1, Ordering::SeqCst);
+                Ok(provider_vector_response())
+            }
+        }
+    }
+
     #[async_trait::async_trait]
     impl HttpTransport for CountingEmbeddingTransport {
         async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
@@ -3057,6 +3095,25 @@ mod tests {
             } else if request.url.ends_with("/embeddings") && request.method == "POST" {
                 self.posts.fetch_add(1, Ordering::SeqCst);
                 Ok(provider_vector_response())
+            } else {
+                Err(HttpError::Connection(
+                    "unexpected fixture endpoint".to_string(),
+                ))
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for AmbiguousEmbeddingTransport {
+        async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            if request.url.ends_with("/embeddings/models") {
+                Ok(provider_catalog_response())
+            } else if request.url.ends_with("/embeddings") && request.method == "POST" {
+                self.posts.fetch_add(1, Ordering::SeqCst);
+                Err(HttpError::Http {
+                    status: self.status,
+                    reason: "untrusted ambiguous response".to_string(),
+                })
             } else {
                 Err(HttpError::Connection(
                     "unexpected fixture endpoint".to_string(),
@@ -3672,7 +3729,25 @@ mod tests {
             })
             .unwrap();
         assert_eq!(receipt_state, "succeeded");
-        let dashboard = store.dashboard_snapshot(20, "noop", false).unwrap();
+        let hidden_dashboard = store
+            .dashboard_snapshot(
+                20,
+                "noop",
+                false,
+                crate::storage::local_product_store::ProviderEmbeddingReceiptVisibility::Hidden,
+            )
+            .unwrap();
+        assert_eq!(hidden_dashboard["provider_embedding_receipts"], json!([]));
+        let dashboard = store
+            .dashboard_snapshot(
+                20,
+                "noop",
+                false,
+                crate::storage::local_product_store::ProviderEmbeddingReceiptVisibility::TenantOperator {
+                    tenant_id: request.scope.tenant_id.clone(),
+                },
+            )
+            .unwrap();
         let receipt = &dashboard["provider_embedding_receipts"][0];
         assert_eq!(receipt["state"], "succeeded");
         assert_eq!(receipt["operation_kind"], "retrieval_query");
@@ -3688,6 +3763,20 @@ mod tests {
         ] {
             assert!(!dashboard_json.contains(forbidden));
         }
+        let other_tenant_dashboard = store
+            .dashboard_snapshot(
+                20,
+                "noop",
+                false,
+                crate::storage::local_product_store::ProviderEmbeddingReceiptVisibility::TenantOperator {
+                    tenant_id: "tenant-other".to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            other_tenant_dashboard["provider_embedding_receipts"],
+            json!([])
+        );
         let duplicate = store.retrieve_durable_memories(&request, "test").unwrap();
         assert_eq!(duplicate.request_sha256, first.request_sha256);
         assert_eq!(duplicate.result_sha256, first.result_sha256);
@@ -4136,6 +4225,71 @@ mod tests {
     }
 
     #[test]
+    fn post_claim_kill_switch_is_failed_before_send_and_never_posts() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let transport = Arc::new(KillAfterCatalogTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let request = create(
+            "ws-provider-post-claim-kill",
+            "source-provider-post-claim-kill",
+            "bounded post claim kill switch",
+        );
+        let store = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("post-claim-kill.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            transport.clone(),
+        )
+        .unwrap();
+        let error = store.create_durable_memory(&request, "test").unwrap_err();
+        assert!(error.contains("kill switch"), "unexpected error: {error}");
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 0);
+        let memory_id = memory_id(&request).unwrap();
+        let (state, send_event_id): (String, Option<String>) = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT state,send_event_id FROM provider_embedding_operations WHERE target_memory_id=?1",
+                    [&memory_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(state, "failed_before_send");
+        assert!(send_event_id.is_some());
+        assert!(store
+            .provider_audit_events(10)
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event["event_type"] == "error"
+                    && event["error_domain"] == "provider_failed_before_send"
+            }));
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
+        std::env::remove_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH");
+        let retry = store
+            .reconcile_provider_embedding_operation(
+                &memory_id,
+                &super::super::provider_audit::ProviderEmbeddingResolutionRequest {
+                    target_version: 1,
+                    expected_attempt_count: 1,
+                    scope: request.scope.clone(),
+                    run_id: request.run_id.clone(),
+                    action: super::super::provider_audit::ProviderEmbeddingResolutionAction::RetryFailed,
+                    evidence_source_id: None,
+                    evidence_sha256: None,
+                    confirm_resolution: true,
+                },
+                "operator",
+            )
+            .unwrap();
+        assert_eq!(retry["state"], "retry_authorized");
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 0);
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
+    }
+
+    #[test]
     fn provider_embedding_failure_reconciliation_and_reembedding_are_owned() {
         use super::super::provider_audit::{
             ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
@@ -4151,7 +4305,11 @@ mod tests {
             Ok(provider_catalog_response()),
             Ok(HttpResponse {
                 status: 401,
-                body: br#"{"error":"fixture refusal"}"#.to_vec(),
+                body: format!(
+                    r#"{{"error":{{"code":401,"message":"redacted","metadata":{{"error_type":"authentication"}}}},"openrouter_metadata":{{"attempt":0,"requested":"{}"}}}}"#,
+                    crate::provider::embedding::OPENROUTER_EMBEDDING_MODEL_ID
+                )
+                .into_bytes(),
             }),
             Ok(provider_catalog_response()),
             Ok(provider_vector_response()),
@@ -4374,6 +4532,79 @@ mod tests {
                 .reconcile_provider_embedding_operation(&memory_id, &retry, "operator")
                 .unwrap_err()
                 .contains("state/action conflict"));
+        }
+    }
+
+    #[test]
+    fn ambiguous_post_is_not_replayed_by_concurrency_restart_or_reconciliation() {
+        use super::super::provider_audit::{
+            ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
+        };
+        let _env = ProviderEnvGuard::enabled();
+        for status in [400, 408, 429, 500, 502, 503, 504, 529] {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join(format!("provider-ambiguous-{status}.db"));
+            let request = create(
+                &format!("ws-provider-ambiguous-{status}"),
+                &format!("source-provider-ambiguous-{status}"),
+                "ambiguous provider outcome",
+            );
+            let transport = Arc::new(AmbiguousEmbeddingTransport {
+                posts: AtomicUsize::new(0),
+                status,
+            });
+            let store = Arc::new(
+                LocalProductStore::new_with_embedding_transport(
+                    &path,
+                    || "2026-07-15T00:00:00Z".to_string(),
+                    transport.clone(),
+                )
+                .unwrap(),
+            );
+            assert!(store
+                .create_durable_memory(&request, "test")
+                .unwrap_err()
+                .contains("outcome unknown"));
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    let store = Arc::clone(&store);
+                    let request = request.clone();
+                    scope.spawn(move || {
+                        assert!(store
+                            .create_durable_memory(&request, "test")
+                            .unwrap_err()
+                            .contains("outcome is unknown"));
+                    });
+                }
+            });
+            assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+            let memory_id = memory_id(&request).unwrap();
+            let retry = ProviderEmbeddingResolutionRequest {
+                target_version: 1,
+                expected_attempt_count: 1,
+                scope: request.scope.clone(),
+                run_id: request.run_id.clone(),
+                action: ProviderEmbeddingResolutionAction::RetryFailed,
+                evidence_source_id: None,
+                evidence_sha256: None,
+                confirm_resolution: true,
+            };
+            assert!(store
+                .reconcile_provider_embedding_operation(&memory_id, &retry, "operator")
+                .unwrap_err()
+                .contains("state/action conflict"));
+            drop(store);
+            let restarted = LocalProductStore::new_with_embedding_transport(
+                &path,
+                || "2026-07-16T00:00:00Z".to_string(),
+                transport.clone(),
+            )
+            .unwrap();
+            assert!(restarted
+                .create_durable_memory(&request, "test")
+                .unwrap_err()
+                .contains("outcome is unknown"));
+            assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
         }
     }
 

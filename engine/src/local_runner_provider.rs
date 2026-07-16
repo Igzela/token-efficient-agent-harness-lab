@@ -128,6 +128,7 @@ pub struct RunnerLimits {
     pub iterations: usize,
     pub max_calls: usize,
     pub max_tokens: i64,
+    pub max_output_tokens: i64,
     pub timeout_seconds: f64,
     pub run_cost_cap_usd: f64,
     pub daily_cost_cap_usd: f64,
@@ -140,6 +141,7 @@ impl Default for RunnerLimits {
             iterations: 10,
             max_calls: 40,
             max_tokens: 120000,
+            max_output_tokens: 1024,
             timeout_seconds: 30.0,
             run_cost_cap_usd: 0.25,
             daily_cost_cap_usd: 1.0,
@@ -186,7 +188,7 @@ fn runner_pricing_from_env() -> Option<RunnerPricing> {
     let pricing = provider_pricing_from_env();
     let (input_cost_per_1k, output_cost_per_1k) =
         pricing.input_cost_per_1k.zip(pricing.output_cost_per_1k)?;
-    (input_cost_per_1k > 0.0 && output_cost_per_1k > 0.0).then_some(RunnerPricing {
+    (input_cost_per_1k >= 0.0 && output_cost_per_1k >= 0.0).then_some(RunnerPricing {
         input_cost_per_1k,
         output_cost_per_1k,
     })
@@ -247,26 +249,81 @@ fn summarize_state(history: &[Value]) -> String {
 }
 
 fn make_prompt(mode: &str, iteration: usize, history: &[Value]) -> String {
-    let task =
-        "Find an integer candidate from 0 to 25 that maximizes a hidden deterministic score.";
-    if matches!(mode, "stateless_reread" | "full_history") {
-        let history_text = serde_json::to_string(history).unwrap_or_else(|_| "[]".to_string());
+    if matches!(mode, "static_all" | "deterministic_top_k") {
+        let descriptors = if mode == "static_all" {
+            "read, search, summarize, write"
+        } else {
+            "read, search, summarize"
+        };
+        let (task, required_tool) = if iteration == 0 {
+            ("inspect bounded evidence", "read")
+        } else {
+            ("locate an approved source identifier", "search")
+        };
         format!(
-            "Task: {task}\nIteration: {iteration}\nFull prior compact history: {history_text}\nReturn candidate=<number>."
-        )
-    } else if mode == "retrieval_memory" {
-        let best = summarize_state(history);
-        format!(
-            "Task: {task}\nIteration: {iteration}\nRetrieved bounded reference: {best}\nReturn candidate=<number>."
+            "Task: {task}. Required capability: {required_tool}.\nCanonical task index: {iteration}\nAvailable tool descriptors: {descriptors}\nInvoke exactly one available tool."
         )
     } else {
-        let state_summary = summarize_state(history);
-        let recent: Vec<&Value> = history.iter().rev().take(2).collect();
-        let recent_json = serde_json::to_string(&recent).unwrap_or_else(|_| "[]".to_string());
-        format!(
-            "Task: {task}\nIteration: {iteration}\nState summary: {state_summary}\nRecent window: {recent_json}\nReturn candidate=<number>."
+        let task =
+            "Find an integer candidate from 0 to 25 that maximizes a hidden deterministic score.";
+        if matches!(mode, "stateless_reread" | "full_history") {
+            let history_text = serde_json::to_string(history).unwrap_or_else(|_| "[]".to_string());
+            format!(
+            "Task: {task}\nIteration: {iteration}\nFull prior compact history: {history_text}\nReturn candidate=<number>."
         )
+        } else if mode == "retrieval_memory" {
+            let best = summarize_state(history);
+            format!(
+                "Task: {task}\nIteration: {iteration}\nRetrieved bounded reference: {best}\nReturn candidate=<number>."
+            )
+        } else {
+            let state_summary = summarize_state(history);
+            let recent: Vec<&Value> = history.iter().rev().take(2).collect();
+            let recent_json = serde_json::to_string(&recent).unwrap_or_else(|_| "[]".to_string());
+            format!(
+                "Task: {task}\nIteration: {iteration}\nState summary: {state_summary}\nRecent window: {recent_json}\nReturn candidate=<number>."
+            )
+        }
     }
+}
+
+fn tool_descriptors(mode: &str) -> Option<Value> {
+    let names: &[(&str, &str)] = match mode {
+        "static_all" => &[
+            ("read", "Read one approved bounded source"),
+            ("search", "Search approved source identifiers"),
+            ("summarize", "Summarize bounded approved evidence"),
+            ("write", "Write one approved bounded output"),
+        ],
+        "deterministic_top_k" => &[
+            ("read", "Read one approved bounded source"),
+            ("search", "Search approved source identifiers"),
+            ("summarize", "Summarize bounded approved evidence"),
+        ],
+        _ => return None,
+    };
+    Some(Value::Array(
+        names
+            .iter()
+            .map(|(name, description)| {
+                json!({
+                    "type":"function",
+                    "function":{
+                        "name":name,
+                        "description":description,
+                        "parameters":{"type":"object","properties":{},"additionalProperties":false}
+                    }
+                })
+            })
+            .collect(),
+    ))
+}
+
+fn selected_tool(output: &str) -> Option<String> {
+    let captures = regex::Regex::new(r"(?:^|;)tool=(read|search|summarize|write)(?:;|$)")
+        .expect("bounded tool regex")
+        .captures(output)?;
+    Some(captures[1].to_string())
 }
 
 fn provider_request_model<'a>(
@@ -390,6 +447,9 @@ fn run_mode_with_usage(
     provider: &Arc<dyn Provider>,
     usage: &mut RunnerUsage,
 ) -> Result<Value, String> {
+    if config.limits.max_output_tokens <= 0 {
+        return Err("output token limit must be positive".to_string());
+    }
     if !matches!(
         mode,
         "stateless_reread"
@@ -398,6 +458,8 @@ fn run_mode_with_usage(
             | "summary_memory"
             | "retrieval_memory"
             | "durable_state_bounded_recent"
+            | "static_all"
+            | "deterministic_top_k"
     ) {
         return Err(format!("unsupported mode: {mode}"));
     }
@@ -409,6 +471,8 @@ fn run_mode_with_usage(
     let mut mode_cost: f64 = 0.0;
     let mut best_score_val: f64 = 0.0;
     let mut status = "fail";
+    let mut selected_tool_ids = Vec::new();
+    let mut correct_tool_selections = 0_i64;
 
     for iteration in 0..config.limits.iterations {
         if config.provider_kind == ProviderKind::Live
@@ -441,7 +505,8 @@ fn run_mode_with_usage(
         if remaining_output_tokens <= 0 {
             return Err("token reservation would exceed run token limit".to_string());
         }
-        let request_max_output_tokens = std::cmp::min(1024, remaining_output_tokens);
+        let request_max_output_tokens =
+            std::cmp::min(config.limits.max_output_tokens, remaining_output_tokens);
 
         if config.provider_kind == ProviderKind::Live {
             let pricing = config.pricing.ok_or_else(|| {
@@ -472,6 +537,10 @@ fn run_mode_with_usage(
             "dispatch_id": format!("local-runner:{mode}:{iteration}"),
             "max_tokens": request_max_output_tokens,
         });
+        if let Some(tools) = tool_descriptors(mode) {
+            provider_req.metadata["tools"] = tools;
+            provider_req.metadata["tool_choice"] = json!("required");
+        }
 
         let timeout = Duration::try_from_secs_f64(config.limits.timeout_seconds)
             .map_err(|_| "timeout must be finite and positive".to_string())?;
@@ -506,6 +575,9 @@ fn run_mode_with_usage(
             }
             None => estimate_tokens(&prompt),
         };
+        if input_tokens < 0 {
+            return Err("provider returned negative input token usage".to_string());
+        }
         let output_tokens = match resp.output_tokens {
             Some(value) => value,
             None if config.provider_kind == ProviderKind::Live => {
@@ -513,6 +585,11 @@ fn run_mode_with_usage(
             }
             None => 0,
         };
+        if output_tokens < 0 || output_tokens > request_max_output_tokens {
+            return Err(
+                "provider output token usage exceeded the per-call output limit".to_string(),
+            );
+        }
         usage.tokens += input_tokens + output_tokens;
         let call_cost = match resp.estimated_cost {
             Some(cost) if cost.is_finite() && cost >= 0.0 => cost,
@@ -543,9 +620,28 @@ fn run_mode_with_usage(
         }
 
         let fallback_candidate = std::cmp::min(17, 3 + (iteration as i64) * 2);
+        let tool_id = selected_tool(&resp.output);
         let candidate = parse_candidate(&resp.output, fallback_candidate);
-        let score_val = score(candidate);
-        best_score_val = best_score_val.max(score_val);
+        let tool_mode = matches!(mode, "static_all" | "deterministic_top_k");
+        let score_val = if tool_mode {
+            let required_tool = if iteration == 0 { "read" } else { "search" };
+            if tool_id.as_deref() == Some(required_tool) {
+                correct_tool_selections += 1;
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            score(candidate)
+        };
+        best_score_val = if tool_mode {
+            correct_tool_selections as f64 / (iteration + 1) as f64
+        } else {
+            best_score_val.max(score_val)
+        };
+        if let Some(tool_id) = &tool_id {
+            selected_tool_ids.push(tool_id.clone());
+        }
 
         history.push(json!({
             "iteration": iteration as i64,
@@ -553,7 +649,7 @@ fn run_mode_with_usage(
             "score": score_val,
         }));
 
-        steps.push(build_step(
+        let mut step = build_step(
             mode,
             &run_id,
             iteration,
@@ -563,9 +659,20 @@ fn run_mode_with_usage(
             repeated_context_tokens,
             candidate,
             score_val,
-        ));
+        );
+        if let Some(tool_id) = tool_id {
+            step["selected_tool_id"] = json!(tool_id);
+        }
+        steps.push(step);
 
-        if best_score_val >= config.limits.pass_threshold {
+        if tool_mode {
+            if iteration == 1 {
+                if best_score_val >= config.limits.pass_threshold {
+                    status = "pass";
+                }
+                break;
+            }
+        } else if best_score_val >= config.limits.pass_threshold {
             status = "pass";
             break;
         }
@@ -618,6 +725,7 @@ fn run_mode_with_usage(
             "summary_memory" => "memory_digest",
             "retrieval_memory" => "retrieval_refs",
             "durable_state_bounded_recent" => "mixed",
+            "static_all" | "deterministic_top_k" => "none",
             _ => unreachable!(),
         },
         "status": status,
@@ -651,11 +759,14 @@ fn run_mode_with_usage(
             "model": request_model,
             "external_calls": steps.len() as i64,
             "final_best_score": best_score_val,
+            "selected_tool_ids": selected_tool_ids,
             "context_protocol": match mode {
                 "stateless_reread" | "full_history" => "full_history_reread",
                 "summary_memory" => "summary_memory",
                 "retrieval_memory" => "bounded_retrieval",
                 "stateful_store" | "durable_state_bounded_recent" => "durable_state_bounded_recent",
+                "static_all" => "static_all_tool_descriptors",
+                "deterministic_top_k" => "deterministic_top_k_tool_descriptors",
                 _ => unreachable!(),
             },
         },
@@ -760,13 +871,14 @@ fn build_live_openai_compatible_provider() -> Result<Arc<dyn Provider>, String> 
         "2026-01-01T00:00:00Z",
     );
     let pricing = provider_pricing_from_env();
-    let pricing_is_positive = pricing
+    let pricing_is_complete = pricing
         .input_cost_per_1k
         .zip(pricing.output_cost_per_1k)
-        .is_some_and(|(input, output)| input > 0.0 && output > 0.0);
-    if !pricing_is_positive {
+        .is_some_and(|(input, output)| input >= 0.0 && output >= 0.0);
+    if !pricing_is_complete {
         return Err(
-            "live local runner requires positive input and output provider pricing".to_string(),
+            "live local runner requires complete non-negative input and output provider pricing"
+                .to_string(),
         );
     }
     provider_config.apply_pricing(&pricing);
@@ -824,6 +936,7 @@ pub fn build_config(
             iterations,
             max_calls,
             max_tokens,
+            max_output_tokens: 1024,
             timeout_seconds,
             run_cost_cap_usd,
             daily_cost_cap_usd,
@@ -988,6 +1101,11 @@ mod tests {
         calls: Arc<AtomicUsize>,
     }
 
+    struct OutputLimitProvider {
+        observed_max_tokens: Arc<std::sync::atomic::AtomicI64>,
+        returned_output_tokens: i64,
+    }
+
     struct MissingUsageProvider {
         missing_input: bool,
     }
@@ -1018,6 +1136,34 @@ mod tests {
     }
 
     #[async_trait::async_trait]
+    impl Provider for OutputLimitProvider {
+        fn provider_id(&self) -> &str {
+            "output-limit-provider"
+        }
+
+        fn is_enabled(&self) -> bool {
+            true
+        }
+
+        async fn invoke(&self, request: &ProviderRequest) -> ProviderResult {
+            self.observed_max_tokens.store(
+                request.metadata["max_tokens"].as_i64().unwrap_or_default(),
+                Ordering::SeqCst,
+            );
+            Ok(ProviderResponse {
+                schema_version: "provider_response.v1".to_string(),
+                provider_id: self.provider_id().to_string(),
+                model: request.model.clone(),
+                output: "candidate=17".to_string(),
+                input_tokens: Some(10),
+                output_tokens: Some(self.returned_output_tokens),
+                estimated_cost: Some(0.0),
+                provider_request_id: None,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
     impl Provider for MissingUsageProvider {
         fn provider_id(&self) -> &str {
             "missing-usage-provider"
@@ -1036,7 +1182,7 @@ mod tests {
                 schema_version: "provider_response.v1".to_string(),
                 provider_id: self.provider_id().to_string(),
                 model: request.model.clone(),
-                output: "candidate=17".to_string(),
+                output: "tool=search;candidate=17".to_string(),
                 input_tokens: (!self.missing_input).then_some(10),
                 output_tokens: self.missing_input.then_some(2),
                 estimated_cost: Some(0.01),
@@ -1061,11 +1207,16 @@ mod tests {
 
         async fn invoke(&self, request: &ProviderRequest) -> ProviderResult {
             tokio::time::sleep(self.delay).await;
+            let selected_tool = if request.prompt.contains("Required capability: read") {
+                "read"
+            } else {
+                "search"
+            };
             Ok(ProviderResponse {
                 schema_version: "provider_response.v1".to_string(),
                 provider_id: self.provider_id().to_string(),
                 model: request.model.clone(),
-                output: "candidate=17".to_string(),
+                output: format!("tool={selected_tool};candidate=17"),
                 input_tokens: Some(10),
                 output_tokens: Some(2),
                 estimated_cost: self.estimated_cost,
@@ -1092,6 +1243,7 @@ mod tests {
                 iterations: 2,
                 max_calls: 4,
                 max_tokens: 1_000,
+                max_output_tokens: 1024,
                 timeout_seconds,
                 run_cost_cap_usd,
                 daily_cost_cap_usd: 1.0,
@@ -1339,6 +1491,39 @@ mod tests {
     }
 
     #[test]
+    fn live_provider_accepts_explicit_zero_pricing_without_invoking_network() {
+        with_env_lock(|| {
+            clear_live_env();
+            std::env::set_var(LOCAL_RUNNER_PROVIDER_TYPE_ENV, "openai_compatible");
+            std::env::set_var(LOCAL_RUNNER_BASE_URL_ENV, "https://api.example.test/v1");
+            std::env::set_var(LOCAL_RUNNER_MODEL_ENV, "free-model:free");
+            std::env::set_var(LOCAL_RUNNER_API_KEY_ENV_REF, "LOCAL_RUNNER_TEST_OPENAI_KEY");
+            std::env::set_var("LOCAL_RUNNER_TEST_OPENAI_KEY", "opaque-test-key");
+            std::env::set_var(
+                crate::provider::config::ACP_PROVIDER_INPUT_COST_PER_1K_USD,
+                "0",
+            );
+            std::env::set_var(
+                crate::provider::config::ACP_PROVIDER_OUTPUT_COST_PER_1K_USD,
+                "0",
+            );
+
+            assert_eq!(
+                runner_pricing_from_env(),
+                Some(RunnerPricing {
+                    input_cost_per_1k: 0.0,
+                    output_cost_per_1k: 0.0,
+                })
+            );
+            let provider =
+                build_live_provider(&live_config(), Some(&gates_with_provider()), audit_store())
+                    .unwrap();
+            assert_eq!(provider.default_model(), Some("free-model:free"));
+            clear_live_env();
+        });
+    }
+
+    #[test]
     fn live_provider_with_configured_instance_works() {
         let provider: Arc<dyn Provider> = Arc::new(FakeProvider::new("live-test"));
         let config = RunnerConfig {
@@ -1422,6 +1607,31 @@ mod tests {
     }
 
     #[test]
+    fn live_request_enforces_the_configured_output_limit() {
+        let observed = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let provider: Arc<dyn Provider> = Arc::new(OutputLimitProvider {
+            observed_max_tokens: Arc::clone(&observed),
+            returned_output_tokens: 2,
+        });
+        let (mut config, _) = scripted_runner(Duration::ZERO, 0.0, 1.0, 0.25);
+        config.limits.max_output_tokens = 256;
+        run_mode_with_daily_cost("full_history", &config, &provider, 0.0).unwrap();
+        assert_eq!(observed.load(Ordering::SeqCst), 256);
+    }
+
+    #[test]
+    fn live_response_rejects_usage_above_the_configured_output_limit() {
+        let provider: Arc<dyn Provider> = Arc::new(OutputLimitProvider {
+            observed_max_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            returned_output_tokens: 257,
+        });
+        let (mut config, _) = scripted_runner(Duration::ZERO, 0.0, 1.0, 0.25);
+        config.limits.max_output_tokens = 256;
+        let error = run_mode_with_daily_cost("full_history", &config, &provider, 0.0).unwrap_err();
+        assert!(error.contains("output token usage exceeded"));
+    }
+
+    #[test]
     fn run_pair_shares_the_run_cost_cap_across_modes() {
         let (config, provider) = scripted_runner(Duration::ZERO, 0.15, 1.0, 0.25);
 
@@ -1443,7 +1653,7 @@ mod tests {
             .unwrap(),
         );
         let (mut config, _provider) = scripted_runner(Duration::ZERO, 0.001, 1.0, 0.25);
-        config.limits.max_calls = 4;
+        config.limits.max_calls = 8;
         let provider =
             build_live_provider(&config, Some(&gates_with_provider()), store.clone()).unwrap();
         let results = run_live_modes_with_store(
@@ -1455,12 +1665,24 @@ mod tests {
                 "summary_memory",
                 "retrieval_memory",
                 "durable_state_bounded_recent",
+                "static_all",
+                "deterministic_top_k",
             ],
             0.05,
         )
         .unwrap();
-        assert_eq!(results.len(), 4);
-        assert_eq!(store.provider_audit_events(100).unwrap().len(), 8);
+        assert_eq!(results.len(), 6);
+        assert_eq!(results[4]["mode"], "static_all");
+        assert_eq!(results[5]["mode"], "deterministic_top_k");
+        assert_eq!(
+            results[4].pointer("/runner_metadata/selected_tool_ids"),
+            Some(&json!(["read", "search"]))
+        );
+        assert_eq!(
+            results[5].pointer("/runner_metadata/selected_tool_ids"),
+            Some(&json!(["read", "search"]))
+        );
+        assert_eq!(store.provider_audit_events(100).unwrap().len(), 16);
     }
 
     #[test]

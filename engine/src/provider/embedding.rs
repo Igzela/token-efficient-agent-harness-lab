@@ -1,4 +1,6 @@
-use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -38,6 +40,10 @@ const SUPPORTED_DURABLE_EMBEDDING_IDENTITIES: &[DurableEmbeddingIdentity] =
         completion_cost_per_token_usd: 0.0,
         request_cost_per_request_usd: 0.0,
         image_cost_per_image_usd: 0.0,
+        web_search_cost_per_request_usd: 0.0,
+        internal_reasoning_cost_per_token_usd: 0.0,
+        input_cache_read_cost_per_token_usd: 0.0,
+        input_cache_write_cost_per_token_usd: 0.0,
         currency: "USD",
         pricing_effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE,
         pricing_source: OPENROUTER_EMBEDDING_PRICING_SOURCE,
@@ -54,6 +60,10 @@ struct DurableEmbeddingIdentity {
     completion_cost_per_token_usd: f64,
     request_cost_per_request_usd: f64,
     image_cost_per_image_usd: f64,
+    web_search_cost_per_request_usd: f64,
+    internal_reasoning_cost_per_token_usd: f64,
+    input_cache_read_cost_per_token_usd: f64,
+    input_cache_write_cost_per_token_usd: f64,
     currency: &'static str,
     pricing_effective_date: &'static str,
     pricing_source: &'static str,
@@ -65,6 +75,8 @@ const DEFAULT_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_MAX_RETRIES: usize = 2;
 const DEFAULT_PER_CALL_CAP_USD: f64 = 0.01;
 const DEFAULT_DAILY_CAP_USD: f64 = 0.10;
+const TRANSPORT_WORKER_COUNT: usize = 4;
+const TRANSPORT_QUEUE_CAPACITY: usize = 32;
 
 #[cfg(test)]
 pub(crate) static EMBEDDING_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -76,6 +88,10 @@ pub struct EmbeddingPricingEvidence {
     pub completion_cost_per_token_usd: f64,
     pub request_cost_per_request_usd: f64,
     pub image_cost_per_image_usd: f64,
+    pub web_search_cost_per_request_usd: f64,
+    pub internal_reasoning_cost_per_token_usd: f64,
+    pub input_cache_read_cost_per_token_usd: f64,
+    pub input_cache_write_cost_per_token_usd: f64,
     pub request_max_price: EmbeddingPricingOverrides,
     pub currency: String,
     pub effective_date: String,
@@ -134,6 +150,10 @@ pub(crate) fn pinned_free_embedding_contract_evidence() -> EmbeddingContractEvid
         completion_cost_per_token_usd: 0.0,
         request_cost_per_request_usd: 0.0,
         image_cost_per_image_usd: 0.0,
+        web_search_cost_per_request_usd: 0.0,
+        internal_reasoning_cost_per_token_usd: 0.0,
+        input_cache_read_cost_per_token_usd: 0.0,
+        input_cache_write_cost_per_token_usd: 0.0,
         request_max_price: EmbeddingPricingOverrides::zero(),
         currency: "USD".to_string(),
         effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
@@ -196,6 +216,13 @@ fn pricing_matches_identity(
         && pricing.completion_cost_per_token_usd == identity.completion_cost_per_token_usd
         && pricing.request_cost_per_request_usd == identity.request_cost_per_request_usd
         && pricing.image_cost_per_image_usd == identity.image_cost_per_image_usd
+        && pricing.web_search_cost_per_request_usd == identity.web_search_cost_per_request_usd
+        && pricing.internal_reasoning_cost_per_token_usd
+            == identity.internal_reasoning_cost_per_token_usd
+        && pricing.input_cache_read_cost_per_token_usd
+            == identity.input_cache_read_cost_per_token_usd
+        && pricing.input_cache_write_cost_per_token_usd
+            == identity.input_cache_write_cost_per_token_usd
         && pricing.request_max_price == EmbeddingPricingOverrides::zero()
         && pricing.currency == identity.currency
         && pricing.effective_date == identity.pricing_effective_date
@@ -204,6 +231,7 @@ fn pricing_matches_identity(
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ProviderEmbeddingAttemptError {
+    FailedBeforeSend(String),
     Definitive(String),
     OutcomeUnknown(String),
 }
@@ -212,14 +240,18 @@ impl ProviderEmbeddingAttemptError {
     pub(crate) fn outcome_unknown(&self) -> bool {
         matches!(self, Self::OutcomeUnknown(_))
     }
+
+    pub(crate) fn failed_before_send(&self) -> bool {
+        matches!(self, Self::FailedBeforeSend(_))
+    }
 }
 
 impl std::fmt::Display for ProviderEmbeddingAttemptError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Definitive(message) | Self::OutcomeUnknown(message) => {
-                formatter.write_str(message)
-            }
+            Self::FailedBeforeSend(message)
+            | Self::Definitive(message)
+            | Self::OutcomeUnknown(message) => formatter.write_str(message),
         }
     }
 }
@@ -304,6 +336,7 @@ impl ProviderEmbeddingConfig {
 
 pub(crate) struct ProviderEmbeddingClient {
     transport: Arc<dyn HttpTransport>,
+    transport_executor: Option<Arc<BoundedTransportExecutor>>,
     catalog_circuit_breaker: Arc<CircuitBreaker>,
     embedding_circuit_breaker: Arc<CircuitBreaker>,
 }
@@ -318,6 +351,12 @@ impl ProviderEmbeddingClient {
     pub(crate) fn new(transport: Arc<dyn HttpTransport>) -> Self {
         Self {
             transport,
+            transport_executor: BoundedTransportExecutor::new(
+                TRANSPORT_WORKER_COUNT,
+                TRANSPORT_QUEUE_CAPACITY,
+            )
+            .ok()
+            .map(Arc::new),
             catalog_circuit_breaker: Arc::new(CircuitBreaker::new(
                 "openrouter-durable-memory-embedding-catalog",
                 3,
@@ -371,12 +410,12 @@ impl ProviderEmbeddingClient {
         config: &ProviderEmbeddingConfig,
         contract: &VerifiedEmbeddingContract,
     ) -> Result<ProviderEmbeddingOutput, ProviderEmbeddingAttemptError> {
-        validate_inputs(inputs).map_err(ProviderEmbeddingAttemptError::Definitive)?;
-        let boundary =
-            CredentialBoundary::new("env").map_err(ProviderEmbeddingAttemptError::Definitive)?;
+        validate_inputs(inputs).map_err(ProviderEmbeddingAttemptError::FailedBeforeSend)?;
+        let boundary = CredentialBoundary::new("env")
+            .map_err(ProviderEmbeddingAttemptError::FailedBeforeSend)?;
         let api_key = boundary
             .resolve(OPENROUTER_EMBEDDING_CREDENTIAL_ENV)
-            .map_err(ProviderEmbeddingAttemptError::Definitive)?;
+            .map_err(ProviderEmbeddingAttemptError::FailedBeforeSend)?;
         let body = json!({
             "model": OPENROUTER_EMBEDDING_MODEL_ID,
             "input": inputs,
@@ -400,7 +439,7 @@ impl ProviderEmbeddingClient {
                 headers: authorization_headers(&api_key),
                 body: Some(
                     serde_json::to_vec(&body).map_err(|error| {
-                        ProviderEmbeddingAttemptError::Definitive(error.to_string())
+                        ProviderEmbeddingAttemptError::FailedBeforeSend(error.to_string())
                     })?,
                 ),
                 timeout_secs: Some(config.timeout_ms as f64 / 1000.0),
@@ -416,7 +455,7 @@ impl ProviderEmbeddingClient {
         match result {
             Ok(output) => Ok(output),
             Err(CircuitBreakerError::CircuitOpen) => {
-                Err(ProviderEmbeddingAttemptError::Definitive(
+                Err(ProviderEmbeddingAttemptError::FailedBeforeSend(
                     "durable memory embedding provider circuit is open".to_string(),
                 ))
             }
@@ -438,7 +477,11 @@ impl ProviderEmbeddingClient {
             if std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH").as_deref() == Ok("1") {
                 return Err("durable memory embedding kill switch became active".to_string());
             }
-            match send_blocking(Arc::clone(&self.transport), request.clone()) {
+            match send_blocking(
+                self.transport_executor.as_ref(),
+                Arc::clone(&self.transport),
+                request.clone(),
+            ) {
                 Ok(response) => return Ok(response),
                 Err(error) if retryable_http_error(&error) && attempt < config.max_retries => {
                     let delay = Duration::from_millis(
@@ -457,27 +500,37 @@ impl ProviderEmbeddingClient {
         request: HttpRequest,
     ) -> Result<super::transport::HttpResponse, ProviderEmbeddingAttemptError> {
         if std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH").as_deref() == Ok("1") {
-            return Err(ProviderEmbeddingAttemptError::Definitive(
+            return Err(ProviderEmbeddingAttemptError::FailedBeforeSend(
                 "durable memory embedding kill switch became active".to_string(),
             ));
         }
-        match send_blocking(Arc::clone(&self.transport), request) {
+        match send_blocking(
+            self.transport_executor.as_ref(),
+            Arc::clone(&self.transport),
+            request,
+        ) {
             Ok(response) if (200..=299).contains(&response.status) => Ok(response),
-            Ok(response) if definitive_refusal_status(response.status) => Err(
-                ProviderEmbeddingAttemptError::Definitive(redacted_http_error(&HttpError::Http {
+            Ok(response) => {
+                let error = HttpError::Http {
                     status: response.status,
-                    reason: String::new(),
-                })),
-            ),
-            Ok(response) => Err(ProviderEmbeddingAttemptError::OutcomeUnknown(format!(
-                "embedding provider outcome unknown; automatic replay is forbidden (unexpected HTTP status {})",
-                response.status
-            ))),
-            Err(error @ HttpError::Http { status, .. }) if definitive_refusal_status(status) => {
-                Err(ProviderEmbeddingAttemptError::Definitive(
-                    redacted_http_error(&error),
-                ))
+                    reason: String::from_utf8_lossy(&response.body).into_owned(),
+                };
+                if proved_pre_effect_refusal(&error) {
+                    return Err(ProviderEmbeddingAttemptError::Definitive(
+                        redacted_http_error(&error),
+                    ));
+                }
+                Err(ProviderEmbeddingAttemptError::OutcomeUnknown(format!(
+                    "embedding provider outcome unknown; automatic replay is forbidden (unexpected HTTP status {})",
+                    response.status
+                )))
             }
+            Err(error) if proved_pre_effect_refusal(&error) => Err(
+                ProviderEmbeddingAttemptError::Definitive(redacted_http_error(&error)),
+            ),
+            Err(HttpError::PreSend(_)) => Err(ProviderEmbeddingAttemptError::FailedBeforeSend(
+                "embedding provider request was not sent".to_string(),
+            )),
             Err(error) => Err(ProviderEmbeddingAttemptError::OutcomeUnknown(format!(
                 "embedding provider outcome unknown; automatic replay is forbidden ({})",
                 outcome_unknown_transport_class(&error)
@@ -488,6 +541,7 @@ impl ProviderEmbeddingClient {
 
 fn outcome_unknown_transport_class(error: &HttpError) -> &'static str {
     match error {
+        HttpError::PreSend(_) => "request not sent",
         HttpError::Timeout(_) => "timeout after send",
         HttpError::Connection(_) => "connection lost after send",
         HttpError::Http {
@@ -500,11 +554,45 @@ fn outcome_unknown_transport_class(error: &HttpError) -> &'static str {
     }
 }
 
-fn definitive_refusal_status(status: u16) -> bool {
-    matches!(
+fn proved_pre_effect_refusal(error: &HttpError) -> bool {
+    let HttpError::Http { status, reason } = error else {
+        return false;
+    };
+    let Ok(body) = serde_json::from_str::<Value>(reason) else {
+        return false;
+    };
+    if body.pointer("/error/code").and_then(Value::as_u64) != Some(u64::from(*status)) {
+        return false;
+    }
+    if !matches!(
         status,
-        400..=407 | 409..=451
-    )
+        400 | 401 | 402 | 403 | 404 | 409 | 412 | 413 | 415 | 422 | 429
+    ) {
+        return false;
+    }
+    let error_type = body
+        .pointer("/error/metadata/error_type")
+        .and_then(Value::as_str);
+    let edge_refusal = matches!(
+        error_type,
+        Some(
+            "authentication"
+                | "payment_required"
+                | "invalid_request"
+                | "invalid_prompt"
+                | "not_found"
+                | "precondition_failed"
+                | "payload_too_large"
+                | "unprocessable"
+        )
+    );
+    let attempt = body
+        .pointer("/openrouter_metadata/attempt")
+        .and_then(Value::as_u64);
+    let requested = body
+        .pointer("/openrouter_metadata/requested")
+        .and_then(Value::as_str);
+    edge_refusal && attempt == Some(0) && requested == Some(OPENROUTER_EMBEDDING_MODEL_ID)
 }
 
 fn map_circuit_result<T>(result: Result<T, CircuitBreakerError<String>>) -> Result<T, String> {
@@ -517,20 +605,201 @@ fn map_circuit_result<T>(result: Result<T, CircuitBreakerError<String>>) -> Resu
     }
 }
 
+enum TransportTask {
+    Send {
+        transport: Arc<dyn HttpTransport>,
+        request: HttpRequest,
+        deadline: std::time::Instant,
+        response: mpsc::Sender<Result<super::transport::HttpResponse, HttpError>>,
+    },
+    Shutdown,
+}
+
+struct BoundedTransportExecutor {
+    sender: Option<mpsc::SyncSender<TransportTask>>,
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    liveness: Arc<AtomicUsize>,
+}
+
+impl BoundedTransportExecutor {
+    fn new(worker_count: usize, queue_capacity: usize) -> Result<Self, String> {
+        if worker_count == 0 || queue_capacity == 0 {
+            return Err("embedding transport executor bounds must be positive".to_string());
+        }
+        let (sender, receiver) = mpsc::sync_channel(queue_capacity);
+        let receiver = Arc::new(Mutex::new(receiver));
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(test)]
+        let liveness = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::with_capacity(worker_count);
+        let (startup_sender, startup_receiver) = mpsc::channel();
+        for index in 0..worker_count {
+            let receiver = Arc::clone(&receiver);
+            let shutdown = Arc::clone(&shutdown);
+            #[cfg(test)]
+            let liveness = Arc::clone(&liveness);
+            let startup_sender = startup_sender.clone();
+            let worker = std::thread::Builder::new()
+                .name(format!("provider-embedding-transport-{index}"))
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build();
+                    let Ok(runtime) = runtime else {
+                        let _ = startup_sender.send(false);
+                        return;
+                    };
+                    #[cfg(test)]
+                    liveness.fetch_add(1, Ordering::SeqCst);
+                    let _ = startup_sender.send(true);
+                    loop {
+                        let task = receiver
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .recv();
+                        match task {
+                            Ok(TransportTask::Send {
+                                transport,
+                                mut request,
+                                deadline,
+                                response,
+                            }) => {
+                                if shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                                    let _ = response.send(Err(HttpError::PreSend(
+                                        "embedding transport executor is shutting down".to_string(),
+                                    )));
+                                } else if std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH")
+                                    .as_deref()
+                                    == Ok("1")
+                                {
+                                    let _ = response.send(Err(HttpError::PreSend(
+                                        "embedding kill switch became active before network send"
+                                            .to_string(),
+                                    )));
+                                } else if let Some(remaining) =
+                                    deadline.checked_duration_since(std::time::Instant::now())
+                                {
+                                    request.timeout_secs = Some(remaining.as_secs_f64());
+                                    let _ =
+                                        response.send(runtime.block_on(transport.send(&request)));
+                                } else {
+                                    let _ = response.send(Err(HttpError::PreSend(
+                                        "embedding transport deadline expired before network send"
+                                            .to_string(),
+                                    )));
+                                }
+                            }
+                            Ok(TransportTask::Shutdown) | Err(_) => break,
+                        }
+                    }
+                    #[cfg(test)]
+                    liveness.fetch_sub(1, Ordering::SeqCst);
+                })
+                .map_err(|error| error.to_string())?;
+            workers.push(worker);
+        }
+        drop(startup_sender);
+        for _ in 0..worker_count {
+            if startup_receiver.recv().ok() != Some(true) {
+                for _ in 0..worker_count {
+                    let _ = sender.send(TransportTask::Shutdown);
+                }
+                for worker in workers {
+                    let _ = worker.join();
+                }
+                return Err("embedding transport worker initialization failed".to_string());
+            }
+        }
+        Ok(Self {
+            sender: Some(sender),
+            workers: Mutex::new(workers),
+            shutdown,
+            #[cfg(test)]
+            liveness,
+        })
+    }
+
+    fn send(
+        &self,
+        transport: Arc<dyn HttpTransport>,
+        request: HttpRequest,
+    ) -> Result<super::transport::HttpResponse, HttpError> {
+        let timeout = std::time::Duration::try_from_secs_f64(
+            request
+                .timeout_secs
+                .unwrap_or(DEFAULT_TIMEOUT_MS as f64 / 1000.0),
+        )
+        .map_err(|_| HttpError::Timeout("invalid embedding overall timeout".to_string()))?;
+        let deadline = std::time::Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| HttpError::Timeout("invalid embedding overall timeout".to_string()))?;
+        let (response_sender, response_receiver) = mpsc::channel();
+        self.sender
+            .as_ref()
+            .ok_or_else(|| {
+                HttpError::PreSend(
+                    "embedding transport executor stopped before admission".to_string(),
+                )
+            })?
+            .try_send(TransportTask::Send {
+                transport,
+                request,
+                deadline,
+                response: response_sender,
+            })
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => HttpError::PreSend(
+                    "embedding transport queue is full before network send".to_string(),
+                ),
+                mpsc::TrySendError::Disconnected(_) => HttpError::PreSend(
+                    "embedding transport executor stopped before admission".to_string(),
+                ),
+            })?;
+        response_receiver
+            .recv_timeout(timeout)
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => {
+                    HttpError::Timeout("embedding transport overall deadline exceeded".to_string())
+                }
+                mpsc::RecvTimeoutError::Disconnected => HttpError::Connection(
+                    "embedding transport worker stopped before response".to_string(),
+                ),
+            })?
+    }
+
+    #[cfg(test)]
+    fn liveness_probe(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.liveness)
+    }
+}
+
+impl Drop for BoundedTransportExecutor {
+    fn drop(&mut self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.sender.take();
+        let workers = self
+            .workers
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for worker in workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
 fn send_blocking(
+    executor: Option<&Arc<BoundedTransportExecutor>>,
     transport: Arc<dyn HttpTransport>,
     request: HttpRequest,
 ) -> Result<super::transport::HttpResponse, HttpError> {
-    std::thread::scope(|scope| {
-        scope
-            .spawn(move || {
-                tokio::runtime::Runtime::new()
-                    .map_err(|error| HttpError::Connection(error.to_string()))?
-                    .block_on(transport.send(&request))
-            })
-            .join()
-            .map_err(|_| HttpError::Connection("embedding transport worker panicked".to_string()))?
-    })
+    executor
+        .ok_or_else(|| {
+            HttpError::Connection("embedding transport executor unavailable".to_string())
+        })?
+        .send(transport, request)
 }
 
 fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
@@ -579,11 +848,20 @@ fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
         .get("pricing")
         .and_then(Value::as_object)
         .ok_or_else(|| "embedding provider pricing is unknown or incomplete".to_string())?;
-    let expected_fields = ["prompt", "completion", "request", "image"];
-    if pricing.len() != expected_fields.len()
-        || pricing
-            .keys()
-            .any(|key| !expected_fields.contains(&key.as_str()))
+    const KNOWN_FIELDS: &[&str] = &[
+        "prompt",
+        "completion",
+        "request",
+        "image",
+        "web_search",
+        "internal_reasoning",
+        "input_cache_read",
+        "input_cache_write",
+        "discount",
+    ];
+    if pricing
+        .keys()
+        .any(|key| !KNOWN_FIELDS.contains(&key.as_str()))
     {
         return Err(
             "embedding provider pricing contains an unknown or unmodelled charge field".to_string(),
@@ -593,7 +871,28 @@ fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
     let completion = parse_price(pricing.get("completion"))?;
     let request = parse_price(pricing.get("request"))?;
     let image = parse_price(pricing.get("image"))?;
-    if prompt != 0.0 || completion != 0.0 || request != 0.0 || image != 0.0 {
+    let web_search = parse_price(pricing.get("web_search"))?;
+    let internal_reasoning = parse_price(pricing.get("internal_reasoning"))?;
+    let input_cache_read = parse_price(pricing.get("input_cache_read"))?;
+    let input_cache_write = parse_price(pricing.get("input_cache_write"))?;
+    let discount = pricing
+        .get("discount")
+        .map(|value| parse_price(Some(value)))
+        .transpose()?;
+    if [
+        prompt,
+        completion,
+        request,
+        image,
+        web_search,
+        internal_reasoning,
+        input_cache_read,
+        input_cache_write,
+    ]
+    .into_iter()
+    .any(|price| price != 0.0)
+        || discount.is_some_and(|price| price != 0.0)
+    {
         return Err("pinned free embedding model pricing changed".to_string());
     }
     Ok(EmbeddingPricingEvidence {
@@ -601,6 +900,10 @@ fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
         completion_cost_per_token_usd: completion,
         request_cost_per_request_usd: request,
         image_cost_per_image_usd: image,
+        web_search_cost_per_request_usd: web_search,
+        internal_reasoning_cost_per_token_usd: internal_reasoning,
+        input_cache_read_cost_per_token_usd: input_cache_read,
+        input_cache_write_cost_per_token_usd: input_cache_write,
         request_max_price: EmbeddingPricingOverrides::zero(),
         currency: "USD".to_string(),
         effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
@@ -730,13 +1033,15 @@ fn authorization_headers(api_key: &str) -> Vec<(String, String)> {
     vec![
         ("Authorization".to_string(), format!("Bearer {api_key}")),
         ("content-type".to_string(), "application/json".to_string()),
+        ("X-OpenRouter-Metadata".to_string(), "enabled".to_string()),
     ]
 }
 
 fn retryable_http_error(error: &HttpError) -> bool {
     matches!(
         error,
-        HttpError::Timeout(_)
+        HttpError::PreSend(_)
+            | HttpError::Timeout(_)
             | HttpError::Connection(_)
             | HttpError::Http {
                 status: 429 | 500..=599,
@@ -747,6 +1052,7 @@ fn retryable_http_error(error: &HttpError) -> bool {
 
 fn redacted_http_error(error: &HttpError) -> String {
     match error {
+        HttpError::PreSend(_) => "embedding provider request was not sent".to_string(),
         HttpError::Http {
             status: 401 | 403, ..
         } => "embedding provider authentication refused".to_string(),
@@ -759,11 +1065,20 @@ fn redacted_http_error(error: &HttpError) -> String {
 }
 
 fn parse_price(value: Option<&Value>) -> Result<f64, String> {
-    let parsed = value
+    let raw = value
         .and_then(Value::as_str)
-        .and_then(|value| value.parse::<f64>().ok())
+        .ok_or_else(|| "embedding provider pricing is unknown or incomplete".to_string())?;
+    let parsed = raw
+        .parse::<f64>()
+        .ok()
         .filter(|value| value.is_finite() && *value >= 0.0)
         .ok_or_else(|| "embedding provider pricing is unknown or incomplete".to_string())?;
+    let significand = raw
+        .split_once(['e', 'E'])
+        .map_or(raw, |(significand, _)| significand);
+    if parsed == 0.0 && significand.bytes().any(|byte| matches!(byte, b'1'..=b'9')) {
+        return Err("embedding provider pricing underflowed exact zero".to_string());
+    }
     Ok(parsed)
 }
 
@@ -822,6 +1137,7 @@ fn sha256_json(value: &Value) -> String {
 mod tests {
     use super::*;
     use crate::provider::transport::{HttpResponse, MockTransport};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn catalog() -> HttpResponse {
         HttpResponse {
@@ -830,7 +1146,7 @@ mod tests {
                 "id": OPENROUTER_EMBEDDING_MODEL_ID,
                 "canonical_slug": OPENROUTER_EMBEDDING_CANONICAL_SLUG,
                 "context_length": OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
+                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0","web_search":"0","internal_reasoning":"0","input_cache_read":"0","input_cache_write":"0"},
                 "architecture":{"input_modalities":["text","image"],"output_modalities":["embeddings"]}
             }]}))
             .unwrap(),
@@ -865,7 +1181,9 @@ mod tests {
     }
     impl EnvGuard {
         fn enabled() -> Self {
-            let lock = EMBEDDING_TEST_ENV_LOCK.lock().unwrap();
+            let lock = EMBEDDING_TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let prior_key = std::env::var(OPENROUTER_EMBEDDING_CREDENTIAL_ENV).ok();
             let prior_kill_switch = std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH").ok();
             std::env::set_var(OPENROUTER_EMBEDDING_CREDENTIAL_ENV, "test-secret");
@@ -960,6 +1278,10 @@ mod tests {
             completion_cost_per_token_usd: 0.0,
             request_cost_per_request_usd: 0.0,
             image_cost_per_image_usd: 0.0,
+            web_search_cost_per_request_usd: 0.0,
+            internal_reasoning_cost_per_token_usd: 0.0,
+            input_cache_read_cost_per_token_usd: 0.0,
+            input_cache_write_cost_per_token_usd: 0.0,
             request_max_price: EmbeddingPricingOverrides::zero(),
             currency: "USD".to_string(),
             effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
@@ -997,6 +1319,10 @@ mod tests {
                 completion_cost_per_token_usd: 0.0,
                 request_cost_per_request_usd: 0.0,
                 image_cost_per_image_usd: 0.0,
+                web_search_cost_per_request_usd: 0.0,
+                internal_reasoning_cost_per_token_usd: 0.0,
+                input_cache_read_cost_per_token_usd: 0.0,
+                input_cache_write_cost_per_token_usd: 0.0,
                 request_max_price: EmbeddingPricingOverrides::zero(),
                 currency: "USD".to_string(),
                 effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
@@ -1013,7 +1339,14 @@ mod tests {
         let auth = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(vec![Err(
             HttpError::Http {
                 status: 401,
-                reason: "secret-shaped provider body".to_string(),
+                reason: json!({
+                    "error": {
+                        "code": 401,
+                        "message": "redacted",
+                        "metadata": {"error_type": "authentication"}
+                    }
+                })
+                .to_string(),
             },
         )])));
         assert_eq!(
@@ -1047,7 +1380,7 @@ mod tests {
             "id":OPENROUTER_EMBEDDING_MODEL_ID,
             "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
             "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-            "pricing":{"prompt":"0.0001","completion":"0","request":"0","image":"0"},
+            "pricing":{"prompt":"0.0001","completion":"0","request":"0","image":"0","web_search":"0","internal_reasoning":"0","input_cache_read":"0","input_cache_write":"0"},
             "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
         }]});
         assert!(validate_catalog(&serde_json::to_vec(&changed).unwrap())
@@ -1057,6 +1390,16 @@ mod tests {
 
     #[test]
     fn request_pricing_and_all_catalog_charge_fields_fail_closed() {
+        let mut incomplete_persisted =
+            serde_json::to_value(pinned_free_embedding_contract_evidence()).unwrap();
+        incomplete_persisted["pricing"]
+            .as_object_mut()
+            .unwrap()
+            .remove("web_search_cost_per_request_usd");
+        assert!(
+            serde_json::from_value::<EmbeddingContractEvidence>(incomplete_persisted).is_err(),
+            "persisted pricing evidence must not default a missing modeled dimension to zero"
+        );
         let base = json!({"data":[{
             "id":OPENROUTER_EMBEDDING_MODEL_ID,
             "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
@@ -1064,7 +1407,35 @@ mod tests {
             "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
             "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
         }]});
-        assert!(validate_catalog(&serde_json::to_vec(&base).unwrap()).is_ok());
+        assert!(
+            validate_catalog(&serde_json::to_vec(&base).unwrap()).is_err(),
+            "missing modeled pricing dimensions must fail closed"
+        );
+
+        let mut documented_zero_fields = base.clone();
+        documented_zero_fields["data"][0]["pricing"] = json!({
+            "prompt":"0","completion":"0","request":"0","image":"0",
+            "web_search":"0","internal_reasoning":"0",
+            "input_cache_read":"0","input_cache_write":"0"
+        });
+        assert!(
+            validate_catalog(&serde_json::to_vec(&documented_zero_fields).unwrap()).is_ok(),
+            "documented zero-price dimensions must not break a free catalog contract"
+        );
+        let mut zero_discount = documented_zero_fields.clone();
+        zero_discount["data"][0]["pricing"]["discount"] = json!("0");
+        assert!(validate_catalog(&serde_json::to_vec(&zero_discount).unwrap()).is_ok());
+        for discount in [json!("0.01"), json!("free"), Value::Null] {
+            let mut invalid_discount = documented_zero_fields.clone();
+            invalid_discount["data"][0]["pricing"]["discount"] = discount;
+            assert!(validate_catalog(&serde_json::to_vec(&invalid_discount).unwrap()).is_err());
+        }
+        let mut underflow_price = documented_zero_fields.clone();
+        underflow_price["data"][0]["pricing"]["request"] = json!("1e-9999");
+        assert!(
+            validate_catalog(&serde_json::to_vec(&underflow_price).unwrap()).is_err(),
+            "positive decimal prices must not underflow into free evidence"
+        );
 
         for (name, pricing) in [
             ("missing-request", json!({"prompt":"0","completion":"0"})),
@@ -1075,6 +1446,14 @@ mod tests {
             (
                 "unknown-paid-field",
                 json!({"prompt":"0","completion":"0","request":"0","future_charge":"0.01"}),
+            ),
+            (
+                "documented-paid-field",
+                json!({"prompt":"0","completion":"0","request":"0","image":"0","web_search":"0.01"}),
+            ),
+            (
+                "unknown-zero-field",
+                json!({"prompt":"0","completion":"0","request":"0","image":"0","future_charge":"0"}),
             ),
             (
                 "unparseable-field",
@@ -1105,6 +1484,10 @@ mod tests {
                 completion_cost_per_token_usd: 0.0,
                 request_cost_per_request_usd: 0.0,
                 image_cost_per_image_usd: 0.0,
+                web_search_cost_per_request_usd: 0.0,
+                internal_reasoning_cost_per_token_usd: 0.0,
+                input_cache_read_cost_per_token_usd: 0.0,
+                input_cache_write_cost_per_token_usd: 0.0,
                 request_max_price: EmbeddingPricingOverrides::zero(),
                 currency: "USD".to_string(),
                 effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
@@ -1152,6 +1535,300 @@ mod tests {
             assert!(failure.outcome_unknown());
             assert!(failure.to_string().contains(expected));
         }
+    }
+
+    #[test]
+    fn post_send_status_is_retryable_only_with_proved_pre_effect_evidence() {
+        let _guard = EnvGuard::enabled();
+        for status in [408, 425, 429, 500, 502, 503, 504, 529] {
+            let client = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(vec![Err(
+                HttpError::Http {
+                    status,
+                    reason: json!({
+                        "error": {"code": status, "message": "redacted"},
+                        "openrouter_metadata": {"attempt": 1}
+                    })
+                    .to_string(),
+                },
+            )])));
+            assert!(client
+                .send_embedding_once(HttpRequest {
+                    url: "https://example.invalid/embeddings".to_string(),
+                    method: "POST".to_string(),
+                    headers: Vec::new(),
+                    body: Some(Vec::new()),
+                    timeout_secs: Some(1.0),
+                })
+                .unwrap_err()
+                .outcome_unknown());
+        }
+
+        let client = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(vec![Err(
+            HttpError::Http {
+                status: 404,
+                reason: json!({
+                    "error": {
+                        "code": 404,
+                        "message": "redacted",
+                        "metadata": {"error_type": "not_found"}
+                    },
+                    "openrouter_metadata": {
+                        "requested": OPENROUTER_EMBEDDING_MODEL_ID,
+                        "attempt": 0
+                    }
+                })
+                .to_string(),
+            },
+        )])));
+        assert!(!client
+            .send_embedding_once(HttpRequest {
+                url: "https://example.invalid/embeddings".to_string(),
+                method: "POST".to_string(),
+                headers: Vec::new(),
+                body: Some(Vec::new()),
+                timeout_secs: Some(1.0),
+            })
+            .unwrap_err()
+            .outcome_unknown());
+
+        for (status, body) in [
+            (
+                401,
+                json!({
+                    "error": {
+                        "code": 401,
+                        "message": "redacted",
+                        "metadata": {"error_type": "authentication"}
+                    }
+                }),
+            ),
+            (
+                500,
+                json!({
+                    "error": {
+                        "code": 500,
+                        "message": "redacted",
+                        "metadata": {"error_type": "invalid_request"}
+                    }
+                }),
+            ),
+            (
+                503,
+                json!({
+                    "error": {"code": 503, "message": "redacted"},
+                    "openrouter_metadata": {
+                        "requested": OPENROUTER_EMBEDDING_MODEL_ID,
+                        "attempt": 0
+                    }
+                }),
+            ),
+        ] {
+            let client = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(vec![Err(
+                HttpError::Http {
+                    status,
+                    reason: body.to_string(),
+                },
+            )])));
+            assert!(client
+                .send_embedding_once(HttpRequest {
+                    url: "https://example.invalid/embeddings".to_string(),
+                    method: "POST".to_string(),
+                    headers: Vec::new(),
+                    body: Some(Vec::new()),
+                    timeout_secs: Some(1.0),
+                })
+                .unwrap_err()
+                .outcome_unknown());
+        }
+    }
+
+    #[test]
+    fn post_send_plain_four_xx_without_typed_evidence_is_unknown() {
+        let _guard = EnvGuard::enabled();
+        for status in [400, 401, 403, 404, 409, 413, 415, 422] {
+            let client = ProviderEmbeddingClient::new(Arc::new(MockTransport::new(vec![Err(
+                HttpError::Http {
+                    status,
+                    reason: "untrusted provider detail".to_string(),
+                },
+            )])));
+            assert!(client
+                .send_embedding_once(HttpRequest {
+                    url: "https://example.invalid/embeddings".to_string(),
+                    method: "POST".to_string(),
+                    headers: Vec::new(),
+                    body: Some(Vec::new()),
+                    timeout_secs: Some(1.0),
+                })
+                .unwrap_err()
+                .outcome_unknown());
+        }
+    }
+
+    struct ConcurrencyProbeTransport {
+        calls: AtomicUsize,
+        active: AtomicUsize,
+        maximum: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for ConcurrencyProbeTransport {
+        async fn send(&self, _request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.maximum.fetch_max(active, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(HttpResponse {
+                status: 200,
+                body: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn transport_executor_bounds_concurrency_and_shuts_down_workers() {
+        let _guard = EnvGuard::enabled();
+        let executor = Arc::new(BoundedTransportExecutor::new(2, 4).unwrap());
+        let liveness = executor.liveness_probe();
+        let admission_failures = Arc::new(AtomicUsize::new(0));
+        let unexpected_failures = Arc::new(AtomicUsize::new(0));
+        let transport = Arc::new(ConcurrencyProbeTransport {
+            calls: AtomicUsize::new(0),
+            active: AtomicUsize::new(0),
+            maximum: AtomicUsize::new(0),
+        });
+        std::thread::scope(|scope| {
+            for _ in 0..24 {
+                let executor = Arc::clone(&executor);
+                let transport = Arc::clone(&transport);
+                let admission_failures = Arc::clone(&admission_failures);
+                let unexpected_failures = Arc::clone(&unexpected_failures);
+                scope.spawn(move || {
+                    if let Err(error) = executor.send(
+                        transport,
+                        HttpRequest {
+                            url: "https://example.invalid/embeddings".to_string(),
+                            method: "POST".to_string(),
+                            headers: Vec::new(),
+                            body: Some(Vec::new()),
+                            timeout_secs: Some(1.0),
+                        },
+                    ) {
+                        if matches!(error, HttpError::PreSend(_)) {
+                            admission_failures.fetch_add(1, Ordering::SeqCst);
+                        } else {
+                            unexpected_failures.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                });
+            }
+        });
+        let observed_maximum = transport.maximum.load(Ordering::SeqCst);
+        assert!((1..=2).contains(&observed_maximum));
+        assert!(admission_failures.load(Ordering::SeqCst) > 0);
+        assert_eq!(unexpected_failures.load(Ordering::SeqCst), 0);
+        assert_eq!(liveness.load(Ordering::SeqCst), 2);
+        drop(executor);
+        assert_eq!(liveness.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn transport_executor_deadline_includes_worker_execution() {
+        let _guard = EnvGuard::enabled();
+        let executor = BoundedTransportExecutor::new(1, 1).unwrap();
+        let transport = Arc::new(ConcurrencyProbeTransport {
+            calls: AtomicUsize::new(0),
+            active: AtomicUsize::new(0),
+            maximum: AtomicUsize::new(0),
+        });
+        let started = std::time::Instant::now();
+        let error = executor
+            .send(
+                transport,
+                HttpRequest {
+                    url: "https://example.invalid/embeddings".to_string(),
+                    method: "POST".to_string(),
+                    headers: Vec::new(),
+                    body: Some(Vec::new()),
+                    timeout_secs: Some(0.005),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, HttpError::Timeout(_)));
+        assert!(started.elapsed() < Duration::from_millis(20));
+    }
+
+    #[test]
+    fn stopped_executor_before_admission_is_typed_pre_send() {
+        let mut executor = BoundedTransportExecutor::new(1, 1).unwrap();
+        executor.sender.take();
+        let error = executor
+            .send(
+                Arc::new(MockTransport::empty()),
+                HttpRequest {
+                    url: "https://example.invalid/embeddings".to_string(),
+                    method: "POST".to_string(),
+                    headers: Vec::new(),
+                    body: Some(Vec::new()),
+                    timeout_secs: Some(1.0),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, HttpError::PreSend(_)));
+    }
+
+    #[test]
+    fn expired_queued_transport_task_never_sends_after_caller_timeout() {
+        let _guard = EnvGuard::enabled();
+        let executor = Arc::new(BoundedTransportExecutor::new(1, 2).unwrap());
+        let transport = Arc::new(ConcurrencyProbeTransport {
+            calls: AtomicUsize::new(0),
+            active: AtomicUsize::new(0),
+            maximum: AtomicUsize::new(0),
+        });
+        std::thread::scope(|scope| {
+            let thread_executor = Arc::clone(&executor);
+            let thread_transport = Arc::clone(&transport);
+            scope.spawn(move || {
+                thread_executor
+                    .send(
+                        thread_transport,
+                        HttpRequest {
+                            url: "https://example.invalid/embeddings".to_string(),
+                            method: "POST".to_string(),
+                            headers: Vec::new(),
+                            body: Some(Vec::new()),
+                            timeout_secs: Some(1.0),
+                        },
+                    )
+                    .unwrap();
+            });
+            let start_deadline = std::time::Instant::now() + Duration::from_secs(1);
+            while transport.active.load(Ordering::SeqCst) == 0
+                && std::time::Instant::now() < start_deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(transport.active.load(Ordering::SeqCst), 1);
+            let error = executor
+                .send(
+                    Arc::clone(&transport) as Arc<dyn HttpTransport>,
+                    HttpRequest {
+                        url: "https://example.invalid/embeddings".to_string(),
+                        method: "POST".to_string(),
+                        headers: Vec::new(),
+                        body: Some(Vec::new()),
+                        timeout_secs: Some(0.005),
+                    },
+                )
+                .unwrap_err();
+            assert!(matches!(error, HttpError::Timeout(_)));
+        });
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.maximum.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.active.load(Ordering::SeqCst), 0);
     }
 
     #[test]

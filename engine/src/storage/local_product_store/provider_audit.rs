@@ -237,7 +237,24 @@ pub struct ProviderEmbeddingResolutionRequest {
 }
 
 impl LocalProductStore {
-    pub fn provider_embedding_receipt_evidence(&self, limit: i64) -> Result<Vec<Value>, String> {
+    pub fn authorized_provider_embedding_receipt_evidence(
+        &self,
+        limit: i64,
+        visibility: super::ProviderEmbeddingReceiptVisibility,
+    ) -> Result<Vec<Value>, String> {
+        match visibility {
+            super::ProviderEmbeddingReceiptVisibility::TenantOperator { tenant_id } => {
+                self.provider_embedding_receipt_evidence(limit, &tenant_id)
+            }
+            super::ProviderEmbeddingReceiptVisibility::Hidden => Ok(Vec::new()),
+        }
+    }
+
+    fn provider_embedding_receipt_evidence(
+        &self,
+        limit: i64,
+        tenant_id: &str,
+    ) -> Result<Vec<Value>, String> {
         let limit = limit.clamp(1, 100);
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -249,9 +266,10 @@ impl LocalProductStore {
                             o.result_id,o.result_sha256,e.error_domain,o.created_at,o.updated_at
                      FROM provider_embedding_operations o
                      LEFT JOIN provider_audit_events e ON e.event_id=o.outcome_event_id
-                     ORDER BY o.updated_at DESC,o.operation_id DESC LIMIT ?1",
+                     WHERE o.tenant_id=?1
+                     ORDER BY o.updated_at DESC,o.operation_id DESC LIMIT ?2",
                 ).map_err(|error|error.to_string())?;
-                let rows = statement.query_map([limit], |row| Ok(json!({
+                let rows = statement.query_map(rusqlite::params![tenant_id, limit], |row| Ok(json!({
                     "operation_id":row.get::<_,String>(0)?,"operation_kind":row.get::<_,String>(1)?,
                     "tenant_id":row.get::<_,String>(2)?,"workspace_id":row.get::<_,String>(3)?,
                     "run_id":row.get::<_,Option<String>>(4)?,"node_id":row.get::<_,Option<String>>(5)?,
@@ -277,7 +295,8 @@ impl LocalProductStore {
                             o.result_id,o.result_sha256,e.error_domain,o.created_at::TEXT,o.updated_at::TEXT
                      FROM provider_embedding_operations o
                      LEFT JOIN provider_audit_events e ON e.event_id=o.outcome_event_id
-                     ORDER BY o.updated_at DESC,o.operation_id DESC LIMIT $1", &[&limit],
+                     WHERE o.tenant_id=$1
+                     ORDER BY o.updated_at DESC,o.operation_id DESC LIMIT $2", &[&tenant_id, &limit],
                 ).map_err(|error|error.to_string()).map(|rows| rows.iter().map(|row| json!({
                     "operation_id":row.get::<_,String>(0),"operation_kind":row.get::<_,String>(1),
                     "tenant_id":row.get::<_,String>(2),"workspace_id":row.get::<_,String>(3),
@@ -1021,10 +1040,16 @@ impl LocalProductStore {
     pub(crate) fn fail_provider_embedding_operation(
         &self,
         operation: &ProviderEmbeddingOperation,
+        failed_before_send: bool,
         outcome_unknown: bool,
         error_event: &crate::provider::ProviderAuditEvent,
     ) -> Result<(), String> {
-        let state = if outcome_unknown {
+        if failed_before_send && outcome_unknown {
+            return Err("provider embedding failure classification is contradictory".to_string());
+        }
+        let state = if failed_before_send {
+            ProviderEmbeddingReceiptState::FailedBeforeSend
+        } else if outcome_unknown {
             ProviderEmbeddingReceiptState::OutcomeUnknown
         } else {
             ProviderEmbeddingReceiptState::FailedKnownOutcome
@@ -1041,7 +1066,19 @@ impl LocalProductStore {
             || error_event.provider_id != operation.provider_id
             || expected_error_id.as_deref() != Some(error_event.event_id.as_str())
             || error_event.redaction_status != "redacted"
-            || error_event.error_domain.is_none()
+            || error_event
+                .error_domain
+                .as_deref()
+                .and_then(ProviderEmbeddingErrorDomain::parse)
+                .is_none_or(|domain| {
+                    if failed_before_send {
+                        domain != ProviderEmbeddingErrorDomain::FailedBeforeSend
+                    } else if outcome_unknown {
+                        !domain.is_unknown_outcome()
+                    } else {
+                        !domain.is_known_outcome()
+                    }
+                })
         {
             return Err("invalid provider embedding failure audit event".to_string());
         }
@@ -1560,6 +1597,10 @@ fn validate_verified_free_embedding_reservation(
         || pricing.completion_cost_per_token_usd != 0.0
         || pricing.request_cost_per_request_usd != 0.0
         || pricing.image_cost_per_image_usd != 0.0
+        || pricing.web_search_cost_per_request_usd != 0.0
+        || pricing.internal_reasoning_cost_per_token_usd != 0.0
+        || pricing.input_cache_read_cost_per_token_usd != 0.0
+        || pricing.input_cache_write_cost_per_token_usd != 0.0
         || pricing.request_max_price
             != crate::provider::embedding::EmbeddingPricingOverrides::zero()
         || pricing.currency != "USD"
@@ -2230,4 +2271,54 @@ fn pg_provider_audit_rows(rows: Vec<postgres::Row>) -> Result<Vec<Value>, String
         }));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn zero_reservation() -> crate::provider::ProviderAuditEvent {
+        crate::provider::ProviderAuditEvent {
+            schema_version: "provider_audit_event.v1".to_string(),
+            event_id: "paudit-reservation-test".to_string(),
+            dispatch_id: "memory-embedding-test".to_string(),
+            provider_id: crate::provider::embedding::OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            event_type: "request_reserved".to_string(),
+            input_token_count: None,
+            output_token_count: None,
+            cost: Some(0.0),
+            currency: Some("USD".to_string()),
+            latency_ms: None,
+            error_domain: None,
+            redaction_status: "redacted".to_string(),
+            created_at: "2026-07-16T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn free_embedding_reservation_owner_checks_every_modeled_charge_dimension() {
+        let event = zero_reservation();
+        let mut pricing =
+            crate::provider::embedding::pinned_free_embedding_contract_evidence().pricing;
+        assert!(validate_verified_free_embedding_reservation(&event, &pricing).is_ok());
+        for mutate in [
+            |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
+                value.web_search_cost_per_request_usd = 0.000_001;
+            },
+            |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
+                value.internal_reasoning_cost_per_token_usd = 0.000_001;
+            },
+            |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
+                value.input_cache_read_cost_per_token_usd = 0.000_001;
+            },
+            |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
+                value.input_cache_write_cost_per_token_usd = 0.000_001;
+            },
+        ] {
+            let original = pricing.clone();
+            mutate(&mut pricing);
+            assert!(validate_verified_free_embedding_reservation(&event, &pricing).is_err());
+            pricing = original;
+        }
+    }
 }

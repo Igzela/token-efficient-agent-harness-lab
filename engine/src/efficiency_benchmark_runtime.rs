@@ -28,6 +28,7 @@ pub const STRATEGIES: [&str; 4] = [
     "retrieval_memory",
     "durable_state_bounded_recent",
 ];
+const TOOL_VARIANTS: [&str; 2] = ["static_all", "deterministic_top_k"];
 
 const MAX_FILE_BYTES: u64 = 1_048_576;
 const NATIVE_VERSION: &str = "native-efficiency-runtime.v1";
@@ -258,6 +259,9 @@ fn live_runtime(request: &Value) -> Result<LiveRuntime, String> {
         return Err("live benchmark audit store path is unsafe".to_string());
     }
     let max_calls = required_u64(limits, "max_calls")?;
+    if max_calls < ((STRATEGIES.len() + TOOL_VARIANTS.len()) * 2) as u64 {
+        return Err("live max_calls must cover every memory and tool variant".to_string());
+    }
     let max_tokens = required_u64(limits, "max_tokens")?;
     let timeout_seconds = required_f64(limits, "timeout_seconds")?;
     let run_cost_cap = required_f64(limits, "run_cost_cap_usd")?;
@@ -266,7 +270,7 @@ fn live_runtime(request: &Value) -> Result<LiveRuntime, String> {
     if per_call_cost_cap > run_cost_cap || run_cost_cap > daily_cost_cap {
         return Err("live cost caps must satisfy per-call <= run <= daily".to_string());
     }
-    let config = build_config(
+    let mut config = build_config(
         ProviderKind::Live,
         2,
         usize::try_from(max_calls).map_err(|_| "max_calls is out of range")?,
@@ -276,6 +280,8 @@ fn live_runtime(request: &Value) -> Result<LiveRuntime, String> {
         daily_cost_cap,
         0.9,
     )?;
+    config.limits.max_output_tokens = i64::try_from(required_u64(limits, "output_limit_tokens")?)
+        .map_err(|_| "output_limit_tokens is out of range")?;
     let store = Arc::new(LocalProductStore::new(audit_path)?);
     let audit_ids_before = store
         .provider_audit_events(10_000)?
@@ -524,6 +530,10 @@ fn native_strategy(request: &Value, strategy: &str, index: usize) -> Result<Valu
                 .get("max_tokens")
                 .and_then(Value::as_i64)
                 .unwrap_or(120_000),
+            max_output_tokens: limits
+                .get("output_limit_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(256),
             timeout_seconds: limits
                 .get("timeout_seconds")
                 .and_then(Value::as_f64)
@@ -648,7 +658,7 @@ fn adapter_request(
             "typed_result":{
                 "status":raw.get("status").cloned().unwrap_or(json!("fail")),
                 "decision_code":if raw.get("status").and_then(Value::as_str)==Some("pass") { "quality-gate-pass" } else { "quality-gate-fail" },
-                "selected_tool_ids":[],
+                "selected_tool_ids":raw.pointer("/runner_metadata/selected_tool_ids").cloned().unwrap_or(json!([])),
                 "quality_score":raw.get("quality_score").cloned().unwrap_or(Value::Null),
                 "quality_method":"bounded-rule-v1",
             },
@@ -666,6 +676,48 @@ fn adapter_request(
             },
         });
     }
+    let mut material = value.clone();
+    material.as_object_mut().unwrap().remove("request_sha256");
+    material.as_object_mut().unwrap().remove("invocation_id");
+    material
+        .as_object_mut()
+        .unwrap()
+        .remove("provider_exchange");
+    value["request_sha256"] = json!(sha256_value(&material, false)?);
+    Ok(value)
+}
+
+fn tool_adapter_request(
+    request: &Value,
+    variant: &str,
+    index: usize,
+    raw: &Value,
+) -> Result<Value, String> {
+    let mut value = adapter_request(request, "durable_state_bounded_recent", index, Some(raw))?;
+    let benchmark_run_id = required_str(request, "benchmark_run_id")?;
+    value["invocation_id"] = json!(format!("inv-{benchmark_run_id}-tool-{index}"));
+    value["node_id"] = json!(format!("tool-{index}"));
+    value["thread_id"] = json!(format!("tool-thread-{index}"));
+    let scope_material = json!({
+        "tenant_id":value["tenant_id"],
+        "workspace_id":value["workspace_id"],
+        "run_id":value["run_id"],
+        "workflow_id":value["workflow_id"],
+        "node_id":value["node_id"],
+        "thread_id":value["thread_id"],
+    });
+    value["scope_binding_sha256"] = json!(sha256_value(&scope_material, false)?);
+    value["benchmark"]["scenario_id"] = json!("bounded-tool-discovery");
+    value["benchmark"]["scenario_sha256"] = json!(sha256_bytes(b"bounded-tool-discovery"));
+    value["benchmark"]["task_sha256"] = json!(sha256_bytes(
+        format!("bounded-tool-discovery:{variant}").as_bytes()
+    ));
+    value["benchmark"]["required_reference_ids"] = json!([]);
+    value["benchmark"]["candidate_reference_ids"] = json!([]);
+    value["benchmark"]["selected_reference_ids"] = json!([]);
+    value["benchmark"]["stale_reference_ids"] = json!([]);
+    value["provider_exchange"]["invocation_id"] = value["invocation_id"].clone();
+    value["provider_exchange"]["scope_binding_sha256"] = value["scope_binding_sha256"].clone();
     let mut material = value.clone();
     material.as_object_mut().unwrap().remove("request_sha256");
     material.as_object_mut().unwrap().remove("invocation_id");
@@ -765,7 +817,12 @@ fn live_langgraph_strategy(
     )
 }
 
-fn tool_results(request: &Value, runtime: RuntimeKind) -> Result<Vec<Value>, String> {
+fn tool_results(
+    request: &Value,
+    runtime: RuntimeKind,
+    live_results: Option<&[Value]>,
+    adapter_results: Option<&[Value]>,
+) -> Result<Vec<Value>, String> {
     let benchmark_run_id = required_str(request, "benchmark_run_id")?;
     let descriptors = [
         ("read", "Read a bounded approved source"),
@@ -779,22 +836,67 @@ fn tool_results(request: &Value, runtime: RuntimeKind) -> Result<Vec<Value>, Str
         .collect::<Vec<_>>();
     let corpus_sha = sha256_value(&Value::Array(descriptor_hashes.clone()), false)?;
     let registry_sha = sha256_bytes(b"tool_discovery_scenarios.v1");
+    if live_results.is_some_and(|values| values.len() != TOOL_VARIANTS.len()) {
+        return Err("live tool discovery requires exactly two provider results".to_string());
+    }
+    if adapter_results.is_some_and(|values| values.len() != TOOL_VARIANTS.len()) {
+        return Err("LangGraph tool discovery requires exactly two adapter results".to_string());
+    }
+    let prompt_tokens = live_results.map_or_else(
+        || vec![100, 55],
+        |values| {
+            values
+                .iter()
+                .map(|value| value["input_token_total"].as_i64().unwrap_or(0))
+                .collect()
+        },
+    );
+    if prompt_tokens.iter().any(|value| *value <= 0) {
+        return Err("tool discovery requires positive prompt token evidence".to_string());
+    }
     let mut results = Vec::new();
     for (index, variant) in ["static_all", "deterministic_top_k"].iter().enumerate() {
-        let prompt = if index == 0 { 100 } else { 55 };
-        let card = scorecard(
+        let raw = live_results.map(|values| &values[index]);
+        let adapter_result_sha256 = adapter_results
+            .map(|values| {
+                values[index]["result_sha256"]
+                    .as_str()
+                    .ok_or_else(|| "LangGraph tool result hash is missing".to_string())
+            })
+            .transpose()?;
+        let prompt = prompt_tokens[index];
+        let output = raw
+            .and_then(|value| value["output_token_total"].as_i64())
+            .unwrap_or(8);
+        let duration = raw
+            .and_then(|value| value["duration_ms"].as_i64())
+            .unwrap_or(1)
+            .max(1);
+        let mut card = scorecard(
             request,
             runtime,
             &format!("{benchmark_run_id}-{}-tools-{index}", runtime.id()),
             "bounded-tool-discovery",
             "none",
             prompt,
-            8,
+            output,
             prompt,
             0,
             0,
-            1,
+            duration,
         )?;
+        if let Some(raw) = raw {
+            card["status"] = raw.get("status").cloned().unwrap_or(json!("fail"));
+            card["pass_fail_reason"] = raw
+                .get("pass_fail_reason")
+                .cloned()
+                .unwrap_or(json!("bounded provider tool run did not report a reason"));
+            card["quality_score"] = raw.get("quality_score").cloned().unwrap_or(Value::Null);
+            card["estimated_cost_usd"] = raw
+                .get("estimated_cost_usd")
+                .cloned()
+                .unwrap_or(Value::Null);
+        }
         let selected = if index == 0 {
             descriptors
                 .iter()
@@ -807,23 +909,61 @@ fn tool_results(request: &Value, runtime: RuntimeKind) -> Result<Vec<Value>, Str
                 json!({"tool_id": "summarize", "score": 0.7}),
             ]
         };
+        let provider_selected_tool_ids = match raw {
+            Some(value) => value
+                .pointer("/runner_metadata/selected_tool_ids")
+                .and_then(Value::as_array)
+                .filter(|values| values.len() == 2)
+                .and_then(|values| {
+                    values
+                        .iter()
+                        .map(|value| value.as_str().map(str::to_string))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .ok_or_else(|| {
+                    "live tool discovery requires two provider-selected tools".to_string()
+                })?,
+            None => vec!["read".to_string(), "search".to_string()],
+        };
+        let required_tools = ["read", "search"];
+        let correct_tool_selections = provider_selected_tool_ids
+            .iter()
+            .zip(required_tools)
+            .filter(|(selected, required)| selected.as_str() == *required)
+            .count();
+        let required_tool_recall = correct_tool_selections as f64 / required_tools.len() as f64;
+        let incorrect_tool_selection = (required_tools.len() - correct_tool_selections) as i64;
+        let prompt_reduction = if index == 0 {
+            0.0
+        } else {
+            ((prompt_tokens[0] - prompt_tokens[1]) as f64 / prompt_tokens[0] as f64 * 1_000_000.0)
+                .round()
+                / 1_000_000.0
+        };
+        let token_provenance = if raw.is_some() {
+            "provider_reported"
+        } else {
+            "harness_derived"
+        };
         results.push(json!({
             "variant": variant,
             "scorecard": card,
             "metrics": {
-                "required_tool_recall": measured(json!(1.0), "harness_derived"),
-                "incorrect_tool_selection": measured(json!(0), "harness_derived"),
-                "prompt_tokens": measured(json!(prompt), "harness_derived"),
-                "prompt_token_reduction": measured(json!(if index == 0 { 0.0 } else { 0.45 }), "harness_derived"),
-                "quality": measured(json!(1.0), "harness_derived"),
-                "latency_ms": measured(json!(1), "harness_derived"),
-                "cost_usd": measured(json!(derived_cost(prompt, 8, request)?), "estimated"),
+                "required_tool_recall": measured(json!(required_tool_recall), "harness_derived"),
+                "incorrect_tool_selection": measured(json!(incorrect_tool_selection), "harness_derived"),
+                "prompt_tokens": measured(json!(prompt), token_provenance),
+                "prompt_token_reduction": measured(json!(prompt_reduction), "harness_derived"),
+                "quality": measured(card["quality_score"].clone(), "harness_derived"),
+                "latency_ms": measured(json!(duration), "harness_derived"),
+                "cost_usd": measured(card["estimated_cost_usd"].clone(), "estimated"),
             },
             "corpus_sha256": corpus_sha,
             "registry_sha256": registry_sha,
             "retriever_version": "deterministic_descriptor_overlap.v1",
             "descriptor_hashes": descriptor_hashes,
             "selected_tools": selected,
+            "provider_selected_tool_ids": provider_selected_tool_ids,
+            "adapter_result_sha256": adapter_result_sha256,
         }));
     }
     Ok(results)
@@ -846,88 +986,119 @@ fn persist_benchmark_scorecards(
 pub fn execute(request: &Value, runtime: RuntimeKind) -> Result<Value, String> {
     validate_request(request)?;
     let live = required_str(request, "mode")? == "live";
-    let tool_discovery_results = tool_results(request, runtime)?;
-    let (strategy_results, external_provider_calls, audit_evidence) = if live {
-        let runtime_owner = live_runtime(request)?;
-        let raw_results = run_live_modes_with_store(
-            &runtime_owner.config,
-            &runtime_owner.provider,
-            &runtime_owner.store,
-            &STRATEGIES,
-            runtime_owner.per_call_cost_cap_usd,
-        )?;
-        let strategy_results = raw_results
-            .iter()
-            .enumerate()
-            .map(|(index, raw)| match runtime {
-                RuntimeKind::Native => {
-                    strategy_from_runner(request, runtime, STRATEGIES[index], index, raw, None)
-                }
-                RuntimeKind::LangGraph => {
-                    live_langgraph_strategy(request, STRATEGIES[index], index, raw)
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let external_provider_calls = raw_results
-            .iter()
-            .filter_map(|raw| {
-                raw.pointer("/runner_metadata/external_calls")
-                    .and_then(Value::as_i64)
-            })
-            .sum::<i64>();
-        if external_provider_calls <= 0 {
-            return Err("live benchmark produced no provider calls".to_string());
-        }
-        let audit_events = runtime_owner
-            .store
-            .provider_audit_events(10_000)?
-            .into_iter()
-            .filter(|event| {
-                event
-                    .get("event_id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| !runtime_owner.audit_ids_before.contains(id))
-            })
-            .collect::<Vec<_>>();
-        if audit_events.is_empty() {
-            return Err("live benchmark did not persist provider audit evidence".to_string());
-        }
-        persist_benchmark_scorecards(
-            &runtime_owner.store,
-            &strategy_results,
-            &tool_discovery_results,
-        )?;
-        let evidence_sha256 = sha256_value(&Value::Array(audit_events.clone()), false)?;
-        (
-            strategy_results,
-            external_provider_calls,
-            json!({
-                "schema_version":"efficiency_benchmark_audit_evidence.v1",
-                "event_count":audit_events.len(),
-                "evidence_sha256":evidence_sha256,
-                "store_kind":"app-owned-local-product-store",
-            }),
-        )
-    } else {
-        let strategy_results = STRATEGIES
-            .iter()
-            .enumerate()
-            .map(|(index, strategy)| match runtime {
-                RuntimeKind::Native => native_strategy(request, strategy, index),
-                RuntimeKind::LangGraph => langgraph_strategy(request, strategy, index),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        (
-            strategy_results,
-            0,
-            json!({
-                "schema_version": "efficiency_benchmark_audit_evidence.v1",
-                "event_count": 0,
-                "evidence_sha256": sha256_bytes(format!("fixture:{}", runtime.id()).as_bytes()),
-                "store_kind": "fixture-no-external-audit",
-            }),
-        )
-    };
+    let ((strategy_results, tool_discovery_results), external_provider_calls, audit_evidence) =
+        if live {
+            let runtime_owner = live_runtime(request)?;
+            let modes = STRATEGIES
+                .iter()
+                .chain(TOOL_VARIANTS.iter())
+                .copied()
+                .collect::<Vec<_>>();
+            let raw_results = run_live_modes_with_store(
+                &runtime_owner.config,
+                &runtime_owner.provider,
+                &runtime_owner.store,
+                &modes,
+                runtime_owner.per_call_cost_cap_usd,
+            )?;
+            let strategy_results = raw_results[..STRATEGIES.len()]
+                .iter()
+                .enumerate()
+                .map(|(index, raw)| match runtime {
+                    RuntimeKind::Native => {
+                        strategy_from_runner(request, runtime, STRATEGIES[index], index, raw, None)
+                    }
+                    RuntimeKind::LangGraph => {
+                        live_langgraph_strategy(request, STRATEGIES[index], index, raw)
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let tool_raw = &raw_results[STRATEGIES.len()..];
+            let adapter_tool_results = if runtime == RuntimeKind::LangGraph {
+                Some(
+                    tool_raw
+                        .iter()
+                        .enumerate()
+                        .map(|(index, raw)| {
+                            invoke_langgraph(&tool_adapter_request(
+                                request,
+                                TOOL_VARIANTS[index],
+                                index,
+                                raw,
+                            )?)
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                )
+            } else {
+                None
+            };
+            let tool_discovery_results = tool_results(
+                request,
+                runtime,
+                Some(tool_raw),
+                adapter_tool_results.as_deref(),
+            )?;
+            let external_provider_calls = raw_results
+                .iter()
+                .filter_map(|raw| {
+                    raw.pointer("/runner_metadata/external_calls")
+                        .and_then(Value::as_i64)
+                })
+                .sum::<i64>();
+            if external_provider_calls <= 0 {
+                return Err("live benchmark produced no provider calls".to_string());
+            }
+            let audit_events = runtime_owner
+                .store
+                .provider_audit_events(10_000)?
+                .into_iter()
+                .filter(|event| {
+                    event
+                        .get("event_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !runtime_owner.audit_ids_before.contains(id))
+                })
+                .collect::<Vec<_>>();
+            if audit_events.is_empty() {
+                return Err("live benchmark did not persist provider audit evidence".to_string());
+            }
+            persist_benchmark_scorecards(
+                &runtime_owner.store,
+                &strategy_results,
+                &tool_discovery_results,
+            )?;
+            let evidence_sha256 = sha256_value(&Value::Array(audit_events.clone()), false)?;
+            (
+                (strategy_results, tool_discovery_results),
+                external_provider_calls,
+                json!({
+                    "schema_version":"efficiency_benchmark_audit_evidence.v1",
+                    "event_count":audit_events.len(),
+                    "evidence_sha256":evidence_sha256,
+                    "store_kind":"app-owned-local-product-store",
+                }),
+            )
+        } else {
+            let strategy_results = STRATEGIES
+                .iter()
+                .enumerate()
+                .map(|(index, strategy)| match runtime {
+                    RuntimeKind::Native => native_strategy(request, strategy, index),
+                    RuntimeKind::LangGraph => langgraph_strategy(request, strategy, index),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let tool_discovery_results = tool_results(request, runtime, None, None)?;
+            (
+                (strategy_results, tool_discovery_results),
+                0,
+                json!({
+                    "schema_version": "efficiency_benchmark_audit_evidence.v1",
+                    "event_count": 0,
+                    "evidence_sha256": sha256_bytes(format!("fixture:{}", runtime.id()).as_bytes()),
+                    "store_kind": "fixture-no-external-audit",
+                }),
+            )
+        };
     let request_sha = sha256_value(request, true)?;
     let audit_evidence = if live {
         audit_evidence
@@ -1063,6 +1234,154 @@ mod tests {
             live_metrics["context_tokens"]["provenance"],
             "harness_derived"
         );
+    }
+
+    #[test]
+    fn live_tool_discovery_uses_provider_results_instead_of_fixture_metrics() {
+        let request = json!({
+            "benchmark_run_id":"provider-tool-run",
+            "comparison_contract": {
+                "provider_id": "openai_compatible",
+                "model_id": "fixed-free-model",
+                "tokenizer_id": "provider-reported",
+                "pricing_id": "catalog-bound-zero",
+                "input_cost_per_1k_usd": 0.0,
+                "output_cost_per_1k_usd": 0.0,
+                "quality_threshold": 0.9,
+                "evaluator_version": "bounded-rule-v1",
+                "retry_policy": "no-retry.v1",
+                "seed": 165,
+            }
+        });
+        let raw = [
+            json!({"input_token_total":80,"output_token_total":7,"duration_ms":21,"estimated_cost_usd":0.0,"status":"pass","pass_fail_reason":"provider quality passed","quality_score":1.0,"runner_metadata":{"selected_tool_ids":["read","search"]}}),
+            json!({"input_token_total":50,"output_token_total":6,"duration_ms":17,"estimated_cost_usd":0.0,"status":"pass","pass_fail_reason":"provider quality passed","quality_score":1.0,"runner_metadata":{"selected_tool_ids":["read","search"]}}),
+        ];
+        let results = tool_results(&request, RuntimeKind::Native, Some(&raw), None).unwrap();
+        assert_eq!(results[0]["metrics"]["prompt_tokens"]["value"], 80);
+        assert_eq!(
+            results[0]["metrics"]["prompt_tokens"]["provenance"],
+            "provider_reported"
+        );
+        assert_eq!(
+            results[1]["metrics"]["prompt_token_reduction"]["value"],
+            0.375
+        );
+        assert_eq!(results[1]["scorecard"]["duration_ms"], 17);
+
+        let mut missing_selection = raw.clone();
+        missing_selection[0]["runner_metadata"] = Value::Null;
+        assert!(tool_results(
+            &request,
+            RuntimeKind::Native,
+            Some(&missing_selection),
+            None
+        )
+        .unwrap_err()
+        .contains("provider-selected tool"));
+    }
+
+    fn langgraph_tool_bridge_fixture() -> (Value, Vec<Value>) {
+        let request = json!({
+            "benchmark_run_id":"provider-tool-adapter-run",
+            "comparison_contract": {
+                "provider_id": "openai_compatible",
+                "model_id": "fixed-free-model",
+                "tokenizer_id": "provider-reported",
+                "pricing_id": "catalog-bound-zero",
+                "input_cost_per_1k_usd": 0.0,
+                "output_cost_per_1k_usd": 0.0,
+                "quality_threshold": 0.9,
+                "evaluator_version": "bounded-rule-v1",
+                "retry_policy": "no-retry.v1",
+                "seed": 165,
+            }
+        });
+        let raw = json!({
+            "input_token_total": 50,
+            "output_token_total": 6,
+            "duration_ms": 17,
+            "estimated_cost_usd": 0.0,
+            "retry_count": 0,
+            "status": "pass",
+            "quality_score": 1.0,
+            "runner_metadata": {"selected_tool_ids": ["read", "search"]},
+        });
+        let raws = vec![raw.clone(), raw];
+        (request, raws)
+    }
+
+    fn langgraph_tool_adapter_results(
+        request: &Value,
+        raws: &[Value],
+        mut invoke: impl FnMut(&Value) -> Result<Value, String>,
+    ) -> Result<Vec<Value>, String> {
+        TOOL_VARIANTS
+            .iter()
+            .enumerate()
+            .map(|(index, variant)| {
+                let adapter_request = tool_adapter_request(request, variant, index, &raws[index])
+                    .expect("tool adapter request");
+                assert_eq!(
+                    adapter_request.pointer("/provider_exchange/typed_result/selected_tool_ids"),
+                    Some(&json!(["read", "search"]))
+                );
+                invoke(&adapter_request)
+            })
+            .collect()
+    }
+
+    fn assert_langgraph_tool_bridge_results(
+        request: &Value,
+        raws: &[Value],
+        adapter_results: &[Value],
+    ) {
+        let results = tool_results(
+            request,
+            RuntimeKind::LangGraph,
+            Some(raws),
+            Some(adapter_results),
+        )
+        .expect("LangGraph tool results");
+        for (result, adapter) in results.iter().zip(adapter_results) {
+            assert_eq!(
+                result["provider_selected_tool_ids"],
+                json!(["read", "search"])
+            );
+            assert_eq!(result["adapter_result_sha256"], adapter["result_sha256"]);
+        }
+    }
+
+    #[test]
+    fn langgraph_tool_result_binding_consumes_the_provider_selected_tool() {
+        let (request, raws) = langgraph_tool_bridge_fixture();
+        let adapter_results = langgraph_tool_adapter_results(&request, &raws, |adapter_request| {
+            Ok(json!({
+                    "result_sha256": sha256_value(adapter_request, false)
+                    .expect("bounded adapter result hash")
+            }))
+        })
+        .expect("synthetic adapter results");
+        assert_langgraph_tool_bridge_results(&request, &raws, &adapter_results);
+    }
+
+    #[test]
+    #[ignore = "requires the uv-managed LangGraph adapter"]
+    fn langgraph_tool_bridge_invokes_the_real_adapter() {
+        let (request, raws) = langgraph_tool_bridge_fixture();
+        let adapter_results = langgraph_tool_adapter_results(&request, &raws, invoke_langgraph)
+            .expect("real LangGraph adapter results");
+        for adapter in &adapter_results {
+            assert_eq!(
+                adapter.pointer("/scorecard_summary/selected_tool_count"),
+                Some(&json!(2))
+            );
+            assert_eq!(
+                adapter.pointer("/trace_summary/provider_exchanges_consumed"),
+                Some(&json!(1))
+            );
+        }
+        assert_langgraph_tool_bridge_results(&request, &raws, &adapter_results);
     }
 
     #[test]

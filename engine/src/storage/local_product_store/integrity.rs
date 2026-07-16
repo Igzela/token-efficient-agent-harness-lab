@@ -782,7 +782,6 @@ fn validate_provider_event_cross_owner(
         && operation.send_event_id.is_some();
     let state_event_binding_valid = match (operation.state.as_str(), event_type) {
         ("preflight_reserved", "contract_check_reserved")
-        | ("failed_before_send", "contract_check_reserved")
         | ("reserved", "request_reserved")
         | ("sending", "request_reserved" | "request_sent")
         | (
@@ -794,8 +793,17 @@ fn validate_provider_event_cross_owner(
             "outcome_unknown" | "outcome_unknown_acknowledged",
             "request_reserved" | "request_sent",
         ) => true,
+        ("failed_before_send", "contract_check_reserved") => operation.send_event_id.is_none(),
+        ("failed_before_send", "request_reserved" | "request_sent") => {
+            operation.send_event_id.is_some()
+        }
         ("failed_before_send", "error") => {
-            prefix == "paudit-contract-error-"
+            prefix
+                == if operation.send_event_id.is_some() {
+                    "paudit-error-"
+                } else {
+                    "paudit-contract-error-"
+                }
                 && typed_error_domain
                     == Some(super::provider_audit::ProviderEmbeddingErrorDomain::FailedBeforeSend)
         }
@@ -811,7 +819,12 @@ fn validate_provider_event_cross_owner(
                     == Some(super::provider_audit::ProviderEmbeddingErrorDomain::FailedBeforeSend)
         }
         ("retry_authorized", "error") if retry_from_post => {
-            prefix == "paudit-error-" && known_error_domain
+            prefix == "paudit-error-"
+                && (known_error_domain
+                    || typed_error_domain
+                        == Some(
+                            super::provider_audit::ProviderEmbeddingErrorDomain::FailedBeforeSend,
+                        ))
         }
         _ => false,
     };
@@ -1008,7 +1021,7 @@ fn validate_provider_embedding_operation_integrity(
             }
         }
         super::provider_audit::ProviderEmbeddingReceiptState::FailedBeforeSend
-            if row.send_event_id.is_some() || row.outcome_event_id.is_none() =>
+            if row.outcome_event_id.is_none() =>
         {
             return Err(failure("failed-before-send audit binding is invalid"));
         }
@@ -1327,6 +1340,10 @@ mod tests {
                     completion_cost_per_token_usd: 0.0,
                     request_cost_per_request_usd: 0.0,
                     image_cost_per_image_usd: 0.0,
+                    web_search_cost_per_request_usd: 0.0,
+                    internal_reasoning_cost_per_token_usd: 0.0,
+                    input_cache_read_cost_per_token_usd: 0.0,
+                    input_cache_write_cost_per_token_usd: 0.0,
                     request_max_price: crate::provider::embedding::EmbeddingPricingOverrides::zero(
                     ),
                     currency: "USD".to_string(),
@@ -1368,6 +1385,10 @@ mod tests {
                 completion_cost_per_token_usd: 0.0,
                 request_cost_per_request_usd: 0.0,
                 image_cost_per_image_usd: 0.0,
+                web_search_cost_per_request_usd: 0.0,
+                internal_reasoning_cost_per_token_usd: 0.0,
+                input_cache_read_cost_per_token_usd: 0.0,
+                input_cache_write_cost_per_token_usd: 0.0,
                 request_max_price: crate::provider::embedding::EmbeddingPricingOverrides::zero(),
                 currency: "USD".to_string(),
                 effective_date: "2026-07-15".to_string(),
