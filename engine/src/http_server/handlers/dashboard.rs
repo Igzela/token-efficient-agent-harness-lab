@@ -24,18 +24,28 @@ pub(crate) async fn api_dashboard(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
     let receipt_visibility = if context.scopes.contains("team:admin") {
-        ProviderEmbeddingReceiptVisibility::GlobalOperator
+        ProviderEmbeddingReceiptVisibility::TenantOperator {
+            tenant_id: context.tenant_id.clone(),
+        }
     } else {
         ProviderEmbeddingReceiptVisibility::Hidden
     };
+    let receipt_evidence_authorized = matches!(
+        receipt_visibility,
+        ProviderEmbeddingReceiptVisibility::TenantOperator { .. }
+    );
     let exec_type = state.executor_type();
     let execution_gates = state.effective_execution_gates();
     let prov_enabled = state.provider_enabled()
         || (execution_gates.provider_execution && state.adaptive_provider_executor.is_some());
-    let mut body = if let Some(store) = &state.local_store {
-        store
-            .dashboard_snapshot(20, exec_type, prov_enabled, receipt_visibility)
-            .map_err(internal_error)?
+    let mut body = if let Some(store) = state.local_store.clone() {
+        let exec_type = exec_type.to_string();
+        tokio::task::spawn_blocking(move || {
+            store.dashboard_snapshot(20, &exec_type, prov_enabled, receipt_visibility)
+        })
+        .await
+        .map_err(|error| internal_error(error.to_string()))?
+        .map_err(internal_error)?
     } else {
         json!({
             "schema_version": "local_dashboard.v1",
@@ -87,7 +97,7 @@ pub(crate) async fn api_dashboard(
     if let Some(object) = body.as_object_mut() {
         object.insert(
             "provider_embedding_receipts_authorized".to_string(),
-            json!(receipt_visibility == ProviderEmbeddingReceiptVisibility::GlobalOperator),
+            json!(receipt_evidence_authorized),
         );
         object
             .entry("provider_embedding_receipts".to_string())

@@ -186,7 +186,7 @@ fn runner_pricing_from_env() -> Option<RunnerPricing> {
     let pricing = provider_pricing_from_env();
     let (input_cost_per_1k, output_cost_per_1k) =
         pricing.input_cost_per_1k.zip(pricing.output_cost_per_1k)?;
-    (input_cost_per_1k > 0.0 && output_cost_per_1k > 0.0).then_some(RunnerPricing {
+    (input_cost_per_1k >= 0.0 && output_cost_per_1k >= 0.0).then_some(RunnerPricing {
         input_cost_per_1k,
         output_cost_per_1k,
     })
@@ -760,13 +760,14 @@ fn build_live_openai_compatible_provider() -> Result<Arc<dyn Provider>, String> 
         "2026-01-01T00:00:00Z",
     );
     let pricing = provider_pricing_from_env();
-    let pricing_is_positive = pricing
+    let pricing_is_complete = pricing
         .input_cost_per_1k
         .zip(pricing.output_cost_per_1k)
-        .is_some_and(|(input, output)| input > 0.0 && output > 0.0);
-    if !pricing_is_positive {
+        .is_some_and(|(input, output)| input >= 0.0 && output >= 0.0);
+    if !pricing_is_complete {
         return Err(
-            "live local runner requires positive input and output provider pricing".to_string(),
+            "live local runner requires complete non-negative input and output provider pricing"
+                .to_string(),
         );
     }
     provider_config.apply_pricing(&pricing);
@@ -1334,6 +1335,39 @@ mod tests {
             assert_eq!(provider.provider_id(), "local-runner-openai-compatible");
             assert!(provider.is_enabled());
             assert_eq!(provider.default_model(), Some("test-model"));
+            clear_live_env();
+        });
+    }
+
+    #[test]
+    fn live_provider_accepts_explicit_zero_pricing_without_invoking_network() {
+        with_env_lock(|| {
+            clear_live_env();
+            std::env::set_var(LOCAL_RUNNER_PROVIDER_TYPE_ENV, "openai_compatible");
+            std::env::set_var(LOCAL_RUNNER_BASE_URL_ENV, "https://api.example.test/v1");
+            std::env::set_var(LOCAL_RUNNER_MODEL_ENV, "free-model:free");
+            std::env::set_var(LOCAL_RUNNER_API_KEY_ENV_REF, "LOCAL_RUNNER_TEST_OPENAI_KEY");
+            std::env::set_var("LOCAL_RUNNER_TEST_OPENAI_KEY", "opaque-test-key");
+            std::env::set_var(
+                crate::provider::config::ACP_PROVIDER_INPUT_COST_PER_1K_USD,
+                "0",
+            );
+            std::env::set_var(
+                crate::provider::config::ACP_PROVIDER_OUTPUT_COST_PER_1K_USD,
+                "0",
+            );
+
+            assert_eq!(
+                runner_pricing_from_env(),
+                Some(RunnerPricing {
+                    input_cost_per_1k: 0.0,
+                    output_cost_per_1k: 0.0,
+                })
+            );
+            let provider =
+                build_live_provider(&live_config(), Some(&gates_with_provider()), audit_store())
+                    .unwrap();
+            assert_eq!(provider.default_model(), Some("free-model:free"));
             clear_live_env();
         });
     }

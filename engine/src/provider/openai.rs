@@ -124,11 +124,27 @@ impl Provider for OpenAiProvider {
             .and_then(|value| value.as_u64())
             .filter(|value| (1..=1_000_000).contains(value))
             .unwrap_or(1024);
-        let body = json!({
+        let mut body = json!({
             "model": request.model,
             "messages": [{"role": "user", "content": request.prompt}],
             "max_tokens": max_tokens,
         });
+        if self.config.base_url.trim_end_matches('/') == "https://openrouter.ai/api/v1"
+            && self.config.input_cost_per_1k == Some(0.0)
+            && self.config.output_cost_per_1k == Some(0.0)
+        {
+            body["provider"] = json!({
+                "only": ["Novita"],
+                "allow_fallbacks": false,
+                "require_parameters": true,
+                "max_price": {
+                    "prompt": 0,
+                    "completion": 0,
+                    "request": 0,
+                    "image": 0,
+                },
+            });
+        }
 
         let http_request = HttpRequest {
             url,
@@ -155,6 +171,29 @@ impl Provider for OpenAiProvider {
                 message: format!("failed to parse response: {e}"),
                 retryable: false,
             })?;
+
+        if self.config.base_url.trim_end_matches('/') == "https://openrouter.ai/api/v1"
+            && self.config.input_cost_per_1k == Some(0.0)
+            && self.config.output_cost_per_1k == Some(0.0)
+        {
+            let response_model = response_json.get("model").and_then(|value| value.as_str());
+            let expected_canonical = match request.model.as_str() {
+                "tencent/hy3:free" => Some("tencent/hy3-20260706"),
+                _ => None,
+            };
+            if response_model != Some(request.model.as_str())
+                && response_model != expected_canonical
+            {
+                return Err(ProviderError {
+                    schema_version: "provider_error.v1".to_string(),
+                    provider_id: self.config.provider_id.clone(),
+                    error_domain: "provider_identity".to_string(),
+                    message: "OpenRouter response model does not match the catalog-bound identity"
+                        .to_string(),
+                    retryable: false,
+                });
+            }
+        }
 
         let output = response_json["choices"][0]["message"]["content"]
             .as_str()
@@ -203,6 +242,22 @@ mod tests {
     use super::*;
     use crate::provider::transport::HttpResponse;
     use crate::provider::transport::MockTransport;
+    use std::sync::Mutex;
+
+    struct CapturingTransport {
+        request: Mutex<Option<HttpRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for CapturingTransport {
+        async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            *self.request.lock().unwrap() = Some(request.clone());
+            Ok(HttpResponse {
+                status: 200,
+                body: make_response_json().to_string().into_bytes(),
+            })
+        }
+    }
 
     fn make_config() -> ProviderConfig {
         ProviderConfig {
@@ -236,6 +291,7 @@ mod tests {
     fn make_response_json() -> serde_json::Value {
         json!({
             "id": "chatcmpl-123",
+            "model": "tencent/hy3-20260706",
             "choices": [{"message": {"content": "Hello from OpenAI"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5}
         })
@@ -276,6 +332,95 @@ mod tests {
         let cost = result.estimated_cost.unwrap();
         assert!((cost - 0.0006).abs() < 0.000001);
         std::env::remove_var("TEST_OPENAI_KEY_OK");
+    }
+
+    #[tokio::test]
+    async fn openrouter_free_request_disables_fallbacks_and_caps_every_request_price() {
+        std::env::set_var("TEST_OPENROUTER_FREE_KEY", "opaque-test-key");
+        let transport = Arc::new(CapturingTransport {
+            request: Mutex::new(None),
+        });
+        let mut config = make_config();
+        config.base_url = "https://openrouter.ai/api/v1".to_string();
+        config.model_id = "tencent/hy3:free".to_string();
+        config.credential_ref = "TEST_OPENROUTER_FREE_KEY".to_string();
+        config.input_cost_per_1k = Some(0.0);
+        config.output_cost_per_1k = Some(0.0);
+        let provider = OpenAiProvider::new(
+            config,
+            CredentialBoundary::new("env").unwrap(),
+            CredentialRef::new(
+                "TEST_OPENROUTER_FREE_KEY",
+                "env",
+                "***",
+                "provider:openrouter",
+                "2026-01-01T00:00:00Z",
+            ),
+            transport.clone(),
+            None,
+        );
+
+        provider
+            .invoke(&ProviderRequest::local_stub(
+                "openrouter-test",
+                "tencent/hy3:free",
+                "bounded",
+            ))
+            .await
+            .unwrap();
+
+        let captured = transport.request.lock().unwrap().clone().unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&captured.body.unwrap()).unwrap();
+        assert_eq!(body["model"], "tencent/hy3:free");
+        assert_eq!(body["provider"]["only"], json!(["Novita"]));
+        assert_eq!(body["provider"]["allow_fallbacks"], false);
+        assert_eq!(body["provider"]["require_parameters"], true);
+        assert_eq!(
+            body["provider"]["max_price"],
+            json!({"prompt":0,"completion":0,"request":0,"image":0})
+        );
+        std::env::remove_var("TEST_OPENROUTER_FREE_KEY");
+    }
+
+    #[tokio::test]
+    async fn openrouter_free_response_rejects_an_unbound_model_identity() {
+        std::env::set_var("TEST_OPENROUTER_IDENTITY_KEY", "opaque-test-key");
+        let mut response = make_response_json();
+        response["model"] = json!("different/model");
+        let transport = MockTransport::new(vec![Ok(HttpResponse {
+            status: 200,
+            body: response.to_string().into_bytes(),
+        })]);
+        let mut config = make_config();
+        config.base_url = "https://openrouter.ai/api/v1".to_string();
+        config.model_id = "tencent/hy3:free".to_string();
+        config.credential_ref = "TEST_OPENROUTER_IDENTITY_KEY".to_string();
+        config.input_cost_per_1k = Some(0.0);
+        config.output_cost_per_1k = Some(0.0);
+        let provider = OpenAiProvider::new(
+            config,
+            CredentialBoundary::new("env").unwrap(),
+            CredentialRef::new(
+                "TEST_OPENROUTER_IDENTITY_KEY",
+                "env",
+                "***",
+                "provider:openrouter",
+                "2026-01-01T00:00:00Z",
+            ),
+            Arc::new(transport),
+            None,
+        );
+        let error = provider
+            .invoke(&ProviderRequest::local_stub(
+                "openrouter-test",
+                "tencent/hy3:free",
+                "bounded",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(error.error_domain, "provider_identity");
+        assert!(!error.retryable);
+        std::env::remove_var("TEST_OPENROUTER_IDENTITY_KEY");
     }
 
     #[tokio::test]

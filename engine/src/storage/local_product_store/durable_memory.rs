@@ -3013,7 +3013,7 @@ mod tests {
                 "id":OPENROUTER_EMBEDDING_MODEL_ID,
                 "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
                 "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
+                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0","web_search":"0","internal_reasoning":"0","input_cache_read":"0","input_cache_write":"0"},
                 "architecture":{"input_modalities":["text","image"],"output_modalities":["embeddings"]}
             }]}))
             .unwrap(),
@@ -3710,7 +3710,9 @@ mod tests {
                 20,
                 "noop",
                 false,
-                crate::storage::local_product_store::ProviderEmbeddingReceiptVisibility::GlobalOperator,
+                crate::storage::local_product_store::ProviderEmbeddingReceiptVisibility::TenantOperator {
+                    tenant_id: request.scope.tenant_id.clone(),
+                },
             )
             .unwrap();
         let receipt = &dashboard["provider_embedding_receipts"][0];
@@ -3728,6 +3730,20 @@ mod tests {
         ] {
             assert!(!dashboard_json.contains(forbidden));
         }
+        let other_tenant_dashboard = store
+            .dashboard_snapshot(
+                20,
+                "noop",
+                false,
+                crate::storage::local_product_store::ProviderEmbeddingReceiptVisibility::TenantOperator {
+                    tenant_id: "tenant-other".to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            other_tenant_dashboard["provider_embedding_receipts"],
+            json!([])
+        );
         let duplicate = store.retrieve_durable_memories(&request, "test").unwrap();
         assert_eq!(duplicate.request_sha256, first.request_sha256);
         assert_eq!(duplicate.result_sha256, first.result_sha256);
@@ -4191,7 +4207,11 @@ mod tests {
             Ok(provider_catalog_response()),
             Ok(HttpResponse {
                 status: 401,
-                body: br#"{"error":{"code":401,"message":"redacted","metadata":{"error_type":"authentication"}}}"#.to_vec(),
+                body: format!(
+                    r#"{{"error":{{"code":401,"message":"redacted","metadata":{{"error_type":"authentication"}}}},"openrouter_metadata":{{"attempt":0,"requested":"{}"}}}}"#,
+                    crate::provider::embedding::OPENROUTER_EMBEDDING_MODEL_ID
+                )
+                .into_bytes(),
             }),
             Ok(provider_catalog_response()),
             Ok(provider_vector_response()),

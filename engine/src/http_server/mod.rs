@@ -916,7 +916,7 @@ pub fn openapi_document() -> serde_json::Value {
             "/api/v1/dashboard": {
                 "get": {
                     "summary": "Read local dashboard state from SQLite-backed runtime state",
-                    "description": "Requires health:read. Global provider-embedding receipt evidence is included only for team:admin; other callers receive an empty receipt view.",
+                    "description": "Requires health:read. Tenant-filtered provider-embedding receipt evidence is included only for team:admin within the authenticated tenant; other callers receive an empty receipt view.",
                     "responses": {"200": {"description": "Dashboard state"}}
                 }
             },

@@ -21,8 +21,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -57,6 +60,31 @@ MAX_TIMEOUT_SECONDS = 60.0
 MAX_CALLS = 64
 MAX_TOKENS = 200_000
 MAX_OUTPUT_TOKENS = 1_024
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
+OPENROUTER_HY3_ENDPOINTS_URL = (
+    f"{OPENROUTER_BASE_URL}/models/tencent/hy3:free/endpoints"
+)
+OPENROUTER_HY3_MODEL_ID = "tencent/hy3:free"
+OPENROUTER_HY3_CANONICAL_ID = "tencent/hy3-20260706"
+OPENROUTER_HY3_PROVIDER = "Novita"
+OPENROUTER_REQUIRED_PARAMETERS = {
+    "max_tokens",
+    "structured_outputs",
+    "tool_choice",
+    "tools",
+}
+OPENROUTER_KNOWN_PRICE_FIELDS = {
+    "prompt",
+    "completion",
+    "request",
+    "image",
+    "web_search",
+    "internal_reasoning",
+    "input_cache_read",
+    "input_cache_write",
+    "discount",
+}
 
 PRIMARY_STRATEGIES = (
     "full_history",
@@ -231,6 +259,155 @@ CANONICAL_DEFINITION: dict[str, Any] = {
 
 class BenchmarkError(ValueError):
     """Raised when execution or evidence fails the bounded contract."""
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
+def _fetch_bounded_catalog_json(url: str, timeout_seconds: float) -> dict[str, Any]:
+    if url not in {OPENROUTER_MODELS_URL, OPENROUTER_HY3_ENDPOINTS_URL}:
+        raise BenchmarkError("catalog URL is outside the fixed OpenRouter allowlist")
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json", "Accept-Encoding": "identity"},
+        method="GET",
+    )
+    opener = urllib.request.build_opener(_NoRedirect())
+    try:
+        with opener.open(request, timeout=min(timeout_seconds, 15.0)) as response:
+            if response.status != 200:
+                raise BenchmarkError(f"OpenRouter catalog returned HTTP {response.status}")
+            declared = response.headers.get("Content-Length")
+            if declared is not None and int(declared) > MAX_JSON_BYTES:
+                raise BenchmarkError("OpenRouter catalog exceeds the response-size ceiling")
+            content_encoding = response.headers.get("Content-Encoding")
+            if content_encoding not in (None, "", "identity"):
+                raise BenchmarkError("OpenRouter catalog returned an unexpected content encoding")
+            encoded = response.read(MAX_JSON_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code <= 399:
+            raise BenchmarkError("OpenRouter catalog redirect refused") from exc
+        raise BenchmarkError(f"OpenRouter catalog returned HTTP {exc.code}") from exc
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise BenchmarkError("OpenRouter catalog request failed") from exc
+    if not encoded or len(encoded) > MAX_JSON_BYTES:
+        raise BenchmarkError("OpenRouter catalog response is empty or oversized")
+    try:
+        value = json.loads(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BenchmarkError("OpenRouter catalog response is malformed") from exc
+    if not isinstance(value, dict):
+        raise BenchmarkError("OpenRouter catalog response must be an object")
+    return value
+
+
+CatalogFetcher = Callable[[str, float], dict[str, Any]]
+
+
+def _zero_pricing(value: Any, field: str) -> dict[str, float]:
+    if not isinstance(value, dict) or not value:
+        raise BenchmarkError(f"{field} pricing is missing")
+    unknown = set(value) - OPENROUTER_KNOWN_PRICE_FIELDS
+    if unknown:
+        raise BenchmarkError(f"{field} pricing contains unknown charge dimensions")
+    if not {"prompt", "completion"}.issubset(value):
+        raise BenchmarkError(f"{field} pricing is missing prompt or completion")
+    normalized: dict[str, float] = {}
+    for name, raw in value.items():
+        if isinstance(raw, bool):
+            raise BenchmarkError(f"{field} pricing contains malformed prices")
+        try:
+            parsed = Decimal(str(raw))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise BenchmarkError(f"{field} pricing contains malformed prices") from exc
+        if not parsed.is_finite() or parsed != Decimal(0):
+            raise BenchmarkError(f"{field} pricing is not completely free")
+        normalized[name] = 0.0
+    return {name: normalized[name] for name in sorted(normalized)}
+
+
+def _openrouter_hy3_catalog_evidence(
+    args: argparse.Namespace,
+    fetcher: CatalogFetcher,
+) -> dict[str, Any]:
+    if args.provider_base_url.rstrip("/") != OPENROUTER_BASE_URL:
+        raise BenchmarkError("free Hy3 live execution requires the official OpenRouter base URL")
+    if args.model != OPENROUTER_HY3_MODEL_ID:
+        raise BenchmarkError(f"free Hy3 live execution requires {OPENROUTER_HY3_MODEL_ID}")
+    if args.input_cost_per_1k_usd != 0.0 or args.output_cost_per_1k_usd != 0.0:
+        raise BenchmarkError("free Hy3 live execution requires explicit zero token prices")
+    models = fetcher(OPENROUTER_MODELS_URL, float(args.timeout_seconds))
+    rows = models.get("data")
+    if not isinstance(rows, list):
+        raise BenchmarkError("OpenRouter model catalog is missing data")
+    matches = [row for row in rows if isinstance(row, dict) and row.get("id") == args.model]
+    if len(matches) != 1:
+        raise BenchmarkError("OpenRouter catalog does not contain exactly one requested Hy3 model")
+    model = matches[0]
+    if model.get("canonical_slug") != OPENROUTER_HY3_CANONICAL_ID:
+        raise BenchmarkError("OpenRouter Hy3 canonical model identity changed")
+    context_length = model.get("context_length")
+    if not isinstance(context_length, int) or isinstance(context_length, bool):
+        raise BenchmarkError("OpenRouter Hy3 context length is malformed")
+    if context_length < args.max_tokens + args.output_limit_tokens:
+        raise BenchmarkError("OpenRouter Hy3 context is smaller than the benchmark contract")
+    parameters = model.get("supported_parameters")
+    if not isinstance(parameters, list) or not all(isinstance(item, str) for item in parameters):
+        raise BenchmarkError("OpenRouter Hy3 capabilities are malformed")
+    if not OPENROUTER_REQUIRED_PARAMETERS.issubset(parameters):
+        raise BenchmarkError("OpenRouter Hy3 lacks required benchmark capabilities")
+    model_pricing = _zero_pricing(model.get("pricing"), "OpenRouter model")
+
+    endpoint_document = fetcher(OPENROUTER_HY3_ENDPOINTS_URL, float(args.timeout_seconds))
+    endpoint_data = endpoint_document.get("data")
+    if not isinstance(endpoint_data, dict) or endpoint_data.get("id") != args.model:
+        raise BenchmarkError("OpenRouter endpoint catalog model identity changed")
+    endpoints = endpoint_data.get("endpoints")
+    if not isinstance(endpoints, list):
+        raise BenchmarkError("OpenRouter Hy3 endpoints are missing")
+    matching_endpoints = [
+        endpoint
+        for endpoint in endpoints
+        if isinstance(endpoint, dict)
+        and endpoint.get("provider_name") == OPENROUTER_HY3_PROVIDER
+        and endpoint.get("status") == 0
+    ]
+    if len(matching_endpoints) != 1:
+        raise BenchmarkError("OpenRouter Hy3 does not have exactly one healthy Novita endpoint")
+    endpoint = matching_endpoints[0]
+    endpoint_context = endpoint.get("context_length")
+    if not isinstance(endpoint_context, int) or endpoint_context < args.max_tokens + args.output_limit_tokens:
+        raise BenchmarkError("OpenRouter Hy3 endpoint context is insufficient")
+    endpoint_parameters = endpoint.get("supported_parameters")
+    if not isinstance(endpoint_parameters, list) or not OPENROUTER_REQUIRED_PARAMETERS.issubset(
+        endpoint_parameters
+    ):
+        raise BenchmarkError("OpenRouter Hy3 endpoint lacks required benchmark capabilities")
+    endpoint_pricing = _zero_pricing(endpoint.get("pricing"), "OpenRouter endpoint")
+    observed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    evidence = {
+        "schema_version": "openrouter_live_catalog_evidence.v1",
+        "observed_at": observed_at,
+        "requested_model_id": args.model,
+        "canonical_model_id": OPENROUTER_HY3_CANONICAL_ID,
+        "context_length": context_length,
+        "required_capabilities": sorted(OPENROUTER_REQUIRED_PARAMETERS),
+        "model_pricing": model_pricing,
+        "endpoint_provider": OPENROUTER_HY3_PROVIDER,
+        "endpoint_context_length": endpoint_context,
+        "endpoint_pricing": endpoint_pricing,
+        "request_routing": {
+            "only": [OPENROUTER_HY3_PROVIDER],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+            "max_price": {"completion": 0, "image": 0, "prompt": 0, "request": 0},
+        },
+        "source_urls": [OPENROUTER_MODELS_URL, OPENROUTER_HY3_ENDPOINTS_URL],
+    }
+    evidence["evidence_sha256"] = sha256_value(evidence)
+    return evidence
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -932,7 +1109,12 @@ def _tool_comparison(runtime_result: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_report(benchmark_run_id: str, mode: str, results: Mapping[str, dict[str, Any]]) -> dict[str, Any]:
+def build_report(
+    benchmark_run_id: str,
+    mode: str,
+    results: Mapping[str, dict[str, Any]],
+    catalog_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if set(results) != set(RUNTIME_KINDS):
         raise BenchmarkError("both native_harness and langgraph results are required")
     quality_results = {
@@ -975,6 +1157,7 @@ def build_report(benchmark_run_id: str, mode: str, results: Mapping[str, dict[st
         "read_only": True,
         "report_only": True,
         "target_repository_writes": "disabled",
+        "catalog_evidence": catalog_evidence,
         "acceptance_status": acceptance_status,
         "quality_failure_reasons": quality_failure_reasons,
         "incomparable_reasons": incomparable_reasons,
@@ -1285,31 +1468,42 @@ def execute(
     *,
     env: Mapping[str, str] | None = None,
     runner: RunCallable = subprocess.run,
+    catalog_fetcher: CatalogFetcher | None = None,
 ) -> tuple[dict[str, Any], Path]:
     environment = dict(os.environ if env is None else env)
     benchmark_run_id = _identifier(args.benchmark_run_id, "benchmark_run_id")
     _validate_common_args(args)
     _validate_live_args(args, environment)
+    catalog_evidence = None
+    effective_args = argparse.Namespace(**vars(args))
+    if args.mode == "live":
+        catalog_evidence = _openrouter_hy3_catalog_evidence(
+            args, catalog_fetcher or _fetch_bounded_catalog_json
+        )
+        effective_args.pricing_id = (
+            f"openrouter-catalog-sha256:{catalog_evidence['evidence_sha256']}"
+        )
+        effective_args.pricing_effective_date = catalog_evidence["observed_at"]
     results = {
         "native_harness": _invoke_runtime(
-            args.native_cli,
+            effective_args.native_cli,
             "native_harness",
-            args,
+            effective_args,
             benchmark_run_id,
             environment,
             runner,
         ),
         "langgraph": _invoke_runtime(
-            args.langgraph_adapter,
+            effective_args.langgraph_adapter,
             "langgraph",
-            args,
+            effective_args,
             benchmark_run_id,
             environment,
             runner,
         ),
     }
-    report = build_report(benchmark_run_id, args.mode, results)
-    path = _write_report(args.output_root, benchmark_run_id, report)
+    report = build_report(benchmark_run_id, args.mode, results, catalog_evidence)
+    path = _write_report(effective_args.output_root, benchmark_run_id, report)
     return report, path
 
 

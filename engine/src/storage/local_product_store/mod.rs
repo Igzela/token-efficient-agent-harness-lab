@@ -489,9 +489,9 @@ impl LocalProductStore {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderEmbeddingReceiptVisibility {
-    GlobalOperator,
+    TenantOperator { tenant_id: String },
     Hidden,
 }
 

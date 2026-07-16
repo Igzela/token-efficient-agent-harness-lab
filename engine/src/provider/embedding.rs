@@ -581,16 +581,13 @@ fn proved_pre_effect_refusal(error: &HttpError) -> bool {
                 | "unprocessable"
         )
     );
-    if edge_refusal {
-        return true;
-    }
     let attempt = body
         .pointer("/openrouter_metadata/attempt")
         .and_then(Value::as_u64);
     let requested = body
         .pointer("/openrouter_metadata/requested")
         .and_then(Value::as_str);
-    attempt == Some(0) && requested == Some(OPENROUTER_EMBEDDING_MODEL_ID)
+    edge_refusal && attempt == Some(0) && requested == Some(OPENROUTER_EMBEDDING_MODEL_ID)
 }
 
 fn map_circuit_result<T>(result: Result<T, CircuitBreakerError<String>>) -> Result<T, String> {
@@ -813,10 +810,10 @@ fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
     let completion = parse_price(pricing.get("completion"))?;
     let request = parse_price(pricing.get("request"))?;
     let image = parse_price(pricing.get("image"))?;
-    let web_search = parse_optional_zero_price(pricing.get("web_search"))?;
-    let internal_reasoning = parse_optional_zero_price(pricing.get("internal_reasoning"))?;
-    let input_cache_read = parse_optional_zero_price(pricing.get("input_cache_read"))?;
-    let input_cache_write = parse_optional_zero_price(pricing.get("input_cache_write"))?;
+    let web_search = parse_price(pricing.get("web_search"))?;
+    let internal_reasoning = parse_price(pricing.get("internal_reasoning"))?;
+    let input_cache_read = parse_price(pricing.get("input_cache_read"))?;
+    let input_cache_write = parse_price(pricing.get("input_cache_write"))?;
     if [
         prompt,
         completion,
@@ -1008,10 +1005,6 @@ fn parse_price(value: Option<&Value>) -> Result<f64, String> {
     Ok(parsed)
 }
 
-fn parse_optional_zero_price(value: Option<&Value>) -> Result<f64, String> {
-    value.map_or(Ok(0.0), |value| parse_price(Some(value)))
-}
-
 fn bounded_u64_env(key: &str, default: u64, min: u64, max: u64) -> Result<u64, String> {
     let value = std::env::var(key)
         .ok()
@@ -1076,7 +1069,7 @@ mod tests {
                 "id": OPENROUTER_EMBEDDING_MODEL_ID,
                 "canonical_slug": OPENROUTER_EMBEDDING_CANONICAL_SLUG,
                 "context_length": OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
+                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0","web_search":"0","internal_reasoning":"0","input_cache_read":"0","input_cache_write":"0"},
                 "architecture":{"input_modalities":["text","image"],"output_modalities":["embeddings"]}
             }]}))
             .unwrap(),
@@ -1310,7 +1303,7 @@ mod tests {
             "id":OPENROUTER_EMBEDDING_MODEL_ID,
             "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
             "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-            "pricing":{"prompt":"0.0001","completion":"0","request":"0","image":"0"},
+            "pricing":{"prompt":"0.0001","completion":"0","request":"0","image":"0","web_search":"0","internal_reasoning":"0","input_cache_read":"0","input_cache_write":"0"},
             "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
         }]});
         assert!(validate_catalog(&serde_json::to_vec(&changed).unwrap())
@@ -1327,7 +1320,10 @@ mod tests {
             "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
             "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
         }]});
-        assert!(validate_catalog(&serde_json::to_vec(&base).unwrap()).is_ok());
+        assert!(
+            validate_catalog(&serde_json::to_vec(&base).unwrap()).is_err(),
+            "missing modeled pricing dimensions must fail closed"
+        );
 
         let mut documented_zero_fields = base.clone();
         documented_zero_fields["data"][0]["pricing"] = json!({
@@ -1495,6 +1491,16 @@ mod tests {
             .outcome_unknown());
 
         for (status, body) in [
+            (
+                401,
+                json!({
+                    "error": {
+                        "code": 401,
+                        "message": "redacted",
+                        "metadata": {"error_type": "authentication"}
+                    }
+                }),
+            ),
             (
                 500,
                 json!({

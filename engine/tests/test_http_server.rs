@@ -13740,7 +13740,7 @@ async fn axum_managed_supervised_patch_run_rejects_authenticated_generic_mutatio
     assert_eq!(preserved["pause_reason"], "api_owned_supervised_patch");
 }
 #[tokio::test]
-async fn axum_dashboard_receipts_require_global_operator_scope() {
+async fn axum_dashboard_receipts_are_tenant_scoped_and_require_tenant_admin() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("dashboard-auth.db")).unwrap();
     let mut resolver = TenantResolver::new();

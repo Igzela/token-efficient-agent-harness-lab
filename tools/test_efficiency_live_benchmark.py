@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from typing import Any
 
@@ -274,9 +275,47 @@ class EfficiencyLiveBenchmarkTests(unittest.TestCase):
         for executable in (self.native, self.langgraph):
             executable.write_text("fixture executable", encoding="utf-8")
             executable.chmod(0o700)
+        self.catalog_patcher = mock.patch.object(
+            MODULE,
+            "_fetch_bounded_catalog_json",
+            side_effect=self.fake_catalog_fetch,
+        )
+        self.catalog_patcher.start()
 
     def tearDown(self) -> None:
+        self.catalog_patcher.stop()
         self.temp.cleanup()
+
+    @staticmethod
+    def fake_catalog_fetch(url: str, _timeout: float) -> dict[str, Any]:
+        if url == MODULE.OPENROUTER_MODELS_URL:
+            return {
+                "data": [
+                    {
+                        "id": MODULE.OPENROUTER_HY3_MODEL_ID,
+                        "canonical_slug": MODULE.OPENROUTER_HY3_CANONICAL_ID,
+                        "context_length": 262_144,
+                        "supported_parameters": sorted(MODULE.OPENROUTER_REQUIRED_PARAMETERS),
+                        "pricing": {"prompt": "0", "completion": "0"},
+                    }
+                ]
+            }
+        if url == MODULE.OPENROUTER_HY3_ENDPOINTS_URL:
+            return {
+                "data": {
+                    "id": MODULE.OPENROUTER_HY3_MODEL_ID,
+                    "endpoints": [
+                        {
+                            "provider_name": MODULE.OPENROUTER_HY3_PROVIDER,
+                            "status": 0,
+                            "context_length": 262_144,
+                            "supported_parameters": sorted(MODULE.OPENROUTER_REQUIRED_PARAMETERS),
+                            "pricing": {"prompt": "0", "completion": "0", "discount": 0},
+                        }
+                    ],
+                }
+            }
+        raise AssertionError(f"unexpected catalog URL: {url}")
 
     def args(self, *extra: str) -> Any:
         return MODULE.build_parser().parse_args(
@@ -303,9 +342,9 @@ class EfficiencyLiveBenchmarkTests(unittest.TestCase):
             "--provider",
             "openai_compatible",
             "--provider-base-url",
-            "https://provider.example/v1",
+            MODULE.OPENROUTER_BASE_URL,
             "--model",
-            "fixed-model-v1",
+            MODULE.OPENROUTER_HY3_MODEL_ID,
             "--tokenizer",
             "fixed-tokenizer-v1",
             "--credential-env",
@@ -319,9 +358,9 @@ class EfficiencyLiveBenchmarkTests(unittest.TestCase):
             "--pricing-effective-date",
             "2026-07-15T00:00:00Z",
             "--input-cost-per-1k-usd",
-            "0.001",
+            "0",
             "--output-cost-per-1k-usd",
-            "0.002",
+            "0",
             *extra,
         )
 
@@ -536,6 +575,60 @@ class EfficiencyLiveBenchmarkTests(unittest.TestCase):
         contract = report["runtime_evidence"]["native_harness"]["comparison_contract"]
         self.assertEqual(contract["input_cost_per_1k_usd"], 0.0)
         self.assertEqual(contract["output_cost_per_1k_usd"], 0.0)
+        evidence = report["catalog_evidence"]
+        self.assertEqual(evidence["requested_model_id"], MODULE.OPENROUTER_HY3_MODEL_ID)
+        self.assertEqual(evidence["canonical_model_id"], MODULE.OPENROUTER_HY3_CANONICAL_ID)
+        self.assertEqual(
+            contract["pricing_id"],
+            f"openrouter-catalog-sha256:{evidence['evidence_sha256']}",
+        )
+        self.assertEqual(evidence["request_routing"]["max_price"]["request"], 0)
+
+    def test_openrouter_catalog_pricing_accepts_known_extra_zero_fields(self) -> None:
+        def fetch(url: str, timeout: float) -> dict[str, Any]:
+            document = copy.deepcopy(self.fake_catalog_fetch(url, timeout))
+            if url == MODULE.OPENROUTER_MODELS_URL:
+                document["data"][0]["pricing"].update({"request": "0", "image": 0})
+            return document
+
+        evidence = MODULE._openrouter_hy3_catalog_evidence(self.live_args(), fetch)
+        self.assertEqual(evidence["model_pricing"]["request"], 0.0)
+        self.assertEqual(evidence["model_pricing"]["image"], 0.0)
+
+    def test_openrouter_catalog_pricing_fails_closed(self) -> None:
+        cases = (
+            ("unknown", {"surprise_charge": "0"}, "unknown charge dimensions"),
+            ("nonzero", {"request": "0.000001"}, "not completely free"),
+            ("malformed", {"request": "not-a-price"}, "malformed prices"),
+        )
+        for name, added, error in cases:
+            def fetch(url: str, timeout: float, added: dict[str, Any] = added) -> dict[str, Any]:
+                document = copy.deepcopy(self.fake_catalog_fetch(url, timeout))
+                if url == MODULE.OPENROUTER_MODELS_URL:
+                    document["data"][0]["pricing"].update(added)
+                return document
+
+            with self.subTest(name=name), self.assertRaisesRegex(MODULE.BenchmarkError, error):
+                MODULE._openrouter_hy3_catalog_evidence(self.live_args(), fetch)
+
+    def test_openrouter_catalog_rejects_model_rotation_and_incomplete_pricing(self) -> None:
+        def rotated(url: str, timeout: float) -> dict[str, Any]:
+            document = copy.deepcopy(self.fake_catalog_fetch(url, timeout))
+            if url == MODULE.OPENROUTER_MODELS_URL:
+                document["data"][0]["canonical_slug"] = "tencent/hy3-rotated"
+            return document
+
+        with self.assertRaisesRegex(MODULE.BenchmarkError, "canonical model identity changed"):
+            MODULE._openrouter_hy3_catalog_evidence(self.live_args(), rotated)
+
+        def incomplete(url: str, timeout: float) -> dict[str, Any]:
+            document = copy.deepcopy(self.fake_catalog_fetch(url, timeout))
+            if url == MODULE.OPENROUTER_MODELS_URL:
+                document["data"][0]["pricing"] = {"prompt": "0"}
+            return document
+
+        with self.assertRaisesRegex(MODULE.BenchmarkError, "missing prompt or completion"):
+            MODULE._openrouter_hy3_catalog_evidence(self.live_args(), incomplete)
 
     def test_live_mode_rejects_negative_token_prices(self) -> None:
         with self.assertRaisesRegex(MODULE.BenchmarkError, "input price"):
