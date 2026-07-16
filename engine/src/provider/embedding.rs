@@ -1778,6 +1778,7 @@ mod tests {
 
     #[test]
     fn expired_queued_transport_task_never_sends_after_caller_timeout() {
+        let _guard = EnvGuard::enabled();
         let executor = Arc::new(BoundedTransportExecutor::new(1, 2).unwrap());
         let transport = Arc::new(ConcurrencyProbeTransport {
             calls: AtomicUsize::new(0),
@@ -1801,9 +1802,13 @@ mod tests {
                     )
                     .unwrap();
             });
-            while transport.active.load(Ordering::SeqCst) == 0 {
-                std::thread::yield_now();
+            let start_deadline = std::time::Instant::now() + Duration::from_secs(1);
+            while transport.active.load(Ordering::SeqCst) == 0
+                && std::time::Instant::now() < start_deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
             }
+            assert_eq!(transport.active.load(Ordering::SeqCst), 1);
             let error = executor
                 .send(
                     Arc::clone(&transport) as Arc<dyn HttpTransport>,

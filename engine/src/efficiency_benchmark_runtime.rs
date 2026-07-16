@@ -1282,7 +1282,7 @@ mod tests {
     }
 
     #[test]
-    fn langgraph_tool_adapter_consumes_the_provider_selected_tool() {
+    fn langgraph_tool_result_binding_consumes_the_provider_selected_tool() {
         let request = json!({
             "benchmark_run_id":"provider-tool-adapter-run",
             "comparison_contract": {
@@ -1319,7 +1319,10 @@ mod tests {
                     adapter_request.pointer("/provider_exchange/typed_result/selected_tool_ids"),
                     Some(&json!(["read", "search"]))
                 );
-                invoke_langgraph(&adapter_request).expect("LangGraph tool adapter")
+                json!({
+                    "result_sha256": sha256_value(&adapter_request, false)
+                        .expect("bounded adapter result hash")
+                })
             })
             .collect::<Vec<_>>();
         let results = tool_results(

@@ -170,6 +170,10 @@ jobs:
         run: cd dashboard && bun install --frozen-lockfile && bun run build:static
       - name: Build native engine
         run: cargo build -p engine
+      - name: Test LangGraph adapter
+        run: >-
+          uv run --frozen --project adapters/langgraph
+          python -m unittest discover -s adapters/langgraph/tests -v
       - name: Smoke native runtime
         run: uv run --no-project python scripts/smoke_native_runtime.py
       - name: Smoke adaptive stub completion
