@@ -16,7 +16,7 @@ use crate::http_server::{
 };
 use crate::node_executor::CommandNodeExecutor;
 use crate::provider::redaction::redact_sensitive_patterns;
-use crate::storage::local_product_store::LocalProductStore;
+use crate::storage::local_product_store::{LocalProductStore, TargetOutputClaim};
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, export_patch, github_repository_for_remote,
     prepare_git_worktree, push_approved_branch, remove_git_worktree, BranchPublishRequest,
@@ -414,6 +414,82 @@ pub(crate) async fn api_target_repo_output(
             "target repo output requires valid approval binding",
         ));
     }
+    let effective_branch = request
+        .branch_name
+        .clone()
+        .unwrap_or_else(|| format!("acp/{artifact_id}"));
+    let effective_remote = request
+        .remote
+        .clone()
+        .unwrap_or_else(|| "origin".to_string());
+    let effective_commit_message = request
+        .commit_message
+        .clone()
+        .unwrap_or_else(|| format!("feat: apply approved artifact {artifact_id}"));
+    let effective_pr_title = request
+        .pr_title
+        .clone()
+        .unwrap_or_else(|| format!("Apply approved artifact {artifact_id}"));
+    let request_binding = json!({
+        "schema_version": "target_repo_output_request.v1",
+        "artifact_id": artifact_id,
+        "workspace_id": artifact.get("workspace_id"),
+        "run_id": request.run_id,
+        "target_id": artifact.get("target_id"),
+        "mode": request.mode,
+        "patch_hash": artifact.get("patch_hash"),
+        "source_revision": artifact.get("source_revision"),
+        "approval_id": binding.get("approving_approval").and_then(|value| value.get("approval_id")),
+        "branch_name": if request.mode == "push_branch" { Some(effective_branch.as_str()) } else { None },
+        "remote": if request.mode == "push_branch" { Some(effective_remote.as_str()) } else { None },
+        "commit_message": if request.mode == "push_branch" { Some(effective_commit_message.as_str()) } else { None },
+        "pr_title": if request.mode == "push_branch" { Some(effective_pr_title.as_str()) } else { None },
+        "create_pull_request": request.create_pull_request == Some(true),
+    });
+    let request_sha256 = hex::encode(Sha256::digest(
+        serde_json::to_vec(&request_binding).map_err(|error| internal_error(error.to_string()))?,
+    ));
+    if artifact.get("target_output_receipt").is_some() {
+        match store
+            .claim_target_output(
+                &artifact_id,
+                &request_binding,
+                &request_sha256,
+                &context.api_key_id,
+            )
+            .map_err(target_output_receipt_error)?
+        {
+            TargetOutputClaim::Reused(output) => {
+                let _ = store.append_audit(
+                    &context.api_key_id,
+                    "supervised_patch.target_output_reused",
+                    &artifact_id,
+                    &json!({"request_sha256": request_sha256, "receipt_state": "completed"}),
+                );
+                return Ok((
+                    cors_headers(),
+                    Json(json!({
+                        "schema_version": AXUM_API_SCHEMA_VERSION,
+                        "output": output,
+                        "approval_binding": binding,
+                        "reused": true,
+                    })),
+                ));
+            }
+            TargetOutputClaim::ReconciliationRequired(state) => {
+                return Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "target_output_reconciliation_required",
+                    format!("target output is {state}; automatic delivery is refused"),
+                ));
+            }
+            TargetOutputClaim::Claimed => {
+                return Err(internal_error(
+                    "existing target output receipt unexpectedly produced a new claim".to_string(),
+                ));
+            }
+        }
+    }
     let integrity = store
         .validate_artifact_integrity(&artifact_id)
         .map_err(internal_error)?;
@@ -514,16 +590,10 @@ pub(crate) async fn api_target_repo_output(
             serde_json::to_value(output).map_err(|error| internal_error(error.to_string()))?
         }
         "push_branch" => {
-            let branch_name = request
-                .branch_name
-                .unwrap_or_else(|| format!("acp/{artifact_id}"));
-            let remote = request.remote.unwrap_or_else(|| "origin".to_string());
-            let commit_message = request
-                .commit_message
-                .unwrap_or_else(|| format!("feat: apply approved artifact {artifact_id}"));
-            let pr_title = request
-                .pr_title
-                .unwrap_or_else(|| format!("Apply approved artifact {artifact_id}"));
+            let branch_name = effective_branch;
+            let remote = effective_remote;
+            let commit_message = effective_commit_message;
+            let pr_title = effective_pr_title;
             let pr_body = build_pr_body(&artifact);
             let publish_branch = branch_name.clone();
             let publish_remote = remote.clone();
@@ -589,6 +659,41 @@ pub(crate) async fn api_target_repo_output(
             } else {
                 None
             };
+            match store
+                .claim_target_output(
+                    &artifact_id,
+                    &request_binding,
+                    &request_sha256,
+                    &context.api_key_id,
+                )
+                .map_err(target_output_receipt_error)?
+            {
+                TargetOutputClaim::Claimed => {}
+                TargetOutputClaim::Reused(output) => {
+                    let _ = store.append_audit(
+                        &context.api_key_id,
+                        "supervised_patch.target_output_reused",
+                        &artifact_id,
+                        &json!({"request_sha256": request_sha256, "receipt_state": "completed"}),
+                    );
+                    return Ok((
+                        cors_headers(),
+                        Json(json!({
+                            "schema_version": AXUM_API_SCHEMA_VERSION,
+                            "output": output,
+                            "approval_binding": binding,
+                            "reused": true,
+                        })),
+                    ));
+                }
+                TargetOutputClaim::ReconciliationRequired(state) => {
+                    return Err(ApiError::with_code(
+                        StatusCode::CONFLICT,
+                        "target_output_reconciliation_required",
+                        format!("target output is {state}; automatic delivery is refused"),
+                    ));
+                }
+            }
             let output = match push_approved_branch(
                 &config,
                 BranchPublishRequest {
@@ -611,6 +716,13 @@ pub(crate) async fn api_target_repo_output(
             ) {
                 Ok(output) => output,
                 Err(error) => {
+                    let _ = store.mark_target_output_outcome_unknown(
+                        &artifact_id,
+                        &request_binding,
+                        &request_sha256,
+                        &context.api_key_id,
+                        "branch_push_failed",
+                    );
                     audit_target_output_failure(
                         &store,
                         &context.api_key_id,
@@ -632,6 +744,13 @@ pub(crate) async fn api_target_repo_output(
                 {
                     Ok(pull_request) => pull_request,
                     Err(error) => {
+                        let _ = store.mark_target_output_outcome_unknown(
+                            &artifact_id,
+                            &request_binding,
+                            &request_sha256,
+                            &context.api_key_id,
+                            "pull_request_failed",
+                        );
                         audit_target_output_failure(
                             &store,
                             &context.api_key_id,
@@ -668,20 +787,36 @@ pub(crate) async fn api_target_repo_output(
         }
     };
 
-    let _ = store.append_audit(
-        &context.api_key_id,
-        "supervised_patch.target_output_success",
-        &artifact_id,
-        &json!({
-            "run_id": request.run_id,
-            "mode": request.mode,
-            "patch_hash": expected_patch_hash,
-            "branch_name": output.get("branch_name"),
-            "commit_sha": output.get("commit_sha"),
-            "approval_id": binding.get("approving_approval").and_then(|value| value.get("approval_id")),
-            "kill_path": "ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1",
-        }),
-    );
+    if request.mode == "push_branch" {
+        if let Err(error) = store.record_target_output_receipt(
+            &artifact_id,
+            &request_binding,
+            &request_sha256,
+            &output,
+            &context.api_key_id,
+        ) {
+            let _ = store.mark_target_output_outcome_unknown(
+                &artifact_id,
+                &request_binding,
+                &request_sha256,
+                &context.api_key_id,
+                "local_finalize_failed",
+            );
+            return Err(internal_error(error));
+        }
+    } else {
+        let _ = store.append_audit(
+            &context.api_key_id,
+            "supervised_patch.target_output_success",
+            &artifact_id,
+            &json!({
+                "run_id": request.run_id,
+                "mode": request.mode,
+                "patch_hash": expected_patch_hash,
+                "kill_path": "ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1",
+            }),
+        );
+    }
 
     Ok((
         cors_headers(),
@@ -690,6 +825,7 @@ pub(crate) async fn api_target_repo_output(
             "output": output,
             "approval_binding": binding,
             "integrity": integrity,
+            "reused": false,
         })),
     ))
 }
@@ -774,6 +910,15 @@ fn target_output_error(error: String) -> ApiError {
             (StatusCode::BAD_REQUEST, "target_repo_output_invalid")
         };
     ApiError::with_code(status, code, &error)
+}
+
+fn target_output_receipt_error(error: String) -> ApiError {
+    let code = if error.contains("does not match durable receipt") {
+        "target_output_request_mismatch"
+    } else {
+        "target_output_receipt_invalid"
+    };
+    ApiError::with_code(StatusCode::CONFLICT, code, &error)
 }
 
 pub(crate) async fn api_cleanup_supervised_patch_workspace(

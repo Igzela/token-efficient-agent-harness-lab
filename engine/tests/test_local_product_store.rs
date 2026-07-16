@@ -3,9 +3,12 @@ use engine::provider::audit::{
     ProviderAuditEvent, ProviderAuditRecorder, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION,
 };
 use engine::read_only_planner::ReadOnlyPlanner;
-use engine::storage::local_product_store::{DurableMemoryCreate, LocalProductStore, MemoryScope};
+use engine::storage::local_product_store::{
+    DurableMemoryCreate, LocalProductStore, MemoryScope, TargetOutputClaim,
+};
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use tempfile::tempdir;
@@ -1555,6 +1558,108 @@ fn supervised_patch_artifact_records_metadata_without_apply_authority() {
     let stats = store.stats().unwrap();
     assert_eq!(stats["supervised_patch_workspaces"], 1);
     assert_eq!(stats["supervised_patch_artifacts"], 1);
+}
+
+#[test]
+fn target_output_claim_is_atomic_and_unknown_is_not_replayed_on_sqlite() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store_path = dir.path().join("target-output-state.db");
+    let store = LocalProductStore::new(&store_path).unwrap();
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "run-target-output",
+                "target_id": "target-output",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_root.path().join("workspace").to_string_lossy(),
+                "source_revision": "abc123",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let artifact = store
+        .record_supervised_patch_artifact(
+            &json!({
+                "workspace_id": "patch-workspace-0001",
+                "patch_hash": "sha256:target-output",
+                "changed_files": ["+README.md"],
+                "redaction_status": "redacted",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let artifact_id = artifact["artifact_id"].as_str().unwrap().to_string();
+    let binding = json!({
+        "schema_version": "target_repo_output_request.v1",
+        "artifact_id": artifact_id,
+        "workspace_id": artifact["workspace_id"],
+        "run_id": artifact["run_id"],
+        "target_id": artifact["target_id"],
+        "source_revision": artifact["source_revision"],
+        "patch_hash": artifact["patch_hash"],
+        "mode": "push_branch",
+        "branch_name": "acp/sqlite-claim",
+        "remote": "origin",
+    });
+    let request_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(&binding).unwrap()));
+    let barrier = Arc::new(Barrier::new(3));
+    let mut handles = Vec::new();
+    for actor in ["first", "second"] {
+        let path = store_path.clone();
+        let artifact_id = artifact_id.clone();
+        let binding = binding.clone();
+        let request_sha256 = request_sha256.clone();
+        let barrier = barrier.clone();
+        handles.push(thread::spawn(move || {
+            let connection = LocalProductStore::new(path).unwrap();
+            barrier.wait();
+            connection
+                .claim_target_output(&artifact_id, &binding, &request_sha256, actor)
+                .unwrap()
+        }));
+    }
+    barrier.wait();
+    let claims: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| **claim == TargetOutputClaim::Claimed)
+            .count(),
+        1
+    );
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| matches!(claim,
+        TargetOutputClaim::ReconciliationRequired(state) if state == "sending"))
+            .count(),
+        1
+    );
+    store
+        .mark_target_output_outcome_unknown(
+            &artifact_id,
+            &binding,
+            &request_sha256,
+            "operator",
+            "interrupted_finalize",
+        )
+        .unwrap();
+    let restarted = LocalProductStore::new(&store_path).unwrap();
+    assert_eq!(
+        restarted
+            .claim_target_output(&artifact_id, &binding, &request_sha256, "retry")
+            .unwrap(),
+        TargetOutputClaim::ReconciliationRequired("outcome_unknown".to_string())
+    );
+    assert!(restarted
+        .record_target_output_receipt(&artifact_id, &binding, &request_sha256, &json!({}), "retry",)
+        .unwrap_err()
+        .contains("not finalizable"));
 }
 
 #[test]
