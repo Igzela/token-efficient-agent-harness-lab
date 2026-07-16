@@ -16,7 +16,7 @@ use crate::http_server::{
 };
 use crate::node_executor::CommandNodeExecutor;
 use crate::provider::redaction::redact_sensitive_patterns;
-use crate::storage::local_product_store::LocalProductStore;
+use crate::storage::local_product_store::{LocalProductStore, TargetOutputClaim};
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, export_patch, github_repository_for_remote,
     prepare_git_worktree, push_approved_branch, remove_git_worktree, BranchPublishRequest,
@@ -433,7 +433,9 @@ pub(crate) async fn api_target_repo_output(
     let request_binding = json!({
         "schema_version": "target_repo_output_request.v1",
         "artifact_id": artifact_id,
+        "workspace_id": artifact.get("workspace_id"),
         "run_id": request.run_id,
+        "target_id": artifact.get("target_id"),
         "mode": request.mode,
         "patch_hash": artifact.get("patch_hash"),
         "source_revision": artifact.get("source_revision"),
@@ -447,38 +449,46 @@ pub(crate) async fn api_target_repo_output(
     let request_sha256 = hex::encode(Sha256::digest(
         serde_json::to_vec(&request_binding).map_err(|error| internal_error(error.to_string()))?,
     ));
-    if let Some(receipt) = artifact.get("target_output_receipt") {
-        if receipt.get("state").and_then(serde_json::Value::as_str) == Some("completed")
-            && receipt
-                .get("request_sha256")
-                .and_then(serde_json::Value::as_str)
-                == Some(request_sha256.as_str())
-            && receipt.get("request_binding") == Some(&request_binding)
-        {
-            let output = receipt.get("output").cloned().ok_or_else(|| {
-                internal_error("completed target output receipt is missing output".to_string())
-            })?;
-            let _ = store.append_audit(
-                &context.api_key_id,
-                "supervised_patch.target_output_reused",
+    if artifact.get("target_output_receipt").is_some() {
+        match store
+            .claim_target_output(
                 &artifact_id,
-                &json!({"request_sha256": request_sha256, "receipt_state": "completed"}),
-            );
-            return Ok((
-                cors_headers(),
-                Json(json!({
-                    "schema_version": AXUM_API_SCHEMA_VERSION,
-                    "output": output,
-                    "approval_binding": binding,
-                    "reused": true,
-                })),
-            ));
+                &request_binding,
+                &request_sha256,
+                &context.api_key_id,
+            )
+            .map_err(target_output_receipt_error)?
+        {
+            TargetOutputClaim::Reused(output) => {
+                let _ = store.append_audit(
+                    &context.api_key_id,
+                    "supervised_patch.target_output_reused",
+                    &artifact_id,
+                    &json!({"request_sha256": request_sha256, "receipt_state": "completed"}),
+                );
+                return Ok((
+                    cors_headers(),
+                    Json(json!({
+                        "schema_version": AXUM_API_SCHEMA_VERSION,
+                        "output": output,
+                        "approval_binding": binding,
+                        "reused": true,
+                    })),
+                ));
+            }
+            TargetOutputClaim::ReconciliationRequired(state) => {
+                return Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "target_output_reconciliation_required",
+                    format!("target output is {state}; automatic delivery is refused"),
+                ));
+            }
+            TargetOutputClaim::Claimed => {
+                return Err(internal_error(
+                    "existing target output receipt unexpectedly produced a new claim".to_string(),
+                ));
+            }
         }
-        return Err(ApiError::with_code(
-            StatusCode::CONFLICT,
-            "target_output_request_mismatch",
-            "artifact already completed under a different target output request",
-        ));
     }
     let integrity = store
         .validate_artifact_integrity(&artifact_id)
@@ -649,6 +659,41 @@ pub(crate) async fn api_target_repo_output(
             } else {
                 None
             };
+            match store
+                .claim_target_output(
+                    &artifact_id,
+                    &request_binding,
+                    &request_sha256,
+                    &context.api_key_id,
+                )
+                .map_err(target_output_receipt_error)?
+            {
+                TargetOutputClaim::Claimed => {}
+                TargetOutputClaim::Reused(output) => {
+                    let _ = store.append_audit(
+                        &context.api_key_id,
+                        "supervised_patch.target_output_reused",
+                        &artifact_id,
+                        &json!({"request_sha256": request_sha256, "receipt_state": "completed"}),
+                    );
+                    return Ok((
+                        cors_headers(),
+                        Json(json!({
+                            "schema_version": AXUM_API_SCHEMA_VERSION,
+                            "output": output,
+                            "approval_binding": binding,
+                            "reused": true,
+                        })),
+                    ));
+                }
+                TargetOutputClaim::ReconciliationRequired(state) => {
+                    return Err(ApiError::with_code(
+                        StatusCode::CONFLICT,
+                        "target_output_reconciliation_required",
+                        format!("target output is {state}; automatic delivery is refused"),
+                    ));
+                }
+            }
             let output = match push_approved_branch(
                 &config,
                 BranchPublishRequest {
@@ -671,6 +716,13 @@ pub(crate) async fn api_target_repo_output(
             ) {
                 Ok(output) => output,
                 Err(error) => {
+                    let _ = store.mark_target_output_outcome_unknown(
+                        &artifact_id,
+                        &request_binding,
+                        &request_sha256,
+                        &context.api_key_id,
+                        "branch_push_failed",
+                    );
                     audit_target_output_failure(
                         &store,
                         &context.api_key_id,
@@ -692,6 +744,13 @@ pub(crate) async fn api_target_repo_output(
                 {
                     Ok(pull_request) => pull_request,
                     Err(error) => {
+                        let _ = store.mark_target_output_outcome_unknown(
+                            &artifact_id,
+                            &request_binding,
+                            &request_sha256,
+                            &context.api_key_id,
+                            "pull_request_failed",
+                        );
                         audit_target_output_failure(
                             &store,
                             &context.api_key_id,
@@ -729,15 +788,22 @@ pub(crate) async fn api_target_repo_output(
     };
 
     if request.mode == "push_branch" {
-        store
-            .record_target_output_receipt(
+        if let Err(error) = store.record_target_output_receipt(
+            &artifact_id,
+            &request_binding,
+            &request_sha256,
+            &output,
+            &context.api_key_id,
+        ) {
+            let _ = store.mark_target_output_outcome_unknown(
                 &artifact_id,
                 &request_binding,
                 &request_sha256,
-                &output,
                 &context.api_key_id,
-            )
-            .map_err(internal_error)?;
+                "local_finalize_failed",
+            );
+            return Err(internal_error(error));
+        }
     } else {
         let _ = store.append_audit(
             &context.api_key_id,
@@ -844,6 +910,15 @@ fn target_output_error(error: String) -> ApiError {
             (StatusCode::BAD_REQUEST, "target_repo_output_invalid")
         };
     ApiError::with_code(status, code, &error)
+}
+
+fn target_output_receipt_error(error: String) -> ApiError {
+    let code = if error.contains("does not match durable receipt") {
+        "target_output_request_mismatch"
+    } else {
+        "target_output_receipt_invalid"
+    };
+    ApiError::with_code(StatusCode::CONFLICT, code, &error)
 }
 
 pub(crate) async fn api_cleanup_supervised_patch_workspace(

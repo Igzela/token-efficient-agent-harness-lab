@@ -13243,34 +13243,60 @@ async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
         "GitHub PR preflight failure must not push the target branch"
     );
 
-    let push = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri(format!(
-                    "/api/v1/supervised-patch/artifacts/{artifact_id}/output"
-                ))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "run_id": run_id,
-                        "mode": "push_branch",
-                        "confirm_target_output": true,
-                        "branch_name": format!("acp/{artifact_id}"),
-                        "remote": "origin",
-                        "commit_message": "feat: apply approved production output",
-                        "pr_title": "Apply approved production output"
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
+    let push_request = || {
+        Request::builder()
+            .method(Method::POST)
+            .uri(format!(
+                "/api/v1/supervised-patch/artifacts/{artifact_id}/output"
+            ))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({
+                    "run_id": run_id,
+                    "mode": "push_branch",
+                    "confirm_target_output": true,
+                    "branch_name": format!("acp/{artifact_id}"),
+                    "remote": "origin",
+                    "commit_message": "feat: apply approved production output",
+                    "pr_title": "Apply approved production output"
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let (first_push, concurrent_push) = tokio::join!(
+        app.clone().oneshot(push_request()),
+        app.clone().oneshot(push_request())
+    );
+    let first_push = first_push.unwrap();
+    let concurrent_push = concurrent_push.unwrap();
+    let first_status = first_push.status();
+    let concurrent_status = concurrent_push.status();
+    let first_body = response_json(first_push).await;
+    let concurrent_body = response_json(concurrent_push).await;
+    let completed = [
+        (&first_status, &first_body),
+        (&concurrent_status, &concurrent_body),
+    ];
+    assert_eq!(
+        completed
+            .iter()
+            .filter(|(status, body)| { **status == StatusCode::OK && body["reused"] == false })
+            .count(),
+        1,
+        "exactly one concurrent request must own the external delivery: {completed:?}"
+    );
+    assert!(completed.iter().all(|(status, body)| {
+        **status == StatusCode::OK
+            || (**status == StatusCode::CONFLICT
+                && body["code"] == "target_output_reconciliation_required")
+    }));
+    let push_body = completed
+        .iter()
+        .find_map(|(status, body)| {
+            (**status == StatusCode::OK && body["reused"] == false).then_some((*body).clone())
+        })
         .unwrap();
-    let push_status = push.status();
-    let push_body = response_json(push).await;
-    assert_eq!(push_status, StatusCode::OK, "push failed: {push_body}");
     assert_eq!(push_body["output"]["patch_hash"], patch_hash);
     assert_eq!(
         git(target.path(), &["rev-parse", "main"]),
@@ -13323,6 +13349,61 @@ async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
     assert_eq!(duplicate_body["output"], push_body["output"]);
     assert_eq!(duplicate_body["reused"], true);
 
+    let connection = rusqlite::Connection::open(&store_path).unwrap();
+    let completed_raw: String = connection
+        .query_row(
+            "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = ?1",
+            rusqlite::params![artifact_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let completed_artifact: Value = serde_json::from_str(&completed_raw).unwrap();
+    let published_commit = git(
+        remote.path(),
+        &["rev-parse", &format!("refs/heads/acp/{artifact_id}")],
+    );
+    for state_name in ["sending", "outcome_unknown"] {
+        let mut interrupted = completed_artifact.clone();
+        interrupted["target_output_receipt"]["state"] = json!(state_name);
+        interrupted["target_output_receipt"]["output"] = Value::Null;
+        interrupted["target_output_receipt"]["output_sha256"] = Value::Null;
+        interrupted["target_output_receipt"]["completed_at"] = Value::Null;
+        if state_name == "outcome_unknown" {
+            interrupted["target_output_receipt"]["outcome_unknown_at"] =
+                json!("2026-07-16T00:00:00Z");
+        }
+        connection
+            .execute(
+                "UPDATE supervised_patch_artifacts SET artifact_json = ?1 WHERE artifact_id = ?2",
+                rusqlite::params![interrupted.to_string(), artifact_id],
+            )
+            .unwrap();
+        let interrupted_app = build_axum_router(
+            AxumApiState::new().with_local_store(LocalProductStore::new(&store_path).unwrap()),
+        );
+        let retry = interrupted_app.oneshot(push_request()).await.unwrap();
+        assert_eq!(retry.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_json(retry).await["code"],
+            "target_output_reconciliation_required"
+        );
+        assert_eq!(
+            git(
+                remote.path(),
+                &["rev-parse", &format!("refs/heads/acp/{artifact_id}")]
+            ),
+            published_commit,
+            "nonterminal receipt must never replay target output"
+        );
+    }
+    connection
+        .execute(
+            "UPDATE supervised_patch_artifacts SET artifact_json = ?1 WHERE artifact_id = ?2",
+            rusqlite::params![completed_raw, artifact_id],
+        )
+        .unwrap();
+    drop(connection);
+
     let mismatched = restarted_app
         .clone()
         .oneshot(
@@ -13363,7 +13444,58 @@ async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
         .status
         .success());
 
-    let audit = restarted_app
+    let connection = rusqlite::Connection::open(&store_path).unwrap();
+    let raw: String = connection
+        .query_row(
+            "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = ?1",
+            rusqlite::params![artifact_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut tampered: Value = serde_json::from_str(&raw).unwrap();
+    tampered["target_output_receipt"]["output"]["commit_sha"] = json!("c".repeat(40));
+    connection
+        .execute(
+            "UPDATE supervised_patch_artifacts SET artifact_json = ?1 WHERE artifact_id = ?2",
+            rusqlite::params![tampered.to_string(), artifact_id],
+        )
+        .unwrap();
+    drop(connection);
+    let tampered_app = build_axum_router(
+        AxumApiState::new().with_local_store(LocalProductStore::new(&store_path).unwrap()),
+    );
+    let tampered_reuse = tampered_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/artifacts/{artifact_id}/output"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "run_id": run_id,
+                        "mode": "push_branch",
+                        "confirm_target_output": true,
+                        "branch_name": format!("acp/{artifact_id}"),
+                        "remote": "origin",
+                        "commit_message": "feat: apply approved production output",
+                        "pr_title": "Apply approved production output"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tampered_reuse.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response_json(tampered_reuse).await["code"],
+        "target_output_receipt_invalid"
+    );
+
+    let audit = tampered_app
         .oneshot(
             Request::builder()
                 .method(Method::GET)

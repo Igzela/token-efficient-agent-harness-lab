@@ -35,6 +35,7 @@ mod provider_audit;
 mod regression_report_artifacts;
 mod schema;
 mod supervised_patch;
+pub use supervised_patch::TargetOutputClaim;
 mod team;
 mod tool_execution_policy;
 mod tool_policy_management;

@@ -2462,16 +2462,67 @@ fn pg_supervised_patch_metadata() {
     let request_binding = json!({
         "schema_version": "target_repo_output_request.v1",
         "artifact_id": artifact_id,
+        "workspace_id": artifact["workspace_id"],
         "run_id": run_id,
+        "target_id": artifact["target_id"],
         "mode": "push_branch",
+        "patch_hash": artifact["patch_hash"],
+        "source_revision": artifact["source_revision"],
         "branch_name": format!("acp/{artifact_id}"),
+        "remote": "origin",
     });
-    let request_sha256 = "a".repeat(64);
+    let request_sha256 = hex::encode(Sha256::digest(
+        serde_json::to_vec(&request_binding).unwrap(),
+    ));
     let output = json!({
         "schema_version": "target_repo_output.v1",
+        "source_revision": artifact["source_revision"],
+        "patch_hash": artifact["patch_hash"],
         "branch_name": format!("acp/{artifact_id}"),
+        "remote": "origin",
         "commit_sha": "b".repeat(40),
     });
+    let first_store = test_store().expect("first concurrent PostgreSQL store");
+    let first_artifact = artifact_id.to_string();
+    let first_binding = request_binding.clone();
+    let first_hash = request_sha256.clone();
+    let first = std::thread::spawn(move || {
+        first_store.claim_target_output(&first_artifact, &first_binding, &first_hash, "first-actor")
+    });
+    let second_store = test_store().expect("second concurrent PostgreSQL store");
+    let second_artifact = artifact_id.to_string();
+    let second_binding = request_binding.clone();
+    let second_hash = request_sha256.clone();
+    let second = std::thread::spawn(move || {
+        second_store.claim_target_output(
+            &second_artifact,
+            &second_binding,
+            &second_hash,
+            "second-actor",
+        )
+    });
+    let claims = [
+        first.join().unwrap().unwrap(),
+        second.join().unwrap().unwrap(),
+    ];
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| {
+                **claim == engine::storage::local_product_store::TargetOutputClaim::Claimed
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| matches!(claim,
+                engine::storage::local_product_store::TargetOutputClaim::ReconciliationRequired(state)
+                if state == "sending"))
+            .count(),
+        1
+    );
     let receipt = store
         .record_target_output_receipt(
             artifact_id,
@@ -2506,7 +2557,7 @@ fn pg_supervised_patch_metadata() {
             "test-actor",
         )
         .unwrap_err()
-        .contains("different completed receipt"));
+        .contains("request hash is invalid"));
 }
 
 /// PostgreSQL active trial: exercises the full auto-adjustment apply + rollback

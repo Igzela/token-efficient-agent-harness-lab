@@ -20,6 +20,13 @@ use self::fs_utils::*;
 pub const SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION: &str = "supervised_patch_workspace.v1";
 pub const SUPERVISED_PATCH_ARTIFACT_SCHEMA_VERSION: &str = "supervised_patch_artifact.v1";
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum TargetOutputClaim {
+    Claimed,
+    Reused(Value),
+    ReconciliationRequired(String),
+}
+
 impl LocalProductStore {
     pub fn create_workspace_directory(
         &self,
@@ -1741,6 +1748,117 @@ impl LocalProductStore {
         }
     }
 
+    pub fn claim_target_output(
+        &self,
+        artifact_id: &str,
+        request_binding: &Value,
+        request_sha256: &str,
+        actor: &str,
+    ) -> Result<TargetOutputClaim, String> {
+        validate_target_output_request_hash(request_binding, request_sha256)?;
+        let claimed_at = self.now();
+        let claim = |mut artifact: Value| -> Result<(Value, TargetOutputClaim, bool), String> {
+            validate_target_output_binding(&artifact, artifact_id, request_binding)?;
+            if let Some(existing) = artifact.get("target_output_receipt") {
+                validate_target_output_receipt(&artifact, existing)?;
+                if existing.get("request_sha256").and_then(Value::as_str) != Some(request_sha256)
+                    || existing.get("request_binding") != Some(request_binding)
+                {
+                    return Err("target output request does not match durable receipt".to_string());
+                }
+                return match existing.get("state").and_then(Value::as_str) {
+                    Some("completed") => Ok((
+                        artifact.clone(),
+                        TargetOutputClaim::Reused(existing.get("output").cloned().ok_or_else(
+                            || "completed target output receipt is missing output".to_string(),
+                        )?),
+                        false,
+                    )),
+                    Some(state @ ("sending" | "outcome_unknown")) => Ok((
+                        artifact.clone(),
+                        TargetOutputClaim::ReconciliationRequired(state.to_string()),
+                        false,
+                    )),
+                    _ => Err("target output receipt has invalid state".to_string()),
+                };
+            }
+            let receipt = json!({
+                "schema_version": "target_repo_output_receipt.v1",
+                "state": "sending",
+                "artifact_id": artifact_id,
+                "workspace_id": artifact.get("workspace_id"),
+                "run_id": artifact.get("run_id"),
+                "target_id": artifact.get("target_id"),
+                "source_revision": artifact.get("source_revision"),
+                "patch_hash": artifact.get("patch_hash"),
+                "request_binding": request_binding,
+                "request_sha256": request_sha256,
+                "output": Value::Null,
+                "output_sha256": Value::Null,
+                "claimed_at": claimed_at,
+                "completed_at": Value::Null,
+            });
+            validate_target_output_receipt(&artifact, &receipt)?;
+            artifact
+                .as_object_mut()
+                .ok_or_else(|| "supervised patch artifact must be an object".to_string())?
+                .insert("target_output_receipt".to_string(), receipt);
+            Ok((artifact, TargetOutputClaim::Claimed, true))
+        };
+
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
+                let raw: String = tx.query_row(
+                    "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = ?1",
+                    params![artifact_id],
+                    |row| row.get(0),
+                ).map_err(|error| error.to_string())?;
+                let (artifact, result, changed) = claim(
+                    serde_json::from_str(&raw).map_err(|error| error.to_string())?
+                )?;
+                if changed {
+                    tx.execute(
+                        "UPDATE supervised_patch_artifacts SET artifact_json = ?1 WHERE artifact_id = ?2",
+                        params![artifact.to_string(), artifact_id],
+                    ).map_err(|error| error.to_string())?;
+                    append_audit_locked(&tx, &claimed_at, actor,
+                        "supervised_patch.target_output_claimed", artifact_id,
+                        &json!({"request_sha256": request_sha256, "receipt_state": "sending"}))?;
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(result)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let row = tx.query_one(
+                    "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = $1 FOR UPDATE",
+                    &[&artifact_id],
+                ).map_err(|error| error.to_string())?;
+                let raw: String = row.get(0);
+                let (artifact, result, changed) = claim(
+                    serde_json::from_str(&raw).map_err(|error| error.to_string())?
+                )?;
+                if changed {
+                    tx.execute(
+                        "UPDATE supervised_patch_artifacts SET artifact_json = $1 WHERE artifact_id = $2",
+                        &[&artifact.to_string(), &artifact_id],
+                    ).map_err(|error| error.to_string())?;
+                    let details = json!({"request_sha256": request_sha256, "receipt_state": "sending"}).to_string();
+                    pg_append_audit(&mut tx, &claimed_at, actor,
+                        "supervised_patch.target_output_claimed", artifact_id, &details)?;
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(result)
+            }),
+        }
+    }
+
     pub fn record_target_output_receipt(
         &self,
         artifact_id: &str,
@@ -1749,35 +1867,48 @@ impl LocalProductStore {
         output: &Value,
         actor: &str,
     ) -> Result<Value, String> {
-        if request_sha256.len() != 64
-            || !request_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err("target output request hash is invalid".to_string());
-        }
+        validate_target_output_request_hash(request_binding, request_sha256)?;
         let completed_at = self.now();
         let update = |mut artifact: Value| -> Result<(Value, Value), String> {
-            if let Some(existing) = artifact.get("target_output_receipt").cloned() {
-                if existing.get("request_sha256").and_then(Value::as_str) == Some(request_sha256)
-                    && existing.get("request_binding") == Some(request_binding)
-                {
-                    return Ok((artifact, existing));
-                }
-                return Err(
-                    "target output artifact already has a different completed receipt".to_string(),
-                );
+            validate_target_output_binding(&artifact, artifact_id, request_binding)?;
+            let existing = artifact
+                .get("target_output_receipt")
+                .cloned()
+                .ok_or_else(|| "target output must be claimed before finalization".to_string())?;
+            validate_target_output_receipt(&artifact, &existing)?;
+            if existing.get("request_sha256").and_then(Value::as_str) != Some(request_sha256)
+                || existing.get("request_binding") != Some(request_binding)
+            {
+                return Err("target output finalization binding changed".to_string());
             }
+            if existing.get("state").and_then(Value::as_str) == Some("completed") {
+                let durable_output = existing.get("output").cloned().unwrap_or(Value::Null);
+                if &durable_output != output {
+                    return Err("target output completed under a different result".to_string());
+                }
+                return Ok((artifact, existing));
+            }
+            if existing.get("state").and_then(Value::as_str) != Some("sending") {
+                return Err("target output receipt is not finalizable".to_string());
+            }
+            let output_sha256 = target_output_json_sha256(output)?;
             let receipt = json!({
                 "schema_version": "target_repo_output_receipt.v1",
                 "state": "completed",
                 "artifact_id": artifact_id,
+                "workspace_id": artifact.get("workspace_id"),
                 "run_id": artifact.get("run_id"),
+                "target_id": artifact.get("target_id"),
                 "source_revision": artifact.get("source_revision"),
                 "patch_hash": artifact.get("patch_hash"),
                 "request_binding": request_binding,
                 "request_sha256": request_sha256,
                 "output": output,
+                "output_sha256": output_sha256,
+                "claimed_at": existing.get("claimed_at"),
                 "completed_at": completed_at,
             });
+            validate_target_output_receipt(&artifact, &receipt)?;
             artifact
                 .as_object_mut()
                 .ok_or_else(|| "supervised patch artifact must be an object".to_string())?
@@ -1787,9 +1918,11 @@ impl LocalProductStore {
 
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let tx = conn
-                    .unchecked_transaction()
-                    .map_err(|error| error.to_string())?;
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
                 let raw: String = tx
                     .query_row(
                         "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = ?1",
@@ -1844,6 +1977,79 @@ impl LocalProductStore {
                 )?;
                 tx.commit().map_err(|error| error.to_string())?;
                 Ok(receipt)
+            }),
+        }
+    }
+
+    pub fn mark_target_output_outcome_unknown(
+        &self,
+        artifact_id: &str,
+        request_binding: &Value,
+        request_sha256: &str,
+        actor: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        validate_target_output_request_hash(request_binding, request_sha256)?;
+        let now = self.now();
+        let update = |mut artifact: Value| -> Result<Value, String> {
+            validate_target_output_binding(&artifact, artifact_id, request_binding)?;
+            let receipt = artifact
+                .get_mut("target_output_receipt")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| "target output receipt is missing".to_string())?;
+            if receipt.get("request_sha256").and_then(Value::as_str) != Some(request_sha256)
+                || receipt.get("request_binding") != Some(request_binding)
+            {
+                return Err("target output outcome binding changed".to_string());
+            }
+            match receipt.get("state").and_then(Value::as_str) {
+                Some("sending") => {
+                    receipt.insert("state".to_string(), json!("outcome_unknown"));
+                    receipt.insert("outcome_unknown_at".to_string(), json!(now));
+                }
+                Some("outcome_unknown") => {}
+                _ => return Err("target output receipt cannot become outcome unknown".to_string()),
+            }
+            Ok(artifact)
+        };
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
+                let raw: String = tx.query_row(
+                    "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = ?1",
+                    params![artifact_id], |row| row.get(0),
+                ).map_err(|error| error.to_string())?;
+                let artifact = update(serde_json::from_str(&raw).map_err(|error| error.to_string())?)?;
+                tx.execute(
+                    "UPDATE supervised_patch_artifacts SET artifact_json = ?1 WHERE artifact_id = ?2",
+                    params![artifact.to_string(), artifact_id],
+                ).map_err(|error| error.to_string())?;
+                append_audit_locked(&tx, &now, actor,
+                    "supervised_patch.target_output_outcome_unknown", artifact_id,
+                    &json!({"request_sha256": request_sha256, "reason": reason}))?;
+                tx.commit().map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let row = tx.query_one(
+                    "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = $1 FOR UPDATE",
+                    &[&artifact_id],
+                ).map_err(|error| error.to_string())?;
+                let raw: String = row.get(0);
+                let artifact = update(serde_json::from_str(&raw).map_err(|error| error.to_string())?)?;
+                tx.execute(
+                    "UPDATE supervised_patch_artifacts SET artifact_json = $1 WHERE artifact_id = $2",
+                    &[&artifact.to_string(), &artifact_id],
+                ).map_err(|error| error.to_string())?;
+                let details = json!({"request_sha256": request_sha256, "reason": reason}).to_string();
+                pg_append_audit(&mut tx, &now, actor,
+                    "supervised_patch.target_output_outcome_unknown", artifact_id, &details)?;
+                tx.commit().map_err(|error| error.to_string())
             }),
         }
     }
@@ -2704,6 +2910,131 @@ fn build_import_artifact_record(
         object.insert("safety".to_string(), artifact_safety_profile());
     }
     Ok(artifact_record)
+}
+
+fn target_output_json_sha256(value: &Value) -> Result<String, String> {
+    let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn validate_target_output_request_hash(
+    request_binding: &Value,
+    request_sha256: &str,
+) -> Result<(), String> {
+    if request_sha256.len() != 64
+        || !request_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || target_output_json_sha256(request_binding)? != request_sha256
+    {
+        return Err("target output request hash is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn validate_target_output_binding(
+    artifact: &Value,
+    artifact_id: &str,
+    request_binding: &Value,
+) -> Result<(), String> {
+    let required = [
+        ("workspace_id", artifact.get("workspace_id")),
+        ("run_id", artifact.get("run_id")),
+        ("target_id", artifact.get("target_id")),
+        ("source_revision", artifact.get("source_revision")),
+        ("patch_hash", artifact.get("patch_hash")),
+    ];
+    if request_binding
+        .get("schema_version")
+        .and_then(Value::as_str)
+        != Some("target_repo_output_request.v1")
+        || request_binding.get("artifact_id").and_then(Value::as_str) != Some(artifact_id)
+        || required
+            .iter()
+            .any(|(field, expected)| request_binding.get(*field) != *expected)
+    {
+        return Err("target output request is not bound to its artifact owner".to_string());
+    }
+    Ok(())
+}
+
+fn validate_target_output_receipt(artifact: &Value, receipt: &Value) -> Result<(), String> {
+    let request_binding = receipt
+        .get("request_binding")
+        .ok_or_else(|| "target output receipt is missing request binding".to_string())?;
+    let artifact_id = artifact
+        .get("artifact_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "target output artifact is missing identity".to_string())?;
+    validate_target_output_binding(artifact, artifact_id, request_binding)?;
+    let request_sha256 = receipt
+        .get("request_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "target output receipt is missing request hash".to_string())?;
+    validate_target_output_request_hash(request_binding, request_sha256)?;
+    for field in [
+        "artifact_id",
+        "workspace_id",
+        "run_id",
+        "target_id",
+        "source_revision",
+        "patch_hash",
+    ] {
+        if receipt.get(field) != artifact.get(field) {
+            return Err(format!("target output receipt {field} binding changed"));
+        }
+    }
+    if receipt.get("schema_version").and_then(Value::as_str)
+        != Some("target_repo_output_receipt.v1")
+    {
+        return Err("target output receipt schema is invalid".to_string());
+    }
+    match receipt.get("state").and_then(Value::as_str) {
+        Some("sending" | "outcome_unknown") => {
+            if !receipt.get("output").is_none_or(Value::is_null)
+                || !receipt.get("output_sha256").is_none_or(Value::is_null)
+                || !receipt.get("completed_at").is_none_or(Value::is_null)
+            {
+                return Err("nonterminal target output receipt contains a result".to_string());
+            }
+        }
+        Some("completed") => {
+            let output = receipt
+                .get("output")
+                .filter(|value| !value.is_null())
+                .ok_or_else(|| "completed target output receipt is missing output".to_string())?;
+            let expected_hash = receipt
+                .get("output_sha256")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    "completed target output receipt is missing output hash".to_string()
+                })?;
+            if receipt
+                .get("completed_at")
+                .and_then(Value::as_str)
+                .is_none()
+            {
+                return Err(
+                    "completed target output receipt is missing completion time".to_string()
+                );
+            }
+            if target_output_json_sha256(output)? != expected_hash {
+                return Err("target output receipt result hash changed".to_string());
+            }
+            for field in ["source_revision", "patch_hash"] {
+                if output.get(field) != artifact.get(field) {
+                    return Err(format!("target output result {field} binding changed"));
+                }
+            }
+            if request_binding.get("mode").and_then(Value::as_str) == Some("push_branch") {
+                for field in ["branch_name", "remote"] {
+                    if output.get(field) != request_binding.get(field) {
+                        return Err(format!("target output result {field} binding changed"));
+                    }
+                }
+            }
+        }
+        _ => return Err("target output receipt has invalid state".to_string()),
+    }
+    Ok(())
 }
 
 #[cfg(feature = "pg")]
