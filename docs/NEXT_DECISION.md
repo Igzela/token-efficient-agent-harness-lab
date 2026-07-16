@@ -18,12 +18,12 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 ## Active Routing
 
 1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE`. No implementation branch is active. Resume only when the external runner/catalog prerequisites can be verified.
-2. `AR7-BOUNDED-RECURSIVE-EXECUTION-1` — `READY_FOR_EXECUTION`. Independent fixture/local lane; it must not enable Issue #208, call a provider, or depend on the Vader runner.
-3. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on AR7. It establishes candidate lineage, equal-budget evaluation, sealed holdout discipline, and PR-only promotion.
+2. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — `READY_FOR_EXECUTION`. This is the AR7 runtime-extension slice. It is an independent fixture/local lane and must not enable Issue #208, call a provider, or depend on the Vader runner.
+3. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on the recursive-execution packet. It establishes candidate lineage, equal-budget evaluation, sealed holdout discipline, and PR-only promotion.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result. It may test whether an evolved improver improves `Improvement@K`; it may not modify the authoritative evaluator, permissions, sealed set, or release owner.
 5. PR #225 remains an independent presentation-only Dashboard PR and does not own runtime, recursive execution, evolution, provider, or live-acceptance behavior.
 
-The recursive/evolution lane is intentionally independent of the blocked external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. Any provider call, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation requires separate authority.
+The recursive/evolution lane is independent of the blocked external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. Any provider call, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation requires separate authority.
 
 ## Verified Baseline
 
@@ -81,11 +81,21 @@ Stop and report `BLOCKED` rather than improvising when:
 - a worker or external effect cannot be proven terminal and late writes cannot be ruled out;
 - exact-head CI is failed, queued, in progress, cancelled, action-required, or unexpectedly skipped at merge time.
 
-## Packet AR7-BOUNDED-RECURSIVE-EXECUTION-1 — Recursive task-tree contract
+## Packet PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1 — Remaining external acceptance
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Goal:** Complete the already-merged external acceptance chain only after the named Vader runner and provider catalog prerequisites are independently verified.
+
+**Current blocker:** the runner token-exchange TLS path remains unavailable and current catalog evidence does not admit the configured provider contracts. No implementation branch, provider POST, or smoke dispatch is active.
+
+**Completion:** one replacement repository-agent smoke reaches PR creation, exact-head CI, and independent review; any provider-backed acceptance separately proves current identity, pricing, audit, and cost evidence.
+
+## Packet PE7-BOUNDED-RECURSIVE-EXECUTION-1 — Recursive task-tree contract
 
 **State:** `READY_FOR_EXECUTION`
 
-**Goal:** Extend the existing Agent Runtime child-task proposal mechanism into a persistent, bounded task tree without adding a second runtime, scheduler, queue, mailbox, or storage authority.
+**Goal:** Extend the existing Agent Runtime child-task proposal mechanism into a persistent, bounded task tree without adding a second runtime, scheduler, queue, mailbox, or storage authority. This packet is the AR7 runtime-extension slice.
 
 **Existing owners to reuse:**
 
@@ -119,7 +129,7 @@ The control plane, not the model, derives depth, remaining budgets, scope, autho
 - maximum 12 recursive nodes per root run;
 - maximum 3 concurrently leased recursive nodes globally within the feature;
 - maximum one retry per recursive node, subject to existing retryability and outcome-unknown rules;
-- child permissions may only equal a strict subset of the parent permissions;
+- child permissions may only equal or be a strict subset of the parent permissions;
 - no recursive node may create a new root goal, broaden tenant/workspace/repository scope, or authorize an external mutation.
 
 These defaults may be changed only through a later evidence-backed packet and versioned configuration contract.
@@ -158,7 +168,7 @@ These defaults may be changed only through a later evidence-backed packet and ve
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** AR7 is complete and its recursive bounds have deterministic fixture evidence.
+**Prerequisite:** `PE7-BOUNDED-RECURSIVE-EXECUTION-1`
 
 **Goal:** Add a default-off laboratory path that proposes, evaluates, archives, and optionally promotes isolated Harness candidates while the active Harness and the complete control plane remain immutable.
 
@@ -191,24 +201,13 @@ The candidate and evolver may not modify or supply authority for:
 - tool descriptions and deterministic tool-selection policy, not tool authority;
 - retry and stop policy within existing limits;
 - model-routing policy within the existing admitted provider/model set;
-- recursive subtask decomposition policy within AR7 limits.
+- recursive subtask decomposition policy within the preceding packet's limits.
 
-Harness source-code mutation is a later sub-stage of the same packet and may begin only after the component-level candidate path has stable lineage, equal-budget baselines, sealed evaluation, and rollback evidence. Model weights, evaluator code, permissions, and production release logic remain out of scope.
+Harness source-code mutation is a later sub-stage and may begin only after the component-level candidate path has stable lineage, equal-budget baselines, sealed evaluation, and rollback evidence. Model weights, evaluator code, permissions, and production release logic remain out of scope.
 
 **Required persistent evidence:**
 
-Each candidate must bind:
-
-- candidate, parent, lineage, base commit, and active-version identities;
-- exact structured proposal and supporting trace/evidence references;
-- complete patch/content hash and mutable-component declaration;
-- generator/evaluator model and version metadata when applicable;
-- development, validation, sealed-test, and migration-task identities without exposing sealed labels to the proposer;
-- random seed, calls, tokens, trustworthy cost, latency, failures, retries, tool use, and wall time;
-- correctness, safety, regression, integrity, and compatibility results;
-- rejection, archive, PR-ready, promoted, rolled-back, or blocked status and reason.
-
-Raw prompts, outputs, transcripts, repository content, credentials, and private paths must not be persisted in product evidence.
+Each candidate must bind candidate, parent, lineage, base commit, active-version identity, exact proposal/evidence references, patch/content hash, mutable-component declaration, generator/evaluator metadata, task-split identities, seed, calls, tokens, trustworthy cost, latency, failures, retries, tool use, wall time, correctness, safety, regression, integrity, compatibility, and terminal reason. Raw prompts, outputs, transcripts, repository content, credentials, and private paths must not be persisted in product evidence.
 
 **Evaluation protocol:**
 
@@ -229,26 +228,22 @@ Use task-family splits, not only random instance splits. Search may use developm
 - hard constraints for correctness, safety, integrity, scope, and budget;
 - Pareto archive over quality, token/cost, latency, robustness, and behavior diversity;
 - conservative AIDE²-style sequential promotion first: the active laboratory parent changes only when a candidate clears every hard gate and improves the declared objective under equal budget;
-- DGM/GEA-style multi-lineage parent selection and cross-branch recombination remain disabled until the sequential baseline is measured and a separate packet revision defines the archive policy.
+- DGM/GEA-style multi-lineage parent selection and cross-branch recombination remain disabled until the sequential baseline is measured and a later packet revision defines the archive policy.
 
-**Output authority:**
-
-A candidate may become `PR_READY` only. Existing app-owned target-output or repository-orchestrator finalizers must independently validate the exact patch, allowed paths, base/head identity, secret scan, verification evidence, and live controls. Auto-merge stays off. No candidate may write active `main`, deploy, publish, or change its own evaluator.
+**Output authority:** A candidate may become `PR_READY` only. Existing target-output or repository-orchestrator finalizers must independently validate the exact patch, scope, base/head identity, secret scan, verification evidence, and live controls. Auto-merge stays off. No candidate may write active `main`, deploy, publish, or change its own evaluator.
 
 **Fixture-first acceptance:**
 
-The first implementation must pass without a provider call or Vader runner and must include:
-
-- deterministic candidate generation fixtures;
+- deterministic candidate-generation fixtures;
 - lineage/archive persistence and restart/idempotency tests;
-- evaluator and sealed-set access denial tests;
+- evaluator and sealed-set access-denial tests;
 - equal-budget accounting and incomplete-cost refusal;
 - candidate workspace confinement and target-output non-authority;
 - tamper, duplicate, stale-parent, changed-active-version, and rollback tests;
 - at least three deterministic seeds or equivalent repeated fixture runs;
 - no claim of performance improvement until a separately authorized guarded-live experiment is completed.
 
-**Rollback:** Disable the evolution gate and kill switch, stop candidate admission, preserve candidate and evaluation evidence, discard unpromoted workspaces, and revert code. Promoted code is rolled back only through its ordinary signed commit/PR/release rollback path; the lab must not invent a second rollback authority.
+**Rollback:** Disable the evolution gate and kill switch, stop candidate admission, preserve candidate and evaluation evidence, discard unpromoted workspaces, and revert code. Promoted code is rolled back only through its ordinary commit/PR/release rollback path.
 
 **Completion:** The laboratory can produce auditable fixture candidates and evaluation bundles, but remains default-off and cannot mutate the active Harness. A later guarded-live packet is required before any Level-1 efficiency claim.
 
@@ -256,7 +251,7 @@ The first implementation must pass without a provider call or Vader runner and m
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisites:** PE7 has a stable Level-1 candidate/evaluation loop, at least one independently reviewed guarded-live result, and no unresolved evaluator-integrity or cost-accounting defect.
+**Prerequisite:** `PE7-HARNESS-EVOLUTION-LAB-1`
 
 **Goal:** Test whether an evolved proposer/parent selector improves the rate or quality of future improvement under a fixed candidate budget.
 
@@ -272,6 +267,34 @@ Compare a fixed human-designed proposer/selector, the initial Meta Agent, the ev
 **Still immutable:** evaluator implementation, sealed set, permissions, budget owner, audit, release/merge authority, and final promotion gate.
 
 **Completion threshold:** statistically supported improvement in `Improvement@K` on unseen improvement tasks, with no safety or cost regression. Without that evidence the project must describe the result as Harness evolution, not recursive self-improvement or ignition.
+
+## Historical Compatibility Packets
+
+These headings remain in the active handoff surface because repository governance checks and older automation use them as stable anchors. Their implementation is merged; they are not active work.
+
+## Packet PR207-REPAIR-1 — Repository-maintenance orchestrator baseline
+
+**State:** `COMPLETE`
+
+PR #207 and PR #216 established the disabled-by-default orchestrator and repaired its Codex/output/readiness compatibility. Production acceptance remains separately blocked under `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`.
+
+## Packet PE2-RUNTIME-PRODUCER-1 — Budget evidence production
+
+**State:** `COMPLETE`
+
+Owner-backed workflow/provider/scorecard usage produces bounded forecast and anomaly evidence through the existing fenced jobs and typed pause/recovery owners.
+
+## Packet PE4-EVIDENCE-ENTRY-1 — Trace-backed replay and promotion
+
+**State:** `COMPLETE`
+
+Recorder-owned dispatch traces produce immutable replay evidence; promotion remains explicit, current-state-bound, permissioned, confirmed, snapshot-backed, and rollbackable.
+
+## Packet TOOL-DISCOVERY-BENCH-1 — Static-all versus deterministic Top-K
+
+**State:** `COMPLETE`
+
+The canonical benchmark compares static-all and deterministic Top-K tool discovery through existing scorecard owners and grants no production tool-loading authority.
 
 ## Deferred Work
 
