@@ -6,7 +6,7 @@ Last updated: 2026-07-16.
 
 This repository is a local/small-team self-hosted agent workflow control plane. Rust `engine/` remains the sole runtime, API, and application-owned storage implementation. Active documents describe current facts and forward execution; merged PRs and repository history retain detailed stage history.
 
-PR #220, PR #221, and PR #222 closed the local production-call gaps for Agent Runtime, durable memory, PE-2/PE-4, the managed external runtime, and fixture/guarded-live efficiency measurement. PR #223 then merged the provider-backed durable-memory receipt and embedding repair. External live acceptance is still incomplete. PR #224 is the active provider live-safety repair; PR #225 is a presentation-only Dashboard redesign. The GitHub Issues/Actions → Vader Codex repository-maintenance orchestrator remains unaccepted for production task use.
+PR #220, PR #221, and PR #222 closed the local production-call gaps for Agent Runtime, durable memory, PE-2/PE-4, the managed external runtime, and fixture/guarded-live efficiency measurement. PR #223 and PR #224 then merged the provider-backed durable-memory receipt, embedding, transport, authorization, and pricing safety repairs. PR #226 repaired a duplicate-delivery defect found by disposable target-repository acceptance. Controlled staging drills and the repaired target-output path have external acceptance evidence; provider-backed embedding/benchmark and the replacement GitHub/Vader smoke remain blocked by current external prerequisites. PR #225 is an independent presentation-only Dashboard redesign.
 
 ## Verified Repository State
 
@@ -19,9 +19,11 @@ PR #220, PR #221, and PR #222 closed the local production-call gaps for Agent Ru
 - PR #221 merged durable memory plus the PE-2/PE-4 production loop as `f821d366359e1b68376df6dd1eae7a10c9519058`; exact PR-head CI run `29383755592` and post-merge CI run `29384216781` each passed all seven required jobs;
 - PR #222 merged the managed external runtime, benchmark, orchestrator repair, and local acceptance seal as `49a5948c4527ba741569f673696cf462db7ac092`; exact head `646118bffa1e2c9c56aead2616cb9526a8457032` passed all seven jobs in CI run `29390757467`;
 - PR #223 (`DURABLE-MEMORY-PROVIDER-EMBEDDING-REPAIR-1`) merged exact head `2c31912c4e07e182667d68b14fa20472866d01fe` as `f33b7bb0b49ec902c66b170406efa9d8ee60f9a2`; exact-head CI run `29424971021` passed all seven required jobs;
-- PR #224 (`PROVIDER-EMBEDDING-LIVE-SAFETY-REPAIR-1`) is open and mergeable at exact head `861990a6c52c91f640af8db028f7172459abd0c3`; current CI run `29485833293` is in progress, independent review and merge are not complete, and no live provider POST has been made;
+- PR #224 (`PROVIDER-EMBEDDING-LIVE-SAFETY-REPAIR-1`) merged exact reviewed head `d8df385b9af8d3bfc9e8d09d4b08f892694efe4f` as `8e7cd78be290d51231e58ebc3c70562ec8693961`; exact-head CI run `29493620726` and post-merge CI run `29494339424` each passed all seven required jobs;
+- PR #226 (`TARGET-OUTPUT-IDEMPOTENCY-REPAIR-1`) merged exact reviewed head `c52da4ee49a19acdcb2b102836cc40d12b6eb122` as `f251d7760e80179b1e1798bf6b6f442326028f89`; exact-head CI run `29499243470` and post-merge CI run `29500019102` each passed all seven required jobs, including PostgreSQL integration;
 - PR #225 (`style(dashboard): adopt a warm Claude-inspired workspace`) is open at head `edc6048be17716a7de5d5949295877f30eaf9249`; it changes only Dashboard presentation files and does not modify runtime, API, storage, permissions, or provider behavior;
-- Issue #208 currently has only `agent-control` and `agent-emergency-stop`; orchestration and auto-merge enable labels are absent.
+- repository Actions workflow permission is `write`, Actions may create/approve pull requests, and the `AGENT_SETTINGS_READ_TOKEN` and `AGENT_PUSH_TOKEN` secrets exist by name only;
+- Issue #208 currently has only `agent-control` and `agent-emergency-stop`; orchestration and auto-merge enable labels are absent; the unique Vader runner is registered with the required labels but is offline and idle.
 
 ## Repository-Agent Smoke Status
 
@@ -38,13 +40,13 @@ GPT Web request
 
 The task then transitioned to `agent-blocked`. Bounded Actions diagnostics established that Vader produced the artifact, the GitHub-hosted finalizer validated it, and the branch push completed; PR creation then failed with HTTP 403 because the repository does not permit GitHub Actions to create or approve pull requests. The Issue comments do not retain that terminal detail. The control Issue was returned to emergency stop and orchestration was disabled.
 
-The demonstrated failure cause is established from Actions diagnostics, but the required repository setting is still disabled, the Vader runner is currently offline, and Issue comments do not contain the workflow run/job identity or bounded terminal reason. A repaired preflight now checks the setting through a separate least-privilege administration-read credential before dispatch and records bounded terminal evidence, but a replacement smoke has not run.
+The demonstrated failure cause is established from Actions diagnostics. The repository Actions setting and least-privilege administration-read credential prerequisite are now present, but the Vader runner remains offline: its current latest official runner service is active locally while broker session creation repeatedly ends in TLS transport EOF. A repaired preflight records bounded terminal evidence, but a replacement smoke has not run and Issue #208 was never enabled during this acceptance attempt.
 
 Operational consequence:
 
 - do not dispatch a production repository task through this orchestrator yet;
 - keep Issue #208 emergency-stopped;
-- configure the documented administration-read preflight credential, enable the repository PR-creation setting, and restore the named disposable Vader runner;
+- restore the named disposable Vader runner to uniquely registered, online, and idle state;
 - run a new bounded smoke through PR creation, exact-head CI, and independent review before declaring the GPT Web path operational.
 
 The intended user interface remains natural language in GPT Web. The assistant, not the user, owns creation of the bounded Issue and the internal workflow parameters. This contract is documented in `README.md` and `AGENTS.md`, but activation remains blocked by the failed smoke.
@@ -58,15 +60,15 @@ The intended user interface remains natural language in GPT Web. The assistant, 
 | Agent Runtime through AR-6 | Production-managed through typed `agent_step` plans, the Rust scheduler/executor pool, bounded provider decisions, atomic action receipts, and operator evidence |
 | Trusted Local Autonomous Execution through IAE-3 | Complete |
 | PE-1 Token Efficiency Regression Lab | Complete and connected through scorecard persistence, read APIs, Dashboard, reports, batches, and trends |
-| Durable cross-run memory | Versioned scoped memory, bounded retrieval, runtime context injection, audit, API/SDK, backup, and SQLite/PostgreSQL parity are connected; provider live-safety hardening remains active in PR #224 |
+| Durable cross-run memory | Versioned scoped memory, bounded retrieval, runtime context injection, audit, API/SDK, backup, and SQLite/PostgreSQL parity are connected; provider live-safety hardening merged in PR #224, while live embedding remains fail-closed on incomplete current catalog pricing evidence |
 | PE-2 Budget Intelligence and Anomaly Auto-Pause | Normalized usage production, immutable forecast/anomaly artifacts, operator decisions, pause, and recovery are connected |
 | PE-3 Operator Decision Center | Complete and connected to typed approval, inspect, acknowledge, rollback, workflow, retry, pause, and recovery owners |
 | PE-4 Trace-backed Policy Replay | Eligible dispatch traces produce immutable replay artifacts; explicit evidence-chain promotion and exact-snapshot rollback are connected |
 | PE-5 Release Provenance | Post-seal repair merged in PR #214; exact-head CI passed; no real public release or production installation was exercised |
-| PE-6 Fault Injection and Recovery Drills | Post-seal repair merged in PR #214; owner-emitted drills are wired into existing test/CI paths; no destructive external testing is authorized |
+| PE-6 Fault Injection and Recovery Drills | Post-seal repair merged in PR #214; disposable staging drills passed timeout, outcome-unknown, redirect/size/truncation/pricing/model, duplicate/restart, corruption, migration, backup/restore, scheduler/LangGraph/PE-2/PE-4 recovery, and cleanup cases; no production resource was targeted |
 | Managed LangGraph external runtime | Production-managed by one Rust-leased node with scoped checkpoint/receipt storage, fixture/live gates, automatic scorecard persistence, and bounded inspection; live mode remains default-off |
 | Native/LangGraph efficiency benchmark | Canonical four-strategy and tool-discovery contract is connected in fixture and guarded-live modes; deterministic fixture evidence passed, but no provider-backed result is verified |
-| GitHub/Vader repository orchestrator | Repair merged in PR #222; smoke #217 failed after branch push because Actions PR creation is disabled; replacement smoke remains blocked and production use is disabled |
+| GitHub/Vader repository orchestrator | Repair merged in PR #222; Actions PR creation is now enabled, but replacement smoke remains blocked by the offline Vader runner and production use is disabled |
 | Dashboard product surface | Functional production surface is connected; PR #225 is an in-progress presentation-only redesign toward a warmer, calmer workspace visual system |
 | Post-R7 wire/type governance | Implemented through `scripts/check_wire_codegen_drift.sh` |
 
@@ -84,7 +86,7 @@ This Agent Runtime is an engine workflow capability. It is independent from the 
 
 Migration v23 adds app-owned versioned durable memory, retrieval events, normalized usage, fenced production jobs, replay bindings, and operator acknowledgements for SQLite and PostgreSQL. Memory identity and updates bind tenant, workspace, optional agent/task, source ID/hash, version, state, freshness, expiry, confidence, conflict, supersession, tombstone, actor, and record hash. Create, revise, supersede, invalidate, forget, prune, inspect, and retrieve are authenticated production APIs with SDK coverage; every call is rebound to an authoritative run and exact stored tenant/workspace/scope before access. Conflicting, superseded, stale, expired, invalid, and tombstoned records are excluded from current truth; concurrent revisions serialize by memory identity and stale versions fail explicitly.
 
-The scheduler assembles each real node context from durable run state, bounded recent history, the run-scoped digest, and immutable retrieved references before execution. Top-K, bytes, estimated tokens, candidate evidence, selection scores, truncation, and source hashes are bounded and audited without copying raw memory into scorecards. `local_hash_v1` vector generation is default-off, prohibited in CI, explicitly gated, and labeled `harness_derived`; deterministic fixture vectors are test-only. Migration v25 connects the durable-memory owner to a default-off OpenRouter embedding adapter pinned to the currently verified free NVIDIA Nemotron embedding model at 1,536 dimensions. It requires provider execution (legacy gate or a ready trusted-local profile) plus authenticated runtime mode, rejects secret-shaped outbound content before the send claim, and revalidates current catalog identity, text/context capability, and zero pricing before each POST. Catalog reads have bounded retry; each embedding POST is sent once. An app-owned, hash-bound operation receipt atomically binds scope/source, complete catalog evidence, cost reservation, send evidence, attempt count, and one memory/version target. Completed vector/metadata receipts survive restart and are revalidated before reuse without another POST. Definitive pre-effect failures and redacted error audit commit atomically. Every transport, 5xx, or validation failure after a POST is typed as outcome-unknown and cannot be retried. Authenticated reconciliation supports bounded retries only for definitive failures; an unknown outcome can be source/hash-acknowledged for audit but remains blocked. A confirmed re-embedding API creates a new immutable version under the current contract, while an append-only identity-and-pricing registry keeps historical rows and receipts readable during model rotation. The catalog price values and the harness-pinned selection effective date have distinct combined provenance and remain stable across UTC date changes. Target uniqueness prevents different concurrent revisions from both calling the provider. The symbolic `OPENROUTER_API_KEY`, timeout, separate catalog/POST circuit breakers, kill switch, redacted provider audit, and app-owned cost owner remain authoritative. Exact model/pricing/vector hashes bind tenant/workspace/optional agent/task/run, memory/version, and source ID/hash. Provider failure never silently degrades. Lexical retrieval runs only when the request explicitly permits the labeled degradation. SQLite v25 schema and marker changes commit in one immediate transaction and repair only empty partial operation tables; occupied partial tables fail closed. PostgreSQL retains the same transaction/advisory-lock semantics. Integrity scans and backup/storage include binding metadata and operation receipts; the older export/import snapshot does not claim durable-memory coverage. PR #224 is tightening ambiguous post-send classification, tenant-scoped receipt visibility, full documented zero-price validation, reusable bounded provider transport, free-model benchmark admission, and PostgreSQL startup behavior before any controlled live provider POST.
+The scheduler assembles each real node context from durable run state, bounded recent history, the run-scoped digest, and immutable retrieved references before execution. Top-K, bytes, estimated tokens, candidate evidence, selection scores, truncation, and source hashes are bounded and audited without copying raw memory into scorecards. `local_hash_v1` vector generation is default-off, prohibited in CI, explicitly gated, and labeled `harness_derived`; deterministic fixture vectors are test-only. Migration v25 connects the durable-memory owner to a default-off OpenRouter embedding adapter configured for an explicitly validated public embedding identity and dimension. It requires provider execution (legacy gate or a ready trusted-local profile) plus authenticated runtime mode, rejects secret-shaped outbound content before the send claim, and revalidates current catalog identity, capability, and every modeled applicable charge dimension before each POST. Catalog reads have bounded retry; each embedding POST is sent once. An app-owned, hash-bound operation receipt atomically binds scope/source, complete catalog evidence, cost reservation, send evidence, attempt count, and one memory/version target. Completed vector/metadata receipts survive restart and are revalidated before reuse without another POST. Definitive pre-effect failures and redacted error audit commit atomically. Every ambiguous status, transport loss, timeout, redirect, malformed/truncated/oversized response, or other unproved post-send failure is typed as outcome-unknown and cannot be retried. Authenticated reconciliation supports bounded retries only for definitive pre-effect failures; an unknown outcome can be source/hash-acknowledged for audit but remains blocked. A confirmed re-embedding API creates a new immutable version under the current contract, while an append-only identity-and-pricing registry keeps historical rows and receipts readable during model rotation. Target uniqueness prevents different concurrent revisions from both calling the provider. The symbolic `OPENROUTER_API_KEY`, bounded reusable transport, separate catalog/POST circuit breakers, kill switch, redacted provider audit, tenant-scoped Dashboard evidence, and app-owned cost owner remain authoritative. SQLite/PostgreSQL schema, receipt, audit, retrieval, and integrity parity passed real PostgreSQL 16 tests and exact-head CI. Current OpenRouter catalog reads found public free-labeled Hy3 chat and NVIDIA Nemotron embedding candidates, but their catalog pricing objects omit modeled charge dimensions required by the fail-closed admission contract. Therefore no provider POST was made, provider call count and verified cost remain zero, and live embedding/benchmark evidence is blocked rather than inferred from the free label.
 
 ### Automatic budget evidence and trace-backed policy operations
 
@@ -102,7 +104,7 @@ The canonical efficiency benchmark compares exactly `full_history`, `summary_mem
 
 ### Repository-agent worker completion and evidence
 
-The control, intake, dispatcher, Vader implementation, artifact finalizer, and branch push were exercised, but the first bounded task could not create a PR because the repository Actions PR-creation setting is disabled. The repair adds preflight and bounded failure evidence; external acceptance still requires the repository setting, an online disposable Vader runner, and a replacement smoke.
+The control, intake, dispatcher, Vader implementation, artifact finalizer, and branch push were exercised, but the historical bounded task could not create a PR. The repair adds preflight and bounded failure evidence, and the repository Actions PR-creation setting is now enabled. External acceptance still requires an online disposable Vader runner and a replacement smoke.
 
 Required chain:
 
@@ -119,7 +121,11 @@ bounded task
 
 ### External live acceptance
 
-No live provider POST, disposable-target repository acceptance, replacement orchestrator smoke, staging-only external fault drill, public tag, or public release has been completed. OpenRouter catalog reads identified a currently free Hy3 endpoint, but catalog inspection is not provider execution and is not live acceptance. These states remain `BLOCKED`, `IN_PROGRESS`, or `RELEASE_READY_NOT_PUBLISHED` according to their actual prerequisites; fixture evidence is not live evidence.
+Disposable staging-only recovery drills passed with bounded temporary SQLite/PostgreSQL 16 stores, provider proxy faults, backup/restore, restart, concurrency, duplicate, interrupted-finalization, scheduler/LangGraph recovery, compensation, and cleanup evidence. The core drill report SHA-256 is `00444cffe225e24ace61a68c99a37d96978e0f0fd6fddf150c18b6feabe32e88`; the SQLite backup/restore report SHA-256 is `70d3576c61eed36a5a6752af8ea724fec5e73e7f35137934f768cf686b78cec0`.
+
+The disposable target-repository path passed after PR #226: one private no-value repository, one changed file, one approved first delivery, immediate and process-restart duplicate reuse with zero additional external delivery, unchanged `main`, exact receipt/audit/approval binding, closed PR, deleted branch, and cleaned workspace. The bounded evidence manifest SHA-256 is `3068b6e5bcb69f7d37df5a1b4e8e7172f0b292047753f5b67b30ff7123d6866a`. Repository deletion is the only incomplete compensation step because GitHub requires interactive sudo-mode 2FA; the repository contains no valuable data and has no open PR or temporary branch.
+
+No live provider POST, provider-backed benchmark, replacement orchestrator smoke, public tag, or public release has been completed. OpenRouter catalog inspection is not provider execution and is not live acceptance. These states remain `BLOCKED` or `RELEASE_READY_NOT_PUBLISHED` according to their actual prerequisites; fixture evidence is not live evidence.
 
 ### Local runner boundary
 
@@ -127,7 +133,7 @@ The workflow-owned `LocalRunnerValidationExecutor` intentionally uses the Stub p
 
 ## Open Work Coordination
 
-PR #224 owns the active provider live-safety repair. It must complete exact-head CI, two independent reviews, exact reviewed-head merge, and post-merge verification before controlled live provider acceptance begins. PR #225 is independent presentation-only Dashboard work and must not be mixed into #224 or used as evidence for live acceptance.
+PR #224 and the follow-up target-output repair PR #226 are merged with exact-head review and seven-job CI evidence. PR #225 remains independent presentation-only Dashboard work and is not evidence for live acceptance.
 
 ## Active Execution Order
 
@@ -135,8 +141,9 @@ PR #224 owns the active provider live-safety repair. It must complete exact-head
 2. `PR2-MEMORY-BUDGET-POLICY-LOOP-1` — merged as PR #221.
 3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — merged as PR #222; local/fixture implementation is complete.
 4. `DURABLE-MEMORY-PROVIDER-EMBEDDING-REPAIR-1` — merged as PR #223.
-5. `PROVIDER-EMBEDDING-LIVE-SAFETY-REPAIR-1` — active in PR #224; CI/review/merge are not complete.
-6. Controlled external acceptance — provider embedding, native/LangGraph benchmark, replacement Vader smoke, disposable target repository, and staging drills; not started.
+5. `PROVIDER-EMBEDDING-LIVE-SAFETY-REPAIR-1` — merged as PR #224.
+6. `TARGET-OUTPUT-IDEMPOTENCY-REPAIR-1` — defect found by external acceptance and merged as PR #226.
+7. Controlled external acceptance — staging drills and disposable target repository passed; provider embedding/benchmark are blocked by incomplete current catalog pricing evidence; replacement Vader smoke is blocked by the offline runner; disposable repository deletion awaits GitHub sudo-mode 2FA.
 
 Deferred until the external acceptance sequence is complete:
 
