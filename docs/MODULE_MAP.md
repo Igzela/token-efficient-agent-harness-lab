@@ -4,6 +4,8 @@ Last updated: 2026-07-17.
 
 This file maps current ownership and approved future connection points. It is not a phase history. Detailed implementation evidence remains in merged commits and PRs; forward execution is governed by `docs/NEXT_DECISION.md`.
 
+Full Agent Autonomy Mode remains active for repository-scoped work that is testable, observable, reviewable, verification-gated, compatible, and rollbackable. External mutations, release, deployment, evaluator changes, and other authority-critical actions retain their separate gates.
+
 ## Core Ownership
 
 | Module | State | Purpose | Verification |
@@ -46,7 +48,7 @@ This file maps current ownership and approved future connection points. It is no
 
 ## Approved Recursive-Execution Ownership
 
-`AR7-BOUNDED-RECURSIVE-EXECUTION-1` is approved but not implemented. It must extend existing owners rather than create parallel infrastructure.
+`PE7-BOUNDED-RECURSIVE-EXECUTION-1` is the approved AR7 runtime-extension packet but is not implemented. It must extend existing owners rather than create parallel infrastructure.
 
 | Required capability | Existing owner to extend | Boundary |
 |---|---|---|
@@ -58,11 +60,11 @@ This file maps current ownership and approved future connection points. It is no
 | Recursive evidence | operator evidence read model, audit, scorecards, storage integrity | metadata-only ancestry/budget/result evidence; no raw prompt/output/transcript persistence |
 | Pause, kill, rollback | existing scheduler pause, Agent Runtime kill switch plus a new narrower recursive gate/kill switch | disable admission, drain/block leases, preserve evidence, revert code; no destructive cleanup by default |
 
-No source file or schema addition is considered implemented until its packet PR is merged with exact-head CI. Likely owner paths are the existing orchestration, workflow, scheduler, node-executor, local-store, HTTP, SDK, and Dashboard modules named above; the implementation PR must audit actual current file boundaries before choosing new filenames.
+No source file or schema addition is considered implemented until its packet PR is merged with exact-head CI. The implementation PR must audit actual current file boundaries before choosing new filenames.
 
 ## Approved Harness-Evolution Ownership
 
-`PE7-HARNESS-EVOLUTION-LAB-1` is approved as a default-off laboratory and remains blocked on AR7. It must reuse these owners:
+`PE7-HARNESS-EVOLUTION-LAB-1` is approved as a default-off laboratory and remains blocked on `PE7-BOUNDED-RECURSIVE-EXECUTION-1`.
 
 | Laboratory function | Existing owner to reuse | Boundary |
 |---|---|---|
@@ -75,7 +77,7 @@ No source file or schema addition is considered implemented until its packet PR 
 | Promotion | operator decision center, evidence-chain promotion patterns, target-output finalizer, PR/CI/review gates | candidate may become `PR_READY`; no direct active-version change, auto-merge, deployment, or release |
 | Rollback | ordinary Git/PR/release rollback plus lab gate/kill switch | lab never invents a second rollback authority |
 
-The authoritative evaluator, sealed set, permissions, credentials, budget owner, audit, promotion thresholds, target-output authority, merge/release owner, and active-version binding are part of the immutable control plane. The initial mutable surface is limited to prompts/rules, context selection, tool descriptions/selection policy, bounded retry/stop policy, admitted model routing, and AR7 decomposition policy. Source-code mutation follows only after component-level evaluation is stable.
+The authoritative evaluator, sealed set, permissions, credentials, budget owner, audit, promotion thresholds, target-output authority, merge/release owner, and active-version binding are part of the immutable control plane. The initial mutable surface is limited to prompts/rules, context selection, tool descriptions/selection policy, bounded retry/stop policy, admitted model routing, and recursive decomposition policy. Source-code mutation follows only after component-level evaluation is stable.
 
 ## Integration and External-Acceptance Ownership
 
@@ -87,15 +89,19 @@ The orchestrator remains disabled and emergency-stopped. `control_state.py` owns
 
 Provider adapters, catalog validation, pricing/cost gates, receipts, audit, circuit breakers, kill switches, and symbolic credentials remain the only live-call owners. Recursive/evolution fixture work may not infer live evidence from fixture output or from a `free` label.
 
-### Release and recovery
+## PE-5 Release Provenance Ownership
 
-PE-5 release provenance and PE-6 fault/recovery owners remain unchanged. Recursive/evolution work cannot publish, install, sign, corrupt real stores, or weaken rollback. Faults remain allowlisted and disposable.
+PR #214 merged the active `release_provenance.v2` repair. Existing release workflow, package/container builders, lockfiles, signed SLSA/SPDX/custom-manifest bundles, installer/upgrader verification, and transactional rollback remain authoritative. Recursive/evolution work adds no signing, publication, install, or release authority.
+
+## PE-6 Fault Injection and Recovery Ownership
+
+PR #214 merged the active v2 owner-evidence repair. Existing fixed scenario registry, disposable fault harness, SQLite/PostgreSQL recovery tests, provider/fake fault owners, release rollback drills, and cleanup evidence remain authoritative. Recursive/evolution work may use only separately allowlisted disposable fixtures and cannot target production resources.
 
 ## Active Routing
 
 1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is blocked on external runner/catalog prerequisites.
-2. `AR7-BOUNDED-RECURSIVE-EXECUTION-1` is the first eligible independent implementation packet.
-3. `PE7-HARNESS-EVOLUTION-LAB-1` follows only after AR7 merges and is refreshed against actual `main`.
+2. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is the first eligible independent implementation packet.
+3. `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the recursive packet merges and is refreshed against actual `main`.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` remains blocked until a stable, independently reviewed Level-1 lab result exists.
 5. Extend existing owners; do not create another runtime, scheduler, queue, storage layer, evaluator authority, release pipeline, signing authority, recovery authority, artifact truth source, tool registry, or Dashboard mutation model without an explicit replacement decision, compatibility evidence, and rollback.
 
