@@ -366,10 +366,10 @@ def _dispatch_fallback(
     match = re.search(r"/actions/runs/(\d+)(?:$|[/?#])", output.strip())
     if match:
         return int(match.group(1))
-    if os.environ.get("AGENT_CI_FIXTURE_MODE") != "true":
-        # Production terminal evidence must carry the provider run identity;
-        # a dispatch response without it cannot authorize a later mutation.
-        raise CIVerificationError("fallback_run_identity_missing")
+    # ``gh workflow run`` returns the URL when available, but provider
+    # visibility can lag or omit it.  Correlate the unique nonce below in
+    # both production and fixture mode; production identity validation still
+    # rejects any incomplete run once it becomes observable.
     if not isinstance(result.stdout, str):
         return None
     deadline = time.monotonic() + FALLBACK_RUN_LOOKUP_SECONDS

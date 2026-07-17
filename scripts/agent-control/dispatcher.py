@@ -50,6 +50,11 @@ def _claim(issue: int, target_label: str, dispatch_id: str, action: str) -> tupl
         if associated:
             return False, [], "issue_already_associated"
     elif target_label in {sm.LABEL_CI_REPAIRING, sm.LABEL_REVIEW_RUNNING}:
+        if target_label in labels:
+            # The external workflow may already have been dispatched even if
+            # its final audit comment was unavailable.  Retain the active
+            # claim and refuse a duplicate external mutation.
+            return False, [], "capacity_already_claimed"
         if labels & sm.TERMINAL_LABELS or not labels & {sm.LABEL_RUNNING, sm.LABEL_CI_REPAIRING, sm.LABEL_REVIEW_RUNNING}:
             return False, [], "issue_not_active"
     active = sm.get_active_issue_numbers(repo)
@@ -128,9 +133,13 @@ def dispatch_ready(issue: int, dispatch_id: str | None = None) -> dict[str, obje
     if not _record_dispatched(
         issue, dispatch_id, "worker", {"workflow": "agent-worker.yml"}
     ):
-        rolled_back = _rollback(issue, dispatch_id, previous, "dispatch_state_failed")
-        reason = "dispatch_state_failed" if rolled_back else "dispatch_state_failed_rollback_failed"
-        return {"dispatched": False, "issue": issue, "reason": reason}
+        # The external workflow has already been accepted.  Keep the claimed
+        # state and active label so a retry cannot dispatch it a second time.
+        return {
+            "dispatched": False,
+            "issue": issue,
+            "reason": "dispatch_state_failed_capacity_retained",
+        }
     return {"dispatched": True, "issue": issue, "dispatch_id": dispatch_id}
 
 
@@ -155,9 +164,8 @@ def dispatch_repair(pr: int, issue: int, sha: str, run_id: str, repair_count: st
         reason = "workflow_dispatch_failed" if rolled_back else "workflow_dispatch_failed_rollback_failed"
         return {"dispatched": False, "reason": reason}
     if not _record_dispatched(issue, dispatch_id, "repair", fields):
-        rolled_back = _rollback(issue, dispatch_id, previous, "dispatch_state_failed")
-        reason = "dispatch_state_failed" if rolled_back else "dispatch_state_failed_rollback_failed"
-        return {"dispatched": False, "reason": reason}
+        # Do not roll back a claim after the external repair has started.
+        return {"dispatched": False, "reason": "dispatch_state_failed_capacity_retained"}
     return {"dispatched": True, "dispatch_id": dispatch_id}
 
 
@@ -176,9 +184,8 @@ def dispatch_review(pr: int, issue: int, sha: str) -> dict[str, object]:
         reason = "workflow_dispatch_failed" if rolled_back else "workflow_dispatch_failed_rollback_failed"
         return {"dispatched": False, "reason": reason}
     if not _record_dispatched(issue, dispatch_id, "review", fields):
-        rolled_back = _rollback(issue, dispatch_id, previous, "dispatch_state_failed")
-        reason = "dispatch_state_failed" if rolled_back else "dispatch_state_failed_rollback_failed"
-        return {"dispatched": False, "reason": reason}
+        # Do not roll back a claim after the external review has started.
+        return {"dispatched": False, "reason": "dispatch_state_failed_capacity_retained"}
     return {"dispatched": True, "dispatch_id": dispatch_id}
 
 
@@ -252,9 +259,8 @@ def retry_review(issue: int) -> dict[str, object]:
         reason = "workflow_dispatch_failed" if rolled_back else "workflow_dispatch_failed_rollback_failed"
         return {"dispatched": False, "reason": reason}
     if not _record_dispatched(issue, dispatch_id, "retry-review", fields):
-        rolled_back = _rollback(issue, dispatch_id, previous_labels, "dispatch_state_failed")
-        reason = "dispatch_state_failed" if rolled_back else "dispatch_state_failed_rollback_failed"
-        return {"dispatched": False, "reason": reason}
+        # Do not roll back a claim after the external retry has started.
+        return {"dispatched": False, "reason": "dispatch_state_failed_capacity_retained"}
     return {"dispatched": True, "dispatch_id": dispatch_id}
 
 
@@ -270,6 +276,8 @@ def dispatch_merge(pr: int, issue: int, sha: str) -> dict[str, object]:
         return {"dispatched": False, "reason": "dispatch_state_unavailable"}
     if existing and existing.get("status") == "dispatched":
         return {"dispatched": True, "already_dispatched": True, "dispatch_id": dispatch_id}
+    if existing and existing.get("status") == "claimed":
+        return {"dispatched": False, "reason": "dispatch_in_flight"}
     labels = sm.get_issue_labels_checked(issue, _repo())
     if labels is None:
         return {"dispatched": False, "reason": "label_state_unavailable"}
