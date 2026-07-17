@@ -230,6 +230,159 @@ class TestReviewPassedLogic(unittest.TestCase):
         self.assertNotIn("LABEL_FINAL_REVIEW", source)
 
 
+class TestDispatchCIProcessing(unittest.TestCase):
+    """process_ci_dispatch: exact-head CI verification from explicit inputs."""
+
+    REQUIRED_JOBS = [
+        "docker-build", "native-runtime", "pg-integration-tests",
+        "python-tests", "rust-tests", "rust-typescript-cutover", "typescript-tests",
+    ]
+
+    def _mock_run(self, workflow_name="tests", conclusion="success",
+                  head_sha="abc123", head_branch="agent/issue-42",
+                  status="completed", workflow_id=12345, path=".github/workflows/tests.yml",
+                  repository="test/repo", head_repository="test/repo",
+                  event="workflow_dispatch"):
+        return {
+            "databaseId": 99999,
+            "workflowName": workflow_name,
+            "workflowDatabaseId": workflow_id,
+            "path": path,
+            "status": status,
+            "conclusion": conclusion,
+            "headSha": head_sha,
+            "headBranch": head_branch,
+            "headRepository": head_repository,
+            "repository": repository,
+            "event": event,
+            "jobs": [
+                {"name": job, "status": "completed", "conclusion": "success",
+                 "steps": [{"name": "step1", "conclusion": "success"}]}
+                for job in self.REQUIRED_JOBS
+            ],
+            "createdAt": "2026-07-17T00:00:00Z",
+            "updatedAt": "2026-07-17T01:00:00Z",
+        }
+
+    def _mock_pr(self, number=42, head_sha="abc123",
+                 head_branch="agent/issue-42", state="OPEN",
+                 body='Closes #1\n<!-- agent-orchestrator-binding: {"issue_number": 1, "branch": "agent/issue-1"} -->'):
+        return {
+            "number": number,
+            "headRefOid": head_sha,
+            "headRefName": head_branch,
+            "state": state,
+            "body": body,
+            "baseRefName": "main",
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+        }
+
+    @mock.patch.object(ch.ci_verifier, "run_info")
+    @mock.patch.object(ch.ci_verifier, "verify_exact_head_ci")
+    @mock.patch.object(ch.sm, "get_pr_info")
+    @mock.patch.object(ch, "_find_issue_for_pr")
+    @mock.patch.object(ch.sm, "verify_issue_pr_binding")
+    @mock.patch.object(ch, "_is_duplicate_exact_head_run")
+    @mock.patch.object(ch, "_persist_canonical_acquisition")
+    @mock.patch.object(ch, "_record_ci")
+    @mock.patch.object(ch.sm, "read_ci_state")
+    @mock.patch.object(ch.sm, "get_issue_labels_checked")
+    def test_dispatch_success_triggers_review(
+        self, mock_labels, mock_ci_state, mock_record_ci,
+        mock_persist, mock_dup, mock_binding, mock_find_issue,
+        mock_pr_info, mock_verify_ci, mock_run_info,
+    ):
+        run = self._mock_run()
+        mock_run_info.return_value = run
+        mock_pr_info.return_value = self._mock_pr()
+        mock_find_issue.return_value = 1
+        mock_binding.return_value = (True, "ok")
+        mock_dup.return_value = False
+        mock_ci_state.return_value = {"extra": {"repair_count": 0}}
+        mock_labels.return_value = {sm.LABEL_RUNNING}
+
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo", "GITHUB_REPOSITORY": "test/repo"}):
+            result = ch.process_ci_dispatch(1, 42, "abc123", 99999)
+
+        self.assertEqual(result["action"], "trigger_review")
+        self.assertEqual(result["pr_number"], 42)
+        self.assertEqual(result["issue_number"], 1)
+        self.assertEqual(result["ci_run_id"], 99999)
+
+    @mock.patch.object(ch.ci_verifier, "run_info")
+    def test_dispatch_wrong_workflow_name(self, mock_run_info):
+        run = self._mock_run(workflow_name="deploy")
+        mock_run_info.return_value = run
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"}):
+            result = ch.process_ci_dispatch(1, 42, "abc123", 99999)
+        self.assertEqual(result["action"], "noop")
+        self.assertIn("workflow_name_mismatch", result["reason"])
+
+    @mock.patch.object(ch.ci_verifier, "run_info")
+    def test_dispatch_head_sha_mismatch(self, mock_run_info):
+        run = self._mock_run(head_sha="different_sha")
+        mock_run_info.return_value = run
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"}):
+            result = ch.process_ci_dispatch(1, 42, "abc123", 99999)
+        self.assertEqual(result["action"], "stale")
+        self.assertIn("head_sha", result["reason"])
+
+    @mock.patch.object(ch.ci_verifier, "run_info")
+    @mock.patch.object(ch.sm, "get_pr_info")
+    def test_dispatch_pr_not_open(self, mock_pr_info, mock_run_info):
+        run = self._mock_run()
+        mock_run_info.return_value = run
+        mock_pr_info.return_value = self._mock_pr(state="MERGED")
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"}):
+            result = ch.process_ci_dispatch(1, 42, "abc123", 99999)
+        self.assertEqual(result["action"], "noop")
+        self.assertIn("pr_not_open", result["reason"])
+
+    @mock.patch.object(ch.ci_verifier, "run_info")
+    @mock.patch.object(ch.sm, "get_pr_info")
+    @mock.patch.object(ch, "_find_issue_for_pr")
+    @mock.patch.object(ch.sm, "verify_issue_pr_binding")
+    @mock.patch.object(ch, "_is_duplicate_exact_head_run")
+    def test_dispatch_duplicate_run(
+        self, mock_dup, mock_binding, mock_find_issue, mock_pr_info, mock_run_info,
+    ):
+        run = self._mock_run()
+        mock_run_info.return_value = run
+        mock_pr_info.return_value = self._mock_pr()
+        mock_find_issue.return_value = 1
+        mock_binding.return_value = (True, "ok")
+        mock_dup.return_value = True
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"}):
+            result = ch.process_ci_dispatch(1, 42, "abc123", 99999)
+        self.assertEqual(result["action"], "noop")
+        self.assertIn("duplicate", result["reason"])
+
+    @mock.patch.object(ch.ci_verifier, "run_info")
+    @mock.patch.object(ch.sm, "get_pr_info")
+    @mock.patch.object(ch, "_find_issue_for_pr")
+    @mock.patch.object(ch.sm, "verify_issue_pr_binding")
+    @mock.patch.object(ch, "_is_duplicate_exact_head_run")
+    @mock.patch.object(ch, "_persist_canonical_acquisition")
+    @mock.patch.object(ch, "_record_ci")
+    @mock.patch.object(ch.sm, "read_ci_state")
+    def test_dispatch_failure_triggers_repair(
+        self, mock_ci_state, mock_record_ci, mock_persist,
+        mock_dup, mock_binding, mock_find_issue, mock_pr_info, mock_run_info,
+    ):
+        run = self._mock_run(conclusion="failure")
+        mock_run_info.return_value = run
+        mock_pr_info.return_value = self._mock_pr()
+        mock_find_issue.return_value = 1
+        mock_binding.return_value = (True, "ok")
+        mock_dup.return_value = False
+        mock_ci_state.return_value = {"extra": {"repair_count": 0}}
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"}):
+            result = ch.process_ci_dispatch(1, 42, "abc123", 99999)
+        self.assertEqual(result["action"], "trigger_repair")
+        self.assertEqual(result["repair_count"], 1)
+
+
 class TestMaxRepairPersistence(unittest.TestCase):
     """Defect 19: Repair count persists across events."""
 

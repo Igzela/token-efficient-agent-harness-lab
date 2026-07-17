@@ -485,7 +485,204 @@ def process_ci_completion(event_path):
     }
 
 
+def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
+    """Process a CI completion from explicit workflow_dispatch monitor inputs.
+
+    This is the dispatch-monitor equivalent of process_ci_completion() for the
+    trusted monitor path (agent-worker dispatch -> agent-ci-monitor via
+    workflow_dispatch).  It derives all state from the GitHub API directly
+    rather than from a workflow_run event payload.
+    """
+    expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
+    if not expected_repo:
+        return {"action": "noop", "reason": "repository_unavailable"}
+
+    run = ci_verifier.run_info(ci_run_id)
+    if not run:
+        return {"action": "noop", "reason": "ci_run_not_found"}
+
+    requirements = ci_verifier.load_requirements()
+    if run.get("workflowName") != requirements["workflow_name"]:
+        return {"action": "noop", "reason": "workflow_name_mismatch"}
+    if run.get("repository") not in (None, expected_repo):
+        return {"action": "noop", "reason": "foreign_repository"}
+    if run.get("headRepository") not in (None, expected_repo):
+        return {"action": "noop", "reason": "fork_head_repository"}
+    workflow_id = requirements.get("workflow_id")
+    if workflow_id is not None and run.get("workflowDatabaseId") not in (None, workflow_id):
+        return {"action": "noop", "reason": "workflow_id_mismatch"}
+    workflow_path = requirements.get("workflow_path")
+    if workflow_path and run.get("path") not in (None, workflow_path):
+        return {"action": "noop", "reason": "workflow_path_mismatch"}
+    if run.get("headSha") != head_sha:
+        return {"action": "stale", "reason": "run_head_sha_mismatch"}
+    if run.get("status") != "completed":
+        return {"action": "noop", "reason": "run_not_completed"}
+
+    ci_conclusion = run.get("conclusion", "")
+    supported_conclusions = {"success", "failure"} | TERMINAL_UNSUPPORTED_CONCLUSIONS
+    if ci_conclusion not in supported_conclusions:
+        return {"action": "noop", "reason": f"unsupported_conclusion:{ci_conclusion}"}
+
+    branch = run.get("headBranch", "")
+
+    pr_info = sm.get_pr_info(pr_number)
+    if not pr_info or pr_info.get("state") != "OPEN":
+        return {"action": "noop", "reason": "pr_not_open"}
+    if pr_info.get("headRefOid") != head_sha:
+        return {"action": "stale", "reason": "pr_head_mismatch"}
+    if pr_info.get("headRefName") != branch:
+        return {"action": "stale", "reason": "pr_branch_mismatch"}
+
+    issue = _find_issue_for_pr(pr_number)
+    if not issue or issue != int(issue_number):
+        return {"action": "noop", "reason": "issue_binding_mismatch"}
+
+    binding_ok, binding_reason = sm.verify_issue_pr_binding(issue, pr_number, head_sha)
+    if not binding_ok:
+        return {"action": "noop", "reason": f"binding_rejected:{binding_reason}"}
+
+    try:
+        duplicate = _is_duplicate_exact_head_run(
+            issue, pr_number, head_sha, ci_run_id, branch
+        )
+    except sm.StateUnavailableError as exc:
+        return _state_unavailable_result(issue, pr_number, head_sha, ci_run_id, str(exc))
+    if duplicate:
+        return {"action": "noop", "reason": "duplicate_exact_head_run"}
+
+    try:
+        _persist_canonical_acquisition(issue, pr_number, head_sha, branch, run)
+    except (RuntimeError, sm.StateUnavailableError) as exc:
+        return _state_unavailable_result(
+            issue, pr_number, head_sha, ci_run_id, str(exc)
+        )
+
+    if ci_conclusion in TERMINAL_UNSUPPORTED_CONCLUSIONS:
+        try:
+            replacement = _reselect_unsupported(
+                issue, pr_number, head_sha, branch, run
+            )
+        except (RuntimeError, sm.StateUnavailableError) as exc:
+            return _state_unavailable_result(
+                issue, pr_number, head_sha, ci_run_id, str(exc)
+            )
+        if replacement is not None:
+            return {
+                "action": "noop",
+                "pr_number": pr_number,
+                "issue_number": issue,
+                "head_sha": head_sha,
+                "ci_run_id": replacement.get("workflow_run_id"),
+                "reason": "ci_reselected_after_unsupported_run",
+            }
+        try:
+            _record_ci(
+                issue, pr_number, head_sha, ci_run_id,
+                f"terminal_{ci_conclusion}", run,
+            )
+        except RuntimeError as exc:
+            return _state_unavailable_result(
+                issue, pr_number, head_sha, ci_run_id, str(exc)
+            )
+        return {
+            "action": "blocked",
+            "pr_number": pr_number,
+            "issue_number": issue,
+            "head_sha": head_sha,
+            "ci_run_id": ci_run_id,
+            "reason": f"ci_terminal_{ci_conclusion}",
+        }
+
+    if ci_conclusion == "success":
+        try:
+            evidence = ci_verifier.verify_exact_head_ci(
+                pr_number, head_sha, ci_run_id, pr_info
+            )
+        except ci_verifier.CIVerificationError as exc:
+            return {"action": "stale", "reason": f"exact_head_ci_rejected:{exc}"}
+        try:
+            previous_state = sm.read_ci_state(issue)
+        except sm.StateUnavailableError as exc:
+            return _state_unavailable_result(
+                issue, pr_number, head_sha, ci_run_id, str(exc)
+            )
+        repair_count = int((previous_state or {}).get("extra", {}).get("repair_count", 0))
+        try:
+            _record_ci(
+                issue, pr_number, head_sha, ci_run_id,
+                "success", run, repair_count,
+            )
+        except RuntimeError as exc:
+            return _state_unavailable_result(
+                issue, pr_number, head_sha, ci_run_id, str(exc)
+            )
+        labels = sm.get_issue_labels_checked(issue)
+        if labels is None:
+            return _state_unavailable_result(
+                issue, pr_number, head_sha, ci_run_id,
+                "Issue label state is unavailable",
+            )
+        action = "merge_ready" if sm.LABEL_REVIEW_PASSED in labels else "trigger_review"
+        return {
+            "action": action,
+            "pr_number": pr_number,
+            "issue_number": issue,
+            "head_sha": head_sha,
+            "ci_run_id": ci_run_id,
+            "reason": "ci_green",
+        }
+
+    try:
+        state = sm.read_ci_state(issue)
+    except sm.StateUnavailableError as exc:
+        return _state_unavailable_result(
+            issue, pr_number, head_sha, ci_run_id, str(exc)
+        )
+    repair_count = int((state or {}).get("extra", {}).get("repair_count", 0))
+    next_count = repair_count + 1
+    try:
+        _record_ci(
+            issue, pr_number, head_sha, ci_run_id,
+            f"failure_repair_{repair_count}", run, repair_count,
+        )
+    except RuntimeError as exc:
+        return _state_unavailable_result(
+            issue, pr_number, head_sha, ci_run_id, str(exc)
+        )
+    if next_count > MAX_REPAIR_ATTEMPTS:
+        return {
+            "action": "blocked",
+            "pr_number": pr_number,
+            "issue_number": issue,
+            "head_sha": head_sha,
+            "repair_count": next_count,
+            "reason": f"max_repairs_exceeded ({next_count}/{MAX_REPAIR_ATTEMPTS})",
+        }
+    return {
+        "action": "trigger_repair",
+        "pr_number": pr_number,
+        "issue_number": issue,
+        "head_sha": head_sha,
+        "ci_run_id": ci_run_id,
+        "repair_count": next_count,
+        "reason": "ci_failure",
+    }
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "process-dispatch":
+        if len(sys.argv) != 6:
+            print(
+                "Usage: ci_handler.py process-dispatch <issue> <pr> <head_sha> <ci_run_id>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        result = process_ci_dispatch(
+            int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], int(sys.argv[5]),
+        )
+        print(json.dumps(result, sort_keys=True))
+        return
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     if not event_path:
         print("GITHUB_EVENT_PATH not set", file=sys.stderr)

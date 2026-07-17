@@ -389,6 +389,19 @@ jobs:
           EXTRA=$(jq -c --argjson id "$RUN_ID" '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id}' scripts/agent-control/ci_requirements.json)
           python3 scripts/agent-control/state_manager.py record-ci "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
             "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" dispatched "$EXTRA"
+      - name: Dispatch trusted agent-ci-monitor to process completed CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          ACQ=$(python3 scripts/agent-control/state_manager.py read-ci-acquisition \
+            "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" "${{ steps.commit.outputs.head_sha }}")
+          RUN_ID=$(jq -er '.workflow_run_id' <<<"$ACQ")
+          gh workflow run agent-ci-monitor.yml --ref main \
+            -f issue="${{ inputs.issue }}" \
+            -f pr="${{ steps.pr.outputs.pr_number }}" \
+            -f head_sha="${{ steps.commit.outputs.head_sha }}" \
+            -f ci_run_id="$RUN_ID"
 
   rejected-before-vader:
     needs: [gate, validate]

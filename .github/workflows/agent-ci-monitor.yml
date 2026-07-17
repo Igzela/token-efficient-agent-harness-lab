@@ -4,6 +4,24 @@ on:
   workflow_run:
     workflows: [tests]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number bound to the PR
+        required: true
+        type: number
+      pr:
+        description: PR number with completed CI
+        required: true
+        type: number
+      head_sha:
+        description: Exact head SHA of the PR and CI run
+        required: true
+        type: string
+      ci_run_id:
+        description: Exact canonical tests workflow run ID
+        required: true
+        type: number
 
 permissions:
   actions: write
@@ -12,7 +30,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: agent-ci-monitor-${{ github.event.workflow_run.id }}
+  group: agent-ci-monitor-${{ github.event.workflow_run.id || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -37,13 +55,20 @@ jobs:
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Process exact canonical workflow_run evidence
+      - name: Process exact canonical workflow_run evidence or explicit dispatch
         id: decision
         if: steps.gate.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/ci_handler.py > "$RUNNER_TEMP/ci-decision.json"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python3 scripts/agent-control/ci_handler.py process-dispatch \
+              "${{ inputs.issue }}" "${{ inputs.pr }}" \
+              "${{ inputs.head_sha }}" "${{ inputs.ci_run_id }}" \
+              > "$RUNNER_TEMP/ci-decision.json"
+          else
+            python3 scripts/agent-control/ci_handler.py > "$RUNNER_TEMP/ci-decision.json"
+          fi
           cat "$RUNNER_TEMP/ci-decision.json"
           echo "action=$(jq -er '.action' "$RUNNER_TEMP/ci-decision.json")" >> "$GITHUB_OUTPUT"
           for key in pr_number issue_number head_sha ci_run_id repair_count; do
