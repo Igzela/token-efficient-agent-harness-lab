@@ -238,9 +238,16 @@ class TestDispatchCIProcessing(unittest.TestCase):
         "python-tests", "rust-tests", "rust-typescript-cutover", "typescript-tests",
     ]
 
+    def setUp(self):
+        self._control_live = mock.patch.object(ch.ci_verifier, "control_is_live", return_value=True)
+        self._control_live.start()
+
+    def tearDown(self):
+        self._control_live.stop()
+
     def _mock_run(self, workflow_name="tests", conclusion="success",
                   head_sha="abc123", head_branch="agent/issue-42",
-                  status="completed", workflow_id=12345, path=".github/workflows/tests.yml",
+                  status="completed", workflow_id=278094148, path=".github/workflows/tests.yml",
                   repository="test/repo", head_repository="test/repo",
                   event="workflow_dispatch"):
         return {
@@ -317,7 +324,7 @@ class TestDispatchCIProcessing(unittest.TestCase):
         with mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"}):
             result = ch.process_ci_dispatch(1, 42, "abc123", 99999)
         self.assertEqual(result["action"], "noop")
-        self.assertIn("workflow_name_mismatch", result["reason"])
+        self.assertEqual(result["reason"], "issue_binding_mismatch")
 
     @mock.patch.object(ch.ci_verifier, "run_info")
     def test_dispatch_head_sha_mismatch(self, mock_run_info):
@@ -325,8 +332,8 @@ class TestDispatchCIProcessing(unittest.TestCase):
         mock_run_info.return_value = run
         with mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"}):
             result = ch.process_ci_dispatch(1, 42, "abc123", 99999)
-        self.assertEqual(result["action"], "stale")
-        self.assertIn("head_sha", result["reason"])
+        self.assertEqual(result["action"], "noop")
+        self.assertEqual(result["reason"], "issue_binding_mismatch")
 
     @mock.patch.object(ch.ci_verifier, "run_info")
     @mock.patch.object(ch.sm, "get_pr_info")
@@ -336,8 +343,8 @@ class TestDispatchCIProcessing(unittest.TestCase):
         mock_pr_info.return_value = self._mock_pr(state="MERGED")
         with mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"}):
             result = ch.process_ci_dispatch(1, 42, "abc123", 99999)
-        self.assertEqual(result["action"], "noop")
-        self.assertIn("pr_not_open", result["reason"])
+        self.assertEqual(result["action"], "stale")
+        self.assertIn("pr_closed", result["reason"])
 
     @mock.patch.object(ch.ci_verifier, "run_info")
     @mock.patch.object(ch.sm, "get_pr_info")

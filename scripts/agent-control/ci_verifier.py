@@ -105,11 +105,18 @@ def run_info(run_id: int | str) -> dict[str, Any] | None:
     if target:
         details = _gh_json("api", f"repos/{target}/actions/runs/{run_id}")
         if isinstance(details, dict):
-            summary["repository"] = (details.get("repository") or {}).get("full_name") or target
-            summary["headRepository"] = (details.get("head_repository") or {}).get("full_name")
-            summary["workflowId"] = details.get("workflow_id")
-            summary["path"] = details.get("path")
-            summary["attempt"] = details.get("run_attempt")
+            if "repository" in details:
+                summary["repository"] = (details.get("repository") or {}).get("full_name")
+            if "head_repository" in details:
+                summary["headRepository"] = (details.get("head_repository") or {}).get("full_name")
+            if "workflow_id" in details:
+                summary["workflowId"] = details.get("workflow_id")
+            if details.get("workflow_id") is not None:
+                summary["workflowDatabaseId"] = details["workflow_id"]
+            if "path" in details:
+                summary["path"] = details.get("path")
+            if "run_attempt" in details:
+                summary["attempt"] = details.get("run_attempt")
             pull_requests = details.get("pull_requests")
             if isinstance(pull_requests, list):
                 summary["pullRequestNumbers"] = sorted(
@@ -130,16 +137,11 @@ def verify_failed_run(run_id: int | str, expected_sha: str) -> dict[str, Any]:
     if run.get("workflowName") != requirements["workflow_name"]:
         raise CIVerificationError("workflow name does not match canonical tests workflow")
     expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY")
-    if expected_repo and run.get("repository") not in (None, expected_repo):
-        raise CIVerificationError("CI repository does not match expected repository")
-    if expected_repo and run.get("headRepository") != expected_repo:
-        raise CIVerificationError("CI head repository is not trusted")
-    workflow_id = requirements.get("workflow_id")
-    if workflow_id is not None and run.get("workflowDatabaseId") not in (None, workflow_id):
-        raise CIVerificationError("CI workflow identity does not match canonical workflow")
-    workflow_path = requirements.get("workflow_path")
-    if workflow_path and run.get("path") not in (None, workflow_path):
-        raise CIVerificationError("CI workflow path does not match canonical workflow")
+    identity_failure = _validate_run_identity(
+        run, expected_sha, run.get("headBranch", ""), None,
+    )
+    if identity_failure:
+        raise CIVerificationError(f"CI identity rejected: {identity_failure}")
     if run.get("status") != "completed":
         raise CIVerificationError("failed workflow run is not completed")
     if run.get("conclusion") != "failure":
@@ -236,28 +238,7 @@ def _candidate_matches(
     requirements: dict[str, Any],
     expected_pr: int | None = None,
 ) -> bool:
-    if run.get("headSha") != head_sha or run.get("headBranch") != branch:
-        return False
-    if run.get("workflowName") != requirements["workflow_name"]:
-        return False
-    expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY")
-    if expected_repo and run.get("headRepository") != expected_repo:
-        return False
-    workflow_id = requirements.get("workflow_id")
-    if workflow_id is not None and run.get("workflowDatabaseId") not in (None, workflow_id):
-        return False
-    workflow_path = requirements.get("workflow_path")
-    if workflow_path and run.get("path") not in (None, workflow_path):
-        return False
-    if expected_pr is not None:
-        numbers = _candidate_pr_numbers(run)
-        if numbers is not None and run.get("event") == "pull_request":
-            if int(expected_pr) not in numbers:
-                return False
-        elif numbers:
-            if int(expected_pr) not in numbers:
-                return False
-    return True
+    return _validate_run_identity(run, head_sha, branch, expected_pr) is None
 
 
 def _timestamp(run: dict[str, Any]) -> float:
@@ -313,6 +294,8 @@ def _acquisition_selection_reason(selected: dict[str, Any]) -> str:
 
 
 def _dispatch_fallback(requirements: dict[str, Any], branch: str, head_sha: str) -> None:
+    if not control_is_live():
+        raise CIControlStopped("ci_control_stopped_before_fallback_dispatch")
     result = subprocess.run(
         [
             "gh", "workflow", "run", f"{requirements['workflow_name']}.yml",
@@ -353,19 +336,27 @@ def acquire_exact_run(
     all_runs: list[dict[str, Any]] = []
     selected: dict[str, Any] | None = None
     while True:
+        if not control_is_live():
+            raise CIControlStopped("ci_control_stopped_during_run_acquisition")
         all_runs = [
             run for run in find_exact_runs(branch, head_sha, pr_number)
             if _candidate_matches(run, branch, head_sha, requirements, pr_number)
         ]
         selected = select_canonical_run(all_runs)
         if selected is not None:
+            if not control_is_live():
+                raise CIControlStopped("ci_control_stopped_before_run_acceptance")
             break
         if time.monotonic() < deadline:
             time.sleep(min(2, max(0.01, deadline - time.monotonic())))
             continue
         if not fallback_dispatched:
+            if not control_is_live():
+                raise CIControlStopped("ci_control_stopped_before_fallback_dispatch")
             _dispatch_fallback(requirements, branch, head_sha)
             fallback_dispatched = True
+            if not control_is_live():
+                raise CIControlStopped("ci_control_stopped_after_fallback_dispatch")
             deadline = time.monotonic() + max(0, dispatch_timeout_seconds)
             continue
         raise CIRunObservationTimeout(
@@ -460,26 +451,43 @@ def _validate_run_identity(
     """Return a stable reason string if the run is unsafe, else None."""
 
     requirements = load_requirements()
+    if run.get("headSha") is None:
+        return "head_identity_missing"
     if run.get("headSha") != expected_head:
         return "head_moved"
+    if not run.get("headBranch"):
+        return "branch_identity_missing"
     if expected_branch and run.get("headBranch") != expected_branch:
         return "branch_moved"
+    if "workflowName" not in run or not run.get("workflowName"):
+        return "workflow_name_identity_missing"
     if run.get("workflowName") != requirements["workflow_name"]:
         return "workflow_changed"
     expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY")
-    if expected_repo and run.get("repository") not in (None, expected_repo):
+    production_identity = bool(expected_repo or os.environ.get("GITHUB_ACTIONS") == "true")
+    if production_identity and "repository" not in run:
+        return "repository_identity_missing"
+    if production_identity and run.get("repository") != expected_repo:
         return "foreign_repository"
-    if expected_repo and run.get("headRepository") not in (None, expected_repo):
+    if production_identity and "headRepository" not in run:
+        return "head_repository_identity_missing"
+    if production_identity and run.get("headRepository") != expected_repo:
         return "fork_head_repository"
     workflow_id = requirements.get("workflow_id")
-    if workflow_id is not None and run.get("workflowDatabaseId") not in (None, workflow_id):
+    if production_identity and workflow_id is not None and "workflowDatabaseId" not in run:
+        return "workflow_id_identity_missing"
+    if production_identity and workflow_id is not None and run.get("workflowDatabaseId") != workflow_id:
         return "workflow_id_mismatch"
     workflow_path = requirements.get("workflow_path")
-    if workflow_path and run.get("path") not in (None, workflow_path):
+    if production_identity and workflow_path and "path" not in run:
+        return "workflow_path_identity_missing"
+    if production_identity and workflow_path and run.get("path") != workflow_path:
         return "workflow_path_mismatch"
-    if pr_number is not None and run.get("event") == "pull_request":
+    if production_identity and pr_number is not None and run.get("event") == "pull_request":
         numbers = _candidate_pr_numbers(run)
-        if numbers and int(pr_number) not in numbers:
+        if numbers is None:
+            return "pr_binding_identity_missing"
+        if int(pr_number) not in numbers:
             return "pr_mismatch"
     return None
 

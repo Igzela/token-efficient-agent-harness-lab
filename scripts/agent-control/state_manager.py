@@ -101,6 +101,22 @@ class CIState:
 
 
 @dataclass(frozen=True)
+class CITerminalResolutionState:
+    issue_number: int
+    pr_number: int
+    head_sha: str
+    ci_run_id: int
+    terminal_status: str
+    reason: str
+    observed_status: str
+    capacity_release_outcome: str
+    capacity_release_reason: str
+
+    def to_wire(self):
+        return _state_wire("agent-orchestrator-ci-terminal-resolution", 1, self)
+
+
+@dataclass(frozen=True)
 class CIAcquisitionState:
     pr_number: int
     head_sha: str
@@ -426,6 +442,130 @@ def record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, extra=
         extra,
     ).to_wire()
     return comment_on_issue(issue_number, json.dumps(state), repo)
+
+
+def record_ci_terminal_state(
+    issue_number,
+    pr_number,
+    head_sha,
+    ci_run_id,
+    terminal_status,
+    observed_status,
+    reason,
+    repo="",
+    extra=None,
+):
+    """Persist bounded terminal CI evidence idempotently."""
+
+    if (
+        not isinstance(terminal_status, str)
+        or re.fullmatch(r"terminal_[a-z0-9_]+", terminal_status) is None
+        or not isinstance(observed_status, str)
+        or re.fullmatch(r"[a-z0-9_]{1,40}", observed_status) is None
+        or not isinstance(reason, str)
+        or re.fullmatch(r"[a-z0-9_:.()/-]{1,240}", reason) is None
+    ):
+        return False
+
+    details = dict(extra or {})
+    details.update({
+        "issue_number": int(issue_number),
+        "observed_status": str(observed_status),
+        "reason": str(reason),
+    })
+    state = CIState(
+        int(pr_number),
+        head_sha,
+        int(ci_run_id) if str(ci_run_id).isdigit() else ci_run_id,
+        details.get("workflow_name", "tests"),
+        details.get("required_jobs", []),
+        details.get("successful_jobs", []),
+        terminal_status,
+        details,
+    ).to_wire()
+    try:
+        comments = get_issue_comments(issue_number, repo)
+    except StateUnavailableError:
+        return False
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        try:
+            previous = json.loads(comment.get("body", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if previous == state:
+            return True
+    return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
+
+
+def release_and_record_ci_terminal(
+    issue_number,
+    pr_number,
+    head_sha,
+    ci_run_id,
+    terminal_status,
+    reason,
+    observed_status,
+    repo="",
+):
+    """Release matching active CI capacity and record the exact result."""
+
+    if (
+        not isinstance(terminal_status, str)
+        or re.fullmatch(r"terminal_[a-z0-9_]+", terminal_status) is None
+        or not isinstance(reason, str)
+        or re.fullmatch(r"[a-z0-9_:.()/-]{1,240}", reason) is None
+        or not isinstance(observed_status, str)
+        or re.fullmatch(r"[a-z0-9_]{1,40}", observed_status) is None
+    ):
+        return False, "terminal_resolution_evidence_invalid"
+
+    release_ok, release_reason = release_failed_capacity(
+        issue_number,
+        "any",
+        LABEL_BLOCKED,
+        expected_sha=head_sha,
+        repo=repo,
+    )
+    state = CITerminalResolutionState(
+        int(issue_number),
+        int(pr_number),
+        head_sha,
+        int(ci_run_id),
+        terminal_status,
+        reason,
+        observed_status,
+        "released" if release_ok else "failed",
+        release_reason,
+    ).to_wire()
+    try:
+        comments = get_issue_comments(issue_number, repo)
+    except StateUnavailableError:
+        return False, "terminal_resolution_state_unavailable"
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        try:
+            previous = json.loads(comment.get("body", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(previous, dict):
+            continue
+        if (
+            previous.get("kind") == state["kind"]
+            and previous.get("issue_number") == state["issue_number"]
+            and previous.get("pr_number") == state["pr_number"]
+            and previous.get("head_sha") == state["head_sha"]
+            and previous.get("ci_run_id") == state["ci_run_id"]
+            and previous.get("terminal_status") == state["terminal_status"]
+            and previous.get("reason") == state["reason"]
+            and previous.get("observed_status") == state["observed_status"]
+        ):
+            return release_ok, "already_recorded" if release_ok else release_reason
+    if not comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo):
+        return False, "terminal_resolution_write_failed"
+    return release_ok, release_reason
 
 
 def record_ci_acquisition(
@@ -959,6 +1099,8 @@ def release_failed_capacity(
         return False, "label_state_unavailable"
     active = labels & ACTIVE_LABELS
     if expected_active == "any":
+        if not active and terminal_label in labels:
+            return True, "already_released"
         if len(active) != 1:
             return False, "active_state_mismatch"
     elif active != {expected_active}:
@@ -1553,6 +1695,22 @@ def main():
         )
         if not ok:
             print(f"FATAL: unable to release failed capacity: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print(reason)
+
+    elif command == "release-ci-terminal":
+        if len(sys.argv) != 9:
+            print(
+                "Usage: state_manager.py release-ci-terminal <issue> <pr> <head> <run> <status> <reason> <observed-status>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        ok, reason = release_and_record_ci_terminal(
+            int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], int(sys.argv[5]),
+            sys.argv[6], sys.argv[7], sys.argv[8], repo=repo,
+        )
+        if not ok:
+            print(f"FATAL: unable to release and record terminal CI state: {reason}", file=sys.stderr)
             sys.exit(1)
         print(reason)
 

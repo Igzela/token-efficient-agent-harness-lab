@@ -182,11 +182,66 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("agent-blocked", source)
         self.assertIn("max_repairs_exceeded", (CONTROL / "ci_handler.py").read_text())
 
+    def test_ci_monitor_consumes_every_terminal_dispatch_outcome(self):
+        monitor = self.read("agent-ci-monitor.yml")
+        for action in ("trigger_repair", "trigger_review", "merge_ready", "blocked", "stale", "noop"):
+            with self.subTest(action=action):
+                self.assertIn(f"action == '{action}'", monitor)
+        self.assertIn("terminal_status != ''", monitor)
+        self.assertIn("release-ci-terminal", monitor)
+        self.assertIn("agent-blocked", monitor)
+        self.assertIn("terminal_status == '' && steps.decision.outputs.action == 'trigger_review'", monitor)
+        self.assertIn("terminal_status == '' && steps.decision.outputs.action == 'trigger_repair'", monitor)
+        self.assertIn("terminal_status == '' && steps.decision.outputs.action == 'merge_ready'", monitor)
+        self.assertIn("terminal_status == '' && steps.decision.outputs.action == 'blocked'", monitor)
+
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")
         self.assertIn("rejected-before-vader:", source)
         self.assertIn("release-rejected-worker", source)
         self.assertIn("needs: [gate, validate, vader-implementation, finalize]", source)
+
+
+class TestCITerminalState(unittest.TestCase):
+    def test_terminal_resolution_is_idempotent_and_records_release_result(self):
+        comments = []
+
+        def read_comments(*args, **kwargs):
+            return list(comments)
+
+        def write_comment(issue, body, repo=""):
+            comments.append({
+                "author": {"login": "github-actions[bot]"},
+                "body": body,
+            })
+            return True
+
+        with mock.patch.object(
+            state_manager, "release_failed_capacity",
+            side_effect=[(True, "released"), (True, "already_released")],
+        ), mock.patch.object(
+            state_manager, "get_issue_comments", side_effect=read_comments,
+        ), mock.patch.object(
+            state_manager, "comment_on_issue", side_effect=write_comment,
+        ) as comment:
+            first = state_manager.release_and_record_ci_terminal(
+                42, 207, "a" * 40, 9001, "terminal_ci_stale_binding",
+                "ci_stale_binding:pr_head_moved", "in_progress",
+            )
+            second = state_manager.release_and_record_ci_terminal(
+                42, 207, "a" * 40, 9001, "terminal_ci_stale_binding",
+                "ci_stale_binding:pr_head_moved", "in_progress",
+            )
+
+        self.assertEqual(first, (True, "released"))
+        self.assertEqual(second, (True, "already_recorded"))
+        comment.assert_called_once()
+        evidence = json.loads(comments[0]["body"])
+        self.assertEqual(evidence["issue_number"], 42)
+        self.assertEqual(evidence["pr_number"], 207)
+        self.assertEqual(evidence["head_sha"], "a" * 40)
+        self.assertEqual(evidence["ci_run_id"], 9001)
+        self.assertEqual(evidence["capacity_release_outcome"], "released")
 
     def test_legacy_generic_issue_mutators_are_not_exposed(self):
         source = (CONTROL / "state_manager.py").read_text()
@@ -290,7 +345,7 @@ class TestDispatcher(unittest.TestCase):
             gh_path.write_text(
                 "#!/usr/bin/env python3\n"
                 "import json\n"
-                "print(json.dumps({'databaseId':456,'workflowName':'tests','status':'completed','conclusion':'failure','headSha':'%s'}))\n"
+                "print(json.dumps({'databaseId':456,'workflowName':'tests','status':'completed','conclusion':'failure','headSha':'%s','headBranch':'agent/issue-42'}))\n"
                 % sha
             )
             gh_path.chmod(gh_path.stat().st_mode | stat.S_IXUSR)
@@ -452,11 +507,14 @@ class TestCIEventTrust(unittest.TestCase):
         try:
             with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
                  mock.patch.object(ci_handler.ci_verifier, "run_info", return_value=run), \
-                 mock.patch.object(ci_handler.sm, "get_pr_info", return_value=pr):
+                 mock.patch.object(ci_handler.sm, "get_pr_info", return_value=pr), \
+                 mock.patch.object(ci_handler.sm, "record_ci_terminal_state", return_value=True):
                 result = ci_handler.process_ci_completion(event_path)
         finally:
             os.unlink(event_path)
-        self.assertEqual(result, {"action": "stale", "reason": "head_sha_mismatch"})
+        self.assertEqual(result["action"], "stale")
+        self.assertEqual(result["terminal_status"], "terminal_ci_stale_binding")
+        self.assertEqual(result["reason"], "ci_stale_binding:head_sha_mismatch")
 
 
 class TestRepairHeadTransition(unittest.TestCase):
@@ -506,9 +564,148 @@ class TestExactHeadCI(unittest.TestCase):
             os.environ, {"AGENT_REPO": "", "GITHUB_REPOSITORY": ""}, clear=False
         )
         self._clear_repo_env.start()
+        self._control_live = mock.patch.object(
+            ci_verifier, "control_is_live", return_value=True
+        )
+        self._control_live.start()
 
     def tearDown(self):
+        self._control_live.stop()
         self._clear_repo_env.stop()
+
+    def test_acquisition_stops_before_fallback_when_control_changes(self):
+        sha = "c" * 40
+        with mock.patch.object(ci_verifier, "control_is_live", side_effect=[True, False]), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=[]), \
+             mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
+            with self.assertRaises(ci_verifier.CIControlStopped) as raised:
+                ci_verifier.acquire_exact_run(
+                    1, "agent/issue-c", sha, observe_seconds=0,
+                )
+        self.assertIn("before_fallback_dispatch", str(raised.exception))
+        dispatch.assert_not_called()
+
+    def test_acquisition_rechecks_control_after_fallback_dispatch(self):
+        sha = "d" * 40
+        fallback = {
+            "databaseId": 501, "event": "workflow_dispatch", "status": "queued",
+            "conclusion": "", "headSha": sha, "headBranch": "agent/issue-d",
+            "workflowName": "tests",
+        }
+        with mock.patch.object(ci_verifier, "control_is_live", side_effect=[True, True, True, False]), \
+             mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[], [fallback]]), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
+            with self.assertRaises(ci_verifier.CIControlStopped) as raised:
+                ci_verifier.acquire_exact_run(
+                    1, "agent/issue-d", sha, observe_seconds=0,
+                )
+        self.assertIn("after_fallback_dispatch", str(raised.exception))
+        dispatch.assert_called_once()
+
+    def test_production_identity_rejects_each_missing_identity_field(self):
+        sha = "e" * 40
+        complete = {
+            "databaseId": 502,
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "success",
+            "headSha": sha,
+            "headBranch": "agent/issue-e",
+            "workflowName": "tests",
+            "workflowDatabaseId": 278094148,
+            "path": ".github/workflows/tests.yml",
+            "repository": "trusted/repo",
+            "headRepository": "trusted/repo",
+            "pullRequestNumbers": [207],
+        }
+        fields = {
+            "repository": "repository_identity_missing",
+            "headRepository": "head_repository_identity_missing",
+            "workflowName": "workflow_name_identity_missing",
+            "workflowDatabaseId": "workflow_id_identity_missing",
+            "path": "workflow_path_identity_missing",
+            "headSha": "head_identity_missing",
+            "headBranch": "branch_identity_missing",
+            "pullRequestNumbers": "pr_binding_identity_missing",
+        }
+        for field, expected_reason in fields.items():
+            with self.subTest(field=field), mock.patch.dict(
+                os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False,
+            ):
+                run = dict(complete)
+                run.pop(field)
+                self.assertEqual(
+                    ci_verifier._validate_run_identity(
+                        run, sha, "agent/issue-e", 207,
+                    ),
+                    expected_reason,
+                )
+
+    def test_terminal_processing_refresh_rejects_head_changed_after_poll_validator(self):
+        sha = "f" * 40
+        run = {
+            "databaseId": 503, "event": "workflow_dispatch", "status": "queued",
+            "conclusion": "", "headSha": sha, "headBranch": "agent/issue-f",
+            "workflowName": "tests", "workflowDatabaseId": 278094148,
+            "path": ".github/workflows/tests.yml", "repository": "trusted/repo",
+            "headRepository": "trusted/repo",
+        }
+        initial_pr = {
+            "number": 207, "state": "OPEN", "headRefOid": sha,
+            "headRefName": "agent/issue-f", "body": "Closes #42",
+        }
+        moved_pr = dict(initial_pr, headRefOid="0" * 40)
+
+        def complete_after_validator(*args, **kwargs):
+            self.assertIsNone(kwargs["validator"]())
+            return {
+                "status": "success", "conclusion": "success", "ci_run_id": 503,
+                "head_sha": sha, "branch": "agent/issue-f", "run": dict(
+                    run, status="completed", conclusion="success",
+                ),
+            }
+
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+             mock.patch.object(ci_handler.ci_verifier, "run_info", return_value=run), \
+             mock.patch.object(ci_handler.sm, "get_pr_info", side_effect=[initial_pr, initial_pr, moved_pr]), \
+             mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
+             mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(ci_handler.ci_verifier, "wait_for_run_completion", side_effect=complete_after_validator), \
+             mock.patch.object(ci_handler.sm, "record_ci_terminal_state", return_value=True), \
+             mock.patch.object(ci_handler.ci_verifier, "verify_exact_head_ci") as verify:
+            result = ci_handler.process_ci_dispatch(42, 207, sha, 503)
+        self.assertEqual(result["action"], "stale")
+        self.assertIn("pr_head_moved", result["reason"])
+        verify.assert_not_called()
+
+    def test_control_stop_is_recorded_with_observed_run_and_terminal_binding(self):
+        sha = "g" * 40
+        run = {
+            "databaseId": 504, "event": "workflow_dispatch", "status": "in_progress",
+            "conclusion": "", "headSha": sha, "headBranch": "agent/issue-g",
+            "workflowName": "tests", "workflowDatabaseId": 278094148,
+            "path": ".github/workflows/tests.yml", "repository": "trusted/repo",
+            "headRepository": "trusted/repo",
+        }
+        pr = {"number": 207, "state": "OPEN", "headRefOid": sha,
+              "headRefName": "agent/issue-g", "body": "Closes #42"}
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+             mock.patch.object(ci_handler.ci_verifier, "run_info", return_value=run), \
+             mock.patch.object(ci_handler.sm, "get_pr_info", side_effect=[pr, pr]), \
+             mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
+             mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(ci_handler.ci_verifier, "wait_for_run_completion", return_value={
+                 "status": "ci_control_stopped", "reason": "control_emergency_stop_activated",
+                 "ci_run_id": 504, "head_sha": sha,
+             }), \
+             mock.patch.object(ci_handler.sm, "record_ci_terminal_state", return_value=True) as record:
+            result = ci_handler.process_ci_dispatch(42, 207, sha, 504)
+        self.assertEqual(result["action"], "blocked")
+        self.assertEqual(result["terminal_status"], "terminal_ci_control_stopped")
+        record.assert_called_once()
+        args = record.call_args.args
+        self.assertEqual(args[:6], (42, 207, sha, 504, "terminal_ci_control_stopped", "in_progress"))
+        self.assertEqual(args[6], "control_emergency_stop_activated")
 
     def test_all_seven_required_jobs_must_succeed_on_exact_head(self):
         required = ci_verifier.load_requirements()["required_jobs"]
@@ -1153,6 +1350,9 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(result["reason"], "binding_rejected:issue_pr_mismatch")
 
     @mock.patch.object(ci_handler.ci_verifier, "verify_exact_head_ci", side_effect=ci_verifier.CIVerificationError("mock failure"))
+    @mock.patch.object(ci_handler, "_record_ci_terminal", return_value={
+        "action": "stale", "reason": "ci_stale_binding:exact_head_ci_rejected",
+    })
     @mock.patch.object(ci_handler, "_record_ci")
     @mock.patch.object(ci_handler, "_persist_canonical_acquisition")
     @mock.patch.object(ci_handler, "_is_duplicate_exact_head_run", return_value=False)
@@ -1162,7 +1362,7 @@ class TestExactHeadCI(unittest.TestCase):
     @mock.patch.object(ci_handler.ci_verifier, "run_info", return_value={
         "databaseId": 99999, "status": "completed", "conclusion": "success",
         "headSha": "abc123", "headBranch": "agent/issue-42",
-        "workflowName": "tests", "workflowId": 1, "path": ".github/workflows/tests.yml",
+        "workflowName": "tests", "workflowId": 278094148, "workflowDatabaseId": 278094148, "path": ".github/workflows/tests.yml",
         "repository": "test/repo", "headRepository": "test/repo",
     })
     @mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"})
@@ -1173,7 +1373,7 @@ class TestExactHeadCI(unittest.TestCase):
 
     @mock.patch.object(ci_handler, "_record_ci_terminal", return_value={
         "action": "blocked", "pr_number": 207, "issue_number": 42,
-        "head_sha": "abc123", "ci_run_id": 99999, "reason": "ci_terminal_ci_completion_timeout",
+        "head_sha": "abc123", "ci_run_id": 99999, "reason": "ci_completion_timeout",
     })
     @mock.patch.object(ci_handler.ci_verifier, "wait_for_run_completion", return_value={
         "status": "ci_completion_timeout", "reason": "run_still_active",
@@ -1187,16 +1387,18 @@ class TestExactHeadCI(unittest.TestCase):
     @mock.patch.object(ci_handler.ci_verifier, "run_info", return_value={
         "databaseId": 99999, "status": "queued", "conclusion": "",
         "headSha": "abc123", "headBranch": "agent/issue-42",
-        "workflowName": "tests", "workflowId": 1, "path": ".github/workflows/tests.yml",
+        "workflowName": "tests", "workflowId": 278094148, "workflowDatabaseId": 278094148, "path": ".github/workflows/tests.yml",
         "repository": "test/repo", "headRepository": "test/repo",
     })
     @mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"})
     def test_process_dispatch_completion_timeout_persists_terminal(self, *mocks):
         result = ci_handler.process_ci_dispatch(42, 207, "abc123", 99999)
         self.assertEqual(result["action"], "blocked")
-        self.assertIn("ci_terminal_", result["reason"])
+        self.assertEqual(result["reason"], "ci_completion_timeout")
 
-    @mock.patch.object(ci_handler, "_record_ci_terminal")
+    @mock.patch.object(ci_handler, "_record_ci_terminal", return_value={
+        "action": "blocked", "reason": "control_emergency_stop_activated",
+    })
     @mock.patch.object(ci_handler.ci_verifier, "wait_for_run_completion", return_value={
         "status": "ci_control_stopped", "reason": "control_emergency_stop_activated",
         "ci_run_id": 99999, "head_sha": "abc123",
@@ -1209,14 +1411,14 @@ class TestExactHeadCI(unittest.TestCase):
     @mock.patch.object(ci_handler.ci_verifier, "run_info", return_value={
         "databaseId": 99999, "status": "queued", "conclusion": "",
         "headSha": "abc123", "headBranch": "agent/issue-42",
-        "workflowName": "tests", "workflowId": 1, "path": ".github/workflows/tests.yml",
+        "workflowName": "tests", "workflowId": 278094148, "workflowDatabaseId": 278094148, "path": ".github/workflows/tests.yml",
         "repository": "test/repo", "headRepository": "test/repo",
     })
     @mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"})
     def test_process_dispatch_control_stopped_returns_blocked(self, *mocks):
         result = ci_handler.process_ci_dispatch(42, 207, "abc123", 99999)
         self.assertEqual(result["action"], "blocked")
-        self.assertIn("ci_control_stopped", result["reason"])
+        self.assertEqual(result["reason"], "control_emergency_stop_activated")
 
 
 class TestRunnerReadiness(unittest.TestCase):

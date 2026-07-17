@@ -71,12 +71,27 @@ jobs:
           fi
           cat "$RUNNER_TEMP/ci-decision.json"
           echo "action=$(jq -er '.action' "$RUNNER_TEMP/ci-decision.json")" >> "$GITHUB_OUTPUT"
-          for key in pr_number issue_number head_sha ci_run_id repair_count; do
+          for key in pr_number issue_number head_sha ci_run_id repair_count terminal_status observed_status reason; do
             value=$(jq -r --arg key "$key" '.[$key] // empty' "$RUNNER_TEMP/ci-decision.json")
             echo "$key=$value" >> "$GITHUB_OUTPUT"
           done
+      - name: Release and record stale or control-stopped terminal outcome
+        if: steps.decision.outputs.action == 'stale' || steps.decision.outputs.terminal_status != ''
+        env:
+          ISSUE_NUMBER: ${{ steps.decision.outputs.issue_number }}
+          PR_NUMBER: ${{ steps.decision.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.decision.outputs.head_sha }}
+          CI_RUN_ID: ${{ steps.decision.outputs.ci_run_id }}
+          TERMINAL_STATUS: ${{ steps.decision.outputs.terminal_status }}
+          OBSERVED_STATUS: ${{ steps.decision.outputs.observed_status }}
+          TERMINAL_REASON: ${{ steps.decision.outputs.reason }}
+        run: |
+          set -euo pipefail
+          python3 scripts/agent-control/state_manager.py release-ci-terminal \
+            "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
+            "$TERMINAL_STATUS" "$TERMINAL_REASON" "$OBSERVED_STATUS"
       - name: Dispatch bounded CI repair by exact failed run ID
-        if: steps.decision.outputs.action == 'trigger_repair'
+        if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'trigger_repair'
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
           gh workflow run agent-controller.yml --ref main \
@@ -87,7 +102,7 @@ jobs:
             -f ci_run_id="${{ steps.decision.outputs.ci_run_id }}" \
             -f repair_count="${{ steps.decision.outputs.repair_count }}"
       - name: Dispatch independent exact-head review
-        if: steps.decision.outputs.action == 'trigger_review'
+        if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'trigger_review'
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
           gh workflow run agent-controller.yml --ref main \
@@ -96,7 +111,7 @@ jobs:
             -f issue="${{ steps.decision.outputs.issue_number }}" \
             -f head_sha="${{ steps.decision.outputs.head_sha }}"
       - name: Dispatch merge only through the auto-merge control gate
-        if: steps.decision.outputs.action == 'merge_ready'
+        if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'merge_ready'
         run: |
           if python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null; then
             gh workflow run agent-controller.yml --ref main \
@@ -106,8 +121,14 @@ jobs:
               -f head_sha="${{ steps.decision.outputs.head_sha }}"
           fi
       - name: Release the exact-head CI failure's active capacity
-        if: steps.decision.outputs.action == 'blocked'
+        if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'blocked'
         run: |
           python3 scripts/agent-control/state_manager.py release-failed \
             "${{ steps.decision.outputs.issue_number }}" any agent-blocked \
             "${{ steps.decision.outputs.head_sha }}"
+      - name: Consume benign no-op decision without dispatch
+        if: steps.decision.outputs.action == 'noop'
+        env:
+          NOOP_REASON: ${{ steps.decision.outputs.reason }}
+        run: |
+          echo "No external action authorized: $NOOP_REASON"
