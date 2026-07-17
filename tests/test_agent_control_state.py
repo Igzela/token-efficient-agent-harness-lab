@@ -593,9 +593,16 @@ class TestCapacityRelease(unittest.TestCase):
         transition.assert_called_once_with(42, sm.LABEL_REVIEW_BLOCKED, repo="acme/repo")
 
     def test_terminal_release_requires_exact_pr_and_ci_run_binding(self):
+        pr = {
+            "number": 207, "state": "OPEN", "headRefName": "agent/issue-42",
+            "headRefOid": "a" * 40,
+            "body": 'Closes #42\n\n<!-- agent-orchestrator-binding: {"issue_number": 42, "branch": "agent/issue-42"} -->',
+        }
         with mock.patch.object(sm, "get_issue_labels_checked", return_value={sm.LABEL_RUNNING}), \
-             mock.patch.object(sm, "read_worker_state", return_value={"pr_number": 207, "head_sha": "a" * 40}), \
+             mock.patch.object(sm, "get_pr_info", return_value=pr), \
+             mock.patch.object(sm, "read_worker_state", return_value={"pr_number": 207, "head_sha": "a" * 40, "extra": {"branch": "agent/issue-42"}}), \
              mock.patch.object(sm, "read_ci_state", return_value={"pr_number": 207, "head_sha": "a" * 40, "workflow_run_id": 9001}), \
+             mock.patch.object(sm, "_gh", return_value="[]"), \
              mock.patch.object(sm, "set_labels", return_value=True) as transition:
             ok, reason = sm.release_failed_capacity(
                 42, "any", sm.LABEL_BLOCKED, "a" * 40, "acme/repo",
@@ -605,8 +612,10 @@ class TestCapacityRelease(unittest.TestCase):
         transition.assert_called_once_with(42, sm.LABEL_BLOCKED, repo="acme/repo")
 
         with mock.patch.object(sm, "get_issue_labels_checked", return_value={sm.LABEL_RUNNING}), \
-             mock.patch.object(sm, "read_worker_state", return_value={"pr_number": 207, "head_sha": "a" * 40}), \
+             mock.patch.object(sm, "get_pr_info", return_value=pr), \
+             mock.patch.object(sm, "read_worker_state", return_value={"pr_number": 207, "head_sha": "a" * 40, "extra": {"branch": "agent/issue-42"}}), \
              mock.patch.object(sm, "read_ci_state", return_value={"pr_number": 207, "head_sha": "a" * 40, "workflow_run_id": 9002}), \
+             mock.patch.object(sm, "_gh", return_value="[]"), \
              mock.patch.object(sm, "set_labels") as transition:
             ok, reason = sm.release_failed_capacity(
                 42, "any", sm.LABEL_BLOCKED, "a" * 40, "acme/repo",

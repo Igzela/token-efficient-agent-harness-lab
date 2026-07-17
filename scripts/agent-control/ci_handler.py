@@ -287,6 +287,17 @@ def _reselect_unsupported(issue, pr, sha, branch, event_run):
             )
         except ci_verifier.CIVerificationError:
             return None
+        refreshed_pr = sm.get_pr_info(pr)
+        if not refreshed_pr or refreshed_pr.get("state") != "OPEN":
+            return None
+        if (
+            refreshed_pr.get("headRefOid") != sha
+            or refreshed_pr.get("headRefName") != branch
+        ):
+            return None
+        binding_ok, _ = sm.verify_issue_pr_binding(issue, pr, sha)
+        if not binding_ok or not ci_verifier.control_is_live():
+            return None
     try:
         selected_id = int(acquisition["workflow_run_id"])
         event_id = int(event_run.get("databaseId", 0))
@@ -455,6 +466,25 @@ def process_ci_completion(event_path):
     current_head = pr_info.get("headRefOid", "")
     if not current_head:
         return {"action": "noop", "reason": "pr_head_identity_missing"}
+    if current_head != info["head_sha"]:
+        try:
+            worker = sm.read_worker_state(issue_number)
+        except sm.StateUnavailableError:
+            worker = None
+        worker_branch = (worker or {}).get("extra", {}).get("branch")
+        if (
+            worker
+            and worker.get("pr_number") == pr_number
+            and worker.get("head_sha") == info["head_sha"]
+            and worker_branch == info["head_branch"] == pr_info.get("headRefName")
+        ):
+            run, run_failure = _run_for_event(info)
+            if run:
+                return _record_ci_terminal(
+                    issue_number, pr_number, info["head_sha"], info["run_id"], run,
+                    "ci_stale_binding", action="stale",
+                    reason=f"ci_stale_binding:pr_head_moved:{run_failure or 'current_head_changed'}",
+                )
     binding_ok, binding_reason = sm.verify_issue_pr_binding(
         issue_number, pr_number, current_head,
     )
@@ -529,14 +559,10 @@ def process_ci_completion(event_path):
                 issue_number, pr_number, current_head, info["run_id"], str(exc)
             )
         if replacement is not None:
-            return {
-                "action": "noop",
-                "pr_number": pr_number,
-                "issue_number": issue_number,
-                "head_sha": current_head,
-                "ci_run_id": replacement.get("workflow_run_id"),
-                "reason": "ci_reselected_after_unsupported_run",
-            }
+            return process_ci_dispatch(
+                issue_number, pr_number, current_head,
+                int(replacement["workflow_run_id"]),
+            )
         conclusion = info["conclusion"]
         try:
             _record_ci(
@@ -912,12 +938,9 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
                 issue, pr_number, head_sha, ci_run_id, str(exc)
             )
         if replacement is not None:
-            return _noop_result(
-                issue,
-                pr_number,
-                head_sha,
-                replacement.get("workflow_run_id", ci_run_id),
-                "ci_reselected_after_unsupported_run",
+            return process_ci_dispatch(
+                issue, pr_number, head_sha,
+                int(replacement["workflow_run_id"]),
             )
         return _record_ci_terminal(
             issue, pr_number, head_sha, ci_run_id, run, ci_conclusion,

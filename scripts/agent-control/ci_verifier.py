@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -337,7 +338,9 @@ def _acquisition_selection_reason(selected: dict[str, Any]) -> str:
     return "fallback_active_observed"
 
 
-def _dispatch_fallback(requirements: dict[str, Any], branch: str, head_sha: str) -> None:
+def _dispatch_fallback(
+    requirements: dict[str, Any], branch: str, head_sha: str,
+) -> int | None:
     if not control_is_live():
         raise CIControlStopped("ci_control_stopped_before_fallback_dispatch")
     result = subprocess.run(
@@ -348,6 +351,9 @@ def _dispatch_fallback(requirements: dict[str, Any], branch: str, head_sha: str)
     )
     if result.returncode != 0:
         raise CIVerificationError("canonical tests workflow dispatch failed")
+    output = result.stdout if isinstance(result.stdout, str) else ""
+    match = re.search(r"/actions/runs/(\d+)(?:$|[/?#])", output.strip())
+    return int(match.group(1)) if match else None
 
 
 def _observe_fallback_after_control_stop(
@@ -440,15 +446,31 @@ def acquire_exact_run(
             pre_dispatch_run_ids = {
                 _run_id(run) for run in observed_runs if _run_id(run) > 0
             }
-            _dispatch_fallback(requirements, branch, head_sha)
+            dispatched_run_id = _dispatch_fallback(requirements, branch, head_sha)
             fallback_dispatched = True
             if not control_is_live():
-                observed = _observe_fallback_after_control_stop(
-                    branch, head_sha, pr_number, pre_dispatch_run_ids,
-                )
+                observed = {}
+                if dispatched_run_id is not None:
+                    candidate = run_info(dispatched_run_id)
+                    if candidate and _run_id(candidate) == dispatched_run_id:
+                        observed = candidate
+                    else:
+                        observed = {
+                            "databaseId": dispatched_run_id,
+                            "event": "workflow_dispatch",
+                            "status": "dispatched",
+                            "conclusion": "",
+                            "headSha": head_sha,
+                            "headBranch": branch,
+                            "workflowName": requirements["workflow_name"],
+                        }
+                else:
+                    observed = _observe_fallback_after_control_stop(
+                        branch, head_sha, pr_number, pre_dispatch_run_ids,
+                    )
                 raise CIControlStopped(
                     "ci_control_stopped_after_fallback_dispatch",
-                    ci_run_id=_run_id(observed) or None,
+                    ci_run_id=dispatched_run_id or _run_id(observed) or None,
                     head_sha=head_sha,
                     observed_run=observed,
                 )

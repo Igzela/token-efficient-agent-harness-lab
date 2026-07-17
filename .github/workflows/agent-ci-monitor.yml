@@ -129,10 +129,18 @@ jobs:
           set -euo pipefail
           if python3 scripts/agent-control/control_state.py require-live >/dev/null; then
             if [ "$ACTION" = "trigger_repair" ]; then
-              test "$REPAIR_OUTCOME" = "success"
+              if [ "$REPAIR_OUTCOME" = "success" ]; then
+                exit 0
+              fi
             else
-              test "$REVIEW_OUTCOME" = "success"
+              if [ "$REVIEW_OUTCOME" = "success" ]; then
+                exit 0
+              fi
             fi
+            python3 scripts/agent-control/state_manager.py release-ci-terminal \
+              "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
+              terminal_ci_followup_dispatch_failed \
+              "ci_followup_dispatch_failed:$ACTION" "$OBSERVED_STATUS"
             exit 0
           fi
           python3 scripts/agent-control/state_manager.py release-ci-terminal \

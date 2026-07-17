@@ -252,24 +252,46 @@ class TestWorkflowContracts(unittest.TestCase):
     def test_ci_monitor_action_contract_executes_a_consumer_for_each_handler_action(self):
         blocks = self.read("agent-ci-monitor.yml").split("      - name: ")[1:]
         action_contract = {
-            "trigger_repair": ("dispatch", "gh workflow run agent-controller.yml"),
-            "trigger_review": ("dispatch", "gh workflow run agent-controller.yml"),
-            "merge_ready": ("dispatch", "require-auto-merge"),
-            "blocked": ("release", "release-failed"),
-            "stale": ("release", "release-ci-terminal"),
-            "noop": ("release", "release-ci-terminal"),
+            "trigger_repair": (
+                "steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'trigger_repair'",
+                "gh workflow run agent-controller.yml",
+            ),
+            "trigger_review": (
+                "steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'trigger_review'",
+                "gh workflow run agent-controller.yml",
+            ),
+            "merge_ready": (
+                "steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'merge_ready'",
+                "require-auto-merge",
+            ),
+            "blocked": (
+                "steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'blocked'",
+                "release-failed",
+            ),
+            "stale": (
+                "steps.decision.outputs.action == 'stale'",
+                "release-ci-terminal",
+            ),
+            "noop": (
+                "steps.decision.outputs.action == 'noop'",
+                "release-ci-terminal",
+            ),
         }
-        for action, (kind, command) in action_contract.items():
-            candidates = [block for block in blocks if action in block and "run:" in block]
+        for action, (condition, command) in action_contract.items():
+            candidates = [
+                block for block in blocks
+                if condition in block and "run:" in block
+            ]
             with self.subTest(action=action):
                 self.assertTrue(candidates)
                 if action == "noop":
                     self.assertTrue(any("terminal_status != ''" in block for block in candidates))
                     self.assertTrue(any("terminal_status == ''" in block for block in candidates))
-                if kind == "release":
-                    self.assertTrue(any(command in block for block in candidates))
-                else:
-                    self.assertTrue(any(command in block for block in candidates))
+                self.assertTrue(any(command in block for block in candidates))
+
+        monitor = self.read("agent-ci-monitor.yml")
+        self.assertIn("terminal_ci_followup_dispatch_failed", monitor)
+        self.assertIn('"ci_followup_dispatch_failed:$ACTION" "$OBSERVED_STATUS"', monitor)
 
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")
@@ -608,6 +630,44 @@ class TestCIEventTrust(unittest.TestCase):
         self.assertEqual(result["terminal_status"], "terminal_ci_stale_binding")
         self.assertEqual(result["reason"], "ci_stale_binding:branch_moved")
 
+    def test_moved_head_event_records_stale_old_binding_for_capacity_release(self):
+        old_sha = "2" * 40
+        new_sha = "3" * 40
+        body = 'Closes #42\n\n<!-- agent-orchestrator-binding: {"issue_number": 42, "branch": "agent/issue-42"} -->'
+        event_path = self.event_file({
+            "repository": {"full_name": "trusted/repo"},
+            "workflow_run": {
+                "name": "tests", "status": "completed", "conclusion": "success",
+                "head_branch": "agent/issue-42", "head_sha": old_sha, "id": 100,
+                "head_repository": {"full_name": "trusted/repo"},
+                "pull_requests": [{"number": 207, "head": {"sha": old_sha}}],
+            },
+        })
+        run = {
+            "databaseId": 100, "workflowName": "tests", "status": "completed",
+            "conclusion": "success", "headSha": old_sha, "headBranch": "agent/issue-42",
+        }
+        moved_pr = {
+            "state": "OPEN", "headRefName": "agent/issue-42", "headRefOid": new_sha,
+            "body": body,
+        }
+        try:
+            with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+                 mock.patch.object(ci_handler.ci_verifier, "run_info", return_value=run), \
+                 mock.patch.object(ci_handler.sm, "get_pr_info", return_value=moved_pr), \
+                 mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
+                 mock.patch.object(ci_handler.sm, "read_worker_state", return_value={
+                     "pr_number": 207, "head_sha": old_sha,
+                     "extra": {"branch": "agent/issue-42"},
+                 }), \
+                 mock.patch.object(ci_handler.sm, "record_ci_terminal_state", return_value=True):
+                result = ci_handler.process_ci_completion(event_path)
+        finally:
+            os.unlink(event_path)
+        self.assertEqual(result["action"], "stale")
+        self.assertEqual(result["head_sha"], old_sha)
+        self.assertEqual(result["reason"], "ci_stale_binding:pr_head_moved:current_head_changed")
+
 
 class TestRepairHeadTransition(unittest.TestCase):
     def test_post_push_verification_accepts_h2_before_new_worker_state(self):
@@ -635,6 +695,23 @@ class TestRepairHeadTransition(unittest.TestCase):
         self.assertTrue(ok, reason)
         self.assertFalse(old_ok)
         self.assertEqual(old_reason, "head_mismatch")
+
+    def test_terminal_release_accepts_only_same_issue_pr_branch_after_head_move(self):
+        pr = {
+            "number": 207, "state": "OPEN", "headRefName": "agent/issue-42",
+            "headRefOid": "b" * 40,
+            "body": 'Closes #42\n\n<!-- agent-orchestrator-binding: {"issue_number": 42, "branch": "agent/issue-42"} -->',
+        }
+        worker = {
+            "pr_number": 207, "head_sha": "a" * 40,
+            "extra": {"branch": "agent/issue-42"},
+        }
+        with mock.patch.object(state_manager, "get_pr_info", return_value=pr), \
+             mock.patch.object(state_manager, "read_worker_state", return_value=worker), \
+             mock.patch.object(state_manager, "_gh", return_value="[]"):
+            ok, reason = state_manager.verify_ci_terminal_binding(42, 207, "a" * 40, "acme/repo")
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "stale_head_replaced")
 
     def test_old_ci_and_review_evidence_cannot_authorize_new_head(self):
         with mock.patch.object(state_manager, "get_issue_labels", return_value={state_manager.LABEL_REVIEW_PASSED, state_manager.LABEL_MERGE_READY}), \
@@ -696,6 +773,24 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(raised.exception.head_sha, sha)
         self.assertEqual(raised.exception.observed_run["status"], "queued")
         dispatch.assert_called_once()
+
+    def test_stop_after_dispatch_binds_run_id_before_provider_visibility(self):
+        sha = "d" * 40
+        completed_dispatch = mock.Mock(
+            returncode=0,
+            stdout="https://github.com/trusted/repo/actions/runs/777",
+        )
+        with mock.patch.object(ci_verifier, "control_is_live", side_effect=[True, True, True, False]), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=[]), \
+             mock.patch.object(ci_verifier, "run_info", return_value=None), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=completed_dispatch):
+            with self.assertRaises(ci_verifier.CIControlStopped) as raised:
+                ci_verifier.acquire_exact_run(
+                    1, "agent/issue-d", sha, observe_seconds=0,
+                )
+        self.assertEqual(raised.exception.ci_run_id, 777)
+        self.assertEqual(raised.exception.observed_run["databaseId"], 777)
+        self.assertEqual(raised.exception.observed_run["status"], "dispatched")
 
     def test_production_identity_rejects_each_missing_identity_field(self):
         sha = "e" * 40
@@ -1309,6 +1404,9 @@ class TestExactHeadCI(unittest.TestCase):
         }
         with mock.patch.object(ci_handler.ci_verifier, "acquire_exact_ci", return_value=replacement), \
              mock.patch.object(ci_handler.sm, "read_ci_acquisition", return_value=None), \
+             mock.patch.object(ci_handler.sm, "get_pr_info", return_value={"state": "OPEN", "headRefOid": "a" * 40, "headRefName": "agent/x"}), \
+             mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(ci_handler.ci_verifier, "control_is_live", return_value=True), \
              mock.patch.object(ci_handler.sm, "record_ci_acquisition", return_value=True) as record:
             selected = ci_handler._reselect_unsupported(42, 207, "a" * 40, "agent/x", event_run)
         self.assertEqual(selected, replacement)

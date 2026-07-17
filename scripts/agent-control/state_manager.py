@@ -1101,6 +1101,38 @@ def verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo=""):
     return True, "ok"
 
 
+def verify_ci_terminal_binding(issue_number, pr_number, expected_sha, repo=""):
+    """Revalidate the PR/worker binding before terminal capacity release.
+
+    A stale CI event is allowed to release the worker claim for its exact
+    old head after the same PR advances, but it must still be the same
+    issue-bound branch and PR.  An unchanged head uses the full binding
+    validator above; the moved-head case deliberately does not authorize
+    the new head.
+    """
+
+    pr = get_pr_info(pr_number, repo)
+    if not pr:
+        return False, "pr_not_found"
+    try:
+        worker = read_worker_state(issue_number, repo)
+    except StateUnavailableError:
+        return False, "worker_state_unavailable"
+    if not worker or worker.get("pr_number") != int(pr_number) or worker.get("head_sha") != expected_sha:
+        return False, "worker_binding_mismatch"
+    expected_branch = (worker.get("extra") or {}).get("branch") or f"agent/issue-{issue_number}"
+    if pr.get("headRefName") != expected_branch:
+        return False, "branch_mismatch"
+    marker = parse_binding_marker(pr.get("body", ""))
+    if not marker or marker.get("issue_number") != int(issue_number) or marker.get("branch") != expected_branch:
+        return False, "binding_marker_mismatch"
+    if not re.search(rf"(?:Closes|Fixes|Resolves|Implements)\s+#?{int(issue_number)}\b", pr.get("body", ""), re.IGNORECASE):
+        return False, "missing_issue_link"
+    if pr.get("headRefOid") == expected_sha:
+        return verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo)
+    return True, "stale_head_replaced"
+
+
 def release_failed_capacity(
     issue_number,
     expected_active,
@@ -1181,6 +1213,12 @@ def release_failed_capacity(
         return False, "capacity_state_changed"
     if latest_labels & (TERMINAL_LABELS | {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}):
         return False, "newer_terminal_state_exists"
+    if expected_pr is not None and expected_sha:
+        binding_ok, binding_reason = verify_ci_terminal_binding(
+            issue_number, expected_pr, expected_sha, repo
+        )
+        if not binding_ok:
+            return False, f"binding_rejected:{binding_reason}"
     if not set_labels(issue_number, terminal_label, repo=repo):
         return False, "label_transition_failed"
     return True, "released"
