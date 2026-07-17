@@ -50,7 +50,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: agent-dispatch-global
+  group: agent-pr-state-${{ inputs.pr_number || github.run_id }}
   cancel-in-progress: false
 
 jobs:

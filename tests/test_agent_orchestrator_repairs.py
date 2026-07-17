@@ -204,6 +204,7 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("agent-pr-state-${{ inputs.pr || github.event.workflow_run.pull_requests[0].number", monitor)
         for workflow in ("agent-review.yml", "agent-ci-repair.yml", "agent-merge.yml"):
             self.assertIn("group: agent-pr-state-${{ inputs.pr_number }}", self.read(workflow))
+        self.assertIn("group: agent-pr-state-${{ inputs.pr_number || github.run_id }}", self.read("agent-controller.yml"))
 
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")
@@ -539,7 +540,7 @@ class TestCIEventTrust(unittest.TestCase):
             os.unlink(event_path)
         self.assertEqual(result["action"], "stale")
         self.assertEqual(result["terminal_status"], "terminal_ci_stale_binding")
-        self.assertEqual(result["reason"], "ci_stale_binding:head_sha_mismatch")
+        self.assertEqual(result["reason"], "ci_stale_binding:branch_moved")
 
 
 class TestRepairHeadTransition(unittest.TestCase):
@@ -1089,6 +1090,7 @@ class TestExactHeadCI(unittest.TestCase):
                  mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
                  mock.patch.object(ci_handler.sm, "read_ci_acquisition", return_value=None), \
                  mock.patch.object(ci_handler.sm, "record_ci_acquisition", return_value=True), \
+                 mock.patch.object(ci_handler.sm, "record_ci_terminal_state", return_value=True), \
                  mock.patch.object(ci_handler, "_record_ci") as record:
                 result = ci_handler.process_ci_completion(event_path.name)
             with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
@@ -1280,7 +1282,7 @@ class TestExactHeadCI(unittest.TestCase):
              mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=1)) as dispatch:
             with self.assertRaises(ci_verifier.CIVerificationError):
                 ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0, dispatch_timeout_seconds=0)
-        dispatch.assert_called_once()
+        dispatch.assert_not_called()
 
     def test_candidate_identity_rejects_wrong_pull_request_when_provider_binds_one(self):
         sha = "7" * 40
@@ -1298,7 +1300,7 @@ class TestExactHeadCI(unittest.TestCase):
              mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=1)) as dispatch:
             with self.assertRaises(ci_verifier.CIVerificationError):
                 ci_verifier.acquire_exact_ci(207, "agent/x", sha, observe_seconds=0, dispatch_timeout_seconds=0)
-        dispatch.assert_called_once()
+        dispatch.assert_not_called()
 
     def test_reselection_keeps_repair_count_and_ignores_stale_failure_after_success(self):
         sha = "1" * 40

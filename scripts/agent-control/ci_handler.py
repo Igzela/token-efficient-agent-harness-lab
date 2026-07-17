@@ -49,18 +49,23 @@ def parse_workflow_run_event(event_path):
 def _run_for_event(info):
     run = ci_verifier.run_info(info["run_id"])
     if not run:
-        return None
+        return None, "workflow_run_unavailable"
+    if run.get("databaseId") is None:
+        return None, "run_id_identity_missing"
     if str(run.get("databaseId")) != str(info.get("run_id")):
-        return None
+        return None, "run_id_identity_mismatch"
     requirements = ci_verifier.load_requirements()
-    if run.get("workflowName") != requirements["workflow_name"]:
-        return None
-    if run.get("headSha") != info["head_sha"] or run.get("status") != "completed":
-        return None
+    identity_failure = ci_verifier._validate_run_identity(
+        run, info["head_sha"], info["head_branch"], info.get("pr_number"),
+    )
+    if identity_failure:
+        return None, identity_failure
+    if run.get("status") != "completed":
+        return None, "workflow_run_not_completed"
     if info.get("workflow_id") is not None and run.get("workflowId") not in (None, info["workflow_id"]):
-        return None
+        return None, "workflow_id_mismatch"
     if info.get("workflow_path") and run.get("path") not in (None, info["workflow_path"]):
-        return None
+        return None, "workflow_path_mismatch"
     provider_identity = {"repository", "headRepository", "workflowId", "path"}
     production_run = (
         os.environ.get("GITHUB_ACTIONS") == "true"
@@ -73,8 +78,8 @@ def _run_for_event(info):
         requirements,
         info.get("pr_number"),
     ):
-        return None
-    return run
+        return None, "workflow_identity_or_head_mismatch"
+    return run, None
 
 
 def get_failed_jobs(run_id):
@@ -432,13 +437,13 @@ def process_ci_completion(event_path):
     issue_number = _find_issue_for_pr(pr_number)
     if not issue_number:
         return {"action": "noop", "reason": "no_canonical_issue_binding"}
-    run = _run_for_event(info)
+    run, run_failure = _run_for_event(info)
     if not run:
         return _record_ci_terminal(
             issue_number, pr_number, info["head_sha"], info["run_id"],
             {"status": info["status"], "conclusion": info["conclusion"], "headBranch": info["head_branch"]},
             "ci_stale_binding", action="stale",
-            reason="ci_stale_binding:workflow_identity_or_head_mismatch",
+            reason=f"ci_stale_binding:{run_failure or 'workflow_identity_or_head_mismatch'}",
         )
     pr_info = sm.get_pr_info(pr_number)
     if not pr_info or pr_info.get("state") != "OPEN":
@@ -526,14 +531,15 @@ def process_ci_completion(event_path):
             return _state_unavailable_result(
                 issue_number, pr_number, current_head, info["run_id"], str(exc)
             )
-        return {
-            "action": "blocked",
-            "pr_number": pr_number,
-            "issue_number": issue_number,
-            "head_sha": current_head,
-            "ci_run_id": info["run_id"],
-            "reason": f"ci_terminal_{conclusion}",
-        }
+        if not ci_verifier.control_is_live():
+            return _record_ci_terminal(
+                issue_number, pr_number, current_head, info["run_id"], run,
+                "ci_control_stopped", reason="ci_control_stopped:after_ci_state_persistence",
+            )
+        return _record_ci_terminal(
+            issue_number, pr_number, current_head, info["run_id"], run,
+            conclusion, reason=f"ci_terminal_{conclusion}",
+        )
 
     if info["conclusion"] == "success":
         try:
@@ -559,6 +565,11 @@ def process_ci_completion(event_path):
         except RuntimeError as exc:
             return _state_unavailable_result(
                 issue_number, pr_number, current_head, info["run_id"], str(exc)
+            )
+        if not ci_verifier.control_is_live():
+            return _record_ci_terminal(
+                issue_number, pr_number, current_head, info["run_id"], run,
+                "ci_control_stopped", reason="ci_control_stopped:after_ci_state_persistence",
             )
         labels = sm.get_issue_labels_checked(issue_number)
         if labels is None:
@@ -593,15 +604,16 @@ def process_ci_completion(event_path):
         return _state_unavailable_result(
             issue_number, pr_number, current_head, info["run_id"], str(exc)
         )
+    if not ci_verifier.control_is_live():
+        return _record_ci_terminal(
+            issue_number, pr_number, current_head, info["run_id"], run,
+            "ci_control_stopped", reason="ci_control_stopped:after_ci_state_persistence",
+        )
     if next_count > MAX_REPAIR_ATTEMPTS:
-        return {
-            "action": "blocked",
-            "pr_number": pr_number,
-            "issue_number": issue_number,
-            "head_sha": current_head,
-            "repair_count": next_count,
-            "reason": f"max_repairs_exceeded ({next_count}/{MAX_REPAIR_ATTEMPTS})",
-        }
+        return _record_ci_terminal(
+            issue_number, pr_number, current_head, info["run_id"], run,
+            "max_repairs_exceeded", reason=f"max_repairs_exceeded:{next_count}/{MAX_REPAIR_ATTEMPTS}",
+        )
     return {
         "action": "trigger_repair",
         "pr_number": pr_number,
@@ -911,6 +923,11 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
             return _state_unavailable_result(
                 issue, pr_number, head_sha, ci_run_id, str(exc)
             )
+        if not ci_verifier.control_is_live():
+            return _record_ci_terminal(
+                issue, pr_number, head_sha, ci_run_id, run,
+                "ci_control_stopped", reason="ci_control_stopped:after_ci_state_persistence",
+            )
         labels = sm.get_issue_labels_checked(issue)
         if labels is None:
             return _state_unavailable_result(
@@ -950,14 +967,10 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
             issue, pr_number, head_sha, ci_run_id, str(exc)
         )
     if next_count > MAX_REPAIR_ATTEMPTS:
-        return {
-            "action": "blocked",
-            "pr_number": pr_number,
-            "issue_number": issue,
-            "head_sha": head_sha,
-            "repair_count": next_count,
-            "reason": f"max_repairs_exceeded ({next_count}/{MAX_REPAIR_ATTEMPTS})",
-        }
+        return _record_ci_terminal(
+            issue, pr_number, head_sha, ci_run_id, run,
+            "max_repairs_exceeded", reason=f"max_repairs_exceeded:{next_count}/{MAX_REPAIR_ATTEMPTS}",
+        )
     return {
         "action": "trigger_repair",
         "pr_number": pr_number,

@@ -61,6 +61,14 @@ class CIControlStopped(CIVerificationError):
     """The live control state changed while the run was being observed."""
 
 
+class ExactRunCandidates(list):
+    """Valid exact-head runs plus rejected production identities."""
+
+    def __init__(self, runs: list[dict[str, Any]], rejections: list[str]):
+        super().__init__(runs)
+        self.identity_rejections = rejections
+
+
 def load_requirements() -> dict[str, Any]:
     with REQUIREMENTS_PATH.open(encoding="utf-8") as handle:
         data = json.load(handle)
@@ -185,6 +193,13 @@ def _candidate_pr_numbers(run: dict[str, Any]) -> list[int] | None:
 
 
 def find_exact_runs(branch: str, head_sha: str, expected_pr: int | None = None) -> list[dict[str, Any]]:
+    candidates, _ = _find_exact_runs_with_rejections(branch, head_sha, expected_pr)
+    return candidates
+
+
+def _find_exact_runs_with_rejections(
+    branch: str, head_sha: str, expected_pr: int | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     requirements = load_requirements()
     target = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY")
     args = [
@@ -198,13 +213,18 @@ def find_exact_runs(branch: str, head_sha: str, expected_pr: int | None = None) 
         *args,
     )
     if not isinstance(runs, list):
-        return []
+        return [], []
     exact = [run for run in runs if run.get("headSha") == head_sha and run.get("headBranch") == branch]
     enriched = [run_info(run.get("databaseId")) or run for run in exact]
-    return [
-        run for run in enriched
-        if _candidate_matches(run, branch, head_sha, requirements, expected_pr)
-    ]
+    candidates = []
+    rejections = []
+    for run in enriched:
+        identity_failure = _validate_run_identity(run, head_sha, branch, expected_pr)
+        if identity_failure:
+            rejections.append(identity_failure)
+            continue
+        candidates.append(run)
+    return ExactRunCandidates(candidates, sorted(set(rejections))), sorted(set(rejections))
 
 
 def find_exact_run(branch: str, head_sha: str, expected_pr: int | None = None) -> dict[str, Any] | None:
@@ -334,14 +354,23 @@ def acquire_exact_run(
     deadline = time.monotonic() + max(0, observe_seconds)
     fallback_dispatched = False
     all_runs: list[dict[str, Any]] = []
+    identity_rejections: list[str] = []
     selected: dict[str, Any] | None = None
     while True:
         if not control_is_live():
             raise CIControlStopped("ci_control_stopped_during_run_acquisition")
-        all_runs = [
-            run for run in find_exact_runs(branch, head_sha, pr_number)
-            if _candidate_matches(run, branch, head_sha, requirements, pr_number)
-        ]
+        observed_runs = find_exact_runs(branch, head_sha, pr_number)
+        identity_rejections = list(getattr(observed_runs, "identity_rejections", []))
+        all_runs = []
+        for run in observed_runs:
+            identity_failure = _validate_run_identity(
+                run, head_sha, branch, pr_number,
+            )
+            if identity_failure:
+                identity_rejections.append(identity_failure)
+            else:
+                all_runs.append(run)
+        identity_rejections = sorted(set(identity_rejections))
         selected = select_canonical_run(all_runs)
         if selected is not None:
             if not control_is_live():
@@ -353,6 +382,10 @@ def acquire_exact_run(
         if not fallback_dispatched:
             if not control_is_live():
                 raise CIControlStopped("ci_control_stopped_before_fallback_dispatch")
+            if identity_rejections:
+                raise CIVerificationError(
+                    f"ci_stale_binding:{identity_rejections[0]}"
+                )
             _dispatch_fallback(requirements, branch, head_sha)
             fallback_dispatched = True
             if not control_is_live():
@@ -748,7 +781,7 @@ def _finalize_acquisition_with_wait(
     if completion_status == "success":
         verify_exact_head_ci(
             pr_number, head_sha, acquisition["workflow_run_id"],
-            pr_snapshot={"headRefOid": head_sha},
+            pr_snapshot={"headRefOid": head_sha, "headRefName": branch},
         )
     return {
         "kind": "agent-orchestrator-ci-acquisition",
