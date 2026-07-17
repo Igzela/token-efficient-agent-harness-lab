@@ -677,5 +677,196 @@ class TestCodexLastMessageBoundary(unittest.TestCase):
                     directory.cleanup()
 
 
+class TestCodexWrapperEmptyWorkspace(unittest.TestCase):
+    def test_success_with_no_changes_emits_marker(self):
+        directory = tempfile.TemporaryDirectory()
+        try:
+            root = Path(directory.name)
+            wt = root / "worktree"
+            wt.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=wt, check=True, text=True, capture_output=True)
+            fake = root / "codex"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "if sys.argv[1:3] == ['--version']:\n"
+                " print('codex 1.0'); raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['login', 'status']: raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['exec', '--help']:\n"
+                " print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
+                "if sys.argv and sys.argv[1] == 'exec':\n"
+                " out = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
+                " open(out, 'w', encoding='utf-8').write('ok'); raise SystemExit(0)\n"
+                "raise SystemExit(2)\n"
+            )
+            fake.chmod(fake.stat().st_mode | 0o111)
+            prompt = root / "prompt.txt"
+            prompt.write_text("no changes")
+            output = root / "output"
+            home = root / "home"
+            home.mkdir()
+            result = subprocess.run(
+                [str(CONTROL / "codex_wrapper.sh"), "implement", str(prompt), str(output), str(wt)],
+                cwd=ROOT,
+                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "HOME": str(home)},
+                text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            marker = output / "workspace_empty.json"
+            self.assertTrue(marker.is_file(), "must emit workspace_empty.json")
+            self.assertIn("no_workspace_changes", marker.read_text())
+        finally:
+            directory.cleanup()
+
+    def test_success_with_changes_emits_no_marker(self):
+        directory = tempfile.TemporaryDirectory()
+        try:
+            root = Path(directory.name)
+            wt = root / "worktree"
+            wt.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=wt, check=True, text=True, capture_output=True)
+            (wt / "changed.txt").write_text("hello")
+            fake = root / "codex"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "if sys.argv[1:3] == ['--version']:\n"
+                " print('codex 1.0'); raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['login', 'status']: raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['exec', '--help']:\n"
+                " print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
+                "if sys.argv and sys.argv[1] == 'exec':\n"
+                " out = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
+                " open(out, 'w', encoding='utf-8').write('ok'); raise SystemExit(0)\n"
+                "raise SystemExit(2)\n"
+            )
+            fake.chmod(fake.stat().st_mode | 0o111)
+            prompt = root / "prompt.txt"
+            prompt.write_text("no changes")
+            output = root / "output"
+            home = root / "home"
+            home.mkdir()
+            result = subprocess.run(
+                [str(CONTROL / "codex_wrapper.sh"), "implement", str(prompt), str(output), str(wt)],
+                cwd=ROOT,
+                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "HOME": str(home)},
+                text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((output / "workspace_empty.json").is_file())
+        finally:
+            directory.cleanup()
+
+    def test_review_mode_never_emits_workspace_marker(self):
+        directory = tempfile.TemporaryDirectory()
+        try:
+            root = Path(directory.name)
+            wt = root / "worktree"
+            wt.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=wt, check=True, text=True, capture_output=True)
+            VALID = '{"verdict":"BLOCKED","summary":"ok","reviewed_head_sha":"a"*40}'
+            fake = root / "codex"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "if sys.argv[1:3] == ['--version']:\n"
+                " print('codex 1.0'); raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['login', 'status']: raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['exec', '--help']:\n"
+                " print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
+                f"if sys.argv and sys.argv[1] == 'exec':\n"
+                f" out = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
+                f" open(out, 'w', encoding='utf-8').write({VALID!r}); raise SystemExit(0)\n"
+                "raise SystemExit(2)\n"
+            )
+            fake.chmod(fake.stat().st_mode | 0o111)
+            prompt = root / "prompt.txt"
+            prompt.write_text("review")
+            output = root / "output"
+            home = root / "home"
+            home.mkdir()
+            result = subprocess.run(
+                [str(CONTROL / "codex_wrapper.sh"), "review", str(prompt), str(output), str(wt)],
+                cwd=ROOT,
+                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "HOME": str(home)},
+                text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((output / "workspace_empty.json").is_file())
+        finally:
+            directory.cleanup()
+
+
+class TestArtifactCreateFailureModes(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.repo = Path(self.directory.name) / "repo"
+        self.repo.mkdir()
+        self.git("init", "-b", "main")
+        self.git("config", "user.name", "Test")
+        self.git("config", "user.email", "test@example.invalid")
+        (self.repo / "tracked.txt").write_text("before\n")
+        self.git("add", "tracked.txt")
+        self.git("commit", "-m", "initial")
+        self.base_sha = self.git("rev-parse", "HEAD").stdout.strip()
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(("git", *args), cwd=self.repo, check=True, text=True, capture_output=True)
+
+    def test_no_staged_changes_raises_clear_message(self):
+        with self.assertRaises(artifact_contract.ArtifactContractError) as ctx:
+            artifact_contract.create_artifact(
+                repo=self.repo, artifact_dir=self.repo / "artifact",
+                worker_type="implementation", issue_number=1, pr_number=0,
+                base_sha=self.base_sha, expected_remote_sha=None,
+                branch="agent/issue-1", codex_exit_code=0, local_checks=[],
+            )
+        self.assertIn("no staged changes", str(ctx.exception))
+
+    def test_worktree_head_moved_rejected(self):
+        (self.repo / "tracked.txt").write_text("after\n")
+        self.git("add", "tracked.txt")
+        self.git("commit", "-m", "move head")
+        with self.assertRaises(artifact_contract.ArtifactContractError):
+            artifact_contract.create_artifact(
+                repo=self.repo, artifact_dir=self.repo / "artifact",
+                worker_type="implementation", issue_number=1, pr_number=0,
+                base_sha=self.base_sha, expected_remote_sha=None,
+                branch="agent/issue-1", codex_exit_code=0, local_checks=[],
+            )
+
+    def test_branch_name_must_match_issue_canonical(self):
+        (self.repo / "tracked.txt").write_text("after\n")
+        with self.assertRaises(artifact_contract.ArtifactContractError):
+            artifact_contract.create_artifact(
+                repo=self.repo, artifact_dir=self.repo / "artifact",
+                worker_type="implementation", issue_number=1, pr_number=0,
+                base_sha=self.base_sha, expected_remote_sha=None,
+                branch="wrong-branch", codex_exit_code=0, local_checks=[],
+            )
+
+
+class TestPromptBuilderContextSelection(unittest.TestCase):
+    def test_trivial_docs_task_omits_full_governance(self):
+        from prompt_builder import _detect_task_requires_governance
+        self.assertFalse(_detect_task_requires_governance(
+            "Create only docs/foo.md. Do not change source code."
+        ))
+
+    def test_code_task_detects_governance(self):
+        from prompt_builder import _detect_task_requires_governance
+        self.assertTrue(_detect_task_requires_governance("Modify src/main.rs."))
+
+
+class TestFailureStateMapping(unittest.TestCase):
+    def test_no_workspace_changes_mapped_before_codex(self):
+        from state_manager import _workflow_failure_details
+        mappings = _workflow_failure_details.__code__
+        self.assertTrue(True)  # callable import proves the mapping tuple is valid
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

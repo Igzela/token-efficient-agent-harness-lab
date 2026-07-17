@@ -1038,6 +1038,7 @@ def _workflow_failure_details(workflow_kind, workflow_run_id, repo=""):
         "",
     ).lower()
     mappings = (
+        (("no_workspace_changes",), "model_execution", "no_workspace_changes"),
         (("codex",), "model_execution", "model_execution_failure"),
         (("artifact", "validate"), "artifact_validation", "artifact_validation_failure"),
         (("artifact", "upload"), "artifact_upload", "artifact_upload_failure"),
