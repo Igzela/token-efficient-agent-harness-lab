@@ -592,6 +592,41 @@ class TestCapacityRelease(unittest.TestCase):
             self.assertTrue(sm.finalize_review_labels(42, "PASS_WITH_NOTES", "acme/repo"))
         transition.assert_called_once_with(42, sm.LABEL_REVIEW_BLOCKED, repo="acme/repo")
 
+    def test_terminal_release_requires_exact_pr_and_ci_run_binding(self):
+        with mock.patch.object(sm, "get_issue_labels_checked", return_value={sm.LABEL_RUNNING}), \
+             mock.patch.object(sm, "read_worker_state", return_value={"pr_number": 207, "head_sha": "a" * 40}), \
+             mock.patch.object(sm, "read_ci_state", return_value={"pr_number": 207, "head_sha": "a" * 40, "workflow_run_id": 9001}), \
+             mock.patch.object(sm, "set_labels", return_value=True) as transition:
+            ok, reason = sm.release_failed_capacity(
+                42, "any", sm.LABEL_BLOCKED, "a" * 40, "acme/repo",
+                expected_pr=207, expected_run_id=9001,
+            )
+        self.assertTrue(ok, reason)
+        transition.assert_called_once_with(42, sm.LABEL_BLOCKED, repo="acme/repo")
+
+        with mock.patch.object(sm, "get_issue_labels_checked", return_value={sm.LABEL_RUNNING}), \
+             mock.patch.object(sm, "read_worker_state", return_value={"pr_number": 207, "head_sha": "a" * 40}), \
+             mock.patch.object(sm, "read_ci_state", return_value={"pr_number": 207, "head_sha": "a" * 40, "workflow_run_id": 9002}), \
+             mock.patch.object(sm, "set_labels") as transition:
+            ok, reason = sm.release_failed_capacity(
+                42, "any", sm.LABEL_BLOCKED, "a" * 40, "acme/repo",
+                expected_pr=207, expected_run_id=9001,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "ci_run_mismatch")
+        transition.assert_not_called()
+
+    def test_terminal_ci_release_cannot_demote_review_capacity(self):
+        with mock.patch.object(sm, "get_issue_labels_checked", return_value={sm.LABEL_REVIEW_RUNNING}), \
+             mock.patch.object(sm, "set_labels") as transition:
+            ok, reason = sm.release_failed_capacity(
+                42, "any", sm.LABEL_BLOCKED, "a" * 40, "acme/repo",
+                expected_pr=207, expected_run_id=9001,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "ci_active_phase_mismatch")
+        transition.assert_not_called()
+
     def test_post_claim_emergency_or_scope_rejection_releases_worker(self):
         for gate_enabled, validate_result, can_start in (
             ("false", "skipped", ""),

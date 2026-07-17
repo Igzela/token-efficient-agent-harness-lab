@@ -566,14 +566,21 @@ def wait_for_run_completion(
             "ci_run_id": ci_run_id,
             "head_sha": expected_head,
         }
+
+    def control_stopped(observed_run=None):
+        observed_run = observed_run or run_info(bound_id) or {}
+        return {
+            "status": "ci_control_stopped",
+            "reason": "control_emergency_stop_activated",
+            "ci_run_id": bound_id,
+            "head_sha": expected_head,
+            "observed_status": str(observed_run.get("status") or "unknown"),
+            "run": observed_run,
+        }
+
     while True:
         if not control_is_live():
-            return {
-                "status": "ci_control_stopped",
-                "reason": "control_emergency_stop_activated",
-                "ci_run_id": bound_id,
-                "head_sha": expected_head,
-            }
+            return control_stopped()
         if validator is not None:
             validation_failure = validator()
             if validation_failure is not None:
@@ -640,12 +647,7 @@ def wait_for_run_completion(
                 "current_status": status,
             }
         if not control_is_live():
-            return {
-                "status": "ci_control_stopped",
-                "reason": "control_emergency_stop_activated",
-                "ci_run_id": bound_id,
-                "head_sha": expected_head,
-            }
+            return control_stopped(run)
         sleep(max(0, min(poll_seconds, deadline - time.monotonic())))
 
 
@@ -778,26 +780,49 @@ def verify_exact_head_ci(
     run = run_info(workflow_run_id)
     if not run:
         raise CIVerificationError("workflow run is absent")
-    if run.get("workflowName") != requirements["workflow_name"]:
-        raise CIVerificationError("workflow name does not match canonical tests workflow")
-    if run.get("headSha") != expected_sha:
-        raise CIVerificationError("CI head SHA does not match expected head")
+    try:
+        expected_run_id = int(workflow_run_id)
+    except (TypeError, ValueError) as exc:
+        raise CIVerificationError("run_id_identity_invalid") from exc
+    actual_run_id = run.get("databaseId")
+    if actual_run_id is None:
+        raise CIVerificationError("run_id_identity_missing")
+    if str(actual_run_id) != str(expected_run_id):
+        raise CIVerificationError("run_id_identity_mismatch")
     provider_identity = {"repository", "headRepository", "workflowId", "path"}
     production_identity = (
         os.environ.get("AGENT_CI_FIXTURE_MODE") != "true"
         and bool(os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_ACTIONS") == "true")
     )
-    if production_identity or provider_identity & run.keys():
+    if production_identity:
+        if not isinstance(pr_snapshot, dict) or not pr_snapshot.get("headRefName"):
+            raise CIVerificationError("pr_branch_identity_missing")
         identity_failure = _validate_run_identity(
             run,
             expected_sha,
-            (pr_snapshot or {}).get("headRefName") or str(run.get("headBranch", "")),
+            pr_snapshot["headRefName"],
             pr_number,
         )
         if identity_failure:
             raise CIVerificationError(
                 f"CI run identity rejected: {identity_failure}"
             )
+    elif provider_identity & run.keys() and not _candidate_matches(
+        run,
+        str(run.get("headBranch", "")),
+        expected_sha,
+        requirements,
+        pr_number,
+    ):
+        raise CIVerificationError("CI run identity does not match the expected PR and repository")
+    if not run.get("workflowName"):
+        raise CIVerificationError("workflow_name_identity_missing")
+    if run.get("workflowName") != requirements["workflow_name"]:
+        raise CIVerificationError("workflow name does not match canonical tests workflow")
+    if not run.get("headSha"):
+        raise CIVerificationError("head_identity_missing")
+    if run.get("headSha") != expected_sha:
+        raise CIVerificationError("CI head SHA does not match expected head")
     if run.get("status") != "completed" or run.get("conclusion") != "success":
         raise CIVerificationError("CI workflow is not completed successfully")
 

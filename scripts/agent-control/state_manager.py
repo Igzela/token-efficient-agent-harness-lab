@@ -571,6 +571,8 @@ def release_and_record_ci_terminal(
         LABEL_BLOCKED,
         expected_sha=head_sha,
         repo=repo,
+        expected_pr=pr_number,
+        expected_run_id=ci_run_id,
     )
     finalized = CITerminalResolutionState(
         int(issue_number),
@@ -1107,6 +1109,8 @@ def release_failed_capacity(
     repo="",
     failed_run_id=None,
     repair_attempt=None,
+    expected_pr=None,
+    expected_run_id=None,
 ):
     """Idempotently release only the current failed workflow's active capacity."""
 
@@ -1127,6 +1131,8 @@ def release_failed_capacity(
         if terminal_label in labels and not active:
             return True, "already_released"
         return False, "active_state_mismatch"
+    if expected_run_id is not None and active == {LABEL_REVIEW_RUNNING}:
+        return False, "ci_active_phase_mismatch"
     if labels & (TERMINAL_LABELS | {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}):
         return False, "newer_terminal_state_exists"
     if expected_sha:
@@ -1145,6 +1151,21 @@ def release_failed_capacity(
         )
         if not same_head and not same_repair:
             return False, "worker_head_mismatch"
+    if expected_pr is not None:
+        try:
+            worker = read_worker_state(issue_number, repo)
+        except StateUnavailableError:
+            return False, "worker_state_unavailable"
+        if not worker or worker.get("pr_number") != int(expected_pr):
+            return False, "worker_pr_mismatch"
+    if expected_run_id is not None:
+        try:
+            ci_state = read_ci_state(issue_number, repo)
+        except StateUnavailableError:
+            return False, "ci_state_unavailable"
+        state_run_id = (ci_state or {}).get("workflow_run_id") or (ci_state or {}).get("ci_run_id")
+        if state_run_id is None or str(state_run_id) != str(expected_run_id):
+            return False, "ci_run_mismatch"
     if not set_labels(issue_number, terminal_label, repo=repo):
         return False, "label_transition_failed"
     return True, "released"

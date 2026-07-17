@@ -49,6 +49,8 @@ def _run_for_event(info):
     run = ci_verifier.run_info(info["run_id"])
     if not run:
         return None
+    if str(run.get("databaseId")) != str(info.get("run_id")):
+        return None
     requirements = ci_verifier.load_requirements()
     if run.get("workflowName") != requirements["workflow_name"]:
         return None
@@ -332,6 +334,20 @@ def _noop_result(issue, pr_number, head_sha, ci_run_id, reason):
     }
 
 
+def _record_ci_noop(issue, pr_number, head_sha, ci_run_id, run, reason):
+    """Persist a bound no-op before the monitor performs compensation."""
+    return _record_ci_terminal(
+        issue,
+        pr_number,
+        head_sha,
+        ci_run_id,
+        run,
+        "noop",
+        action="noop",
+        reason=f"ci_noop:{reason}",
+    )
+
+
 def _record_ci_terminal(
     issue,
     pr_number,
@@ -409,10 +425,19 @@ def process_ci_completion(event_path):
         )
     pr_info = sm.get_pr_info(pr_number)
     if not pr_info or pr_info.get("state") != "OPEN":
-        return {"action": "noop", "reason": "pr_not_open"}
+        return _record_ci_noop(
+            issue_number, pr_number, info["head_sha"], info["run_id"], run,
+            "pr_not_open",
+        )
     current_head = pr_info.get("headRefOid", "")
     expected_head = info["pr_head_sha"] or info["head_sha"]
     expected_branch = pr_info.get("headRefName", "")
+    if not expected_branch:
+        return _record_ci_terminal(
+            issue_number, pr_number, expected_head, info["run_id"], run,
+            "ci_stale_binding", action="stale",
+            reason="ci_stale_binding:pr_branch_identity_missing",
+        )
     if (
         current_head != expected_head
         or run.get("headSha") != expected_head
@@ -425,7 +450,10 @@ def process_ci_completion(event_path):
         )
     binding_ok, binding_reason = sm.verify_issue_pr_binding(issue_number, pr_number, current_head)
     if not binding_ok:
-        return {"action": "noop", "reason": f"binding_rejected:{binding_reason}"}
+        return _record_ci_noop(
+            issue_number, pr_number, current_head, info["run_id"], run,
+            f"binding_rejected:{binding_reason}",
+        )
     try:
         duplicate = _is_duplicate_exact_head_run(
             issue_number, pr_number, current_head, info["run_id"], info["head_branch"]
@@ -435,7 +463,10 @@ def process_ci_completion(event_path):
             issue_number, pr_number, current_head, info["run_id"], str(exc)
         )
     if duplicate:
-        return {"action": "noop", "reason": "duplicate_exact_head_run"}
+        return _record_ci_noop(
+            issue_number, pr_number, current_head, info["run_id"], run,
+            "duplicate_exact_head_run",
+        )
 
     try:
         _persist_canonical_acquisition(
@@ -581,6 +612,8 @@ def _make_poll_validator(issue, pr_number, head_sha, branch):
             return "pr_closed"
         if pr_info.get("headRefOid") != head_sha:
             return "pr_head_moved"
+        if not pr_info.get("headRefName"):
+            return "pr_branch_identity_missing"
         if pr_info.get("headRefName") != branch:
             return "pr_branch_changed"
         binding_ok, binding_reason = sm.verify_issue_pr_binding(issue, pr_number, head_sha)
@@ -602,6 +635,8 @@ def _refresh_terminal_binding(issue, pr_number, head_sha, expected_branch):
         return pr_info, "ci_stale_binding:pr_closed"
     if pr_info.get("headRefOid") != head_sha:
         return pr_info, "ci_stale_binding:pr_head_moved"
+    if not pr_info.get("headRefName"):
+        return pr_info, "ci_stale_binding:pr_branch_identity_missing"
     if pr_info.get("headRefName") != expected_branch:
         return pr_info, "ci_stale_binding:pr_branch_changed"
     binding_ok, binding_reason = sm.verify_issue_pr_binding(issue, pr_number, head_sha)
@@ -634,6 +669,18 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
     initial_run = ci_verifier.run_info(ci_run_id)
     if not initial_run:
         return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "ci_run_not_found")
+    if initial_run.get("databaseId") is None:
+        return _record_ci_terminal(
+            issue_number, pr_number, head_sha, ci_run_id, initial_run,
+            "ci_stale_binding", action="stale",
+            reason="ci_stale_binding:run_id_identity_missing",
+        )
+    if str(initial_run.get("databaseId")) != str(ci_run_id):
+        return _record_ci_terminal(
+            issue_number, pr_number, head_sha, ci_run_id, initial_run,
+            "ci_stale_binding", action="stale",
+            reason="ci_stale_binding:run_id_identity_mismatch",
+        )
 
     pr_info = sm.get_pr_info(pr_number)
     if not pr_info:
@@ -653,12 +700,20 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
             "ci_stale_binding", action="stale", reason="ci_stale_binding:pr_head_mismatch",
         )
     expected_branch = pr_info.get("headRefName", "")
+    if not expected_branch:
+        return _record_ci_terminal(
+            issue, pr_number, head_sha, ci_run_id, initial_run,
+            "ci_stale_binding", action="stale",
+            reason="ci_stale_binding:pr_branch_identity_missing",
+        )
     identity_failure = ci_verifier._validate_run_identity(
         initial_run, head_sha, expected_branch, int(pr_number),
     )
     if identity_failure:
         if identity_failure in {"foreign_repository", "fork_head_repository"}:
-            return _noop_result(issue, pr_number, head_sha, ci_run_id, identity_failure)
+            return _record_ci_noop(
+                issue, pr_number, head_sha, ci_run_id, initial_run, identity_failure,
+            )
         return _record_ci_terminal(
             issue, pr_number, head_sha, ci_run_id, initial_run,
             "ci_stale_binding", action="stale",
@@ -758,7 +813,9 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
     except sm.StateUnavailableError as exc:
         return _state_unavailable_result(issue, pr_number, head_sha, ci_run_id, str(exc))
     if duplicate:
-        return _noop_result(issue, pr_number, head_sha, ci_run_id, "duplicate_exact_head_run")
+        return _record_ci_noop(
+            issue, pr_number, head_sha, ci_run_id, run, "duplicate_exact_head_run",
+        )
 
     if not ci_verifier.control_is_live():
         return _record_ci_terminal(

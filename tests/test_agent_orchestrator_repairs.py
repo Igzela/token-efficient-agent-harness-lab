@@ -198,6 +198,9 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("terminal_status == '' && steps.decision.outputs.action == 'blocked'", monitor)
         self.assertIn('steps.decision.outputs.action == \'noop\'', monitor)
         self.assertIn('"$TERMINAL_STATUS" "$NOOP_REASON" "$OBSERVED_STATUS"', monitor)
+        self.assertIn("steps.decision.outputs.terminal_status != ''", monitor)
+        self.assertIn("steps.decision.outputs.terminal_status == ''", monitor)
+        self.assertIn("_record_ci_noop", (CONTROL / "ci_handler.py").read_text())
 
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")
@@ -922,6 +925,57 @@ class TestExactHeadCI(unittest.TestCase):
                 completion_timeout_seconds=30, poll_seconds=60,
             )
         self.assertEqual(result["status"], "ci_control_stopped")
+        self.assertEqual(result["observed_status"], "queued")
+
+    def test_exact_head_verification_rejects_run_id_mismatch_with_typed_reason(self):
+        sha = "i" * 40
+        run = {
+            "databaseId": 507, "workflowName": "tests", "status": "completed",
+            "conclusion": "success", "headSha": sha,
+            "jobs": [{"name": name, "status": "completed", "conclusion": "success"}
+                      for name in ci_verifier.load_requirements()["required_jobs"]],
+        }
+        with mock.patch.object(ci_verifier, "run_info", return_value=run):
+            with self.assertRaisesRegex(ci_verifier.CIVerificationError, "run_id_identity_mismatch"):
+                ci_verifier.verify_exact_head_ci(207, sha, 508, {"headRefOid": sha})
+
+    def test_exact_head_verification_reports_typed_missing_workflow_and_head_identity(self):
+        required = ci_verifier.load_requirements()["required_jobs"]
+        for field, expected in (("workflowName", "workflow_name_identity_missing"),
+                                ("headSha", "head_identity_missing")):
+            with self.subTest(field=field):
+                sha = "j" * 40
+                run = {
+                    "databaseId": 509, "workflowName": "tests", "status": "completed",
+                    "conclusion": "success", "headSha": sha,
+                    "headBranch": "agent/issue-j",
+                    "jobs": [{"name": name, "status": "completed", "conclusion": "success"}
+                              for name in required],
+                }
+                run.pop(field)
+                with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo", "AGENT_CI_FIXTURE_MODE": "false"}, clear=False), \
+                     mock.patch.object(ci_verifier, "run_info", return_value=run):
+                    with self.assertRaisesRegex(ci_verifier.CIVerificationError, expected):
+                        ci_verifier.verify_exact_head_ci(
+                            207, sha, 509,
+                            {"headRefOid": sha, "headRefName": "agent/issue-j"},
+                        )
+
+    def test_exact_head_verification_rejects_missing_pr_branch_identity(self):
+        sha = "k" * 40
+        run = {
+            "databaseId": 510, "workflowName": "tests", "status": "completed",
+            "conclusion": "success", "headSha": sha, "headBranch": "agent/issue-k",
+            "repository": "trusted/repo", "headRepository": "trusted/repo",
+            "workflowDatabaseId": 278094148, "path": ".github/workflows/tests.yml",
+            "pullRequestNumbers": [207],
+            "jobs": [{"name": name, "status": "completed", "conclusion": "success"}
+                      for name in ci_verifier.load_requirements()["required_jobs"]],
+        }
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo", "AGENT_CI_FIXTURE_MODE": "false"}, clear=False), \
+             mock.patch.object(ci_verifier, "run_info", return_value=run):
+            with self.assertRaisesRegex(ci_verifier.CIVerificationError, "pr_branch_identity_missing"):
+                ci_verifier.verify_exact_head_ci(207, sha, 510, {"headRefOid": sha})
 
     def test_wait_for_run_head_moved(self):
         sha = "p" * 40
@@ -1274,7 +1328,7 @@ class TestExactHeadCI(unittest.TestCase):
         finally:
             os.unlink(event_path.name)
         self.assertEqual(result["action"], "noop")
-        self.assertEqual(result["reason"], "duplicate_exact_head_run")
+        self.assertEqual(result["reason"], "ci_noop:duplicate_exact_head_run")
 
     def test_completion_persists_canonical_supersession_metadata(self):
         sha = "6" * 40

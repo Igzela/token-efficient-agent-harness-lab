@@ -127,7 +127,7 @@ jobs:
             "${{ steps.decision.outputs.issue_number }}" any agent-blocked \
             "${{ steps.decision.outputs.head_sha }}"
       - name: Consume bound no-op decision and release its active capacity
-        if: steps.decision.outputs.action == 'noop'
+        if: steps.decision.outputs.action == 'noop' && steps.decision.outputs.terminal_status != ''
         env:
           ISSUE_NUMBER: ${{ steps.decision.outputs.issue_number }}
           PR_NUMBER: ${{ steps.decision.outputs.pr_number }}
@@ -141,3 +141,8 @@ jobs:
           python3 scripts/agent-control/state_manager.py release-ci-terminal \
             "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
             "$TERMINAL_STATUS" "$NOOP_REASON" "$OBSERVED_STATUS"
+      - name: Consume unbound no-op decision without mutation
+        if: steps.decision.outputs.action == 'noop' && steps.decision.outputs.terminal_status == ''
+        env:
+          NOOP_REASON: ${{ steps.decision.outputs.reason }}
+        run: echo "No bound capacity mutation authorized: $NOOP_REASON"
