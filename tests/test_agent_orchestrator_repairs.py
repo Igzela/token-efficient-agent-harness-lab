@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTROL = ROOT / "scripts" / "agent-control"
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -242,8 +243,33 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("id: acquire_ci", worker)
         self.assertIn("ci_control_stopped=true", worker)
         self.assertIn("steps.acquire_ci.outputs.ci_control_stopped != 'true'", worker)
-        for workflow in ("agent-controller.yml", "agent-ci-monitor.yml", "agent-review.yml", "agent-ci-repair.yml", "agent-merge.yml", "agent-worker.yml", "agent-intake.yml"):
+        self.assertIn("record-ci", worker)
+        self.assertIn("agent-emergency-stop", self.read("agent-controller.yml"))
+        for workflow in ("agent-ci-monitor.yml", "agent-review.yml", "agent-ci-repair.yml", "agent-merge.yml", "agent-worker.yml", "agent-intake.yml"):
             self.assertIn("group: agent-orchestrator-state", self.read(workflow))
+        self.assertIn("agent-orchestrator-state", self.read("agent-controller.yml"))
+
+    def test_ci_monitor_action_contract_executes_a_consumer_for_each_handler_action(self):
+        blocks = self.read("agent-ci-monitor.yml").split("      - name: ")[1:]
+        action_contract = {
+            "trigger_repair": ("dispatch", "gh workflow run agent-controller.yml"),
+            "trigger_review": ("dispatch", "gh workflow run agent-controller.yml"),
+            "merge_ready": ("dispatch", "require-auto-merge"),
+            "blocked": ("release", "release-failed"),
+            "stale": ("release", "release-ci-terminal"),
+            "noop": ("release", "release-ci-terminal"),
+        }
+        for action, (kind, command) in action_contract.items():
+            candidates = [block for block in blocks if action in block and "run:" in block]
+            with self.subTest(action=action):
+                self.assertTrue(candidates)
+                if action == "noop":
+                    self.assertTrue(any("terminal_status != ''" in block for block in candidates))
+                    self.assertTrue(any("terminal_status == ''" in block for block in candidates))
+                if kind == "release":
+                    self.assertTrue(any(command in block for block in candidates))
+                else:
+                    self.assertTrue(any(command in block for block in candidates))
 
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")

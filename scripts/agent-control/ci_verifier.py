@@ -351,7 +351,7 @@ def _dispatch_fallback(requirements: dict[str, Any], branch: str, head_sha: str)
 
 
 def _observe_fallback_after_control_stop(
-    branch: str, head_sha: str, pr_number: int,
+    branch: str, head_sha: str, pr_number: int, excluded_run_ids: set[int],
 ) -> dict[str, Any]:
     """Read the just-dispatched run for typed stop compensation.
 
@@ -360,7 +360,10 @@ def _observe_fallback_after_control_stop(
     release the matching active claim without accepting the run as usable CI.
     """
 
-    candidates = find_exact_runs(branch, head_sha, pr_number)
+    candidates = [
+        run for run in find_exact_runs(branch, head_sha, pr_number)
+        if _run_id(run) not in excluded_run_ids
+    ]
     if not candidates:
         return {}
     return max(
@@ -403,6 +406,7 @@ def acquire_exact_run(
     all_runs: list[dict[str, Any]] = []
     identity_rejections: list[str] = []
     selected: dict[str, Any] | None = None
+    pre_dispatch_run_ids: set[int] = set()
     while True:
         if not control_is_live():
             raise CIControlStopped("ci_control_stopped_during_run_acquisition")
@@ -433,11 +437,14 @@ def acquire_exact_run(
                 raise CIVerificationError(
                     f"ci_stale_binding:{identity_rejections[0]}"
                 )
+            pre_dispatch_run_ids = {
+                _run_id(run) for run in observed_runs if _run_id(run) > 0
+            }
             _dispatch_fallback(requirements, branch, head_sha)
             fallback_dispatched = True
             if not control_is_live():
                 observed = _observe_fallback_after_control_stop(
-                    branch, head_sha, pr_number,
+                    branch, head_sha, pr_number, pre_dispatch_run_ids,
                 )
                 raise CIControlStopped(
                     "ci_control_stopped_after_fallback_dispatch",
@@ -984,6 +991,9 @@ def main() -> None:
         print(json.dumps(result, sort_keys=True))
     except CIControlStopped as exc:
         observed = exc.observed_run
+        if exc.ci_run_id is None:
+            print(f"CI_VERIFICATION_ERROR: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
         print(json.dumps({
             "status": "ci_control_stopped",
             "reason": str(exc),

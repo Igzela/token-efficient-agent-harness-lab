@@ -385,6 +385,12 @@ jobs:
             OBSERVED_STATUS=$(jq -er '.observed_status // empty' <<<"$CI")
             STOP_REASON=$(jq -er '.reason' <<<"$CI")
             test "$RUN_ID" -gt 0
+            EXTRA=$(jq -c --argjson id "$RUN_ID" --arg observed "$OBSERVED_STATUS" \
+              '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id,observed_status:$observed}' \
+              scripts/agent-control/ci_requirements.json)
+            python3 scripts/agent-control/state_manager.py record-ci \
+              "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
+              "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" "$OBSERVED_STATUS" "$EXTRA"
             python3 scripts/agent-control/state_manager.py release-ci-terminal \
               "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
               "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" \

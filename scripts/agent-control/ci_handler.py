@@ -356,6 +356,18 @@ def _noop_result(issue, pr_number, head_sha, ci_run_id, reason):
     }
 
 
+def _unbound_noop_result(issue, pr_number, head_sha, ci_run_id, reason):
+    """Return a no-op that is intentionally ineligible for state mutation."""
+    return {
+        "action": "noop",
+        "pr_number": int(pr_number),
+        "issue_number": int(issue),
+        "head_sha": head_sha,
+        "ci_run_id": int(ci_run_id),
+        "reason": f"ci_unbound_noop:{reason}",
+    }
+
+
 def _record_ci_noop(issue, pr_number, head_sha, ci_run_id, run, reason):
     """Persist a bound no-op before the monitor performs compensation."""
     return _record_ci_terminal(
@@ -450,8 +462,10 @@ def process_ci_completion(event_path):
         return {"action": "noop", "reason": f"binding_rejected:{binding_reason}"}
     run, run_failure = _run_for_event(info)
     if not run:
+        if info["head_sha"] != current_head:
+            return {"action": "noop", "reason": "ci_unbound_noop:pr_head_moved_since_event"}
         return _record_ci_terminal(
-            issue_number, pr_number, info["head_sha"], info["run_id"],
+            issue_number, pr_number, current_head, info["run_id"],
             {"status": info["status"], "conclusion": info["conclusion"], "headBranch": info["head_branch"]},
             "ci_stale_binding", action="stale",
             reason=f"ci_stale_binding:{run_failure or 'workflow_identity_or_head_mismatch'}",
@@ -704,11 +718,11 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
     """
     expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
     if not expected_repo:
-        return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "repository_unavailable")
+        return _unbound_noop_result(issue_number, pr_number, head_sha, ci_run_id, "repository_unavailable")
 
     initial_run = ci_verifier.run_info(ci_run_id)
     if not initial_run:
-        return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "ci_run_not_found")
+        return _unbound_noop_result(issue_number, pr_number, head_sha, ci_run_id, "ci_run_not_found")
     if initial_run.get("databaseId") is None:
         run_identity_failure = "run_id_identity_missing"
     elif str(initial_run.get("databaseId")) != str(ci_run_id):
@@ -717,18 +731,18 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
         run_identity_failure = None
     pr_info = sm.get_pr_info(pr_number)
     if not pr_info:
-        return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "pr_unavailable")
+        return _unbound_noop_result(issue_number, pr_number, head_sha, ci_run_id, "pr_unavailable")
     issue = _find_issue_for_pr(pr_number)
     if not issue or issue != int(issue_number):
-        return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "issue_binding_mismatch")
+        return _unbound_noop_result(issue_number, pr_number, head_sha, ci_run_id, "issue_binding_mismatch")
 
     current_head = pr_info.get("headRefOid", "")
     expected_branch = pr_info.get("headRefName", "")
     if not current_head:
-        return _noop_result(issue, pr_number, head_sha, ci_run_id, "pr_head_identity_missing")
+        return _unbound_noop_result(issue, pr_number, head_sha, ci_run_id, "pr_head_identity_missing")
     binding_ok, binding_reason = sm.verify_issue_pr_binding(issue, pr_number, current_head)
     if not binding_ok:
-        return _noop_result(
+        return _unbound_noop_result(
             issue, pr_number, head_sha, ci_run_id,
             f"binding_rejected:{binding_reason}",
         )
