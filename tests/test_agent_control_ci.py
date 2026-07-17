@@ -318,22 +318,34 @@ class TestDispatchCIProcessing(unittest.TestCase):
         self.assertEqual(result["ci_run_id"], 99999)
 
     @mock.patch.object(ch.ci_verifier, "run_info")
-    def test_dispatch_wrong_workflow_name(self, mock_run_info):
+    @mock.patch.object(ch.sm, "get_pr_info")
+    @mock.patch.object(ch, "_find_issue_for_pr", return_value=1)
+    @mock.patch.object(ch.sm, "record_ci_terminal_state", return_value=True)
+    def test_dispatch_wrong_workflow_name(
+        self, mock_record_terminal, mock_find_issue, mock_pr_info, mock_run_info,
+    ):
         run = self._mock_run(workflow_name="deploy")
         mock_run_info.return_value = run
+        mock_pr_info.return_value = self._mock_pr()
         with mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"}):
             result = ch.process_ci_dispatch(1, 42, "abc123", 99999)
-        self.assertEqual(result["action"], "noop")
-        self.assertEqual(result["reason"], "issue_binding_mismatch")
+        self.assertEqual(result["action"], "stale")
+        self.assertEqual(result["reason"], "ci_stale_binding:workflow_changed")
 
     @mock.patch.object(ch.ci_verifier, "run_info")
-    def test_dispatch_head_sha_mismatch(self, mock_run_info):
+    @mock.patch.object(ch.sm, "get_pr_info")
+    @mock.patch.object(ch, "_find_issue_for_pr", return_value=1)
+    @mock.patch.object(ch.sm, "record_ci_terminal_state", return_value=True)
+    def test_dispatch_head_sha_mismatch(
+        self, mock_record_terminal, mock_find_issue, mock_pr_info, mock_run_info,
+    ):
         run = self._mock_run(head_sha="different_sha")
         mock_run_info.return_value = run
+        mock_pr_info.return_value = self._mock_pr()
         with mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"}):
             result = ch.process_ci_dispatch(1, 42, "abc123", 99999)
-        self.assertEqual(result["action"], "noop")
-        self.assertEqual(result["reason"], "issue_binding_mismatch")
+        self.assertEqual(result["action"], "stale")
+        self.assertEqual(result["reason"], "ci_stale_binding:head_moved")
 
     @mock.patch.object(ch.ci_verifier, "run_info")
     @mock.patch.object(ch.sm, "get_pr_info")
