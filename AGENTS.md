@@ -119,15 +119,22 @@ Autonomy does not authorize inventing evidence, weakening fail-closed behavior, 
 
 ## Minimal Reading Model
 
-Before implementation read:
+Use progressive disclosure rather than reading every active document in full.
 
-1. `AGENTS.md`
-2. `docs/CURRENT_STATUS.md`
-3. `docs/NEXT_DECISION.md`
-4. `docs/MODULE_MAP.md`
-5. `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for branch, PR, CI, review, and merge work
-6. `docs/ARCHITECTURE_BOOK.md` for architecture, storage, authority, security, evaluator, release, or recovery work
-7. `docs/RUNBOOK.md` only for proven operator procedures
+Always read `AGENTS.md`. Then read only these sections before selecting work:
+
+1. `docs/CURRENT_STATUS.md`: `Summary`, `Verified Repository State`, `Confirmed Integration Gaps`, and `Open Work Coordination`;
+2. `docs/NEXT_DECISION.md`: `Current Direction`, `Active Routing`, `Common Execution Protocol`, `Hard Stops`, and the one selected packet; do not read unrelated packet bodies unless scope or prerequisites overlap;
+3. `docs/MODULE_MAP.md`: `Core Ownership`, the capability row relevant to the request, and the selected packet's approved ownership section.
+
+Read additional surfaces only when triggered:
+
+- `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for branch, PR, CI, review, and merge work;
+- the relevant section of `docs/ARCHITECTURE_BOOK.md` for architecture, storage, authority, security, evaluator, release, or recovery changes;
+- the relevant procedure in `docs/RUNBOOK.md` only for an actual operator action;
+- `README.md` and `CLAUDE.md` only when changing entrypoints, installation, public usage, or compatibility instructions.
+
+Use targeted search and line-range reads. Do not load an entire large document merely because it is active. Expand reading only when the selected section references a dependency, conflict, or authority boundary that can change the conclusion.
 
 Use current code, merged history, tests, and CI as authoritative evidence. Reconcile stale documentation explicitly rather than silently following it.
 
