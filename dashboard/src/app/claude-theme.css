@@ -13,11 +13,11 @@
   --panel-hover: #f4f0e9;
   --ink: #2d2a26;
   --ink-subtle: #5f5a52;
-  --muted: #817a70;
+  --muted: #6f685e;
   --border: #e0dbd2;
   --border-strong: #cdc5b9;
 
-  --accent: #c15f3c;
+  --accent: #af4d2d;
   --accent-soft: #f5e4dc;
   --accent-hover: #a94d31;
   --accent-fg: #fffaf4;
@@ -480,6 +480,11 @@ details pre,
 .card,
 .operator-surface {
   padding: 18px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .card:hover,
