@@ -22,7 +22,13 @@ def _dispatch_id(action: str, *parts: object) -> str:
     return ":".join([action, *(str(part) for part in parts)])
 
 
-def _claim(issue: int, target_label: str, dispatch_id: str, action: str) -> tuple[bool, list[str], str]:
+def _claim(
+    issue: int,
+    target_label: str,
+    dispatch_id: str,
+    action: str,
+    claim_details: dict[str, object] | None = None,
+) -> tuple[bool, list[str], str]:
     repo = _repo()
     try:
         previous = sm.read_dispatch_state(issue, dispatch_id, repo)
@@ -54,7 +60,19 @@ def _claim(issue: int, target_label: str, dispatch_id: str, action: str) -> tupl
             # The external workflow may already have been dispatched even if
             # its final audit comment was unavailable.  Retain the active
             # claim and refuse a duplicate external mutation.
-            return False, [], "capacity_already_claimed"
+            try:
+                matching_claim = claim_details and sm.has_inflight_ci_dispatch(
+                    issue,
+                    claim_details.get("pr_number"),
+                    claim_details.get("head_sha"),
+                    claim_details.get("ci_run_id"),
+                    repo,
+                )
+            except sm.StateUnavailableError:
+                return False, [], "dispatch_state_unavailable"
+            if matching_claim:
+                return False, [], "capacity_already_claimed"
+            return False, [], "capacity_already_claimed_unverified"
         if labels & sm.TERMINAL_LABELS or not labels & {sm.LABEL_RUNNING, sm.LABEL_CI_REPAIRING, sm.LABEL_REVIEW_RUNNING}:
             return False, [], "issue_not_active"
     active = sm.get_active_issue_numbers(repo)
@@ -70,7 +88,11 @@ def _claim(issue: int, target_label: str, dispatch_id: str, action: str) -> tupl
         dispatch_id,
         action,
         "claimed",
-        {"previous_labels": previous_known, "target_label": target_label},
+        {
+            "previous_labels": previous_known,
+            "target_label": target_label,
+            **(claim_details or {}),
+        },
         repo,
     ):
         restored = sm.set_labels(
@@ -149,9 +171,6 @@ def dispatch_repair(pr: int, issue: int, sha: str, run_id: str, repair_count: st
         control_state.require_live(_repo() or None)
     except control_state.ControlStateError:
         return {"dispatched": False, "reason": "disabled_or_emergency_stopped"}
-    claimed, previous, reason = _claim(issue, sm.LABEL_CI_REPAIRING, dispatch_id, "repair")
-    if not claimed:
-        return {"dispatched": reason == "already_dispatched", "reason": reason}
     fields = {
         "pr_number": pr,
         "issue_number": issue,
@@ -159,6 +178,11 @@ def dispatch_repair(pr: int, issue: int, sha: str, run_id: str, repair_count: st
         "repair_count": repair_count,
         "ci_run_id": run_id,
     }
+    claimed, previous, reason = _claim(
+        issue, sm.LABEL_CI_REPAIRING, dispatch_id, "repair", fields
+    )
+    if not claimed:
+        return {"dispatched": reason == "already_dispatched", "reason": reason}
     if not _run_workflow("agent-ci-repair.yml", fields):
         rolled_back = _rollback(issue, dispatch_id, previous, "workflow_dispatch_failed")
         reason = "workflow_dispatch_failed" if rolled_back else "workflow_dispatch_failed_rollback_failed"
@@ -175,10 +199,12 @@ def dispatch_review(pr: int, issue: int, sha: str) -> dict[str, object]:
         control_state.require_live(_repo() or None)
     except control_state.ControlStateError:
         return {"dispatched": False, "reason": "disabled_or_emergency_stopped"}
-    claimed, previous, reason = _claim(issue, sm.LABEL_REVIEW_RUNNING, dispatch_id, "review")
+    fields = {"pr_number": pr, "issue_number": issue, "head_sha": sha}
+    claimed, previous, reason = _claim(
+        issue, sm.LABEL_REVIEW_RUNNING, dispatch_id, "review", fields
+    )
     if not claimed:
         return {"dispatched": reason == "already_dispatched", "reason": reason}
-    fields = {"pr_number": pr, "issue_number": issue, "head_sha": sha}
     if not _run_workflow("agent-review.yml", fields):
         rolled_back = _rollback(issue, dispatch_id, previous, "workflow_dispatch_failed")
         reason = "workflow_dispatch_failed" if rolled_back else "workflow_dispatch_failed_rollback_failed"
@@ -238,6 +264,7 @@ def retry_review(issue: int) -> dict[str, object]:
     if issue not in active and len(active) >= MAX_ACTIVE:
         return {"dispatched": False, "reason": "capacity_full"}
     previous_labels = [sm.LABEL_REVIEW_BLOCKED]
+    fields = {"pr_number": pr, "issue_number": issue, "head_sha": sha}
     if not sm.set_labels(issue, sm.LABEL_REVIEW_RUNNING, repo=repo):
         return {"dispatched": False, "reason": "claim_label_failed"}
     if not sm.record_dispatch_state(
@@ -245,13 +272,16 @@ def retry_review(issue: int) -> dict[str, object]:
         dispatch_id,
         "retry-review",
         "claimed",
-        {"previous_labels": previous_labels, "target_label": sm.LABEL_REVIEW_RUNNING},
+        {
+            "previous_labels": previous_labels,
+            "target_label": sm.LABEL_REVIEW_RUNNING,
+            **fields,
+        },
         repo,
     ):
         restored = sm.set_labels(issue, *previous_labels, repo=repo)
         reason = "claim_state_failed" if restored else "claim_state_failed_rollback_failed"
         return {"dispatched": False, "reason": reason}
-    fields = {"pr_number": pr, "issue_number": issue, "head_sha": sha}
     if not _run_workflow("agent-review.yml", fields):
         rolled_back = _rollback(
             issue, dispatch_id, previous_labels, "workflow_dispatch_failed"

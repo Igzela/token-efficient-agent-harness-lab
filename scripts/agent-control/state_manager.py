@@ -1072,7 +1072,7 @@ def has_inflight_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id, repo=
         if (
             not isinstance(state, dict)
             or state.get("kind") != "agent-orchestrator-dispatch-state"
-            or state.get("status") != "claimed"
+            or state.get("status") not in {"claimed", "dispatched"}
         ):
             continue
         details = state.get("details") or {}
@@ -1851,6 +1851,7 @@ def main():
         failed_run_id = sys.argv[6] if len(sys.argv) > 6 else None
         repair_attempt = sys.argv[7] if len(sys.argv) > 7 else None
         expected_pr = sys.argv[8] if len(sys.argv) > 8 else None
+        expected_run_id = sys.argv[9] if len(sys.argv) > 9 else None
         ok, reason = release_failed_capacity(
             issue_number,
             expected_active,
@@ -1860,6 +1861,7 @@ def main():
             failed_run_id,
             repair_attempt,
             expected_pr=expected_pr,
+            expected_run_id=expected_run_id,
         )
         if not ok:
             print(f"FATAL: unable to release failed capacity: {reason}", file=sys.stderr)

@@ -344,9 +344,11 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("capacity_retained", monitor)
         self.assertIn("dispatch_in_flight", monitor)
         self.assertIn("capacity_already_claimed", monitor)
+        self.assertIn("capacity_already_claimed_unverified", monitor)
         self.assertIn("REPAIR_CAPACITY_RETAINED", monitor)
         self.assertIn("MERGE_CAPACITY_RETAINED", monitor)
         self.assertIn("has_inflight_ci_dispatch", (CONTROL / "state_manager.py").read_text())
+        self.assertIn('"${{ steps.decision.outputs.ci_run_id }}"', monitor)
 
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")
@@ -518,6 +520,37 @@ class TestCITerminalState(unittest.TestCase):
         evidence = json.loads(comments[-1]["body"])
         self.assertEqual(evidence["capacity_release_outcome"], "preserved")
         self.assertEqual(evidence["capacity_release_reason"], "dispatch_in_flight")
+
+    def test_duplicate_noop_preserves_normally_audited_repair_claim(self):
+        comments = [{
+            "author": {"login": "github-actions[bot]"},
+            "body": json.dumps({
+                "kind": "agent-orchestrator-dispatch-state",
+                "status": "dispatched",
+                "action": "repair",
+                "details": {
+                    "pr_number": 207,
+                    "issue_number": 42,
+                    "head_sha": "a" * 40,
+                    "ci_run_id": "9001",
+                },
+            }),
+        }]
+
+        with mock.patch.object(
+            state_manager, "get_issue_comments", return_value=comments
+        ), mock.patch.object(
+            state_manager, "comment_on_issue", return_value=True
+        ), mock.patch.object(
+            state_manager, "release_failed_capacity"
+        ) as release:
+            result = state_manager.release_and_record_ci_terminal(
+                42, 207, "a" * 40, 9001, "terminal_noop",
+                "ci_noop:duplicate_exact_head_run", "completed",
+            )
+
+        self.assertEqual(result, (True, "dispatch_in_flight"))
+        release.assert_not_called()
 
     def test_legacy_generic_issue_mutators_are_not_exposed(self):
         source = (CONTROL / "state_manager.py").read_text()
@@ -730,7 +763,9 @@ class TestDispatcher(unittest.TestCase):
 
         def record_dispatch(_issue, dispatch_id, action, status, details=None, repo=""):
             if status == "claimed":
-                dispatch_states[dispatch_id] = {"action": action, "status": status}
+                dispatch_states[dispatch_id] = {
+                    "action": action, "status": status, "details": details,
+                }
                 return True
             return False
 
@@ -767,7 +802,9 @@ class TestDispatcher(unittest.TestCase):
 
         def record_dispatch(_issue, dispatch_id, action, status, details=None, repo=""):
             if status == "claimed":
-                dispatch_states[dispatch_id] = {"action": action, "status": status}
+                dispatch_states[dispatch_id] = {
+                    "action": action, "status": status, "details": details,
+                }
                 return True
             return False
 
@@ -788,6 +825,17 @@ class TestDispatcher(unittest.TestCase):
         self.assertEqual(second["reason"], "dispatch_in_flight")
         self.assertEqual(len(workflow_calls), 1)
         self.assertEqual(labels, {state_manager.LABEL_CI_REPAIRING})
+        details = dispatch_states["repair:207:" + "a" * 40 + ":9001:1"]["details"]
+        self.assertEqual(
+            {key: details[key] for key in ("pr_number", "issue_number", "head_sha", "repair_count", "ci_run_id")},
+            {
+                "pr_number": 207,
+                "issue_number": 42,
+                "head_sha": "a" * 40,
+                "repair_count": "1",
+                "ci_run_id": "9001",
+            },
+        )
 
     def test_merge_dispatch_audit_failure_retains_claim_and_blocks_duplicate(self):
         dispatch_states = {}
