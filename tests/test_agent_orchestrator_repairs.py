@@ -1322,6 +1322,7 @@ class TestExactHeadCI(unittest.TestCase):
                  mock.patch.object(ci_handler.sm, "get_pr_info", return_value={"state": "OPEN", "headRefName": "agent/x", "headRefOid": sha, "body": body}), \
                  mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
                  mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(ci_handler.sm, "record_ci_terminal_state", return_value=True), \
                  mock.patch.object(ci_handler.sm, "read_ci_acquisition", return_value={"workflow_run_id": 960}), \
                  mock.patch.object(ci_handler.sm, "read_ci_state", return_value={"pr_number": 207, "head_sha": sha, "workflow_run_id": 961, "status": "success", "extra": {"repair_count": 1}}):
                 result = ci_handler.process_ci_completion(event_path.name)
