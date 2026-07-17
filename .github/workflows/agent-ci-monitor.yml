@@ -109,7 +109,7 @@ jobs:
           status=$?
           set -e
           printf '%s\n' "$result"
-          retained=$(printf '%s' "$result" | jq -r '.reason == "dispatch_state_failed_capacity_retained"' 2>/dev/null || true)
+          retained=$(printf '%s' "$result" | jq -r '.reason == "dispatch_state_failed_capacity_retained" or .reason == "dispatch_in_flight" or .reason == "capacity_already_claimed"' 2>/dev/null || true)
           echo "capacity_retained=${retained:-false}" >> "$GITHUB_OUTPUT"
           exit "$status"
       - name: Dispatch independent exact-head review
@@ -127,7 +127,7 @@ jobs:
           status=$?
           set -e
           printf '%s\n' "$result"
-          retained=$(printf '%s' "$result" | jq -r '.reason == "dispatch_state_failed_capacity_retained"' 2>/dev/null || true)
+          retained=$(printf '%s' "$result" | jq -r '.reason == "dispatch_state_failed_capacity_retained" or .reason == "dispatch_in_flight" or .reason == "capacity_already_claimed"' 2>/dev/null || true)
           echo "capacity_retained=${retained:-false}" >> "$GITHUB_OUTPUT"
           exit "$status"
       - name: Record control stop during follow-up handoff
@@ -179,7 +179,7 @@ jobs:
           status=$?
           set -e
           printf '%s\n' "$result"
-          retained=$(printf '%s' "$result" | jq -r '.reason == "dispatch_state_failed_capacity_retained"' 2>/dev/null || true)
+          retained=$(printf '%s' "$result" | jq -r '.reason == "dispatch_state_failed_capacity_retained" or .reason == "dispatch_in_flight" or .reason == "capacity_already_claimed"' 2>/dev/null || true)
           echo "capacity_retained=${retained:-false}" >> "$GITHUB_OUTPUT"
           exit "$status"
       - name: Record merge handoff failure or control stop

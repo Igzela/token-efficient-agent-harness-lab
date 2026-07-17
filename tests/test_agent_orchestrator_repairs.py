@@ -342,8 +342,11 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("terminal_ci_merge_dispatch_failed", monitor)
         self.assertIn("ci_merge_dispatch_failed:merge_ready", monitor)
         self.assertIn("capacity_retained", monitor)
+        self.assertIn("dispatch_in_flight", monitor)
+        self.assertIn("capacity_already_claimed", monitor)
         self.assertIn("REPAIR_CAPACITY_RETAINED", monitor)
         self.assertIn("MERGE_CAPACITY_RETAINED", monitor)
+        self.assertIn("has_inflight_ci_dispatch", (CONTROL / "state_manager.py").read_text())
 
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")
@@ -477,6 +480,44 @@ class TestCITerminalState(unittest.TestCase):
             )
         self.assertEqual(result, (False, "terminal_resolution_write_failed"))
         release.assert_not_called()
+
+    def test_duplicate_noop_preserves_accepted_repair_claim(self):
+        comments = [{
+            "author": {"login": "github-actions[bot]"},
+            "body": json.dumps({
+                "kind": "agent-orchestrator-dispatch-state",
+                "status": "claimed",
+                "action": "repair",
+                "details": {
+                    "pr_number": 207,
+                    "issue_number": 42,
+                    "head_sha": "a" * 40,
+                    "ci_run_id": "9001",
+                },
+            }),
+        }]
+
+        def write_comment(issue, body, repo=""):
+            comments.append({"author": {"login": "github-actions[bot]"}, "body": body})
+            return True
+
+        with mock.patch.object(
+            state_manager, "get_issue_comments", return_value=comments
+        ), mock.patch.object(
+            state_manager, "comment_on_issue", side_effect=write_comment
+        ), mock.patch.object(
+            state_manager, "release_failed_capacity"
+        ) as release:
+            result = state_manager.release_and_record_ci_terminal(
+                42, 207, "a" * 40, 9001, "terminal_noop",
+                "ci_noop:duplicate_exact_head_run", "completed",
+            )
+
+        self.assertEqual(result, (True, "dispatch_in_flight"))
+        release.assert_not_called()
+        evidence = json.loads(comments[-1]["body"])
+        self.assertEqual(evidence["capacity_release_outcome"], "preserved")
+        self.assertEqual(evidence["capacity_release_reason"], "dispatch_in_flight")
 
     def test_legacy_generic_issue_mutators_are_not_exposed(self):
         source = (CONTROL / "state_manager.py").read_text()

@@ -557,13 +557,37 @@ def release_and_record_ci_terminal(
             and previous.get("observed_status") == state["observed_status"]
         ):
             previous_outcome = previous.get("capacity_release_outcome")
-            if previous_outcome in {"released", "already_released"}:
+            if previous_outcome in {"released", "already_released", "preserved"}:
                 return True, "already_recorded"
             state = previous
             pending_found = previous_outcome == "pending"
     if not pending_found:
         if not comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo):
             return False, "terminal_resolution_write_failed"
+
+    try:
+        downstream_inflight = has_inflight_ci_dispatch(
+            issue_number, pr_number, head_sha, ci_run_id, repo
+        )
+    except StateUnavailableError:
+        return False, "dispatch_state_unavailable"
+    if downstream_inflight and terminal_status in {
+        "terminal_noop", "terminal_ci_unbound_noop"
+    }:
+        finalized = CITerminalResolutionState(
+            int(issue_number),
+            int(pr_number),
+            head_sha,
+            int(ci_run_id),
+            terminal_status,
+            reason,
+            observed_status,
+            "preserved",
+            "dispatch_in_flight",
+        ).to_wire()
+        if not comment_on_issue(issue_number, json.dumps(finalized, sort_keys=True), repo):
+            return False, "terminal_resolution_write_failed"
+        return True, "dispatch_in_flight"
 
     release_ok, release_reason = release_failed_capacity(
         issue_number,
@@ -1032,6 +1056,42 @@ def read_dispatch_state(issue_number, dispatch_id=None, repo=""):
         if dispatch_id is None or state.get("dispatch_id") == dispatch_id:
             return state
     return None
+
+
+def has_inflight_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id, repo=""):
+    """Find an accepted downstream dispatch that still owns this CI phase."""
+
+    comments = get_issue_comments(issue_number, repo)
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        try:
+            state = json.loads(comment.get("body", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (
+            not isinstance(state, dict)
+            or state.get("kind") != "agent-orchestrator-dispatch-state"
+            or state.get("status") != "claimed"
+        ):
+            continue
+        details = state.get("details") or {}
+        if state.get("action") == "repair":
+            matches = (
+                details.get("pr_number") == int(pr_number)
+                and details.get("head_sha") == head_sha
+                and str(details.get("ci_run_id")) == str(ci_run_id)
+            )
+        elif state.get("action") in {"review", "retry-review"}:
+            matches = (
+                details.get("pr_number") == int(pr_number)
+                and details.get("head_sha") == head_sha
+            )
+        else:
+            matches = False
+        if matches:
+            return True
+    return False
 
 
 def parse_binding_marker(body):
