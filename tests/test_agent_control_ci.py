@@ -320,9 +320,10 @@ class TestDispatchCIProcessing(unittest.TestCase):
     @mock.patch.object(ch.ci_verifier, "run_info")
     @mock.patch.object(ch.sm, "get_pr_info")
     @mock.patch.object(ch, "_find_issue_for_pr", return_value=1)
+    @mock.patch.object(ch.sm, "verify_issue_pr_binding", return_value=(True, "ok"))
     @mock.patch.object(ch.sm, "record_ci_terminal_state", return_value=True)
     def test_dispatch_wrong_workflow_name(
-        self, mock_record_terminal, mock_find_issue, mock_pr_info, mock_run_info,
+        self, mock_record_terminal, mock_binding, mock_find_issue, mock_pr_info, mock_run_info,
     ):
         run = self._mock_run(workflow_name="deploy")
         mock_run_info.return_value = run
@@ -335,9 +336,10 @@ class TestDispatchCIProcessing(unittest.TestCase):
     @mock.patch.object(ch.ci_verifier, "run_info")
     @mock.patch.object(ch.sm, "get_pr_info")
     @mock.patch.object(ch, "_find_issue_for_pr", return_value=1)
+    @mock.patch.object(ch.sm, "verify_issue_pr_binding", return_value=(True, "ok"))
     @mock.patch.object(ch.sm, "record_ci_terminal_state", return_value=True)
     def test_dispatch_head_sha_mismatch(
-        self, mock_record_terminal, mock_find_issue, mock_pr_info, mock_run_info,
+        self, mock_record_terminal, mock_binding, mock_find_issue, mock_pr_info, mock_run_info,
     ):
         run = self._mock_run(head_sha="different_sha")
         mock_run_info.return_value = run
@@ -349,8 +351,9 @@ class TestDispatchCIProcessing(unittest.TestCase):
 
     @mock.patch.object(ch.ci_verifier, "run_info")
     @mock.patch.object(ch.sm, "get_pr_info")
+    @mock.patch.object(ch.sm, "verify_issue_pr_binding", return_value=(True, "ok"))
     @mock.patch.object(ch.sm, "record_ci_terminal_state", return_value=True)
-    def test_dispatch_pr_not_open(self, mock_record_terminal, mock_pr_info, mock_run_info):
+    def test_dispatch_pr_not_open(self, mock_record_terminal, mock_binding, mock_pr_info, mock_run_info):
         run = self._mock_run()
         mock_run_info.return_value = run
         mock_pr_info.return_value = self._mock_pr(state="MERGED")

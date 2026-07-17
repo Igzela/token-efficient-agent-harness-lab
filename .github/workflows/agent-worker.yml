@@ -364,6 +364,7 @@ jobs:
           python3 scripts/agent-control/state_manager.py record-worker "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
             "${{ steps.commit.outputs.head_sha }}" implementation "{\"branch\":\"$BRANCH\"}"
       - name: Recheck control immediately before exact-run acquisition
+        id: acquire_ci
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ needs.vader-implementation.outputs.branch }}
@@ -379,6 +380,18 @@ jobs:
             CI=$(python3 scripts/agent-control/ci_verifier.py acquire-run \
               "${{ steps.pr.outputs.pr_number }}" "$BRANCH" "${{ steps.commit.outputs.head_sha }}")
           fi
+          if [ "$(jq -r '.status // empty' <<<"$CI")" = "ci_control_stopped" ]; then
+            RUN_ID=$(jq -er '.ci_run_id // empty' <<<"$CI")
+            OBSERVED_STATUS=$(jq -er '.observed_status // empty' <<<"$CI")
+            STOP_REASON=$(jq -er '.reason' <<<"$CI")
+            test "$RUN_ID" -gt 0
+            python3 scripts/agent-control/state_manager.py release-ci-terminal \
+              "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
+              "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" \
+              terminal_ci_control_stopped "$STOP_REASON" "$OBSERVED_STATUS"
+            echo "ci_control_stopped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI")
           if [ "$EXISTING" = "null" ]; then
             SOURCE=$(jq -er '.source' <<<"$CI")
@@ -391,6 +404,7 @@ jobs:
           python3 scripts/agent-control/state_manager.py record-ci "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
             "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" dispatched "$EXTRA"
       - name: Dispatch trusted agent-ci-monitor to process completed CI
+        if: steps.acquire_ci.outputs.ci_control_stopped != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

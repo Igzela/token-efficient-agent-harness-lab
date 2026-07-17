@@ -60,6 +60,20 @@ class CIStaleBinding(CIVerificationError):
 class CIControlStopped(CIVerificationError):
     """The live control state changed while the run was being observed."""
 
+    def __init__(
+        self,
+        reason: str,
+        *,
+        ci_run_id: int | None = None,
+        head_sha: str = "",
+        observed_run: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.ci_run_id = ci_run_id
+        self.head_sha = head_sha
+        self.observed_run = observed_run or {}
+
 
 class ExactRunCandidates(list):
     """Valid exact-head runs plus rejected production identities."""
@@ -336,6 +350,29 @@ def _dispatch_fallback(requirements: dict[str, Any], branch: str, head_sha: str)
         raise CIVerificationError("canonical tests workflow dispatch failed")
 
 
+def _observe_fallback_after_control_stop(
+    branch: str, head_sha: str, pr_number: int,
+) -> dict[str, Any]:
+    """Read the just-dispatched run for typed stop compensation.
+
+    This is deliberately read-only.  The fallback dispatch has already
+    happened, so identifying its exact run lets the worker persist and
+    release the matching active claim without accepting the run as usable CI.
+    """
+
+    candidates = find_exact_runs(branch, head_sha, pr_number)
+    if not candidates:
+        return {}
+    return max(
+        candidates,
+        key=lambda run: (
+            _timestamp(run),
+            int(run.get("attempt", 0) or 0),
+            _run_id(run),
+        ),
+    )
+
+
 def acquire_exact_run(
     pr_number: int,
     branch: str,
@@ -399,7 +436,15 @@ def acquire_exact_run(
             _dispatch_fallback(requirements, branch, head_sha)
             fallback_dispatched = True
             if not control_is_live():
-                raise CIControlStopped("ci_control_stopped_after_fallback_dispatch")
+                observed = _observe_fallback_after_control_stop(
+                    branch, head_sha, pr_number,
+                )
+                raise CIControlStopped(
+                    "ci_control_stopped_after_fallback_dispatch",
+                    ci_run_id=_run_id(observed) or None,
+                    head_sha=head_sha,
+                    observed_run=observed,
+                )
             deadline = time.monotonic() + max(0, dispatch_timeout_seconds)
             continue
         raise CIRunObservationTimeout(
@@ -937,6 +982,16 @@ def main() -> None:
                 "Usage: ci_verifier.py <dispatch branch sha|verify-failed-run run-id sha branch pr|acquire pr branch sha|acquire-run pr branch sha>"
             )
         print(json.dumps(result, sort_keys=True))
+    except CIControlStopped as exc:
+        observed = exc.observed_run
+        print(json.dumps({
+            "status": "ci_control_stopped",
+            "reason": str(exc),
+            "ci_run_id": exc.ci_run_id,
+            "head_sha": exc.head_sha,
+            "observed_status": str(observed.get("status") or "unknown"),
+            "run": observed,
+        }, sort_keys=True))
     except CIVerificationError as exc:
         print(f"CI_VERIFICATION_ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

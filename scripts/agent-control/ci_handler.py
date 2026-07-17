@@ -437,6 +437,17 @@ def process_ci_completion(event_path):
     issue_number = _find_issue_for_pr(pr_number)
     if not issue_number:
         return {"action": "noop", "reason": "no_canonical_issue_binding"}
+    pr_info = sm.get_pr_info(pr_number)
+    if not pr_info:
+        return {"action": "noop", "reason": "pr_unavailable"}
+    current_head = pr_info.get("headRefOid", "")
+    if not current_head:
+        return {"action": "noop", "reason": "pr_head_identity_missing"}
+    binding_ok, binding_reason = sm.verify_issue_pr_binding(
+        issue_number, pr_number, current_head,
+    )
+    if not binding_ok:
+        return {"action": "noop", "reason": f"binding_rejected:{binding_reason}"}
     run, run_failure = _run_for_event(info)
     if not run:
         return _record_ci_terminal(
@@ -445,13 +456,11 @@ def process_ci_completion(event_path):
             "ci_stale_binding", action="stale",
             reason=f"ci_stale_binding:{run_failure or 'workflow_identity_or_head_mismatch'}",
         )
-    pr_info = sm.get_pr_info(pr_number)
     if not pr_info or pr_info.get("state") != "OPEN":
         return _record_ci_noop(
             issue_number, pr_number, info["head_sha"], info["run_id"], run,
             "pr_not_open",
         )
-    current_head = pr_info.get("headRefOid", "")
     expected_head = info["pr_head_sha"] or info["head_sha"]
     expected_branch = pr_info.get("headRefName", "")
     if not expected_branch:
@@ -472,10 +481,7 @@ def process_ci_completion(event_path):
         )
     binding_ok, binding_reason = sm.verify_issue_pr_binding(issue_number, pr_number, current_head)
     if not binding_ok:
-        return _record_ci_noop(
-            issue_number, pr_number, current_head, info["run_id"], run,
-            f"binding_rejected:{binding_reason}",
-        )
+        return {"action": "noop", "reason": f"binding_rejected:{binding_reason}"}
     try:
         duplicate = _is_duplicate_exact_head_run(
             issue_number, pr_number, current_head, info["run_id"], info["head_branch"]
@@ -588,6 +594,7 @@ def process_ci_completion(event_path):
             "issue_number": issue_number,
             "head_sha": current_head,
             "ci_run_id": info["run_id"],
+            "observed_status": str(run.get("status") or "unknown"),
             "ci_evidence": evidence,
             "reason": "ci_green",
         }
@@ -625,6 +632,7 @@ def process_ci_completion(event_path):
         "issue_number": issue_number,
         "head_sha": current_head,
         "ci_run_id": info["run_id"],
+        "observed_status": str(run.get("status") or "unknown"),
         "repair_count": next_count,
         "reason": "ci_failure",
     }
@@ -660,8 +668,6 @@ def _make_poll_validator(issue, pr_number, head_sha, branch):
 
 def _refresh_terminal_binding(issue, pr_number, head_sha, expected_branch):
     """Re-read all authoritative bindings immediately before terminal action."""
-    if not ci_verifier.control_is_live():
-        return None, "ci_control_stopped:control_emergency_stop_activated"
     pr_info = sm.get_pr_info(pr_number)
     if not pr_info:
         return None, "ci_stale_binding:pr_unavailable"
@@ -704,24 +710,28 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
     if not initial_run:
         return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "ci_run_not_found")
     if initial_run.get("databaseId") is None:
-        return _record_ci_terminal(
-            issue_number, pr_number, head_sha, ci_run_id, initial_run,
-            "ci_stale_binding", action="stale",
-            reason="ci_stale_binding:run_id_identity_missing",
-        )
-    if str(initial_run.get("databaseId")) != str(ci_run_id):
-        return _record_ci_terminal(
-            issue_number, pr_number, head_sha, ci_run_id, initial_run,
-            "ci_stale_binding", action="stale",
-            reason="ci_stale_binding:run_id_identity_mismatch",
-        )
-
+        run_identity_failure = "run_id_identity_missing"
+    elif str(initial_run.get("databaseId")) != str(ci_run_id):
+        run_identity_failure = "run_id_identity_mismatch"
+    else:
+        run_identity_failure = None
     pr_info = sm.get_pr_info(pr_number)
     if not pr_info:
         return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "pr_unavailable")
     issue = _find_issue_for_pr(pr_number)
     if not issue or issue != int(issue_number):
         return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "issue_binding_mismatch")
+
+    current_head = pr_info.get("headRefOid", "")
+    expected_branch = pr_info.get("headRefName", "")
+    if not current_head:
+        return _noop_result(issue, pr_number, head_sha, ci_run_id, "pr_head_identity_missing")
+    binding_ok, binding_reason = sm.verify_issue_pr_binding(issue, pr_number, current_head)
+    if not binding_ok:
+        return _noop_result(
+            issue, pr_number, head_sha, ci_run_id,
+            f"binding_rejected:{binding_reason}",
+        )
 
     if pr_info.get("state") != "OPEN":
         return _record_ci_terminal(
@@ -733,12 +743,17 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
             issue, pr_number, head_sha, ci_run_id, initial_run,
             "ci_stale_binding", action="stale", reason="ci_stale_binding:pr_head_mismatch",
         )
-    expected_branch = pr_info.get("headRefName", "")
     if not expected_branch:
         return _record_ci_terminal(
             issue, pr_number, head_sha, ci_run_id, initial_run,
             "ci_stale_binding", action="stale",
             reason="ci_stale_binding:pr_branch_identity_missing",
+        )
+    if run_identity_failure:
+        return _record_ci_terminal(
+            issue, pr_number, head_sha, ci_run_id, initial_run,
+            "ci_stale_binding", action="stale",
+            reason=f"ci_stale_binding:{run_identity_failure}",
         )
     identity_failure = ci_verifier._validate_run_identity(
         initial_run, head_sha, expected_branch, int(pr_number),
@@ -774,6 +789,9 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
             validator=poll_validator,
         )
         run = completion.get("run") or ci_verifier.run_info(ci_run_id) or {}
+        if completion.get("observed_status"):
+            run = dict(run)
+            run["status"] = completion["observed_status"]
 
     refreshed_pr, refresh_failure = _refresh_terminal_binding(
         issue, pr_number, head_sha, expected_branch,
@@ -951,6 +969,7 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
             "issue_number": issue,
             "head_sha": head_sha,
             "ci_run_id": ci_run_id,
+            "observed_status": str(run.get("status") or "unknown"),
             "reason": "ci_green",
         }
 
@@ -987,6 +1006,7 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
         "issue_number": issue,
         "head_sha": head_sha,
         "ci_run_id": ci_run_id,
+        "observed_status": str(run.get("status") or "unknown"),
         "repair_count": next_count,
         "reason": "ci_failure",
     }

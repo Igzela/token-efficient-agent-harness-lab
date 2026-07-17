@@ -122,6 +122,7 @@ jobs:
           HEAD_SHA: ${{ steps.decision.outputs.head_sha }}
           CI_RUN_ID: ${{ steps.decision.outputs.ci_run_id }}
           ACTION: ${{ steps.decision.outputs.action }}
+          OBSERVED_STATUS: ${{ steps.decision.outputs.observed_status }}
           REPAIR_OUTCOME: ${{ steps.dispatch_repair.outcome }}
           REVIEW_OUTCOME: ${{ steps.dispatch_review.outcome }}
         run: |
@@ -136,7 +137,7 @@ jobs:
           fi
           python3 scripts/agent-control/state_manager.py release-ci-terminal \
             "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
-            terminal_ci_control_stopped ci_control_stopped:before_followup_dispatch unknown
+            terminal_ci_control_stopped ci_control_stopped:before_followup_dispatch "$OBSERVED_STATUS"
       - name: Dispatch merge only through the auto-merge control gate
         if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'merge_ready'
         run: |

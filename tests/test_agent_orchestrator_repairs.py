@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ast
 import os
 import pathlib
 import stat
@@ -186,7 +187,30 @@ class TestWorkflowContracts(unittest.TestCase):
 
     def test_ci_monitor_consumes_every_terminal_dispatch_outcome(self):
         monitor = self.read("agent-ci-monitor.yml")
-        for action in ("trigger_repair", "trigger_review", "merge_ready", "blocked", "stale", "noop"):
+        handler = ast.parse((CONTROL / "ci_handler.py").read_text())
+        actions = set()
+        for node in ast.walk(handler):
+            if isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    if isinstance(key, ast.Constant) and key.value == "action":
+                        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                            actions.add(value.value)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id == "_record_ci_terminal":
+                    for keyword in node.keywords:
+                        if keyword.arg == "action" and isinstance(keyword.value, ast.Constant):
+                            actions.add(keyword.value.value)
+                if node.func.id == "_record_ci_noop":
+                    actions.add("noop")
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "action"
+                for target in node.targets
+            ) and isinstance(node.value, ast.IfExp):
+                for branch in (node.value.body, node.value.orelse):
+                    if isinstance(branch, ast.Constant) and isinstance(branch.value, str):
+                        actions.add(branch.value)
+        self.assertEqual(actions, {"trigger_repair", "trigger_review", "merge_ready", "blocked", "stale", "noop"})
+        for action in sorted(actions):
             with self.subTest(action=action):
                 self.assertIn(f"action == '{action}'", monitor)
         self.assertIn("terminal_status != ''", monitor)
@@ -203,6 +227,21 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("_record_ci_noop", (CONTROL / "ci_handler.py").read_text())
         self.assertIn("Record control stop during follow-up handoff", monitor)
         self.assertIn("continue-on-error: true", monitor)
+        self.assertIn('terminal_ci_control_stopped ci_control_stopped:before_followup_dispatch "$OBSERVED_STATUS"', monitor)
+        for action, required in {
+            "trigger_repair": "gh workflow run agent-controller.yml",
+            "trigger_review": "gh workflow run agent-controller.yml",
+            "merge_ready": "require-auto-merge",
+            "blocked": "release-failed",
+            "stale": "release-ci-terminal",
+            "noop": "release-ci-terminal",
+        }.items():
+            with self.subTest(action=action):
+                self.assertIn(required, monitor)
+        worker = self.read("agent-worker.yml")
+        self.assertIn("id: acquire_ci", worker)
+        self.assertIn("ci_control_stopped=true", worker)
+        self.assertIn("steps.acquire_ci.outputs.ci_control_stopped != 'true'", worker)
         for workflow in ("agent-controller.yml", "agent-ci-monitor.yml", "agent-review.yml", "agent-ci-repair.yml", "agent-merge.yml", "agent-worker.yml", "agent-intake.yml"):
             self.assertIn("group: agent-orchestrator-state", self.read(workflow))
 
@@ -534,6 +573,7 @@ class TestCIEventTrust(unittest.TestCase):
             with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
                  mock.patch.object(ci_handler.ci_verifier, "run_info", return_value=run), \
                  mock.patch.object(ci_handler.sm, "get_pr_info", return_value=pr), \
+                 mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
                  mock.patch.object(ci_handler.sm, "record_ci_terminal_state", return_value=True):
                 result = ci_handler.process_ci_completion(event_path)
         finally:
@@ -626,6 +666,9 @@ class TestExactHeadCI(unittest.TestCase):
                     1, "agent/issue-d", sha, observe_seconds=0,
                 )
         self.assertIn("after_fallback_dispatch", str(raised.exception))
+        self.assertEqual(raised.exception.ci_run_id, 501)
+        self.assertEqual(raised.exception.head_sha, sha)
+        self.assertEqual(raised.exception.observed_run["status"], "queued")
         dispatch.assert_called_once()
 
     def test_production_identity_rejects_each_missing_identity_field(self):
@@ -762,6 +805,42 @@ class TestExactHeadCI(unittest.TestCase):
         args = record.call_args.args
         self.assertEqual(args[:6], (42, 207, sha, 504, "terminal_ci_control_stopped", "in_progress"))
         self.assertEqual(args[6], "control_emergency_stop_activated")
+
+    def test_stale_run_identity_cannot_terminalize_before_binding(self):
+        sha = "h" * 40
+        pr = {
+            "number": 207, "state": "OPEN", "headRefOid": sha,
+            "headRefName": "agent/issue-h", "body": "Closes #42",
+        }
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+             mock.patch.object(ci_handler.ci_verifier, "run_info", return_value={
+                 "status": "completed", "conclusion": "success",
+             }), \
+             mock.patch.object(ci_handler.sm, "get_pr_info", return_value=pr), \
+             mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
+             mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(False, "issue_pr_mismatch")), \
+             mock.patch.object(ci_handler.sm, "record_ci_terminal_state", return_value=True) as record:
+            result = ci_handler.process_ci_dispatch(42, 207, sha, 505)
+        self.assertEqual(result["action"], "noop")
+        self.assertIn("binding_rejected", result["reason"])
+        record.assert_not_called()
+
+    def test_refresh_terminal_binding_reads_authority_before_stop_check(self):
+        sha = "i" * 40
+        pr = {
+            "number": 207, "state": "OPEN", "headRefOid": sha,
+            "headRefName": "agent/issue-i", "body": "Closes #42",
+        }
+        with mock.patch.object(ci_handler.sm, "get_pr_info", return_value=pr) as get_pr, \
+             mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")) as verify, \
+             mock.patch.object(ci_handler.ci_verifier, "control_is_live", return_value=False):
+            refreshed, reason = ci_handler._refresh_terminal_binding(
+                42, 207, sha, "agent/issue-i",
+            )
+        self.assertEqual(refreshed, pr)
+        self.assertEqual(reason, "ci_control_stopped:control_emergency_stop_activated")
+        get_pr.assert_called_once_with(207)
+        verify.assert_called_once_with(42, 207, sha)
 
     def test_all_seven_required_jobs_must_succeed_on_exact_head(self):
         required = ci_verifier.load_requirements()["required_jobs"]
