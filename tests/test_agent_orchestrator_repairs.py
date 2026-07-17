@@ -341,6 +341,9 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn('"ci_followup_dispatch_failed:$ACTION" "$OBSERVED_STATUS"', monitor)
         self.assertIn("terminal_ci_merge_dispatch_failed", monitor)
         self.assertIn("ci_merge_dispatch_failed:merge_ready", monitor)
+        self.assertIn("capacity_retained", monitor)
+        self.assertIn("REPAIR_CAPACITY_RETAINED", monitor)
+        self.assertIn("MERGE_CAPACITY_RETAINED", monitor)
 
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")
@@ -707,6 +710,72 @@ class TestDispatcher(unittest.TestCase):
         self.assertEqual(second["reason"], "dispatch_in_flight")
         self.assertEqual(len(workflow_calls), 1)
         self.assertEqual(labels, {state_manager.LABEL_REVIEW_RUNNING})
+
+    def test_repair_dispatch_audit_failure_retains_claim_and_blocks_duplicate(self):
+        labels = {state_manager.LABEL_RUNNING}
+        dispatch_states = {}
+        workflow_calls = []
+
+        def read_dispatch(_issue, dispatch_id, _repo):
+            return dispatch_states.get(dispatch_id)
+
+        def set_labels(_issue, *new_labels, repo=""):
+            labels.clear()
+            labels.update(new_labels)
+            return True
+
+        def record_dispatch(_issue, dispatch_id, action, status, details=None, repo=""):
+            if status == "claimed":
+                dispatch_states[dispatch_id] = {"action": action, "status": status}
+                return True
+            return False
+
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value={42}), \
+             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record_dispatch), \
+             mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
+            first = dispatcher.dispatch_repair(207, 42, "a" * 40, "9001", "1")
+            second = dispatcher.dispatch_repair(207, 42, "a" * 40, "9001", "1")
+
+        self.assertFalse(first["dispatched"])
+        self.assertEqual(first["reason"], "dispatch_state_failed_capacity_retained")
+        self.assertFalse(second["dispatched"])
+        self.assertEqual(second["reason"], "dispatch_in_flight")
+        self.assertEqual(len(workflow_calls), 1)
+        self.assertEqual(labels, {state_manager.LABEL_CI_REPAIRING})
+
+    def test_merge_dispatch_audit_failure_retains_claim_and_blocks_duplicate(self):
+        dispatch_states = {}
+        workflow_calls = []
+
+        def read_dispatch(_issue, dispatch_id, _repo):
+            return dispatch_states.get(dispatch_id)
+
+        def record_dispatch(_issue, dispatch_id, action, status, details=None, repo=""):
+            if status == "claimed":
+                dispatch_states[dispatch_id] = {"action": action, "status": status}
+                return True
+            return False
+
+        with mock.patch.object(dispatcher.control_state, "require_auto_merge", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_MERGE_READY, state_manager.LABEL_REVIEW_PASSED}), \
+             mock.patch.object(dispatcher.sm, "read_review_state", return_value={"pr_number": 207, "head_sha": "a" * 40, "verdict": "PASS"}), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record_dispatch), \
+             mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
+            first = dispatcher.dispatch_merge(207, 42, "a" * 40)
+            second = dispatcher.dispatch_merge(207, 42, "a" * 40)
+
+        self.assertFalse(first["dispatched"])
+        self.assertEqual(first["reason"], "dispatch_state_failed_capacity_retained")
+        self.assertFalse(second["dispatched"])
+        self.assertEqual(second["reason"], "dispatch_in_flight")
+        self.assertEqual(len(workflow_calls), 1)
 
     def test_retry_review_derives_and_revalidates_the_current_binding(self):
         worker = {

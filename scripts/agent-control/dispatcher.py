@@ -300,14 +300,9 @@ def dispatch_merge(pr: int, issue: int, sha: str) -> dict[str, object]:
         reason = "workflow_dispatch_failed" if audited else "workflow_dispatch_failed_audit_failed"
         return {"dispatched": False, "reason": reason}
     if not _record_dispatched(issue, dispatch_id, "merge", fields):
-        audited = sm.record_dispatch_state(
-            issue, dispatch_id, "merge", "failed",
-            {"reason": "dispatch_state_failed"}, _repo(),
-        )
-        return {
-            "dispatched": False,
-            "reason": "dispatch_state_failed" if audited else "dispatch_state_failed_audit_failed",
-        }
+        # The merge workflow has already been accepted.  Retain the claim so
+        # a later monitor retry cannot issue a second merge mutation.
+        return {"dispatched": False, "reason": "dispatch_state_failed_capacity_retained"}
     return {"dispatched": True, "dispatch_id": dispatch_id}
 
 
