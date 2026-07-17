@@ -6,7 +6,7 @@ Last updated: 2026-07-17.
 
 The bounded production-integration program is merged. Rust `engine/` remains the sole runtime, API, scheduler, policy, audit, and application-owned storage authority. Disposable staging drills and the repaired target-repository output path passed. External live acceptance is still incomplete:
 
-- the GitHub/Vader repository-maintenance path remains disabled and emergency-stopped until the named Vader runner is online/idle and a replacement smoke reaches PR creation, exact-head CI, and independent review;
+- the GitHub/Vader repository-maintenance path remains disabled and emergency-stopped until a replacement smoke reaches PR creation, exact-head CI, and independent review (runner online/idle was restored after Mihomo egress repair, but Codex model execution still failed closed);
 - provider-backed embedding and the native/LangGraph benchmark remain fail-closed because the current OpenRouter catalog proves the configured embedding identity but omits the potentially chargeable embedding `request` price;
 - no provider POST, public release, production installation, or protected-branch write is authorized;
 - deletion of the disposable no-value target repository still requires interactive GitHub sudo-mode/2FA.
@@ -92,7 +92,7 @@ Stop and report `BLOCKED` rather than improvising when:
 
 **Goal:** Complete the already-merged external acceptance chain only after the named Vader runner and provider catalog prerequisites are independently verified.
 
-**Current blocker:** the runner token-exchange TLS path remains unavailable through the current Mihomo-routed egress, and the current embedding catalog omits the potentially chargeable `request` price. No provider POST or smoke dispatch is active.
+**Current blocker:** Vader is online/idle after switching Mihomo `节点选择` off the broken `台湾家宽-IEPL 02` path, but replacement smoke Issues #228/#229 failed at `vader-implementation` / `model_execution` (ChatGPT 403 on bad egress, then empty staged artifact). Issue #208 is emergency-stopped again. The current embedding catalog still omits the potentially chargeable `request` price. No provider POST is active.
 
 **Completion:** one replacement repository-agent smoke reaches PR creation, exact-head CI, and independent review; any provider-backed acceptance separately proves current identity, pricing, audit, and cost evidence.
 

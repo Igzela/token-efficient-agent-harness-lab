@@ -6,9 +6,9 @@ Last updated: 2026-07-17.
 
 This repository is a local/small-team self-hosted Agent workflow control plane and research lab. Rust `engine/` remains the sole runtime, API, scheduler, policy, and application-owned storage implementation. The production-integration program through Agent Runtime AR-6 and product evolution PE-1 through PE-6 is merged. Durable memory, budget evidence, replay/promotion, managed external-runtime adapters, target-output authority, release provenance, and fault/recovery evidence are connected through existing bounded owners.
 
-Controlled staging drills and the repaired disposable target-repository path passed. External live acceptance is still incomplete because the GitHub/Vader runner is offline on its token-exchange TLS path and the current authenticated OpenRouter embedding catalog, while proving the configured identity, omits the potentially chargeable `request` price. Merged PR #227 records applicability/receipt evidence but intentionally keeps that catalog response pre-send-blocked. No provider POST, provider-backed benchmark, replacement repository-agent smoke, public release, or production installation has been completed.
+Controlled staging drills and the repaired disposable target-repository path passed. External live acceptance is still incomplete. The named Vader runner was restored to uniquely registered, online, and idle state after a Mihomo selector repair, but the documentation-only replacement smoke did not reach PR creation: Codex model execution either hit ChatGPT 403 on non-US egress or produced no staged file changes under the artifact contract. Issue #208 is again emergency-stopped with orchestration and auto-merge disabled. The current authenticated OpenRouter embedding catalog still omits the potentially chargeable `request` price; merged PR #227 keeps that path pre-send-blocked. No provider POST, provider-backed benchmark, accepted replacement smoke, public release, or production installation has been completed.
 
-A new research direction is documented: bounded recursive execution followed by an evidence-gated Harness evolution laboratory. This is an approved forward plan only. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (the AR7 runtime-extension slice) and the later PE7 packets are not implemented, no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
+A new research direction is documented: bounded recursive execution, then a controlled OpenCode external adapter, then an evidence-gated Harness evolution laboratory. This is an approved forward plan only. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (the AR7 runtime-extension slice) and the later PE7 packets are not implemented, no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
 
 ## Verified Repository State
 
@@ -24,9 +24,10 @@ A new research direction is documented: bounded recursive execution followed by 
 - exact-head CI evidence recorded by the merged PRs remains the implementation evidence; documentation changes do not create new implementation evidence;
 - PR #225 remains open and presentation-only, touching the Dashboard visual system rather than runtime or authority;
 - repository Actions may create/approve pull requests and the required secret names exist, but Issue #208 remains emergency-stopped with orchestration and auto-merge disabled;
-- the unique Vader runner is registered but offline; its expected user service has no proxy environment, but policy routing sends its broker traffic through the Mihomo tunnel, where `tokenghub.actions.githubusercontent.com` repeatedly ends in TLS EOF. Direct IPv4 and the available Tailscale egress both time out, and no usable IPv6 path exists. An operator must provide a valid direct or broker-compatible egress for that hostname, then restart the runner and pass readiness before any smoke;
+- the unique Vader runner unit is `actions.runner.Igzela-token-efficient-agent-harness-lab.Vader.service` under user `igzela`; after switching Mihomo group `节点选择` away from the broken `台湾家宽-IEPL 02` pin to a working egress (verified with `美国-IEPL 01`), `tokenghub` TLS and broker session creation succeed and repository readiness reports online/idle. The selector is runtime-only and can regress on Clash Verge reload;
+- a bounded replacement smoke was attempted (Issues #228/#229). Intake, controller claim, validate, and Vader worktree creation succeeded; terminal failure remained at `vader-implementation` / `model_execution` with capacity released. No smoke PR was created. Issue #208 was restored to emergency-stop;
 - the current authenticated OpenRouter embedding catalog proves the fixed model identity and explicit zero `prompt`/`completion` prices, but omits the potentially chargeable `request` price; merged PR #227 records Applicable/NotApplicable/Unknown receipt evidence without treating omitted fields as zero, and the live request remains blocked before POST;
-- the disposable no-value target repository remains undeleted because GitHub requires interactive sudo-mode/2FA, but it has no valuable content, open PR, or temporary branch.
+- disposable repository `Igzela/acp-target-accept-20260716-1145` no longer resolves via GitHub API/GraphQL (already absent or previously deleted); do not delete any other repository.
 
 ## Repository-Agent Smoke Status
 
@@ -42,14 +43,14 @@ GPT Web request
 -> branch push
 ```
 
-PR creation then failed because Actions PR creation was disabled at that time. PR #222 added setting preflight, bounded worker timeout, terminal phase/reason evidence, and capacity-safe cleanup. The repository setting is now repaired, but a replacement smoke has not run because the Vader runner is offline.
+PR creation then failed because Actions PR creation was disabled at that time. PR #222 added setting preflight, bounded worker timeout, terminal phase/reason evidence, and capacity-safe cleanup. The repository setting and runner online/idle readiness are currently repaired, but the replacement smoke has not completed through PR creation.
 
 Operational consequence:
 
 - do not dispatch production repository work through the orchestrator;
 - keep Issue #208 emergency-stopped and both enable labels absent;
-- restore outbound TLS connectivity from the runner host to `tokenghub.actions.githubusercontent.com:443` without an intercepting/terminating middlebox;
-- rerun the bounded readiness checker;
+- keep Mihomo egress on a node that completes both `tokenghub` TLS and ChatGPT Codex API access; re-verify after any Clash reload;
+- rerun the bounded readiness checker before any re-enable;
 - complete one documentation-only replacement smoke through PR creation, exact-head CI, independent review, and manual merge decision before removing the restriction.
 
 The intended interface remains ordinary language in GPT Web. The assistant, not the user, owns internal Issue/workflow parameters once the path is accepted.
@@ -72,7 +73,7 @@ The intended interface remains ordinary language in GPT Web. The assistant, not 
 | Managed LangGraph external runtime | One bounded adapter invocation per Rust-leased node; fixture/guarded-live modes; Python owns no queue or product authority |
 | Native/LangGraph efficiency benchmark | Deterministic fixture evidence connected; no provider-backed result verified |
 | Target-repository output | Disposable acceptance passed after PR #226 with unchanged target `main`, one external delivery, and duplicate/restart reuse |
-| GitHub/Vader repository orchestrator | Implemented/default-off; production use blocked by the offline runner and missing replacement smoke |
+| GitHub/Vader repository orchestrator | Implemented/default-off; runner online/idle after host egress repair, but replacement smoke blocked at Codex model execution / empty staged artifact |
 | Dashboard | Functional; PR #225 is an independent presentation-only redesign |
 | Post-R7 wire/type governance | Implemented through `scripts/check_wire_codegen_drift.sh` |
 | PE7 bounded recursive execution | Approved in active documents; not implemented; no recursive tree admission or lineage schema exists yet |
@@ -111,14 +112,14 @@ A `langgraph_external` node performs one adapter invocation under a Rust lease. 
 
 ### Recursive/evolution boundary
 
-`PE7-BOUNDED-RECURSIVE-EXECUTION-1` may proceed independently only in deterministic local/fixture mode. It may not enable Issue #208, use the offline Vader runner, call a provider, mutate a real target repository, or alter evaluator, permission, budget, audit, target-output, merge, release, or rollback boundaries. The Harness-evolution packet remains blocked until recursive execution is implemented and verified.
+`PE7-BOUNDED-RECURSIVE-EXECUTION-1` may proceed independently only in deterministic local/fixture mode. It may not enable Issue #208, depend on the repository-agent smoke path, call a provider, mutate a real target repository, or alter evaluator, permission, budget, audit, target-output, merge, release, or rollback boundaries. OpenCode adapter and Harness-evolution packets remain blocked until recursive execution is implemented and verified.
 
 ## Confirmed Integration Gaps
 
-1. Restore the named Vader runner to uniquely registered, online, and idle state and complete the replacement smoke.
+1. Complete one documentation-only replacement smoke through PR creation, exact-head CI, and independent review while keeping auto-merge off; keep Issue #208 emergency-stopped until that succeeds.
 2. Obtain current provider catalog evidence that satisfies exact model identity and every modeled applicable charge dimension before any provider POST.
-3. Complete interactive deletion of the no-value disposable repository when convenient.
-4. Implement and verify `PE7-BOUNDED-RECURSIVE-EXECUTION-1` before starting Harness evolution.
+3. Confirm disposable repository deletion remains limited to the already-absent `Igzela/acp-target-accept-20260716-1145` identity only.
+4. Implement and verify `PE7-BOUNDED-RECURSIVE-EXECUTION-1` before OpenCode adapter or Harness evolution.
 
 The first three gaps continue to block production repository-agent use and provider-backed acceptance. They do not prevent fixture/local recursive-execution implementation.
 
