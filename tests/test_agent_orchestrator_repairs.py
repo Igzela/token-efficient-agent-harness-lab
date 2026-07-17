@@ -201,10 +201,10 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("steps.decision.outputs.terminal_status != ''", monitor)
         self.assertIn("steps.decision.outputs.terminal_status == ''", monitor)
         self.assertIn("_record_ci_noop", (CONTROL / "ci_handler.py").read_text())
-        self.assertIn("agent-pr-state-${{ inputs.pr || github.event.workflow_run.pull_requests[0].number", monitor)
-        for workflow in ("agent-review.yml", "agent-ci-repair.yml", "agent-merge.yml"):
-            self.assertIn("group: agent-pr-state-${{ inputs.pr_number }}", self.read(workflow))
-        self.assertIn("group: agent-pr-state-${{ inputs.pr_number || github.run_id }}", self.read("agent-controller.yml"))
+        self.assertIn("Record control stop during follow-up handoff", monitor)
+        self.assertIn("continue-on-error: true", monitor)
+        for workflow in ("agent-controller.yml", "agent-ci-monitor.yml", "agent-review.yml", "agent-ci-repair.yml", "agent-merge.yml", "agent-worker.yml", "agent-intake.yml"):
+            self.assertIn("group: agent-orchestrator-state", self.read(workflow))
 
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")
@@ -378,7 +378,7 @@ class TestDispatcher(unittest.TestCase):
             env = {**os.environ, "PATH": f"{temp}:{os.environ['PATH']}"}
             env.update({"AGENT_REPO": "", "GITHUB_REPOSITORY": ""})
             result = subprocess.run(
-                [sys.executable, str(CONTROL / "ci_verifier.py"), "verify-failed-run", "456", sha],
+                [sys.executable, str(CONTROL / "ci_verifier.py"), "verify-failed-run", "456", sha, "agent/issue-42", "207"],
                 cwd=ROOT, env=env, capture_output=True, text=True,
             )
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -29,7 +29,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: agent-pr-state-${{ inputs.pr_number }}
+  group: agent-orchestrator-state
   cancel-in-progress: false
 
 jobs:
@@ -56,8 +56,10 @@ jobs:
           set -euo pipefail
           python3 scripts/agent-control/control_state.py require-live >/dev/null
           python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
+          PR_BRANCH=$(gh pr view "${{ inputs.pr_number }}" --json headRefName --jq .headRefName)
+          test -n "$PR_BRANCH"
           python3 scripts/agent-control/ci_verifier.py verify-failed-run \
-            "${{ inputs.ci_run_id }}" "$INPUT_HEAD_SHA"
+            "${{ inputs.ci_run_id }}" "$INPUT_HEAD_SHA" "$PR_BRANCH" "${{ inputs.pr_number }}"
       - name: Fetch bounded failed jobs, steps, and redacted logs by run ID
         env:
           AGENT_REPO: ${{ github.repository }}

@@ -30,7 +30,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: agent-pr-state-${{ inputs.pr || github.event.workflow_run.pull_requests[0].number || github.run_id }}
+  group: agent-orchestrator-state
   cancel-in-progress: false
 
 jobs:
@@ -91,7 +91,9 @@ jobs:
             "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
             "$TERMINAL_STATUS" "$TERMINAL_REASON" "$OBSERVED_STATUS"
       - name: Dispatch bounded CI repair by exact failed run ID
+        id: dispatch_repair
         if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'trigger_repair'
+        continue-on-error: true
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
           gh workflow run agent-controller.yml --ref main \
@@ -102,7 +104,9 @@ jobs:
             -f ci_run_id="${{ steps.decision.outputs.ci_run_id }}" \
             -f repair_count="${{ steps.decision.outputs.repair_count }}"
       - name: Dispatch independent exact-head review
+        id: dispatch_review
         if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'trigger_review'
+        continue-on-error: true
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
           gh workflow run agent-controller.yml --ref main \
@@ -110,6 +114,29 @@ jobs:
             -f pr_number="${{ steps.decision.outputs.pr_number }}" \
             -f issue="${{ steps.decision.outputs.issue_number }}" \
             -f head_sha="${{ steps.decision.outputs.head_sha }}"
+      - name: Record control stop during follow-up handoff
+        if: always() && steps.decision.outputs.terminal_status == '' && (steps.decision.outputs.action == 'trigger_repair' || steps.decision.outputs.action == 'trigger_review')
+        env:
+          ISSUE_NUMBER: ${{ steps.decision.outputs.issue_number }}
+          PR_NUMBER: ${{ steps.decision.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.decision.outputs.head_sha }}
+          CI_RUN_ID: ${{ steps.decision.outputs.ci_run_id }}
+          ACTION: ${{ steps.decision.outputs.action }}
+          REPAIR_OUTCOME: ${{ steps.dispatch_repair.outcome }}
+          REVIEW_OUTCOME: ${{ steps.dispatch_review.outcome }}
+        run: |
+          set -euo pipefail
+          if python3 scripts/agent-control/control_state.py require-live >/dev/null; then
+            if [ "$ACTION" = "trigger_repair" ]; then
+              test "$REPAIR_OUTCOME" = "success"
+            else
+              test "$REVIEW_OUTCOME" = "success"
+            fi
+            exit 0
+          fi
+          python3 scripts/agent-control/state_manager.py release-ci-terminal \
+            "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
+            terminal_ci_control_stopped ci_control_stopped:before_followup_dispatch unknown
       - name: Dispatch merge only through the auto-merge control gate
         if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'merge_ready'
         run: |

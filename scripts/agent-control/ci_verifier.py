@@ -135,18 +135,28 @@ def run_info(run_id: int | str) -> dict[str, Any] | None:
     return summary
 
 
-def verify_failed_run(run_id: int | str, expected_sha: str) -> dict[str, Any]:
+def verify_failed_run(
+    run_id: int | str,
+    expected_sha: str,
+    expected_branch: str,
+    expected_pr: int,
+) -> dict[str, Any]:
     """Validate the exact failed canonical run used to prepare a repair."""
 
     requirements = load_requirements()
     run = run_info(run_id)
     if not run:
         raise CIVerificationError("workflow run is absent")
-    if run.get("workflowName") != requirements["workflow_name"]:
-        raise CIVerificationError("workflow name does not match canonical tests workflow")
-    expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY")
+    try:
+        expected_run_id = int(run_id)
+    except (TypeError, ValueError) as exc:
+        raise CIVerificationError("run_id_identity_invalid") from exc
+    if run.get("databaseId") is None:
+        raise CIVerificationError("run_id_identity_missing")
+    if str(run.get("databaseId")) != str(expected_run_id):
+        raise CIVerificationError("run_id_identity_mismatch")
     identity_failure = _validate_run_identity(
-        run, expected_sha, run.get("headBranch", ""), None,
+        run, expected_sha, expected_branch, int(expected_pr),
     )
     if identity_failure:
         raise CIVerificationError(f"CI identity rejected: {identity_failure}")
@@ -158,7 +168,7 @@ def verify_failed_run(run_id: int | str, expected_sha: str) -> dict[str, Any]:
         raise CIVerificationError("failed workflow run head SHA does not match expected head")
     return {
         "workflow_name": requirements["workflow_name"],
-        "workflow_run_id": run.get("databaseId") or run_id,
+        "workflow_run_id": expected_run_id,
         "head_sha": expected_sha,
         "status": run.get("status"),
         "conclusion": run.get("conclusion"),
@@ -631,6 +641,20 @@ def wait_for_run_completion(
                 "ci_run_id": bound_id,
                 "head_sha": expected_head,
             }
+        if run.get("databaseId") is None:
+            return {
+                "status": "ci_stale_binding",
+                "reason": "run_id_identity_missing",
+                "ci_run_id": bound_id,
+                "head_sha": expected_head,
+            }
+        if str(run.get("databaseId")) != str(bound_id):
+            return {
+                "status": "ci_stale_binding",
+                "reason": "run_id_identity_mismatch",
+                "ci_run_id": bound_id,
+                "head_sha": expected_head,
+            }
         identity_failure = _validate_run_identity(
             run, expected_head, expected_branch, pr_number
         )
@@ -902,15 +926,15 @@ def main() -> None:
     try:
         if len(sys.argv) == 4 and sys.argv[1] == "dispatch":
             result = dispatch_exact_ci(sys.argv[2], sys.argv[3])
-        elif len(sys.argv) == 4 and sys.argv[1] == "verify-failed-run":
-            result = verify_failed_run(sys.argv[2], sys.argv[3])
+        elif len(sys.argv) == 6 and sys.argv[1] == "verify-failed-run":
+            result = verify_failed_run(sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]))
         elif len(sys.argv) == 5 and sys.argv[1] == "acquire":
             result = acquire_exact_ci(int(sys.argv[2]), sys.argv[3], sys.argv[4])
         elif len(sys.argv) == 5 and sys.argv[1] == "acquire-run":
             result = acquire_exact_run(int(sys.argv[2]), sys.argv[3], sys.argv[4])
         else:
             raise SystemExit(
-                "Usage: ci_verifier.py <dispatch branch sha|verify-failed-run run-id sha|acquire pr branch sha|acquire-run pr branch sha>"
+                "Usage: ci_verifier.py <dispatch branch sha|verify-failed-run run-id sha branch pr|acquire pr branch sha|acquire-run pr branch sha>"
             )
         print(json.dumps(result, sort_keys=True))
     except CIVerificationError as exc:

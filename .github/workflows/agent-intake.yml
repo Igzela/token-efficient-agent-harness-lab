@@ -10,7 +10,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: agent-intake-${{ github.event.issue.number }}
+  group: agent-orchestrator-state
   cancel-in-progress: false
 
 jobs:

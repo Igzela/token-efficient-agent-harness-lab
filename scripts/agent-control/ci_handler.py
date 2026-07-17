@@ -576,6 +576,11 @@ def process_ci_completion(event_path):
             return _state_unavailable_result(
                 issue_number, pr_number, current_head, info["run_id"], "Issue label state is unavailable"
             )
+        if not ci_verifier.control_is_live():
+            return _record_ci_terminal(
+                issue_number, pr_number, current_head, info["run_id"], run,
+                "ci_control_stopped", reason="ci_control_stopped:before_followup_dispatch",
+            )
         action = "merge_ready" if sm.LABEL_REVIEW_PASSED in labels else "trigger_review"
         return {
             "action": action,
@@ -933,6 +938,11 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
             return _state_unavailable_result(
                 issue, pr_number, head_sha, ci_run_id,
                 "Issue label state is unavailable",
+            )
+        if not ci_verifier.control_is_live():
+            return _record_ci_terminal(
+                issue, pr_number, head_sha, ci_run_id, run,
+                "ci_control_stopped", reason="ci_control_stopped:before_followup_dispatch",
             )
         action = "merge_ready" if sm.LABEL_REVIEW_PASSED in labels else "trigger_review"
         return {
