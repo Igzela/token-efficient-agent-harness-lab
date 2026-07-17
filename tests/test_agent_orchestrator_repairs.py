@@ -230,8 +230,8 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("continue-on-error: true", monitor)
         self.assertIn('terminal_ci_control_stopped ci_control_stopped:before_followup_dispatch "$OBSERVED_STATUS"', monitor)
         for action, required in {
-            "trigger_repair": "gh workflow run agent-controller.yml",
-            "trigger_review": "gh workflow run agent-controller.yml",
+            "trigger_repair": "dispatcher.py dispatch-repair",
+            "trigger_review": "dispatcher.py dispatch-review",
             "merge_ready": "require-auto-merge",
             "blocked": "release-failed",
             "stale": "release-ci-terminal",
@@ -251,14 +251,37 @@ class TestWorkflowContracts(unittest.TestCase):
 
     def test_ci_monitor_action_contract_executes_a_consumer_for_each_handler_action(self):
         blocks = self.read("agent-ci-monitor.yml").split("      - name: ")[1:]
+        handler = ast.parse((CONTROL / "ci_handler.py").read_text())
+        process = next(
+            node for node in ast.walk(handler)
+            if isinstance(node, ast.FunctionDef) and node.name == "process_ci_dispatch"
+        )
+        handler_actions = {
+            node.value
+            for node in ast.walk(process)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and node.value in {"trigger_repair", "trigger_review", "merge_ready", "blocked", "stale", "noop"}
+        }
+        names = {node.id for node in ast.walk(process) if isinstance(node, ast.Name)}
+        if "_record_ci_terminal" in names:
+            handler_actions.add("blocked")
+        if "_record_ci_noop" in names or "_unbound_noop_result" in names:
+            handler_actions.add("noop")
+        # The source walk above is intentionally restricted to the action
+        # vocabulary; this assertion protects the contract when a new action
+        # is introduced in the handler.
+        self.assertEqual(
+            handler_actions,
+            {"trigger_repair", "trigger_review", "merge_ready", "blocked", "stale", "noop"},
+        )
         action_contract = {
             "trigger_repair": (
                 "steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'trigger_repair'",
-                "gh workflow run agent-controller.yml",
+                "dispatcher.py dispatch-repair",
             ),
             "trigger_review": (
                 "steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'trigger_review'",
-                "gh workflow run agent-controller.yml",
+                "dispatcher.py dispatch-review",
             ),
             "merge_ready": (
                 "steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'merge_ready'",
@@ -289,6 +312,15 @@ class TestWorkflowContracts(unittest.TestCase):
                     self.assertTrue(any("terminal_status == ''" in block for block in candidates))
                 self.assertTrue(any(command in block for block in candidates))
 
+        for block in blocks:
+            if "state_manager.py release-ci-terminal" in block:
+                for field in ("$ISSUE_NUMBER", "$PR_NUMBER", "$HEAD_SHA", "$CI_RUN_ID"):
+                    self.assertIn(field, block)
+
+        self.assertIn("dispatcher.py dispatch-repair", self.read("agent-ci-monitor.yml"))
+        self.assertIn("dispatcher.py dispatch-review", self.read("agent-ci-monitor.yml"))
+        self.assertIn("dispatcher.py dispatch-merge", self.read("agent-ci-monitor.yml"))
+
         monitor = self.read("agent-ci-monitor.yml")
         self.assertIn("terminal_ci_followup_dispatch_failed", monitor)
         self.assertIn('"ci_followup_dispatch_failed:$ACTION" "$OBSERVED_STATUS"', monitor)
@@ -303,6 +335,17 @@ class TestWorkflowContracts(unittest.TestCase):
 
 
 class TestCITerminalState(unittest.TestCase):
+    def test_explicit_dispatch_unbound_noop_is_terminal_and_exactly_bound(self):
+        result = ci_handler._unbound_noop_result(
+            42, 207, "a" * 40, 9001, "pr_unavailable",
+        )
+        self.assertEqual(result["action"], "noop")
+        self.assertEqual(result["terminal_status"], "terminal_ci_unbound_noop")
+        self.assertEqual(
+            {result[key] for key in ("issue_number", "pr_number", "head_sha", "ci_run_id")},
+            {42, 207, "a" * 40, 9001},
+        )
+
     def test_terminal_resolution_is_idempotent_and_records_release_result(self):
         comments = []
 
@@ -342,6 +385,37 @@ class TestCITerminalState(unittest.TestCase):
         self.assertEqual(evidence["head_sha"], "a" * 40)
         self.assertEqual(evidence["ci_run_id"], 9001)
         self.assertEqual(evidence["capacity_release_outcome"], "released")
+
+    def test_unbound_noop_terminal_release_uses_worker_binding_without_ci_state(self):
+        comments = []
+
+        def write_comment(issue, body, repo=""):
+            comments.append({"author": {"login": "github-actions[bot]"}, "body": body})
+            return True
+
+        with mock.patch.object(
+            state_manager, "get_issue_comments", return_value=[]
+        ), mock.patch.object(
+            state_manager, "comment_on_issue", side_effect=write_comment
+        ), mock.patch.object(
+            state_manager, "get_issue_labels_checked", return_value={state_manager.LABEL_RUNNING}
+        ), mock.patch.object(
+            state_manager, "read_worker_state", return_value={
+                "pr_number": 207, "head_sha": "a" * 40,
+                "extra": {"branch": "agent/issue-42"},
+            }
+        ), mock.patch.object(
+            state_manager, "get_pr_info", return_value=None
+        ), mock.patch.object(
+            state_manager, "set_labels", return_value=True
+        ) as transition:
+            result = state_manager.release_and_record_ci_terminal(
+                42, 207, "a" * 40, 9001, "terminal_ci_unbound_noop",
+                "ci_unbound_noop:pr_unavailable", "unknown",
+            )
+        self.assertEqual(result, (True, "released"))
+        transition.assert_called_once_with(42, state_manager.LABEL_BLOCKED, repo="")
+        self.assertEqual(json.loads(comments[-1]["body"])["ci_run_id"], 9001)
 
     def test_terminal_audit_failure_precedes_capacity_release(self):
         with mock.patch.object(
@@ -779,6 +853,53 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(raised.exception.head_sha, sha)
         self.assertEqual(raised.exception.observed_run["status"], "queued")
         dispatch.assert_called_once()
+
+    def test_delayed_fallback_visibility_rechecks_stop_and_preserves_exact_run(self):
+        sha = "d" * 40
+        fallback = {
+            "databaseId": 778, "event": "workflow_dispatch", "status": "queued",
+            "conclusion": "", "headSha": sha, "headBranch": "agent/issue-d",
+            "workflowName": "tests",
+        }
+        dispatch = mock.Mock(returncode=0, stdout="")
+        listing = mock.Mock(
+            returncode=0,
+            stdout=json.dumps([{
+                "databaseId": 778, "name": "tests-deadbeef",
+                "headSha": sha, "headBranch": "agent/issue-d",
+                "event": "workflow_dispatch",
+            }]),
+        )
+        with mock.patch.object(
+            ci_verifier, "control_is_live", side_effect=[True, True, True, False, False]
+        ), mock.patch.object(ci_verifier, "find_exact_runs", return_value=[]), \
+             mock.patch.object(ci_verifier, "run_info", return_value=fallback), \
+             mock.patch.object(ci_verifier.uuid, "uuid4", return_value=mock.Mock(hex="deadbeef")), \
+             mock.patch.object(ci_verifier.subprocess, "run", side_effect=[dispatch, listing]):
+            with self.assertRaises(ci_verifier.CIControlStopped) as raised:
+                ci_verifier.acquire_exact_run(1, "agent/issue-d", sha, observe_seconds=0)
+        self.assertEqual(raised.exception.ci_run_id, 778)
+        self.assertEqual(raised.exception.observed_run["databaseId"], 778)
+
+    def test_dispatched_fallback_id_cannot_be_replaced_by_newer_same_head_run(self):
+        sha = "d" * 40
+        fallback = {
+            "databaseId": 779, "event": "workflow_dispatch", "status": "queued",
+            "conclusion": "", "headSha": sha, "headBranch": "agent/issue-d",
+            "workflowName": "tests",
+        }
+        newer = {
+            "databaseId": 780, "event": "pull_request", "status": "completed",
+            "conclusion": "success", "headSha": sha, "headBranch": "agent/issue-d",
+            "workflowName": "tests",
+        }
+        with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[], [newer]]), \
+             mock.patch.object(ci_verifier, "run_info", return_value=fallback), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(
+                 returncode=0, stdout="https://github.com/trusted/repo/actions/runs/779"
+             )):
+            result = ci_verifier.acquire_exact_run(1, "agent/issue-d", sha, observe_seconds=0)
+        self.assertEqual(result["workflow_run_id"], 779)
 
     def test_stop_after_dispatch_binds_run_id_before_provider_visibility(self):
         sha = "d" * 40

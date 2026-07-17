@@ -95,25 +95,25 @@ jobs:
         if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'trigger_repair'
         continue-on-error: true
         run: |
+          set -euo pipefail
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          gh workflow run agent-controller.yml --ref main \
-            -f command=dispatch-repair \
-            -f pr_number="${{ steps.decision.outputs.pr_number }}" \
-            -f issue="${{ steps.decision.outputs.issue_number }}" \
-            -f head_sha="${{ steps.decision.outputs.head_sha }}" \
-            -f ci_run_id="${{ steps.decision.outputs.ci_run_id }}" \
-            -f repair_count="${{ steps.decision.outputs.repair_count }}"
+          python3 scripts/agent-control/dispatcher.py dispatch-repair \
+            "${{ steps.decision.outputs.pr_number }}" \
+            "${{ steps.decision.outputs.issue_number }}" \
+            "${{ steps.decision.outputs.head_sha }}" \
+            "${{ steps.decision.outputs.ci_run_id }}" \
+            "${{ steps.decision.outputs.repair_count }}"
       - name: Dispatch independent exact-head review
         id: dispatch_review
         if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'trigger_review'
         continue-on-error: true
         run: |
+          set -euo pipefail
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          gh workflow run agent-controller.yml --ref main \
-            -f command=dispatch-review \
-            -f pr_number="${{ steps.decision.outputs.pr_number }}" \
-            -f issue="${{ steps.decision.outputs.issue_number }}" \
-            -f head_sha="${{ steps.decision.outputs.head_sha }}"
+          python3 scripts/agent-control/dispatcher.py dispatch-review \
+            "${{ steps.decision.outputs.pr_number }}" \
+            "${{ steps.decision.outputs.issue_number }}" \
+            "${{ steps.decision.outputs.head_sha }}"
       - name: Record control stop during follow-up handoff
         if: always() && steps.decision.outputs.terminal_status == '' && (steps.decision.outputs.action == 'trigger_repair' || steps.decision.outputs.action == 'trigger_review')
         env:
@@ -151,12 +151,12 @@ jobs:
         if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'merge_ready'
         continue-on-error: true
         run: |
+          set -euo pipefail
           python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null
-          gh workflow run agent-controller.yml --ref main \
-            -f command=dispatch-merge \
-            -f pr_number="${{ steps.decision.outputs.pr_number }}" \
-            -f issue="${{ steps.decision.outputs.issue_number }}" \
-            -f head_sha="${{ steps.decision.outputs.head_sha }}"
+          python3 scripts/agent-control/dispatcher.py dispatch-merge \
+            "${{ steps.decision.outputs.pr_number }}" \
+            "${{ steps.decision.outputs.issue_number }}" \
+            "${{ steps.decision.outputs.head_sha }}"
       - name: Record merge handoff failure or control stop
         if: always() && steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'merge_ready'
         env:
@@ -211,10 +211,9 @@ jobs:
           NOOP_REASON: ${{ steps.decision.outputs.reason }}
         run: |
           set -euo pipefail
-          if [ -z "$ISSUE_NUMBER" ] || [ -z "$HEAD_SHA" ]; then
-            echo "No exact binding available; retaining fail-closed no-op: $NOOP_REASON"
-            exit 0
-          fi
+          test -n "$ISSUE_NUMBER"
+          test -n "$PR_NUMBER"
+          test -n "$HEAD_SHA"
           echo "Releasing matching capacity for unbound no-op: $NOOP_REASON"
           python3 scripts/agent-control/state_manager.py release-failed \
             "$ISSUE_NUMBER" any agent-blocked "$HEAD_SHA" "" "" "$PR_NUMBER"

@@ -393,13 +393,22 @@ def _noop_result(issue, pr_number, head_sha, ci_run_id, reason):
 
 
 def _unbound_noop_result(issue, pr_number, head_sha, ci_run_id, reason):
-    """Return a no-op that is intentionally ineligible for state mutation."""
+    """Return an explicit terminal no-op for an already-bound dispatch.
+
+    ``process_ci_dispatch`` always receives the exact issue/PR/head/run tuple
+    from the workflow-dispatch input contract.  Even when later provider
+    lookups cannot establish the binding, the monitor must consume the result
+    through the idempotent terminal release path instead of silently leaving
+    the Issue active.
+    """
     return {
         "action": "noop",
         "pr_number": int(pr_number),
         "issue_number": int(issue),
         "head_sha": head_sha,
         "ci_run_id": int(ci_run_id),
+        "terminal_status": "terminal_ci_unbound_noop",
+        "observed_status": "unknown",
         "reason": f"ci_unbound_noop:{reason}",
     }
 

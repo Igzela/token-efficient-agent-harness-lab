@@ -362,7 +362,14 @@ def _dispatch_fallback(
     if not isinstance(result.stdout, str):
         return None
     deadline = time.monotonic() + 20
+    control_stopped_during_lookup = False
     while True:
+        # A workflow-dispatch response can precede provider run visibility.  A
+        # stop during that interval must not turn into generic identity loss;
+        # keep correlating by the unique nonce until the exact run is visible
+        # so the caller can record the run-bound stop evidence.
+        if not control_is_live():
+            control_stopped_during_lookup = True
         listing = subprocess.run(
             [
                 "gh", "run", "list", "--workflow", f"{requirements['workflow_name']}.yml",
@@ -420,6 +427,7 @@ def acquire_exact_run(
     requirements = load_requirements()
     deadline = time.monotonic() + max(0, observe_seconds)
     fallback_dispatched = False
+    fallback_run_id: int | None = None
     all_runs: list[dict[str, Any]] = []
     identity_rejections: list[str] = []
     selected: dict[str, Any] | None = None
@@ -438,7 +446,31 @@ def acquire_exact_run(
             else:
                 all_runs.append(run)
         identity_rejections = sorted(set(identity_rejections))
-        selected = select_canonical_run(all_runs)
+        if fallback_dispatched and fallback_run_id is not None:
+            # Once a fallback was dispatched, a newer or otherwise more
+            # attractive same-head run is not an authorization to switch
+            # identities.  The nonce/URL-bound fallback is the only run that
+            # may be accepted for this acquisition.
+            selected = next(
+                (run for run in all_runs if _run_id(run) == fallback_run_id),
+                None,
+            )
+            if selected is None:
+                observed_fallback = run_info(fallback_run_id)
+                if observed_fallback and _run_id(observed_fallback) == fallback_run_id:
+                    identity_failure = _validate_run_identity(
+                        observed_fallback, head_sha, branch, pr_number,
+                    )
+                    if identity_failure:
+                        raise CIVerificationError(
+                            f"ci_stale_binding:{identity_failure}"
+                        )
+                    selected = observed_fallback
+                    all_runs.append(observed_fallback)
+            if selected is not None and selected.get("status") not in ACTIVE_RUN_STATUSES | {"completed"}:
+                selected = None
+        else:
+            selected = select_canonical_run(all_runs)
         if selected is not None:
             if not control_is_live():
                 raise CIControlStopped("ci_control_stopped_before_run_acceptance")
@@ -454,6 +486,7 @@ def acquire_exact_run(
                     f"ci_stale_binding:{identity_rejections[0]}"
                 )
             dispatched_run_id = _dispatch_fallback(requirements, branch, head_sha)
+            fallback_run_id = dispatched_run_id
             fallback_dispatched = True
             if not control_is_live():
                 observed = {}

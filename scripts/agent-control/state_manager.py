@@ -572,7 +572,10 @@ def release_and_record_ci_terminal(
         expected_sha=head_sha,
         repo=repo,
         expected_pr=pr_number,
-        expected_run_id=ci_run_id,
+        # An explicit-dispatch unbound no-op has exact run evidence in the
+        # terminal record but may arrive before a CI-state comment exists.
+        # Its worker PR/head binding remains the capacity authorization.
+        expected_run_id=None if terminal_status == "terminal_ci_unbound_noop" else ci_run_id,
     )
     finalized = CITerminalResolutionState(
         int(issue_number),
@@ -1111,9 +1114,6 @@ def verify_ci_terminal_binding(issue_number, pr_number, expected_sha, repo=""):
     the new head.
     """
 
-    pr = get_pr_info(pr_number, repo)
-    if not pr:
-        return False, "pr_not_found"
     try:
         worker = read_worker_state(issue_number, repo)
     except StateUnavailableError:
@@ -1121,6 +1121,13 @@ def verify_ci_terminal_binding(issue_number, pr_number, expected_sha, repo=""):
     if not worker or worker.get("pr_number") != int(pr_number) or worker.get("head_sha") != expected_sha:
         return False, "worker_binding_mismatch"
     expected_branch = (worker.get("extra") or {}).get("branch") or f"agent/issue-{issue_number}"
+    pr = get_pr_info(pr_number, repo)
+    if not pr:
+        # The explicit-dispatch no-op path can be entered when the PR API is
+        # transiently unavailable.  The exact worker claim still identifies
+        # the issue/PR/head capacity; release it through the same bounded
+        # compensation path rather than leaving the Issue active.
+        return True, "pr_unavailable_worker_bound"
     if pr.get("headRefName") != expected_branch:
         return False, "branch_mismatch"
     marker = parse_binding_marker(pr.get("body", ""))
