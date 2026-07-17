@@ -413,6 +413,33 @@ def _unbound_noop_result(issue, pr_number, head_sha, ci_run_id, reason):
     }
 
 
+DISPATCH_ACTION_CONSUMERS = {
+    "trigger_repair": "dispatch_repair",
+    "trigger_review": "dispatch_review",
+    "merge_ready": "dispatch_merge",
+    "blocked": "release_blocked_capacity",
+    "stale": "release_terminal_capacity",
+    "noop": "release_noop_capacity",
+}
+
+
+def validate_ci_dispatch_decision(result):
+    """Validate the executable monitor contract for one handler decision."""
+    if not isinstance(result, dict):
+        raise ValueError("ci_decision_not_an_object")
+    action = result.get("action")
+    if action not in DISPATCH_ACTION_CONSUMERS:
+        raise ValueError("ci_decision_action_unknown")
+    required = ("issue_number", "pr_number", "head_sha", "ci_run_id")
+    if any(result.get(field) in (None, "") for field in required):
+        raise ValueError(f"ci_decision_binding_missing:{action}")
+    if action in {"blocked", "stale", "noop"} and not result.get("terminal_status"):
+        raise ValueError(f"ci_decision_terminal_status_missing:{action}")
+    if action in {"trigger_repair", "trigger_review", "merge_ready"} and result.get("terminal_status"):
+        raise ValueError(f"ci_decision_unexpected_terminal_status:{action}")
+    return DISPATCH_ACTION_CONSUMERS[action]
+
+
 def _record_ci_noop(issue, pr_number, head_sha, ci_run_id, run, reason):
     """Persist a bound no-op before the monitor performs compensation."""
     return _record_ci_terminal(
@@ -1087,6 +1114,11 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "validate-decision":
+        with open(sys.argv[2], encoding="utf-8") as handle:
+            decision = json.load(handle)
+        print(validate_ci_dispatch_decision(decision))
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "process-dispatch":
         if len(sys.argv) != 6:
             print(

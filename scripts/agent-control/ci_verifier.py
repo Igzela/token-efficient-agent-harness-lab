@@ -342,16 +342,21 @@ def _acquisition_selection_reason(selected: dict[str, Any]) -> str:
 def _dispatch_fallback(
     requirements: dict[str, Any], branch: str, head_sha: str,
 ) -> int | None:
+    dispatch_nonce = uuid.uuid4().hex
+    dispatch_args = [
+        "gh", "workflow", "run", f"{requirements['workflow_name']}.yml",
+        "--ref", branch,
+        "-f", f"expected_sha={head_sha}",
+        "-f", f"dispatch_nonce={dispatch_nonce}",
+    ]
+    # Keep this check adjacent to the external mutation.  The workflow-level
+    # shared concurrency group and emergency-stop cancellation provide the
+    # cross-runner serialization; this is the final in-process authorization
+    # gate before the dispatch syscall.
     if not control_is_live():
         raise CIControlStopped("ci_control_stopped_before_fallback_dispatch")
-    dispatch_nonce = uuid.uuid4().hex
     result = subprocess.run(
-        [
-            "gh", "workflow", "run", f"{requirements['workflow_name']}.yml",
-            "--ref", branch,
-            "-f", f"expected_sha={head_sha}",
-            "-f", f"dispatch_nonce={dispatch_nonce}",
-        ], capture_output=True, text=True, timeout=60,
+        dispatch_args, capture_output=True, text=True, timeout=60,
     )
     if result.returncode != 0:
         raise CIVerificationError("canonical tests workflow dispatch failed")
@@ -378,10 +383,16 @@ def _dispatch_fallback(
             ], capture_output=True, text=True, timeout=60,
         )
         if listing.returncode != 0:
+            if control_stopped_during_lookup:
+                time.sleep(1)
+                continue
             raise CIVerificationError("fallback_run_identity_missing")
         try:
             candidates = json.loads(listing.stdout or "[]")
         except json.JSONDecodeError as exc:
+            if control_stopped_during_lookup:
+                time.sleep(1)
+                continue
             raise CIVerificationError("fallback_run_identity_missing") from exc
         matches = [
             candidate for candidate in candidates
@@ -395,7 +406,11 @@ def _dispatch_fallback(
             return _run_id(matches[0])
         if len(matches) > 1:
             raise CIVerificationError("fallback_run_identity_ambiguous")
-        if time.monotonic() >= deadline:
+        # Once the stop is observed, retain the correlation loop until the
+        # provider exposes the exact nonce-bound run.  Returning generic
+        # identity loss here would discard the run ID needed for durable
+        # ci_control_stopped evidence and capacity compensation.
+        if not control_stopped_during_lookup and time.monotonic() >= deadline:
             raise CIVerificationError("fallback_run_identity_missing")
         time.sleep(1)
 

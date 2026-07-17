@@ -1170,10 +1170,10 @@ def release_failed_capacity(
         if terminal_label in labels and not active:
             return True, "already_released"
         return False, "active_state_mismatch"
-    if expected_run_id is not None and active in (
-        {LABEL_REVIEW_RUNNING},
-        {LABEL_CI_REPAIRING},
-    ):
+    # A CI terminal outcome is allowed to release the repair phase when its
+    # exact CI state/run binding matches.  Review capacity is owned by the
+    # review workflow and remains protected from unrelated CI terminal events.
+    if expected_run_id is not None and active == {LABEL_REVIEW_RUNNING}:
         return False, "ci_active_phase_mismatch"
     if labels & (TERMINAL_LABELS | {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}):
         return False, "newer_terminal_state_exists"

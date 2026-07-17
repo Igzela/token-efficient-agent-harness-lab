@@ -320,6 +320,21 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("dispatcher.py dispatch-repair", self.read("agent-ci-monitor.yml"))
         self.assertIn("dispatcher.py dispatch-review", self.read("agent-ci-monitor.yml"))
         self.assertIn("dispatcher.py dispatch-merge", self.read("agent-ci-monitor.yml"))
+        self.assertIn("ci_handler.py validate-decision", self.read("agent-ci-monitor.yml"))
+
+        for action, consumer in ci_handler.DISPATCH_ACTION_CONSUMERS.items():
+            result = {
+                "action": action,
+                "issue_number": 42,
+                "pr_number": 207,
+                "head_sha": "a" * 40,
+                "ci_run_id": 9001,
+            }
+            if action in {"blocked", "stale", "noop"}:
+                result["terminal_status"] = f"terminal_{action}"
+            if action == "trigger_repair":
+                result["repair_count"] = 1
+            self.assertEqual(ci_handler.validate_ci_dispatch_decision(result), consumer)
 
         monitor = self.read("agent-ci-monitor.yml")
         self.assertIn("terminal_ci_followup_dispatch_failed", monitor)

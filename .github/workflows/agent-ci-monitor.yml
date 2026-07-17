@@ -66,6 +66,8 @@ jobs:
               "${{ inputs.issue }}" "${{ inputs.pr }}" \
               "${{ inputs.head_sha }}" "${{ inputs.ci_run_id }}" \
               > "$RUNNER_TEMP/ci-decision.json"
+            python3 scripts/agent-control/ci_handler.py validate-decision \
+              "$RUNNER_TEMP/ci-decision.json" >/dev/null
           else
             python3 scripts/agent-control/ci_handler.py > "$RUNNER_TEMP/ci-decision.json"
           fi
@@ -203,7 +205,7 @@ jobs:
             "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
             "$TERMINAL_STATUS" "$NOOP_REASON" "$OBSERVED_STATUS"
       - name: Consume unbound no-op decision and release matching capacity
-        if: steps.decision.outputs.action == 'noop' && steps.decision.outputs.terminal_status == ''
+        if: steps.decision.outputs.action == 'noop' && steps.decision.outputs.terminal_status == '' && steps.decision.outputs.issue_number != ''
         env:
           ISSUE_NUMBER: ${{ steps.decision.outputs.issue_number }}
           PR_NUMBER: ${{ steps.decision.outputs.pr_number }}
@@ -217,3 +219,7 @@ jobs:
           echo "Releasing matching capacity for unbound no-op: $NOOP_REASON"
           python3 scripts/agent-control/state_manager.py release-failed \
             "$ISSUE_NUMBER" any agent-blocked "$HEAD_SHA" "" "" "$PR_NUMBER"
+      - name: End unbound external-event no-op without mutation
+        if: steps.decision.outputs.action == 'noop' && steps.decision.outputs.terminal_status == '' && steps.decision.outputs.issue_number == ''
+        run: |
+          echo "No owned Issue/PR/head binding; no capacity mutation permitted"
