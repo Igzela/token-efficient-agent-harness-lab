@@ -6,7 +6,7 @@ Last updated: 2026-07-17.
 
 This repository is a local/small-team self-hosted Agent workflow control plane and research lab. Rust `engine/` remains the sole runtime, API, scheduler, policy, and application-owned storage implementation. The production-integration program through Agent Runtime AR-6 and product evolution PE-1 through PE-6 is merged. Durable memory, budget evidence, replay/promotion, managed external-runtime adapters, target-output authority, release provenance, and fault/recovery evidence are connected through existing bounded owners.
 
-Controlled staging drills and the repaired disposable target-repository path passed. External live acceptance is still incomplete because the GitHub/Vader runner is offline on its token-exchange TLS path and the current OpenRouter catalog does not admit the configured embedding identity or every modeled applicable price dimension. No provider POST, provider-backed benchmark, replacement repository-agent smoke, public release, or production installation has been completed.
+Controlled staging drills and the repaired disposable target-repository path passed. External live acceptance is still incomplete because the GitHub/Vader runner is offline on its token-exchange TLS path and the current authenticated OpenRouter embedding catalog, while proving the configured identity, omits the potentially chargeable `request` price. PR #227 repairs the applicability/receipt representation but intentionally keeps that catalog response pre-send-blocked. No provider POST, provider-backed benchmark, replacement repository-agent smoke, public release, or production installation has been completed.
 
 A new research direction is documented: bounded recursive execution followed by an evidence-gated Harness evolution laboratory. This is an approved forward plan only. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (the AR7 runtime-extension slice) and the later PE7 packets are not implemented, no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
 
@@ -25,7 +25,7 @@ A new research direction is documented: bounded recursive execution followed by 
 - PR #225 remains open and presentation-only, touching the Dashboard visual system rather than runtime or authority;
 - repository Actions may create/approve pull requests and the required secret names exist, but Issue #208 remains emergency-stopped with orchestration and auto-merge disabled;
 - the unique Vader runner is registered but offline; its current service reproduces TLS failure during token exchange to `tokenghub.actions.githubusercontent.com`;
-- the current public OpenRouter catalog evidence omits the fixed embedding identity and does not expose every modeled charge dimension for the free Hy3 chat candidate;
+- the current authenticated OpenRouter embedding catalog proves the fixed model identity and explicit zero `prompt`/`completion` prices, but omits the potentially chargeable `request` price; PR #227 is open to record Applicable/NotApplicable/Unknown receipt evidence without treating omitted fields as zero, and the live request remains blocked before POST;
 - the disposable no-value target repository remains undeleted because GitHub requires interactive sudo-mode/2FA, but it has no valuable content, open PR, or temporary branch.
 
 ## Repository-Agent Smoke Status

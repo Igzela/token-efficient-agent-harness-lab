@@ -118,7 +118,7 @@ impl HttpTransport for PgCountingEmbeddingTransport {
                     "id":OPENROUTER_EMBEDDING_MODEL_ID,
                     "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
                     "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-                    "pricing":{"prompt":"0","completion":"0","request":"0","image":"0","web_search":"0","internal_reasoning":"0","input_cache_read":"0","input_cache_write":"0"},
+                    "pricing":{"prompt":"0","completion":"0","request":"0"},
                     "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
                 }]}))
                 .unwrap(),
