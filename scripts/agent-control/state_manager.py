@@ -509,7 +509,7 @@ def release_and_record_ci_terminal(
     observed_status,
     repo="",
 ):
-    """Release matching active CI capacity and record the exact result."""
+    """Record terminal intent, release matching capacity, and finalize evidence."""
 
     if (
         not isinstance(terminal_status, str)
@@ -521,13 +521,6 @@ def release_and_record_ci_terminal(
     ):
         return False, "terminal_resolution_evidence_invalid"
 
-    release_ok, release_reason = release_failed_capacity(
-        issue_number,
-        "any",
-        LABEL_BLOCKED,
-        expected_sha=head_sha,
-        repo=repo,
-    )
     state = CITerminalResolutionState(
         int(issue_number),
         int(pr_number),
@@ -536,13 +529,14 @@ def release_and_record_ci_terminal(
         terminal_status,
         reason,
         observed_status,
-        "released" if release_ok else "failed",
-        release_reason,
+        "pending",
+        "release_pending",
     ).to_wire()
     try:
         comments = get_issue_comments(issue_number, repo)
     except StateUnavailableError:
         return False, "terminal_resolution_state_unavailable"
+    pending_found = False
     for comment in comments:
         if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
             continue
@@ -562,8 +556,34 @@ def release_and_record_ci_terminal(
             and previous.get("reason") == state["reason"]
             and previous.get("observed_status") == state["observed_status"]
         ):
-            return release_ok, "already_recorded" if release_ok else release_reason
-    if not comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo):
+            previous_outcome = previous.get("capacity_release_outcome")
+            if previous_outcome in {"released", "already_released"}:
+                return True, "already_recorded"
+            state = previous
+            pending_found = previous_outcome == "pending"
+    if not pending_found:
+        if not comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo):
+            return False, "terminal_resolution_write_failed"
+
+    release_ok, release_reason = release_failed_capacity(
+        issue_number,
+        "any",
+        LABEL_BLOCKED,
+        expected_sha=head_sha,
+        repo=repo,
+    )
+    finalized = CITerminalResolutionState(
+        int(issue_number),
+        int(pr_number),
+        head_sha,
+        int(ci_run_id),
+        terminal_status,
+        reason,
+        observed_status,
+        "released" if release_ok else "failed",
+        release_reason,
+    ).to_wire()
+    if not comment_on_issue(issue_number, json.dumps(finalized, sort_keys=True), repo):
         return False, "terminal_resolution_write_failed"
     return release_ok, release_reason
 

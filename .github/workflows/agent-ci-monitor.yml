@@ -76,7 +76,7 @@ jobs:
             echo "$key=$value" >> "$GITHUB_OUTPUT"
           done
       - name: Release and record stale or control-stopped terminal outcome
-        if: steps.decision.outputs.action == 'stale' || steps.decision.outputs.terminal_status != ''
+        if: (steps.decision.outputs.action == 'stale' || steps.decision.outputs.terminal_status != '') && steps.decision.outputs.action != 'noop'
         env:
           ISSUE_NUMBER: ${{ steps.decision.outputs.issue_number }}
           PR_NUMBER: ${{ steps.decision.outputs.pr_number }}
@@ -126,9 +126,18 @@ jobs:
           python3 scripts/agent-control/state_manager.py release-failed \
             "${{ steps.decision.outputs.issue_number }}" any agent-blocked \
             "${{ steps.decision.outputs.head_sha }}"
-      - name: Consume benign no-op decision without dispatch
+      - name: Consume bound no-op decision and release its active capacity
         if: steps.decision.outputs.action == 'noop'
         env:
+          ISSUE_NUMBER: ${{ steps.decision.outputs.issue_number }}
+          PR_NUMBER: ${{ steps.decision.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.decision.outputs.head_sha }}
+          CI_RUN_ID: ${{ steps.decision.outputs.ci_run_id }}
+          TERMINAL_STATUS: ${{ steps.decision.outputs.terminal_status }}
+          OBSERVED_STATUS: ${{ steps.decision.outputs.observed_status }}
           NOOP_REASON: ${{ steps.decision.outputs.reason }}
         run: |
-          echo "No external action authorized: $NOOP_REASON"
+          set -euo pipefail
+          python3 scripts/agent-control/state_manager.py release-ci-terminal \
+            "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
+            "$TERMINAL_STATUS" "$NOOP_REASON" "$OBSERVED_STATUS"

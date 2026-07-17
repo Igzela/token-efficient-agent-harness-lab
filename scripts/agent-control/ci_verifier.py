@@ -783,14 +783,21 @@ def verify_exact_head_ci(
     if run.get("headSha") != expected_sha:
         raise CIVerificationError("CI head SHA does not match expected head")
     provider_identity = {"repository", "headRepository", "workflowId", "path"}
-    if provider_identity & run.keys() and not _candidate_matches(
-        run,
-        str(run.get("headBranch", "")),
-        expected_sha,
-        requirements,
-        pr_number,
-    ):
-        raise CIVerificationError("CI run identity does not match the expected PR and repository")
+    production_identity = (
+        os.environ.get("AGENT_CI_FIXTURE_MODE") != "true"
+        and bool(os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_ACTIONS") == "true")
+    )
+    if production_identity or provider_identity & run.keys():
+        identity_failure = _validate_run_identity(
+            run,
+            expected_sha,
+            (pr_snapshot or {}).get("headRefName") or str(run.get("headBranch", "")),
+            pr_number,
+        )
+        if identity_failure:
+            raise CIVerificationError(
+                f"CI run identity rejected: {identity_failure}"
+            )
     if run.get("status") != "completed" or run.get("conclusion") != "success":
         raise CIVerificationError("CI workflow is not completed successfully")
 

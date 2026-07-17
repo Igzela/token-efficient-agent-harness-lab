@@ -196,6 +196,8 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("terminal_status == '' && steps.decision.outputs.action == 'trigger_repair'", monitor)
         self.assertIn("terminal_status == '' && steps.decision.outputs.action == 'merge_ready'", monitor)
         self.assertIn("terminal_status == '' && steps.decision.outputs.action == 'blocked'", monitor)
+        self.assertIn('steps.decision.outputs.action == \'noop\'', monitor)
+        self.assertIn('"$TERMINAL_STATUS" "$NOOP_REASON" "$OBSERVED_STATUS"', monitor)
 
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")
@@ -237,13 +239,28 @@ class TestCITerminalState(unittest.TestCase):
 
         self.assertEqual(first, (True, "released"))
         self.assertEqual(second, (True, "already_recorded"))
-        comment.assert_called_once()
-        evidence = json.loads(comments[0]["body"])
+        self.assertEqual(comment.call_count, 2)
+        evidence = json.loads(comments[-1]["body"])
         self.assertEqual(evidence["issue_number"], 42)
         self.assertEqual(evidence["pr_number"], 207)
         self.assertEqual(evidence["head_sha"], "a" * 40)
         self.assertEqual(evidence["ci_run_id"], 9001)
         self.assertEqual(evidence["capacity_release_outcome"], "released")
+
+    def test_terminal_audit_failure_precedes_capacity_release(self):
+        with mock.patch.object(
+            state_manager, "get_issue_comments", return_value=[]
+        ), mock.patch.object(
+            state_manager, "comment_on_issue", return_value=False
+        ), mock.patch.object(
+            state_manager, "release_failed_capacity"
+        ) as release:
+            result = state_manager.release_and_record_ci_terminal(
+                42, 207, "a" * 40, 9001, "terminal_ci_control_stopped",
+                "ci_control_stopped:emergency_stop", "in_progress",
+            )
+        self.assertEqual(result, (False, "terminal_resolution_write_failed"))
+        release.assert_not_called()
 
     def test_legacy_generic_issue_mutators_are_not_exposed(self):
         source = (CONTROL / "state_manager.py").read_text()
@@ -643,6 +660,34 @@ class TestExactHeadCI(unittest.TestCase):
                         run, sha, "agent/issue-e", 207,
                     ),
                     expected_reason,
+                )
+
+    def test_production_exact_head_verification_rejects_missing_identity(self):
+        sha = "h" * 40
+        required = ci_verifier.load_requirements()["required_jobs"]
+        run = {
+            "databaseId": 505,
+            "workflowName": "tests",
+            "status": "completed",
+            "conclusion": "success",
+            "headSha": sha,
+            "headBranch": "agent/issue-h",
+            "jobs": [
+                {"name": name, "status": "completed", "conclusion": "success"}
+                for name in required
+            ],
+        }
+        with mock.patch.dict(
+            os.environ,
+            {"AGENT_REPO": "trusted/repo", "AGENT_CI_FIXTURE_MODE": "false"},
+            clear=False,
+        ), mock.patch.object(ci_verifier, "run_info", return_value=run):
+            with self.assertRaisesRegex(
+                ci_verifier.CIVerificationError, "repository_identity_missing"
+            ):
+                ci_verifier.verify_exact_head_ci(
+                    207, sha, 505,
+                    {"headRefOid": sha, "headRefName": "agent/issue-h"},
                 )
 
     def test_terminal_processing_refresh_rejects_head_changed_after_poll_validator(self):

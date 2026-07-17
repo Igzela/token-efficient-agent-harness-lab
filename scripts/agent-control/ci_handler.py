@@ -318,6 +318,20 @@ def _state_unavailable_result(issue, pr, sha, run_id, detail):
     }
 
 
+def _noop_result(issue, pr_number, head_sha, ci_run_id, reason):
+    """Return a bound no-op that the monitor can terminalize and release."""
+    return {
+        "action": "noop",
+        "pr_number": int(pr_number),
+        "issue_number": int(issue),
+        "head_sha": head_sha,
+        "ci_run_id": int(ci_run_id),
+        "terminal_status": "terminal_noop",
+        "observed_status": "unknown",
+        "reason": f"ci_noop:{reason}",
+    }
+
+
 def _record_ci_terminal(
     issue,
     pr_number,
@@ -615,18 +629,18 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
     """
     expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
     if not expected_repo:
-        return {"action": "noop", "reason": "repository_unavailable"}
+        return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "repository_unavailable")
 
     initial_run = ci_verifier.run_info(ci_run_id)
     if not initial_run:
-        return {"action": "noop", "reason": "ci_run_not_found"}
+        return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "ci_run_not_found")
 
     pr_info = sm.get_pr_info(pr_number)
     if not pr_info:
-        return {"action": "noop", "reason": "pr_unavailable"}
+        return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "pr_unavailable")
     issue = _find_issue_for_pr(pr_number)
     if not issue or issue != int(issue_number):
-        return {"action": "noop", "reason": "issue_binding_mismatch"}
+        return _noop_result(issue_number, pr_number, head_sha, ci_run_id, "issue_binding_mismatch")
 
     if pr_info.get("state") != "OPEN":
         return _record_ci_terminal(
@@ -644,7 +658,7 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
     )
     if identity_failure:
         if identity_failure in {"foreign_repository", "fork_head_repository"}:
-            return {"action": "noop", "reason": identity_failure}
+            return _noop_result(issue, pr_number, head_sha, ci_run_id, identity_failure)
         return _record_ci_terminal(
             issue, pr_number, head_sha, ci_run_id, initial_run,
             "ci_stale_binding", action="stale",
@@ -744,7 +758,7 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
     except sm.StateUnavailableError as exc:
         return _state_unavailable_result(issue, pr_number, head_sha, ci_run_id, str(exc))
     if duplicate:
-        return {"action": "noop", "reason": "duplicate_exact_head_run"}
+        return _noop_result(issue, pr_number, head_sha, ci_run_id, "duplicate_exact_head_run")
 
     if not ci_verifier.control_is_live():
         return _record_ci_terminal(
@@ -775,14 +789,13 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
                 issue, pr_number, head_sha, ci_run_id, str(exc)
             )
         if replacement is not None:
-            return {
-                "action": "noop",
-                "pr_number": pr_number,
-                "issue_number": issue,
-                "head_sha": head_sha,
-                "ci_run_id": replacement.get("workflow_run_id"),
-                "reason": "ci_reselected_after_unsupported_run",
-            }
+            return _noop_result(
+                issue,
+                pr_number,
+                head_sha,
+                replacement.get("workflow_run_id", ci_run_id),
+                "ci_reselected_after_unsupported_run",
+            )
         return _record_ci_terminal(
             issue, pr_number, head_sha, ci_run_id, run, ci_conclusion,
         )
