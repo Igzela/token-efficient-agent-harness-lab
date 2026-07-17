@@ -145,4 +145,5 @@ jobs:
         if: steps.decision.outputs.action == 'noop' && steps.decision.outputs.terminal_status == ''
         env:
           NOOP_REASON: ${{ steps.decision.outputs.reason }}
-        run: echo "No bound capacity mutation authorized: $NOOP_REASON"
+        run: |
+          echo "No bound capacity mutation authorized: $NOOP_REASON"
