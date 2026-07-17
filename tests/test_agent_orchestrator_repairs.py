@@ -558,6 +558,151 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(result["workflow_run_id"], 21)
         self.assertEqual(result["duplicate_run_ids"], [22])
 
+    def test_acquire_run_natural_queued_binds_without_fallback(self):
+        sha = "z" * 40
+        run = {"databaseId": 101, "event": "pull_request", "status": "queued", "conclusion": "",
+               "headSha": sha, "headBranch": "agent/issue-x", "workflowName": "tests",
+               "updatedAt": "2026-07-14T00:00:00Z"}
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]), \
+             mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
+            result = ci_verifier.acquire_exact_run(1, "agent/issue-x", sha, observe_seconds=0)
+        dispatch.assert_not_called()
+        self.assertEqual(result["workflow_run_id"], 101)
+        self.assertEqual(result["bound_status"], "queued")
+        self.assertEqual(result["selection_reason"], "natural_active_observed")
+        self.assertFalse(result["fallback_dispatched"])
+
+    def test_acquire_run_natural_in_progress_binds_without_fallback(self):
+        sha = "y" * 40
+        run = {"databaseId": 102, "event": "pull_request", "status": "in_progress", "conclusion": "",
+               "headSha": sha, "headBranch": "agent/issue-y", "workflowName": "tests",
+               "updatedAt": "2026-07-14T00:00:00Z"}
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]), \
+             mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
+            result = ci_verifier.acquire_exact_run(1, "agent/issue-y", sha, observe_seconds=0)
+        dispatch.assert_not_called()
+        self.assertEqual(result["workflow_run_id"], 102)
+        self.assertEqual(result["bound_status"], "in_progress")
+        self.assertEqual(result["selection_reason"], "natural_active_observed")
+
+    def test_acquire_run_completed_binds_without_dispatch(self):
+        sha = "w" * 40
+        run = {"databaseId": 103, "event": "pull_request", "status": "completed", "conclusion": "success",
+               "headSha": sha, "headBranch": "agent/issue-w", "workflowName": "tests",
+               "updatedAt": "2026-07-14T00:00:00Z"}
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]), \
+             mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
+            result = ci_verifier.acquire_exact_run(1, "agent/issue-w", sha, observe_seconds=0)
+        dispatch.assert_not_called()
+        self.assertEqual(result["workflow_run_id"], 103)
+        self.assertEqual(result["bound_status"], "completed")
+        self.assertEqual(result["selection_reason"], "natural_completed_observed")
+
+    def test_acquire_run_no_runs_dispatches_exactly_one_fallback(self):
+        sha = "v" * 40
+        fallback = {"databaseId": 104, "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
+                    "headSha": sha, "headBranch": "agent/issue-v", "workflowName": "tests",
+                    "updatedAt": "2026-07-14T00:00:00Z"}
+        with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[], [fallback]]), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
+            result = ci_verifier.acquire_exact_run(1, "agent/issue-v", sha, observe_seconds=0)
+        dispatch.assert_called_once()
+        self.assertEqual(result["workflow_run_id"], 104)
+        self.assertEqual(result["source"], "workflow_dispatch")
+        self.assertTrue(result["fallback_dispatched"])
+
+    def test_acquire_run_fallback_never_observable_raises(self):
+        sha = "u" * 40
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=[]), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
+            with self.assertRaises(ci_verifier.CIRunObservationTimeout):
+                ci_verifier.acquire_exact_run(1, "agent/issue-u", sha, observe_seconds=0, dispatch_timeout_seconds=0)
+        dispatch.assert_called_once()
+
+    def test_acquire_run_superseded_candidates(self):
+        sha = "t" * 40
+        older = {"databaseId": 105, "event": "pull_request", "status": "completed", "conclusion": "failure",
+                 "headSha": sha, "headBranch": "agent/issue-t", "workflowName": "tests",
+                 "updatedAt": "2026-07-14T00:01:00Z"}
+        newer = {"databaseId": 106, "event": "pull_request", "status": "completed", "conclusion": "success",
+                 "headSha": sha, "headBranch": "agent/issue-t", "workflowName": "tests",
+                 "updatedAt": "2026-07-14T00:02:00Z"}
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=[older, newer]):
+            result = ci_verifier.acquire_exact_run(1, "agent/issue-t", sha, observe_seconds=0)
+        self.assertEqual(result["workflow_run_id"], 106)
+        self.assertEqual(result["superseded_run_ids"], [105])
+
+    def test_wait_for_run_queued_to_success(self):
+        sha = "s" * 40
+        run = {"databaseId": 110, "status": "completed", "conclusion": "success",
+               "headSha": sha, "headBranch": "agent/issue-s", "workflowName": "tests",
+               "updatedAt": "2026-07-14T00:01:00Z"}
+        with mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
+             mock.patch.object(ci_verifier, "run_info", return_value=run), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]):
+            result = ci_verifier.wait_for_run_completion(
+                110, expected_head=sha, expected_branch="agent/issue-s",
+                completion_timeout_seconds=30, poll_seconds=60,
+            )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["ci_run_id"], 110)
+
+    def test_wait_for_run_queued_to_failure(self):
+        sha = "r" * 40
+        run = {"databaseId": 111, "status": "completed", "conclusion": "failure",
+               "headSha": sha, "headBranch": "agent/issue-r", "workflowName": "tests",
+               "updatedAt": "2026-07-14T00:01:00Z"}
+        with mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
+             mock.patch.object(ci_verifier, "run_info", return_value=run), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]):
+            result = ci_verifier.wait_for_run_completion(
+                111, expected_head=sha, expected_branch="agent/issue-r",
+                completion_timeout_seconds=30, poll_seconds=60,
+            )
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["ci_run_id"], 111)
+
+    def test_wait_for_run_control_stopped(self):
+        sha = "q" * 40
+        run = {"databaseId": 112, "status": "queued", "conclusion": "",
+               "headSha": sha, "headBranch": "agent/issue-q", "workflowName": "tests",
+               "updatedAt": "2026-07-14T00:00:00Z"}
+        with mock.patch.object(ci_verifier, "control_is_live", return_value=False), \
+             mock.patch.object(ci_verifier, "run_info", return_value=run):
+            result = ci_verifier.wait_for_run_completion(
+                112, expected_head=sha, expected_branch="agent/issue-q",
+                completion_timeout_seconds=30, poll_seconds=60,
+            )
+        self.assertEqual(result["status"], "ci_control_stopped")
+
+    def test_wait_for_run_head_moved(self):
+        sha = "p" * 40
+        moved = {"databaseId": 113, "status": "in_progress", "conclusion": "",
+                 "headSha": "x" * 40, "headBranch": "agent/issue-p", "workflowName": "tests",
+                 "updatedAt": "2026-07-14T00:00:00Z"}
+        with mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
+             mock.patch.object(ci_verifier, "run_info", return_value=moved):
+            result = ci_verifier.wait_for_run_completion(
+                113, expected_head=sha, expected_branch="agent/issue-p",
+                completion_timeout_seconds=30, poll_seconds=60,
+            )
+        self.assertEqual(result["status"], "ci_stale_binding")
+        self.assertEqual(result["reason"], "head_moved")
+
+    def test_wait_for_run_completion_timeout(self):
+        sha = "n" * 40
+        run = {"databaseId": 114, "status": "queued", "conclusion": "",
+               "headSha": sha, "headBranch": "agent/issue-n", "workflowName": "tests",
+               "updatedAt": "2026-07-14T00:00:00Z"}
+        with mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
+             mock.patch.object(ci_verifier, "run_info", return_value=run), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]):
+            result = ci_verifier.wait_for_run_completion(
+                114, expected_head=sha, expected_branch="agent/issue-n",
+                completion_timeout_seconds=0, poll_seconds=60,
+            )
+        self.assertEqual(result["status"], "ci_completion_timeout")
+
     def test_duplicate_success_or_failure_event_is_idempotent(self):
         with mock.patch.object(ci_handler.sm, "read_ci_acquisition", return_value={"workflow_run_id": 31}), \
              mock.patch.object(ci_handler.sm, "read_ci_state", return_value=None), \
@@ -672,7 +817,7 @@ class TestExactHeadCI(unittest.TestCase):
         with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs):
             result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
         self.assertEqual(result["workflow_run_id"], 901)
-        self.assertEqual(result["selection_reason"], "newest_completed_supported")
+        self.assertEqual(result["selection_reason"], "natural_completed_observed")
         self.assertEqual(result["superseded_run_ids"], [900])
 
     def test_newer_failure_supersedes_older_success(self):
@@ -706,20 +851,23 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(result["workflow_run_id"], 921)
         self.assertEqual(result["source"], "workflow_dispatch")
 
-    def test_natural_pending_timeout_dispatches_at_most_one_fallback(self):
+    def test_natural_pending_completes_through_combined_function(self):
         sha = "d" * 40
         natural = {"databaseId": 930, "event": "pull_request", "status": "queued", "conclusion": "",
                    "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
                    "updatedAt": "2026-07-14T00:00:00Z"}
-        fallback = {"databaseId": 931, "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
-                    "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
-                    "updatedAt": "2026-07-14T00:01:00Z"}
-        with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[natural], [natural], [natural, fallback]]), \
+        completed = {"databaseId": 930, "event": "pull_request", "status": "completed", "conclusion": "success",
+                     "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+                     "updatedAt": "2026-07-14T00:01:00Z"}
+        with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[natural], [completed]]), \
+             mock.patch.object(ci_verifier, "run_info", return_value=completed), \
+             mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
              mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
             result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
-        dispatch.assert_called_once()
-        self.assertEqual(result["workflow_run_id"], 931)
-        self.assertTrue(result["fallback_dispatched"])
+        dispatch.assert_not_called()
+        self.assertEqual(result["workflow_run_id"], 930)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["source"], "pull_request")
 
     def test_selection_records_unsupported_and_observed_candidates(self):
         sha = "e" * 40

@@ -491,33 +491,94 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
     This is the dispatch-monitor equivalent of process_ci_completion() for the
     trusted monitor path (agent-worker dispatch -> agent-ci-monitor via
     workflow_dispatch).  It derives all state from the GitHub API directly
-    rather than from a workflow_run event payload.
+    rather than from a workflow_run event payload.  When the bound run is
+    still active at the moment of dispatch, this function boundedly waits
+    for it to reach a terminal state via
+    :func:`ci_verifier.wait_for_run_completion` before continuing.
     """
     expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
     if not expected_repo:
         return {"action": "noop", "reason": "repository_unavailable"}
 
-    run = ci_verifier.run_info(ci_run_id)
-    if not run:
+    initial_run = ci_verifier.run_info(ci_run_id)
+    if not initial_run:
         return {"action": "noop", "reason": "ci_run_not_found"}
 
     requirements = ci_verifier.load_requirements()
-    if run.get("workflowName") != requirements["workflow_name"]:
+    if initial_run.get("workflowName") != requirements["workflow_name"]:
         return {"action": "noop", "reason": "workflow_name_mismatch"}
-    if run.get("repository") not in (None, expected_repo):
+    if initial_run.get("repository") not in (None, expected_repo):
         return {"action": "noop", "reason": "foreign_repository"}
-    if run.get("headRepository") not in (None, expected_repo):
+    if initial_run.get("headRepository") not in (None, expected_repo):
         return {"action": "noop", "reason": "fork_head_repository"}
     workflow_id = requirements.get("workflow_id")
-    if workflow_id is not None and run.get("workflowDatabaseId") not in (None, workflow_id):
+    if workflow_id is not None and initial_run.get("workflowDatabaseId") not in (None, workflow_id):
         return {"action": "noop", "reason": "workflow_id_mismatch"}
     workflow_path = requirements.get("workflow_path")
-    if workflow_path and run.get("path") not in (None, workflow_path):
+    if workflow_path and initial_run.get("path") not in (None, workflow_path):
         return {"action": "noop", "reason": "workflow_path_mismatch"}
-    if run.get("headSha") != head_sha:
+    if initial_run.get("headSha") != head_sha:
         return {"action": "stale", "reason": "run_head_sha_mismatch"}
+
+    pr_info = sm.get_pr_info(pr_number)
+    if not pr_info or pr_info.get("state") != "OPEN":
+        return {"action": "noop", "reason": "pr_not_open"}
+    if pr_info.get("headRefOid") != head_sha:
+        return {"action": "stale", "reason": "pr_head_mismatch"}
+    expected_branch = pr_info.get("headRefName", "")
+    if initial_run.get("headBranch") and expected_branch and initial_run.get("headBranch") != expected_branch:
+        return {"action": "stale", "reason": "run_branch_mismatch"}
+
+    run = initial_run
     if run.get("status") != "completed":
-        return {"action": "noop", "reason": "run_not_completed"}
+        completion = ci_verifier.wait_for_run_completion(
+            ci_run_id,
+            expected_head=head_sha,
+            expected_branch=expected_branch,
+            pr_number=pr_number,
+        )
+        if completion["status"] == "ci_completion_timeout":
+            return {
+                "action": "ci_wait",
+                "pr_number": pr_number,
+                "issue_number": int(issue_number),
+                "head_sha": head_sha,
+                "ci_run_id": ci_run_id,
+                "reason": "ci_completion_timeout",
+                "current_status": completion.get("current_status"),
+            }
+        if completion["status"] == "ci_control_stopped":
+            return {
+                "action": "ci_wait",
+                "pr_number": pr_number,
+                "issue_number": int(issue_number),
+                "head_sha": head_sha,
+                "ci_run_id": ci_run_id,
+                "reason": "ci_control_stopped",
+            }
+        if completion["status"] == "ci_stale_binding":
+            return {
+                "action": "stale",
+                "pr_number": pr_number,
+                "issue_number": int(issue_number),
+                "head_sha": head_sha,
+                "ci_run_id": ci_run_id,
+                "reason": f"ci_stale_binding:{completion.get('reason')}",
+            }
+        run = completion.get("run") or ci_verifier.run_info(ci_run_id) or {}
+        if completion["status"] not in {"success", "failure"}:
+            return {
+                "action": "blocked",
+                "pr_number": pr_number,
+                "issue_number": int(issue_number),
+                "head_sha": head_sha,
+                "ci_run_id": ci_run_id,
+                "reason": f"ci_terminal_{completion.get('conclusion') or completion.get('status')}",
+                "conclusion": completion.get("conclusion"),
+            }
+
+    if pr_info.get("headRefName") != run.get("headBranch", "") and run.get("headBranch"):
+        return {"action": "stale", "reason": "pr_branch_mismatch"}
 
     ci_conclusion = run.get("conclusion", "")
     supported_conclusions = {"success", "failure"} | TERMINAL_UNSUPPORTED_CONCLUSIONS
@@ -525,14 +586,6 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
         return {"action": "noop", "reason": f"unsupported_conclusion:{ci_conclusion}"}
 
     branch = run.get("headBranch", "")
-
-    pr_info = sm.get_pr_info(pr_number)
-    if not pr_info or pr_info.get("state") != "OPEN":
-        return {"action": "noop", "reason": "pr_not_open"}
-    if pr_info.get("headRefOid") != head_sha:
-        return {"action": "stale", "reason": "pr_head_mismatch"}
-    if pr_info.get("headRefName") != branch:
-        return {"action": "stale", "reason": "pr_branch_mismatch"}
 
     issue = _find_issue_for_pr(pr_number)
     if not issue or issue != int(issue_number):
