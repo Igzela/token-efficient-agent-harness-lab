@@ -46,6 +46,18 @@ The GPT Web assistant then owns the internal translation:
 
 Current restriction: Issue #208 must remain emergency-stopped. The runner is offline on its GitHub token-exchange TLS path, so no production repository task may be dispatched through this orchestrator. A replacement documentation-only smoke is required before normal use resumes.
 
+## Repository-Agent Repair Contract
+
+Resume this path only under `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`; PR #219 is a closed historical parking PR and is not an implementation branch. First restore the uniquely named Vader runner to registered, online, and idle state and pass the repository-owned readiness checker without weakening TLS or control gates.
+
+Preserve the useful security split during the first replacement smoke: Vader remains artifact-only and receives no repository write credential; the GitHub-hosted finalizer owns branch push and PR creation; exact allowed paths, base/head binding, secret suppression, emergency stop, and auto-merge-off remain mandatory.
+
+The replacement smoke must change exactly one disposable Markdown path and prove one bounded execution identity through intake, controller, worker, artifact, finalizer, PR, exact-head CI, independent review, and terminal capacity release. Any failure must retain the exact workflow run/attempt, failed job, failed phase, fixed reason code, and release result. Do not infer a cause from labels alone.
+
+Do not pre-emptively rewrite the orchestrator merely because it has multiple workflows. If the restored current chain completes the smoke, retain it and limit later work to evidence-backed cleanup. If the smoke fails because of cross-workflow handoff, duplicate dispatch, contradictory state, or missing terminal ownership, open one focused architecture-repair PR that may collapse intake/controller/worker coordination into one top-level workflow with ordered jobs and one run identity. Such simplification must preserve the artifact-only Vader boundary, GitHub-hosted finalization, fail-closed controls, exact-head evidence, manual merge default, and rollback.
+
+No production repository task may use the path until the replacement smoke is accepted and the restriction is removed from active documents.
+
 ## Recursive and Evolution Boundary
 
 The recursive/evolution lane must obey these additional rules:
