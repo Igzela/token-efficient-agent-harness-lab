@@ -13,17 +13,20 @@ The bounded production-integration program is merged. Rust `engine/` remains the
 
 A separate research lane is now approved for **bounded recursive execution and evidence-gated Harness evolution**. This lane is not an online self-update mechanism and does not establish recursive self-improvement. It must remain default-off, fixture/local-first, isolated from the active Harness, and subordinate to the existing budget, tool-policy, target-output, review, promotion, and rollback owners.
 
+A controlled OpenCode integration is planned between bounded recursive execution and Harness evolution. OpenCode may be introduced only as a pinned, default-off external coding executor under the existing Rust scheduler and finalizer. It may not become a second runtime, scheduler, permission owner, session store, provider router, evaluator, promotion owner, or release authority.
+
 Do not create another roadmap, phase, status, policy, or closeout document. This file is the single forward plan. Current facts belong in `docs/CURRENT_STATUS.md`; durable architecture belongs in `docs/ARCHITECTURE_BOOK.md`; ownership belongs in `docs/MODULE_MAP.md`; only proven operator procedures belong in `docs/RUNBOOK.md`.
 
 ## Active Routing
 
 1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE`. No implementation branch is active. Resume only when the external runner/catalog prerequisites can be verified.
 2. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — `READY_FOR_EXECUTION`. This is the AR7 runtime-extension slice. It is an independent fixture/local lane and must not enable Issue #208, call a provider, or depend on the Vader runner.
-3. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on the recursive-execution packet. It establishes candidate lineage, equal-budget evaluation, sealed holdout discipline, and PR-only promotion.
-4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result. It may test whether an evolved improver improves `Improvement@K`; it may not modify the authoritative evaluator, permissions, sealed set, or release owner.
-5. PR #225 remains an independent presentation-only Dashboard PR and does not own runtime, recursive execution, evolution, provider, or live-acceptance behavior.
+3. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `BLOCKED_PREREQUISITE` on bounded recursive execution. It introduces a pinned OpenCode release or commit only as a controlled, local/fixture external executor with networked tools disabled.
+4. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on both bounded recursive execution and the controlled OpenCode adapter. It establishes candidate lineage, equal-budget evaluation, sealed holdout discipline, and PR-only promotion.
+5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result. It may test whether an evolved improver improves `Improvement@K`; it may not modify the authoritative evaluator, permissions, sealed set, or release owner.
+6. PR #225 remains an independent presentation-only Dashboard PR and does not own runtime, recursive execution, OpenCode integration, evolution, provider, or live-acceptance behavior.
 
-The recursive/evolution lane is independent of the blocked external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. Any provider call, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation requires separate authority.
+The recursive/evolution lane is independent of the blocked external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation requires separate authority.
 
 ## Verified Baseline
 
@@ -36,6 +39,7 @@ The following merged work is the implementation baseline:
 - PR #222 connected the managed external runtime, canonical efficiency benchmark, orchestrator evidence repair, and local acceptance seal;
 - PR #223 and PR #224 repaired provider embedding receipts, transport, authorization, identity, and pricing safety;
 - PR #226 repaired target-output duplicate delivery and restart idempotency;
+- PR #227 added endpoint-specific Applicable / NotApplicable / Unknown embedding-pricing evidence while preserving historical receipt reads; its authenticated GET-only evidence still rejects the current row because `request` pricing is absent;
 - staging recovery drills and disposable target-repository acceptance passed without moving target `main`;
 - the current repository-maintenance orchestrator remains emergency-stopped and no provider-backed benchmark is verified.
 
@@ -78,6 +82,7 @@ Stop and report `BLOCKED` rather than improvising when:
 - an irreversible external action lacks explicit authority and tested recovery;
 - another active PR owns conflicting code that cannot be safely reconciled;
 - a recursive run can exceed a deterministic tree, call, token, cost, time, concurrency, retry, or lease bound;
+- an OpenCode invocation can broaden scope, enable an unapproved provider or network tool, escape its workspace, change its own permission contract, or leave descendant processes unbounded;
 - a worker or external effect cannot be proven terminal and late writes cannot be ruled out;
 - exact-head CI is failed, queued, in progress, cancelled, action-required, or unexpectedly skipped at merge time.
 
@@ -164,11 +169,75 @@ These defaults may be changed only through a later evidence-backed packet and ve
 
 **Completion:** One reviewed PR is merged with the bounded tree contract, production call-path ownership, SQLite/PostgreSQL tests, operator evidence, default-off gates, and exact-head CI. Active docs must state that recursive execution is implemented but Harness evolution remains unavailable.
 
+## Packet PE7-OPENCODE-EXTERNAL-ADAPTER-1 — Controlled coding executor
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is merged and accepted.
+
+**Goal:** Integrate a pinned release or exact commit of the active MIT-licensed `anomalyco/opencode` project as one default-off external coding executor. The Rust scheduler remains the sole admission, lease, retry, timeout, pause, concurrency, authority, and state owner. OpenCode receives one bounded task in one isolated worktree and may return only bounded analysis evidence or a candidate patch for existing finalizer validation.
+
+**Architecture:**
+
+```text
+Rust scheduler and tool-policy owner
+        -> one leased external-executor invocation
+        -> pinned OpenCode binary in an isolated worktree
+        -> deny-by-default generated permission profile
+        -> bounded analysis or allowed-path patch
+        -> app-owned receipt and output validation
+        -> existing finalizer / evaluation path
+        -> at most PR_READY
+```
+
+**Version and supply-chain contract:**
+
+- pin an exact upstream release or commit plus artifact/source checksum; mutable `latest`, an unpinned installer, or an unreviewed automatic upgrade is forbidden;
+- record the upstream repository identity, license attribution, version, build source, checksum, and local adapter version;
+- upgrades are explicit compatibility packets with fixture replay and changed-permission/tool review;
+- no fork becomes an authoritative parallel product runtime merely because its code is vendored or invoked.
+
+**Initial authority and confinement:**
+
+- default-off and local/fixture-only;
+- execute as an ordinary bounded workflow node under the existing scheduler, never through a second queue or autonomous session owner;
+- one app-owned disposable worktree with exact base identity and allowed-path set;
+- explicit deny-by-default OpenCode permission configuration; do not use `--auto` or any equivalent implicit approval mode;
+- disable provider fallback, web search, web fetch, MCP servers, remote agents, networked plugins, background agents, and OpenCode-managed repository mutations;
+- no provider call, external network access, GitHub mutation, target-repository delivery, protected-branch write, merge, release, deployment, or new root objective;
+- bound process-tree lifetime, descendant termination, stdout/stderr bytes, files read/written, patch size, tool calls, retries, wall time, tokens, and trustworthy cost where applicable;
+- OpenCode's internal permission result never overrides the Harness allowlist, approval, budget, secret, audit, or target-output owners.
+
+**Required invocation evidence:**
+
+Each invocation must bind at least the root run/node/lease, adapter and OpenCode versions, binary/source checksum, generated permission-profile hash, task-input hash, base commit/worktree identity, allowed paths, environment allowlist, process start/end, timeout and termination result, exit status, bounded tool summary, changed paths, patch/output hash and size, validation result, retry identity, and final reason code. Raw prompts, model outputs, transcripts, secrets, private paths, and unrestricted repository contents must not enter durable product evidence.
+
+**Fixture-first acceptance:**
+
+- one deterministic read-only code-analysis fixture and one deterministic allowed-path patch fixture;
+- path traversal, symlink escape, forbidden file, unexpected binary, undeclared environment, network attempt, MCP/plugin activation, permission escalation, background descendant, malformed output, oversized patch, timeout, cancellation, kill-switch, stale lease, duplicate delivery, restart, and receipt-replay tests;
+- prove that finalizer validation independently rejects scope, base/head, secret-scan, test-evidence, or output-contract mismatch;
+- compare the adapter against the existing fixed executor on representative fixtures under equal declared calls/time/output bounds, but make no quality or efficiency claim from adapter acceptance alone;
+- full applicable local suites, exact-head seven-job CI, and independent complete-diff review.
+
+**Non-goals:**
+
+- no OpenCode web search, web fetch, MCP, remote agents, background-agent autonomy, internal recursive subagent tree, provider routing, or production external calls;
+- no replacement of Rust runtime, scheduler, storage, auth, audit, budget, evaluator, target-output, promotion, merge, release, or rollback owners;
+- no automatic use in production routing and no claim that OpenCode is superior to Codex or the existing executor;
+- no direct participation in Harness evolution until this adapter packet is complete.
+
+**Later staged capabilities:** LSP/symbol assistance, bounded internal subagents, `webfetch`, and `websearch` require separate evidence-backed packets in that order or an explicitly justified alternative. Each networked capability must add source provenance, freshness, prompt-injection defenses, permission, cost, timeout, caching, and audit contracts before activation.
+
+**Rollback:** Disable the adapter gate, terminate and drain adapter-owned processes, discard unpromoted worktrees, preserve bounded receipts, remove the pinned binary/configuration, and revert the adapter PR. No external or production state should require compensation because initial acceptance forbids it.
+
+**Completion:** One reviewed PR is merged with a pinned and attributed OpenCode adapter, deterministic fixture acceptance, confinement and process-tree evidence, default-off gates, no network/provider activity, exact-head CI, and active-document synchronization. The adapter may produce bounded evidence or `PR_READY` candidates only.
+
 ## Packet PE7-HARNESS-EVOLUTION-LAB-1 — Evidence-gated candidate evolution
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** `PE7-BOUNDED-RECURSIVE-EXECUTION-1`
+**Prerequisites:** `PE7-BOUNDED-RECURSIVE-EXECUTION-1` and `PE7-OPENCODE-EXTERNAL-ADAPTER-1`.
 
 **Goal:** Add a default-off laboratory path that proposes, evaluates, archives, and optionally promotes isolated Harness candidates while the active Harness and the complete control plane remain immutable.
 
@@ -179,6 +248,7 @@ posted traces / scorecards / failures
         -> bounded failure miner
         -> structured mutation proposal
         -> isolated candidate worktree or app-owned workspace
+        -> fixed executor baselines, including the controlled OpenCode adapter
         -> static checks and deterministic fixture evaluation
         -> equal-budget validation and sealed holdout
         -> lineage/Pareto archive
@@ -219,7 +289,8 @@ Compare under a predeclared equal total-call or total-token budget:
 - prompt-only optimization;
 - greedy current-best Harness mutation;
 - random candidate generation with the same candidate count;
-- the lineage/archive experiment.
+- the lineage/archive experiment;
+- existing fixed executor baselines and the controlled OpenCode adapter, without allowing executor choice to change the evaluator or budget owner.
 
 Use task-family splits, not only random instance splits. Search may use development and validation tasks. Only 1–3 preselected candidates may enter the sealed set, and sealed results may not be fed back into further mutation. Primary promotion evidence is sealed task success/non-regression; secondary evidence includes tokens per pass, cost per pass, latency, invalid tool calls, crash rate, permission incidents, old-task sentinel regression, and lineage-average performance rather than best-so-far alone.
 
@@ -307,6 +378,7 @@ The following remain deferred unless separately activated:
 - autonomous generation of new root goals;
 - production continuous self-update;
 - automatic merge, deploy, release, or protected-branch mutation;
+- OpenCode networked tools, MCP, remote/background agents, autonomous provider routing, and production executor routing beyond the accepted adapter;
 - A2A remote-agent execution;
 - complexity/risk-driven Adaptive Fusion unification;
 - behavior-preserving cleanup of oversized provider/integrity modules until current external acceptance is stable.
@@ -316,6 +388,7 @@ The following remain deferred unless separately activated:
 - Rust `engine/` remains the sole runtime/API/storage authority.
 - Existing scheduler, workflow, pause/recovery, budget, provider, tool-policy, audit, target-output, promotion, release, and rollback owners remain authoritative.
 - Recursive nodes are ordinary bounded workflow work, not a new autonomous runtime.
+- OpenCode, if admitted, remains a pinned external worker under Rust-owned leases, permissions, receipts, confinement, finalization, and kill controls.
 - Evolution candidates execute only in isolated app-owned workspaces or controlled worktrees.
 - Candidate evidence never grants execution, target-output, merge, deploy, release, or evaluator authority.
 - Vader remains artifact-only; GitHub-hosted finalizers own GitHub mutations when that path is accepted and enabled.
@@ -332,6 +405,6 @@ Every packet report must include:
 - exact-head CI and every required job result;
 - independent complete-diff review and repairs;
 - compatibility, cost, security, evaluator-integrity, rollback, and residual risk;
-- whether Issue #208 or any provider/evolution gate was enabled;
+- whether Issue #208 or any provider/evolution/OpenCode gate was enabled;
 - whether any external call or repository mutation occurred;
 - truthful terminal state: `COMPLETE`, `BLOCKED`, `MERGE_READY`, or `PR_READY`.
