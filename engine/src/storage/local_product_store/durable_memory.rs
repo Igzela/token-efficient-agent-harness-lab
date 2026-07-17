@@ -1426,7 +1426,7 @@ impl LocalProductStore {
             &reservation,
             config.per_call_cap_usd,
             config.daily_cap_usd,
-            &contract.pricing,
+            &contract_evidence,
         )? {
             ProviderEmbeddingOperationClaim::Claimed { .. } => {}
             ProviderEmbeddingOperationClaim::Completed {
@@ -3029,7 +3029,7 @@ mod tests {
                 "id":OPENROUTER_EMBEDDING_MODEL_ID,
                 "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
                 "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0","web_search":"0","internal_reasoning":"0","input_cache_read":"0","input_cache_write":"0"},
+                "pricing":{"prompt":"0","completion":"0","request":"0"},
                 "architecture":{"input_modalities":["text","image"],"output_modalities":["embeddings"]}
             }]}))
             .unwrap(),

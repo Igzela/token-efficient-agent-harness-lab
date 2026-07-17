@@ -616,10 +616,10 @@ impl LocalProductStore {
         reservation: &crate::provider::ProviderAuditEvent,
         per_call_cap_usd: f64,
         daily_cap_usd: f64,
-        pricing: &crate::provider::embedding::EmbeddingPricingEvidence,
+        contract: &crate::provider::embedding::EmbeddingContractEvidence,
     ) -> Result<ProviderEmbeddingOperationClaim, String> {
         validate_embedding_operation(operation)?;
-        validate_verified_free_embedding_reservation(reservation, pricing)?;
+        validate_verified_free_embedding_reservation(reservation, contract)?;
         validate_provider_caps(per_call_cap_usd, daily_cap_usd)?;
         let date_prefix = reservation
             .created_at
@@ -1587,24 +1587,36 @@ fn validate_provider_caps(per_call_cap_usd: f64, daily_cap_usd: f64) -> Result<(
 
 fn validate_verified_free_embedding_reservation(
     event: &crate::provider::ProviderAuditEvent,
-    pricing: &crate::provider::embedding::EmbeddingPricingEvidence,
+    contract: &crate::provider::embedding::EmbeddingContractEvidence,
 ) -> Result<(), String> {
+    let pricing = &contract.pricing;
     if event.provider_id != crate::provider::embedding::OPENROUTER_EMBEDDING_PROVIDER_ID
         || event.event_type != "request_reserved"
         || event.cost != Some(0.0)
         || event.currency.as_deref() != Some("USD")
-        || pricing.prompt_cost_per_token_usd != 0.0
-        || pricing.completion_cost_per_token_usd != 0.0
-        || pricing.request_cost_per_request_usd != 0.0
-        || pricing.image_cost_per_image_usd != 0.0
-        || pricing.web_search_cost_per_request_usd != 0.0
-        || pricing.internal_reasoning_cost_per_token_usd != 0.0
-        || pricing.input_cache_read_cost_per_token_usd != 0.0
-        || pricing.input_cache_write_cost_per_token_usd != 0.0
+        || pricing.prompt_cost_per_token_usd != Some(0.0)
+        || pricing.completion_cost_per_token_usd != Some(0.0)
+        || pricing.request_cost_per_request_usd != Some(0.0)
+        || pricing
+            .image_cost_per_image_usd
+            .is_some_and(|price| price != 0.0)
+        || pricing
+            .web_search_cost_per_request_usd
+            .is_some_and(|price| price != 0.0)
+        || pricing
+            .internal_reasoning_cost_per_token_usd
+            .is_some_and(|price| price != 0.0)
+        || pricing
+            .input_cache_read_cost_per_token_usd
+            .is_some_and(|price| price != 0.0)
+        || pricing
+            .input_cache_write_cost_per_token_usd
+            .is_some_and(|price| price != 0.0)
         || pricing.request_max_price
             != crate::provider::embedding::EmbeddingPricingOverrides::zero()
         || pricing.currency != "USD"
         || pricing.source != crate::provider::embedding::OPENROUTER_EMBEDDING_PRICING_SOURCE
+        || !crate::provider::embedding::has_current_pricing_dimension_applicability(contract)
     {
         return Err(
             "zero-cost provider reservation requires verified free embedding pricing".to_string(),
@@ -2298,27 +2310,28 @@ mod tests {
     #[test]
     fn free_embedding_reservation_owner_checks_every_modeled_charge_dimension() {
         let event = zero_reservation();
-        let mut pricing =
-            crate::provider::embedding::pinned_free_embedding_contract_evidence().pricing;
-        assert!(validate_verified_free_embedding_reservation(&event, &pricing).is_ok());
+        let mut contract = crate::provider::embedding::pinned_free_embedding_contract_evidence();
+        assert!(validate_verified_free_embedding_reservation(&event, &contract).is_ok());
         for mutate in [
             |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
-                value.web_search_cost_per_request_usd = 0.000_001;
+                value.web_search_cost_per_request_usd = Some(0.000_001);
             },
             |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
-                value.internal_reasoning_cost_per_token_usd = 0.000_001;
+                value.internal_reasoning_cost_per_token_usd = Some(0.000_001);
             },
             |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
-                value.input_cache_read_cost_per_token_usd = 0.000_001;
+                value.input_cache_read_cost_per_token_usd = Some(0.000_001);
             },
             |value: &mut crate::provider::embedding::EmbeddingPricingEvidence| {
-                value.input_cache_write_cost_per_token_usd = 0.000_001;
+                value.input_cache_write_cost_per_token_usd = Some(0.000_001);
             },
         ] {
-            let original = pricing.clone();
-            mutate(&mut pricing);
-            assert!(validate_verified_free_embedding_reservation(&event, &pricing).is_err());
-            pricing = original;
+            let original = contract.clone();
+            mutate(&mut contract.pricing);
+            assert!(validate_verified_free_embedding_reservation(&event, &contract).is_err());
+            contract = original;
         }
+        contract.pricing_dimension_applicability.remove("request");
+        assert!(validate_verified_free_embedding_reservation(&event, &contract).is_err());
     }
 }

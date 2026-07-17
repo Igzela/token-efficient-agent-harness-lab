@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -84,18 +85,33 @@ pub(crate) static EMBEDDING_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mut
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddingPricingEvidence {
-    pub prompt_cost_per_token_usd: f64,
-    pub completion_cost_per_token_usd: f64,
-    pub request_cost_per_request_usd: f64,
-    pub image_cost_per_image_usd: f64,
-    pub web_search_cost_per_request_usd: f64,
-    pub internal_reasoning_cost_per_token_usd: f64,
-    pub input_cache_read_cost_per_token_usd: f64,
-    pub input_cache_write_cost_per_token_usd: f64,
+    #[serde(deserialize_with = "deserialize_explicit_nullable_price")]
+    pub prompt_cost_per_token_usd: Option<f64>,
+    #[serde(deserialize_with = "deserialize_explicit_nullable_price")]
+    pub completion_cost_per_token_usd: Option<f64>,
+    #[serde(deserialize_with = "deserialize_explicit_nullable_price")]
+    pub request_cost_per_request_usd: Option<f64>,
+    #[serde(deserialize_with = "deserialize_explicit_nullable_price")]
+    pub image_cost_per_image_usd: Option<f64>,
+    #[serde(deserialize_with = "deserialize_explicit_nullable_price")]
+    pub web_search_cost_per_request_usd: Option<f64>,
+    #[serde(deserialize_with = "deserialize_explicit_nullable_price")]
+    pub internal_reasoning_cost_per_token_usd: Option<f64>,
+    #[serde(deserialize_with = "deserialize_explicit_nullable_price")]
+    pub input_cache_read_cost_per_token_usd: Option<f64>,
+    #[serde(deserialize_with = "deserialize_explicit_nullable_price")]
+    pub input_cache_write_cost_per_token_usd: Option<f64>,
     pub request_max_price: EmbeddingPricingOverrides,
     pub currency: String,
     pub effective_date: String,
     pub source: String,
+}
+
+fn deserialize_explicit_nullable_price<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<f64>::deserialize(deserializer)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -128,6 +144,20 @@ pub struct EmbeddingContractEvidence {
     pub dimensions: usize,
     pub context_length: u64,
     pub pricing: EmbeddingPricingEvidence,
+    /// New receipts bind every modeled catalog field to its request-specific
+    /// applicability. Empty is reserved for already-persisted v25 receipts,
+    /// whose full zero-valued evidence remains readable but cannot authorize
+    /// a new provider request.
+    #[serde(default)]
+    pub pricing_dimension_applicability: BTreeMap<String, EmbeddingPricingApplicability>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingPricingApplicability {
+    Applicable,
+    NotApplicable,
+    Unknown,
 }
 
 impl EmbeddingContractEvidence {
@@ -140,20 +170,93 @@ impl EmbeddingContractEvidence {
             dimensions: OPENROUTER_EMBEDDING_DIMENSIONS,
             context_length: OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
             pricing,
+            pricing_dimension_applicability: expected_pricing_dimension_applicability(),
         }
     }
 }
 
+#[derive(Clone, Copy)]
+struct CatalogPricingDimension {
+    field: &'static str,
+    applicability: EmbeddingPricingApplicability,
+    required_in_catalog: bool,
+}
+
+const CATALOG_PRICING_DIMENSIONS: &[CatalogPricingDimension] = &[
+    CatalogPricingDimension {
+        field: "prompt",
+        applicability: EmbeddingPricingApplicability::Applicable,
+        required_in_catalog: true,
+    },
+    CatalogPricingDimension {
+        // OpenRouter's public embedding-model schema requires this field, but
+        // the fixed endpoint returns vectors rather than completion tokens.
+        field: "completion",
+        applicability: EmbeddingPricingApplicability::NotApplicable,
+        required_in_catalog: true,
+    },
+    CatalogPricingDimension {
+        // Every POST is one request, so a missing per-request price is an
+        // unknown potential charge, never an implied zero.
+        field: "request",
+        applicability: EmbeddingPricingApplicability::Applicable,
+        required_in_catalog: false,
+    },
+    CatalogPricingDimension {
+        field: "image",
+        applicability: EmbeddingPricingApplicability::NotApplicable,
+        required_in_catalog: false,
+    },
+    CatalogPricingDimension {
+        field: "web_search",
+        applicability: EmbeddingPricingApplicability::NotApplicable,
+        required_in_catalog: false,
+    },
+    CatalogPricingDimension {
+        field: "internal_reasoning",
+        applicability: EmbeddingPricingApplicability::NotApplicable,
+        required_in_catalog: false,
+    },
+    CatalogPricingDimension {
+        field: "input_cache_read",
+        applicability: EmbeddingPricingApplicability::NotApplicable,
+        required_in_catalog: false,
+    },
+    CatalogPricingDimension {
+        field: "input_cache_write",
+        applicability: EmbeddingPricingApplicability::NotApplicable,
+        required_in_catalog: false,
+    },
+    CatalogPricingDimension {
+        field: "discount",
+        applicability: EmbeddingPricingApplicability::NotApplicable,
+        required_in_catalog: false,
+    },
+];
+
+fn expected_pricing_dimension_applicability() -> BTreeMap<String, EmbeddingPricingApplicability> {
+    CATALOG_PRICING_DIMENSIONS
+        .iter()
+        .map(|dimension| (dimension.field.to_string(), dimension.applicability))
+        .collect()
+}
+
+pub(crate) fn has_current_pricing_dimension_applicability(
+    contract: &EmbeddingContractEvidence,
+) -> bool {
+    contract.pricing_dimension_applicability == expected_pricing_dimension_applicability()
+}
+
 pub(crate) fn pinned_free_embedding_contract_evidence() -> EmbeddingContractEvidence {
     EmbeddingContractEvidence::current(EmbeddingPricingEvidence {
-        prompt_cost_per_token_usd: 0.0,
-        completion_cost_per_token_usd: 0.0,
-        request_cost_per_request_usd: 0.0,
-        image_cost_per_image_usd: 0.0,
-        web_search_cost_per_request_usd: 0.0,
-        internal_reasoning_cost_per_token_usd: 0.0,
-        input_cache_read_cost_per_token_usd: 0.0,
-        input_cache_write_cost_per_token_usd: 0.0,
+        prompt_cost_per_token_usd: Some(0.0),
+        completion_cost_per_token_usd: Some(0.0),
+        request_cost_per_request_usd: Some(0.0),
+        image_cost_per_image_usd: None,
+        web_search_cost_per_request_usd: None,
+        internal_reasoning_cost_per_token_usd: None,
+        input_cache_read_cost_per_token_usd: None,
+        input_cache_write_cost_per_token_usd: None,
         request_max_price: EmbeddingPricingOverrides::zero(),
         currency: "USD".to_string(),
         effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
@@ -205,6 +308,8 @@ pub(crate) fn is_supported_durable_embedding_contract(
                 && contract.dimensions == identity.dimensions
                 && contract.context_length == identity.context_length
                 && pricing_matches_identity(&contract.pricing, identity)
+                && (contract.pricing_dimension_applicability.is_empty()
+                    || has_current_pricing_dimension_applicability(contract))
         })
 }
 
@@ -212,21 +317,37 @@ fn pricing_matches_identity(
     pricing: &EmbeddingPricingEvidence,
     identity: &DurableEmbeddingIdentity,
 ) -> bool {
-    pricing.prompt_cost_per_token_usd == identity.prompt_cost_per_token_usd
-        && pricing.completion_cost_per_token_usd == identity.completion_cost_per_token_usd
-        && pricing.request_cost_per_request_usd == identity.request_cost_per_request_usd
-        && pricing.image_cost_per_image_usd == identity.image_cost_per_image_usd
-        && pricing.web_search_cost_per_request_usd == identity.web_search_cost_per_request_usd
-        && pricing.internal_reasoning_cost_per_token_usd
-            == identity.internal_reasoning_cost_per_token_usd
-        && pricing.input_cache_read_cost_per_token_usd
-            == identity.input_cache_read_cost_per_token_usd
-        && pricing.input_cache_write_cost_per_token_usd
-            == identity.input_cache_write_cost_per_token_usd
+    pricing.prompt_cost_per_token_usd == Some(identity.prompt_cost_per_token_usd)
+        && pricing.completion_cost_per_token_usd == Some(identity.completion_cost_per_token_usd)
+        && pricing.request_cost_per_request_usd == Some(identity.request_cost_per_request_usd)
+        && matches_non_applicable_zero(
+            pricing.image_cost_per_image_usd,
+            identity.image_cost_per_image_usd,
+        )
+        && matches_non_applicable_zero(
+            pricing.web_search_cost_per_request_usd,
+            identity.web_search_cost_per_request_usd,
+        )
+        && matches_non_applicable_zero(
+            pricing.internal_reasoning_cost_per_token_usd,
+            identity.internal_reasoning_cost_per_token_usd,
+        )
+        && matches_non_applicable_zero(
+            pricing.input_cache_read_cost_per_token_usd,
+            identity.input_cache_read_cost_per_token_usd,
+        )
+        && matches_non_applicable_zero(
+            pricing.input_cache_write_cost_per_token_usd,
+            identity.input_cache_write_cost_per_token_usd,
+        )
         && pricing.request_max_price == EmbeddingPricingOverrides::zero()
         && pricing.currency == identity.currency
         && pricing.effective_date == identity.pricing_effective_date
         && pricing.source == identity.pricing_source
+}
+
+fn matches_non_applicable_zero(observed: Option<f64>, expected: f64) -> bool {
+    observed.is_none() || observed == Some(expected)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -848,53 +969,61 @@ fn validate_catalog(body: &[u8]) -> Result<EmbeddingPricingEvidence, String> {
         .get("pricing")
         .and_then(Value::as_object)
         .ok_or_else(|| "embedding provider pricing is unknown or incomplete".to_string())?;
-    const KNOWN_FIELDS: &[&str] = &[
-        "prompt",
-        "completion",
-        "request",
-        "image",
-        "web_search",
-        "internal_reasoning",
-        "input_cache_read",
-        "input_cache_write",
-        "discount",
-    ];
-    if pricing
-        .keys()
-        .any(|key| !KNOWN_FIELDS.contains(&key.as_str()))
-    {
-        return Err(
-            "embedding provider pricing contains an unknown or unmodelled charge field".to_string(),
-        );
+    for field in pricing.keys() {
+        if !CATALOG_PRICING_DIMENSIONS
+            .iter()
+            .any(|dimension| dimension.field == field)
+        {
+            return Err(
+                "embedding provider pricing contains an unknown or unmodelled charge field"
+                    .to_string(),
+            );
+        }
     }
-    let prompt = parse_price(pricing.get("prompt"))?;
-    let completion = parse_price(pricing.get("completion"))?;
-    let request = parse_price(pricing.get("request"))?;
-    let image = parse_price(pricing.get("image"))?;
-    let web_search = parse_price(pricing.get("web_search"))?;
-    let internal_reasoning = parse_price(pricing.get("internal_reasoning"))?;
-    let input_cache_read = parse_price(pricing.get("input_cache_read"))?;
-    let input_cache_write = parse_price(pricing.get("input_cache_write"))?;
-    let discount = pricing
-        .get("discount")
-        .map(|value| parse_price(Some(value)))
-        .transpose()?;
-    if [
-        prompt,
-        completion,
-        request,
-        image,
-        web_search,
-        internal_reasoning,
-        input_cache_read,
-        input_cache_write,
-    ]
-    .into_iter()
-    .any(|price| price != 0.0)
-        || discount.is_some_and(|price| price != 0.0)
-    {
-        return Err("pinned free embedding model pricing changed".to_string());
-    }
+    let catalog_price = |field| {
+        let dimension = CATALOG_PRICING_DIMENSIONS
+            .iter()
+            .find(|dimension| dimension.field == field)
+            .expect("catalog pricing dimensions are complete");
+        match pricing.get(field) {
+            Some(value) => {
+                let price = parse_price(Some(value))?;
+                if price != 0.0 {
+                    return Err(format!(
+                        "pinned free embedding model {field} pricing changed"
+                    ));
+                }
+                if dimension.applicability == EmbeddingPricingApplicability::NotApplicable
+                    && !dimension.required_in_catalog
+                {
+                    // The status, not a synthetic price, is the durable
+                    // evidence for a dimension this fixed request cannot use.
+                    Ok(None)
+                } else {
+                    Ok(Some(price))
+                }
+            }
+            None if dimension.applicability == EmbeddingPricingApplicability::Applicable => Err(
+                format!("embedding provider pricing is unknown for applicable {field} charge"),
+            ),
+            None if dimension.required_in_catalog => Err(format!(
+                "embedding provider pricing is incomplete for required {field} field"
+            )),
+            // Preserve absence as absence. The contract's applicability map
+            // makes this non-applicability explicit; it is never a zero-price
+            // inference.
+            None => Ok(None),
+        }
+    };
+    let prompt = catalog_price("prompt")?;
+    let completion = catalog_price("completion")?;
+    let request = catalog_price("request")?;
+    let image = catalog_price("image")?;
+    let web_search = catalog_price("web_search")?;
+    let internal_reasoning = catalog_price("internal_reasoning")?;
+    let input_cache_read = catalog_price("input_cache_read")?;
+    let input_cache_write = catalog_price("input_cache_write")?;
+    let _discount = catalog_price("discount")?;
     Ok(EmbeddingPricingEvidence {
         prompt_cost_per_token_usd: prompt,
         completion_cost_per_token_usd: completion,
@@ -1146,10 +1275,43 @@ mod tests {
                 "id": OPENROUTER_EMBEDDING_MODEL_ID,
                 "canonical_slug": OPENROUTER_EMBEDDING_CANONICAL_SLUG,
                 "context_length": OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0","web_search":"0","internal_reasoning":"0","input_cache_read":"0","input_cache_write":"0"},
+                "pricing":{"prompt":"0","completion":"0","request":"0"},
                 "architecture":{"input_modalities":["text","image"],"output_modalities":["embeddings"]}
             }]}))
             .unwrap(),
+        }
+    }
+
+    struct CatalogAdmissionTransport {
+        posts: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for CatalogAdmissionTransport {
+        async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            if request.url.ends_with("/embeddings/models") && request.method == "GET" {
+                return Ok(HttpResponse {
+                    status: 200,
+                    body: serde_json::to_vec(&json!({"data":[{
+                        "id": OPENROUTER_EMBEDDING_MODEL_ID,
+                        "canonical_slug": OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+                        "context_length": OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
+                        // This is the shape observed from the live catalog:
+                        // non-applicable optional dimensions are absent, while
+                        // the potentially chargeable request field is absent.
+                        "pricing":{"prompt":"0","completion":"0"},
+                        "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
+                    }]}))
+                    .unwrap(),
+                });
+            }
+            if request.url.ends_with("/embeddings") && request.method == "POST" {
+                self.posts.fetch_add(1, Ordering::SeqCst);
+                return Err(HttpError::Connection("POST must not be sent".to_string()));
+            }
+            Err(HttpError::Connection(
+                "unexpected fixture endpoint".to_string(),
+            ))
         }
     }
 
@@ -1245,6 +1407,20 @@ mod tests {
     }
 
     #[test]
+    fn live_shaped_catalog_with_unknown_request_price_refuses_before_post() {
+        let _guard = EnvGuard::enabled();
+        let transport = Arc::new(CatalogAdmissionTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let client = ProviderEmbeddingClient::new(transport.clone());
+        assert!(client
+            .embed(&["bounded memory".to_string()], &config())
+            .unwrap_err()
+            .contains("unknown for applicable request charge"));
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn provider_embedding_supports_bounded_batches_without_fabricating_per_item_usage() {
         let _guard = EnvGuard::enabled();
         let batch_response = HttpResponse {
@@ -1274,14 +1450,14 @@ mod tests {
     #[test]
     fn malformed_non_finite_empty_and_dimension_mismatch_fail_closed() {
         let pricing = EmbeddingPricingEvidence {
-            prompt_cost_per_token_usd: 0.0,
-            completion_cost_per_token_usd: 0.0,
-            request_cost_per_request_usd: 0.0,
-            image_cost_per_image_usd: 0.0,
-            web_search_cost_per_request_usd: 0.0,
-            internal_reasoning_cost_per_token_usd: 0.0,
-            input_cache_read_cost_per_token_usd: 0.0,
-            input_cache_write_cost_per_token_usd: 0.0,
+            prompt_cost_per_token_usd: Some(0.0),
+            completion_cost_per_token_usd: Some(0.0),
+            request_cost_per_request_usd: Some(0.0),
+            image_cost_per_image_usd: Some(0.0),
+            web_search_cost_per_request_usd: Some(0.0),
+            internal_reasoning_cost_per_token_usd: Some(0.0),
+            input_cache_read_cost_per_token_usd: Some(0.0),
+            input_cache_write_cost_per_token_usd: Some(0.0),
             request_max_price: EmbeddingPricingOverrides::zero(),
             currency: "USD".to_string(),
             effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
@@ -1315,14 +1491,14 @@ mod tests {
             &serde_json::to_vec(&wrong_model).unwrap(),
             &input,
             EmbeddingPricingEvidence {
-                prompt_cost_per_token_usd: 0.0,
-                completion_cost_per_token_usd: 0.0,
-                request_cost_per_request_usd: 0.0,
-                image_cost_per_image_usd: 0.0,
-                web_search_cost_per_request_usd: 0.0,
-                internal_reasoning_cost_per_token_usd: 0.0,
-                input_cache_read_cost_per_token_usd: 0.0,
-                input_cache_write_cost_per_token_usd: 0.0,
+                prompt_cost_per_token_usd: Some(0.0),
+                completion_cost_per_token_usd: Some(0.0),
+                request_cost_per_request_usd: Some(0.0),
+                image_cost_per_image_usd: Some(0.0),
+                web_search_cost_per_request_usd: Some(0.0),
+                internal_reasoning_cost_per_token_usd: Some(0.0),
+                input_cache_read_cost_per_token_usd: Some(0.0),
+                input_cache_write_cost_per_token_usd: Some(0.0),
                 request_max_price: EmbeddingPricingOverrides::zero(),
                 currency: "USD".to_string(),
                 effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
@@ -1389,7 +1565,7 @@ mod tests {
     }
 
     #[test]
-    fn request_pricing_and_all_catalog_charge_fields_fail_closed() {
+    fn embedding_catalog_pricing_uses_explicit_applicability_and_refuses_unknown_charges() {
         let mut incomplete_persisted =
             serde_json::to_value(pinned_free_embedding_contract_evidence()).unwrap();
         incomplete_persisted["pricing"]
@@ -1400,17 +1576,56 @@ mod tests {
             serde_json::from_value::<EmbeddingContractEvidence>(incomplete_persisted).is_err(),
             "persisted pricing evidence must not default a missing modeled dimension to zero"
         );
+        let mut legacy_persisted =
+            serde_json::to_value(pinned_free_embedding_contract_evidence()).unwrap();
+        assert_eq!(
+            legacy_persisted["pricing"]["image_cost_per_image_usd"],
+            Value::Null,
+            "new receipts preserve an absent non-applicable catalog price as null"
+        );
+        for field in [
+            "image_cost_per_image_usd",
+            "web_search_cost_per_request_usd",
+            "internal_reasoning_cost_per_token_usd",
+            "input_cache_read_cost_per_token_usd",
+            "input_cache_write_cost_per_token_usd",
+        ] {
+            legacy_persisted["pricing"][field] = json!(0.0);
+        }
+        legacy_persisted
+            .as_object_mut()
+            .unwrap()
+            .remove("pricing_dimension_applicability");
+        let legacy = serde_json::from_value::<EmbeddingContractEvidence>(legacy_persisted).unwrap();
+        assert!(is_supported_durable_embedding_contract(&legacy));
+        assert!(
+            !has_current_pricing_dimension_applicability(&legacy),
+            "legacy receipts remain readable but cannot reserve a new provider request"
+        );
         let base = json!({"data":[{
             "id":OPENROUTER_EMBEDDING_MODEL_ID,
             "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
             "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
-            "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
+            "pricing":{"prompt":"0","completion":"0","request":"0"},
             "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
         }]});
-        assert!(
-            validate_catalog(&serde_json::to_vec(&base).unwrap()).is_err(),
-            "missing modeled pricing dimensions must fail closed"
+        let realistic = validate_catalog(&serde_json::to_vec(&base).unwrap()).unwrap();
+        assert_eq!(realistic.image_cost_per_image_usd, None);
+        assert_eq!(realistic.web_search_cost_per_request_usd, None);
+        let contract = EmbeddingContractEvidence::current(realistic);
+        assert_eq!(
+            contract.pricing_dimension_applicability.get("prompt"),
+            Some(&EmbeddingPricingApplicability::Applicable)
         );
+        assert_eq!(
+            contract.pricing_dimension_applicability.get("request"),
+            Some(&EmbeddingPricingApplicability::Applicable)
+        );
+        assert_eq!(
+            contract.pricing_dimension_applicability.get("image"),
+            Some(&EmbeddingPricingApplicability::NotApplicable)
+        );
+        assert!(has_current_pricing_dimension_applicability(&contract));
 
         let mut documented_zero_fields = base.clone();
         documented_zero_fields["data"][0]["pricing"] = json!({
@@ -1421,6 +1636,13 @@ mod tests {
         assert!(
             validate_catalog(&serde_json::to_vec(&documented_zero_fields).unwrap()).is_ok(),
             "documented zero-price dimensions must not break a free catalog contract"
+        );
+        assert_eq!(
+            validate_catalog(&serde_json::to_vec(&documented_zero_fields).unwrap())
+                .unwrap()
+                .image_cost_per_image_usd,
+            None,
+            "a zero catalog value does not turn a non-applicable dimension into price evidence"
         );
         let mut zero_discount = documented_zero_fields.clone();
         zero_discount["data"][0]["pricing"]["discount"] = json!("0");
@@ -1480,14 +1702,14 @@ mod tests {
             &serde_json::to_vec(&body).unwrap(),
             &["bounded memory".to_string()],
             EmbeddingPricingEvidence {
-                prompt_cost_per_token_usd: 0.0,
-                completion_cost_per_token_usd: 0.0,
-                request_cost_per_request_usd: 0.0,
-                image_cost_per_image_usd: 0.0,
-                web_search_cost_per_request_usd: 0.0,
-                internal_reasoning_cost_per_token_usd: 0.0,
-                input_cache_read_cost_per_token_usd: 0.0,
-                input_cache_write_cost_per_token_usd: 0.0,
+                prompt_cost_per_token_usd: Some(0.0),
+                completion_cost_per_token_usd: Some(0.0),
+                request_cost_per_request_usd: Some(0.0),
+                image_cost_per_image_usd: Some(0.0),
+                web_search_cost_per_request_usd: Some(0.0),
+                internal_reasoning_cost_per_token_usd: Some(0.0),
+                input_cache_read_cost_per_token_usd: Some(0.0),
+                input_cache_write_cost_per_token_usd: Some(0.0),
                 request_max_price: EmbeddingPricingOverrides::zero(),
                 currency: "USD".to_string(),
                 effective_date: OPENROUTER_EMBEDDING_PRICING_EFFECTIVE_DATE.to_string(),
