@@ -337,7 +337,8 @@ class TestDispatchCIProcessing(unittest.TestCase):
 
     @mock.patch.object(ch.ci_verifier, "run_info")
     @mock.patch.object(ch.sm, "get_pr_info")
-    def test_dispatch_pr_not_open(self, mock_pr_info, mock_run_info):
+    @mock.patch.object(ch.sm, "record_ci_terminal_state", return_value=True)
+    def test_dispatch_pr_not_open(self, mock_record_terminal, mock_pr_info, mock_run_info):
         run = self._mock_run()
         mock_run_info.return_value = run
         mock_pr_info.return_value = self._mock_pr(state="MERGED")
