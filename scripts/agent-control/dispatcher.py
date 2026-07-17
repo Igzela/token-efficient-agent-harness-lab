@@ -34,9 +34,13 @@ def _claim(
         previous = sm.read_dispatch_state(issue, dispatch_id, repo)
     except sm.StateUnavailableError:
         return False, [], "dispatch_state_unavailable"
-    if previous and previous.get("status") == "dispatched":
-        return False, [], "already_dispatched"
-    if previous and previous.get("status") == "claimed":
+    if previous and previous.get("status") in {"claimed", "dispatched"}:
+        if not claim_details or not sm.dispatch_state_binding_matches(
+            previous, issue, action, claim_details, target_label
+        ):
+            return False, [], "dispatch_state_binding_unverified"
+        if previous.get("status") == "dispatched":
+            return False, [], "already_dispatched"
         return False, [], "dispatch_in_flight"
     labels = sm.get_issue_labels_checked(issue, repo)
     if labels is None:
@@ -118,8 +122,14 @@ def _record_dispatched(
     action: str,
     details: dict[str, object],
 ) -> bool:
+    try:
+        previous = sm.read_dispatch_state(issue, dispatch_id, _repo())
+    except sm.StateUnavailableError:
+        return False
+    merged_details = dict((previous or {}).get("details") or {})
+    merged_details.update(details)
     return sm.record_dispatch_state(
-        issue, dispatch_id, action, "dispatched", details, _repo()
+        issue, dispatch_id, action, "dispatched", merged_details, _repo()
     )
 
 
@@ -140,7 +150,13 @@ def dispatch_ready(issue: int, dispatch_id: str | None = None) -> dict[str, obje
         control_state.require_live(_repo() or None)
     except control_state.ControlStateError:
         return {"dispatched": False, "issue": issue, "reason": "disabled_or_emergency_stopped"}
-    claimed, previous, reason = _claim(issue, sm.LABEL_RUNNING, dispatch_id, "worker")
+    claimed, previous, reason = _claim(
+        issue,
+        sm.LABEL_RUNNING,
+        dispatch_id,
+        "worker",
+        {"issue_number": issue},
+    )
     if not claimed:
         if reason.startswith("invalid_scope:"):
             sm.record_dispatch_state(
@@ -250,13 +266,18 @@ def retry_review(issue: int) -> dict[str, object]:
         previous = sm.read_dispatch_state(issue, dispatch_id, repo)
     except sm.StateUnavailableError:
         return {"dispatched": False, "reason": "dispatch_state_unavailable"}
-    if previous and previous.get("status") == "dispatched":
-        return {
-            "dispatched": True,
-            "already_dispatched": True,
-            "dispatch_id": dispatch_id,
-        }
-    if previous and previous.get("status") == "claimed":
+    fields = {"pr_number": pr, "issue_number": issue, "head_sha": sha}
+    if previous and previous.get("status") in {"claimed", "dispatched"}:
+        if not sm.dispatch_state_binding_matches(
+            previous, issue, "retry-review", fields, sm.LABEL_REVIEW_RUNNING
+        ):
+            return {"dispatched": False, "reason": "dispatch_state_binding_unverified"}
+        if previous.get("status") == "dispatched":
+            return {
+                "dispatched": True,
+                "already_dispatched": True,
+                "dispatch_id": dispatch_id,
+            }
         return {"dispatched": False, "reason": "dispatch_in_flight"}
     active = sm.get_active_issue_numbers(repo)
     if active is None:
@@ -264,7 +285,6 @@ def retry_review(issue: int) -> dict[str, object]:
     if issue not in active and len(active) >= MAX_ACTIVE:
         return {"dispatched": False, "reason": "capacity_full"}
     previous_labels = [sm.LABEL_REVIEW_BLOCKED]
-    fields = {"pr_number": pr, "issue_number": issue, "head_sha": sha}
     if not sm.set_labels(issue, sm.LABEL_REVIEW_RUNNING, repo=repo):
         return {"dispatched": False, "reason": "claim_label_failed"}
     if not sm.record_dispatch_state(
@@ -296,6 +316,7 @@ def retry_review(issue: int) -> dict[str, object]:
 
 def dispatch_merge(pr: int, issue: int, sha: str) -> dict[str, object]:
     dispatch_id = _dispatch_id("merge", pr, sha)
+    fields = {"pr_number": pr, "issue_number": issue, "head_sha": sha}
     try:
         control_state.require_auto_merge(_repo() or None)
     except control_state.ControlStateError:
@@ -304,9 +325,13 @@ def dispatch_merge(pr: int, issue: int, sha: str) -> dict[str, object]:
         existing = sm.read_dispatch_state(issue, dispatch_id, _repo())
     except sm.StateUnavailableError:
         return {"dispatched": False, "reason": "dispatch_state_unavailable"}
-    if existing and existing.get("status") == "dispatched":
-        return {"dispatched": True, "already_dispatched": True, "dispatch_id": dispatch_id}
-    if existing and existing.get("status") == "claimed":
+    if existing and existing.get("status") in {"claimed", "dispatched"}:
+        if not sm.dispatch_state_binding_matches(
+            existing, issue, "merge", fields
+        ):
+            return {"dispatched": False, "reason": "dispatch_state_binding_unverified"}
+        if existing.get("status") == "dispatched":
+            return {"dispatched": True, "already_dispatched": True, "dispatch_id": dispatch_id}
         return {"dispatched": False, "reason": "dispatch_in_flight"}
     labels = sm.get_issue_labels_checked(issue, _repo())
     if labels is None:
@@ -319,7 +344,6 @@ def dispatch_merge(pr: int, issue: int, sha: str) -> dict[str, object]:
         return {"dispatched": False, "reason": "review_state_unavailable"}
     if not review or review.get("pr_number") != int(pr) or review.get("head_sha") != sha or review.get("verdict") != "PASS":
         return {"dispatched": False, "reason": "review_head_mismatch"}
-    fields = {"pr_number": pr, "issue_number": issue, "head_sha": sha}
     if not sm.record_dispatch_state(issue, dispatch_id, "merge", "claimed", fields, _repo()):
         return {"dispatched": False, "reason": "claim_state_failed"}
     if not _run_workflow("agent-merge.yml", fields):

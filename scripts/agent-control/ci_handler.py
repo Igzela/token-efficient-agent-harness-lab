@@ -417,7 +417,7 @@ DISPATCH_ACTION_CONSUMERS = {
     "trigger_repair": "dispatch_repair",
     "trigger_review": "dispatch_review",
     "merge_ready": "dispatch_merge",
-    "blocked": "release_blocked_capacity",
+    "blocked": "release_terminal_capacity",
     "stale": "release_terminal_capacity",
     "noop": "release_noop_capacity",
 }

@@ -1094,6 +1094,28 @@ def has_inflight_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id, repo=
     return False
 
 
+def dispatch_state_binding_matches(
+    state, issue_number, action, expected_details, target_label=None
+):
+    """Validate a dispatch claim before treating it as retry-safe."""
+
+    if not isinstance(state, dict):
+        return False
+    if state.get("kind") != "agent-orchestrator-dispatch-state":
+        return False
+    if state.get("issue_number") != int(issue_number) or state.get("action") != action:
+        return False
+    details = state.get("details")
+    if not isinstance(details, dict):
+        return False
+    if target_label is not None and details.get("target_label") != target_label:
+        return False
+    return all(
+        str(details.get(key)) == str(value)
+        for key, value in expected_details.items()
+    )
+
+
 def parse_binding_marker(body):
     match = re.search(r"<!-- agent-orchestrator-binding:\s*(\{.*?\})\s*-->", body or "", re.DOTALL)
     if not match:

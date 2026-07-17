@@ -288,8 +288,8 @@ class TestWorkflowContracts(unittest.TestCase):
                 "require-auto-merge",
             ),
             "blocked": (
-                "steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'blocked'",
-                "release-failed",
+                "steps.decision.outputs.terminal_status != ''",
+                "release-ci-terminal",
             ),
             "stale": (
                 "steps.decision.outputs.action == 'stale'",
@@ -570,7 +570,11 @@ class TestDispatcher(unittest.TestCase):
             return True
 
         def record(_issue, dispatch_id, action, status, details=None, repo=""):
-            recorded[dispatch_id] = {"status": status, "action": action}
+            recorded[dispatch_id] = {
+                "kind": "agent-orchestrator-dispatch-state",
+                "issue_number": _issue, "status": status, "action": action,
+                "details": details or {},
+            }
             return True
 
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
@@ -593,7 +597,20 @@ class TestDispatcher(unittest.TestCase):
     def test_claimed_dispatch_is_not_reissued_when_final_audit_write_failed(self):
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
              mock.patch.object(dispatcher, "_repo", return_value="repo"), \
-             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value={"status": "claimed"}), \
+             mock.patch.object(
+                 dispatcher.sm,
+                 "read_dispatch_state",
+                 return_value={
+                     "kind": "agent-orchestrator-dispatch-state",
+                     "issue_number": 12,
+                     "action": "worker",
+                     "status": "claimed",
+                     "details": {
+                         "issue_number": 12,
+                         "target_label": state_manager.LABEL_RUNNING,
+                     },
+                 },
+             ), \
              mock.patch.object(dispatcher, "_run_workflow") as workflow:
             result = dispatcher.dispatch_ready(12, "worker:12")
         self.assertFalse(result["dispatched"])
@@ -764,6 +781,8 @@ class TestDispatcher(unittest.TestCase):
         def record_dispatch(_issue, dispatch_id, action, status, details=None, repo=""):
             if status == "claimed":
                 dispatch_states[dispatch_id] = {
+                    "kind": "agent-orchestrator-dispatch-state",
+                    "issue_number": _issue,
                     "action": action, "status": status, "details": details,
                 }
                 return True
@@ -803,6 +822,8 @@ class TestDispatcher(unittest.TestCase):
         def record_dispatch(_issue, dispatch_id, action, status, details=None, repo=""):
             if status == "claimed":
                 dispatch_states[dispatch_id] = {
+                    "kind": "agent-orchestrator-dispatch-state",
+                    "issue_number": _issue,
                     "action": action, "status": status, "details": details,
                 }
                 return True
@@ -846,7 +867,11 @@ class TestDispatcher(unittest.TestCase):
 
         def record_dispatch(_issue, dispatch_id, action, status, details=None, repo=""):
             if status == "claimed":
-                dispatch_states[dispatch_id] = {"action": action, "status": status}
+                dispatch_states[dispatch_id] = {
+                    "kind": "agent-orchestrator-dispatch-state",
+                    "issue_number": _issue,
+                    "action": action, "status": status, "details": details,
+                }
                 return True
             return False
 
@@ -889,6 +914,90 @@ class TestDispatcher(unittest.TestCase):
             "agent-review.yml",
             {"pr_number": 207, "issue_number": 42, "head_sha": "a" * 40},
         )
+
+    def test_retry_review_audit_failure_retains_claim_and_blocks_duplicate(self):
+        worker = {
+            "pr_number": 207,
+            "head_sha": "a" * 40,
+            "extra": {"branch": "agent/issue-42"},
+        }
+        dispatch_state = {}
+        workflow_calls = []
+
+        def read_dispatch(_issue, _dispatch_id, _repo):
+            return dispatch_state or None
+
+        def record_dispatch(_issue, _dispatch_id, action, status, details=None, repo=""):
+            if status == "claimed":
+                dispatch_state.update({
+                    "kind": "agent-orchestrator-dispatch-state",
+                    "issue_number": 42,
+                    "action": action,
+                    "status": status,
+                    "details": details,
+                })
+                return True
+            return False
+
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_REVIEW_BLOCKED}), \
+             mock.patch.object(dispatcher.sm, "read_worker_state", return_value=worker), \
+             mock.patch.object(dispatcher.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
+             mock.patch.object(dispatcher.sm, "set_labels", return_value=True), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record_dispatch), \
+             mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
+            first = dispatcher.retry_review(42)
+            second = dispatcher.retry_review(42)
+
+        self.assertEqual(first["reason"], "dispatch_state_failed_capacity_retained")
+        self.assertEqual(second["reason"], "dispatch_in_flight")
+        self.assertEqual(len(workflow_calls), 1)
+
+    def test_worker_audit_failure_retains_claim_and_blocks_duplicate(self):
+        labels = {state_manager.LABEL_READY}
+        dispatch_state = {}
+        workflow_calls = []
+
+        def read_dispatch(_issue, _dispatch_id, _repo):
+            return dispatch_state or None
+
+        def set_labels(_issue, *new_labels, repo=""):
+            labels.clear()
+            labels.update(new_labels)
+            return True
+
+        def record_dispatch(_issue, _dispatch_id, action, status, details=None, repo=""):
+            if status == "claimed":
+                dispatch_state.update({
+                    "kind": "agent-orchestrator-dispatch-state",
+                    "issue_number": _issue,
+                    "action": action,
+                    "status": status,
+                    "details": details,
+                })
+                return True
+            return False
+
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=read_dispatch), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
+             mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
+             mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
+             mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(True, ["src/"])), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
+             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record_dispatch), \
+             mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
+            first = dispatcher.dispatch_ready(42, "worker:42")
+            second = dispatcher.dispatch_ready(42, "worker:42")
+
+        self.assertEqual(first["reason"], "dispatch_state_failed_capacity_retained")
+        self.assertEqual(second["reason"], "dispatch_in_flight")
+        self.assertEqual(len(workflow_calls), 1)
 
 
 class TestCIEventTrust(unittest.TestCase):
