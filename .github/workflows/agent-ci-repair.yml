@@ -271,7 +271,7 @@ jobs:
           python3 scripts/agent-control/pr_binding.py create-or-update \
             "${{ inputs.issue_number }}" "$BRANCH" "${{ steps.commit.outputs.head_sha }}" \
             "agent: repair CI for #${{ inputs.issue_number }}" "$BODY_FILE" >/dev/null
-      - name: Persist new exact head, invalidate old evidence, and acquire CI
+      - name: Persist new exact head, invalidate old evidence, and acquire CI run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -289,13 +289,13 @@ jobs:
             CI="$EXISTING"
           else
             python3 scripts/agent-control/control_state.py require-live >/dev/null
-            CI=$(python3 scripts/agent-control/ci_verifier.py acquire "${{ inputs.pr_number }}" "$BRANCH" "$HEAD")
+            CI=$(python3 scripts/agent-control/ci_verifier.py acquire-run "${{ inputs.pr_number }}" "$BRANCH" "$HEAD")
           fi
           RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI")
           if [ "$EXISTING" = "null" ]; then
             SOURCE=$(jq -er '.source' <<<"$CI")
             DUPLICATES=$(jq -c '.duplicate_run_ids // []' <<<"$CI")
-            METADATA=$(jq -c '{observed_run_ids,selection_reason,superseded_run_ids,unsupported_run_ids,fallback_dispatched}' <<<"$CI")
+            METADATA=$(jq -c '{observed_run_ids,selection_reason,superseded_run_ids,unsupported_run_ids,fallback_dispatched,bound_status}' <<<"$CI")
             python3 scripts/agent-control/control_state.py require-live >/dev/null
             python3 scripts/agent-control/state_manager.py record-ci-acquisition "${{ inputs.issue_number }}" \
               "${{ inputs.pr_number }}" "$HEAD" "$RUN_ID" "$SOURCE" "$DUPLICATES" "$METADATA"
@@ -303,6 +303,19 @@ jobs:
           EXTRA=$(jq -c --argjson id "$RUN_ID" --argjson repairs "${{ inputs.repair_count }}" '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id,repair_count:$repairs}' scripts/agent-control/ci_requirements.json)
           python3 scripts/agent-control/control_state.py require-live >/dev/null
           python3 scripts/agent-control/state_manager.py record-ci "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$HEAD" "$RUN_ID" dispatched "$EXTRA"
+      - name: Dispatch trusted agent-ci-monitor for the repair CI run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          ACQ=$(python3 scripts/agent-control/state_manager.py read-ci-acquisition \
+            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ steps.commit.outputs.head_sha }}")
+          RID=$(jq -er '.workflow_run_id' <<<"$ACQ")
+          gh workflow run agent-ci-monitor.yml --ref main \
+            -f issue="${{ inputs.issue_number }}" \
+            -f pr="${{ inputs.pr_number }}" \
+            -f head_sha="${{ steps.commit.outputs.head_sha }}" \
+            -f ci_run_id="$RID"
 
   failure-handler:
     needs: [prepare, vader-repair, finalize]

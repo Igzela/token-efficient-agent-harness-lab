@@ -516,6 +516,7 @@ def wait_for_run_completion(
     completion_timeout_seconds: int = 1800,
     poll_seconds: int = 30,
     sleep: Callable[[float], None] = time.sleep,
+    validator: Callable[[], str | None] | None = None,
 ) -> dict[str, Any]:
     """Bounded wait for the bound run to reach a terminal state.
 
@@ -526,6 +527,10 @@ def wait_for_run_completion(
     unsupported terminal conclusion (``cancelled``, ``skipped``,
     ``action_required``, ``stale``, ``timed_out``, etc.) so the caller
     can map each to a typed reason code.
+
+    When *validator* is provided, it is called on every poll cycle.  If
+    it returns a non-``None`` string the wait stops with
+    ``ci_stale_binding`` and that string as reason.
 
     Returns a stable dict with at least ``status``, ``reason``,
     ``ci_run_id``, ``head_sha``, and (when terminal) ``conclusion``.
@@ -557,6 +562,15 @@ def wait_for_run_completion(
                 "ci_run_id": bound_id,
                 "head_sha": expected_head,
             }
+        if validator is not None:
+            validation_failure = validator()
+            if validation_failure is not None:
+                return {
+                    "status": "ci_stale_binding",
+                    "reason": validation_failure,
+                    "ci_run_id": bound_id,
+                    "head_sha": expected_head,
+                }
         run = run_info(bound_id)
         if not run:
             return {
@@ -718,13 +732,10 @@ def _finalize_acquisition_with_wait(
             f"unexpected CI completion status: {completion['status']}"
         )
     if completion_status == "success":
-        try:
-            verify_exact_head_ci(
-                pr_number, head_sha, acquisition["workflow_run_id"],
-                pr_snapshot={"headRefOid": head_sha},
-            )
-        except CIVerificationError:
-            pass
+        verify_exact_head_ci(
+            pr_number, head_sha, acquisition["workflow_run_id"],
+            pr_snapshot={"headRefOid": head_sha},
+        )
     return {
         "kind": "agent-orchestrator-ci-acquisition",
         "pr_number": int(pr_number),

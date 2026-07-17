@@ -485,6 +485,57 @@ def process_ci_completion(event_path):
     }
 
 
+def _make_poll_validator(issue, pr_number, head_sha, branch):
+    """Return a validator callback for wait_for_run_completion.
+
+    Re-reads the current PR state, exact head, and Issue/PR binding on
+    every call.  Returns None when the state is still current, or a
+    string reason when the binding is stale.
+    """
+
+    def validate() -> str | None:
+        pr_info = sm.get_pr_info(pr_number)
+        if not pr_info:
+            return "pr_unavailable"
+        if pr_info.get("state") != "OPEN":
+            return "pr_closed"
+        if pr_info.get("headRefOid") != head_sha:
+            return "pr_head_moved"
+        if pr_info.get("headRefName") != branch:
+            return "pr_branch_changed"
+        binding_ok, binding_reason = sm.verify_issue_pr_binding(issue, pr_number, head_sha)
+        if not binding_ok:
+            return f"binding_rejected:{binding_reason}"
+        return None
+
+    return validate
+
+
+def _record_ci_terminal(issue, pr_number, head_sha, ci_run_id, run, status_suffix):
+    """Persist a typed terminal CI state and release capacity.
+
+    Returns the standard blocked result dict on success, or a
+    state_unavailable result on failure.
+    """
+    try:
+        _record_ci(
+            issue, pr_number, head_sha, ci_run_id,
+            f"terminal_{status_suffix}", run,
+        )
+    except RuntimeError as exc:
+        return _state_unavailable_result(
+            issue, pr_number, head_sha, ci_run_id, str(exc)
+        )
+    return {
+        "action": "blocked",
+        "pr_number": pr_number,
+        "issue_number": issue,
+        "head_sha": head_sha,
+        "ci_run_id": ci_run_id,
+        "reason": f"ci_terminal_{status_suffix}",
+    }
+
+
 def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
     """Process a CI completion from explicit workflow_dispatch monitor inputs.
 
@@ -495,6 +546,10 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
     still active at the moment of dispatch, this function boundedly waits
     for it to reach a terminal state via
     :func:`ci_verifier.wait_for_run_completion` before continuing.
+
+    Unlike process_ci_completion(), every terminal outcome including
+    completion timeout is explicitly recorded as a typed CI state and
+    produces an action the workflow handles.
     """
     expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
     if not expected_repo:
@@ -529,29 +584,34 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
     if initial_run.get("headBranch") and expected_branch and initial_run.get("headBranch") != expected_branch:
         return {"action": "stale", "reason": "run_branch_mismatch"}
 
+    issue = _find_issue_for_pr(pr_number)
+    if not issue or issue != int(issue_number):
+        return {"action": "noop", "reason": "issue_binding_mismatch"}
+
+    initial_binding_ok, initial_binding_reason = sm.verify_issue_pr_binding(issue, pr_number, head_sha)
+    if not initial_binding_ok:
+        return {"action": "noop", "reason": f"initial_binding_rejected:{initial_binding_reason}"}
+
     run = initial_run
     if run.get("status") != "completed":
+        poll_validator = _make_poll_validator(issue, pr_number, head_sha, expected_branch)
         completion = ci_verifier.wait_for_run_completion(
             ci_run_id,
             expected_head=head_sha,
             expected_branch=expected_branch,
             pr_number=pr_number,
+            validator=poll_validator,
         )
         if completion["status"] == "ci_completion_timeout":
-            return {
-                "action": "ci_wait",
-                "pr_number": pr_number,
-                "issue_number": int(issue_number),
-                "head_sha": head_sha,
-                "ci_run_id": ci_run_id,
-                "reason": "ci_completion_timeout",
-                "current_status": completion.get("current_status"),
-            }
+            return _record_ci_terminal(
+                issue, pr_number, head_sha, ci_run_id, run,
+                "ci_completion_timeout",
+            )
         if completion["status"] == "ci_control_stopped":
             return {
-                "action": "ci_wait",
+                "action": "blocked",
                 "pr_number": pr_number,
-                "issue_number": int(issue_number),
+                "issue_number": int(issue),
                 "head_sha": head_sha,
                 "ci_run_id": ci_run_id,
                 "reason": "ci_control_stopped",
@@ -560,22 +620,18 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
             return {
                 "action": "stale",
                 "pr_number": pr_number,
-                "issue_number": int(issue_number),
+                "issue_number": int(issue),
                 "head_sha": head_sha,
                 "ci_run_id": ci_run_id,
                 "reason": f"ci_stale_binding:{completion.get('reason')}",
             }
         run = completion.get("run") or ci_verifier.run_info(ci_run_id) or {}
         if completion["status"] not in {"success", "failure"}:
-            return {
-                "action": "blocked",
-                "pr_number": pr_number,
-                "issue_number": int(issue_number),
-                "head_sha": head_sha,
-                "ci_run_id": ci_run_id,
-                "reason": f"ci_terminal_{completion.get('conclusion') or completion.get('status')}",
-                "conclusion": completion.get("conclusion"),
-            }
+            conclusion = completion.get("conclusion") or completion.get("status", "")
+            return _record_ci_terminal(
+                issue, pr_number, head_sha, ci_run_id, run,
+                conclusion,
+            )
 
     if pr_info.get("headRefName") != run.get("headBranch", "") and run.get("headBranch"):
         return {"action": "stale", "reason": "pr_branch_mismatch"}
@@ -586,10 +642,6 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
         return {"action": "noop", "reason": f"unsupported_conclusion:{ci_conclusion}"}
 
     branch = run.get("headBranch", "")
-
-    issue = _find_issue_for_pr(pr_number)
-    if not issue or issue != int(issue_number):
-        return {"action": "noop", "reason": "issue_binding_mismatch"}
 
     binding_ok, binding_reason = sm.verify_issue_pr_binding(issue, pr_number, head_sha)
     if not binding_ok:
@@ -629,23 +681,9 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
                 "ci_run_id": replacement.get("workflow_run_id"),
                 "reason": "ci_reselected_after_unsupported_run",
             }
-        try:
-            _record_ci(
-                issue, pr_number, head_sha, ci_run_id,
-                f"terminal_{ci_conclusion}", run,
-            )
-        except RuntimeError as exc:
-            return _state_unavailable_result(
-                issue, pr_number, head_sha, ci_run_id, str(exc)
-            )
-        return {
-            "action": "blocked",
-            "pr_number": pr_number,
-            "issue_number": issue,
-            "head_sha": head_sha,
-            "ci_run_id": ci_run_id,
-            "reason": f"ci_terminal_{ci_conclusion}",
-        }
+        return _record_ci_terminal(
+            issue, pr_number, head_sha, ci_run_id, run, ci_conclusion,
+        )
 
     if ci_conclusion == "success":
         try:

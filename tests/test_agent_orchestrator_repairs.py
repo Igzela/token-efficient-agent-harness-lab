@@ -108,8 +108,10 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertNotIn("--json number --jq", worker)
         self.assertIn("pr_binding.py verify-post-push", repair)
         self.assertIn("ci_verifier.py verify-failed-run", repair)
-        self.assertIn("ci_verifier.py acquire", worker)
-        self.assertIn("ci_verifier.py acquire", repair)
+        self.assertIn("ci_verifier.py acquire-run", worker)
+        self.assertIn("ci_verifier.py acquire-run", repair)
+        self.assertNotIn("ci_verifier.py acquire ", worker)
+        self.assertNotIn("ci_verifier.py acquire ", repair)
 
     def test_review_worker_is_read_only_and_only_pass_authorizes_merge(self):
         source = self.read("agent-review.yml")
@@ -853,12 +855,14 @@ class TestExactHeadCI(unittest.TestCase):
 
     def test_natural_pending_completes_through_combined_function(self):
         sha = "d" * 40
+        required = ci_verifier.load_requirements()["required_jobs"]
         natural = {"databaseId": 930, "event": "pull_request", "status": "queued", "conclusion": "",
                    "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
                    "updatedAt": "2026-07-14T00:00:00Z"}
         completed = {"databaseId": 930, "event": "pull_request", "status": "completed", "conclusion": "success",
                      "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
-                     "updatedAt": "2026-07-14T00:01:00Z"}
+                     "updatedAt": "2026-07-14T00:01:00Z",
+                     "jobs": [{"name": name, "status": "completed", "conclusion": "success"} for name in required]}
         with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[natural], [completed]]), \
              mock.patch.object(ci_verifier, "run_info", return_value=completed), \
              mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
@@ -1044,6 +1048,175 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(metadata["superseded_run_ids"], [1000])
         self.assertEqual(metadata["unsupported_run_ids"], [])
         self.assertEqual(metadata["status"], "bound")
+
+    def test_wait_for_run_queued_in_progress_success_sequence(self):
+        sha = "t" * 40
+        required = ci_verifier.load_requirements()["required_jobs"]
+        transitions = [
+            {"databaseId": 120, "status": "queued", "conclusion": "",
+             "headSha": sha, "headBranch": "agent/issue-t", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:00:00Z"},
+            {"databaseId": 120, "status": "in_progress", "conclusion": "",
+             "headSha": sha, "headBranch": "agent/issue-t", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:00:30Z"},
+            {"databaseId": 120, "status": "completed", "conclusion": "success",
+             "headSha": sha, "headBranch": "agent/issue-t", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:01:00Z",
+             "jobs": [{"name": name, "status": "completed", "conclusion": "success"} for name in required]},
+        ]
+        with mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
+             mock.patch.object(ci_verifier, "run_info", side_effect=transitions), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=[transitions[-1]]):
+            result = ci_verifier.wait_for_run_completion(
+                120, expected_head=sha, expected_branch="agent/issue-t",
+                completion_timeout_seconds=30, poll_seconds=60,
+                sleep=lambda _: None,
+            )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["ci_run_id"], 120)
+        self.assertEqual(result["conclusion"], "success")
+
+    def test_wait_for_run_queued_in_progress_failure_sequence(self):
+        sha = "u" * 40
+        transitions = [
+            {"databaseId": 121, "status": "queued", "conclusion": "",
+             "headSha": sha, "headBranch": "agent/issue-u", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:00:00Z"},
+            {"databaseId": 121, "status": "in_progress", "conclusion": "",
+             "headSha": sha, "headBranch": "agent/issue-u", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:00:30Z"},
+            {"databaseId": 121, "status": "completed", "conclusion": "failure",
+             "headSha": sha, "headBranch": "agent/issue-u", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:01:00Z"},
+        ]
+        with mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
+             mock.patch.object(ci_verifier, "run_info", side_effect=transitions), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=[transitions[-1]]):
+            result = ci_verifier.wait_for_run_completion(
+                121, expected_head=sha, expected_branch="agent/issue-u",
+                completion_timeout_seconds=30, poll_seconds=60,
+                sleep=lambda _: None,
+            )
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["ci_run_id"], 121)
+        self.assertEqual(result["conclusion"], "failure")
+
+    def test_wait_for_run_with_validator_pr_closed(self):
+        sha = "v" * 40
+        run = {"databaseId": 122, "status": "in_progress", "conclusion": "",
+               "headSha": sha, "headBranch": "agent/issue-v", "workflowName": "tests",
+               "updatedAt": "2026-07-14T00:00:00Z"}
+        def validator():
+            return "pr_closed"
+        with mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
+             mock.patch.object(ci_verifier, "run_info", return_value=run):
+            result = ci_verifier.wait_for_run_completion(
+                122, expected_head=sha, expected_branch="agent/issue-v",
+                completion_timeout_seconds=30, poll_seconds=60,
+                validator=validator, sleep=lambda _: None,
+            )
+        self.assertEqual(result["status"], "ci_stale_binding")
+        self.assertEqual(result["reason"], "pr_closed")
+
+    def test_wait_for_run_with_validator_pr_head_moved(self):
+        sha = "w" * 40
+        run = {"databaseId": 123, "status": "in_progress", "conclusion": "",
+               "headSha": sha, "headBranch": "agent/issue-w", "workflowName": "tests",
+               "updatedAt": "2026-07-14T00:00:00Z"}
+        def validator():
+            return "pr_head_moved"
+        with mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
+             mock.patch.object(ci_verifier, "run_info", return_value=run):
+            result = ci_verifier.wait_for_run_completion(
+                123, expected_head=sha, expected_branch="agent/issue-w",
+                completion_timeout_seconds=30, poll_seconds=60,
+                validator=validator, sleep=lambda _: None,
+            )
+        self.assertEqual(result["status"], "ci_stale_binding")
+        self.assertEqual(result["reason"], "pr_head_moved")
+
+    def test_wait_for_run_with_validator_binding_rejected(self):
+        sha = "x" * 40
+        run = {"databaseId": 124, "status": "in_progress", "conclusion": "",
+               "headSha": sha, "headBranch": "agent/issue-x", "workflowName": "tests",
+               "updatedAt": "2026-07-14T00:00:00Z"}
+        def validator():
+            return "binding_rejected:issue_pr_mismatch"
+        with mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
+             mock.patch.object(ci_verifier, "run_info", return_value=run):
+            result = ci_verifier.wait_for_run_completion(
+                124, expected_head=sha, expected_branch="agent/issue-x",
+                completion_timeout_seconds=30, poll_seconds=60,
+                validator=validator, sleep=lambda _: None,
+            )
+        self.assertEqual(result["status"], "ci_stale_binding")
+        self.assertEqual(result["reason"], "binding_rejected:issue_pr_mismatch")
+
+    @mock.patch.object(ci_handler.ci_verifier, "verify_exact_head_ci", side_effect=ci_verifier.CIVerificationError("mock failure"))
+    @mock.patch.object(ci_handler, "_record_ci")
+    @mock.patch.object(ci_handler, "_persist_canonical_acquisition")
+    @mock.patch.object(ci_handler, "_is_duplicate_exact_head_run", return_value=False)
+    @mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok"))
+    @mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42)
+    @mock.patch.object(ci_handler.sm, "get_pr_info", return_value={"number": 207, "headRefOid": "abc123", "headRefName": "agent/issue-42", "body": "fixes #42", "state": "OPEN"})
+    @mock.patch.object(ci_handler.ci_verifier, "run_info", return_value={
+        "databaseId": 99999, "status": "completed", "conclusion": "success",
+        "headSha": "abc123", "headBranch": "agent/issue-42",
+        "workflowName": "tests", "workflowId": 1, "path": ".github/workflows/tests.yml",
+        "repository": "test/repo", "headRepository": "test/repo",
+    })
+    @mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"})
+    def test_process_dispatch_exact_head_ci_fail_propagates(self, *mocks):
+        result = ci_handler.process_ci_dispatch(42, 207, "abc123", 99999)
+        self.assertEqual(result["action"], "stale")
+        self.assertIn("exact_head_ci_rejected", result["reason"])
+
+    @mock.patch.object(ci_handler, "_record_ci_terminal", return_value={
+        "action": "blocked", "pr_number": 207, "issue_number": 42,
+        "head_sha": "abc123", "ci_run_id": 99999, "reason": "ci_terminal_ci_completion_timeout",
+    })
+    @mock.patch.object(ci_handler.ci_verifier, "wait_for_run_completion", return_value={
+        "status": "ci_completion_timeout", "reason": "run_still_active",
+        "ci_run_id": 99999, "head_sha": "abc123",
+    })
+    @mock.patch.object(ci_handler, "_persist_canonical_acquisition")
+    @mock.patch.object(ci_handler, "_is_duplicate_exact_head_run", return_value=False)
+    @mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok"))
+    @mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42)
+    @mock.patch.object(ci_handler.sm, "get_pr_info", return_value={"number": 207, "headRefOid": "abc123", "headRefName": "agent/issue-42", "body": "fixes #42", "state": "OPEN"})
+    @mock.patch.object(ci_handler.ci_verifier, "run_info", return_value={
+        "databaseId": 99999, "status": "queued", "conclusion": "",
+        "headSha": "abc123", "headBranch": "agent/issue-42",
+        "workflowName": "tests", "workflowId": 1, "path": ".github/workflows/tests.yml",
+        "repository": "test/repo", "headRepository": "test/repo",
+    })
+    @mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"})
+    def test_process_dispatch_completion_timeout_persists_terminal(self, *mocks):
+        result = ci_handler.process_ci_dispatch(42, 207, "abc123", 99999)
+        self.assertEqual(result["action"], "blocked")
+        self.assertIn("ci_terminal_", result["reason"])
+
+    @mock.patch.object(ci_handler, "_record_ci_terminal")
+    @mock.patch.object(ci_handler.ci_verifier, "wait_for_run_completion", return_value={
+        "status": "ci_control_stopped", "reason": "control_emergency_stop_activated",
+        "ci_run_id": 99999, "head_sha": "abc123",
+    })
+    @mock.patch.object(ci_handler, "_persist_canonical_acquisition")
+    @mock.patch.object(ci_handler, "_is_duplicate_exact_head_run", return_value=False)
+    @mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok"))
+    @mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42)
+    @mock.patch.object(ci_handler.sm, "get_pr_info", return_value={"number": 207, "headRefOid": "abc123", "headRefName": "agent/issue-42", "body": "fixes #42", "state": "OPEN"})
+    @mock.patch.object(ci_handler.ci_verifier, "run_info", return_value={
+        "databaseId": 99999, "status": "queued", "conclusion": "",
+        "headSha": "abc123", "headBranch": "agent/issue-42",
+        "workflowName": "tests", "workflowId": 1, "path": ".github/workflows/tests.yml",
+        "repository": "test/repo", "headRepository": "test/repo",
+    })
+    @mock.patch.dict(os.environ, {"AGENT_REPO": "test/repo"})
+    def test_process_dispatch_control_stopped_returns_blocked(self, *mocks):
+        result = ci_handler.process_ci_dispatch(42, 207, "abc123", 99999)
+        self.assertEqual(result["action"], "blocked")
+        self.assertIn("ci_control_stopped", result["reason"])
 
 
 class TestRunnerReadiness(unittest.TestCase):
