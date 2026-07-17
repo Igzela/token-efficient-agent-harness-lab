@@ -432,6 +432,34 @@ class TestCITerminalState(unittest.TestCase):
         transition.assert_called_once_with(42, state_manager.LABEL_BLOCKED, repo="")
         self.assertEqual(json.loads(comments[-1]["body"])["ci_run_id"], 9001)
 
+    def test_unbound_noop_cannot_demote_review_capacity(self):
+        comments = []
+
+        def write_comment(issue, body, repo=""):
+            comments.append({"author": {"login": "github-actions[bot]"}, "body": body})
+            return True
+
+        with mock.patch.object(
+            state_manager, "get_issue_comments", return_value=[]
+        ), mock.patch.object(
+            state_manager, "comment_on_issue", side_effect=write_comment
+        ), mock.patch.object(
+            state_manager, "get_issue_labels_checked",
+            return_value={state_manager.LABEL_REVIEW_RUNNING},
+        ), mock.patch.object(
+            state_manager, "set_labels", return_value=True
+        ) as transition:
+            result = state_manager.release_and_record_ci_terminal(
+                42, 207, "a" * 40, 9001, "terminal_ci_unbound_noop",
+                "ci_unbound_noop:pr_unavailable", "unknown",
+            )
+
+        self.assertEqual(result, (False, "ci_active_phase_mismatch"))
+        transition.assert_not_called()
+        evidence = json.loads(comments[-1]["body"])
+        self.assertEqual(evidence["capacity_release_outcome"], "failed")
+        self.assertEqual(evidence["capacity_release_reason"], "ci_active_phase_mismatch")
+
     def test_terminal_audit_failure_precedes_capacity_release(self):
         with mock.patch.object(
             state_manager, "get_issue_comments", return_value=[]
@@ -821,7 +849,13 @@ class TestExactHeadCI(unittest.TestCase):
         # fields.  Production calls populate and require these fields; keep
         # the unit fixtures independent of the runner's repository environment.
         self._clear_repo_env = mock.patch.dict(
-            os.environ, {"AGENT_REPO": "", "GITHUB_REPOSITORY": ""}, clear=False
+            os.environ,
+            {
+                "AGENT_REPO": "",
+                "GITHUB_REPOSITORY": "",
+                "AGENT_CI_FIXTURE_MODE": "true",
+            },
+            clear=False,
         )
         self._clear_repo_env.start()
         self._control_live = mock.patch.object(
@@ -895,6 +929,32 @@ class TestExactHeadCI(unittest.TestCase):
                 ci_verifier.acquire_exact_run(1, "agent/issue-d", sha, observe_seconds=0)
         self.assertEqual(raised.exception.ci_run_id, 778)
         self.assertEqual(raised.exception.observed_run["databaseId"], 778)
+
+    def test_stopped_fallback_lookup_is_bounded_when_run_identity_never_appears(self):
+        sha = "d" * 40
+        dispatch = mock.Mock(returncode=0, stdout="")
+        listing = mock.Mock(returncode=0, stdout="[]")
+        with mock.patch.object(
+            ci_verifier, "control_is_live", side_effect=[True, True, True, False]
+        ), mock.patch.object(
+            ci_verifier, "find_exact_runs", return_value=[]
+        ), mock.patch.object(
+            ci_verifier.uuid, "uuid4", return_value=mock.Mock(hex="deadbeef")
+        ), mock.patch.object(
+            ci_verifier.subprocess, "run", side_effect=[dispatch, listing]
+        ), mock.patch.object(
+            ci_verifier, "FALLBACK_STOP_RECONCILIATION_SECONDS", 0
+        ), mock.patch.object(
+            ci_verifier.time, "sleep", return_value=None
+        ):
+            with self.assertRaises(ci_verifier.CIVerificationError) as raised:
+                ci_verifier.acquire_exact_run(
+                    1, "agent/issue-d", sha, observe_seconds=0,
+                )
+        self.assertEqual(
+            str(raised.exception),
+            "ci_control_stopped:fallback_run_identity_missing",
+        )
 
     def test_dispatched_fallback_id_cannot_be_replaced_by_newer_same_head_run(self):
         sha = "d" * 40

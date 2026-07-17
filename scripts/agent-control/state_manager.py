@@ -576,6 +576,7 @@ def release_and_record_ci_terminal(
         # terminal record but may arrive before a CI-state comment exists.
         # Its worker PR/head binding remains the capacity authorization.
         expected_run_id=None if terminal_status == "terminal_ci_unbound_noop" else ci_run_id,
+        protect_review=terminal_status == "terminal_ci_unbound_noop",
     )
     finalized = CITerminalResolutionState(
         int(issue_number),
@@ -1150,6 +1151,7 @@ def release_failed_capacity(
     repair_attempt=None,
     expected_pr=None,
     expected_run_id=None,
+    protect_review=False,
 ):
     """Idempotently release only the current failed workflow's active capacity."""
 
@@ -1173,7 +1175,10 @@ def release_failed_capacity(
     # A CI terminal outcome is allowed to release the repair phase when its
     # exact CI state/run binding matches.  Review capacity is owned by the
     # review workflow and remains protected from unrelated CI terminal events.
-    if expected_run_id is not None and active == {LABEL_REVIEW_RUNNING}:
+    if (
+        active == {LABEL_REVIEW_RUNNING}
+        and (expected_run_id is not None or protect_review)
+    ):
         return False, "ci_active_phase_mismatch"
     if labels & (TERMINAL_LABELS | {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}):
         return False, "newer_terminal_state_exists"

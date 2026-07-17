@@ -32,6 +32,8 @@ from typing import Any, Callable
 REQUIREMENTS_PATH = Path(__file__).with_name("ci_requirements.json")
 ACTIVE_RUN_STATUSES = {"queued", "in_progress", "requested", "waiting", "pending"}
 SUPPORTED_COMPLETED_CONCLUSIONS = {"success", "failure"}
+FALLBACK_RUN_LOOKUP_SECONDS = 20
+FALLBACK_STOP_RECONCILIATION_SECONDS = 30
 TERMINAL_UNSUPPORTED_CONCLUSIONS = {
     "action_required",
     "cancelled",
@@ -364,10 +366,15 @@ def _dispatch_fallback(
     match = re.search(r"/actions/runs/(\d+)(?:$|[/?#])", output.strip())
     if match:
         return int(match.group(1))
+    if os.environ.get("AGENT_CI_FIXTURE_MODE") != "true":
+        # Production terminal evidence must carry the provider run identity;
+        # a dispatch response without it cannot authorize a later mutation.
+        raise CIVerificationError("fallback_run_identity_missing")
     if not isinstance(result.stdout, str):
         return None
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + FALLBACK_RUN_LOOKUP_SECONDS
     control_stopped_during_lookup = False
+    stop_deadline: float | None = None
     while True:
         # A workflow-dispatch response can precede provider run visibility.  A
         # stop during that interval must not turn into generic identity loss;
@@ -375,6 +382,8 @@ def _dispatch_fallback(
         # so the caller can record the run-bound stop evidence.
         if not control_is_live():
             control_stopped_during_lookup = True
+            if stop_deadline is None:
+                stop_deadline = time.monotonic() + FALLBACK_STOP_RECONCILIATION_SECONDS
         listing = subprocess.run(
             [
                 "gh", "run", "list", "--workflow", f"{requirements['workflow_name']}.yml",
@@ -406,11 +415,17 @@ def _dispatch_fallback(
             return _run_id(matches[0])
         if len(matches) > 1:
             raise CIVerificationError("fallback_run_identity_ambiguous")
-        # Once the stop is observed, retain the correlation loop until the
-        # provider exposes the exact nonce-bound run.  Returning generic
-        # identity loss here would discard the run ID needed for durable
-        # ci_control_stopped evidence and capacity compensation.
-        if not control_stopped_during_lookup and time.monotonic() >= deadline:
+        # A stopped run gets a bounded reconciliation grace period.  If the
+        # provider does not expose the nonce-bound run in that period, do not
+        # fabricate a CI identity: fail closed with a typed reason.  When the
+        # exact run is visible, the normal path above raises the typed stop
+        # outcome with durable issue/PR/head/run evidence.
+        if control_stopped_during_lookup:
+            if stop_deadline is not None and time.monotonic() >= stop_deadline:
+                raise CIVerificationError(
+                    "ci_control_stopped:fallback_run_identity_missing"
+                )
+        elif time.monotonic() >= deadline:
             raise CIVerificationError("fallback_run_identity_missing")
         time.sleep(1)
 
