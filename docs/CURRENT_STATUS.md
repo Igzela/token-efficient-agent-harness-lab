@@ -6,7 +6,7 @@ Last updated: 2026-07-17.
 
 This repository is a local/small-team self-hosted Agent workflow control plane and research lab. Rust `engine/` remains the sole runtime, API, scheduler, policy, and application-owned storage implementation. The production-integration program through Agent Runtime AR-6 and product evolution PE-1 through PE-6 is merged. Durable memory, budget evidence, replay/promotion, managed external-runtime adapters, target-output authority, release provenance, and fault/recovery evidence are connected through existing bounded owners.
 
-Controlled staging drills and the repaired disposable target-repository path passed. External live acceptance is still incomplete. The named Vader runner was restored to uniquely registered, online, and idle state after a Mihomo selector repair, but the documentation-only replacement smoke did not reach PR creation: Codex model execution either hit ChatGPT 403 on non-US egress or produced no staged file changes under the artifact contract. Issue #208 is again emergency-stopped with orchestration and auto-merge disabled. The current authenticated OpenRouter embedding catalog still omits the potentially chargeable `request` price; merged PR #227 keeps that path pre-send-blocked. No provider POST, provider-backed benchmark, accepted replacement smoke, public release, or production installation has been completed.
+Controlled staging drills and the repaired disposable target-repository path passed. External live acceptance advanced: PR #230 repaired the empty-workspace-output defect and inaccurate terminal attribution in the repository-agent orchestrator, merged after exact-head CI. A new documentation-only smoke (Issue #231 → PR #232) then proved intake, Vader worktree, validated non-empty artifact, branch push, and PR creation. The smoke PR's exact-head canonical seven-job CI passed (run `29565496618`), but the GitHub-hosted `agent-ci-monitor` workflow that dispatches independent review failed with `action_required`, so the independent review step did not run. The smoke PR remains unmerged and auto-merge is off. Issue #208 is again emergency-stopped. The current authenticated OpenRouter embedding catalog still omits the potentially chargeable `request` price; merged PR #227 keeps that path pre-send-blocked. No provider POST, provider-backed benchmark, public release, or production installation has been completed.
 
 A new research direction is documented: bounded recursive execution, then a controlled OpenCode external adapter, then an evidence-gated Harness evolution laboratory. This is an approved forward plan only. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (the AR7 runtime-extension slice) and the later PE7 packets are not implemented, no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
 
@@ -24,8 +24,9 @@ A new research direction is documented: bounded recursive execution, then a cont
 - exact-head CI evidence recorded by the merged PRs remains the implementation evidence; documentation changes do not create new implementation evidence;
 - PR #225 remains open and presentation-only, touching the Dashboard visual system rather than runtime or authority;
 - repository Actions may create/approve pull requests and the required secret names exist, but Issue #208 remains emergency-stopped with orchestration and auto-merge disabled;
-- the unique Vader runner unit is `actions.runner.Igzela-token-efficient-agent-harness-lab.Vader.service` under user `igzela`; after switching Mihomo group `节点选择` away from the broken `台湾家宽-IEPL 02` pin to a working egress (verified with `美国-IEPL 01`), `tokenghub` TLS and broker session creation succeed and repository readiness reports online/idle. The selector is runtime-only and can regress on Clash Verge reload;
-- a bounded replacement smoke was attempted (Issues #228/#229). Intake, controller claim, validate, and Vader worktree creation succeeded; terminal failure remained at `vader-implementation` / `model_execution` with capacity released. No smoke PR was created. Issue #208 was restored to emergency-stop;
+- the unique Vader runner unit is `actions.runner.Igzela-token-efficient-agent-harness-lab.Vader.service` under user `igzela`; after switching Mihomo group `节点选择` away from the broken `台湾家宽-IEPL 02` pin to a working egress, `tokenghub` TLS and broker session creation succeed and repository readiness reports online/idle. Egress stability is runtime-only and can regress on Clash Verge reload or node congestion;
+- PR #230 repaired the repository-agent empty-workspace-output defect (Codex returned prose without editing due to an 80KB prompt with conflicting governance constraints) and split terminal attribution so successful-exit/no-changes now records `reason_code: no_workspace_changes` instead of generic `model_execution_failure`. The repair merged;
+- bounded replacement smoke Issue #231 created PR #232 (`docs/agent-smoke-replacement-20260717-c.md` only) and exact-head canonical seven-job CI passed (run `29565496618`), but the GitHub-hosted `agent-ci-monitor` workflow that dispatches independent review failed `action_required`, so the independent review step did not run. The smoke PR remains unmerged and Issue #208 is emergency-stopped;
 - the current authenticated OpenRouter embedding catalog proves the fixed model identity and explicit zero `prompt`/`completion` prices, but omits the potentially chargeable `request` price; merged PR #227 records Applicable/NotApplicable/Unknown receipt evidence without treating omitted fields as zero, and the live request remains blocked before POST;
 - disposable repository `Igzela/acp-target-accept-20260716-1145` no longer resolves via GitHub API/GraphQL (already absent or previously deleted); do not delete any other repository.
 
@@ -43,7 +44,7 @@ GPT Web request
 -> branch push
 ```
 
-PR creation then failed because Actions PR creation was disabled at that time. PR #222 added setting preflight, bounded worker timeout, terminal phase/reason evidence, and capacity-safe cleanup. The repository setting and runner online/idle readiness are currently repaired, but the replacement smoke has not completed through PR creation.
+PR creation then failed because Actions PR creation was disabled at that time. PR #222 added setting preflight, bounded worker timeout, terminal phase/reason evidence, and capacity-safe cleanup. The repository setting, runner online/idle readiness, and empty-workspace repair are merged, but the replacement smoke has not completed through independent exact-head review.
 
 Operational consequence:
 
@@ -51,7 +52,7 @@ Operational consequence:
 - keep Issue #208 emergency-stopped and both enable labels absent;
 - keep Mihomo egress on a node that completes both `tokenghub` TLS and ChatGPT Codex API access; re-verify after any Clash reload;
 - rerun the bounded readiness checker before any re-enable;
-- complete one documentation-only replacement smoke through PR creation, exact-head CI, independent review, and manual merge decision before removing the restriction.
+- complete one documentation-only replacement smoke through PR creation, exact-head CI, independent review, and manual merge decision before removing the restriction. The current smoke reached PR creation and exact-head CI but is blocked at the `agent-ci-monitor` review-dispatch step with `action_required`;
 
 The intended interface remains ordinary language in GPT Web. The assistant, not the user, owns internal Issue/workflow parameters once the path is accepted.
 
@@ -73,7 +74,7 @@ The intended interface remains ordinary language in GPT Web. The assistant, not 
 | Managed LangGraph external runtime | One bounded adapter invocation per Rust-leased node; fixture/guarded-live modes; Python owns no queue or product authority |
 | Native/LangGraph efficiency benchmark | Deterministic fixture evidence connected; no provider-backed result verified |
 | Target-repository output | Disposable acceptance passed after PR #226 with unchanged target `main`, one external delivery, and duplicate/restart reuse |
-| GitHub/Vader repository orchestrator | Implemented/default-off; runner online/idle after host egress repair, but replacement smoke blocked at Codex model execution / empty staged artifact |
+| GitHub/Vader repository orchestrator | Implemented/default-off; PR #230 merged the empty-workspace repair; smoke #231 reached PR #232 + green exact-head CI, but independent review dispatch failed `action_required` |
 | Dashboard | Functional; PR #225 is an independent presentation-only redesign |
 | Post-R7 wire/type governance | Implemented through `scripts/check_wire_codegen_drift.sh` |
 | PE7 bounded recursive execution | Approved in active documents; not implemented; no recursive tree admission or lineage schema exists yet |
