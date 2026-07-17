@@ -364,8 +364,9 @@ class TestDispatchCIProcessing(unittest.TestCase):
     @mock.patch.object(ch, "_find_issue_for_pr")
     @mock.patch.object(ch.sm, "verify_issue_pr_binding")
     @mock.patch.object(ch, "_is_duplicate_exact_head_run")
+    @mock.patch.object(ch.sm, "record_ci_terminal_state", return_value=True)
     def test_dispatch_duplicate_run(
-        self, mock_dup, mock_binding, mock_find_issue, mock_pr_info, mock_run_info,
+        self, mock_record_terminal, mock_dup, mock_binding, mock_find_issue, mock_pr_info, mock_run_info,
     ):
         run = self._mock_run()
         mock_run_info.return_value = run
