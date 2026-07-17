@@ -130,6 +130,13 @@ jobs:
         run: |
           bash scripts/agent-control/codex_wrapper.sh ci-repair "$RUNNER_TEMP/repair-prompt.txt" \
             "$RUNNER_TEMP/codex-output" "${{ steps.worktree.outputs.worktree_path }}"
+      - name: Assert Codex produced workspace changes; fail no_workspace_changes
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/codex-output/workspace_empty.json" ]; then
+            echo "no_workspace_changes: Codex produced no file changes"
+            exit 1
+          fi
       - name: Recheck control before accepting repair artifact
         env:
           AGENT_REPO: ${{ github.repository }}

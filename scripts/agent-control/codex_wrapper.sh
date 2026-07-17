@@ -137,6 +137,15 @@ CODEX_EXIT=$?
 set -e
 echo "$CODEX_EXIT" > "$EXIT_CODE_OUTPUT"
 
+if [ "$CODEX_EXIT" -eq 0 ] && [ "$WORKER_TYPE" != "review" ]; then
+  if [ -z "$(git -C "$WORKSPACE" status --porcelain 2>/dev/null)" ]; then
+    printf '%s\n' '{"key":"no_workspace_changes","detail":"Codex executed successfully but produced no file changes"}' \
+      > "$OUTPUT_DIR/workspace_empty.json"
+  else
+    rm -f "$OUTPUT_DIR/workspace_empty.json"
+  fi
+fi
+
 if [ "$CODEX_EXIT" -ne 0 ]; then
   LOWER_OUTPUT=$(
     {

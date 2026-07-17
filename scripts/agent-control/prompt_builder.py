@@ -91,20 +91,65 @@ def load_prompt_template(template_name):
     return template_path.read_text()
 
 
+def _detect_task_requires_governance(issue_body):
+    """Return True only when the Issue body references code, runtime, or authority owners."""
+    indicators = (
+        "src/", "tests/", "engine/", "dashboard/", ".github/", "migration",
+        "schema", "release", "authority", "permission", "runtime",
+        "scheduler", "storage", "provider", "evaluator", "budget",
+        "cargo", "clippy", "bun test",
+    )
+    lower = (issue_body or "").lower().replace(" ", "")
+    return any(indicator in lower for indicator in indicators)
+
+
+def _build_task_context(issue_body, agents_md, current_status, next_decision, module_map):
+    """Select task-relevant context only. Avoid drowning small tasks in governance."""
+    if _detect_task_requires_governance(issue_body):
+        parts = []
+        if agents_md:
+            parts.append("### Repository governance\n\n```\n" + agents_md[:6000] + "\n```")
+        if current_status:
+            parts.append("### Current capability status\n\n```\n" + current_status[:4000] + "\n```")
+        if module_map:
+            parts.append("### Module ownership\n\n```\n" + module_map[:2000] + "\n```")
+        return "\n\n".join(parts) if parts else "No additional context."
+    lines = []
+    body_lower = (issue_body or "").lower()
+    if agents_md and any(word in body_lower for word in ("agent", "orchestrator", "runner", "workflow", "control")):
+        lines.append("From AGENTS.md: " + _extract_relevant_lines(agents_md, ["orchestrator", "worker", "runner", "artifact"]))
+    if lines:
+        return "\n".join(lines)
+    return "No additional context required for this task."
+
+
+def _extract_relevant_lines(text, keywords, max_lines=20):
+    found = []
+    for line in text.splitlines():
+        if any(kw in line.lower() for kw in keywords):
+            found.append(line)
+    return "\n".join(found[:max_lines]) if found else ""
+
+
 def build_implementation_prompt(issue_number, template="implementation.md"):
     ctx = build_context(issue_number)
     template_text = load_prompt_template(template)
     if not template_text:
         return None
 
+    task_context = _build_task_context(
+        ctx["issue"]["body"],
+        ctx.get("AGENTS_md", ""),
+        ctx.get("docs_CURRENT_STATUS_md", ""),
+        ctx.get("docs_NEXT_DECISION_md", ""),
+        ctx.get("docs_MODULE_MAP_md", ""),
+    )
+
     prompt = template_text
     prompt = prompt.replace("{{ISSUE_NUMBER}}", str(issue_number))
     prompt = prompt.replace("{{ISSUE_TITLE}}", ctx["issue"]["title"])
     prompt = prompt.replace("{{ISSUE_BODY}}", ctx["issue"]["body"])
-    prompt = prompt.replace("{{AGENTS_MD}}", ctx.get("AGENTS_md", ""))
-    prompt = prompt.replace("{{CURRENT_STATUS}}", ctx.get("docs_CURRENT_STATUS_md", ""))
-    prompt = prompt.replace("{{NEXT_DECISION}}", ctx.get("docs_NEXT_DECISION_md", ""))
-    prompt = prompt.replace("{{MODULE_MAP}}", ctx.get("docs_MODULE_MAP_md", ""))
+    prompt = prompt.replace("{{TASK_CONTEXT}}", task_context)
     prompt = prompt.replace("{{REPO_NAME}}", f"{REPO_OWNER}/{REPO_NAME}")
     prompt = prompt.replace("{{GIT_BRANCH}}", os.environ.get("AGENT_BRANCH", "main"))
 
