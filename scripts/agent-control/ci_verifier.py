@@ -23,6 +23,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -343,43 +344,53 @@ def _dispatch_fallback(
 ) -> int | None:
     if not control_is_live():
         raise CIControlStopped("ci_control_stopped_before_fallback_dispatch")
+    dispatch_nonce = uuid.uuid4().hex
     result = subprocess.run(
         [
             "gh", "workflow", "run", f"{requirements['workflow_name']}.yml",
-            "--ref", branch, "-f", f"expected_sha={head_sha}",
+            "--ref", branch,
+            "-f", f"expected_sha={head_sha}",
+            "-f", f"dispatch_nonce={dispatch_nonce}",
         ], capture_output=True, text=True, timeout=60,
     )
     if result.returncode != 0:
         raise CIVerificationError("canonical tests workflow dispatch failed")
     output = result.stdout if isinstance(result.stdout, str) else ""
     match = re.search(r"/actions/runs/(\d+)(?:$|[/?#])", output.strip())
-    return int(match.group(1)) if match else None
-
-
-def _observe_fallback_after_control_stop(
-    branch: str, head_sha: str, pr_number: int, excluded_run_ids: set[int],
-) -> dict[str, Any]:
-    """Read the just-dispatched run for typed stop compensation.
-
-    This is deliberately read-only.  The fallback dispatch has already
-    happened, so identifying its exact run lets the worker persist and
-    release the matching active claim without accepting the run as usable CI.
-    """
-
-    candidates = [
-        run for run in find_exact_runs(branch, head_sha, pr_number)
-        if _run_id(run) not in excluded_run_ids
-    ]
-    if not candidates:
-        return {}
-    return max(
-        candidates,
-        key=lambda run: (
-            _timestamp(run),
-            int(run.get("attempt", 0) or 0),
-            _run_id(run),
-        ),
-    )
+    if match:
+        return int(match.group(1))
+    if not isinstance(result.stdout, str):
+        return None
+    deadline = time.monotonic() + 20
+    while True:
+        listing = subprocess.run(
+            [
+                "gh", "run", "list", "--workflow", f"{requirements['workflow_name']}.yml",
+                "--branch", branch, "--limit", "20",
+                "--json", "databaseId,name,headSha,headBranch,event",
+            ], capture_output=True, text=True, timeout=60,
+        )
+        if listing.returncode != 0:
+            raise CIVerificationError("fallback_run_identity_missing")
+        try:
+            candidates = json.loads(listing.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            raise CIVerificationError("fallback_run_identity_missing") from exc
+        matches = [
+            candidate for candidate in candidates
+            if candidate.get("name") == f"tests-{dispatch_nonce}"
+            and candidate.get("headSha") == head_sha
+            and candidate.get("headBranch") == branch
+            and candidate.get("event") == "workflow_dispatch"
+            and _run_id(candidate) > 0
+        ]
+        if len(matches) == 1:
+            return _run_id(matches[0])
+        if len(matches) > 1:
+            raise CIVerificationError("fallback_run_identity_ambiguous")
+        if time.monotonic() >= deadline:
+            raise CIVerificationError("fallback_run_identity_missing")
+        time.sleep(1)
 
 
 def acquire_exact_run(
@@ -412,7 +423,6 @@ def acquire_exact_run(
     all_runs: list[dict[str, Any]] = []
     identity_rejections: list[str] = []
     selected: dict[str, Any] | None = None
-    pre_dispatch_run_ids: set[int] = set()
     while True:
         if not control_is_live():
             raise CIControlStopped("ci_control_stopped_during_run_acquisition")
@@ -443,9 +453,6 @@ def acquire_exact_run(
                 raise CIVerificationError(
                     f"ci_stale_binding:{identity_rejections[0]}"
                 )
-            pre_dispatch_run_ids = {
-                _run_id(run) for run in observed_runs if _run_id(run) > 0
-            }
             dispatched_run_id = _dispatch_fallback(requirements, branch, head_sha)
             fallback_dispatched = True
             if not control_is_live():
@@ -464,10 +471,6 @@ def acquire_exact_run(
                             "headBranch": branch,
                             "workflowName": requirements["workflow_name"],
                         }
-                else:
-                    observed = _observe_fallback_after_control_stop(
-                        branch, head_sha, pr_number, pre_dispatch_run_ids,
-                    )
                 raise CIControlStopped(
                     "ci_control_stopped_after_fallback_dispatch",
                     ci_run_id=dispatched_run_id or _run_id(observed) or None,
@@ -865,7 +868,12 @@ def _finalize_acquisition_with_wait(
     elif completion["status"] == "ci_completion_timeout":
         raise CICompletionTimeout(completion.get("reason") or "ci_completion_timeout")
     elif completion["status"] == "ci_control_stopped":
-        raise CIControlStopped(completion.get("reason") or "ci_control_stopped")
+        raise CIControlStopped(
+            completion.get("reason") or "ci_control_stopped",
+            ci_run_id=completion.get("ci_run_id") or acquisition["workflow_run_id"],
+            head_sha=completion.get("head_sha") or head_sha,
+            observed_run=completion.get("run"),
+        )
     elif completion["status"] == "ci_stale_binding":
         raise CIStaleBinding(completion.get("reason") or "ci_stale_binding")
     elif completion["status"].startswith("ci_terminal_"):

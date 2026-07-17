@@ -235,7 +235,7 @@ class TestWorkflowContracts(unittest.TestCase):
             "merge_ready": "require-auto-merge",
             "blocked": "release-failed",
             "stale": "release-ci-terminal",
-            "noop": "release-ci-terminal",
+            "noop": "release-failed",
         }.items():
             with self.subTest(action=action):
                 self.assertIn(required, monitor)
@@ -244,7 +244,7 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("ci_control_stopped=true", worker)
         self.assertIn("steps.acquire_ci.outputs.ci_control_stopped != 'true'", worker)
         self.assertIn("record-ci", worker)
-        self.assertIn("agent-emergency-stop", self.read("agent-controller.yml"))
+        self.assertIn("cancel-in-progress: ${{ inputs.command == 'emergency-stop' }}", self.read("agent-controller.yml"))
         for workflow in ("agent-ci-monitor.yml", "agent-review.yml", "agent-ci-repair.yml", "agent-merge.yml", "agent-worker.yml", "agent-intake.yml"):
             self.assertIn("group: agent-orchestrator-state", self.read(workflow))
         self.assertIn("agent-orchestrator-state", self.read("agent-controller.yml"))
@@ -274,7 +274,7 @@ class TestWorkflowContracts(unittest.TestCase):
             ),
             "noop": (
                 "steps.decision.outputs.action == 'noop'",
-                "release-ci-terminal",
+                "release-failed",
             ),
         }
         for action, (condition, command) in action_contract.items():
@@ -292,6 +292,8 @@ class TestWorkflowContracts(unittest.TestCase):
         monitor = self.read("agent-ci-monitor.yml")
         self.assertIn("terminal_ci_followup_dispatch_failed", monitor)
         self.assertIn('"ci_followup_dispatch_failed:$ACTION" "$OBSERVED_STATUS"', monitor)
+        self.assertIn("terminal_ci_merge_dispatch_failed", monitor)
+        self.assertIn("ci_merge_dispatch_failed:merge_ready", monitor)
 
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")
@@ -763,7 +765,11 @@ class TestExactHeadCI(unittest.TestCase):
         }
         with mock.patch.object(ci_verifier, "control_is_live", side_effect=[True, True, True, False]), \
              mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[], [fallback]]), \
-             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
+             mock.patch.object(ci_verifier, "run_info", return_value=fallback), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(
+                 returncode=0,
+                 stdout="https://github.com/trusted/repo/actions/runs/501",
+             )) as dispatch:
             with self.assertRaises(ci_verifier.CIControlStopped) as raised:
                 ci_verifier.acquire_exact_run(
                     1, "agent/issue-d", sha, observe_seconds=0,

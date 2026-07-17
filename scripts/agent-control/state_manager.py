@@ -1778,6 +1778,7 @@ def main():
         expected_sha = sys.argv[5] if len(sys.argv) > 5 else None
         failed_run_id = sys.argv[6] if len(sys.argv) > 6 else None
         repair_attempt = sys.argv[7] if len(sys.argv) > 7 else None
+        expected_pr = sys.argv[8] if len(sys.argv) > 8 else None
         ok, reason = release_failed_capacity(
             issue_number,
             expected_active,
@@ -1786,6 +1787,7 @@ def main():
             repo,
             failed_run_id,
             repair_attempt,
+            expected_pr=expected_pr,
         )
         if not ok:
             print(f"FATAL: unable to release failed capacity: {reason}", file=sys.stderr)

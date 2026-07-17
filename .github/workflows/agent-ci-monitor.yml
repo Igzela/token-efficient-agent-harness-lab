@@ -147,15 +147,40 @@ jobs:
             "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
             terminal_ci_control_stopped ci_control_stopped:before_followup_dispatch "$OBSERVED_STATUS"
       - name: Dispatch merge only through the auto-merge control gate
+        id: dispatch_merge
         if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'merge_ready'
+        continue-on-error: true
         run: |
-          if python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null; then
-            gh workflow run agent-controller.yml --ref main \
-              -f command=dispatch-merge \
-              -f pr_number="${{ steps.decision.outputs.pr_number }}" \
-              -f issue="${{ steps.decision.outputs.issue_number }}" \
-              -f head_sha="${{ steps.decision.outputs.head_sha }}"
+          python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null
+          gh workflow run agent-controller.yml --ref main \
+            -f command=dispatch-merge \
+            -f pr_number="${{ steps.decision.outputs.pr_number }}" \
+            -f issue="${{ steps.decision.outputs.issue_number }}" \
+            -f head_sha="${{ steps.decision.outputs.head_sha }}"
+      - name: Record merge handoff failure or control stop
+        if: always() && steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'merge_ready'
+        env:
+          ISSUE_NUMBER: ${{ steps.decision.outputs.issue_number }}
+          PR_NUMBER: ${{ steps.decision.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.decision.outputs.head_sha }}
+          CI_RUN_ID: ${{ steps.decision.outputs.ci_run_id }}
+          OBSERVED_STATUS: ${{ steps.decision.outputs.observed_status }}
+          MERGE_OUTCOME: ${{ steps.dispatch_merge.outcome }}
+        run: |
+          set -euo pipefail
+          if python3 scripts/agent-control/control_state.py require-live >/dev/null; then
+            if [ "$MERGE_OUTCOME" = "success" ]; then
+              exit 0
+            fi
+            python3 scripts/agent-control/state_manager.py release-ci-terminal \
+              "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
+              terminal_ci_merge_dispatch_failed \
+              ci_merge_dispatch_failed:merge_ready "$OBSERVED_STATUS"
+            exit 0
           fi
+          python3 scripts/agent-control/state_manager.py release-ci-terminal \
+            "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
+            terminal_ci_control_stopped ci_control_stopped:before_merge_dispatch "$OBSERVED_STATUS"
       - name: Release the exact-head CI failure's active capacity
         if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'blocked'
         run: |
@@ -177,9 +202,19 @@ jobs:
           python3 scripts/agent-control/state_manager.py release-ci-terminal \
             "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
             "$TERMINAL_STATUS" "$NOOP_REASON" "$OBSERVED_STATUS"
-      - name: Consume unbound no-op decision without mutation
+      - name: Consume unbound no-op decision and release matching capacity
         if: steps.decision.outputs.action == 'noop' && steps.decision.outputs.terminal_status == ''
         env:
+          ISSUE_NUMBER: ${{ steps.decision.outputs.issue_number }}
+          PR_NUMBER: ${{ steps.decision.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.decision.outputs.head_sha }}
           NOOP_REASON: ${{ steps.decision.outputs.reason }}
         run: |
-          echo "No bound capacity mutation authorized: $NOOP_REASON"
+          set -euo pipefail
+          if [ -z "$ISSUE_NUMBER" ] || [ -z "$HEAD_SHA" ]; then
+            echo "No exact binding available; retaining fail-closed no-op: $NOOP_REASON"
+            exit 0
+          fi
+          echo "Releasing matching capacity for unbound no-op: $NOOP_REASON"
+          python3 scripts/agent-control/state_manager.py release-failed \
+            "$ISSUE_NUMBER" any agent-blocked "$HEAD_SHA" "" "" "$PR_NUMBER"

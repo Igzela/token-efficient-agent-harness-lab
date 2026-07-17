@@ -50,8 +50,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ${{ inputs.command == 'emergency-stop' && 'agent-emergency-stop' || 'agent-orchestrator-state' }}
-  cancel-in-progress: false
+  group: agent-orchestrator-state
+  cancel-in-progress: ${{ inputs.command == 'emergency-stop' }}
 
 jobs:
   control:

@@ -128,7 +128,9 @@ def dispatch_ready(issue: int, dispatch_id: str | None = None) -> dict[str, obje
     if not _record_dispatched(
         issue, dispatch_id, "worker", {"workflow": "agent-worker.yml"}
     ):
-        return {"dispatched": False, "issue": issue, "reason": "dispatch_state_failed"}
+        rolled_back = _rollback(issue, dispatch_id, previous, "dispatch_state_failed")
+        reason = "dispatch_state_failed" if rolled_back else "dispatch_state_failed_rollback_failed"
+        return {"dispatched": False, "issue": issue, "reason": reason}
     return {"dispatched": True, "issue": issue, "dispatch_id": dispatch_id}
 
 
@@ -153,7 +155,9 @@ def dispatch_repair(pr: int, issue: int, sha: str, run_id: str, repair_count: st
         reason = "workflow_dispatch_failed" if rolled_back else "workflow_dispatch_failed_rollback_failed"
         return {"dispatched": False, "reason": reason}
     if not _record_dispatched(issue, dispatch_id, "repair", fields):
-        return {"dispatched": False, "reason": "dispatch_state_failed"}
+        rolled_back = _rollback(issue, dispatch_id, previous, "dispatch_state_failed")
+        reason = "dispatch_state_failed" if rolled_back else "dispatch_state_failed_rollback_failed"
+        return {"dispatched": False, "reason": reason}
     return {"dispatched": True, "dispatch_id": dispatch_id}
 
 
@@ -172,7 +176,9 @@ def dispatch_review(pr: int, issue: int, sha: str) -> dict[str, object]:
         reason = "workflow_dispatch_failed" if rolled_back else "workflow_dispatch_failed_rollback_failed"
         return {"dispatched": False, "reason": reason}
     if not _record_dispatched(issue, dispatch_id, "review", fields):
-        return {"dispatched": False, "reason": "dispatch_state_failed"}
+        rolled_back = _rollback(issue, dispatch_id, previous, "dispatch_state_failed")
+        reason = "dispatch_state_failed" if rolled_back else "dispatch_state_failed_rollback_failed"
+        return {"dispatched": False, "reason": reason}
     return {"dispatched": True, "dispatch_id": dispatch_id}
 
 
@@ -246,7 +252,9 @@ def retry_review(issue: int) -> dict[str, object]:
         reason = "workflow_dispatch_failed" if rolled_back else "workflow_dispatch_failed_rollback_failed"
         return {"dispatched": False, "reason": reason}
     if not _record_dispatched(issue, dispatch_id, "retry-review", fields):
-        return {"dispatched": False, "reason": "dispatch_state_failed"}
+        rolled_back = _rollback(issue, dispatch_id, previous_labels, "dispatch_state_failed")
+        reason = "dispatch_state_failed" if rolled_back else "dispatch_state_failed_rollback_failed"
+        return {"dispatched": False, "reason": reason}
     return {"dispatched": True, "dispatch_id": dispatch_id}
 
 
@@ -284,7 +292,14 @@ def dispatch_merge(pr: int, issue: int, sha: str) -> dict[str, object]:
         reason = "workflow_dispatch_failed" if audited else "workflow_dispatch_failed_audit_failed"
         return {"dispatched": False, "reason": reason}
     if not _record_dispatched(issue, dispatch_id, "merge", fields):
-        return {"dispatched": False, "reason": "dispatch_state_failed"}
+        audited = sm.record_dispatch_state(
+            issue, dispatch_id, "merge", "failed",
+            {"reason": "dispatch_state_failed"}, _repo(),
+        )
+        return {
+            "dispatched": False,
+            "reason": "dispatch_state_failed" if audited else "dispatch_state_failed_audit_failed",
+        }
     return {"dispatched": True, "dispatch_id": dispatch_id}
 
 
@@ -340,6 +355,8 @@ def main() -> None:
     else:
         raise SystemExit("invalid dispatcher command arity")
     print(json.dumps(result, sort_keys=True))
+    if result.get("dispatched") is False:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

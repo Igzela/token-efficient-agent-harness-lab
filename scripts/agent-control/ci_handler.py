@@ -285,19 +285,28 @@ def _reselect_unsupported(issue, pr, sha, branch, event_run):
             acquisition = ci_verifier.acquire_exact_ci(
                 pr, branch, sha, observe_seconds=0, dispatch_timeout_seconds=60
             )
+        except ci_verifier.CIControlStopped as exc:
+            if exc.ci_run_id is None:
+                return None
+            return {
+                "status": "ci_control_stopped",
+                "workflow_run_id": exc.ci_run_id,
+                "observed_run": exc.observed_run,
+                "reason": str(exc),
+            }
         except ci_verifier.CIVerificationError:
             return None
-        refreshed_pr = sm.get_pr_info(pr)
-        if not refreshed_pr or refreshed_pr.get("state") != "OPEN":
-            return None
-        if (
-            refreshed_pr.get("headRefOid") != sha
-            or refreshed_pr.get("headRefName") != branch
-        ):
-            return None
-        binding_ok, _ = sm.verify_issue_pr_binding(issue, pr, sha)
-        if not binding_ok or not ci_verifier.control_is_live():
-            return None
+    refreshed_pr = sm.get_pr_info(pr)
+    if not refreshed_pr or refreshed_pr.get("state") != "OPEN":
+        return None
+    if (
+        refreshed_pr.get("headRefOid") != sha
+        or refreshed_pr.get("headRefName") != branch
+    ):
+        return None
+    binding_ok, _ = sm.verify_issue_pr_binding(issue, pr, sha)
+    if not binding_ok or not ci_verifier.control_is_live():
+        return None
     try:
         selected_id = int(acquisition["workflow_run_id"])
         event_id = int(event_run.get("databaseId", 0))
@@ -324,6 +333,22 @@ def _reselect_unsupported(issue, pr, sha, branch, event_run):
     ):
         raise RuntimeError("unable to persist reselected exact-head acquisition")
     return acquisition
+
+
+def _process_reselection_result(issue, pr, sha, replacement):
+    if replacement.get("status") == "ci_control_stopped":
+        run_id = int(replacement["workflow_run_id"])
+        run = replacement.get("observed_run") or {
+            "databaseId": run_id,
+            "status": "dispatched",
+            "conclusion": "",
+            "headSha": sha,
+        }
+        return _record_ci_terminal(
+            issue, pr, sha, run_id, run, "ci_control_stopped",
+            reason=f"ci_control_stopped:{replacement.get('reason', 'reselection_stopped')}",
+        )
+    return process_ci_dispatch(issue, pr, sha, int(replacement["workflow_run_id"]))
 
 
 def _state_unavailable_result(issue, pr, sha, run_id, detail):
@@ -479,12 +504,19 @@ def process_ci_completion(event_path):
             and worker_branch == info["head_branch"] == pr_info.get("headRefName")
         ):
             run, run_failure = _run_for_event(info)
-            if run:
-                return _record_ci_terminal(
-                    issue_number, pr_number, info["head_sha"], info["run_id"], run,
-                    "ci_stale_binding", action="stale",
-                    reason=f"ci_stale_binding:pr_head_moved:{run_failure or 'current_head_changed'}",
-                )
+            stale_run = run or {
+                "databaseId": info["run_id"],
+                "status": info["status"],
+                "conclusion": info["conclusion"],
+                "headSha": info["head_sha"],
+                "headBranch": info["head_branch"],
+                "workflowName": info["workflow_name"],
+            }
+            return _record_ci_terminal(
+                issue_number, pr_number, info["head_sha"], info["run_id"], stale_run,
+                "ci_stale_binding", action="stale",
+                reason=f"ci_stale_binding:pr_head_moved:{run_failure or 'current_head_changed'}",
+            )
     binding_ok, binding_reason = sm.verify_issue_pr_binding(
         issue_number, pr_number, current_head,
     )
@@ -559,9 +591,8 @@ def process_ci_completion(event_path):
                 issue_number, pr_number, current_head, info["run_id"], str(exc)
             )
         if replacement is not None:
-            return process_ci_dispatch(
-                issue_number, pr_number, current_head,
-                int(replacement["workflow_run_id"]),
+            return _process_reselection_result(
+                issue_number, pr_number, current_head, replacement,
             )
         conclusion = info["conclusion"]
         try:
@@ -938,10 +969,7 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
                 issue, pr_number, head_sha, ci_run_id, str(exc)
             )
         if replacement is not None:
-            return process_ci_dispatch(
-                issue, pr_number, head_sha,
-                int(replacement["workflow_run_id"]),
-            )
+            return _process_reselection_result(issue, pr_number, head_sha, replacement)
         return _record_ci_terminal(
             issue, pr_number, head_sha, ci_run_id, run, ci_conclusion,
         )
