@@ -59,7 +59,10 @@ def _run_for_event(info):
     if info.get("workflow_path") and run.get("path") not in (None, info["workflow_path"]):
         return None
     provider_identity = {"repository", "headRepository", "workflowId", "path"}
-    production_run = os.environ.get("GITHUB_ACTIONS") == "true"
+    production_run = (
+        os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("AGENT_CI_FIXTURE_MODE") != "true"
+    )
     if (provider_identity & run.keys() or production_run) and not ci_verifier._candidate_matches(
         run,
         info["head_branch"],

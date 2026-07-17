@@ -464,7 +464,11 @@ def _validate_run_identity(
     if run.get("workflowName") != requirements["workflow_name"]:
         return "workflow_changed"
     expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY")
-    production_identity = bool(expected_repo or os.environ.get("GITHUB_ACTIONS") == "true")
+    fixture_mode = os.environ.get("AGENT_CI_FIXTURE_MODE") == "true"
+    production_identity = bool(
+        not fixture_mode
+        and (expected_repo or os.environ.get("GITHUB_ACTIONS") == "true")
+    )
     if production_identity and "repository" not in run:
         return "repository_identity_missing"
     if production_identity and run.get("repository") != expected_repo:

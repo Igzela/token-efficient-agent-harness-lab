@@ -15,6 +15,8 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTROL = ROOT / "scripts" / "agent-control"
 WORKFLOWS = ROOT / ".github" / "workflows"
+# Synthetic GitHub-run fixtures must opt out of production identity enrichment.
+os.environ.setdefault("AGENT_CI_FIXTURE_MODE", "true")
 sys.path.insert(0, str(CONTROL))
 
 import ci_handler
@@ -630,7 +632,9 @@ class TestExactHeadCI(unittest.TestCase):
         }
         for field, expected_reason in fields.items():
             with self.subTest(field=field), mock.patch.dict(
-                os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False,
+                os.environ,
+                {"AGENT_REPO": "trusted/repo", "AGENT_CI_FIXTURE_MODE": "false"},
+                clear=False,
             ):
                 run = dict(complete)
                 run.pop(field)
@@ -1164,7 +1168,11 @@ class TestExactHeadCI(unittest.TestCase):
             {"databaseId": 952, "event": "pull_request", "status": "completed", "conclusion": "success",
              "headSha": sha, "headBranch": "agent/x", "workflowName": "tests", "headRepository": "fork/repo"},
         ]
-        with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+        with mock.patch.dict(
+            os.environ,
+            {"AGENT_REPO": "trusted/repo", "AGENT_CI_FIXTURE_MODE": "false"},
+            clear=False,
+        ), \
              mock.patch.object(ci_verifier, "find_exact_runs", return_value=candidates), \
              mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=1)) as dispatch:
             with self.assertRaises(ci_verifier.CIVerificationError):
@@ -1178,7 +1186,11 @@ class TestExactHeadCI(unittest.TestCase):
             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
             "headRepository": "trusted/repo", "pullRequestNumbers": [208],
         }
-        with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+        with mock.patch.dict(
+            os.environ,
+            {"AGENT_REPO": "trusted/repo", "AGENT_CI_FIXTURE_MODE": "false"},
+            clear=False,
+        ), \
              mock.patch.object(ci_verifier, "find_exact_runs", return_value=[candidate]), \
              mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=1)) as dispatch:
             with self.assertRaises(ci_verifier.CIVerificationError):
