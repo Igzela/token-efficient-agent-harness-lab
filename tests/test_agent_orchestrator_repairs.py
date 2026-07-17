@@ -201,6 +201,9 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("steps.decision.outputs.terminal_status != ''", monitor)
         self.assertIn("steps.decision.outputs.terminal_status == ''", monitor)
         self.assertIn("_record_ci_noop", (CONTROL / "ci_handler.py").read_text())
+        self.assertIn("agent-pr-state-${{ inputs.pr || github.event.workflow_run.pull_requests[0].number", monitor)
+        for workflow in ("agent-review.yml", "agent-ci-repair.yml", "agent-merge.yml"):
+            self.assertIn("group: agent-pr-state-${{ inputs.pr_number }}", self.read(workflow))
 
     def test_worker_has_post_claim_nonstart_capacity_release(self):
         source = self.read("agent-worker.yml")
@@ -1104,6 +1107,7 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(result["reason"], "ci_terminal_cancelled")
         record.assert_called_once()
         self.assertEqual(unavailable["action"], "blocked")
+        self.assertEqual(unavailable["terminal_status"], "terminal_ci_state_unavailable")
         self.assertIn("ci_state_unavailable", unavailable["reason"])
 
     def test_canonical_selection_prefers_newer_completed_result_over_run_id(self):
@@ -1482,6 +1486,22 @@ class TestExactHeadCI(unittest.TestCase):
         result = ci_handler.process_ci_dispatch(42, 207, "abc123", 99999)
         self.assertEqual(result["action"], "stale")
         self.assertIn("exact_head_ci_rejected", result["reason"])
+
+    def test_typed_verifier_identity_reason_is_preserved_for_terminal_evidence(self):
+        self.assertEqual(
+            ci_handler._typed_ci_verification_reason(
+                ci_verifier.CIVerificationError(
+                    "CI run identity rejected: workflow_path_identity_missing"
+                )
+            ),
+            "workflow_path_identity_missing",
+        )
+        self.assertEqual(
+            ci_handler._typed_ci_verification_reason(
+                ci_verifier.CIVerificationError("required CI jobs are absent: tests")
+            ),
+            "exact_head_ci_rejected",
+        )
 
     @mock.patch.object(ci_handler, "_record_ci_terminal", return_value={
         "action": "blocked", "pr_number": 207, "issue_number": 42,

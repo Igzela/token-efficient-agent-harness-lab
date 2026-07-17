@@ -1166,6 +1166,18 @@ def release_failed_capacity(
         state_run_id = (ci_state or {}).get("workflow_run_id") or (ci_state or {}).get("ci_run_id")
         if state_run_id is None or str(state_run_id) != str(expected_run_id):
             return False, "ci_run_mismatch"
+    # Re-read the state owner immediately before the label mutation.  The
+    # earlier checks authorize the evidence; this check prevents a newer
+    # active phase observed during the authorization window from being
+    # demoted by a stale terminal result.
+    latest_labels = get_issue_labels_checked(issue_number, repo)
+    if latest_labels is None:
+        return False, "label_state_unavailable"
+    latest_active = latest_labels & ACTIVE_LABELS
+    if latest_active != active:
+        return False, "capacity_state_changed"
+    if latest_labels & (TERMINAL_LABELS | {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}):
+        return False, "newer_terminal_state_exists"
     if not set_labels(issue_number, terminal_label, repo=repo):
         return False, "label_transition_failed"
     return True, "released"

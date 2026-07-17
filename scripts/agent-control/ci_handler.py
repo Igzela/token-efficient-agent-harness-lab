@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 import ci_verifier
@@ -310,14 +311,30 @@ def _reselect_unsupported(issue, pr, sha, branch, event_run):
 
 
 def _state_unavailable_result(issue, pr, sha, run_id, detail):
+    safe_detail = re.sub(r"[^a-z0-9_.:/()-]+", "_", str(detail).lower())[:180].strip("_")
+    reason = "ci_state_unavailable"
+    if safe_detail:
+        reason = f"{reason}:{safe_detail}"
     return {
         "action": "blocked",
         "pr_number": pr,
         "issue_number": issue,
         "head_sha": sha,
         "ci_run_id": run_id,
-        "reason": f"ci_state_unavailable:{detail}",
+        "terminal_status": "terminal_ci_state_unavailable",
+        "observed_status": "unknown",
+        "reason": reason,
     }
+
+
+def _typed_ci_verification_reason(error):
+    """Keep a verifier's stable typed reason in terminal evidence."""
+    message = str(error)
+    prefix = "CI run identity rejected: "
+    candidate = message[len(prefix):] if message.startswith(prefix) else message
+    if re.fullmatch(r"[a-z0-9_]+", candidate):
+        return candidate
+    return "exact_head_ci_rejected"
 
 
 def _noop_result(issue, pr_number, head_sha, ci_run_id, reason):
@@ -525,7 +542,7 @@ def process_ci_completion(event_path):
             return _record_ci_terminal(
                 issue_number, pr_number, current_head, info["run_id"], run,
                 "ci_stale_binding", action="stale",
-                reason="ci_stale_binding:exact_head_ci_rejected",
+                reason=f"ci_stale_binding:{_typed_ci_verification_reason(exc)}",
             )
         try:
             previous_state = sm.read_ci_state(issue_number)
@@ -871,7 +888,7 @@ def process_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id):
             return _record_ci_terminal(
                 issue, pr_number, head_sha, ci_run_id, run,
                 "ci_stale_binding", action="stale",
-                reason="ci_stale_binding:exact_head_ci_rejected",
+                reason=f"ci_stale_binding:{_typed_ci_verification_reason(exc)}",
             )
         try:
             previous_state = sm.read_ci_state(issue)

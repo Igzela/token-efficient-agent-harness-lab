@@ -627,6 +627,19 @@ class TestCapacityRelease(unittest.TestCase):
         self.assertEqual(reason, "ci_active_phase_mismatch")
         transition.assert_not_called()
 
+    def test_terminal_ci_release_stops_when_capacity_changes_before_mutation(self):
+        with mock.patch.object(
+            sm,
+            "get_issue_labels_checked",
+            side_effect=[{sm.LABEL_RUNNING}, {sm.LABEL_REVIEW_RUNNING}],
+        ), mock.patch.object(sm, "set_labels") as transition:
+            ok, reason = sm.release_failed_capacity(
+                42, "any", sm.LABEL_BLOCKED, repo="acme/repo",
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "capacity_state_changed")
+        transition.assert_not_called()
+
     def test_post_claim_emergency_or_scope_rejection_releases_worker(self):
         for gate_enabled, validate_result, can_start in (
             ("false", "skipped", ""),
