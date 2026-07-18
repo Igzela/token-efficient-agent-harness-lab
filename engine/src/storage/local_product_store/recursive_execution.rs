@@ -311,6 +311,14 @@ impl LocalProductStore {
     /// Persist one complete tree snapshot and its bounded node identity index.
     /// The snapshot is the restart authority; the index is query/evidence aid.
     pub fn save_recursive_tree(&self, tree: &RecursiveTree) -> Result<(), String> {
+        self.save_recursive_tree_with_expected_version(tree, tree.version.saturating_sub(1))
+    }
+
+    pub(crate) fn save_recursive_tree_with_expected_version(
+        &self,
+        tree: &RecursiveTree,
+        expected_version: u64,
+    ) -> Result<(), String> {
         if tree.schema_version != RECURSIVE_SCHEMA_VERSION {
             return Err("recursive tree schema version mismatch".to_string());
         }
@@ -323,7 +331,7 @@ impl LocalProductStore {
                 check_expected_sqlite(
                     &tx,
                     &tree.root_run_id,
-                    tree.version.saturating_sub(1),
+                    expected_version,
                 )?;
                 tx.execute(
                     "INSERT INTO recursive_execution_trees
@@ -394,7 +402,6 @@ impl LocalProductStore {
                     )
                     .map_err(|error| error.to_string())?
                     .map(|row| row.get(0));
-                let expected_version = tree.version.saturating_sub(1);
                 let matches = if expected_version == 0 {
                     current.is_none()
                 } else {

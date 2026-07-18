@@ -3596,16 +3596,27 @@ impl LocalProductStore {
                                         .map(|node_id| (node_id.to_string(), attempt_count))
                                 })
                         });
+                    let mut recursive_tree_missing = false;
                     let recursive_retry = if let Some((recursive_node_id, attempt)) =
                         recursive_state.as_ref()
                     {
-                        *attempt <= 1
-                            && super::recursive_execution::recursive_retry_allowed_sqlite(
+                        if *attempt > 1 {
+                            false
+                        } else {
+                            match super::recursive_execution::recursive_retry_allowed_sqlite(
                                 &tx,
                                 run_id,
                                 recursive_node_id,
                                 &recursive_retry_usage(),
-                            )?
+                            ) {
+                                Ok(allowed) => allowed,
+                                Err(error) if error == "stale_parent" => {
+                                    recursive_tree_missing = true;
+                                    false
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        }
                     } else {
                         false
                     };
@@ -3623,6 +3634,20 @@ impl LocalProductStore {
                     if updated > 0 {
                         count += updated as i64;
                         if let Some((recursive_node_id, attempt)) = recursive_state {
+                            if recursive_tree_missing {
+                                append_audit_locked(
+                                    &tx,
+                                    &now,
+                                    "scheduler",
+                                    "recursive.tree_missing_terminalized",
+                                    node_id,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": node_id,
+                                        "reason": "stale_parent",
+                                    }),
+                                )?;
+                            } else {
                             super::recursive_execution::sync_recursive_completion_sqlite(
                                 &tx,
                                 run_id,
@@ -3633,6 +3658,7 @@ impl LocalProductStore {
                                 &recursive_retry_usage(),
                                 &now,
                             )?;
+                            }
                         }
                         append_audit_locked(
                             &tx,
@@ -3709,16 +3735,27 @@ impl LocalProductStore {
                                         .map(|node_id| (node_id.to_string(), i64::from(attempt_count)))
                                 })
                         });
+                    let mut recursive_tree_missing = false;
                     let recursive_retry = if let Some((recursive_node_id, attempt)) =
                         recursive_state.as_ref()
                     {
-                        *attempt <= 1
-                            && super::recursive_execution::recursive_retry_allowed_pg(
+                        if *attempt > 1 {
+                            false
+                        } else {
+                            match super::recursive_execution::recursive_retry_allowed_pg(
                                 &mut tx,
                                 run_id,
                                 recursive_node_id,
                                 &recursive_retry_usage(),
-                            )?
+                            ) {
+                                Ok(allowed) => allowed,
+                                Err(error) if error == "stale_parent" => {
+                                    recursive_tree_missing = true;
+                                    false
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        }
                     } else {
                         false
                     };
@@ -3736,6 +3773,20 @@ impl LocalProductStore {
                     if updated > 0 {
                         count += updated as i64;
                         if let Some((recursive_node_id, attempt)) = recursive_state {
+                            if recursive_tree_missing {
+                                pg_append_audit(
+                                    &mut tx,
+                                    &now,
+                                    "scheduler",
+                                    "recursive.tree_missing_terminalized",
+                                    node_id,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": node_id,
+                                        "reason": "stale_parent",
+                                    }),
+                                )?;
+                            } else {
                             super::recursive_execution::sync_recursive_completion_pg(
                                 &mut tx,
                                 run_id,
@@ -3746,6 +3797,7 @@ impl LocalProductStore {
                                 &recursive_retry_usage(),
                                 &now,
                             )?;
+                            }
                         }
                         pg_append_audit(
                             &mut tx,

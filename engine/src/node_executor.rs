@@ -1827,7 +1827,10 @@ impl AgentStepExecutor {
                         Ok(admission) => admission,
                         Err(reason) => {
                             tree.record_rejection(&proposal_id, reason);
-                            let rejection_persisted = self.store.save_recursive_tree(&tree).is_ok();
+                            let rejection_persisted = self
+                                .store
+                                .save_recursive_tree_with_expected_version(&tree, expected_version)
+                                .is_ok();
                             self.append_agent_step_audit_best_effort(
                                 "agent_step.recursive_proposal_rejected",
                                 agent_id,

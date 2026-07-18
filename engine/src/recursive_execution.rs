@@ -61,7 +61,7 @@ impl RecursiveFailureReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RecursiveBudget {
     pub calls_remaining: u64,
     pub tokens_remaining: u64,
@@ -86,6 +86,17 @@ impl RecursiveBudget {
         self.time_ms_remaining = self
             .time_ms_remaining
             .saturating_sub(other.time_ms_remaining);
+    }
+
+    fn add(&mut self, other: &Self) {
+        self.calls_remaining = self.calls_remaining.saturating_add(other.calls_remaining);
+        self.tokens_remaining = self.tokens_remaining.saturating_add(other.tokens_remaining);
+        self.cost_micros_remaining = self
+            .cost_micros_remaining
+            .saturating_add(other.cost_micros_remaining);
+        self.time_ms_remaining = self
+            .time_ms_remaining
+            .saturating_add(other.time_ms_remaining);
     }
 
     fn bounded_by(&self, other: &Self) -> Self {
@@ -171,6 +182,13 @@ pub struct RecursiveTree {
     pub root_scope: RecursiveScope,
     pub root_capabilities: BTreeSet<String>,
     pub root_budget: RecursiveBudget,
+    /// Remaining unallocated tree authority. `spent_budget` records actual
+    /// usage separately so reservation and execution accounting cannot be
+    /// confused.
+    #[serde(default)]
+    pub root_budget_limit: Option<RecursiveBudget>,
+    #[serde(default)]
+    pub spent_budget: RecursiveBudget,
     pub paused: bool,
     pub version: u64,
     pub nodes: BTreeMap<String, RecursiveNode>,
@@ -291,7 +309,14 @@ impl RecursiveTree {
             root_node_id: node_id,
             root_scope: scope,
             root_capabilities: capabilities,
+            root_budget_limit: Some(budget.clone()),
             root_budget: budget,
+            spent_budget: RecursiveBudget {
+                calls_remaining: 0,
+                tokens_remaining: 0,
+                cost_micros_remaining: 0,
+                time_ms_remaining: 0,
+            },
             paused: false,
             version: 1,
             nodes,
@@ -478,14 +503,33 @@ impl RecursiveTree {
         success: bool,
         usage: &RecursiveBudget,
     ) -> Result<(), RecursiveFailureReason> {
+        let within_node_budget = {
+            let node = self
+                .nodes
+                .get(node_id)
+                .ok_or(RecursiveFailureReason::StaleParent)?;
+            if node.lease_id.as_deref() != Some(lease_id) {
+                return Err(RecursiveFailureReason::ReceiptConflict);
+            }
+            node.budget.can_spend(usage)
+        };
+        let within_tree_budget = self
+            .root_budget_limit
+            .as_ref()
+            .map(|limit| {
+                limit.can_spend(&self.spent_budget) && {
+                    let mut after = self.spent_budget.clone();
+                    after.add(usage);
+                    limit.can_spend(&after)
+                }
+            })
+            .unwrap_or(true);
+        self.spent_budget.add(usage);
+        let within_budget = within_node_budget && within_tree_budget;
         let node = self
             .nodes
             .get_mut(node_id)
             .ok_or(RecursiveFailureReason::StaleParent)?;
-        if node.lease_id.as_deref() != Some(lease_id) {
-            return Err(RecursiveFailureReason::ReceiptConflict);
-        }
-        let within_budget = node.budget.can_spend(usage);
         node.budget.spend(usage);
         node.status = if success && within_budget {
             "completed"
@@ -622,6 +666,12 @@ impl RecursiveTree {
             "accepted_proposal_count": self.accepted_proposals.len(),
             "rejected_proposal_count": self.rejected_proposals.len(),
             "rejected_proposals": self.rejected_proposals,
+            "spent_budget": {
+                "calls": self.spent_budget.calls_remaining,
+                "tokens": self.spent_budget.tokens_remaining,
+                "cost_micros": self.spent_budget.cost_micros_remaining,
+                "time_ms": self.spent_budget.time_ms_remaining,
+            },
             "nodes": nodes,
         })
     }
