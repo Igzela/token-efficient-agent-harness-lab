@@ -101,6 +101,22 @@ class CIState:
 
 
 @dataclass(frozen=True)
+class CITerminalResolutionState:
+    issue_number: int
+    pr_number: int
+    head_sha: str
+    ci_run_id: int
+    terminal_status: str
+    reason: str
+    observed_status: str
+    capacity_release_outcome: str
+    capacity_release_reason: str
+
+    def to_wire(self):
+        return _state_wire("agent-orchestrator-ci-terminal-resolution", 1, self)
+
+
+@dataclass(frozen=True)
 class CIAcquisitionState:
     pr_number: int
     head_sha: str
@@ -426,6 +442,180 @@ def record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, extra=
         extra,
     ).to_wire()
     return comment_on_issue(issue_number, json.dumps(state), repo)
+
+
+def record_ci_terminal_state(
+    issue_number,
+    pr_number,
+    head_sha,
+    ci_run_id,
+    terminal_status,
+    observed_status,
+    reason,
+    repo="",
+    extra=None,
+):
+    """Persist bounded terminal CI evidence idempotently."""
+
+    if (
+        not isinstance(terminal_status, str)
+        or re.fullmatch(r"terminal_[a-z0-9_]+", terminal_status) is None
+        or not isinstance(observed_status, str)
+        or re.fullmatch(r"[a-z0-9_]{1,40}", observed_status) is None
+        or not isinstance(reason, str)
+        or re.fullmatch(r"[a-z0-9_:.()/-]{1,240}", reason) is None
+    ):
+        return False
+
+    details = dict(extra or {})
+    details.update({
+        "issue_number": int(issue_number),
+        "observed_status": str(observed_status),
+        "reason": str(reason),
+    })
+    state = CIState(
+        int(pr_number),
+        head_sha,
+        int(ci_run_id) if str(ci_run_id).isdigit() else ci_run_id,
+        details.get("workflow_name", "tests"),
+        details.get("required_jobs", []),
+        details.get("successful_jobs", []),
+        terminal_status,
+        details,
+    ).to_wire()
+    try:
+        comments = get_issue_comments(issue_number, repo)
+    except StateUnavailableError:
+        return False
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        try:
+            previous = json.loads(comment.get("body", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if previous == state:
+            return True
+    return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
+
+
+def release_and_record_ci_terminal(
+    issue_number,
+    pr_number,
+    head_sha,
+    ci_run_id,
+    terminal_status,
+    reason,
+    observed_status,
+    repo="",
+):
+    """Record terminal intent, release matching capacity, and finalize evidence."""
+
+    if (
+        not isinstance(terminal_status, str)
+        or re.fullmatch(r"terminal_[a-z0-9_]+", terminal_status) is None
+        or not isinstance(reason, str)
+        or re.fullmatch(r"[a-z0-9_:.()/-]{1,240}", reason) is None
+        or not isinstance(observed_status, str)
+        or re.fullmatch(r"[a-z0-9_]{1,40}", observed_status) is None
+    ):
+        return False, "terminal_resolution_evidence_invalid"
+
+    state = CITerminalResolutionState(
+        int(issue_number),
+        int(pr_number),
+        head_sha,
+        int(ci_run_id),
+        terminal_status,
+        reason,
+        observed_status,
+        "pending",
+        "release_pending",
+    ).to_wire()
+    try:
+        comments = get_issue_comments(issue_number, repo)
+    except StateUnavailableError:
+        return False, "terminal_resolution_state_unavailable"
+    pending_found = False
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        try:
+            previous = json.loads(comment.get("body", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(previous, dict):
+            continue
+        if (
+            previous.get("kind") == state["kind"]
+            and previous.get("issue_number") == state["issue_number"]
+            and previous.get("pr_number") == state["pr_number"]
+            and previous.get("head_sha") == state["head_sha"]
+            and previous.get("ci_run_id") == state["ci_run_id"]
+            and previous.get("terminal_status") == state["terminal_status"]
+            and previous.get("reason") == state["reason"]
+            and previous.get("observed_status") == state["observed_status"]
+        ):
+            previous_outcome = previous.get("capacity_release_outcome")
+            if previous_outcome in {"released", "already_released", "preserved"}:
+                return True, "already_recorded"
+            state = previous
+            pending_found = previous_outcome == "pending"
+    if not pending_found:
+        if not comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo):
+            return False, "terminal_resolution_write_failed"
+
+    try:
+        downstream_inflight = has_inflight_ci_dispatch(
+            issue_number, pr_number, head_sha, ci_run_id, repo
+        )
+    except StateUnavailableError:
+        return False, "dispatch_state_unavailable"
+    if downstream_inflight and terminal_status in {
+        "terminal_noop", "terminal_ci_unbound_noop"
+    }:
+        finalized = CITerminalResolutionState(
+            int(issue_number),
+            int(pr_number),
+            head_sha,
+            int(ci_run_id),
+            terminal_status,
+            reason,
+            observed_status,
+            "preserved",
+            "dispatch_in_flight",
+        ).to_wire()
+        if not comment_on_issue(issue_number, json.dumps(finalized, sort_keys=True), repo):
+            return False, "terminal_resolution_write_failed"
+        return True, "dispatch_in_flight"
+
+    release_ok, release_reason = release_failed_capacity(
+        issue_number,
+        "any",
+        LABEL_BLOCKED,
+        expected_sha=head_sha,
+        repo=repo,
+        expected_pr=pr_number,
+        # An explicit-dispatch unbound no-op has exact run evidence in the
+        # terminal record but may arrive before a CI-state comment exists.
+        # Its worker PR/head binding remains the capacity authorization.
+        expected_run_id=None if terminal_status == "terminal_ci_unbound_noop" else ci_run_id,
+        protect_review=terminal_status == "terminal_ci_unbound_noop",
+    )
+    finalized = CITerminalResolutionState(
+        int(issue_number),
+        int(pr_number),
+        head_sha,
+        int(ci_run_id),
+        terminal_status,
+        reason,
+        observed_status,
+        "released" if release_ok else "failed",
+        release_reason,
+    ).to_wire()
+    if not comment_on_issue(issue_number, json.dumps(finalized, sort_keys=True), repo):
+        return False, "terminal_resolution_write_failed"
+    return release_ok, release_reason
 
 
 def record_ci_acquisition(
@@ -868,6 +1058,123 @@ def read_dispatch_state(issue_number, dispatch_id=None, repo=""):
     return None
 
 
+def reconcile_claimed_dispatch(issue_number, dispatch_id, reason, repo=""):
+    """Compensate a dispatch claim left incomplete by workflow cancellation.
+
+    A ``claimed`` state means the dispatcher recorded ownership before the
+    active label mutation, but did not durably record that the child
+    workflow was accepted.  Reconcile only that state.  A ``dispatched``
+    state remains owned by the child workflow and is never released here.
+    """
+
+    try:
+        state = read_dispatch_state(issue_number, dispatch_id, repo)
+    except StateUnavailableError:
+        return False, "dispatch_state_unavailable"
+    if not state:
+        return True, "not_claimed"
+    status = state.get("status")
+    if status == "dispatched":
+        return True, "dispatched_in_flight"
+    if status != "claimed":
+        return True, "already_terminal"
+    details = state.get("details")
+    if not isinstance(details, dict):
+        return False, "dispatch_claim_details_invalid"
+    target_label = details.get("target_label")
+    if target_label == LABEL_REVIEW_RUNNING:
+        terminal_label = LABEL_REVIEW_BLOCKED
+    elif target_label in {LABEL_RUNNING, LABEL_CI_REPAIRING}:
+        terminal_label = LABEL_BLOCKED
+    else:
+        return False, "dispatch_claim_target_invalid"
+    expected_pr = details.get("pr_number")
+    expected_sha = details.get("head_sha")
+    expected_run_id = (
+        details.get("ci_run_id") if target_label == LABEL_CI_REPAIRING else None
+    )
+    release_ok, release_reason = release_failed_capacity(
+        issue_number,
+        target_label,
+        terminal_label,
+        expected_sha=expected_sha or None,
+        repo=repo,
+        expected_pr=expected_pr,
+        expected_run_id=expected_run_id,
+    )
+    if not release_ok:
+        return False, f"capacity_release_failed:{release_reason}"
+    failed_details = {
+        **details,
+        "reason": reason,
+        "capacity_release": release_reason,
+    }
+    if not record_dispatch_state(
+        issue_number, dispatch_id, state.get("action", "unknown"),
+        "failed", failed_details, repo,
+    ):
+        return False, "dispatch_state_failure_record_failed"
+    return True, "released"
+
+
+def has_inflight_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id, repo=""):
+    """Find an accepted downstream dispatch that still owns this CI phase."""
+
+    comments = get_issue_comments(issue_number, repo)
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        try:
+            state = json.loads(comment.get("body", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (
+            not isinstance(state, dict)
+            or state.get("kind") != "agent-orchestrator-dispatch-state"
+            or state.get("status") not in {"claimed", "dispatched"}
+        ):
+            continue
+        details = state.get("details") or {}
+        if state.get("action") == "repair":
+            matches = (
+                details.get("pr_number") == int(pr_number)
+                and details.get("head_sha") == head_sha
+                and str(details.get("ci_run_id")) == str(ci_run_id)
+            )
+        elif state.get("action") in {"review", "retry-review"}:
+            matches = (
+                details.get("pr_number") == int(pr_number)
+                and details.get("head_sha") == head_sha
+            )
+        else:
+            matches = False
+        if matches:
+            return True
+    return False
+
+
+def dispatch_state_binding_matches(
+    state, issue_number, action, expected_details, target_label=None
+):
+    """Validate a dispatch claim before treating it as retry-safe."""
+
+    if not isinstance(state, dict):
+        return False
+    if state.get("kind") != "agent-orchestrator-dispatch-state":
+        return False
+    if state.get("issue_number") != int(issue_number) or state.get("action") != action:
+        return False
+    details = state.get("details")
+    if not isinstance(details, dict):
+        return False
+    if target_label is not None and details.get("target_label") != target_label:
+        return False
+    return all(
+        str(details.get(key)) == str(value)
+        for key, value in expected_details.items()
+    )
+
+
 def parse_binding_marker(body):
     match = re.search(r"<!-- agent-orchestrator-binding:\s*(\{.*?\})\s*-->", body or "", re.DOTALL)
     if not match:
@@ -939,6 +1246,42 @@ def verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo=""):
     return True, "ok"
 
 
+def verify_ci_terminal_binding(issue_number, pr_number, expected_sha, repo=""):
+    """Revalidate the PR/worker binding before terminal capacity release.
+
+    A stale CI event is allowed to release the worker claim for its exact
+    old head after the same PR advances, but it must still be the same
+    issue-bound branch and PR.  An unchanged head uses the full binding
+    validator above; the moved-head case deliberately does not authorize
+    the new head.
+    """
+
+    try:
+        worker = read_worker_state(issue_number, repo)
+    except StateUnavailableError:
+        return False, "worker_state_unavailable"
+    if not worker or worker.get("pr_number") != int(pr_number) or worker.get("head_sha") != expected_sha:
+        return False, "worker_binding_mismatch"
+    expected_branch = (worker.get("extra") or {}).get("branch") or f"agent/issue-{issue_number}"
+    pr = get_pr_info(pr_number, repo)
+    if not pr:
+        # The explicit-dispatch no-op path can be entered when the PR API is
+        # transiently unavailable.  The exact worker claim still identifies
+        # the issue/PR/head capacity; release it through the same bounded
+        # compensation path rather than leaving the Issue active.
+        return True, "pr_unavailable_worker_bound"
+    if pr.get("headRefName") != expected_branch:
+        return False, "branch_mismatch"
+    marker = parse_binding_marker(pr.get("body", ""))
+    if not marker or marker.get("issue_number") != int(issue_number) or marker.get("branch") != expected_branch:
+        return False, "binding_marker_mismatch"
+    if not re.search(rf"(?:Closes|Fixes|Resolves|Implements)\s+#?{int(issue_number)}\b", pr.get("body", ""), re.IGNORECASE):
+        return False, "missing_issue_link"
+    if pr.get("headRefOid") == expected_sha:
+        return verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo)
+    return True, "stale_head_replaced"
+
+
 def release_failed_capacity(
     issue_number,
     expected_active,
@@ -947,6 +1290,9 @@ def release_failed_capacity(
     repo="",
     failed_run_id=None,
     repair_attempt=None,
+    expected_pr=None,
+    expected_run_id=None,
+    protect_review=False,
 ):
     """Idempotently release only the current failed workflow's active capacity."""
 
@@ -959,12 +1305,22 @@ def release_failed_capacity(
         return False, "label_state_unavailable"
     active = labels & ACTIVE_LABELS
     if expected_active == "any":
+        if not active and terminal_label in labels:
+            return True, "already_released"
         if len(active) != 1:
             return False, "active_state_mismatch"
     elif active != {expected_active}:
         if terminal_label in labels and not active:
             return True, "already_released"
         return False, "active_state_mismatch"
+    # A CI terminal outcome is allowed to release the repair phase when its
+    # exact CI state/run binding matches.  Review capacity is owned by the
+    # review workflow and remains protected from unrelated CI terminal events.
+    if (
+        active == {LABEL_REVIEW_RUNNING}
+        and (expected_run_id is not None or protect_review)
+    ):
+        return False, "ci_active_phase_mismatch"
     if labels & (TERMINAL_LABELS | {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}):
         return False, "newer_terminal_state_exists"
     if expected_sha:
@@ -983,6 +1339,39 @@ def release_failed_capacity(
         )
         if not same_head and not same_repair:
             return False, "worker_head_mismatch"
+    if expected_pr is not None:
+        try:
+            worker = read_worker_state(issue_number, repo)
+        except StateUnavailableError:
+            return False, "worker_state_unavailable"
+        if not worker or worker.get("pr_number") != int(expected_pr):
+            return False, "worker_pr_mismatch"
+    if expected_run_id is not None:
+        try:
+            ci_state = read_ci_state(issue_number, repo)
+        except StateUnavailableError:
+            return False, "ci_state_unavailable"
+        state_run_id = (ci_state or {}).get("workflow_run_id") or (ci_state or {}).get("ci_run_id")
+        if state_run_id is None or str(state_run_id) != str(expected_run_id):
+            return False, "ci_run_mismatch"
+    # Re-read the state owner immediately before the label mutation.  The
+    # earlier checks authorize the evidence; this check prevents a newer
+    # active phase observed during the authorization window from being
+    # demoted by a stale terminal result.
+    latest_labels = get_issue_labels_checked(issue_number, repo)
+    if latest_labels is None:
+        return False, "label_state_unavailable"
+    latest_active = latest_labels & ACTIVE_LABELS
+    if latest_active != active:
+        return False, "capacity_state_changed"
+    if latest_labels & (TERMINAL_LABELS | {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}):
+        return False, "newer_terminal_state_exists"
+    if expected_pr is not None and expected_sha:
+        binding_ok, binding_reason = verify_ci_terminal_binding(
+            issue_number, expected_pr, expected_sha, repo
+        )
+        if not binding_ok:
+            return False, f"binding_rejected:{binding_reason}"
     if not set_labels(issue_number, terminal_label, repo=repo):
         return False, "label_transition_failed"
     return True, "released"
@@ -1542,6 +1931,8 @@ def main():
         expected_sha = sys.argv[5] if len(sys.argv) > 5 else None
         failed_run_id = sys.argv[6] if len(sys.argv) > 6 else None
         repair_attempt = sys.argv[7] if len(sys.argv) > 7 else None
+        expected_pr = sys.argv[8] if len(sys.argv) > 8 else None
+        expected_run_id = sys.argv[9] if len(sys.argv) > 9 else None
         ok, reason = release_failed_capacity(
             issue_number,
             expected_active,
@@ -1550,9 +1941,27 @@ def main():
             repo,
             failed_run_id,
             repair_attempt,
+            expected_pr=expected_pr,
+            expected_run_id=expected_run_id,
         )
         if not ok:
             print(f"FATAL: unable to release failed capacity: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print(reason)
+
+    elif command == "release-ci-terminal":
+        if len(sys.argv) != 9:
+            print(
+                "Usage: state_manager.py release-ci-terminal <issue> <pr> <head> <run> <status> <reason> <observed-status>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        ok, reason = release_and_record_ci_terminal(
+            int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], int(sys.argv[5]),
+            sys.argv[6], sys.argv[7], sys.argv[8], repo=repo,
+        )
+        if not ok:
+            print(f"FATAL: unable to release and record terminal CI state: {reason}", file=sys.stderr)
             sys.exit(1)
         print(reason)
 
@@ -1692,6 +2101,18 @@ def main():
         if not record_dispatch_state(issue_number, dispatch_id, action, status, details, repo):
             print("FATAL: unable to persist dispatch state", file=sys.stderr)
             sys.exit(1)
+
+    elif command == "reconcile-dispatch":
+        issue_number = int(sys.argv[2])
+        dispatch_id = sys.argv[3]
+        reason = sys.argv[4]
+        ok, outcome = reconcile_claimed_dispatch(
+            issue_number, dispatch_id, reason, repo
+        )
+        if not ok:
+            print(f"FATAL: unable to reconcile dispatch claim: {outcome}", file=sys.stderr)
+            sys.exit(1)
+        print(outcome)
 
     elif command == "record-review":
         issue_number = int(sys.argv[2])

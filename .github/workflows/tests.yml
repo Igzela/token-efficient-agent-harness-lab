@@ -1,5 +1,7 @@
 name: tests
 
+run-name: tests-${{ inputs.dispatch_nonce || github.run_id }}
+
 on:
   push:
     branches: [ main ]
@@ -9,6 +11,11 @@ on:
     inputs:
       expected_sha:
         description: Exact commit SHA expected by an agent-triggered run
+        required: false
+        default: ""
+        type: string
+      dispatch_nonce:
+        description: Unique fallback-dispatch identity
         required: false
         default: ""
         type: string

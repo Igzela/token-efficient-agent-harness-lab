@@ -196,7 +196,7 @@ jobs:
 
   failure-handler:
     needs: [prepare, vader-review, finalize]
-    if: failure()
+    if: always() && (needs.prepare.result != 'success' || needs.vader-review.result != 'success' || needs.finalize.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
