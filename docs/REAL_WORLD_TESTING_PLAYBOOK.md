@@ -22,6 +22,8 @@ The packet in `docs/NEXT_DECISION.md`, current code, merged history, and verifie
 
 ## Action Permission Matrix
 
+Standing authority permits normal reversible repository work: branch and commit creation, PR creation and repair, CI repair, independent review, eligible manual merge, runner/service/egress recovery, bounded Issue #208 enable/disable for one smoke, audit evidence, and continuation across `READY_FOR_EXECUTION` packets. Agents must not ask again when the exact-head, review, scope, audit, rollback, and merge classifier requirements pass. Existing configured credentials may be used normally; creating, rotating, disclosing, or copying credential values remains confirmation-required.
+
 | Action | Default | Gate |
 |---|---|---|
 | Branch creation | allowed | latest `main` or current owned PR; clean scope |
@@ -62,7 +64,7 @@ A PR is autonomously merge-eligible only when all are true:
 | handoff guard | pass |
 | review | diff reviewed against architecture, authority, compatibility, security, audit, and rollback |
 | rollback | clear and sufficient |
-| external authority | no unapproved irreversible operation or missing required human approval |
+| external authority | no unapproved irreversible operation or action remaining on the confirmation list |
 | human objection | none unresolved |
 
 Green CI alone is not permission to merge a misleading, incompatible, or unreviewed change.
@@ -114,7 +116,7 @@ Stop and report evidence when any occurs:
 2. evidence would be falsified or a known failure hidden;
 3. a rollback or recovery path would be removed without a tested replacement;
 4. an irreversible external action lacks explicit authority and tested recovery;
-5. required human approval, external credentials, or unavailable access blocks validation;
+5. an action requiring confirmation, missing credentials that cannot be repaired through an existing configured interface, or unavailable access after bounded recovery blocks validation;
 6. another agent owns conflicting in-progress work that cannot be reconciled safely;
 7. materially contradictory requirements cannot be resolved from code, merged history, tests, and authoritative documents;
 8. required CI remains failed, queued, in progress, or unexpectedly skipped at merge time, unless the final diff meets every requirement of the strict documentation-only merge exception.
@@ -122,6 +124,8 @@ Stop and report evidence when any occurs:
 Do not stop merely because a packet is stale, a bounded decision is missing, or an initial implementation failed. Audit, update the contract, repair the root cause, and continue while work remains evidence-driven and rollbackable.
 
 ## Execution Checklist
+
+An unavailable but repairable local runner, stopped service, broken existing proxy route, expired local session, or bounded first-attempt failure is a repair task. Diagnose and repair the existing path before reporting a blocker, without weakening TLS, scope, credential-redaction, exact-head, CI, review, or emergency-stop controls.
 
 For each coherent packet or slice:
 
@@ -164,6 +168,8 @@ git diff --check
 Add browser, Docker, migration, release, signing, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces. Strictly documentation-only PRs use the targeted checks in the exception instead of the full baseline unless an additional documentation-specific check is applicable.
 
 ## PR and Merge Policy
+
+Standing authority covers branch creation, commits, PRs, CI repair, independent review, eligible manual squash-merge, and refresh/continuation across ready packets. Automatic merge remains disabled. Manual merge requires the exact reviewed head, all required CI successful, no unresolved objection, a clean scope/path binding, and the normal classifier result; no repeated user confirmation is needed once those conditions pass.
 
 Agents may autonomously create and merge scoped PRs when the classifier or documentation-only exception passes. Do not combine unrelated packets or risk surfaces merely to reduce PR count. When `docs/NEXT_DECISION.md` declares a grouped boundary, its ordered internal packets are one coherent risk surface and may share one branch and PR.
 

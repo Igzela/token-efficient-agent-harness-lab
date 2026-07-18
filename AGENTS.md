@@ -6,9 +6,9 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 
 Rust `engine/` is the sole runtime, API, scheduler, policy, and application-owned storage implementation. The dispatch kernel, V2 real output, Adaptive Fusion through AF-7, Agent Runtime through AR-6, Trusted Local Autonomous Execution through IAE-3, durable memory, the managed external-runtime path, and PE-1 through PE-6 implementation are present.
 
-The production-integration program and provider/target-output safety repairs are merged. Controlled staging drills and disposable target-repository acceptance passed. Two external acceptance paths remain blocked:
+The production-integration program and provider/target-output safety repairs are merged. Controlled staging drills and disposable target-repository acceptance passed. Two external acceptance paths remain incomplete:
 
-- the GitHub Issues/Actions -> Vader repository-maintenance orchestrator remains disabled and emergency-stopped until the named runner is online/idle and a replacement smoke reaches PR creation, exact-head CI, and independent review;
+- the GitHub Issues/Actions -> Vader repository-maintenance orchestrator still needs the named runner restored and one replacement smoke through PR creation, exact-head CI, and independent review;
 - provider-backed embedding and benchmarking remain fail-closed until current catalog evidence establishes the exact admitted model identity and every modeled applicable price dimension.
 
 A new forward lane is documented but not implemented:
@@ -41,14 +41,24 @@ The GPT Web assistant then owns the internal translation:
 4. enable only the authority required for the bounded task;
 5. observe worker, artifact finalizer, branch/PR binding, exact-head CI, repair/review state, and terminal labels;
 6. independently inspect the final diff and evidence;
-7. merge only under authority permitted by the user request and repository playbook;
+7. merge only when the standing authority, repository classifier, exact-head CI, independent review, and rollback requirements permit it;
 8. restore emergency stop immediately on scope drift, secret exposure, contradictory state, duplicate dispatch, stale binding, unexpected mutation, or a worker that fails to reach a bounded terminal state.
 
-Current restriction: Issue #208 must remain emergency-stopped. The runner is offline on its GitHub token-exchange TLS path, so no production repository task may be dispatched through this orchestrator. A replacement documentation-only smoke is required before normal use resumes.
+Current state: PR #237 repaired the CI cancellation/capacity-leak and CI-observation race. The uniquely named Vader runner is currently offline on its GitHub token-exchange TLS path; restoring the existing runner service and egress is operational repair work, not a permission blocker (see Standing Operational Authorization). Issue #208 remains emergency-stopped until a bounded replacement smoke begins; the agent may temporarily replace the emergency stop with the normal enabled control for one bounded smoke or approved repository task and restore it immediately after. A replacement documentation-only smoke is the remaining acceptance step before normal use resumes.
+
+## Standing Operational Authorization
+
+Normal reversible, repository-scoped, evidence-gated work is pre-authorized. No additional confirmation is required to inspect, start, stop, restart, or repair the existing Vader runner service; repair its existing Mihomo/Clash egress route or switch to another already-configured working route; use already-configured authenticated GitHub, Codex, Actions, runner, and local-service interfaces; inspect logs; run bounded diagnostics; create or update Issues, branches, commits, PRs, workflow runs, reviews, and audit evidence; repair CI; continue `READY_FOR_EXECUTION` packets; or refresh `main` and continue after an eligible merge.
+
+The agent may temporarily replace Issue #208 `agent-emergency-stop` with the normal enabled control for one bounded smoke or approved repository task, and must restore the emergency stop immediately after terminal review or unexpected behavior. Eligible PRs may be manually squash-merged without asking again when exact-head required CI and independent review pass, no unresolved objection exists, and the repository merge classifier permits it. Auto-merge remains disabled by default.
+
+An offline runner, stopped service, failed process, broken existing proxy route, expired local session, bounded CI failure, failed first attempt, or repairable documentation conflict is prerequisite-repair work, not a permission blocker. Agents must attempt bounded recovery and evidence collection before reporting `BLOCKED`; they must not invent permission gates absent from the true hard-stop list.
+
+Confirmation remains required only for irreversible external destruction, repository or durable production-data deletion, public release or production deployment, a new paid provider POST without an approved identity/pricing/budget/receipt contract, credential creation/rotation/disclosure/copying of secret values, protected-branch force push, or an external effect that cannot be bounded, compensated, or rolled back through existing owners.
 
 ## Repository-Agent Repair Contract
 
-Resume this path only under `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`; PR #219 is a closed historical parking PR and is not an implementation branch. First restore the uniquely named Vader runner to registered, online, and idle state and pass the repository-owned readiness checker without weakening TLS or control gates.
+Continue this path under `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`; PR #219 is a closed historical parking PR and is not an implementation branch. First restore the uniquely named Vader runner to registered, online, and idle state and pass the repository-owned readiness checker without weakening TLS or control gates.
 
 Preserve the useful security split during the first replacement smoke: Vader remains artifact-only and receives no repository write credential; the GitHub-hosted finalizer owns branch push and PR creation; exact allowed paths, base/head binding, secret suppression, emergency stop, and auto-merge-off remain mandatory.
 
@@ -56,7 +66,7 @@ The replacement smoke must change exactly one disposable Markdown path and prove
 
 Do not pre-emptively rewrite the orchestrator merely because it has multiple workflows. If the restored current chain completes the smoke, retain it and limit later work to evidence-backed cleanup. If the smoke fails because of cross-workflow handoff, duplicate dispatch, contradictory state, or missing terminal ownership, open one focused architecture-repair PR that may collapse intake/controller/worker coordination into one top-level workflow with ordered jobs and one run identity. Such simplification must preserve the artifact-only Vader boundary, GitHub-hosted finalization, fail-closed controls, exact-head evidence, manual merge default, and rollback.
 
-No production repository task may use the path until the replacement smoke is accepted and the restriction is removed from active documents.
+Before the replacement smoke is accepted, use this path only for that bounded acceptance work. After acceptance, normal bounded repository tasks may use it under the same scope, identity, CI, review, audit, compensation, rollback, and emergency-stop controls.
 
 ## Recursive and Evolution Boundary
 
@@ -147,7 +157,7 @@ Stop rather than work around any of these:
 - do not intentionally hide failures, rejected candidates, outcome-unknown effects, or safety regressions;
 - do not remove rollback paths without a tested replacement; recovery paths are subject to the same rule;
 - do not perform irreversible external destruction without a recovery path and explicit authority;
-- do not bypass required human approval, external credentials, or sealed evaluation boundaries;
+- do not bypass required approval for an action that remains on the confirmation list, create or disclose credentials, or cross a sealed evaluation boundary; already-configured credentials and services may be used and repaired normally;
 - do not modify or expose evaluator source, sealed labels, promotion thresholds, permissions, budgets, or audit to a candidate/evolver;
 - do not merge code, tests, scripts, workflows, configuration, schemas, migrations, generated artifacts, dependencies, runtime behavior, authority, evaluator, release, or external-action changes while required CI is failed, queued, in progress, cancelled, action-required, or unexpectedly skipped;
 - do not overwrite another agent's in-progress work without reconciling ownership;

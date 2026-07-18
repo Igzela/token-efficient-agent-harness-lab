@@ -37,7 +37,7 @@ The intended user interface is ordinary language in GPT Web. The user should not
 
 A normal request can be:
 
-> Use the repository agent to implement this task. Keep the scope narrow and auto-merge off, review the resulting PR, and ask before merging.
+> Use the repository agent to implement this task. Keep the scope narrow and auto-merge off; review the resulting PR and merge it manually when exact-head CI, independent review, and the repository merge classifier pass.
 
 The GPT Web assistant owns the internal translation:
 
@@ -45,10 +45,10 @@ The GPT Web assistant owns the internal translation:
 2. create one bounded Agent Task Issue with measurable acceptance criteria and an exact `agent-orchestrator-scope:v1` allowed-path list;
 3. activate only the orchestrator authority required for the task while leaving auto-merge disabled by default;
 4. observe Vader Codex execution, validated artifact finalization, branch/PR binding, exact-head CI, and independent review;
-5. inspect the final diff and evidence and merge only under the user's explicit authority;
+5. inspect the final diff and evidence and merge when the standing authority and repository classifier permit it;
 6. restore emergency stop on scope drift, credential exposure, contradictory state, duplicate dispatch, stale binding, or unexpected mutation.
 
-**Current restriction:** this interface is documented but not yet accepted for production repository tasks. Live smoke Issue #217 reached Vader, artifact validation, and branch push; PR creation then failed because the repository does not permit GitHub Actions to create pull requests. Issue #208 is emergency-stopped, both enable labels are absent, and the Vader runner is currently offline. The final repair must merge and a replacement smoke must complete PR creation, exact-head CI, and independent review before normal use resumes.
+**Current state:** PR #237 is merged and accepted, repairing the CI cancellation/capacity-leak and CI-observation race. The existing Vader runner needs operational restoration, then one replacement documentation-only smoke must complete PR creation, exact-head CI, and independent review. Recovery and the bounded smoke are already authorized; automatic merge remains disabled, and Issue #208 is restored to emergency stop after the smoke.
 
 Machine-facing behavior is normative in [`AGENTS.md`](AGENTS.md); current evidence and restrictions are in [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md); the repair sequence is in [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md); operator recovery details remain in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 

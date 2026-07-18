@@ -6,7 +6,7 @@ Last updated: 2026-07-18.
 
 The bounded production-integration program is merged. Rust `engine/` remains the sole runtime, API, scheduler, policy, audit, and application-owned storage authority. Disposable staging drills and the repaired target-repository output path passed. External live acceptance is still incomplete:
 
-- the GitHub/Vader repository-maintenance path remains disabled and emergency-stopped until a replacement smoke reaches PR creation, exact-head CI, and independent review (runner online/idle restored, empty-workspace defect fixed, dispatch-trigger gap in `agent-ci-monitor` repaired by PR #233, follow-up smoke Issue #234 reached the expected fail-closed terminal state while Issue #208 is still active, one-time bounded temporary lift of the emergency stop ran a fresh end-to-end smoke Issue #235 → PR #236 that proved Vader → artifact → branch → PR → exact-head seven-job CI green → `agent-ci-monitor` `workflow_dispatch` but `dispatch-review` was rejected as `issue_not_active` after the worker moved Issue #235 to `agent-blocked` during a CI-observation race; PR #237 then repaired that race and the CI cancellation/capacity-leak by splitting `ci_verifier` into `acquire_exact_run` + `wait_for_run_completion` and reverting to per-resource concurrency groups, but a fresh replacement smoke could not run because the Vader runner is `offline`);
+- the GitHub/Vader repository-maintenance path needs one final bounded replacement smoke after authorized restoration of the named runner to online/idle (empty-workspace defect fixed, dispatch-trigger gap repaired by PR #233, CI-observation and cancellation/capacity-leak repaired by PR #237);
 - provider-backed embedding and the native/LangGraph benchmark remain fail-closed because the current OpenRouter catalog proves the configured embedding identity but omits the potentially chargeable embedding `request` price;
 - no provider POST, public release, production installation, or protected-branch write is authorized;
 - deletion of the disposable no-value target repository still requires interactive GitHub sudo-mode/2FA.
@@ -19,14 +19,14 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE`. No implementation branch is active. Resume only when the external runner/catalog prerequisites can be verified.
+1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION`. Restore the existing runner, pass readiness, run the replacement smoke, record acceptance, and continue. Runner/egress recovery is operational work, not a permission blocker.
 2. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — `READY_FOR_EXECUTION`. This is the AR7 runtime-extension slice. It is an independent fixture/local lane and must not enable Issue #208, call a provider, or depend on the Vader runner.
 3. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `BLOCKED_PREREQUISITE` on bounded recursive execution. It introduces a pinned OpenCode release or commit only as a controlled, local/fixture external executor with networked tools disabled.
 4. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on both bounded recursive execution and the controlled OpenCode adapter. It establishes candidate lineage, equal-budget evaluation, sealed holdout discipline, and PR-only promotion.
 5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result. It may test whether an evolved improver improves `Improvement@K`; it may not modify the authoritative evaluator, permissions, sealed set, or release owner.
 6. PR #225 remains an independent presentation-only Dashboard PR and does not own runtime, recursive execution, OpenCode integration, evolution, provider, or live-acceptance behavior.
 
-The recursive/evolution lane is independent of the blocked external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation requires separate authority.
+The recursive/evolution lane is independent of the external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. PR3 acceptance work and PE7 local/fixture work may proceed without repeated permission, using separate branches/sessions when they run concurrently. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
 
 ## Verified Baseline
 
@@ -91,11 +91,19 @@ Stop and report `BLOCKED` rather than improvising when:
 
 ## Packet PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1 — Remaining external acceptance
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
-**Goal:** Complete the already-merged external acceptance chain only after the named Vader runner and provider catalog prerequisites are independently verified.
+**Goal:** Complete the already-merged external acceptance chain by restoring the named Vader runner and running one bounded replacement smoke. Provider catalog admission remains a separate fail-closed concern and is not a prerequisite for this documentation-only smoke.
 
-**Current blocker:** The uniquely named Vader runner is currently `offline` (confirmed via `gh api .../actions/runners`), so no replacement smoke can run — this is a hard stop because AGENTS.md prohibits bypassing external credentials or control gates. PR #230 fixed the empty-workspace misattribution. Smoke Issue #231 created PR #232 with exactly one allowed Markdown file and green exact-head CI (run `29565496618`), but the GitHub-hosted `agent-ci-monitor` review-dispatch workflow did not fire because `workflow_run` events are not dispatched for `workflow_dispatch`-triggered `tests.yml` runs on PR branches when triggered by `github-actions[bot]`. PR #233 repaired the dispatch-trigger path and was squash-merged into `main` at `282cfc6246cdd0bdd607f70a951e5709e73f9ffa` after all seven CI jobs passed on the exact head `62de8eb389b488f80a756160fac7ab6f4113cef2`. A fail-closed smoke (Issue #234) confirmed the gate blocks dispatch while the emergency stop is active. A one-time bounded temporary lift then ran a fresh end-to-end smoke (Issue #235 → PR #236) that proved Vader → artifact → branch `agent/issue-235` (head `042d2560cb626a96b0e8b4f477bbbc087902f1a1`) → PR #236 with exactly one allowed Markdown file → exact-head seven-job CI green (run `29573762624`) → `agent-ci-monitor` `workflow_dispatch` (run `29574631602`, `action: trigger_review`). The follow-up `agent-controller` `dispatch-review` (run `29574651817`) was rejected with `issue_not_active` because the worker's failure-handler had already moved Issue #235 to `agent-blocked` during a CI-observation race. PR #237 (squash-merged into `main` at `1947d4b555bd14b7f104c1fc9aba31747099cb88` after all seven CI jobs passed on exact head `068b2e9ac4bde16daea25bcb4846f7e26ba6cca9`, run `29628449688`) repaired that race and the underlying CI cancellation/capacity-leak by splitting `ci_verifier` into `acquire_exact_run` + `wait_for_run_completion` with per-cycle binding revalidation and reverting all seven orchestrator workflows to per-resource concurrency groups with `cancel-in-progress: false` so emergency-stop no longer cancels unrelated workflows. The orchestrator-level race is resolved; the replacement smoke now only requires the Vader runner to be restored to `online`/`idle`. The current embedding catalog still omits the potentially chargeable `request` price. No provider POST is active.
+**Next actions:**
+
+1. restore the existing Vader service and egress route;
+2. pass the repository-owned runner readiness checker with the runner uniquely registered, online, idle, and free of stale capacity;
+3. temporarily replace Issue #208 emergency stop with the normal enabled control and run one fresh documentation-only smoke through intake, Vader, artifact, branch, PR, exact-head seven-job CI, independent review, and terminal capacity release;
+4. restore the emergency stop immediately after terminal review or unexpected behavior;
+5. record the exact Issue/PR/head/run/review/evidence bindings and acceptance, then continue future work.
+
+The prior smoke history remains as recorded in `CURRENT_STATUS.md`; the current runner offline observation is a repair target, not a governance hard stop. No provider POST is active.
 
 **Completion:** one replacement repository-agent smoke reaches PR creation, exact-head CI, and independent review; any provider-backed acceptance separately proves current identity, pricing, audit, and cost evidence.
 
