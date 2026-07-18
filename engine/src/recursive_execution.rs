@@ -70,6 +70,13 @@ pub struct RecursiveBudget {
 }
 
 impl RecursiveBudget {
+    fn can_spend(&self, usage: &Self) -> bool {
+        self.calls_remaining >= usage.calls_remaining
+            && self.tokens_remaining >= usage.tokens_remaining
+            && self.cost_micros_remaining >= usage.cost_micros_remaining
+            && self.time_ms_remaining >= usage.time_ms_remaining
+    }
+
     fn spend(&mut self, other: &Self) {
         self.calls_remaining = self.calls_remaining.saturating_sub(other.calls_remaining);
         self.tokens_remaining = self.tokens_remaining.saturating_sub(other.tokens_remaining);
@@ -451,6 +458,26 @@ impl RecursiveTree {
         lease_id: &str,
         success: bool,
     ) -> Result<(), RecursiveFailureReason> {
+        self.complete_node_with_usage(
+            node_id,
+            lease_id,
+            success,
+            &RecursiveBudget {
+                calls_remaining: 0,
+                tokens_remaining: 0,
+                cost_micros_remaining: 0,
+                time_ms_remaining: 0,
+            },
+        )
+    }
+
+    pub fn complete_node_with_usage(
+        &mut self,
+        node_id: &str,
+        lease_id: &str,
+        success: bool,
+        usage: &RecursiveBudget,
+    ) -> Result<(), RecursiveFailureReason> {
         let node = self
             .nodes
             .get_mut(node_id)
@@ -458,8 +485,23 @@ impl RecursiveTree {
         if node.lease_id.as_deref() != Some(lease_id) {
             return Err(RecursiveFailureReason::ReceiptConflict);
         }
-        node.status = if success { "completed" } else { "failed" }.to_string();
-        node.failure_reason = (!success).then(|| "recursive_node_execution_failed".to_string());
+        let within_budget = node.budget.can_spend(usage);
+        node.budget.spend(usage);
+        node.status = if success && within_budget {
+            "completed"
+        } else {
+            "failed"
+        }
+        .to_string();
+        node.failure_reason = if !within_budget {
+            Some(
+                RecursiveFailureReason::TreeBudgetExhausted
+                    .as_str()
+                    .to_string(),
+            )
+        } else {
+            (!success).then(|| "recursive_node_execution_failed".to_string())
+        };
         node.lease_id = None;
         node.version += 1;
         self.active_leases.remove(lease_id);

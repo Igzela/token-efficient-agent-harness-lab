@@ -960,6 +960,39 @@ impl LocalProductStore {
                         return Ok(LeaseResult::NoReadyNode { run });
                     };
 
+                    if agent_concurrency_caps.is_none() {
+                        let node_task_type: String = conn
+                            .query_row(
+                                "SELECT task_type FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                                params![run_id, nid],
+                                |row| row.get(0),
+                            )
+                            .unwrap_or_default();
+                        if node_task_type == "agent_step"
+                            && workflow_node_is_recursive_locked(conn, run_id, &nid)?
+                        {
+                            let recursive_running = count_running_recursive_steps_locked(conn)?;
+                            if recursive_running >= MAX_RECURSIVE_LEASES as i64 {
+                                append_audit_locked(
+                                    conn,
+                                    &now,
+                                    "scheduler",
+                                    "recursive.claim_conflict",
+                                    &nid,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": nid,
+                                        "reason": "scheduler_capacity_exhausted",
+                                        "running": recursive_running,
+                                        "cap": MAX_RECURSIVE_LEASES,
+                                    }),
+                                )?;
+                                capped_skip.push(nid);
+                                continue;
+                            }
+                        }
+                    }
+
                     // Check agent concurrency caps; skip capped agent_step nodes
                     if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
                         let node_task_type: String = conn
@@ -1281,6 +1314,41 @@ impl LocalProductStore {
                         tx.commit().map_err(|e| e.to_string())?;
                         return Ok(LeaseResult::NoReadyNode { run });
                     };
+
+                    if agent_concurrency_caps.is_none() {
+                        let node_task_type: String = tx
+                            .query_one(
+                                "SELECT task_type FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
+                                &[&run_id, &nid],
+                            )
+                            .map(|r| r.get(0))
+                            .unwrap_or_default();
+                        if node_task_type == "agent_step"
+                            && pg_workflow_node_is_recursive(&mut tx, run_id, &nid)?
+                        {
+                            tx.batch_execute("SELECT pg_advisory_xact_lock(734775128237)")
+                                .map_err(|error| error.to_string())?;
+                            let recursive_running = pg_count_running_recursive_steps(&mut tx)?;
+                            if recursive_running >= MAX_RECURSIVE_LEASES as i64 {
+                                pg_append_audit(
+                                    &mut tx,
+                                    &now,
+                                    "scheduler",
+                                    "recursive.claim_conflict",
+                                    &nid,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": nid,
+                                        "reason": "scheduler_capacity_exhausted",
+                                        "running": recursive_running,
+                                        "cap": MAX_RECURSIVE_LEASES,
+                                    }),
+                                )?;
+                                capped_skip.push(nid);
+                                continue;
+                            }
+                        }
+                    }
 
                     // Check agent concurrency caps; skip capped agent_step nodes
                     if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
@@ -1687,6 +1755,7 @@ impl LocalProductStore {
                                 &format!("workflow:{run_id}:{node_id}:{attempt}"),
                                 final_status == "completed",
                                 should_retry,
+                                &recursive_usage_from_output(&output),
                                 &now,
                             )?;
                         }
@@ -1914,6 +1983,7 @@ impl LocalProductStore {
                                 &format!("workflow:{run_id}:{node_id}:{attempt}"),
                                 final_status == "completed",
                                 should_retry,
+                                &recursive_usage_from_output(&output),
                                 &now,
                             )?;
                         }
@@ -3468,6 +3538,7 @@ impl LocalProductStore {
                                 &format!("workflow:{run_id}:{node_id}:{attempt}"),
                                 false,
                                 true,
+                                &recursive_retry_usage(),
                                 &now,
                             )?;
                         }
@@ -3562,6 +3633,7 @@ impl LocalProductStore {
                                 &format!("workflow:{run_id}:{node_id}:{attempt}"),
                                 false,
                                 true,
+                                &recursive_retry_usage(),
                                 &now,
                             )?;
                         }
@@ -4499,6 +4571,36 @@ fn optional_json_text(value: Option<&Value>) -> Option<String> {
     match value {
         Some(Value::Null) | None => None,
         Some(value) => Some(value.to_string()),
+    }
+}
+
+fn recursive_usage_from_output(
+    output: &crate::node_executor::NodeExecutionOutput,
+) -> crate::recursive_execution::RecursiveBudget {
+    let token_count = output
+        .input_tokens
+        .unwrap_or(0)
+        .saturating_add(output.output_tokens.unwrap_or(0))
+        .max(0) as u64;
+    let cost_micros = output
+        .estimated_cost
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+        .map(|cost| (cost * 1_000_000.0).ceil() as u64)
+        .unwrap_or(0);
+    crate::recursive_execution::RecursiveBudget {
+        calls_remaining: 1,
+        tokens_remaining: token_count,
+        cost_micros_remaining: cost_micros,
+        time_ms_remaining: output.latency_ms.unwrap_or(0).max(0) as u64,
+    }
+}
+
+fn recursive_retry_usage() -> crate::recursive_execution::RecursiveBudget {
+    crate::recursive_execution::RecursiveBudget {
+        calls_remaining: 1,
+        tokens_remaining: 0,
+        cost_micros_remaining: 0,
+        time_ms_remaining: 0,
     }
 }
 

@@ -506,13 +506,14 @@ pub(crate) fn sync_recursive_completion_sqlite(
     lease_id: &str,
     success: bool,
     retry: bool,
+    usage: &crate::recursive_execution::RecursiveBudget,
     now: &str,
 ) -> Result<(), String> {
     let Some(mut tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
         return Err("stale_parent".to_string());
     };
     let expected_version = tree.version;
-    tree.complete_node(recursive_node_id, lease_id, success)
+    tree.complete_node_with_usage(recursive_node_id, lease_id, success, usage)
         .map_err(|reason| reason.as_str().to_string())?;
     if retry {
         tree.retry_node(recursive_node_id)
@@ -576,13 +577,14 @@ pub(crate) fn sync_recursive_completion_pg(
     lease_id: &str,
     success: bool,
     retry: bool,
+    usage: &crate::recursive_execution::RecursiveBudget,
     now: &str,
 ) -> Result<(), String> {
     let Some(mut tree) = load_recursive_tree_pg(client, root_run_id)? else {
         return Err("stale_parent".to_string());
     };
     let expected_version = tree.version;
-    tree.complete_node(recursive_node_id, lease_id, success)
+    tree.complete_node_with_usage(recursive_node_id, lease_id, success, usage)
         .map_err(|reason| reason.as_str().to_string())?;
     if retry {
         tree.retry_node(recursive_node_id)
@@ -643,6 +645,12 @@ mod tests {
                     "lease-1",
                     false,
                     true,
+                    &RecursiveBudget {
+                        calls_remaining: 0,
+                        tokens_remaining: 0,
+                        cost_micros_remaining: 0,
+                        time_ms_remaining: 0,
+                    },
                     "2026-07-18T00:00:01Z",
                 )
             })

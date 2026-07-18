@@ -1807,24 +1807,39 @@ impl AgentStepExecutor {
                         .get(&proposal.parent_node_id)
                         .ok_or_else(|| "stale_parent".to_string())?
                         .version;
-                    let admission = tree
-                        .admit_child(&RecursiveProposal {
-                            proposal_id: proposal_id.clone(),
-                            parent_node_id: proposal.parent_node_id.clone(),
-                            parent_version,
-                            objective: proposal.objective.clone(),
-                            context_summary: proposal.context_summary.clone(),
-                            requested_scope,
-                            requested_capabilities: capabilities,
-                            budget: RecursiveBudget {
-                                calls_remaining: 1,
-                                tokens_remaining: 10_000,
-                                cost_micros_remaining: 10_000,
-                                time_ms_remaining: 60_000,
-                            },
-                            receipt_sha256: action_sha256.clone(),
-                        })
-                        .map_err(|reason| reason.as_str().to_string())?;
+                    let recursive_proposal = RecursiveProposal {
+                        proposal_id: proposal_id.clone(),
+                        parent_node_id: proposal.parent_node_id.clone(),
+                        parent_version,
+                        objective: proposal.objective.clone(),
+                        context_summary: proposal.context_summary.clone(),
+                        requested_scope,
+                        requested_capabilities: capabilities,
+                        budget: RecursiveBudget {
+                            calls_remaining: 1,
+                            tokens_remaining: 10_000,
+                            cost_micros_remaining: 10_000,
+                            time_ms_remaining: 60_000,
+                        },
+                        receipt_sha256: action_sha256.clone(),
+                    };
+                    let admission = match tree.admit_child(&recursive_proposal) {
+                        Ok(admission) => admission,
+                        Err(reason) => {
+                            tree.record_rejection(&proposal_id, reason);
+                            self.append_agent_step_audit_best_effort(
+                                "agent_step.recursive_proposal_rejected",
+                                agent_id,
+                                run_id,
+                                &json!({
+                                    "proposal_id": proposal_id,
+                                    "reason_code": reason.as_str(),
+                                    "evidence_ref": format!("recursive-proposal:{proposal_id}"),
+                                }),
+                            );
+                            return Err(reason.as_str().to_string());
+                        }
+                    };
                     let node_id = admission.node.node_id.clone();
                     let workflow = if self.store.get_workflow_run(run_id)?.is_some() {
                         Some((
