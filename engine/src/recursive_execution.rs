@@ -90,7 +90,7 @@ impl RecursiveBudget {
             .saturating_sub(other.time_ms_remaining);
     }
 
-    fn add(&mut self, other: &Self) {
+    pub(crate) fn add(&mut self, other: &Self) {
         self.calls_remaining = self.calls_remaining.saturating_add(other.calls_remaining);
         self.tokens_remaining = self.tokens_remaining.saturating_add(other.tokens_remaining);
         self.cost_micros_remaining = self
@@ -364,6 +364,9 @@ impl RecursiveTree {
             return Err(RecursiveFailureReason::ReceiptConflict);
         }
         if self.accepted_proposals.contains(&proposal.proposal_id) {
+            return Err(RecursiveFailureReason::ProposalConflict);
+        }
+        if self.rejected_proposals.contains_key(&proposal.proposal_id) {
             return Err(RecursiveFailureReason::ProposalConflict);
         }
         let parent = self

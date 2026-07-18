@@ -1903,7 +1903,7 @@ impl AgentStepExecutor {
                                 reason,
                             );
                             if !rejection_persisted {
-                                return Err("stale_parent".to_string());
+                                return Err(reason.as_str().to_string());
                             }
                             return Err(reason.as_str().to_string());
                         }

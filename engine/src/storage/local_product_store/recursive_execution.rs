@@ -339,16 +339,25 @@ pub(crate) fn record_recursive_cas_rejection_sqlite(
     let Some(mut current) = load_recursive_tree_sqlite(conn, &candidate.root_run_id)? else {
         let rejected: Vec<String> = candidate.accepted_proposals.iter().cloned().collect();
         let mut recovery = candidate.clone();
-        recovery
-            .nodes
-            .retain(|node_id, _| node_id == &recovery.root_node_id);
-        if let Some(root) = recovery.nodes.get_mut(&recovery.root_node_id) {
-            root.accepted_children = 0;
+        let root_node_id = recovery.root_node_id.clone();
+        let mut restored_budget = crate::recursive_execution::RecursiveBudget::default();
+        for (node_id, node) in &recovery.nodes {
+            if node_id != &root_node_id {
+                restored_budget.add(&node.budget);
+            }
         }
+        recovery.nodes.retain(|node_id, _| node_id == &root_node_id);
+        if let Some(root) = recovery.nodes.get_mut(&root_node_id) {
+            root.accepted_children = 0;
+            root.budget.add(&restored_budget);
+        }
+        recovery.root_budget.add(&restored_budget);
         recovery.accepted_proposals.clear();
         recovery.receipts.clear();
         recovery.active_leases.clear();
-        recovery.rejected_proposals.clear();
+        recovery
+            .rejected_proposals
+            .retain(|proposal_id, _| !rejected.contains(proposal_id));
         recovery.version = 1;
         for proposal_id in &rejected {
             recovery.record_rejection(proposal_id, RecursiveFailureReason::StaleParent);
@@ -469,16 +478,25 @@ pub(crate) fn record_recursive_cas_rejection_pg(
     let Some(mut current) = load_recursive_tree_pg(client, &candidate.root_run_id)? else {
         let rejected: Vec<String> = candidate.accepted_proposals.iter().cloned().collect();
         let mut recovery = candidate.clone();
-        recovery
-            .nodes
-            .retain(|node_id, _| node_id == &recovery.root_node_id);
-        if let Some(root) = recovery.nodes.get_mut(&recovery.root_node_id) {
-            root.accepted_children = 0;
+        let root_node_id = recovery.root_node_id.clone();
+        let mut restored_budget = crate::recursive_execution::RecursiveBudget::default();
+        for (node_id, node) in &recovery.nodes {
+            if node_id != &root_node_id {
+                restored_budget.add(&node.budget);
+            }
         }
+        recovery.nodes.retain(|node_id, _| node_id == &root_node_id);
+        if let Some(root) = recovery.nodes.get_mut(&root_node_id) {
+            root.accepted_children = 0;
+            root.budget.add(&restored_budget);
+        }
+        recovery.root_budget.add(&restored_budget);
         recovery.accepted_proposals.clear();
         recovery.receipts.clear();
         recovery.active_leases.clear();
-        recovery.rejected_proposals.clear();
+        recovery
+            .rejected_proposals
+            .retain(|proposal_id, _| !rejected.contains(proposal_id));
         recovery.version = 1;
         for proposal_id in &rejected {
             recovery.record_rejection(proposal_id, RecursiveFailureReason::StaleParent);
@@ -865,6 +883,16 @@ impl LocalProductStore {
                         )?;
                     }
                     for workflow_node_id in terminated {
+                        let workflow_exists: i64 = tx
+                            .query_row(
+                                "SELECT COUNT(*) FROM workflow_runs WHERE run_id=?1",
+                                [root_run_id.as_str()],
+                                |row| row.get(0),
+                            )
+                            .map_err(|error| error.to_string())?;
+                        if workflow_exists == 0 {
+                            continue;
+                        }
                         let workflow_row: Option<(String, Option<String>, String)> = tx
                             .query_row(
                                 "SELECT status, leased_at, node_json FROM workflow_run_nodes
@@ -874,7 +902,7 @@ impl LocalProductStore {
                             )
                             .optional()
                             .map_err(|error| error.to_string())?;
-                        if let Some((_status, _leased_at, node_json_text)) =
+                        let Some((_status, _leased_at, node_json_text)) =
                             workflow_row.filter(|(status, leased_at, node_json)| {
                                 status == "running"
                                     && leased_at.is_some()
@@ -888,14 +916,17 @@ impl LocalProductStore {
                                         })
                                         .unwrap_or(false)
                             })
-                        {
-                            let mut node_json: Value = serde_json::from_str(&node_json_text)
-                                .map_err(|error| error.to_string())?;
-                            if let Some(object) = node_json.as_object_mut() {
-                                object.insert("status".to_string(), json!("failed"));
-                                object.insert("completed_at".to_string(), json!(now));
-                            }
-                            tx.execute(
+                        else {
+                            return Err("recursive workflow node binding is missing".to_string());
+                        };
+                        let mut node_json: Value = serde_json::from_str(&node_json_text)
+                            .map_err(|error| error.to_string())?;
+                        if let Some(object) = node_json.as_object_mut() {
+                            object.insert("status".to_string(), json!("failed"));
+                            object.insert("completed_at".to_string(), json!(now));
+                        }
+                        let updated = tx
+                            .execute(
                                 "UPDATE workflow_run_nodes SET status='failed', completed_at=?1,
                                  leased_at=NULL, blocked_reason=?2, node_json=?3
                                  WHERE run_id=?4 AND node_id=?5 AND status='running'
@@ -909,6 +940,8 @@ impl LocalProductStore {
                                 ],
                             )
                             .map_err(|error| error.to_string())?;
+                        if updated != 1 {
+                            return Err("recursive workflow node terminalization raced".to_string());
                         }
                     }
                 }
@@ -1001,6 +1034,16 @@ impl LocalProductStore {
                         )?;
                     }
                     for workflow_node_id in terminated {
+                        let workflow_exists: i64 = tx
+                            .query_one(
+                                "SELECT COUNT(*) FROM workflow_runs WHERE run_id=$1",
+                                &[&root_run_id],
+                            )
+                            .map_err(|error| error.to_string())?
+                            .get(0);
+                        if workflow_exists == 0 {
+                            continue;
+                        }
                         let workflow_row: Option<(String, Option<String>, String)> = tx
                             .query_opt(
                                 "SELECT status, leased_at, node_json FROM workflow_run_nodes
@@ -1009,7 +1052,7 @@ impl LocalProductStore {
                             )
                             .map_err(|error| error.to_string())?
                             .map(|row| (row.get(0), row.get(1), row.get(2)));
-                        if let Some((_status, _leased_at, node_json_text)) =
+                        let Some((_status, _leased_at, node_json_text)) =
                             workflow_row.filter(|(status, leased_at, node_json)| {
                                 status == "running"
                                     && leased_at.is_some()
@@ -1023,14 +1066,17 @@ impl LocalProductStore {
                                         })
                                         .unwrap_or(false)
                             })
-                        {
-                            let mut node_json: Value = serde_json::from_str(&node_json_text)
-                                .map_err(|error| error.to_string())?;
-                            if let Some(object) = node_json.as_object_mut() {
-                                object.insert("status".to_string(), json!("failed"));
-                                object.insert("completed_at".to_string(), json!(now));
-                            }
-                            tx.execute(
+                        else {
+                            return Err("recursive workflow node binding is missing".to_string());
+                        };
+                        let mut node_json: Value = serde_json::from_str(&node_json_text)
+                            .map_err(|error| error.to_string())?;
+                        if let Some(object) = node_json.as_object_mut() {
+                            object.insert("status".to_string(), json!("failed"));
+                            object.insert("completed_at".to_string(), json!(now));
+                        }
+                        let updated = tx
+                            .execute(
                                 "UPDATE workflow_run_nodes SET status='failed', completed_at=$1,
                                  leased_at=NULL, blocked_reason=$2, node_json=$3
                                  WHERE run_id=$4 AND node_id=$5 AND status='running'
@@ -1044,6 +1090,8 @@ impl LocalProductStore {
                                 ],
                             )
                             .map_err(|error| error.to_string())?;
+                        if updated != 1 {
+                            return Err("recursive workflow node terminalization raced".to_string());
                         }
                     }
                 }
