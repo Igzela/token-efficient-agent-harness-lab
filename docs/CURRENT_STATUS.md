@@ -131,7 +131,7 @@ The first three gaps continue to block production repository-agent use and provi
 
 ## Open Work Coordination
 
-- PR #225 is the only known open PR and is presentation-only.
+- PR #225 remains open and presentation-only; PR #239 is the active PE7-1 repair PR on the recursive execution branch and is not merged.
 - `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is in progress on `pe7-bounded-recursive-execution-1`; it remains the first eligible independent implementation packet.
 - `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the recursive packet merges and active state is refreshed.
 - provider-backed evolution, model-weight updates, evaluator/task-generator co-evolution, automatic multi-lineage recombination, and production continuous self-update remain deferred.

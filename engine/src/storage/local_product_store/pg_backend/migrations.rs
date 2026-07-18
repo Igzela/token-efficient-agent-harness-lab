@@ -357,6 +357,121 @@ fn apply_pg_v26_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|error| format!("failed to commit migration 26: {error}"))
 }
 
+fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    let version = client
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get::<_, i64>(0);
+    if version != super::super::migrations::V26_SCHEMA_VERSION {
+        return Err(format!("PostgreSQL v26 schema version mismatch: {version}"));
+    }
+    let required = [
+        ("recursive_execution_trees", "root_run_id", "text"),
+        ("recursive_execution_trees", "workflow_id", "text"),
+        ("recursive_execution_trees", "root_node_id", "text"),
+        ("recursive_execution_trees", "tree_schema_version", "text"),
+        ("recursive_execution_trees", "tree_json", "text"),
+        ("recursive_execution_trees", "version", "bigint"),
+        ("recursive_execution_trees", "created_at", "text"),
+        ("recursive_execution_trees", "updated_at", "text"),
+        ("recursive_execution_nodes", "node_id", "text"),
+        ("recursive_execution_nodes", "root_run_id", "text"),
+        ("recursive_execution_nodes", "parent_node_id", "text"),
+        ("recursive_execution_nodes", "proposal_id", "text"),
+        ("recursive_execution_nodes", "depth", "bigint"),
+        ("recursive_execution_nodes", "objective_fingerprint", "text"),
+        ("recursive_execution_nodes", "status", "text"),
+        ("recursive_execution_nodes", "version", "bigint"),
+        ("recursive_execution_nodes", "created_at", "text"),
+        ("recursive_execution_nodes", "updated_at", "text"),
+    ];
+    for (table, column, expected_type) in required {
+        let actual: Option<String> = client
+            .query_opt(
+                "SELECT data_type FROM information_schema.columns
+                 WHERE table_schema=current_schema() AND table_name=$1 AND column_name=$2",
+                &[&table, &column],
+            )
+            .map_err(|error| error.to_string())?
+            .map(|row| row.get(0));
+        if actual.as_deref() != Some(expected_type) {
+            return Err(format!(
+                "PostgreSQL v26 schema type mismatch for {table}.{column}"
+            ));
+        }
+    }
+    for index in [
+        "idx_recursive_execution_trees_workflow",
+        "idx_recursive_execution_nodes_root",
+        "idx_recursive_execution_nodes_parent",
+    ] {
+        let exists: bool = client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM pg_indexes
+                 WHERE schemaname=current_schema() AND indexname=$1)",
+                &[&index],
+            )
+            .map_err(|error| error.to_string())?
+            .get(0);
+        if !exists {
+            return Err(format!("PostgreSQL v26 schema missing index {index}"));
+        }
+    }
+    let foreign_key: bool = client
+        .query_one(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_constraint c
+                 JOIN pg_class child ON child.oid=c.conrelid
+                 JOIN pg_class parent ON parent.oid=c.confrelid
+                 WHERE child.relname='recursive_execution_nodes'
+                   AND parent.relname='recursive_execution_trees'
+                   AND c.contype='f'
+             )",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if !foreign_key {
+        return Err("PostgreSQL v26 schema missing recursive root foreign key".to_string());
+    }
+    let depth_check: bool = client
+        .query_one(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_constraint c
+                 JOIN pg_class t ON t.oid=c.conrelid
+                 WHERE t.relname='recursive_execution_nodes'
+                   AND c.contype='c' AND pg_get_constraintdef(c.oid) LIKE '%depth%'
+             )",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if !depth_check {
+        return Err("PostgreSQL v26 schema missing recursive depth constraint".to_string());
+    }
+    let unique_identity: bool = client
+        .query_one(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_constraint c
+                 JOIN pg_class t ON t.oid=c.conrelid
+                 WHERE t.relname='recursive_execution_nodes'
+                   AND c.contype='u'
+                   AND pg_get_constraintdef(c.oid) LIKE '%root_run_id%'
+                   AND pg_get_constraintdef(c.oid) LIKE '%objective_fingerprint%'
+             )",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if !unique_identity {
+        return Err("PostgreSQL v26 schema missing recursive objective uniqueness".to_string());
+    }
+    Ok(())
+}
+
 fn pg_v25_operation_schema_valid(
     client: &mut impl postgres::GenericClient,
 ) -> Result<bool, String> {
@@ -658,6 +773,8 @@ impl LocalProductStore {
                     apply_pg_migration(client, migration.version, sql)?;
                 }
             }
+
+            validate_pg_v26_schema(client)?;
 
             // Seed the scheduler_heartbeat singleton row.
             client

@@ -124,7 +124,7 @@ fn action_type(action: &AgentAction) -> &'static str {
 }
 
 fn recursive_failure_reason_code(error: &str) -> Option<&'static str> {
-    const REASONS: [&str; 16] = [
+    const REASONS: [&str; 21] = [
         "recursive_disabled",
         "depth_exceeded",
         "child_limit_exceeded",
@@ -140,7 +140,12 @@ fn recursive_failure_reason_code(error: &str) -> Option<&'static str> {
         "recursive_node_missing",
         "scheduler_capacity_exhausted",
         "recursive_kill_switch_active",
+        "operator_paused",
+        "terminal_failed",
         "recursive_node_execution_failed",
+        "recursive_retry_exhausted",
+        "fixture_usage_contract_missing",
+        "recursive_usage_unavailable",
     ];
     REASONS
         .into_iter()
@@ -1517,6 +1522,63 @@ impl AgentStepExecutor {
         }
     }
 
+    fn effective_agent_state_for_recursive_node(
+        &self,
+        input: &NodeExecutionInput,
+        agent_state: &AgentState,
+    ) -> Result<AgentState, String> {
+        let Some(recursive_node_id) = input
+            .node_metadata
+            .get("recursive_node_id")
+            .and_then(Value::as_str)
+        else {
+            return Ok(agent_state.clone());
+        };
+        if recursive_node_id != input.node_id {
+            return Err("recursive workflow node identity is not exact".to_string());
+        }
+        let tree = self
+            .store
+            .load_recursive_tree(&input.run_id)?
+            .ok_or_else(|| {
+                RecursiveFailureReason::RecursiveTreeMissing
+                    .as_str()
+                    .to_string()
+            })?;
+        if tree.workflow_id != input.workflow_id {
+            return Err("recursive workflow identity is not exact".to_string());
+        }
+        let node = tree.nodes.get(recursive_node_id).ok_or_else(|| {
+            RecursiveFailureReason::RecursiveNodeMissing
+                .as_str()
+                .to_string()
+        })?;
+        let expected_capabilities =
+            serde_json::to_value(&node.capabilities).map_err(|error| error.to_string())?;
+        if input.node_metadata.get("recursive_capabilities") != Some(&expected_capabilities) {
+            return Err("recursive capability profile binding is inconsistent".to_string());
+        }
+        let expected_scope =
+            serde_json::to_value(&node.scope).map_err(|error| error.to_string())?;
+        if input.node_metadata.get("recursive_scope") != Some(&expected_scope) {
+            return Err("recursive scope binding is inconsistent".to_string());
+        }
+        let mut effective = agent_state.clone();
+        effective.capability_profile = node.capabilities.iter().cloned().collect();
+        effective.metadata.insert(
+            "repository".to_string(),
+            node.scope
+                .repository
+                .as_ref()
+                .map_or(Value::Null, |value| json!(value)),
+        );
+        effective.metadata.insert(
+            "allowed_paths".to_string(),
+            json!(node.scope.allowed_paths.iter().collect::<Vec<_>>()),
+        );
+        Ok(effective)
+    }
+
     /// Append a best-effort audit event for agent-step lifecycle.
     ///
     /// These events are diagnostic — a failed audit write must not block or
@@ -1537,62 +1599,6 @@ impl AgentStepExecutor {
             &format!("agent_state/{agent_id}/{run_id}"),
             details,
         );
-    }
-
-    fn persist_recursive_rejection(
-        &self,
-        tree: &mut RecursiveTree,
-        expected_version: u64,
-        proposal_id: &str,
-        run_id: &str,
-        agent_id: &str,
-        reason: RecursiveFailureReason,
-    ) -> bool {
-        tree.record_rejection(proposal_id, reason);
-        let mut persisted = false;
-        let mut candidate = tree.clone();
-        let mut version = expected_version;
-        for _ in 0..3 {
-            if self
-                .store
-                .save_recursive_tree_with_expected_version(&candidate, version)
-                .is_ok()
-            {
-                persisted = true;
-                break;
-            }
-            let Ok(Some(mut current)) = self.store.load_recursive_tree(run_id) else {
-                break;
-            };
-            current.record_rejection(proposal_id, reason);
-            version = current.version;
-            candidate = current;
-        }
-        if !persisted {
-            persisted = self
-                .store
-                .record_recursive_rejection(run_id, proposal_id, reason)
-                .is_ok();
-        }
-        if persisted {
-            *tree = candidate;
-        } else {
-            // Keep the original failure code in the audit even if a bounded
-            // CAS retry could not win the concurrent update.
-            tree.record_rejection(proposal_id, reason);
-        }
-        self.append_agent_step_audit_best_effort(
-            "agent_step.recursive_proposal_rejected",
-            agent_id,
-            run_id,
-            &json!({
-                "proposal_id": proposal_id,
-                "reason_code": reason.as_str(),
-                "evidence_ref": format!("agent_proposal/{proposal_id}"),
-                "evidence_persisted": persisted,
-            }),
-        );
-        persisted
     }
 
     fn execute_action(
@@ -1816,6 +1822,7 @@ impl AgentStepExecutor {
                     recursive_tree,
                     recursive_expected_version,
                     recursive_workflow,
+                    recursive_rejection_reason,
                 ) = if std::env::var("ACP_RECURSIVE_EXECUTION_ENABLED").as_deref() == Ok("1") {
                     let capabilities: BTreeSet<String> =
                         agent_state.capability_profile.iter().cloned().collect();
@@ -1841,6 +1848,38 @@ impl AgentStepExecutor {
                     };
                     let stored_tree = self.store.load_recursive_tree(run_id)?;
                     let expected_version = stored_tree.as_ref().map_or(0, |tree| tree.version);
+                    let root_creation_receipt = if let Some(receipt) = stored_tree
+                        .as_ref()
+                        .filter(|tree| !tree.root_creation_receipt_sha256.is_empty())
+                        .map(|tree| tree.root_creation_receipt_sha256.clone())
+                    {
+                        receipt
+                    } else {
+                        self.store
+                            .get_workflow_run(run_id)?
+                            .and_then(|run| {
+                                run.get("nodes")
+                                    .and_then(Value::as_array)
+                                    .and_then(|nodes| {
+                                        nodes.iter().find(|node| {
+                                            node.get("node_id").and_then(Value::as_str)
+                                                == Some(proposal.parent_node_id.as_str())
+                                                || node
+                                                    .get("recursive_node_id")
+                                                    .and_then(Value::as_str)
+                                                    == Some(proposal.parent_node_id.as_str())
+                                        })
+                                    })
+                                    .and_then(|node| {
+                                        node.get("creation_receipt_sha256")
+                                            .and_then(Value::as_str)
+                                            .map(str::to_string)
+                                    })
+                            })
+                            .ok_or_else(|| {
+                                "recursive root creation receipt is missing".to_string()
+                            })?
+                    };
                     let mut tree = stored_tree.unwrap_or_else(|| {
                         RecursiveTree::new_with_root_node_id(
                             run_id,
@@ -1860,94 +1899,99 @@ impl AgentStepExecutor {
                             },
                         )
                     });
-                    let parent_version = match tree.nodes.get(&proposal.parent_node_id) {
-                        Some(parent) => parent.version,
-                        None => {
-                            let persisted = self.persist_recursive_rejection(
-                                &mut tree,
-                                expected_version,
-                                &proposal_id,
-                                run_id,
-                                agent_id,
-                                RecursiveFailureReason::StaleParent,
-                            );
-                            if !persisted {
-                                return Err("stale_parent".to_string());
+                    let root_marker = tree.root_node_id.clone();
+                    tree.bind_root_identity(agent_id, &root_marker, &root_creation_receipt)
+                        .map_err(|reason| reason.as_str().to_string())?;
+                    let (recursive_node_id, recursive_workflow, recursive_rejection_reason) =
+                        if let Some(parent) = tree.nodes.get(&proposal.parent_node_id) {
+                            let recursive_proposal = RecursiveProposal {
+                                proposal_id: proposal_id.clone(),
+                                parent_node_id: proposal.parent_node_id.clone(),
+                                parent_version: parent.version,
+                                objective: proposal.objective.clone(),
+                                context_summary: proposal.context_summary.clone(),
+                                requested_scope,
+                                requested_capabilities: capabilities,
+                                budget: RecursiveBudget {
+                                    calls_remaining: 1,
+                                    tokens_remaining: 10_000,
+                                    cost_micros_remaining: 10_000,
+                                    time_ms_remaining: 60_000,
+                                },
+                                receipt_sha256: action_sha256.clone(),
+                            };
+                            match tree.admit_child(&recursive_proposal) {
+                                Ok(admission) => {
+                                    let node_id = admission.node.node_id.clone();
+                                    let workflow = if self.store.get_workflow_run(run_id)?.is_some()
+                                    {
+                                        Some((
+                                            json!({
+                                                "node_id": node_id,
+                                                "task_type": "agent_step",
+                                                "status": "pending",
+                                                "attempt_count": 0,
+                                                "agent_id": agent_id,
+                                                "recursive_node_id": node_id,
+                                                "parent_node_id": proposal.parent_node_id,
+                                                "objective_fingerprint": admission.node.objective_fingerprint.clone(),
+                                                "proposal_id": proposal_id,
+                                                "acceptance_reason": "accepted",
+                                                "evidence_refs": admission.node.evidence_refs.clone(),
+                                                "recursive_capabilities": admission.node.capabilities.clone(),
+                                                "recursive_scope": serde_json::to_value(&admission.node.scope)
+                                                    .map_err(|error| error.to_string())?,
+                                                "decision_source": "fixture",
+                                                "usage_contract": {
+                                                    "kind": "fixture",
+                                                    "calls": 1,
+                                                    "tokens": 1,
+                                                    "cost_micros": 1,
+                                                    "time_ms": 1,
+                                                },
+                                            }),
+                                            json!({
+                                                "edge_id": format!("recursive-edge-{node_id}"),
+                                                "from_node_id": proposal.parent_node_id,
+                                                "to_node_id": node_id,
+                                                "edge_type": "dependency",
+                                                "recursive": true,
+                                            }),
+                                        ))
+                                    } else {
+                                        None
+                                    };
+                                    (Some(node_id), workflow, None)
+                                }
+                                Err(reason) => {
+                                    tree.record_rejection(&proposal_id, reason);
+                                    (None, None, Some(reason))
+                                }
                             }
-                            return Err(RecursiveFailureReason::StaleParent.as_str().to_string());
-                        }
-                    };
-                    let recursive_proposal = RecursiveProposal {
-                        proposal_id: proposal_id.clone(),
-                        parent_node_id: proposal.parent_node_id.clone(),
-                        parent_version,
-                        objective: proposal.objective.clone(),
-                        context_summary: proposal.context_summary.clone(),
-                        requested_scope,
-                        requested_capabilities: capabilities,
-                        budget: RecursiveBudget {
-                            calls_remaining: 1,
-                            tokens_remaining: 10_000,
-                            cost_micros_remaining: 10_000,
-                            time_ms_remaining: 60_000,
-                        },
-                        receipt_sha256: action_sha256.clone(),
-                    };
-                    let admission = match tree.admit_child(&recursive_proposal) {
-                        Ok(admission) => admission,
-                        Err(reason) => {
-                            let rejection_persisted = self.persist_recursive_rejection(
-                                &mut tree,
-                                expected_version,
-                                &proposal_id,
-                                run_id,
-                                agent_id,
-                                reason,
-                            );
-                            if !rejection_persisted {
-                                return Err(reason.as_str().to_string());
-                            }
-                            return Err(reason.as_str().to_string());
-                        }
-                    };
-                    let node_id = admission.node.node_id.clone();
-                    let workflow = if self.store.get_workflow_run(run_id)?.is_some() {
-                        Some((
-                            json!({
-                                "node_id": node_id,
-                                "task_type": "agent_step",
-                                "status": "pending",
-                                "attempt_count": 0,
-                                "agent_id": agent_id,
-                                "recursive_node_id": node_id,
-                                "parent_node_id": proposal.parent_node_id,
-                                "objective_fingerprint": admission.node.objective_fingerprint.clone(),
-                                "proposal_id": proposal_id,
-                                "acceptance_reason": "accepted",
-                                "evidence_refs": admission.node.evidence_refs.clone(),
-                            }),
-                            json!({
-                                "edge_id": format!("recursive-edge-{node_id}"),
-                                "from_node_id": proposal.parent_node_id,
-                                "to_node_id": node_id,
-                                "edge_type": "dependency",
-                                "recursive": true,
-                            }),
-                        ))
-                    } else {
-                        None
-                    };
-                    (Some(node_id), Some(tree), Some(expected_version), workflow)
+                        } else {
+                            let reason = RecursiveFailureReason::StaleParent;
+                            tree.record_rejection(&proposal_id, reason);
+                            (None, None, Some(reason))
+                        };
+                    (
+                        recursive_node_id,
+                        Some(tree),
+                        Some(expected_version),
+                        recursive_workflow,
+                        recursive_rejection_reason,
+                    )
                 } else {
-                    (None, None, None, None)
+                    (None, None, None, None, None)
                 };
-                let result = action_result_with_state_metrics(
-                    json!({"action":"propose_child_task","proposal_id": proposal_id,
+                let mut result_value = json!({"action":"propose_child_task","proposal_id": proposal_id,
                           "correlation_id": proposal.correlation_id,
-                          "recursive_node_id": recursive_node_id}),
-                    memory_state_read_bytes,
-                    0,
-                );
+                          "recursive_node_id": recursive_node_id});
+                if let Some(reason) = recursive_rejection_reason {
+                    result_value["decision"] = json!("rejected");
+                    result_value["reason_code"] = json!(reason.as_str());
+                }
+                let result =
+                    action_result_with_state_metrics(result_value, memory_state_read_bytes, 0);
                 let mut operations = vec![AgentMutationOp::InsertProposal {
                     proposal_id: proposal_id.clone(),
                     correlation_id: proposal.correlation_id.clone(),
@@ -2796,7 +2840,7 @@ impl NodeExecutor for AgentStepExecutor {
             Err(error) => return agent_step_fail(&error, &start),
         }
 
-        let agent_state = match self.store.get_agent_state(&agent_id, &input.run_id) {
+        let loaded_agent_state = match self.store.get_agent_state(&agent_id, &input.run_id) {
             Ok(Some(s)) => s,
             Ok(None) => {
                 return agent_step_fail(
@@ -2806,6 +2850,11 @@ impl NodeExecutor for AgentStepExecutor {
             }
             Err(e) => return agent_step_fail(&format!("failed to load AgentState: {e}"), &start),
         };
+        let agent_state =
+            match self.effective_agent_state_for_recursive_node(input, &loaded_agent_state) {
+                Ok(state) => state,
+                Err(error) => return agent_step_fail(&error, &start),
+            };
 
         let mailbox_count =
             match self
@@ -3223,7 +3272,9 @@ mod tests {
                     "node_id": "agent-node-001",
                     "task_type": "agent_step",
                     "status": "pending",
-                    "recursive_node_id": "agent-node-001"
+                    "recursive_node_id": "agent-node-001",
+                    "agent_id": "agent-recursive",
+                    "creation_receipt_sha256": "test-recursive-root-receipt"
                 }],
                 "edges": [],
                 "events": [],
@@ -4191,6 +4242,184 @@ mod tests {
 
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+    }
+
+    #[test]
+    fn recursive_child_uses_narrow_persisted_capability_profile() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        import_test_workflow(&store, "run-recursive-authority", "wf-ar2-001");
+        create_test_agent(&store, "agent-recursive", "run-recursive-authority");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+
+        let mut tree = RecursiveTree::new_with_root_node_id(
+            "run-recursive-authority",
+            "wf-ar2-001",
+            "agent-node-001",
+            "root objective",
+            crate::recursive_execution::RecursiveScope {
+                repository: Some("fixture".to_string()),
+                allowed_paths: ["docs/".to_string()].into_iter().collect(),
+                capabilities: ["read".to_string(), "memory".to_string()]
+                    .into_iter()
+                    .collect(),
+            },
+            ["read".to_string(), "memory".to_string()]
+                .into_iter()
+                .collect(),
+            crate::recursive_execution::RecursiveBudget {
+                calls_remaining: 4,
+                tokens_remaining: 40,
+                cost_micros_remaining: 40,
+                time_ms_remaining: 400,
+            },
+        );
+        tree.bind_root_identity(
+            "agent-recursive",
+            "agent-node-001",
+            "test-recursive-root-receipt",
+        )
+        .expect("root identity");
+        let admission = tree
+            .admit_child(&RecursiveProposal {
+                proposal_id: "authority-proposal".to_string(),
+                parent_node_id: tree.root_node_id.clone(),
+                parent_version: 1,
+                objective: "narrow child".to_string(),
+                context_summary: "fixture".to_string(),
+                requested_scope: crate::recursive_execution::RecursiveScope {
+                    repository: Some("fixture".to_string()),
+                    allowed_paths: ["docs/".to_string()].into_iter().collect(),
+                    capabilities: ["read".to_string()].into_iter().collect(),
+                },
+                requested_capabilities: ["read".to_string()].into_iter().collect(),
+                budget: crate::recursive_execution::RecursiveBudget {
+                    calls_remaining: 1,
+                    tokens_remaining: 10,
+                    cost_micros_remaining: 10,
+                    time_ms_remaining: 100,
+                },
+                receipt_sha256: "authority-receipt".to_string(),
+            })
+            .expect("child admission");
+        store
+            .save_recursive_tree_with_expected_version(&tree, 0)
+            .expect("persist tree");
+        let child_id = admission.node.node_id.clone();
+        let child_scope = serde_json::to_value(&admission.node.scope).expect("scope json");
+        let child_caps = serde_json::to_value(&admission.node.capabilities).expect("caps json");
+        let executor = AgentStepExecutor::new(
+            store,
+            stub_decision(AgentAction::UpdateScratchpadSummary(
+                "must be denied".to_string(),
+            )),
+        );
+        let output = executor.execute_node(&NodeExecutionInput {
+            node_id: child_id.clone(),
+            task_type: "agent_step".to_string(),
+            run_id: "run-recursive-authority".to_string(),
+            workflow_id: "wf-ar2-001".to_string(),
+            node_metadata: json!({
+                "agent_id": "agent-recursive",
+                "recursive_node_id": child_id,
+                "recursive_capabilities": child_caps,
+                "recursive_scope": child_scope,
+            }),
+        });
+        assert_eq!(output.status, "failed");
+        assert!(output
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("does not authorize")));
+        std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn rejected_recursive_decision_replays_exactly_once() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        import_test_workflow(&store, "run-recursive-replay", "wf-ar2-001");
+        create_test_agent(&store, "agent-recursive", "run-recursive-replay");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+
+        let first = stub_child_task_proposal("agent-recursive", "run-recursive-replay");
+        let first_output = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ProposeChildTask(first)),
+        )
+        .execute_node(&agent_step_input("agent-recursive", "run-recursive-replay"));
+        assert_eq!(first_output.status, "completed");
+        let tree_before_rejection = store
+            .load_recursive_tree("run-recursive-replay")
+            .expect("tree")
+            .expect("tree exists");
+        let child_node_id = tree_before_rejection
+            .nodes
+            .keys()
+            .find(|node_id| *node_id != &tree_before_rejection.root_node_id)
+            .cloned()
+            .expect("child node");
+
+        let mut duplicate = stub_child_task_proposal("agent-recursive", "run-recursive-replay");
+        duplicate.correlation_id = "different-correlation".to_string();
+        duplicate.parent_node_id = child_node_id.clone();
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ProposeChildTask(duplicate)),
+        );
+        let rejected = executor.execute_node(&agent_step_input_at(
+            "agent-recursive",
+            "run-recursive-replay",
+            &child_node_id,
+        ));
+        assert_eq!(rejected.status, "completed", "{:?}", rejected.error_message);
+        let rejected_result = rejected.output.clone().expect("rejected result");
+        assert!(
+            rejected_result.contains("ancestor_cycle"),
+            "unexpected rejected result: {rejected_result}"
+        );
+        let tree_after_rejection = store
+            .load_recursive_tree("run-recursive-replay")
+            .expect("tree")
+            .expect("tree exists");
+        assert!(tree_after_rejection.version > tree_before_rejection.version);
+        let audit_count_before_replay = store
+            .audit_events(1000)
+            .expect("audit")
+            .iter()
+            .filter(|event| event["action"] == "agent_step.recursive_proposal_rejected")
+            .count();
+
+        let replayed = executor.execute_node(&agent_step_input_at(
+            "agent-recursive",
+            "run-recursive-replay",
+            &child_node_id,
+        ));
+        assert_eq!(replayed.status, "completed");
+        assert_eq!(replayed.output, Some(rejected_result));
+        let replayed_tree = store
+            .load_recursive_tree("run-recursive-replay")
+            .expect("tree")
+            .expect("tree exists");
+        assert_eq!(replayed_tree.version, tree_after_rejection.version);
+        assert_eq!(
+            store
+                .audit_events(1000)
+                .expect("audit")
+                .iter()
+                .filter(|event| event["action"] == "agent_step.recursive_proposal_rejected")
+                .count(),
+            audit_count_before_replay
+        );
+        std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 
     #[test]

@@ -8,7 +8,7 @@ use super::{
 };
 use crate::agent_memory::build_memory_context_for_node;
 use crate::provider::redaction::contains_sensitive_patterns;
-use crate::recursive_execution::MAX_RECURSIVE_LEASES;
+use crate::recursive_execution::{RecursiveFailureReason, MAX_RECURSIVE_LEASES};
 use crate::workflow::context_pack::{
     assemble_context_injection_with_bridge, ContextAssemblyConfig, ContextSource,
 };
@@ -1743,6 +1743,10 @@ impl LocalProductStore {
                             .get("recursive_node_id")
                             .and_then(Value::as_str)
                             .map(str::to_string);
+                        let recursive_usage = recursive_node_id
+                            .as_deref()
+                            .map(|_| recursive_usage_from_output(&output, &node_json))
+                            .transpose()?;
                         let requested_retry = retryable_node_failure(&output)
                             && attempt <= if recursive_node_id.is_some() {
                                 1
@@ -1756,7 +1760,7 @@ impl LocalProductStore {
                                     conn,
                                     run_id,
                                     recursive_node_id,
-                                    &recursive_usage_from_output(&output),
+                                    recursive_usage.as_ref().expect("recursive usage"),
                                 )?
                             } else {
                                 true
@@ -1781,13 +1785,13 @@ impl LocalProductStore {
                         ).map_err(|e| e.to_string())?;
                         if finalized != 1 {
                             if let Some(recursive_node_id) = recursive_node_id.as_deref() {
-                                let usage = recursive_usage_from_output(&output);
+                                let usage = recursive_usage.as_ref().expect("recursive usage");
                                 let _ = match super::recursive_execution::record_recursive_late_usage_sqlite(
                                     conn,
                                     run_id,
                                     recursive_node_id,
                                     &format!("workflow:{run_id}:{node_id}:{attempt}"),
-                                    &usage,
+                            usage,
                                     &now,
                                 ) {
                                     Ok(within_tree_budget) => append_audit_locked(
@@ -1846,23 +1850,50 @@ impl LocalProductStore {
                             }));
                         }
 
-                        if let Some(recursive_node_id) = recursive_node_id.as_deref() {
-                            super::recursive_execution::sync_recursive_completion_sqlite(
+                        let recursive_status = if let Some(recursive_node_id) = recursive_node_id.as_deref() {
+                            Some(super::recursive_execution::sync_recursive_completion_sqlite(
                                 conn,
                                 run_id,
                                 recursive_node_id,
                                 &format!("workflow:{run_id}:{node_id}:{attempt}"),
                                 final_status == "completed",
                                 should_retry,
-                                &recursive_usage_from_output(&output),
+                                recursive_usage.as_ref().expect("recursive usage"),
                                 &now,
-                            )?;
+                            )?)
+                        } else {
+                            None
+                        };
+                        let persisted_status = recursive_status.as_deref().unwrap_or(actual_status);
+                        let recursive_failure_reason = recursive_node_id
+                            .as_deref()
+                            .map(|recursive_node_id| {
+                                recursive_failure_reason_sqlite(conn, run_id, recursive_node_id)
+                            })
+                            .transpose()?
+                            .flatten();
+                        if persisted_status != actual_status {
+                            conn.execute(
+                                "UPDATE workflow_run_nodes SET status=?1, blocked_reason=?2
+                                 WHERE run_id=?3 AND node_id=?4",
+                                params![
+                                    persisted_status,
+                                    (persisted_status == "failed").then(|| {
+                                        recursive_failure_reason
+                                            .as_deref()
+                                            .unwrap_or(RecursiveFailureReason::ExecutionFailure.as_str())
+                                    }),
+                                    run_id,
+                                    node_id,
+                                ],
+                            )
+                            .map_err(|e| e.to_string())?;
                         }
                         let result_json = output.to_value();
                         if let Some(obj) = node_json.as_object_mut() {
-                            obj.insert("status".to_string(), json!(actual_status));
+                            obj.insert("status".to_string(), json!(persisted_status));
                             obj.insert("result".to_string(), result_json.clone());
-                            if actual_status == "completed" {
+                            if persisted_status == "completed" {
                                 obj.insert("completed_at".to_string(), json!(now));
                             }
                         }
@@ -1916,7 +1947,7 @@ impl LocalProductStore {
                                 )?;
                             }
                         } else {
-                            let event_type = match final_status.as_str() {
+                            let event_type = match persisted_status {
                                 "completed" => "node.completed",
                                 "awaiting_approval" => "node.awaiting_approval",
                                 _ => "node.failed",
@@ -2024,6 +2055,10 @@ impl LocalProductStore {
                             .get("recursive_node_id")
                             .and_then(Value::as_str)
                             .map(str::to_string);
+                        let recursive_usage = recursive_node_id
+                            .as_deref()
+                            .map(|_| recursive_usage_from_output(&output, &node_json))
+                            .transpose()?;
                         let requested_retry = retryable_node_failure(&output)
                             && attempt <= if recursive_node_id.is_some() {
                                 1
@@ -2037,7 +2072,7 @@ impl LocalProductStore {
                                     &mut tx,
                                     run_id,
                                     recursive_node_id,
-                                    &recursive_usage_from_output(&output),
+                                    recursive_usage.as_ref().expect("recursive usage"),
                                 )?
                             } else {
                                 true
@@ -2064,13 +2099,13 @@ impl LocalProductStore {
                         ).map_err(|e| e.to_string())?;
                         if finalized != 1 {
                             if let Some(recursive_node_id) = recursive_node_id.as_deref() {
-                                let usage = recursive_usage_from_output(&output);
+                                let usage = recursive_usage.as_ref().expect("recursive usage");
                                 match super::recursive_execution::record_recursive_late_usage_pg(
                                     &mut tx,
                                     run_id,
                                     recursive_node_id,
                                     &format!("workflow:{run_id}:{node_id}:{attempt}"),
-                                    &usage,
+                            usage,
                                     &now,
                                 ) {
                                     Ok(within_tree_budget) => pg_append_audit(
@@ -2129,23 +2164,50 @@ impl LocalProductStore {
                             }));
                         }
 
-                        if let Some(recursive_node_id) = recursive_node_id.as_deref() {
-                            super::recursive_execution::sync_recursive_completion_pg(
+                        let recursive_status = if let Some(recursive_node_id) = recursive_node_id.as_deref() {
+                            Some(super::recursive_execution::sync_recursive_completion_pg(
                                 &mut tx,
                                 run_id,
                                 recursive_node_id,
                                 &format!("workflow:{run_id}:{node_id}:{attempt}"),
                                 final_status == "completed",
                                 should_retry,
-                                &recursive_usage_from_output(&output),
+                                recursive_usage.as_ref().expect("recursive usage"),
                                 &now,
-                            )?;
+                            )?)
+                        } else {
+                            None
+                        };
+                        let persisted_status = recursive_status.as_deref().unwrap_or(actual_status);
+                        let recursive_failure_reason = recursive_node_id
+                            .as_deref()
+                            .map(|recursive_node_id| {
+                                recursive_failure_reason_pg(&mut tx, run_id, recursive_node_id)
+                            })
+                            .transpose()?
+                            .flatten();
+                        if persisted_status != actual_status {
+                            tx.execute(
+                                "UPDATE workflow_run_nodes SET status=$1, blocked_reason=$2
+                                 WHERE run_id=$3 AND node_id=$4",
+                                &[
+                                    &persisted_status,
+                                    &(persisted_status == "failed").then(|| {
+                                        recursive_failure_reason
+                                            .as_deref()
+                                            .unwrap_or(RecursiveFailureReason::ExecutionFailure.as_str())
+                                    }),
+                                    &run_id,
+                                    &node_id,
+                                ],
+                            )
+                            .map_err(|e| e.to_string())?;
                         }
                         let result_json = output.to_value();
                         if let Some(obj) = node_json.as_object_mut() {
-                            obj.insert("status".to_string(), json!(actual_status));
+                            obj.insert("status".to_string(), json!(persisted_status));
                             obj.insert("result".to_string(), result_json.clone());
-                            if actual_status == "completed" {
+                            if persisted_status == "completed" {
                                 obj.insert("completed_at".to_string(), json!(now));
                             }
                         }
@@ -2199,7 +2261,7 @@ impl LocalProductStore {
                                 )?;
                             }
                         } else {
-                            let event_type = match final_status.as_str() {
+                            let event_type = match persisted_status {
                                 "completed" => "node.completed",
                                 "awaiting_approval" => "node.awaiting_approval",
                                 _ => "node.failed",
@@ -4924,41 +4986,116 @@ fn optional_json_text(value: Option<&Value>) -> Option<String> {
 
 fn recursive_usage_from_output(
     output: &crate::node_executor::NodeExecutionOutput,
-) -> crate::recursive_execution::RecursiveBudget {
-    // A recursive node must not turn an unmeasured dimension into free
-    // budget. Saturated maxima force the node/tree into a terminal budget
-    // failure while preserving the bounded receipt and audit path.
+    node_metadata: &Value,
+) -> Result<crate::recursive_execution::RecursiveBudget, String> {
+    let usage_contract = node_metadata.get("usage_contract");
+    let contract_kind = usage_contract
+        .and_then(|value| value.get("kind"))
+        .and_then(Value::as_str);
+    if output.executor_type == "agent_step"
+        && node_metadata.get("decision_source").and_then(Value::as_str) == Some("fixture")
+    {
+        let Some(contract) = usage_contract else {
+            return Err("fixture_usage_contract_missing".to_string());
+        };
+        if contract_kind != Some("fixture") {
+            return Err("fixture_usage_contract_invalid".to_string());
+        }
+        return bounded_fixture_usage(contract);
+    }
+    if contract_kind == Some("unavailable") {
+        return Err("recursive_usage_unavailable".to_string());
+    }
     let token_count = match (output.input_tokens, output.output_tokens) {
         (Some(input), Some(output)) if input >= 0 && output >= 0 => {
             (input as u64).saturating_add(output as u64)
         }
-        _ => u64::MAX,
+        _ => return Err("recursive_usage_unavailable".to_string()),
     };
     let cost_micros = output
         .estimated_cost
         .filter(|cost| cost.is_finite() && *cost >= 0.0)
         .map(|cost| (cost * 1_000_000.0).ceil() as u64)
-        .unwrap_or(u64::MAX);
+        .ok_or_else(|| "recursive_usage_unavailable".to_string())?;
     let time_ms = output
         .latency_ms
         .filter(|latency| *latency >= 0)
         .map(|latency| latency as u64)
-        .unwrap_or(u64::MAX);
-    crate::recursive_execution::RecursiveBudget {
+        .ok_or_else(|| "recursive_usage_unavailable".to_string())?;
+    Ok(crate::recursive_execution::RecursiveBudget {
         calls_remaining: 1,
         tokens_remaining: token_count,
         cost_micros_remaining: cost_micros,
         time_ms_remaining: time_ms,
-    }
+    })
 }
 
 fn recursive_retry_usage() -> crate::recursive_execution::RecursiveBudget {
     crate::recursive_execution::RecursiveBudget {
-        calls_remaining: 1,
-        tokens_remaining: u64::MAX,
-        cost_micros_remaining: u64::MAX,
-        time_ms_remaining: u64::MAX,
+        // A stale lease has no measured execution usage. Retry admission is
+        // bounded by the already-held node reservation and must not spend a
+        // second call merely because the first lease became stale.
+        calls_remaining: 0,
+        tokens_remaining: 0,
+        cost_micros_remaining: 0,
+        time_ms_remaining: 0,
     }
+}
+
+fn recursive_failure_reason_sqlite(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    recursive_node_id: &str,
+) -> Result<Option<String>, String> {
+    Ok(
+        super::recursive_execution::load_recursive_tree_sqlite(conn, root_run_id)?.and_then(
+            |tree| {
+                tree.nodes
+                    .get(recursive_node_id)
+                    .and_then(|node| node.failure_reason.clone())
+            },
+        ),
+    )
+}
+
+#[cfg(feature = "pg")]
+fn recursive_failure_reason_pg(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+    recursive_node_id: &str,
+) -> Result<Option<String>, String> {
+    Ok(
+        super::recursive_execution::load_recursive_tree_pg(client, root_run_id)?.and_then(|tree| {
+            tree.nodes
+                .get(recursive_node_id)
+                .and_then(|node| node.failure_reason.clone())
+        }),
+    )
+}
+
+fn bounded_fixture_usage(
+    contract: &Value,
+) -> Result<crate::recursive_execution::RecursiveBudget, String> {
+    let read = |key: &str| {
+        contract
+            .get(key)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "fixture_usage_contract_invalid".to_string())
+    };
+    let usage = crate::recursive_execution::RecursiveBudget {
+        calls_remaining: read("calls")?,
+        tokens_remaining: read("tokens")?,
+        cost_micros_remaining: read("cost_micros")?,
+        time_ms_remaining: read("time_ms")?,
+    };
+    if usage.calls_remaining == 0
+        || usage.tokens_remaining == 0
+        || usage.cost_micros_remaining == 0
+        || usage.time_ms_remaining == 0
+    {
+        return Err("fixture_usage_contract_invalid".to_string());
+    }
+    Ok(usage)
 }
 
 fn escape_like(value: &str) -> String {
@@ -4994,15 +5131,7 @@ fn workflow_node_is_recursive_locked(
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
-    Ok(serde_json::from_str::<Value>(&node_json)
-        .ok()
-        .and_then(|metadata| {
-            metadata
-                .get("recursive_node_id")
-                .and_then(Value::as_str)
-                .map(|_| ())
-        })
-        .is_some())
+    recursive_marker_from_node_json(&node_json)
 }
 
 fn count_running_recursive_steps_locked(conn: &rusqlite::Connection) -> Result<i64, String> {
@@ -5018,16 +5147,7 @@ fn count_running_recursive_steps_locked(conn: &rusqlite::Connection) -> Result<i
     let mut count = 0_i64;
     for row in rows {
         let node_json = row.map_err(|e| e.to_string())?;
-        if serde_json::from_str::<Value>(&node_json)
-            .ok()
-            .and_then(|metadata| {
-                metadata
-                    .get("recursive_node_id")
-                    .and_then(Value::as_str)
-                    .map(|_| ())
-            })
-            .is_some()
-        {
+        if recursive_marker_from_node_json(&node_json)? {
             count += 1;
         }
     }
@@ -5071,15 +5191,7 @@ fn pg_workflow_node_is_recursive(
         )
         .map_err(|e| e.to_string())?;
     let node_json: String = row.get(0);
-    Ok(serde_json::from_str::<Value>(&node_json)
-        .ok()
-        .and_then(|metadata| {
-            metadata
-                .get("recursive_node_id")
-                .and_then(Value::as_str)
-                .map(|_| ())
-        })
-        .is_some())
+    recursive_marker_from_node_json(&node_json)
 }
 
 #[cfg(feature = "pg")]
@@ -5093,21 +5205,31 @@ fn pg_count_running_recursive_steps(
             &[],
         )
         .map_err(|e| e.to_string())?;
-    Ok(rows
-        .iter()
-        .filter(|row| {
-            let node_json: String = row.get(0);
-            serde_json::from_str::<Value>(&node_json)
-                .ok()
-                .and_then(|metadata| {
-                    metadata
-                        .get("recursive_node_id")
-                        .and_then(Value::as_str)
-                        .map(|_| ())
-                })
-                .is_some()
-        })
-        .count() as i64)
+    let mut count = 0_i64;
+    for row in rows {
+        let node_json: String = row.get(0);
+        if recursive_marker_from_node_json(&node_json)? {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// The scheduler's recursive-capacity decision must fail closed. A malformed
+/// node payload is not silently treated as an ordinary agent step, otherwise a
+/// corrupt marker could bypass the global three-lease cap.
+fn recursive_marker_from_node_json(node_json: &str) -> Result<bool, String> {
+    let metadata: Value = serde_json::from_str(node_json)
+        .map_err(|_| "recursive_node_identity_malformed".to_string())?;
+    let Some(marker) = metadata.get("recursive_node_id") else {
+        return Ok(false);
+    };
+    let marker = marker
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "recursive_node_identity_malformed".to_string())?;
+    let _ = marker;
+    Ok(true)
 }
 
 #[cfg(feature = "pg")]
@@ -5996,6 +6118,63 @@ mod recursive_scheduler_tests {
     }
 
     #[test]
+    fn recursive_usage_contract_distinguishes_fixture_measured_and_unavailable() {
+        let fixture_output = NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "agent_step".to_string(),
+            output: Some("fixture".to_string()),
+            error_domain: None,
+            error_message: None,
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost: None,
+            latency_ms: Some(0),
+        };
+        let fixture = recursive_usage_from_output(
+            &fixture_output,
+            &json!({
+                "decision_source": "fixture",
+                "usage_contract": {
+                    "kind": "fixture",
+                    "calls": 1,
+                    "tokens": 2,
+                    "cost_micros": 3,
+                    "time_ms": 4
+                }
+            }),
+        )
+        .expect("bounded fixture usage");
+        assert_eq!(fixture.tokens_remaining, 2);
+        assert_eq!(
+            recursive_usage_from_output(&fixture_output, &json!({"decision_source": "fixture"}))
+                .expect_err("missing fixture contract"),
+            "fixture_usage_contract_missing"
+        );
+        assert_eq!(
+            recursive_usage_from_output(
+                &fixture_output,
+                &json!({"usage_contract": {"kind": "unavailable"}})
+            )
+            .expect_err("unavailable usage"),
+            "recursive_usage_unavailable"
+        );
+        let measured = NodeExecutionOutput {
+            executor_type: "agent_step".to_string(),
+            input_tokens: Some(2),
+            output_tokens: Some(3),
+            estimated_cost: Some(0.000004),
+            latency_ms: Some(5),
+            ..fixture_output
+        };
+        assert_eq!(
+            recursive_usage_from_output(&measured, &json!({}))
+                .expect("measured usage")
+                .tokens_remaining,
+            5
+        );
+    }
+
+    #[test]
     fn global_recursive_lease_counter_ignores_non_recursive_agent_steps() {
         let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
         conn.execute(
@@ -6038,6 +6217,34 @@ mod recursive_scheduler_tests {
         assert!(
             !workflow_node_is_recursive_locked(&conn, "ordinary-run", "ordinary-node")
                 .expect("marker")
+        );
+    }
+
+    #[test]
+    fn malformed_recursive_metadata_cannot_bypass_global_lease_cap() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        conn.execute(
+            "CREATE TABLE workflow_run_nodes (
+                run_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                node_json TEXT NOT NULL
+            )",
+            [],
+        )
+        .expect("schema");
+        conn.execute(
+            "INSERT INTO workflow_run_nodes
+             (run_id, node_id, task_type, status, node_json)
+             VALUES ('malformed-run', 'malformed-node', 'agent_step', 'running', '{')",
+            [],
+        )
+        .expect("malformed row");
+        assert_eq!(
+            count_running_recursive_steps_locked(&conn)
+                .expect_err("malformed metadata must fail closed"),
+            "recursive_node_identity_malformed"
         );
     }
 

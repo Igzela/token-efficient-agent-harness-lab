@@ -44,6 +44,55 @@ fn mark_recursive_proposals_accepted_sqlite(
     Ok(())
 }
 
+fn mark_recursive_proposals_rejected_sqlite(
+    conn: &rusqlite::Connection,
+    mutation: &AgentActionMutation,
+    tree: &RecursiveTree,
+    now: &str,
+) -> Result<(), String> {
+    for (proposal_id, evidence) in &tree.rejected_proposals {
+        let status: Option<String> = conn
+            .query_row(
+                "SELECT status FROM agent_proposals WHERE proposal_id=?1 AND run_id=?2",
+                params![proposal_id, mutation.run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        match status.as_deref() {
+            Some("pending") => {
+                let updated = conn
+                    .execute(
+                        "UPDATE agent_proposals SET status='rejected', updated_at=?1
+                         WHERE proposal_id=?2 AND run_id=?3 AND status='pending'",
+                        params![now, proposal_id, mutation.run_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if updated != 1 {
+                    return Err("recursive proposal rejection raced".to_string());
+                }
+                append_audit_locked(
+                    conn,
+                    now,
+                    &format!("agent:{}", mutation.agent_id),
+                    "agent_step.recursive_proposal_rejected",
+                    &format!("agent_proposal/{proposal_id}"),
+                    &json!({
+                        "run_id": mutation.run_id,
+                        "proposal_id": proposal_id,
+                        "reason_code": evidence.reason_code,
+                        "evidence_refs": evidence.evidence_refs,
+                    }),
+                )?;
+            }
+            Some("rejected") => {}
+            Some("accepted") => return Err("recursive proposal was already accepted".to_string()),
+            _ => return Err("recursive proposal record is missing".to_string()),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "pg")]
 fn mark_recursive_proposals_accepted_pg(
     client: &mut impl postgres::GenericClient,
@@ -74,6 +123,55 @@ fn mark_recursive_proposals_accepted_pg(
             }
             Some("accepted") => {}
             Some("rejected") => return Err("recursive proposal was rejected".to_string()),
+            _ => return Err("recursive proposal record is missing".to_string()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn mark_recursive_proposals_rejected_pg(
+    client: &mut impl postgres::GenericClient,
+    mutation: &AgentActionMutation,
+    tree: &RecursiveTree,
+    now: &str,
+) -> Result<(), String> {
+    for (proposal_id, evidence) in &tree.rejected_proposals {
+        let status: Option<String> = client
+            .query_opt(
+                "SELECT status FROM agent_proposals WHERE proposal_id=$1 AND run_id=$2",
+                &[&proposal_id, &mutation.run_id],
+            )
+            .map_err(|error| error.to_string())?
+            .map(|row| row.get(0));
+        match status.as_deref() {
+            Some("pending") => {
+                let updated = client
+                    .execute(
+                        "UPDATE agent_proposals SET status='rejected', updated_at=$1
+                         WHERE proposal_id=$2 AND run_id=$3 AND status='pending'",
+                        &[&now, &proposal_id, &mutation.run_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if updated != 1 {
+                    return Err("recursive proposal rejection raced".to_string());
+                }
+                super::workflow_runs::pg_append_audit(
+                    client,
+                    now,
+                    &format!("agent:{}", mutation.agent_id),
+                    "agent_step.recursive_proposal_rejected",
+                    &format!("agent_proposal/{proposal_id}"),
+                    &json!({
+                        "run_id": mutation.run_id,
+                        "proposal_id": proposal_id,
+                        "reason_code": evidence.reason_code,
+                        "evidence_refs": evidence.evidence_refs,
+                    }),
+                )?;
+            }
+            Some("rejected") => {}
+            Some("accepted") => return Err("recursive proposal was already accepted".to_string()),
             _ => return Err("recursive proposal record is missing".to_string()),
         }
     }
@@ -490,6 +588,7 @@ fn apply_sqlite_operation(
         ) {
             Ok(()) => {
                 mark_recursive_proposals_accepted_sqlite(conn, mutation, tree, now)?;
+                mark_recursive_proposals_rejected_sqlite(conn, mutation, tree, now)?;
                 Ok(())
             }
             Err(error) if error == "stale_parent" => {
@@ -1105,6 +1204,7 @@ fn apply_pg_operation(
         ) {
             Ok(()) => {
                 mark_recursive_proposals_accepted_pg(client, mutation, tree, now)?;
+                mark_recursive_proposals_rejected_pg(client, mutation, tree, now)?;
                 Ok(())
             }
             Err(error) if error == "stale_parent" => {

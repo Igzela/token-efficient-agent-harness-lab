@@ -33,7 +33,9 @@ fn bind_test_workflow(store: &LocalProductStore, run_id: &str, workflow_id: &str
                 "node_id": node_id,
                 "task_type": "agent_step",
                 "status": "pending",
-                "recursive_node_id": node_id
+                "recursive_node_id": node_id,
+                "agent_id": "test-agent",
+                "creation_receipt_sha256": "test-root-receipt"
             }],
             "edges": [],
             "events": [],
@@ -45,7 +47,7 @@ fn bind_test_workflow(store: &LocalProductStore, run_id: &str, workflow_id: &str
 #[test]
 fn recursive_tree_round_trips_through_local_store() {
     let store = LocalProductStore::new(":memory:").expect("store");
-    let tree = RecursiveTree::new(
+    let mut tree = RecursiveTree::new(
         "recursive-run-1",
         "fixture-workflow",
         "root objective",
@@ -59,6 +61,12 @@ fn recursive_tree_round_trips_through_local_store() {
         &tree.workflow_id,
         &tree.root_node_id,
     );
+    tree.bind_root_identity(
+        "test-agent",
+        &tree.root_node_id.clone(),
+        "test-root-receipt",
+    )
+    .expect("bind root identity");
 
     store.save_recursive_tree(&tree).expect("save");
     let loaded = store
@@ -80,7 +88,7 @@ fn recursive_tree_round_trips_through_local_store() {
 fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() {
     let occupied_path = tempfile::NamedTempFile::new().expect("path");
     let occupied = LocalProductStore::new(occupied_path.path()).expect("store");
-    let tree = RecursiveTree::new(
+    let mut tree = RecursiveTree::new(
         "recursive-run-rollback",
         "fixture-workflow",
         "root objective",
@@ -94,6 +102,12 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
         &tree.workflow_id,
         &tree.root_node_id,
     );
+    tree.bind_root_identity(
+        "test-agent",
+        &tree.root_node_id.clone(),
+        "test-root-receipt",
+    )
+    .expect("bind root identity");
     occupied.save_recursive_tree(&tree).expect("save");
     let error = occupied
         .rollback_v26_to_v25("test", true)

@@ -24,6 +24,23 @@ pub const MAX_SCOPE_VALUE_BYTES: usize = 1024;
 pub const MAX_SCOPE_ITEMS: usize = 64;
 pub const MAX_RECURSIVE_DECISION_EVIDENCE_REFS: usize = 8;
 pub const MAX_RECURSIVE_EVIDENCE_REF_BYTES: usize = 256;
+pub const OBJECTIVE_IDENTITY_VERSION: &str = "recursive-objective.v2";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecursiveExecutionState {
+    Running,
+    OperatorPaused,
+    BudgetExhausted,
+    KillStopped,
+    TerminalFailed,
+}
+
+impl Default for RecursiveExecutionState {
+    fn default() -> Self {
+        Self::Running
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +58,14 @@ pub enum RecursiveFailureReason {
     ReceiptConflict,
     SchedulerCapacityExhausted,
     RecursiveKillSwitchActive,
+    OperatorPaused,
+    TerminalFailed,
+    ExecutionFailure,
+    RetryExhausted,
+    RecursiveTreeMissing,
+    RecursiveNodeMissing,
+    FixtureUsageContractMissing,
+    RecursiveUsageUnavailable,
 }
 
 impl RecursiveFailureReason {
@@ -59,6 +84,14 @@ impl RecursiveFailureReason {
             Self::ReceiptConflict => "receipt_conflict",
             Self::SchedulerCapacityExhausted => "scheduler_capacity_exhausted",
             Self::RecursiveKillSwitchActive => "recursive_kill_switch_active",
+            Self::OperatorPaused => "operator_paused",
+            Self::TerminalFailed => "terminal_failed",
+            Self::ExecutionFailure => "recursive_node_execution_failed",
+            Self::RetryExhausted => "recursive_retry_exhausted",
+            Self::RecursiveTreeMissing => "recursive_tree_missing",
+            Self::RecursiveNodeMissing => "recursive_node_missing",
+            Self::FixtureUsageContractMissing => "fixture_usage_contract_missing",
+            Self::RecursiveUsageUnavailable => "recursive_usage_unavailable",
         }
     }
 }
@@ -158,6 +191,12 @@ pub struct RecursiveNode {
     pub scope: RecursiveScope,
     pub capabilities: BTreeSet<String>,
     pub budget: RecursiveBudget,
+    #[serde(default)]
+    pub child_budget: RecursiveBudget,
+    #[serde(default)]
+    pub reservation: RecursiveBudget,
+    #[serde(default)]
+    pub actual_usage: RecursiveBudget,
     pub status: String,
     pub accepted_children: usize,
     pub retry_count: u8,
@@ -181,6 +220,12 @@ pub struct RecursiveTree {
     pub root_run_id: String,
     pub workflow_id: String,
     pub root_node_id: String,
+    #[serde(default)]
+    pub root_agent_id: String,
+    #[serde(default)]
+    pub root_recursive_marker: String,
+    #[serde(default)]
+    pub root_creation_receipt_sha256: String,
     pub root_scope: RecursiveScope,
     pub root_capabilities: BTreeSet<String>,
     pub root_budget: RecursiveBudget,
@@ -191,7 +236,10 @@ pub struct RecursiveTree {
     pub root_budget_limit: Option<RecursiveBudget>,
     #[serde(default)]
     pub spent_budget: RecursiveBudget,
-    pub paused: bool,
+    #[serde(default)]
+    pub reserved_budget: RecursiveBudget,
+    #[serde(default)]
+    pub execution_state: RecursiveExecutionState,
     pub version: u64,
     pub nodes: BTreeMap<String, RecursiveNode>,
     pub accepted_proposals: BTreeSet<String>,
@@ -210,12 +258,34 @@ pub struct RecursiveAdmission {
 }
 
 pub fn normalize_objective(objective: &str) -> String {
-    objective.split_whitespace().collect::<Vec<_>>().join(" ")
+    objective
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch.is_whitespace() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .filter(|token| !matches!(*token, "a" | "an" | "the" | "to" | "please"))
+        .map(|token| match token {
+            "inspect" | "examine" => "review",
+            "documentation" => "docs",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn objective_fingerprint(objective: &str) -> String {
+    let canonical = json!({
+        "version": OBJECTIVE_IDENTITY_VERSION,
+        "objective": normalize_objective(objective),
+    });
     let mut hasher = Sha256::new();
-    hasher.update(normalize_objective(objective).as_bytes());
+    hasher.update(canonical.to_string().as_bytes());
     hex::encode(hasher.finalize())
 }
 
@@ -307,6 +377,9 @@ impl RecursiveTree {
             status: "ready".to_string(),
             accepted_children: 0,
             retry_count: 0,
+            child_budget: budget.clone(),
+            reservation: RecursiveBudget::default(),
+            actual_usage: RecursiveBudget::default(),
             version: 1,
             lease_id: None,
             failure_reason: None,
@@ -319,6 +392,9 @@ impl RecursiveTree {
             root_run_id,
             workflow_id: workflow_id.into(),
             root_node_id: node_id,
+            root_agent_id: String::new(),
+            root_recursive_marker: String::new(),
+            root_creation_receipt_sha256: String::new(),
             root_scope: scope,
             root_capabilities: capabilities,
             root_budget_limit: Some(budget.clone()),
@@ -329,7 +405,8 @@ impl RecursiveTree {
                 cost_micros_remaining: 0,
                 time_ms_remaining: 0,
             },
-            paused: false,
+            reserved_budget: RecursiveBudget::default(),
+            execution_state: RecursiveExecutionState::Running,
             version: 1,
             nodes,
             accepted_proposals: BTreeSet::new(),
@@ -338,6 +415,30 @@ impl RecursiveTree {
             rejected_proposals: BTreeMap::new(),
             usage_receipts: BTreeMap::new(),
         }
+    }
+
+    pub fn bind_root_identity(
+        &mut self,
+        agent_id: &str,
+        recursive_marker: &str,
+        creation_receipt_sha256: &str,
+    ) -> Result<(), RecursiveFailureReason> {
+        if agent_id.is_empty() || recursive_marker.is_empty() || creation_receipt_sha256.is_empty()
+        {
+            return Err(RecursiveFailureReason::ReceiptConflict);
+        }
+        let matches_or_empty =
+            |existing: &str, value: &str| existing.is_empty() || existing == value;
+        if !matches_or_empty(&self.root_agent_id, agent_id)
+            || !matches_or_empty(&self.root_recursive_marker, recursive_marker)
+            || !matches_or_empty(&self.root_creation_receipt_sha256, creation_receipt_sha256)
+        {
+            return Err(RecursiveFailureReason::ReceiptConflict);
+        }
+        self.root_agent_id = agent_id.to_string();
+        self.root_recursive_marker = recursive_marker.to_string();
+        self.root_creation_receipt_sha256 = creation_receipt_sha256.to_string();
+        Ok(())
     }
 
     pub fn admit_child(
@@ -350,8 +451,20 @@ impl RecursiveTree {
         if kill_switch_active() {
             return Err(RecursiveFailureReason::RecursiveKillSwitchActive);
         }
-        if self.paused {
-            return Err(RecursiveFailureReason::RecursiveKillSwitchActive);
+        match self.execution_state {
+            RecursiveExecutionState::Running => {}
+            RecursiveExecutionState::OperatorPaused => {
+                return Err(RecursiveFailureReason::OperatorPaused)
+            }
+            RecursiveExecutionState::BudgetExhausted => {
+                return Err(RecursiveFailureReason::TreeBudgetExhausted)
+            }
+            RecursiveExecutionState::KillStopped => {
+                return Err(RecursiveFailureReason::RecursiveKillSwitchActive)
+            }
+            RecursiveExecutionState::TerminalFailed => {
+                return Err(RecursiveFailureReason::TerminalFailed)
+            }
         }
         if !shape_is_valid(proposal) {
             return Err(RecursiveFailureReason::ProposalConflict);
@@ -386,9 +499,6 @@ impl RecursiveTree {
         if self.nodes.len() >= MAX_RECURSIVE_NODES_PER_ROOT {
             return Err(RecursiveFailureReason::TreeBudgetExhausted);
         }
-        if self.active_leases.len() >= MAX_RECURSIVE_LEASES {
-            return Err(RecursiveFailureReason::SchedulerCapacityExhausted);
-        }
         if !proposal
             .requested_capabilities
             .is_subset(&parent.capabilities)
@@ -417,15 +527,16 @@ impl RecursiveTree {
         // allowance.
         let effective_budget = proposal
             .budget
-            .bounded_by(&parent.budget)
+            .bounded_by(&parent.child_budget)
             .bounded_by(&self.root_budget);
         if !effective_budget.is_nonzero() {
             return Err(RecursiveFailureReason::TreeBudgetExhausted);
         }
         if let Some(limit) = self.root_budget_limit.as_ref() {
-            let mut projected_spend = self.spent_budget.clone();
-            projected_spend.add(&effective_budget);
-            if !limit.can_spend(&projected_spend) {
+            let mut projected_total = self.spent_budget.clone();
+            projected_total.add(&self.reserved_budget);
+            projected_total.add(&effective_budget);
+            if !limit.can_spend(&projected_total) {
                 return Err(RecursiveFailureReason::TreeBudgetExhausted);
             }
         }
@@ -445,6 +556,9 @@ impl RecursiveTree {
             scope: proposal.requested_scope.clone(),
             capabilities: proposal.requested_capabilities.clone(),
             budget: effective_budget.clone(),
+            child_budget: effective_budget.clone(),
+            reservation: effective_budget.clone(),
+            actual_usage: RecursiveBudget::default(),
             status: "ready".to_string(),
             accepted_children: 0,
             retry_count: 0,
@@ -455,9 +569,10 @@ impl RecursiveTree {
         };
         let parent_entry = self.nodes.get_mut(&parent.node_id).expect("parent checked");
         parent_entry.accepted_children += 1;
-        parent_entry.budget.spend(&effective_budget);
+        parent_entry.child_budget.spend(&effective_budget);
         parent_entry.version += 1;
         self.root_budget.spend(&effective_budget);
+        self.reserved_budget.add(&effective_budget);
         self.nodes.insert(node.node_id.clone(), node.clone());
         self.accepted_proposals.insert(proposal.proposal_id.clone());
         self.receipts.insert(
@@ -479,8 +594,23 @@ impl RecursiveTree {
         if !recursive_enabled() {
             return Err(RecursiveFailureReason::RecursiveDisabled);
         }
-        if kill_switch_active() || self.paused {
+        if kill_switch_active() {
             return Err(RecursiveFailureReason::RecursiveKillSwitchActive);
+        }
+        match self.execution_state {
+            RecursiveExecutionState::Running => {}
+            RecursiveExecutionState::OperatorPaused => {
+                return Err(RecursiveFailureReason::OperatorPaused)
+            }
+            RecursiveExecutionState::BudgetExhausted => {
+                return Err(RecursiveFailureReason::TreeBudgetExhausted)
+            }
+            RecursiveExecutionState::KillStopped => {
+                return Err(RecursiveFailureReason::RecursiveKillSwitchActive)
+            }
+            RecursiveExecutionState::TerminalFailed => {
+                return Err(RecursiveFailureReason::TerminalFailed)
+            }
         }
         if self.active_leases.len() >= MAX_RECURSIVE_LEASES {
             return Err(RecursiveFailureReason::SchedulerCapacityExhausted);
@@ -506,7 +636,7 @@ impl RecursiveTree {
         lease_id: &str,
         success: bool,
     ) -> Result<(), RecursiveFailureReason> {
-        self.complete_node_with_usage(
+        let result = self.complete_node_with_usage(
             node_id,
             lease_id,
             success,
@@ -516,7 +646,11 @@ impl RecursiveTree {
                 cost_micros_remaining: 0,
                 time_ms_remaining: 0,
             },
-        )
+        );
+        if result.is_ok() {
+            self.release_node_reservation_for_persistence(node_id);
+        }
+        result
     }
 
     pub fn complete_node_with_usage(
@@ -543,6 +677,8 @@ impl RecursiveTree {
             .get_mut(node_id)
             .ok_or(RecursiveFailureReason::StaleParent)?;
         node.budget.spend(usage);
+        node.actual_usage.add(usage);
+        node.reservation.spend(usage);
         node.status = if success && within_budget {
             "completed"
         } else {
@@ -555,14 +691,44 @@ impl RecursiveTree {
                     .as_str()
                     .to_string(),
             )
+        } else if !success && node.retry_count >= MAX_RECURSIVE_RETRIES {
+            Some(RecursiveFailureReason::RetryExhausted.as_str().to_string())
         } else {
-            (!success).then(|| "recursive_node_execution_failed".to_string())
+            (!success).then(|| {
+                RecursiveFailureReason::ExecutionFailure
+                    .as_str()
+                    .to_string()
+            })
         };
         node.lease_id = None;
         node.version += 1;
         self.active_leases.remove(lease_id);
+        if !within_budget {
+            self.execution_state = RecursiveExecutionState::BudgetExhausted;
+        } else if !success {
+            self.execution_state = RecursiveExecutionState::TerminalFailed;
+        }
         self.version += 1;
         Ok(())
+    }
+
+    pub(crate) fn release_node_reservation_for_persistence(&mut self, node_id: &str) {
+        let (parent_node_id, remaining) = {
+            let Some(node) = self.nodes.get_mut(node_id) else {
+                return;
+            };
+            let remaining = std::mem::take(&mut node.reservation);
+            (node.parent_node_id.clone(), remaining)
+        };
+        self.reserved_budget.spend(&remaining);
+        self.root_budget.add(&remaining);
+        if let Some(parent_node_id) = parent_node_id {
+            if let Some(parent) = self.nodes.get_mut(&parent_node_id) {
+                parent.child_budget.add(&remaining);
+                parent.version += 1;
+            }
+        }
+        self.version += 1;
     }
 
     fn record_usage(
@@ -588,14 +754,17 @@ impl RecursiveTree {
             .root_budget_limit
             .as_ref()
             .map(|limit| {
-                limit.can_spend(&self.spent_budget) && {
-                    let mut after = self.spent_budget.clone();
-                    after.add(usage);
-                    limit.can_spend(&after)
-                }
+                let mut after_spent = self.spent_budget.clone();
+                after_spent.add(usage);
+                let mut after_reserved = self.reserved_budget.clone();
+                after_reserved.spend(usage);
+                let mut after_total = after_spent.clone();
+                after_total.add(&after_reserved);
+                limit.can_spend(&after_total)
             })
             .unwrap_or(true);
         self.spent_budget.add(usage);
+        self.reserved_budget.spend(usage);
         self.usage_receipts.insert(
             receipt_id.to_string(),
             format!(
@@ -604,7 +773,7 @@ impl RecursiveTree {
             ),
         );
         if !within_tree_budget {
-            self.paused = true;
+            self.execution_state = RecursiveExecutionState::BudgetExhausted;
             self.version += 1;
         }
         Ok(within_tree_budget)
@@ -636,11 +805,8 @@ impl RecursiveTree {
             // the surrounding queue transaction and leave the workflow node
             // pending forever.
             node.status = "failed".to_string();
-            node.failure_reason = Some(
-                RecursiveFailureReason::TreeBudgetExhausted
-                    .as_str()
-                    .to_string(),
-            );
+            node.failure_reason = Some(RecursiveFailureReason::RetryExhausted.as_str().to_string());
+            self.execution_state = RecursiveExecutionState::TerminalFailed;
             node.version += 1;
             self.version += 1;
             return Ok(());
@@ -648,6 +814,9 @@ impl RecursiveTree {
         node.retry_count += 1;
         node.status = "ready".to_string();
         node.failure_reason = None;
+        if self.execution_state == RecursiveExecutionState::TerminalFailed {
+            self.execution_state = RecursiveExecutionState::Running;
+        }
         node.version += 1;
         self.version += 1;
         Ok(())
@@ -669,22 +838,27 @@ impl RecursiveTree {
         }
         Ok(recursive_enabled()
             && !kill_switch_active()
-            && !self.paused
+            && self.execution_state == RecursiveExecutionState::Running
             && node.retry_count < MAX_RECURSIVE_RETRIES
             && current_attempt_fits
-            // A retry is another bounded scheduler call.  Do not enqueue it
-            // after this attempt consumes the node's complete call budget.
+            // The retry reuses the existing reservation. The stale attempt
+            // has no authoritative provider usage, so it must not consume the
+            // node's final execution allowance merely to qualify for retry.
             && remaining.calls_remaining > 0)
     }
 
     pub fn pause(&mut self) {
-        self.paused = true;
+        if self.execution_state == RecursiveExecutionState::Running {
+            self.execution_state = RecursiveExecutionState::OperatorPaused;
+        }
         self.version += 1;
     }
 
     pub fn resume(&mut self) {
-        self.paused = false;
-        self.version += 1;
+        if self.execution_state == RecursiveExecutionState::OperatorPaused {
+            self.execution_state = RecursiveExecutionState::Running;
+            self.version += 1;
+        }
     }
 
     pub fn record_rejection(&mut self, proposal_id: &str, reason: RecursiveFailureReason) {
@@ -731,7 +905,7 @@ impl RecursiveTree {
             "root_run_id": self.root_run_id,
             "workflow_id": self.workflow_id,
             "root_node_id": self.root_node_id,
-            "paused": self.paused,
+            "execution_state": self.execution_state,
             "version": self.version,
             "node_count": self.nodes.len(),
             "active_lease_count": self.active_leases.len(),
@@ -848,6 +1022,14 @@ mod tests {
             objective_fingerprint(" a b ")
         );
         assert_eq!(
+            objective_fingerprint("Please inspect the documentation"),
+            objective_fingerprint("review docs")
+        );
+        assert_ne!(
+            objective_fingerprint("review docs"),
+            objective_fingerprint("review source code")
+        );
+        assert_eq!(
             tree.admit_child(&p),
             Err(RecursiveFailureReason::ProposalConflict)
         );
@@ -879,7 +1061,7 @@ mod tests {
         assert_eq!(node.status, "failed");
         assert_eq!(
             node.failure_reason.as_deref(),
-            Some(RecursiveFailureReason::TreeBudgetExhausted.as_str())
+            Some(RecursiveFailureReason::RetryExhausted.as_str())
         );
         let evidence = tree.redacted_read_model();
         assert!(evidence["nodes"]
@@ -921,6 +1103,170 @@ mod tests {
                 time_ms_remaining: 0,
             }
         );
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn depth_two_tree_separates_reservation_from_actual_usage() {
+        let _guard = test_env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let mut tree = RecursiveTree::new(
+            "depth-two-run",
+            "fixture",
+            "root objective",
+            scope(),
+            ["read".to_string()].into_iter().collect(),
+            RecursiveBudget {
+                calls_remaining: 10,
+                tokens_remaining: 100,
+                cost_micros_remaining: 100,
+                time_ms_remaining: 1000,
+            },
+        );
+        let child = tree
+            .admit_child(&RecursiveProposal {
+                proposal_id: "child-proposal".to_string(),
+                parent_node_id: tree.root_node_id.clone(),
+                parent_version: 1,
+                objective: "review child docs".to_string(),
+                context_summary: "fixture".to_string(),
+                requested_scope: scope(),
+                requested_capabilities: ["read".to_string()].into_iter().collect(),
+                budget: RecursiveBudget {
+                    calls_remaining: 3,
+                    tokens_remaining: 30,
+                    cost_micros_remaining: 30,
+                    time_ms_remaining: 300,
+                },
+                receipt_sha256: "child-receipt".to_string(),
+            })
+            .expect("child admitted");
+        tree.lease_node(&child.node.node_id, "child-lease")
+            .expect("child lease");
+        let grandchild = tree
+            .admit_child(&RecursiveProposal {
+                proposal_id: "grandchild-proposal".to_string(),
+                parent_node_id: child.node.node_id.clone(),
+                parent_version: child.node.version + 1,
+                objective: "review grandchild docs".to_string(),
+                context_summary: "fixture".to_string(),
+                requested_scope: scope(),
+                requested_capabilities: ["read".to_string()].into_iter().collect(),
+                budget: RecursiveBudget {
+                    calls_remaining: 2,
+                    tokens_remaining: 20,
+                    cost_micros_remaining: 20,
+                    time_ms_remaining: 200,
+                },
+                receipt_sha256: "grandchild-receipt".to_string(),
+            })
+            .expect("grandchild admitted");
+        tree.complete_node_with_usage(
+            &child.node.node_id,
+            "child-lease",
+            true,
+            &RecursiveBudget {
+                calls_remaining: 1,
+                tokens_remaining: 10,
+                cost_micros_remaining: 10,
+                time_ms_remaining: 100,
+            },
+        )
+        .expect("child completes");
+        tree.release_node_reservation_for_persistence(&child.node.node_id);
+        tree.lease_node(&grandchild.node.node_id, "grandchild-lease")
+            .expect("grandchild lease");
+        tree.complete_node(&grandchild.node.node_id, "grandchild-lease", true)
+            .expect("grandchild completes");
+        assert_eq!(tree.nodes[&child.node.node_id].status, "completed");
+        assert_eq!(tree.nodes[&grandchild.node.node_id].status, "completed");
+        assert_eq!(tree.reserved_budget, RecursiveBudget::default());
+        assert_eq!(tree.spent_budget.calls_remaining, 1);
+        assert_eq!(tree.spent_budget.tokens_remaining, 10);
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn terminal_states_cannot_be_reopened_by_resume() {
+        let mut paused = RecursiveTree::new(
+            "state-run",
+            "fixture",
+            "root",
+            scope(),
+            ["read".to_string()].into_iter().collect(),
+            budget(),
+        );
+        paused.pause();
+        assert_eq!(
+            paused.execution_state,
+            RecursiveExecutionState::OperatorPaused
+        );
+        paused.resume();
+        assert_eq!(paused.execution_state, RecursiveExecutionState::Running);
+
+        paused.execution_state = RecursiveExecutionState::BudgetExhausted;
+        paused.resume();
+        assert_eq!(
+            paused.execution_state,
+            RecursiveExecutionState::BudgetExhausted
+        );
+        paused.execution_state = RecursiveExecutionState::KillStopped;
+        paused.resume();
+        assert_eq!(paused.execution_state, RecursiveExecutionState::KillStopped);
+        paused.execution_state = RecursiveExecutionState::TerminalFailed;
+        paused.resume();
+        assert_eq!(
+            paused.execution_state,
+            RecursiveExecutionState::TerminalFailed
+        );
+    }
+
+    #[test]
+    fn stale_lease_retries_once_and_late_completion_cannot_replace_attempt() {
+        let _guard = test_env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let mut tree = RecursiveTree::new(
+            "stale-retry-run",
+            "fixture",
+            "root",
+            scope(),
+            ["read".to_string()].into_iter().collect(),
+            budget(),
+        );
+        let admission = tree.admit_child(&proposal(&tree)).expect("child");
+        tree.lease_node(&admission.node.node_id, "lease-one")
+            .expect("lease");
+        let zero = RecursiveBudget::default();
+        assert!(tree
+            .retry_allowed(&admission.node.node_id, &zero)
+            .expect("retry allowed"));
+        tree.complete_node_with_usage(&admission.node.node_id, "lease-one", false, &zero)
+            .expect("stale completion");
+        tree.retry_node(&admission.node.node_id).expect("one retry");
+        tree.lease_node(&admission.node.node_id, "lease-two")
+            .expect("replacement lease");
+        assert!(!tree
+            .retry_allowed(&admission.node.node_id, &zero)
+            .expect("retry exhausted"));
+        tree.complete_node_with_usage(&admission.node.node_id, "lease-two", false, &zero)
+            .expect("second stale completion");
+        tree.retry_node(&admission.node.node_id)
+            .expect("terminalize");
+        let status = tree.nodes[&admission.node.node_id].status.clone();
+        let reason = tree.nodes[&admission.node.node_id].failure_reason.clone();
+        tree.record_late_usage(
+            &admission.node.node_id,
+            "late-replacement-attempt",
+            &RecursiveBudget {
+                calls_remaining: 1,
+                tokens_remaining: 1,
+                cost_micros_remaining: 1,
+                time_ms_remaining: 1,
+            },
+        )
+        .expect("late usage is accounted");
+        assert_eq!(tree.nodes[&admission.node.node_id].status, status);
+        assert_eq!(tree.nodes[&admission.node.node_id].failure_reason, reason);
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 }

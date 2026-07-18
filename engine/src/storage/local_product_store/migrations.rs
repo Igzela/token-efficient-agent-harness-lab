@@ -88,6 +88,12 @@ impl LocalProductStore {
                 conn.execute_batch(&format!("PRAGMA user_version = {}", V26_SCHEMA_VERSION))
                     .map_err(|e| e.to_string())?;
             }
+            let final_version: i64 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            if final_version == V26_SCHEMA_VERSION {
+                validate_sqlite_v26_schema(conn)?;
+            }
             Ok(())
         })
     }
@@ -1221,6 +1227,116 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
     }
 }
 
+fn validate_sqlite_v26_schema(conn: &Connection) -> Result<(), String> {
+    let required: &[(&str, &[(&str, &str)])] = &[
+        (
+            "recursive_execution_trees",
+            &[
+                ("root_run_id", "TEXT"),
+                ("workflow_id", "TEXT"),
+                ("root_node_id", "TEXT"),
+                ("tree_schema_version", "TEXT"),
+                ("tree_json", "TEXT"),
+                ("version", "BIGINT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        ),
+        (
+            "recursive_execution_nodes",
+            &[
+                ("node_id", "TEXT"),
+                ("root_run_id", "TEXT"),
+                ("parent_node_id", "TEXT"),
+                ("proposal_id", "TEXT"),
+                ("depth", "BIGINT"),
+                ("objective_fingerprint", "TEXT"),
+                ("status", "TEXT"),
+                ("version", "BIGINT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        ),
+    ];
+    for (table, columns) in required {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(|error| error.to_string())?;
+        let actual = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        for &(name, type_name) in *columns {
+            let Some((_, actual_type)) = actual.iter().find(|(actual_name, _)| actual_name == name)
+            else {
+                return Err(format!("SQLite v26 schema missing {table}.{name}"));
+            };
+            if !actual_type.eq_ignore_ascii_case(type_name) {
+                return Err(format!(
+                    "SQLite v26 schema type mismatch for {table}.{name}"
+                ));
+            }
+        }
+    }
+    for (table, fragments) in [
+        ("recursive_execution_trees", ["primary key"].as_slice()),
+        (
+            "recursive_execution_nodes",
+            [
+                "unique(root_run_id, objective_fingerprint)",
+                "check (depth between 0 and 2)",
+                "check (length(objective_fingerprint) = 64)",
+            ]
+            .as_slice(),
+        ),
+    ] {
+        let ddl: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let normalized = ddl.to_ascii_lowercase().replace(['\n', '\t'], " ");
+        for fragment in fragments {
+            if !normalized.contains(fragment) {
+                return Err(format!("SQLite v26 schema missing constraint on {table}"));
+            }
+        }
+    }
+    for index in [
+        "idx_recursive_execution_trees_workflow",
+        "idx_recursive_execution_nodes_root",
+        "idx_recursive_execution_nodes_parent",
+    ] {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                [index],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v26 schema missing index {index}"));
+        }
+    }
+    let foreign_key: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_list('recursive_execution_nodes')
+             WHERE \"table\"='recursive_execution_trees' AND \"from\"='root_run_id' AND \"to\"='root_run_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if foreign_key != 1 {
+        return Err("SQLite v26 schema missing recursive root foreign key".to_string());
+    }
+    Ok(())
+}
+
 fn sqlite_v25_operation_schema_valid(tx: &Transaction<'_>) -> Result<bool, String> {
     let ddl: Option<String> = tx
         .query_row(
@@ -2050,5 +2166,33 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn already_versioned_partial_v26_schema_is_rejected_fail_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("partial-v26.db");
+        {
+            let conn = rusqlite::Connection::open(&path).expect("sqlite");
+            conn.execute_batch(
+                "PRAGMA user_version=26;
+                 CREATE TABLE recursive_execution_trees (
+                    root_run_id TEXT PRIMARY KEY,
+                    workflow_id TEXT NOT NULL
+                 );
+                 CREATE TABLE recursive_execution_nodes (
+                    node_id TEXT PRIMARY KEY
+                 );",
+            )
+            .expect("partial v26 schema");
+        }
+        let error = match LocalProductStore::new(&path) {
+            Ok(_) => panic!("partial schema must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("SQLite v26 schema missing") || error.contains("no such column"),
+            "unexpected error: {error}"
+        );
     }
 }
