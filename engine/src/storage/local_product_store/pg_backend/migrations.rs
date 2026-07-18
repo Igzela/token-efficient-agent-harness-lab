@@ -1258,7 +1258,9 @@ mod tests {
             occupied_error.contains("occupied partial operation table"),
             "unexpected occupied constraint failure: {occupied_error}"
         );
-        assert_eq!(store.schema_version().unwrap(), 24);
+        // The refusal is atomic: deleting only the v25 marker does not move or
+        // silently rewrite the existing v26 marker.
+        assert_eq!(store.schema_version().unwrap(), 26);
     }
 
     #[test]
