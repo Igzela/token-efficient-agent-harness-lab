@@ -19,7 +19,7 @@ permissions:
   issues: read
 
 concurrency:
-  group: agent-orchestrator-state
+  group: agent-worker-${{ inputs.issue }}
   cancel-in-progress: false
 
 jobs:

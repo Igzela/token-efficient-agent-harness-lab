@@ -29,7 +29,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: agent-orchestrator-state
+  group: agent-ci-repair-${{ inputs.pr_number }}
   cancel-in-progress: false
 
 jobs:

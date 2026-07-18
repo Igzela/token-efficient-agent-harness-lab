@@ -249,10 +249,24 @@ class TestWorkflowContracts(unittest.TestCase):
             self.assertIn("if: always() &&", self.read(workflow))
         self.assertIn("steps.acquire_ci.outputs.ci_control_stopped != 'true'", worker)
         self.assertIn("record-ci", worker)
-        self.assertIn("cancel-in-progress: ${{ inputs.command == 'emergency-stop' }}", self.read("agent-controller.yml"))
-        for workflow in ("agent-ci-monitor.yml", "agent-review.yml", "agent-ci-repair.yml", "agent-merge.yml", "agent-worker.yml", "agent-intake.yml"):
-            self.assertIn("group: agent-orchestrator-state", self.read(workflow))
-        self.assertIn("agent-orchestrator-state", self.read("agent-controller.yml"))
+        controller = self.read("agent-controller.yml")
+        self.assertIn("group: agent-dispatch-global", controller)
+        self.assertIn("cancel-in-progress: false", controller)
+        self.assertNotIn("cancel-in-progress: ${{ inputs.command == 'emergency-stop' }}", controller)
+        per_resource_groups = {
+            "agent-ci-monitor.yml": "agent-ci-monitor-${{ github.event.workflow_run.id || github.run_id }}",
+            "agent-intake.yml": "agent-intake-${{ github.event.issue.number }}",
+            "agent-worker.yml": "agent-worker-${{ inputs.issue }}",
+            "agent-ci-repair.yml": "agent-ci-repair-${{ inputs.pr_number }}",
+            "agent-review.yml": "agent-review-${{ inputs.pr_number }}-${{ inputs.head_sha }}",
+            "agent-merge.yml": "agent-merge-${{ inputs.pr_number }}-${{ inputs.head_sha }}",
+        }
+        for workflow, group in per_resource_groups.items():
+            source = self.read(workflow)
+            self.assertIn(f"group: {group}", source)
+            self.assertIn("cancel-in-progress: false", source)
+        for workflow in list(per_resource_groups) + ["agent-controller.yml"]:
+            self.assertNotIn("agent-orchestrator-state", self.read(workflow))
 
     def test_ci_monitor_action_contract_executes_a_consumer_for_each_handler_action(self):
         blocks = self.read("agent-ci-monitor.yml").split("      - name: ")[1:]
@@ -653,6 +667,152 @@ class TestCITerminalState(unittest.TestCase):
             )
         self.assertEqual(result, (True, "dispatched_in_flight"))
         release.assert_not_called()
+
+    def test_repeated_cancellation_reconciliation_does_not_double_release(self):
+        claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "status": "claimed",
+            "action": "repair",
+            "details": {
+                "target_label": state_manager.LABEL_CI_REPAIRING,
+                "pr_number": 207,
+                "head_sha": "a" * 40,
+                "ci_run_id": "9001",
+            },
+        }
+        failed_claim = {**claim, "status": "failed"}
+        states = [claim, failed_claim]
+
+        def read_dispatch(_issue, _dispatch_id, _repo):
+            return states[0] if states else None
+
+        with mock.patch.object(state_manager, "read_dispatch_state", side_effect=read_dispatch), \
+             mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")) as release, \
+             mock.patch.object(state_manager, "record_dispatch_state", side_effect=lambda *a, **kw: states.pop(0) or True):
+            first = state_manager.reconcile_claimed_dispatch(
+                42, "repair:207:" + "a" * 40 + ":9001:0",
+                "workflow_cancelled:followup_dispatch",
+            )
+            second = state_manager.reconcile_claimed_dispatch(
+                42, "repair:207:" + "a" * 40 + ":9001:0",
+                "workflow_cancelled:followup_dispatch",
+            )
+        self.assertEqual(first, (True, "released"))
+        self.assertEqual(second, (True, "already_terminal"))
+        release.assert_called_once()
+
+    def test_release_rejects_unrelated_pr_ownership(self):
+        labels = {state_manager.LABEL_CI_REPAIRING}
+
+        def set_labels(_issue, *new_labels, repo=""):
+            labels.clear()
+            labels.update(new_labels)
+            return True
+
+        with mock.patch.object(
+            state_manager, "get_issue_labels_checked",
+            side_effect=[set(labels), set(labels)],
+        ), mock.patch.object(
+            state_manager, "read_worker_state", return_value={"pr_number": 208, "head_sha": "a" * 40},
+        ), mock.patch.object(
+            state_manager, "read_ci_state",
+        ), mock.patch.object(
+            state_manager, "set_labels", side_effect=set_labels,
+        ) as transition:
+            ok, reason = state_manager.release_failed_capacity(
+                42, "ci-repairing", state_manager.LABEL_BLOCKED,
+                expected_sha="a" * 40, expected_pr=207, expected_run_id=9001,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "worker_pr_mismatch")
+        transition.assert_not_called()
+
+    def test_release_rejects_unrelated_ci_run_ownership(self):
+        labels = {state_manager.LABEL_CI_REPAIRING}
+
+        def set_labels(_issue, *new_labels, repo=""):
+            labels.clear()
+            labels.update(new_labels)
+            return True
+
+        with mock.patch.object(
+            state_manager, "get_issue_labels_checked",
+            side_effect=[set(labels), set(labels)],
+        ), mock.patch.object(
+            state_manager, "read_worker_state", return_value={"pr_number": 207, "head_sha": "a" * 40},
+        ), mock.patch.object(
+            state_manager, "read_ci_state", return_value={"workflow_run_id": 9002},
+        ), mock.patch.object(
+            state_manager, "set_labels", side_effect=set_labels,
+        ) as transition:
+            ok, reason = state_manager.release_failed_capacity(
+                42, "ci-repairing", state_manager.LABEL_BLOCKED,
+                expected_sha="a" * 40, expected_pr=207, expected_run_id=9001,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "ci_run_mismatch")
+        transition.assert_not_called()
+
+    def test_release_rejects_capacity_state_changed_during_authorization_window(self):
+        first_read = {state_manager.LABEL_CI_REPAIRING}
+        second_read = {state_manager.LABEL_RUNNING}
+
+        with mock.patch.object(
+            state_manager, "get_issue_labels_checked",
+            side_effect=[first_read, second_read],
+        ), mock.patch.object(
+            state_manager, "read_worker_state", return_value={"pr_number": 207, "head_sha": "a" * 40},
+        ), mock.patch.object(
+            state_manager, "read_ci_state", return_value={"workflow_run_id": 9001},
+        ), mock.patch.object(
+            state_manager, "set_labels",
+        ) as transition:
+            ok, reason = state_manager.release_failed_capacity(
+                42, "ci-repairing", state_manager.LABEL_BLOCKED,
+                expected_sha="a" * 40, expected_pr=207, expected_run_id=9001,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "capacity_state_changed")
+        transition.assert_not_called()
+
+    def test_stale_head_during_cancellation_is_rejected_by_terminal_binding(self):
+        with mock.patch.object(
+            state_manager, "read_worker_state",
+            return_value={"pr_number": 207, "head_sha": "b" * 40, "extra": {"branch": "agent/issue-42"}},
+        ):
+            ok, reason = state_manager.verify_ci_terminal_binding(
+                42, 207, "a" * 40, "",
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "worker_binding_mismatch")
+
+    def test_no_active_capacity_leak_after_terminal_release(self):
+        labels = {state_manager.LABEL_CI_REPAIRING}
+
+        def set_labels(_issue, *new_labels, repo=""):
+            labels.clear()
+            labels.update(new_labels)
+            return True
+
+        with mock.patch.object(
+            state_manager, "get_issue_labels_checked",
+            side_effect=[set(labels), set(labels)],
+        ), mock.patch.object(
+            state_manager, "read_worker_state", return_value={"pr_number": 207, "head_sha": "a" * 40},
+        ), mock.patch.object(
+            state_manager, "read_ci_state", return_value={"workflow_run_id": 9001},
+        ), mock.patch.object(
+            state_manager, "verify_ci_terminal_binding", return_value=(True, "ok"),
+        ), mock.patch.object(
+            state_manager, "set_labels", side_effect=set_labels,
+        ):
+            ok, reason = state_manager.release_failed_capacity(
+                42, "ci-repairing", state_manager.LABEL_BLOCKED,
+                expected_sha="a" * 40, expected_pr=207, expected_run_id=9001,
+            )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "released")
+        self.assertFalse(labels & state_manager.ACTIVE_LABELS)
 
     def test_legacy_generic_issue_mutators_are_not_exposed(self):
         source = (CONTROL / "state_manager.py").read_text()

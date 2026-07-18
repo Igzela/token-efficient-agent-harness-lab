@@ -23,7 +23,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: agent-orchestrator-state
+  group: agent-merge-${{ inputs.pr_number }}-${{ inputs.head_sha }}
   cancel-in-progress: false
 
 jobs:

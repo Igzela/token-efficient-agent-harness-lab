@@ -30,7 +30,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: agent-orchestrator-state
+  group: agent-ci-monitor-${{ github.event.workflow_run.id || github.run_id }}
   cancel-in-progress: false
 
 jobs:
