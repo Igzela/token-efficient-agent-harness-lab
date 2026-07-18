@@ -477,6 +477,12 @@ fn load_recursive_tree_pg(
     client: &mut impl postgres::GenericClient,
     root_run_id: &str,
 ) -> Result<Option<RecursiveTree>, String> {
+    client
+        .execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1))",
+            &[&root_run_id],
+        )
+        .map_err(|error| error.to_string())?;
     let tree_json: Option<String> = client
         .query_opt(
             "SELECT tree_json FROM recursive_execution_trees WHERE root_run_id=$1 FOR UPDATE",
