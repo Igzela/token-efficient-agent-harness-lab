@@ -283,16 +283,19 @@ def _reselect_unsupported(issue, pr, sha, branch, event_run):
     else:
         try:
             acquisition = ci_verifier.acquire_exact_ci(
-                pr, branch, sha, observe_seconds=0, dispatch_timeout_seconds=60
+                pr, branch, sha, observe_seconds=0, dispatch_timeout_seconds=60,
+                final_validator=lambda: _refresh_terminal_binding(
+                    issue, pr, sha, branch
+                ),
             )
         except ci_verifier.CIControlStopped as exc:
-            if exc.ci_run_id is None:
-                return None
             return {
                 "status": "ci_control_stopped",
-                "workflow_run_id": exc.ci_run_id,
+                "workflow_run_id": exc.ci_run_id or 0,
                 "observed_run": exc.observed_run,
                 "reason": str(exc),
+                "run_identity": "exact" if exc.ci_run_id else "unavailable",
+                "dispatch_nonce": exc.dispatch_nonce,
             }
         except ci_verifier.CIVerificationError:
             return None
@@ -419,7 +422,7 @@ DISPATCH_ACTION_CONSUMERS = {
     "merge_ready": "dispatch_merge",
     "blocked": "release_terminal_capacity",
     "stale": "release_terminal_capacity",
-    "noop": "release_noop_capacity",
+    "noop": "release_terminal_capacity",
 }
 
 

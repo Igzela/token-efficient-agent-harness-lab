@@ -71,12 +71,14 @@ class CIControlStopped(CIVerificationError):
         ci_run_id: int | None = None,
         head_sha: str = "",
         observed_run: dict[str, Any] | None = None,
+        dispatch_nonce: str | None = None,
     ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.ci_run_id = ci_run_id
         self.head_sha = head_sha
         self.observed_run = observed_run or {}
+        self.dispatch_nonce = dispatch_nonce
 
 
 class ExactRunCandidates(list):
@@ -356,7 +358,19 @@ def _dispatch_fallback(
     # cross-runner serialization; this is the final in-process authorization
     # gate before the dispatch syscall.
     if not control_is_live():
-        raise CIControlStopped("ci_control_stopped_before_fallback_dispatch")
+        raise CIControlStopped(
+            "ci_control_stopped_before_fallback_dispatch",
+            head_sha=head_sha,
+            observed_run={
+                "status": "not_dispatched",
+                "conclusion": "",
+                "headSha": head_sha,
+                "headBranch": branch,
+                "workflowName": requirements["workflow_name"],
+                "dispatch_nonce": dispatch_nonce,
+            },
+            dispatch_nonce=dispatch_nonce,
+        )
     result = subprocess.run(
         dispatch_args, capture_output=True, text=True, timeout=60,
     )
@@ -422,8 +436,18 @@ def _dispatch_fallback(
         # outcome with durable issue/PR/head/run evidence.
         if control_stopped_during_lookup:
             if stop_deadline is not None and time.monotonic() >= stop_deadline:
-                raise CIVerificationError(
-                    "ci_control_stopped:fallback_run_identity_missing"
+                raise CIControlStopped(
+                    "ci_control_stopped:fallback_run_identity_missing",
+                    head_sha=head_sha,
+                    observed_run={
+                        "status": "unknown",
+                        "conclusion": "",
+                        "headSha": head_sha,
+                        "headBranch": branch,
+                        "workflowName": requirements["workflow_name"],
+                        "dispatch_nonce": dispatch_nonce,
+                    },
+                    dispatch_nonce=dispatch_nonce,
                 )
         elif time.monotonic() >= deadline:
             raise CIVerificationError("fallback_run_identity_missing")
@@ -856,6 +880,7 @@ def acquire_exact_ci(
     dispatch_timeout_seconds: int = 60,
     completion_timeout_seconds: int = 1800,
     poll_seconds: int = 30,
+    final_validator: Callable[[], tuple[dict[str, Any] | None, str | None]] | None = None,
 ) -> dict[str, Any]:
     """Acquire canonical exact-head evidence and wait for completion.
 
@@ -906,6 +931,7 @@ def acquire_exact_ci(
         head_sha=head_sha,
         completion_timeout_seconds=completion_timeout_seconds,
         poll_seconds=poll_seconds,
+        final_validator=final_validator,
     )
 
 
@@ -917,6 +943,7 @@ def _finalize_acquisition_with_wait(
     head_sha: str,
     completion_timeout_seconds: int,
     poll_seconds: int,
+    final_validator: Callable[[], tuple[dict[str, Any] | None, str | None]] | None = None,
 ) -> dict[str, Any]:
     completion = wait_for_run_completion(
         acquisition["workflow_run_id"],
@@ -926,6 +953,19 @@ def _finalize_acquisition_with_wait(
         completion_timeout_seconds=completion_timeout_seconds,
         poll_seconds=poll_seconds,
     )
+    final_pr_snapshot = None
+    if final_validator is not None:
+        final_pr_snapshot, final_binding_failure = final_validator()
+        if final_binding_failure:
+            observed_run = completion.get("run") or {}
+            if final_binding_failure.startswith("ci_control_stopped:"):
+                raise CIControlStopped(
+                    final_binding_failure,
+                    ci_run_id=completion.get("ci_run_id") or acquisition["workflow_run_id"],
+                    head_sha=head_sha,
+                    observed_run=observed_run,
+                )
+            raise CIStaleBinding(final_binding_failure)
     if completion["status"] in {"success", "failure"}:
         completion_status = completion["status"]
     elif completion["status"] == "ci_completion_timeout":
@@ -950,7 +990,7 @@ def _finalize_acquisition_with_wait(
     if completion_status == "success":
         verify_exact_head_ci(
             pr_number, head_sha, acquisition["workflow_run_id"],
-            pr_snapshot={"headRefOid": head_sha, "headRefName": branch},
+            pr_snapshot=final_pr_snapshot or {"headRefOid": head_sha, "headRefName": branch},
         )
     return {
         "kind": "agent-orchestrator-ci-acquisition",
@@ -1084,13 +1124,17 @@ def main() -> None:
         print(json.dumps(result, sort_keys=True))
     except CIControlStopped as exc:
         observed = exc.observed_run
-        if exc.ci_run_id is None:
-            print(f"CI_VERIFICATION_ERROR: {exc}", file=sys.stderr)
-            raise SystemExit(1) from exc
+        ci_run_id = exc.ci_run_id if exc.ci_run_id is not None else 0
+        if exc.dispatch_nonce:
+            observed = dict(observed)
+            observed["dispatch_nonce"] = exc.dispatch_nonce
         print(json.dumps({
             "status": "ci_control_stopped",
             "reason": str(exc),
-            "ci_run_id": exc.ci_run_id,
+            "ci_run_id": ci_run_id,
+            "workflow_run_id": ci_run_id,
+            "run_identity": "exact" if ci_run_id else "unavailable",
+            "dispatch_nonce": exc.dispatch_nonce,
             "head_sha": exc.head_sha,
             "observed_status": str(observed.get("status") or "unknown"),
             "run": observed,

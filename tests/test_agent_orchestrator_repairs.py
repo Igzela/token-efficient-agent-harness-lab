@@ -235,13 +235,18 @@ class TestWorkflowContracts(unittest.TestCase):
             "merge_ready": "require-auto-merge",
             "blocked": "release-failed",
             "stale": "release-ci-terminal",
-            "noop": "release-failed",
+            "noop": "release-ci-terminal",
         }.items():
             with self.subTest(action=action):
                 self.assertIn(required, monitor)
         worker = self.read("agent-worker.yml")
         self.assertIn("id: acquire_ci", worker)
         self.assertIn("ci_control_stopped=true", worker)
+        self.assertIn("ci_control_stopped:after_acquisition", worker)
+        self.assertIn("if: always() &&", worker)
+        self.assertIn("ci_control_stopped:after_acquisition", self.read("agent-ci-repair.yml"))
+        for workflow in ("agent-ci-repair.yml", "agent-review.yml", "agent-merge.yml"):
+            self.assertIn("if: always() &&", self.read(workflow))
         self.assertIn("steps.acquire_ci.outputs.ci_control_stopped != 'true'", worker)
         self.assertIn("record-ci", worker)
         self.assertIn("cancel-in-progress: ${{ inputs.command == 'emergency-stop' }}", self.read("agent-controller.yml"))
@@ -335,6 +340,30 @@ class TestWorkflowContracts(unittest.TestCase):
             if action == "trigger_repair":
                 result["repair_count"] = 1
             self.assertEqual(ci_handler.validate_ci_dispatch_decision(result), consumer)
+
+        terminal_consumers = {
+            action: consumer for action, consumer in ci_handler.DISPATCH_ACTION_CONSUMERS.items()
+            if action in {"blocked", "stale", "noop"}
+        }
+        self.assertEqual(
+            terminal_consumers,
+            {"blocked": "release_terminal_capacity", "stale": "release_terminal_capacity", "noop": "release_terminal_capacity"},
+        )
+        for action in terminal_consumers:
+            result = {
+                "action": action,
+                "issue_number": 42,
+                "pr_number": 207,
+                "head_sha": "a" * 40,
+                "ci_run_id": 9001,
+                "terminal_status": f"terminal_{action}",
+            }
+            with self.subTest(action=action), mock.patch.object(
+                ci_handler.sm, "release_and_record_ci_terminal", return_value=(True, "released")
+            ) as release:
+                self.assertEqual(ci_handler.validate_ci_dispatch_decision(result), "release_terminal_capacity")
+                release(42, 207, "a" * 40, 9001, result["terminal_status"], "test", "completed")
+                release.assert_called_once()
 
         monitor = self.read("agent-ci-monitor.yml")
         self.assertIn("terminal_ci_followup_dispatch_failed", monitor)
@@ -764,6 +793,33 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher, "_rollback", return_value=False):
             result = dispatcher.dispatch_ready(77, "worker:77")
         self.assertEqual(result["reason"], "workflow_dispatch_failed_rollback_failed")
+
+    def test_dispatch_claim_is_persisted_before_label_mutation(self):
+        calls = []
+        labels = {state_manager.LABEL_READY}
+
+        def record(*args, **kwargs):
+            calls.append("state")
+            return True
+
+        def set_labels(*args, **kwargs):
+            calls.append("label")
+            labels.clear()
+            labels.add(state_manager.LABEL_RUNNING)
+            return True
+
+        with mock.patch.object(dispatcher, "_repo", return_value="repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
+             mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
+             mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
+             mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(True, ["src/"])), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
+             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels):
+            claimed = dispatcher._claim(12, state_manager.LABEL_RUNNING, "worker:12", "worker", {"issue_number": 12})
+        self.assertTrue(claimed[0])
+        self.assertEqual(calls[:2], ["state", "label"])
 
     def test_final_dispatch_audit_failure_retains_claim_and_blocks_duplicate(self):
         labels = {state_manager.LABEL_RUNNING}
@@ -1255,10 +1311,27 @@ class TestExactHeadCI(unittest.TestCase):
                 ci_verifier.acquire_exact_run(
                     1, "agent/issue-d", sha, observe_seconds=0,
                 )
-        self.assertEqual(
-            str(raised.exception),
+        self.assertEqual(str(raised.exception), "ci_control_stopped:fallback_run_identity_missing")
+        self.assertIsNone(raised.exception.ci_run_id)
+        self.assertEqual(raised.exception.dispatch_nonce, "deadbeef")
+        self.assertEqual(raised.exception.observed_run["dispatch_nonce"], "deadbeef")
+
+    def test_control_stopped_identity_missing_serializes_typed_non_authorizing_result(self):
+        exc = ci_verifier.CIControlStopped(
             "ci_control_stopped:fallback_run_identity_missing",
+            head_sha="a" * 40,
+            dispatch_nonce="deadbeef",
+            observed_run={"status": "unknown"},
         )
+        with mock.patch.object(ci_verifier, "dispatch_exact_ci", side_effect=exc), \
+             mock.patch.object(ci_verifier.sys, "argv", ["ci_verifier.py", "dispatch", "agent/issue-a", "a" * 40]), \
+             mock.patch("builtins.print") as printed:
+            ci_verifier.main()
+        payload = json.loads(printed.call_args.args[0])
+        self.assertEqual(payload["status"], "ci_control_stopped")
+        self.assertEqual(payload["ci_run_id"], 0)
+        self.assertEqual(payload["run_identity"], "unavailable")
+        self.assertEqual(payload["dispatch_nonce"], "deadbeef")
 
     def test_dispatched_fallback_id_cannot_be_replaced_by_newer_same_head_run(self):
         sha = "d" * 40
@@ -1508,6 +1581,62 @@ class TestExactHeadCI(unittest.TestCase):
         dispatch.assert_called_once()
         self.assertEqual(result["workflow_run_id"], 12)
         self.assertEqual(result["source"], "workflow_dispatch")
+
+    def test_legacy_completion_refreshes_final_binding_before_ci_verification(self):
+        sha = "v" * 40
+        refreshed = {"state": "OPEN", "headRefOid": sha, "headRefName": "agent/issue-v"}
+        acquisition = {
+            "workflow_run_id": 120,
+            "source": "pull_request",
+            "duplicate_run_ids": [],
+            "observed_run_ids": [120],
+            "selection_reason": "natural_completed_observed",
+            "superseded_run_ids": [],
+            "unsupported_run_ids": [],
+            "fallback_dispatched": False,
+        }
+        completion = {
+            "status": "success", "conclusion": "success", "ci_run_id": 120,
+            "head_sha": sha, "run": {"databaseId": 120, "status": "completed"},
+        }
+        with mock.patch.object(ci_verifier, "wait_for_run_completion", return_value=completion), \
+             mock.patch.object(ci_verifier, "verify_exact_head_ci") as verify:
+            result = ci_verifier._finalize_acquisition_with_wait(
+                acquisition,
+                pr_number=207,
+                branch="agent/issue-v",
+                head_sha=sha,
+                completion_timeout_seconds=30,
+                poll_seconds=1,
+                final_validator=lambda: (refreshed, None),
+            )
+        self.assertEqual(result["status"], "completed")
+        verify.assert_called_once_with(207, sha, 120, pr_snapshot=refreshed)
+
+    def test_legacy_completion_refreshes_before_control_stop_terminalization(self):
+        sha = "w" * 40
+        refreshed = {"state": "OPEN", "headRefOid": sha, "headRefName": "agent/issue-w"}
+        acquisition = {"workflow_run_id": 121}
+        completion = {
+            "status": "ci_control_stopped",
+            "reason": "control_emergency_stop_activated",
+            "ci_run_id": 121,
+            "head_sha": sha,
+            "run": {"databaseId": 121, "status": "in_progress"},
+        }
+        validator = mock.Mock(return_value=(refreshed, None))
+        with mock.patch.object(ci_verifier, "wait_for_run_completion", return_value=completion):
+            with self.assertRaises(ci_verifier.CIControlStopped):
+                ci_verifier._finalize_acquisition_with_wait(
+                    acquisition,
+                    pr_number=207,
+                    branch="agent/issue-w",
+                    head_sha=sha,
+                    completion_timeout_seconds=30,
+                    poll_seconds=1,
+                    final_validator=validator,
+                )
+        validator.assert_called_once_with()
 
     def test_two_exact_head_runs_select_one_and_mark_duplicate(self):
         runs = [

@@ -293,6 +293,37 @@ jobs:
             python3 scripts/agent-control/control_state.py require-live >/dev/null
             CI=$(python3 scripts/agent-control/ci_verifier.py acquire-run "${{ inputs.pr_number }}" "$BRANCH" "$HEAD")
           fi
+          if [ "$(jq -r '.status // empty' <<<"$CI")" = "ci_control_stopped" ]; then
+            RUN_ID=$(jq -er '.ci_run_id // 0' <<<"$CI")
+            OBSERVED_STATUS=$(jq -r '.observed_status // "unknown"' <<<"$CI")
+            STOP_REASON=$(jq -er '.reason' <<<"$CI")
+            EXTRA=$(jq -c --argjson id "$RUN_ID" --arg observed "$OBSERVED_STATUS" \
+              --arg identity "$(jq -r '.run_identity // "unavailable"' <<<"$CI")" \
+              --arg nonce "$(jq -r '.dispatch_nonce // empty' <<<"$CI")" \
+              --argjson repairs "${{ inputs.repair_count }}" \
+              '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id,observed_status:$observed,ci_run_identity:$identity,dispatch_nonce:$nonce,repair_count:$repairs}' \
+              scripts/agent-control/ci_requirements.json)
+            python3 scripts/agent-control/state_manager.py record-ci \
+              "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$HEAD" "$RUN_ID" ci_control_stopped "$EXTRA"
+            python3 scripts/agent-control/state_manager.py release-ci-terminal \
+              "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$HEAD" "$RUN_ID" \
+              terminal_ci_control_stopped "$STOP_REASON" "$OBSERVED_STATUS"
+            exit 0
+          fi
+          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then
+            RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI")
+            OBSERVED_STATUS=$(jq -r '.bound_status // .status // "unknown"' <<<"$CI")
+            STOP_REASON=ci_control_stopped:after_acquisition
+            EXTRA=$(jq -c --argjson id "$RUN_ID" --arg observed "$OBSERVED_STATUS" \
+              '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id,observed_status:$observed}' \
+              scripts/agent-control/ci_requirements.json)
+            python3 scripts/agent-control/state_manager.py record-ci \
+              "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$HEAD" "$RUN_ID" ci_control_stopped "$EXTRA"
+            python3 scripts/agent-control/state_manager.py release-ci-terminal \
+              "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$HEAD" "$RUN_ID" \
+              terminal_ci_control_stopped "$STOP_REASON" "$OBSERVED_STATUS"
+            exit 0
+          fi
           RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI")
           if [ "$EXISTING" = "null" ]; then
             SOURCE=$(jq -er '.source' <<<"$CI")
@@ -321,7 +352,7 @@ jobs:
 
   failure-handler:
     needs: [prepare, vader-repair, finalize]
-    if: failure()
+    if: always() && (needs.prepare.result != 'success' || needs.vader-repair.result != 'success' || needs.finalize.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

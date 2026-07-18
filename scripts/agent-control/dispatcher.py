@@ -85,25 +85,34 @@ def _claim(
     if issue not in active and len(active) >= MAX_ACTIVE:
         return False, [], "capacity_full"
     previous_known = sorted(labels & (sm.ACTIVE_LABELS | {sm.LABEL_READY, sm.LABEL_REVIEW_PASSED}))
-    if not sm.set_labels(issue, target_label, repo=repo):
-        return False, [], "claim_label_failed"
+    claim_details_payload = {
+        "previous_labels": previous_known,
+        "target_label": target_label,
+        **(claim_details or {}),
+    }
+    # Persist the claim before changing the Issue label.  An emergency-stop
+    # cancellation can interrupt the label mutation lane; the durable claim
+    # then gives retry/compensation an exact identity instead of leaving an
+    # active label with no state-owner record.
     if not sm.record_dispatch_state(
         issue,
         dispatch_id,
         action,
         "claimed",
-        {
-            "previous_labels": previous_known,
-            "target_label": target_label,
-            **(claim_details or {}),
-        },
+        claim_details_payload,
         repo,
     ):
-        restored = sm.set_labels(
-            issue, *(previous_known or [sm.LABEL_READY]), repo=repo
+        return False, [], "claim_state_failed"
+    if not sm.set_labels(issue, target_label, repo=repo):
+        sm.record_dispatch_state(
+            issue,
+            dispatch_id,
+            action,
+            "failed",
+            {"reason": "claim_label_failed", **claim_details_payload},
+            repo,
         )
-        reason = "claim_state_failed" if restored else "claim_state_failed_rollback_failed"
-        return False, [], reason
+        return False, [], "claim_label_failed"
     return True, previous_known, "claimed"
 
 
@@ -285,8 +294,6 @@ def retry_review(issue: int) -> dict[str, object]:
     if issue not in active and len(active) >= MAX_ACTIVE:
         return {"dispatched": False, "reason": "capacity_full"}
     previous_labels = [sm.LABEL_REVIEW_BLOCKED]
-    if not sm.set_labels(issue, sm.LABEL_REVIEW_RUNNING, repo=repo):
-        return {"dispatched": False, "reason": "claim_label_failed"}
     if not sm.record_dispatch_state(
         issue,
         dispatch_id,
@@ -299,9 +306,17 @@ def retry_review(issue: int) -> dict[str, object]:
         },
         repo,
     ):
-        restored = sm.set_labels(issue, *previous_labels, repo=repo)
-        reason = "claim_state_failed" if restored else "claim_state_failed_rollback_failed"
-        return {"dispatched": False, "reason": reason}
+        return {"dispatched": False, "reason": "claim_state_failed"}
+    if not sm.set_labels(issue, sm.LABEL_REVIEW_RUNNING, repo=repo):
+        sm.record_dispatch_state(
+            issue,
+            dispatch_id,
+            "retry-review",
+            "failed",
+            {"reason": "claim_label_failed", **fields},
+            repo,
+        )
+        return {"dispatched": False, "reason": "claim_label_failed"}
     if not _run_workflow("agent-review.yml", fields):
         rolled_back = _rollback(
             issue, dispatch_id, previous_labels, "workflow_dispatch_failed"

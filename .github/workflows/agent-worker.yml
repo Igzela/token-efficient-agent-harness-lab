@@ -381,16 +381,35 @@ jobs:
               "${{ steps.pr.outputs.pr_number }}" "$BRANCH" "${{ steps.commit.outputs.head_sha }}")
           fi
           if [ "$(jq -r '.status // empty' <<<"$CI")" = "ci_control_stopped" ]; then
-            RUN_ID=$(jq -er '.ci_run_id // empty' <<<"$CI")
-            OBSERVED_STATUS=$(jq -er '.observed_status // empty' <<<"$CI")
+            RUN_ID=$(jq -er '.ci_run_id // 0' <<<"$CI")
+            OBSERVED_STATUS=$(jq -r '.observed_status // "unknown"' <<<"$CI")
             STOP_REASON=$(jq -er '.reason' <<<"$CI")
-            test "$RUN_ID" -gt 0
+            test "$RUN_ID" -ge 0
+            EXTRA=$(jq -c --argjson id "$RUN_ID" --arg observed "$OBSERVED_STATUS" \
+              --arg identity "$(jq -r '.run_identity // "unavailable"' <<<"$CI")" \
+              --arg nonce "$(jq -r '.dispatch_nonce // empty' <<<"$CI")" \
+              '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id,observed_status:$observed,ci_run_identity:$identity,dispatch_nonce:$nonce}' \
+              scripts/agent-control/ci_requirements.json)
+            python3 scripts/agent-control/state_manager.py record-ci \
+              "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
+              "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" "$OBSERVED_STATUS" "$EXTRA"
+            python3 scripts/agent-control/state_manager.py release-ci-terminal \
+              "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
+              "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" \
+              terminal_ci_control_stopped "$STOP_REASON" "$OBSERVED_STATUS"
+            echo "ci_control_stopped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then
+            RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI")
+            OBSERVED_STATUS=$(jq -r '.bound_status // .status // "unknown"' <<<"$CI")
+            STOP_REASON=ci_control_stopped:after_acquisition
             EXTRA=$(jq -c --argjson id "$RUN_ID" --arg observed "$OBSERVED_STATUS" \
               '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id,observed_status:$observed}' \
               scripts/agent-control/ci_requirements.json)
             python3 scripts/agent-control/state_manager.py record-ci \
               "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
-              "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" "$OBSERVED_STATUS" "$EXTRA"
+              "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" ci_control_stopped "$EXTRA"
             python3 scripts/agent-control/state_manager.py release-ci-terminal \
               "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
               "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" \
@@ -451,7 +470,7 @@ jobs:
 
   failure-handler:
     needs: [gate, validate, vader-implementation, finalize]
-    if: failure()
+    if: always() && (needs.gate.result != 'success' || needs.validate.result != 'success' || needs.vader-implementation.result != 'success' || needs.finalize.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
