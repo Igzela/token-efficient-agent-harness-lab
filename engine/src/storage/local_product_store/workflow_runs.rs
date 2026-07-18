@@ -5971,6 +5971,29 @@ fn pg_get_run_row(
 #[cfg(test)]
 mod recursive_scheduler_tests {
     use super::*;
+    use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
+
+    struct RecursiveCapExecutor;
+
+    impl NodeExecutor for RecursiveCapExecutor {
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "agent_step".to_string(),
+                output: Some("recursive cap fixture".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(0),
+            }
+        }
+
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+    }
 
     #[test]
     fn global_recursive_lease_counter_ignores_non_recursive_agent_steps() {
@@ -6016,5 +6039,117 @@ mod recursive_scheduler_tests {
             !workflow_node_is_recursive_locked(&conn, "ordinary-run", "ordinary-node")
                 .expect("marker")
         );
+    }
+
+    #[test]
+    fn recursive_scheduler_claim_refuses_fourth_running_lease() {
+        let store = LocalProductStore::new(":memory:").expect("store");
+        let plan = store
+            .create_workflow_plan("recursive lease cap", "test", "actor", |ids, _| {
+                let nodes: Vec<Value> = (0..=MAX_RECURSIVE_LEASES)
+                    .map(|index| {
+                        json!({
+                            "node_id": format!("recursive-cap-node-{index}"),
+                            "task_type": "agent_step",
+                            "status": "pending",
+                            "agent_id": format!("recursive-cap-agent-{index}"),
+                            "assigned_agent_id": format!("recursive-cap-agent-{index}"),
+                            "agent_role": "fixture-agent",
+                            "agent_objective": "test recursive lease cap",
+                            "capability_profile": ["fixture"],
+                            "profile_id": "recursive-cap-profile",
+                            "decision_source": "fixture",
+                            "max_actions": 1,
+                            "recursive_node_id": format!("recursive-cap-{index}"),
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "schema_version": "read_only_plan.v1",
+                    "plan_id": ids.plan_id,
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "analysis": {"analysis_id": "recursive-cap-analysis", "task_domain": "test"},
+                    "graph": {
+                        "schema_version": "workflow_graph.v1",
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "status": "decomposed",
+                        "created_at": "2026-07-18T00:00:00Z",
+                        "updated_at": "2026-07-18T00:00:00Z",
+                        "nodes": nodes,
+                        "edges": [],
+                    },
+                    "boundaries": {
+                        "execution_authority": "managed",
+                        "target_repository_writes": "disabled",
+                        "runtime_workers": "disabled",
+                    },
+                }))
+            })
+            .expect("plan");
+        let run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().expect("plan id"), "actor")
+            .expect("run");
+        let run_id = run["run_id"].as_str().expect("run id").to_string();
+
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE workflow_runs SET status='running' WHERE run_id=?1",
+                    [&run_id],
+                )
+                .map_err(|error| error.to_string())?;
+                for index in 0..=MAX_RECURSIVE_LEASES {
+                    conn.execute(
+                        "UPDATE workflow_run_nodes
+                         SET status=?1, started_at=?2, leased_at=?2
+                         WHERE run_id=?3 AND node_id=?4",
+                        rusqlite::params![
+                            if index < MAX_RECURSIVE_LEASES {
+                                "running"
+                            } else {
+                                "pending"
+                            },
+                            "2026-07-18T00:00:00Z",
+                            run_id,
+                            format!("recursive-cap-node-{index}"),
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            })
+            .expect("seed running recursive leases");
+
+        let result = store
+            .tick_with_executor(&run_id, "scheduler-test", 0, &RecursiveCapExecutor)
+            .expect("tick");
+        assert_eq!(result["action"], "no_ready_node");
+        let run = store
+            .get_workflow_run(&run_id)
+            .expect("load run")
+            .expect("run exists");
+        assert_eq!(
+            run["nodes"]
+                .as_array()
+                .expect("nodes")
+                .iter()
+                .find(|node| node["node_id"] == "recursive-cap-node-3")
+                .expect("fourth node")["db_status"],
+            "pending"
+        );
+        let conflicts: Vec<_> = store
+            .audit_events(50)
+            .expect("audit")
+            .into_iter()
+            .filter(|event| {
+                event.get("action").and_then(Value::as_str) == Some("recursive.claim_conflict")
+                    && event.pointer("/details/reason").and_then(Value::as_str)
+                        == Some("scheduler_capacity_exhausted")
+            })
+            .collect();
+        assert_eq!(conflicts.len(), 1, "expected one bounded-cap conflict");
     }
 }

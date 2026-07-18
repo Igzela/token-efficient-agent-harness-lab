@@ -1460,6 +1460,22 @@ mod tests {
             .expect("bind test workflow");
     }
 
+    #[cfg(feature = "pg-tests")]
+    fn postgres_test_url() -> Option<String> {
+        match std::env::var("ACP_TEST_DATABASE_URL") {
+            Ok(url) => Some(url),
+            Err(_) if std::env::var("CI").as_deref() == Ok("true") => {
+                panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence")
+            }
+            Err(_) => {
+                eprintln!(
+                    "ACP_TEST_DATABASE_URL not set; PostgreSQL recursive test is explicitly skipped"
+                );
+                None
+            }
+        }
+    }
+
     #[test]
     fn scheduler_lifecycle_sync_is_restart_safe_and_retry_bounded() {
         let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
@@ -1676,8 +1692,7 @@ mod tests {
     #[test]
     fn postgres_scheduler_lifecycle_sync_is_restart_safe() {
         let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
-        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
-            eprintln!("ACP_TEST_DATABASE_URL not set; skipping recursive PostgreSQL test");
+        let Some(url) = postgres_test_url() else {
             return;
         };
         std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
@@ -1835,8 +1850,7 @@ mod tests {
     #[test]
     fn postgres_recursive_workflow_snapshot_binding_is_enforced() {
         let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
-        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
-            eprintln!("ACP_TEST_DATABASE_URL not set; skipping recursive PostgreSQL test");
+        let Some(url) = postgres_test_url() else {
             return;
         };
         std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
