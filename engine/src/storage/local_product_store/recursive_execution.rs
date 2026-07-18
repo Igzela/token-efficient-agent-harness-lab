@@ -161,9 +161,15 @@ pub(crate) fn persist_recursive_tree_pg(
 ) -> Result<(), String> {
     let tree_json = validate_tree_for_persistence(tree)?;
     if let Some(expected_version) = expected_version {
+        client
+            .execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                &[&tree.root_run_id],
+            )
+            .map_err(|error| error.to_string())?;
         let current: Option<i64> = client
             .query_opt(
-                "SELECT version FROM recursive_execution_trees WHERE root_run_id=$1",
+                "SELECT version FROM recursive_execution_trees WHERE root_run_id=$1 FOR UPDATE",
                 &[&tree.root_run_id],
             )
             .map_err(|error| error.to_string())?
@@ -401,5 +407,199 @@ impl LocalProductStore {
         self.load_recursive_tree(root_run_id)?
             .map(|tree| tree.redacted_read_model())
             .ok_or_else(|| "recursive tree not found".to_string())
+    }
+}
+
+fn load_recursive_tree_sqlite(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+) -> Result<Option<RecursiveTree>, String> {
+    let tree_json: Option<String> = conn
+        .query_row(
+            "SELECT tree_json FROM recursive_execution_trees WHERE root_run_id=?1",
+            params![root_run_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    tree_json
+        .map(|value| {
+            let tree: RecursiveTree =
+                serde_json::from_str(&value).map_err(|error| error.to_string())?;
+            if tree.root_run_id != root_run_id || tree.schema_version != RECURSIVE_SCHEMA_VERSION {
+                return Err("recursive tree identity or schema conflict".to_string());
+            }
+            Ok(tree)
+        })
+        .transpose()
+}
+
+pub(crate) fn sync_recursive_lease_sqlite(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    recursive_node_id: &str,
+    lease_id: &str,
+    now: &str,
+) -> Result<(), String> {
+    let Some(mut tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
+        return Ok(());
+    };
+    let expected_version = tree.version;
+    tree.lease_node(recursive_node_id, lease_id)
+        .map_err(|reason| reason.as_str().to_string())?;
+    persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))
+}
+
+pub(crate) fn sync_recursive_completion_sqlite(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    recursive_node_id: &str,
+    lease_id: &str,
+    success: bool,
+    retry: bool,
+    now: &str,
+) -> Result<(), String> {
+    let Some(mut tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
+        return Ok(());
+    };
+    let expected_version = tree.version;
+    tree.complete_node(recursive_node_id, lease_id, success)
+        .map_err(|reason| reason.as_str().to_string())?;
+    if retry {
+        tree.retry_node(recursive_node_id)
+            .map_err(|reason| reason.as_str().to_string())?;
+    }
+    persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))
+}
+
+#[cfg(feature = "pg")]
+fn load_recursive_tree_pg(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+) -> Result<Option<RecursiveTree>, String> {
+    let tree_json: Option<String> = client
+        .query_opt(
+            "SELECT tree_json FROM recursive_execution_trees WHERE root_run_id=$1 FOR UPDATE",
+            &[&root_run_id],
+        )
+        .map_err(|error| error.to_string())?
+        .map(|row| row.get(0));
+    tree_json
+        .map(|value| {
+            let tree: RecursiveTree =
+                serde_json::from_str(&value).map_err(|error| error.to_string())?;
+            if tree.root_run_id != root_run_id || tree.schema_version != RECURSIVE_SCHEMA_VERSION {
+                return Err("recursive tree identity or schema conflict".to_string());
+            }
+            Ok(tree)
+        })
+        .transpose()
+}
+
+#[cfg(feature = "pg")]
+pub(crate) fn sync_recursive_lease_pg(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+    recursive_node_id: &str,
+    lease_id: &str,
+    now: &str,
+) -> Result<(), String> {
+    let Some(mut tree) = load_recursive_tree_pg(client, root_run_id)? else {
+        return Ok(());
+    };
+    let expected_version = tree.version;
+    tree.lease_node(recursive_node_id, lease_id)
+        .map_err(|reason| reason.as_str().to_string())?;
+    persist_recursive_tree_pg(client, &tree, now, Some(expected_version))
+}
+
+#[cfg(feature = "pg")]
+pub(crate) fn sync_recursive_completion_pg(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+    recursive_node_id: &str,
+    lease_id: &str,
+    success: bool,
+    retry: bool,
+    now: &str,
+) -> Result<(), String> {
+    let Some(mut tree) = load_recursive_tree_pg(client, root_run_id)? else {
+        return Ok(());
+    };
+    let expected_version = tree.version;
+    tree.complete_node(recursive_node_id, lease_id, success)
+        .map_err(|reason| reason.as_str().to_string())?;
+    if retry {
+        tree.retry_node(recursive_node_id)
+            .map_err(|reason| reason.as_str().to_string())?;
+    }
+    persist_recursive_tree_pg(client, &tree, now, Some(expected_version))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recursive_execution::{RecursiveBudget, RecursiveScope};
+    use std::collections::BTreeSet;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn scheduler_lifecycle_sync_is_restart_safe_and_retry_bounded() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+        let store = LocalProductStore::new(":memory:").expect("store");
+        let tree = RecursiveTree::new(
+            "recursive-sync-run",
+            "recursive-sync-workflow",
+            "root objective",
+            RecursiveScope {
+                repository: Some("fixture".to_string()),
+                allowed_paths: BTreeSet::from(["docs/".to_string()]),
+                capabilities: BTreeSet::from(["read".to_string()]),
+            },
+            BTreeSet::from(["read".to_string()]),
+            RecursiveBudget {
+                calls_remaining: 12,
+                tokens_remaining: 120,
+                cost_micros_remaining: 120,
+                time_ms_remaining: 1200,
+            },
+        );
+        store.save_recursive_tree(&tree).expect("save");
+        store
+            .with_conn(|conn| {
+                sync_recursive_lease_sqlite(
+                    conn,
+                    "recursive-sync-run",
+                    &tree.root_node_id,
+                    "lease-1",
+                    "2026-07-18T00:00:00Z",
+                )?;
+                sync_recursive_completion_sqlite(
+                    conn,
+                    "recursive-sync-run",
+                    &tree.root_node_id,
+                    "lease-1",
+                    false,
+                    true,
+                    "2026-07-18T00:00:01Z",
+                )
+            })
+            .expect("sync lifecycle");
+        let loaded = store
+            .load_recursive_tree("recursive-sync-run")
+            .expect("load")
+            .expect("tree");
+        let root = loaded.nodes.get(&loaded.root_node_id).expect("root");
+        assert_eq!(root.status, "ready");
+        assert_eq!(root.retry_count, 1);
+        assert!(loaded.active_leases.is_empty());
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 }

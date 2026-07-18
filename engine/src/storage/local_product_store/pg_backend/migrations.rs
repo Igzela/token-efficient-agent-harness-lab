@@ -280,6 +280,41 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|error| format!("failed to commit migration 25: {error}"))
 }
 
+fn apply_pg_v26_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V26_SCHEMA_VERSION;
+    let mut tx = client
+        .transaction()
+        .map_err(|error| format!("failed to start migration 26 transaction: {error}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(
+             hashtext(current_database()), hashtext(current_schema())
+         )",
+        &[],
+    )
+    .map_err(|error| format!("failed to lock migration 26: {error}"))?;
+    let current_version = tx
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map(|row| row.get::<_, i64>(0))
+        .map_err(|error| format!("failed to re-read version for migration 26: {error}"))?;
+    if current_version >= version {
+        tx.commit()
+            .map_err(|error| format!("failed to finish migration 26 no-op: {error}"))?;
+        return Ok(());
+    }
+    tx.batch_execute(schema::V26_DDL)
+        .map_err(|error| format!("migration 26 failed: {error}"))?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|error| format!("failed to record migration {version}: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("failed to commit migration 26: {error}"))
+}
+
 fn pg_v25_operation_schema_valid(
     client: &mut impl postgres::GenericClient,
 ) -> Result<bool, String> {
@@ -467,6 +502,10 @@ impl LocalProductStore {
             for migration in schema::POSTGRES_MIGRATIONS {
                 if migration.version == 25 {
                     apply_pg_v25_migration(client)?;
+                    continue;
+                }
+                if migration.version == 26 {
+                    apply_pg_v26_migration(client)?;
                     continue;
                 }
                 if migration.version <= current {
@@ -1069,7 +1108,7 @@ mod tests {
             .rollback_v25_to_v24("migration-test", true)
             .unwrap_err();
         assert!(error.contains("provider embedding bindings exist"));
-        assert_eq!(store.schema_version().unwrap(), 26);
+        assert_eq!(store.schema_version().unwrap(), 25);
         store
             .with_pg_conn(|client| {
                 client

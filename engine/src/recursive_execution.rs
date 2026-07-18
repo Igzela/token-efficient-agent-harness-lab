@@ -395,6 +395,12 @@ impl RecursiveTree {
         node_id: &str,
         lease_id: &str,
     ) -> Result<(), RecursiveFailureReason> {
+        if !recursive_enabled() {
+            return Err(RecursiveFailureReason::RecursiveDisabled);
+        }
+        if kill_switch_active() || self.paused {
+            return Err(RecursiveFailureReason::RecursiveKillSwitchActive);
+        }
         if self.active_leases.len() >= MAX_RECURSIVE_LEASES {
             return Err(RecursiveFailureReason::SchedulerCapacityExhausted);
         }
