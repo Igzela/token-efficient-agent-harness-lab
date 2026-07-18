@@ -406,6 +406,13 @@ impl RecursiveTree {
         if !effective_budget.is_nonzero() {
             return Err(RecursiveFailureReason::TreeBudgetExhausted);
         }
+        if let Some(limit) = self.root_budget_limit.as_ref() {
+            let mut projected_spend = self.spent_budget.clone();
+            projected_spend.add(&effective_budget);
+            if !limit.can_spend(&projected_spend) {
+                return Err(RecursiveFailureReason::TreeBudgetExhausted);
+            }
+        }
         let node = RecursiveNode {
             node_id: derived_node_id(&self.root_run_id, &proposal.proposal_id, &fingerprint),
             root_run_id: self.root_run_id.clone(),

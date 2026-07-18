@@ -18,7 +18,7 @@ use crate::orchestration::schemas::{
 };
 use crate::provider::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
 use crate::recursive_execution::{
-    RecursiveBudget, RecursiveProposal, RecursiveScope, RecursiveTree,
+    RecursiveBudget, RecursiveFailureReason, RecursiveProposal, RecursiveScope, RecursiveTree,
 };
 use crate::storage::local_product_store::{
     AgentActionMutation, AgentMutationOp, LocalProductStore,
@@ -1537,6 +1537,44 @@ impl AgentStepExecutor {
         );
     }
 
+    fn persist_recursive_rejection(
+        &self,
+        tree: &mut RecursiveTree,
+        expected_version: u64,
+        proposal_id: &str,
+        run_id: &str,
+        agent_id: &str,
+        reason: RecursiveFailureReason,
+    ) -> bool {
+        tree.record_rejection(proposal_id, reason);
+        let mut persisted = self
+            .store
+            .save_recursive_tree_with_expected_version(tree, expected_version)
+            .is_ok();
+        if !persisted {
+            if let Ok(Some(mut current)) = self.store.load_recursive_tree(run_id) {
+                let current_version = current.version;
+                current.record_rejection(proposal_id, reason);
+                persisted = self
+                    .store
+                    .save_recursive_tree_with_expected_version(&current, current_version)
+                    .is_ok();
+            }
+        }
+        self.append_agent_step_audit_best_effort(
+            "agent_step.recursive_proposal_rejected",
+            agent_id,
+            run_id,
+            &json!({
+                "proposal_id": proposal_id,
+                "reason_code": reason.as_str(),
+                "evidence_ref": format!("recursive-proposal:{proposal_id}"),
+                "evidence_persisted": persisted,
+            }),
+        );
+        persisted
+    }
+
     fn execute_action(
         &self,
         agent_id: &str,
@@ -1802,11 +1840,23 @@ impl AgentStepExecutor {
                             },
                         )
                     });
-                    let parent_version = tree
-                        .nodes
-                        .get(&proposal.parent_node_id)
-                        .ok_or_else(|| "stale_parent".to_string())?
-                        .version;
+                    let parent_version = match tree.nodes.get(&proposal.parent_node_id) {
+                        Some(parent) => parent.version,
+                        None => {
+                            let persisted = self.persist_recursive_rejection(
+                                &mut tree,
+                                expected_version,
+                                &proposal_id,
+                                run_id,
+                                agent_id,
+                                RecursiveFailureReason::StaleParent,
+                            );
+                            if !persisted {
+                                return Err("stale_parent".to_string());
+                            }
+                            return Err(RecursiveFailureReason::StaleParent.as_str().to_string());
+                        }
+                    };
                     let recursive_proposal = RecursiveProposal {
                         proposal_id: proposal_id.clone(),
                         parent_node_id: proposal.parent_node_id.clone(),
@@ -1826,21 +1876,13 @@ impl AgentStepExecutor {
                     let admission = match tree.admit_child(&recursive_proposal) {
                         Ok(admission) => admission,
                         Err(reason) => {
-                            tree.record_rejection(&proposal_id, reason);
-                            let rejection_persisted = self
-                                .store
-                                .save_recursive_tree_with_expected_version(&tree, expected_version)
-                                .is_ok();
-                            self.append_agent_step_audit_best_effort(
-                                "agent_step.recursive_proposal_rejected",
-                                agent_id,
+                            let rejection_persisted = self.persist_recursive_rejection(
+                                &mut tree,
+                                expected_version,
+                                &proposal_id,
                                 run_id,
-                                &json!({
-                                    "proposal_id": proposal_id,
-                                    "reason_code": reason.as_str(),
-                                    "evidence_ref": format!("recursive-proposal:{proposal_id}"),
-                                    "evidence_persisted": rejection_persisted,
-                                }),
+                                agent_id,
+                                reason,
                             );
                             if !rejection_persisted {
                                 return Err("stale_parent".to_string());

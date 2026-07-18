@@ -129,6 +129,14 @@ fn validate_scope(scope: &RecursiveScope) -> Result<(), String> {
     Ok(())
 }
 
+fn normalize_loaded_tree(tree: &mut RecursiveTree) {
+    // Older v1 snapshots did not carry aggregate usage accounting. Rebind
+    // them to their persisted remaining authority so restart stays fail-closed.
+    if tree.root_budget_limit.is_none() {
+        tree.root_budget_limit = Some(tree.root_budget.clone());
+    }
+}
+
 fn check_expected_sqlite(
     conn: &rusqlite::Connection,
     root_run_id: &str,
@@ -491,13 +499,14 @@ impl LocalProductStore {
         };
         tree_json
             .map(|value| {
-                let tree: RecursiveTree =
+                let mut tree: RecursiveTree =
                     serde_json::from_str(&value).map_err(|error| error.to_string())?;
                 if tree.root_run_id != root_run_id
                     || tree.schema_version != RECURSIVE_SCHEMA_VERSION
                 {
                     return Err("recursive tree identity or schema conflict".to_string());
                 }
+                normalize_loaded_tree(&mut tree);
                 validate_tree_for_persistence(&tree)?;
                 Ok(tree)
             })
@@ -525,11 +534,12 @@ fn load_recursive_tree_sqlite(
         .map_err(|error| error.to_string())?;
     tree_json
         .map(|value| {
-            let tree: RecursiveTree =
+            let mut tree: RecursiveTree =
                 serde_json::from_str(&value).map_err(|error| error.to_string())?;
             if tree.root_run_id != root_run_id || tree.schema_version != RECURSIVE_SCHEMA_VERSION {
                 return Err("recursive tree identity or schema conflict".to_string());
             }
+            normalize_loaded_tree(&mut tree);
             validate_tree_for_persistence(&tree)?;
             Ok(tree)
         })
@@ -612,11 +622,12 @@ fn load_recursive_tree_pg(
         .map(|row| row.get(0));
     tree_json
         .map(|value| {
-            let tree: RecursiveTree =
+            let mut tree: RecursiveTree =
                 serde_json::from_str(&value).map_err(|error| error.to_string())?;
             if tree.root_run_id != root_run_id || tree.schema_version != RECURSIVE_SCHEMA_VERSION {
                 return Err("recursive tree identity or schema conflict".to_string());
             }
+            normalize_loaded_tree(&mut tree);
             validate_tree_for_persistence(&tree)?;
             Ok(tree)
         })

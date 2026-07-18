@@ -3600,22 +3600,18 @@ impl LocalProductStore {
                     let recursive_retry = if let Some((recursive_node_id, attempt)) =
                         recursive_state.as_ref()
                     {
-                        if *attempt > 1 {
-                            false
-                        } else {
-                            match super::recursive_execution::recursive_retry_allowed_sqlite(
-                                &tx,
-                                run_id,
-                                recursive_node_id,
-                                &recursive_retry_usage(),
-                            ) {
-                                Ok(allowed) => allowed,
-                                Err(error) if error == "stale_parent" => {
-                                    recursive_tree_missing = true;
-                                    false
-                                }
-                                Err(error) => return Err(error),
+                        match super::recursive_execution::recursive_retry_allowed_sqlite(
+                            &tx,
+                            run_id,
+                            recursive_node_id,
+                            &recursive_retry_usage(),
+                        ) {
+                            Ok(allowed) => *attempt <= 1 && allowed,
+                            Err(error) if error == "stale_parent" => {
+                                recursive_tree_missing = true;
+                                false
                             }
+                            Err(error) => return Err(error),
                         }
                     } else {
                         false
@@ -3739,22 +3735,18 @@ impl LocalProductStore {
                     let recursive_retry = if let Some((recursive_node_id, attempt)) =
                         recursive_state.as_ref()
                     {
-                        if *attempt > 1 {
-                            false
-                        } else {
-                            match super::recursive_execution::recursive_retry_allowed_pg(
-                                &mut tx,
-                                run_id,
-                                recursive_node_id,
-                                &recursive_retry_usage(),
-                            ) {
-                                Ok(allowed) => allowed,
-                                Err(error) if error == "stale_parent" => {
-                                    recursive_tree_missing = true;
-                                    false
-                                }
-                                Err(error) => return Err(error),
+                        match super::recursive_execution::recursive_retry_allowed_pg(
+                            &mut tx,
+                            run_id,
+                            recursive_node_id,
+                            &recursive_retry_usage(),
+                        ) {
+                            Ok(allowed) => *attempt <= 1 && allowed,
+                            Err(error) if error == "stale_parent" => {
+                                recursive_tree_missing = true;
+                                false
                             }
+                            Err(error) => return Err(error),
                         }
                     } else {
                         false
