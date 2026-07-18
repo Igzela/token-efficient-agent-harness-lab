@@ -2916,6 +2916,25 @@ impl NodeExecutor for AgentStepExecutor {
                     .unwrap_or_else(|error| agent_step_fail(&error, &start))
             }
             Err(e) => {
+                if recursive_failure_reason_code(&e) == Some("recursive_tree_missing") {
+                    if let AgentAction::ProposeChildTask(_) = &action {
+                        if let Ok(canonical_action) = serde_json::to_vec(&action) {
+                            let action_sha256 = hex::encode(Sha256::digest(canonical_action));
+                            let proposal_id = format!("prop-{}", &action_sha256[..24]);
+                            self.append_agent_step_audit_best_effort(
+                                "agent_step.recursive_proposal_rejected",
+                                &agent_id,
+                                &input.run_id,
+                                &json!({
+                                    "proposal_id": proposal_id,
+                                    "reason_code": "recursive_tree_missing",
+                                    "evidence_ref": format!("agent_proposal/{proposal_id}"),
+                                    "evidence_persisted": false,
+                                }),
+                            );
+                        }
+                    }
+                }
                 let mut failure_details = json!({
                     "action_type": "failed",
                     "error": "agent_step_error",
@@ -3191,6 +3210,26 @@ mod tests {
                 &json!({}),
             )
             .expect("create agent state");
+    }
+
+    fn import_test_workflow(store: &LocalProductStore, run_id: &str, workflow_id: &str) {
+        store
+            .import_workflow_run(&json!({
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "status": "created",
+                "boundaries": {"execution_authority": "disabled"},
+                "nodes": [{
+                    "node_id": "agent-node-001",
+                    "task_type": "agent_step",
+                    "status": "pending",
+                    "recursive_node_id": "agent-node-001"
+                }],
+                "edges": [],
+                "events": [],
+                "approvals": []
+            }))
+            .expect("import test workflow");
     }
 
     #[test]
@@ -4122,6 +4161,7 @@ mod tests {
     fn test_agent_step_recursive_child_is_control_admitted_and_persisted() {
         let _lock = AGENT_ENV_LOCK.lock().unwrap();
         let store = Arc::new(ar2_store());
+        import_test_workflow(&store, "run-recursive", "wf-ar2-001");
         create_test_agent(&store, "agent-recursive", "run-recursive");
         std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
         std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");

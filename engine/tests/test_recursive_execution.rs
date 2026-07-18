@@ -2,6 +2,7 @@ use engine::recursive_execution::{
     RecursiveBudget, RecursiveScope, RecursiveTree, RECURSIVE_SCHEMA_VERSION,
 };
 use engine::storage::local_product_store::LocalProductStore;
+use serde_json::json;
 use std::collections::BTreeSet;
 
 fn scope() -> RecursiveScope {
@@ -21,6 +22,26 @@ fn budget() -> RecursiveBudget {
     }
 }
 
+fn bind_test_workflow(store: &LocalProductStore, run_id: &str, workflow_id: &str, node_id: &str) {
+    store
+        .import_workflow_run(&json!({
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "status": "created",
+            "boundaries": {"execution_authority": "disabled"},
+            "nodes": [{
+                "node_id": node_id,
+                "task_type": "agent_step",
+                "status": "pending",
+                "recursive_node_id": node_id
+            }],
+            "edges": [],
+            "events": [],
+            "approvals": []
+        }))
+        .expect("bind test workflow");
+}
+
 #[test]
 fn recursive_tree_round_trips_through_local_store() {
     let store = LocalProductStore::new(":memory:").expect("store");
@@ -31,6 +52,12 @@ fn recursive_tree_round_trips_through_local_store() {
         scope(),
         BTreeSet::from(["read".to_string()]),
         budget(),
+    );
+    bind_test_workflow(
+        &store,
+        &tree.root_run_id,
+        &tree.workflow_id,
+        &tree.root_node_id,
     );
 
     store.save_recursive_tree(&tree).expect("save");
@@ -60,6 +87,12 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
         scope(),
         BTreeSet::from(["read".to_string()]),
         budget(),
+    );
+    bind_test_workflow(
+        &occupied,
+        &tree.root_run_id,
+        &tree.workflow_id,
+        &tree.root_node_id,
     );
     occupied.save_recursive_tree(&tree).expect("save");
     let error = occupied

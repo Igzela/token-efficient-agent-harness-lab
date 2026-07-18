@@ -564,6 +564,12 @@ fn apply_sqlite_operation(
                     }
                 }
             }
+            super::recursive_execution::validate_recursive_workflow_mutation_sqlite(
+                conn,
+                &mutation.run_id,
+                node,
+                edge,
+            )?;
             super::workflow_runs::dag_mutations::insert_workflow_run_node_locked(
                 conn,
                 &mutation.run_id,
@@ -1171,6 +1177,12 @@ fn apply_pg_operation(
                     }
                 }
             }
+            super::recursive_execution::validate_recursive_workflow_mutation_pg(
+                client,
+                &mutation.run_id,
+                node,
+                edge,
+            )?;
             super::workflow_runs::dag_mutations::pg_insert_workflow_run_node(
                 client,
                 &mutation.run_id,
