@@ -418,11 +418,39 @@ fn apply_sqlite_operation(
         ) {
             Ok(()) => Ok(()),
             Err(error) if error == "stale_parent" => {
-                let rejected = super::recursive_execution::record_recursive_cas_rejection_sqlite(
-                    conn, tree, now,
-                )?;
+                let rejected =
+                    match super::recursive_execution::record_recursive_cas_rejection_sqlite(
+                        conn, tree, now,
+                    ) {
+                        Ok(rejected) => rejected,
+                        Err(error) if error == "recursive_tree_missing" => {
+                            for proposal_id in &tree.accepted_proposals {
+                                conn.execute(
+                                    "UPDATE agent_proposals SET status='rejected', updated_at=?1
+                                 WHERE proposal_id=?2 AND run_id=?3 AND status='pending'",
+                                    params![now, proposal_id, mutation.run_id],
+                                )
+                                .map_err(|error| error.to_string())?;
+                                append_audit_locked(
+                                    conn,
+                                    now,
+                                    &format!("agent:{}", mutation.agent_id),
+                                    "agent_step.recursive_proposal_rejected",
+                                    &format!("agent_proposal/{proposal_id}"),
+                                    &json!({
+                                        "run_id": mutation.run_id,
+                                        "proposal_id": proposal_id,
+                                        "reason_code": "recursive_tree_missing",
+                                        "evidence_persisted": false,
+                                    }),
+                                )?;
+                            }
+                            return Ok(());
+                        }
+                        Err(error) => return Err(error),
+                    };
                 for proposal_id in rejected {
-                    let resource = format!("recursive-proposal/{proposal_id}");
+                    let resource = format!("agent_proposal/{proposal_id}");
                     conn.execute(
                         "UPDATE agent_proposals SET status='rejected', updated_at=?1
                          WHERE proposal_id=?2 AND run_id=?3 AND status='pending'",
@@ -448,8 +476,11 @@ fn apply_sqlite_operation(
             Err(error) => Err(error),
         },
         AgentMutationOp::PersistRecursiveWorkflow { node, edge } => {
-            if let Some(proposal_id) = node.get("proposal_id").and_then(Value::as_str) {
-                let rejected: Option<String> = conn
+            let Some(proposal_id) = node.get("proposal_id").and_then(Value::as_str) else {
+                return Err("recursive proposal identity is missing".to_string());
+            };
+            {
+                let proposal_status: Option<String> = conn
                     .query_row(
                         "SELECT status FROM agent_proposals
                          WHERE proposal_id=?1 AND run_id=?2",
@@ -458,15 +489,22 @@ fn apply_sqlite_operation(
                     )
                     .optional()
                     .map_err(|error| error.to_string())?;
-                if rejected.as_deref() == Some("rejected") {
+                if proposal_status.as_deref() == Some("rejected") {
                     return Ok(());
                 }
-                conn.execute(
-                    "UPDATE agent_proposals SET status='accepted', updated_at=?1
+                if proposal_status.as_deref() != Some("pending") {
+                    return Err("recursive proposal is not pending".to_string());
+                }
+                let updated = conn
+                    .execute(
+                        "UPDATE agent_proposals SET status='accepted', updated_at=?1
                      WHERE proposal_id=?2 AND run_id=?3 AND status='pending'",
-                    params![now, proposal_id, mutation.run_id],
-                )
-                .map_err(|error| error.to_string())?;
+                        params![now, proposal_id, mutation.run_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if updated != 1 {
+                    return Err("recursive proposal acceptance raced".to_string());
+                }
             }
             super::workflow_runs::dag_mutations::insert_workflow_run_node_locked(
                 conn,
@@ -1002,11 +1040,39 @@ fn apply_pg_operation(
         ) {
             Ok(()) => Ok(()),
             Err(error) if error == "stale_parent" => {
-                let rejected = super::recursive_execution::record_recursive_cas_rejection_pg(
+                let rejected = match super::recursive_execution::record_recursive_cas_rejection_pg(
                     client, tree, now,
-                )?;
+                ) {
+                    Ok(rejected) => rejected,
+                    Err(error) if error == "recursive_tree_missing" => {
+                        for proposal_id in &tree.accepted_proposals {
+                            client
+                                .execute(
+                                    "UPDATE agent_proposals SET status='rejected', updated_at=$1
+                                     WHERE proposal_id=$2 AND run_id=$3 AND status='pending'",
+                                    &[&now, &proposal_id, &mutation.run_id],
+                                )
+                                .map_err(|error| error.to_string())?;
+                            super::workflow_runs::pg_append_audit(
+                                client,
+                                now,
+                                &format!("agent:{}", mutation.agent_id),
+                                "agent_step.recursive_proposal_rejected",
+                                &format!("agent_proposal/{proposal_id}"),
+                                &json!({
+                                    "run_id": mutation.run_id,
+                                    "proposal_id": proposal_id,
+                                    "reason_code": "recursive_tree_missing",
+                                    "evidence_persisted": false,
+                                }),
+                            )?;
+                        }
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                };
                 for proposal_id in rejected {
-                    let resource = format!("recursive-proposal/{proposal_id}");
+                    let resource = format!("agent_proposal/{proposal_id}");
                     client
                         .execute(
                             "UPDATE agent_proposals SET status='rejected', updated_at=$1
@@ -1033,8 +1099,11 @@ fn apply_pg_operation(
             Err(error) => Err(error),
         },
         AgentMutationOp::PersistRecursiveWorkflow { node, edge } => {
-            if let Some(proposal_id) = node.get("proposal_id").and_then(Value::as_str) {
-                let rejected: Option<String> = client
+            let Some(proposal_id) = node.get("proposal_id").and_then(Value::as_str) else {
+                return Err("recursive proposal identity is missing".to_string());
+            };
+            {
+                let proposal_status: Option<String> = client
                     .query_opt(
                         "SELECT status FROM agent_proposals
                          WHERE proposal_id=$1 AND run_id=$2",
@@ -1042,16 +1111,22 @@ fn apply_pg_operation(
                     )
                     .map_err(|error| error.to_string())?
                     .map(|row| row.get(0));
-                if rejected.as_deref() == Some("rejected") {
+                if proposal_status.as_deref() == Some("rejected") {
                     return Ok(());
                 }
-                client
+                if proposal_status.as_deref() != Some("pending") {
+                    return Err("recursive proposal is not pending".to_string());
+                }
+                let updated = client
                     .execute(
                         "UPDATE agent_proposals SET status='accepted', updated_at=$1
                          WHERE proposal_id=$2 AND run_id=$3 AND status='pending'",
                         &[&now, &proposal_id, &mutation.run_id],
                     )
                     .map_err(|error| error.to_string())?;
+                if updated != 1 {
+                    return Err("recursive proposal acceptance raced".to_string());
+                }
             }
             super::workflow_runs::dag_mutations::pg_insert_workflow_run_node(
                 client,

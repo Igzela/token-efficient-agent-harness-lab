@@ -4125,6 +4125,7 @@ mod tests {
     #[test]
     fn test_agent_step_ar3_no_provider_or_cli_called() {
         let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let _recursive_lock = crate::recursive_execution::test_env_lock().lock().unwrap();
         let store = Arc::new(ar2_store());
         create_test_agent(&store, "agent-ar3np", "run-ar3np");
         std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
@@ -4148,6 +4149,7 @@ mod tests {
     #[test]
     fn test_agent_step_cancel_proposal() {
         let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let _recursive_lock = crate::recursive_execution::test_env_lock().lock().unwrap();
         let store = Arc::new(ar2_store());
         create_test_agent(&store, "agent-ar3c", "run-ar3c");
         std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");

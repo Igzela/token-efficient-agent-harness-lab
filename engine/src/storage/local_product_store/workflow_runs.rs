@@ -3655,7 +3655,7 @@ impl LocalProductStore {
                 };
                 let mut count = 0_i64;
                 for (run_id, node_id, leased_at) in &stale_nodes {
-                    let recursive_state: Option<(String, i64)> = tx
+                    let recursive_state: Option<(String, i64, String)> = tx
                         .query_row(
                             "SELECT node_json, attempt_count FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
                             params![run_id, node_id],
@@ -3673,12 +3673,14 @@ impl LocalProductStore {
                                     value
                                         .get("recursive_node_id")
                                         .and_then(Value::as_str)
-                                        .map(|node_id| (node_id.to_string(), attempt_count))
+                                        .map(|node_id| {
+                                            (node_id.to_string(), attempt_count, node_json)
+                                        })
                                 })
                         });
                     let mut recursive_tree_missing = false;
                     let mut recursive_node_missing = false;
-                    let recursive_retry = if let Some((recursive_node_id, attempt)) =
+                    let recursive_retry = if let Some((recursive_node_id, attempt, _)) =
                         recursive_state.as_ref()
                     {
                         match super::recursive_execution::recursive_retry_allowed_sqlite(
@@ -3706,15 +3708,42 @@ impl LocalProductStore {
                     } else {
                         "pending"
                     };
+                    let mut recovered_node_json = recursive_state
+                        .as_ref()
+                        .map(|(_, _, node_json)| serde_json::from_str::<Value>(node_json))
+                        .transpose()
+                        .map_err(|error| error.to_string())?;
+                    if let Some(object) = recovered_node_json
+                        .as_mut()
+                        .and_then(Value::as_object_mut)
+                    {
+                        object.insert("status".to_string(), json!(recovery_status));
+                        if recovery_status == "failed" {
+                            object.insert("completed_at".to_string(), json!(now));
+                        } else {
+                            object.remove("completed_at");
+                        }
+                    }
+                    let completed_at = (recovery_status == "failed").then_some(now.as_str());
                     let updated = tx
                         .execute(
-                            "UPDATE workflow_run_nodes SET status = ?1, leased_at = NULL WHERE run_id = ?2 AND node_id = ?3 AND status = 'running' AND leased_at = ?4",
-                            params![recovery_status, run_id, node_id, leased_at],
+                            "UPDATE workflow_run_nodes SET status = ?1, completed_at = ?2,
+                             leased_at = NULL, node_json = COALESCE(?3, node_json)
+                             WHERE run_id = ?4 AND node_id = ?5 AND status = 'running'
+                               AND leased_at = ?6",
+                            params![
+                                recovery_status,
+                                completed_at,
+                                recovered_node_json.map(|value| value.to_string()),
+                                run_id,
+                                node_id,
+                                leased_at,
+                            ],
                         )
                         .map_err(|e| e.to_string())?;
                     if updated > 0 {
                         count += updated as i64;
-                        if let Some((recursive_node_id, attempt)) = recursive_state {
+                        if let Some((recursive_node_id, attempt, _)) = recursive_state {
                             if recursive_tree_missing {
                                 append_audit_locked(
                                     &tx,
@@ -3725,7 +3754,7 @@ impl LocalProductStore {
                                     &json!({
                                         "run_id": run_id,
                                         "node_id": node_id,
-                                        "reason": "stale_parent",
+                                        "reason": "recursive_tree_missing",
                                     }),
                                 )?;
                             } else if recursive_node_missing {
@@ -3811,7 +3840,7 @@ impl LocalProductStore {
                     .collect();
                 let mut count = 0_i64;
                 for (run_id, node_id, leased_at) in &stale_nodes {
-                    let recursive_state: Option<(String, i64)> = tx
+                    let recursive_state: Option<(String, i64, String)> = tx
                         .query_opt(
                             "SELECT node_json, attempt_count FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
                             &[run_id, node_id],
@@ -3827,12 +3856,14 @@ impl LocalProductStore {
                                     value
                                         .get("recursive_node_id")
                                         .and_then(Value::as_str)
-                                        .map(|node_id| (node_id.to_string(), i64::from(attempt_count)))
+                                        .map(|node_id| {
+                                            (node_id.to_string(), i64::from(attempt_count), node_json)
+                                        })
                                 })
                         });
                     let mut recursive_tree_missing = false;
                     let mut recursive_node_missing = false;
-                    let recursive_retry = if let Some((recursive_node_id, attempt)) =
+                    let recursive_retry = if let Some((recursive_node_id, attempt, _)) =
                         recursive_state.as_ref()
                     {
                         match super::recursive_execution::recursive_retry_allowed_pg(
@@ -3860,15 +3891,42 @@ impl LocalProductStore {
                     } else {
                         "pending"
                     };
+                    let mut recovered_node_json = recursive_state
+                        .as_ref()
+                        .map(|(_, _, node_json)| serde_json::from_str::<Value>(node_json))
+                        .transpose()
+                        .map_err(|error| error.to_string())?;
+                    if let Some(object) = recovered_node_json
+                        .as_mut()
+                        .and_then(Value::as_object_mut)
+                    {
+                        object.insert("status".to_string(), json!(recovery_status));
+                        if recovery_status == "failed" {
+                            object.insert("completed_at".to_string(), json!(now));
+                        } else {
+                            object.remove("completed_at");
+                        }
+                    }
+                    let completed_at = (recovery_status == "failed").then_some(now.as_str());
                     let updated = tx
                         .execute(
-                            "UPDATE workflow_run_nodes SET status = $1, leased_at = NULL WHERE run_id = $2 AND node_id = $3 AND status = 'running' AND leased_at = $4",
-                            &[&recovery_status, run_id, node_id, leased_at],
+                            "UPDATE workflow_run_nodes SET status = $1, completed_at = $2,
+                             leased_at = NULL, node_json = COALESCE($3, node_json)
+                             WHERE run_id = $4 AND node_id = $5 AND status = 'running'
+                               AND leased_at = $6",
+                            &[
+                                &recovery_status,
+                                &completed_at,
+                                &recovered_node_json.map(|value| value.to_string()),
+                                run_id,
+                                node_id,
+                                leased_at,
+                            ],
                         )
                         .map_err(|e| e.to_string())?;
                     if updated > 0 {
                         count += updated as i64;
-                        if let Some((recursive_node_id, attempt)) = recursive_state {
+                        if let Some((recursive_node_id, attempt, _)) = recursive_state {
                             if recursive_tree_missing {
                                 pg_append_audit(
                                     &mut tx,
@@ -3879,7 +3937,7 @@ impl LocalProductStore {
                                     &json!({
                                         "run_id": run_id,
                                         "node_id": node_id,
-                                        "reason": "stale_parent",
+                                        "reason": "recursive_tree_missing",
                                     }),
                                 )?;
                             } else if recursive_node_missing {

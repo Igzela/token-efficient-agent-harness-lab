@@ -337,33 +337,7 @@ pub(crate) fn record_recursive_cas_rejection_sqlite(
     now: &str,
 ) -> Result<Vec<String>, String> {
     let Some(mut current) = load_recursive_tree_sqlite(conn, &candidate.root_run_id)? else {
-        let rejected: Vec<String> = candidate.accepted_proposals.iter().cloned().collect();
-        let mut recovery = candidate.clone();
-        let root_node_id = recovery.root_node_id.clone();
-        let mut restored_budget = crate::recursive_execution::RecursiveBudget::default();
-        for (node_id, node) in &recovery.nodes {
-            if node_id != &root_node_id {
-                restored_budget.add(&node.budget);
-            }
-        }
-        recovery.nodes.retain(|node_id, _| node_id == &root_node_id);
-        if let Some(root) = recovery.nodes.get_mut(&root_node_id) {
-            root.accepted_children = 0;
-            root.budget.add(&restored_budget);
-        }
-        recovery.root_budget.add(&restored_budget);
-        recovery.accepted_proposals.clear();
-        recovery.receipts.clear();
-        recovery.active_leases.clear();
-        recovery
-            .rejected_proposals
-            .retain(|proposal_id, _| !rejected.contains(proposal_id));
-        recovery.version = 1;
-        for proposal_id in &rejected {
-            recovery.record_rejection(proposal_id, RecursiveFailureReason::StaleParent);
-        }
-        persist_recursive_tree_sqlite(conn, &recovery, now, Some(0))?;
-        return Ok(rejected);
+        return Err("recursive_tree_missing".to_string());
     };
     let expected_version = current.version;
     let rejected: Vec<String> = candidate
@@ -476,33 +450,7 @@ pub(crate) fn record_recursive_cas_rejection_pg(
     now: &str,
 ) -> Result<Vec<String>, String> {
     let Some(mut current) = load_recursive_tree_pg(client, &candidate.root_run_id)? else {
-        let rejected: Vec<String> = candidate.accepted_proposals.iter().cloned().collect();
-        let mut recovery = candidate.clone();
-        let root_node_id = recovery.root_node_id.clone();
-        let mut restored_budget = crate::recursive_execution::RecursiveBudget::default();
-        for (node_id, node) in &recovery.nodes {
-            if node_id != &root_node_id {
-                restored_budget.add(&node.budget);
-            }
-        }
-        recovery.nodes.retain(|node_id, _| node_id == &root_node_id);
-        if let Some(root) = recovery.nodes.get_mut(&root_node_id) {
-            root.accepted_children = 0;
-            root.budget.add(&restored_budget);
-        }
-        recovery.root_budget.add(&restored_budget);
-        recovery.accepted_proposals.clear();
-        recovery.receipts.clear();
-        recovery.active_leases.clear();
-        recovery
-            .rejected_proposals
-            .retain(|proposal_id, _| !rejected.contains(proposal_id));
-        recovery.version = 1;
-        for proposal_id in &rejected {
-            recovery.record_rejection(proposal_id, RecursiveFailureReason::StaleParent);
-        }
-        persist_recursive_tree_pg(client, &recovery, now, Some(0))?;
-        return Ok(rejected);
+        return Err("recursive_tree_missing".to_string());
     };
     let expected_version = current.version;
     let rejected: Vec<String> = candidate
@@ -953,20 +901,28 @@ impl LocalProductStore {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
                 let now = self.now();
                 let rows = tx
-                    .query(
-                        "SELECT root_run_id, workflow_id, root_node_id,
-                         tree_schema_version, tree_json
-                         FROM recursive_execution_trees",
-                        &[],
-                    )
+                    .query("SELECT root_run_id FROM recursive_execution_trees", &[])
                     .map_err(|error| error.to_string())?;
                 let mut changed = 0;
                 for row in rows {
                     let root_run_id: String = row.get(0);
-                    let workflow_id: String = row.get(1);
-                    let root_node_id: String = row.get(2);
-                    let schema_version: String = row.get(3);
-                    let tree_json: String = row.get(4);
+                    tx.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        &[&root_run_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let authoritative = tx
+                        .query_opt(
+                            "SELECT workflow_id, root_node_id, tree_schema_version, tree_json
+                             FROM recursive_execution_trees WHERE root_run_id=$1 FOR UPDATE",
+                            &[&root_run_id],
+                        )
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| "recursive_tree_missing".to_string())?;
+                    let workflow_id: String = authoritative.get(0);
+                    let root_node_id: String = authoritative.get(1);
+                    let schema_version: String = authoritative.get(2);
+                    let tree_json: String = authoritative.get(3);
                     let mut tree: RecursiveTree =
                         serde_json::from_str(&tree_json).map_err(|error| error.to_string())?;
                     if tree.root_run_id != root_run_id
