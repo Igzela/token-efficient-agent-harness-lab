@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 pub const RECURSIVE_SCHEMA_VERSION: &str = "recursive_execution.v1";
 pub const MAX_RECURSIVE_DEPTH: u8 = 2;
@@ -227,6 +229,14 @@ fn derived_node_id(root_run_id: &str, proposal_id: &str, fingerprint: &str) -> S
     format!("recursive-{}", hex::encode(hasher.finalize()))
 }
 
+pub(crate) fn derived_node_id_for_persistence(
+    root_run_id: &str,
+    proposal_id: &str,
+    fingerprint: &str,
+) -> String {
+    derived_node_id(root_run_id, proposal_id, fingerprint)
+}
+
 fn recursive_enabled() -> bool {
     std::env::var("ACP_RECURSIVE_EXECUTION_ENABLED")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
@@ -438,7 +448,7 @@ impl RecursiveTree {
             version: 1,
             lease_id: None,
             failure_reason: None,
-            evidence_refs: vec![format!("recursive-proposal:{}", proposal.proposal_id)],
+            evidence_refs: vec![format!("agent_proposal/{}", proposal.proposal_id)],
         };
         let parent_entry = self.nodes.get_mut(&parent.node_id).expect("parent checked");
         parent_entry.accepted_children += 1;
@@ -590,6 +600,10 @@ impl RecursiveTree {
                 if within_tree_budget { 1 } else { 0 }
             ),
         );
+        if !within_tree_budget {
+            self.paused = true;
+            self.version += 1;
+        }
         Ok(within_tree_budget)
     }
 
@@ -675,7 +689,7 @@ impl RecursiveTree {
             proposal_id.to_string(),
             RecursiveDecisionEvidence {
                 reason_code: reason.as_str().to_string(),
-                evidence_refs: vec![format!("recursive-proposal:{proposal_id}")],
+                evidence_refs: vec![format!("agent_proposal/{proposal_id}")],
             },
         );
         self.version += 1;
@@ -733,14 +747,14 @@ impl RecursiveTree {
 }
 
 #[cfg(test)]
+pub(crate) fn test_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     fn scope() -> RecursiveScope {
         RecursiveScope {
@@ -782,7 +796,7 @@ mod tests {
 
     #[test]
     fn default_off_and_kill_switch_are_fail_closed() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = test_env_lock().lock().unwrap();
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
         let mut tree = RecursiveTree::new(
@@ -809,7 +823,7 @@ mod tests {
 
     #[test]
     fn admission_is_deterministic_and_narrowing() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = test_env_lock().lock().unwrap();
         std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
         let mut tree = RecursiveTree::new(
@@ -839,7 +853,7 @@ mod tests {
 
     #[test]
     fn limits_and_operator_evidence_are_bounded() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = test_env_lock().lock().unwrap();
         std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
         let mut tree = RecursiveTree::new(
             "run",
@@ -874,7 +888,7 @@ mod tests {
 
     #[test]
     fn child_budget_is_derived_from_remaining_authorities() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = test_env_lock().lock().unwrap();
         std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
         let mut tree = RecursiveTree::new(
             "run-budget",

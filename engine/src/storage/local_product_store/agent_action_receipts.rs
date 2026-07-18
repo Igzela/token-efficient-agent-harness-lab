@@ -461,6 +461,12 @@ fn apply_sqlite_operation(
                 if rejected.as_deref() == Some("rejected") {
                     return Ok(());
                 }
+                conn.execute(
+                    "UPDATE agent_proposals SET status='accepted', updated_at=?1
+                     WHERE proposal_id=?2 AND run_id=?3 AND status='pending'",
+                    params![now, proposal_id, mutation.run_id],
+                )
+                .map_err(|error| error.to_string())?;
             }
             super::workflow_runs::dag_mutations::insert_workflow_run_node_locked(
                 conn,
@@ -1039,6 +1045,13 @@ fn apply_pg_operation(
                 if rejected.as_deref() == Some("rejected") {
                     return Ok(());
                 }
+                client
+                    .execute(
+                        "UPDATE agent_proposals SET status='accepted', updated_at=$1
+                         WHERE proposal_id=$2 AND run_id=$3 AND status='pending'",
+                        &[&now, &proposal_id, &mutation.run_id],
+                    )
+                    .map_err(|error| error.to_string())?;
             }
             super::workflow_runs::dag_mutations::pg_insert_workflow_run_node(
                 client,

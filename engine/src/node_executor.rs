@@ -1566,6 +1566,12 @@ impl AgentStepExecutor {
             version = current.version;
             candidate = current;
         }
+        if !persisted {
+            persisted = self
+                .store
+                .record_recursive_rejection(run_id, proposal_id, reason)
+                .is_ok();
+        }
         if persisted {
             *tree = candidate;
         } else {
@@ -1580,7 +1586,7 @@ impl AgentStepExecutor {
             &json!({
                 "proposal_id": proposal_id,
                 "reason_code": reason.as_str(),
-                "evidence_ref": format!("recursive-proposal:{proposal_id}"),
+                "evidence_ref": format!("agent_proposal/{proposal_id}"),
                 "evidence_persisted": persisted,
             }),
         );
@@ -4083,6 +4089,7 @@ mod tests {
     #[test]
     fn test_agent_step_recursive_child_is_control_admitted_and_persisted() {
         let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let _recursive_lock = crate::recursive_execution::test_env_lock().lock().unwrap();
         let store = Arc::new(ar2_store());
         create_test_agent(&store, "agent-recursive", "run-recursive");
         std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");

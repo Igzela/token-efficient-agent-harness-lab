@@ -94,6 +94,15 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
             *child_counts.entry(parent_node_id.to_string()).or_default() += 1;
         }
         if let Some(proposal_id) = node.proposal_id.as_deref() {
+            if node.node_id
+                != crate::recursive_execution::derived_node_id_for_persistence(
+                    &tree.root_run_id,
+                    proposal_id,
+                    &node.objective_fingerprint,
+                )
+            {
+                return Err("recursive child node identity is not deterministic".to_string());
+            }
             if !proposal_ids.insert(proposal_id.to_string())
                 || !tree.accepted_proposals.contains(proposal_id)
                 || !tree.receipts.contains_key(proposal_id)
@@ -139,6 +148,10 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
             !proposal_ids.contains(proposal_id)
                 || tree.receipts.get(proposal_id).is_none_or(String::is_empty)
         })
+        || tree
+            .accepted_proposals
+            .iter()
+            .any(|proposal_id| tree.rejected_proposals.contains_key(proposal_id))
     {
         return Err("recursive accepted proposal receipt set is inconsistent".to_string());
     }
@@ -214,6 +227,44 @@ fn check_expected_sqlite(
     }
 }
 
+fn check_node_index_sqlite(
+    conn: &rusqlite::Connection,
+    node_id: &str,
+    root_run_id: &str,
+) -> Result<(), String> {
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT root_run_id FROM recursive_execution_nodes WHERE node_id=?1",
+            [node_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if existing.is_some_and(|existing| existing != root_run_id) {
+        return Err("recursive node identity is already bound to another root".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn check_node_index_pg(
+    client: &mut impl postgres::GenericClient,
+    node_id: &str,
+    root_run_id: &str,
+) -> Result<(), String> {
+    let existing: Option<String> = client
+        .query_opt(
+            "SELECT root_run_id FROM recursive_execution_nodes WHERE node_id=$1",
+            &[&node_id],
+        )
+        .map_err(|error| error.to_string())?
+        .map(|row| row.get(0));
+    if existing.is_some_and(|existing| existing != root_run_id) {
+        return Err("recursive node identity is already bound to another root".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn persist_recursive_tree_sqlite(
     tx: &rusqlite::Connection,
     tree: &RecursiveTree,
@@ -247,6 +298,7 @@ pub(crate) fn persist_recursive_tree_sqlite(
     )
     .map_err(|error| error.to_string())?;
     for node in tree.nodes.values() {
+        check_node_index_sqlite(tx, &node.node_id, &tree.root_run_id)?;
         let (node_id, parent_node_id, proposal_id, depth, fingerprint, status, version) =
             node_values(node);
         tx.execute(
@@ -285,7 +337,24 @@ pub(crate) fn record_recursive_cas_rejection_sqlite(
     now: &str,
 ) -> Result<Vec<String>, String> {
     let Some(mut current) = load_recursive_tree_sqlite(conn, &candidate.root_run_id)? else {
-        return Err("recursive_tree_missing".to_string());
+        let rejected: Vec<String> = candidate.accepted_proposals.iter().cloned().collect();
+        let mut recovery = candidate.clone();
+        recovery
+            .nodes
+            .retain(|node_id, _| node_id == &recovery.root_node_id);
+        if let Some(root) = recovery.nodes.get_mut(&recovery.root_node_id) {
+            root.accepted_children = 0;
+        }
+        recovery.accepted_proposals.clear();
+        recovery.receipts.clear();
+        recovery.active_leases.clear();
+        recovery.rejected_proposals.clear();
+        recovery.version = 1;
+        for proposal_id in &rejected {
+            recovery.record_rejection(proposal_id, RecursiveFailureReason::StaleParent);
+        }
+        persist_recursive_tree_sqlite(conn, &recovery, now, Some(0))?;
+        return Ok(rejected);
     };
     let expected_version = current.version;
     let rejected: Vec<String> = candidate
@@ -357,6 +426,7 @@ pub(crate) fn persist_recursive_tree_pg(
         )
         .map_err(|error| error.to_string())?;
     for node in tree.nodes.values() {
+        check_node_index_pg(client, &node.node_id, &tree.root_run_id)?;
         let (node_id, parent_node_id, proposal_id, depth, fingerprint, status, version) =
             node_values(node);
         client
@@ -397,7 +467,24 @@ pub(crate) fn record_recursive_cas_rejection_pg(
     now: &str,
 ) -> Result<Vec<String>, String> {
     let Some(mut current) = load_recursive_tree_pg(client, &candidate.root_run_id)? else {
-        return Err("recursive_tree_missing".to_string());
+        let rejected: Vec<String> = candidate.accepted_proposals.iter().cloned().collect();
+        let mut recovery = candidate.clone();
+        recovery
+            .nodes
+            .retain(|node_id, _| node_id == &recovery.root_node_id);
+        if let Some(root) = recovery.nodes.get_mut(&recovery.root_node_id) {
+            root.accepted_children = 0;
+        }
+        recovery.accepted_proposals.clear();
+        recovery.receipts.clear();
+        recovery.active_leases.clear();
+        recovery.rejected_proposals.clear();
+        recovery.version = 1;
+        for proposal_id in &rejected {
+            recovery.record_rejection(proposal_id, RecursiveFailureReason::StaleParent);
+        }
+        persist_recursive_tree_pg(client, &recovery, now, Some(0))?;
+        return Ok(rejected);
     };
     let expected_version = current.version;
     let rejected: Vec<String> = candidate
@@ -463,6 +550,7 @@ impl LocalProductStore {
                 )
                 .map_err(|error| error.to_string())?;
                 for node in tree.nodes.values() {
+                    check_node_index_sqlite(&tx, &node.node_id, &tree.root_run_id)?;
                     let (node_id, parent_node_id, proposal_id, depth, fingerprint, status, version) =
                         node_values(node);
                     tx.execute(
@@ -540,6 +628,7 @@ impl LocalProductStore {
                 )
                 .map_err(|error| error.to_string())?;
                 for node in tree.nodes.values() {
+                    check_node_index_pg(&mut tx, &node.node_id, &tree.root_run_id)?;
                     let (node_id, parent_node_id, proposal_id, depth, fingerprint, status, version) =
                         node_values(node);
                     tx.execute(
@@ -569,6 +658,39 @@ impl LocalProductStore {
                     )
                     .map_err(|error| error.to_string())?;
                 }
+                tx.commit().map_err(|error| error.to_string())
+            }),
+        }
+    }
+
+    pub(crate) fn record_recursive_rejection(
+        &self,
+        root_run_id: &str,
+        proposal_id: &str,
+        reason: RecursiveFailureReason,
+    ) -> Result<(), String> {
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let Some(mut tree) = load_recursive_tree_sqlite(&tx, root_run_id)? else {
+                    return Err("recursive_tree_missing".to_string());
+                };
+                let expected_version = tree.version;
+                tree.record_rejection(proposal_id, reason);
+                persist_recursive_tree_sqlite(&tx, &tree, &now, Some(expected_version))?;
+                tx.commit().map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let Some(mut tree) = load_recursive_tree_pg(&mut tx, root_run_id)? else {
+                    return Err("recursive_tree_missing".to_string());
+                };
+                let expected_version = tree.version;
+                tree.record_rejection(proposal_id, reason);
+                persist_recursive_tree_pg(&mut tx, &tree, &now, Some(expected_version))?;
                 tx.commit().map_err(|error| error.to_string())
             }),
         }
@@ -743,16 +865,30 @@ impl LocalProductStore {
                         )?;
                     }
                     for workflow_node_id in terminated {
-                        let node_json_text: Option<String> = tx
+                        let workflow_row: Option<(String, Option<String>, String)> = tx
                             .query_row(
-                                "SELECT node_json FROM workflow_run_nodes
+                                "SELECT status, leased_at, node_json FROM workflow_run_nodes
                                  WHERE run_id=?1 AND node_id=?2",
                                 params![root_run_id, workflow_node_id],
-                                |row| row.get(0),
+                                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                             )
                             .optional()
                             .map_err(|error| error.to_string())?;
-                        if let Some(node_json_text) = node_json_text {
+                        if let Some((_status, _leased_at, node_json_text)) =
+                            workflow_row.filter(|(status, leased_at, node_json)| {
+                                status == "running"
+                                    && leased_at.is_some()
+                                    && serde_json::from_str::<Value>(node_json)
+                                        .ok()
+                                        .and_then(|value| {
+                                            value
+                                                .get("recursive_node_id")
+                                                .and_then(Value::as_str)
+                                                .map(|id| id == workflow_node_id)
+                                        })
+                                        .unwrap_or(false)
+                            })
+                        {
                             let mut node_json: Value = serde_json::from_str(&node_json_text)
                                 .map_err(|error| error.to_string())?;
                             if let Some(object) = node_json.as_object_mut() {
@@ -762,7 +898,8 @@ impl LocalProductStore {
                             tx.execute(
                                 "UPDATE workflow_run_nodes SET status='failed', completed_at=?1,
                                  leased_at=NULL, blocked_reason=?2, node_json=?3
-                                 WHERE run_id=?4 AND node_id=?5",
+                                 WHERE run_id=?4 AND node_id=?5 AND status='running'
+                                   AND leased_at IS NOT NULL",
                                 params![
                                     now,
                                     terminal_reason.unwrap_or("recursive_execution_paused"),
@@ -786,7 +923,7 @@ impl LocalProductStore {
                     .query(
                         "SELECT root_run_id, workflow_id, root_node_id,
                          tree_schema_version, tree_json
-                         FROM recursive_execution_trees FOR UPDATE",
+                         FROM recursive_execution_trees",
                         &[],
                     )
                     .map_err(|error| error.to_string())?;
@@ -864,15 +1001,29 @@ impl LocalProductStore {
                         )?;
                     }
                     for workflow_node_id in terminated {
-                        let node_json_text: Option<String> = tx
+                        let workflow_row: Option<(String, Option<String>, String)> = tx
                             .query_opt(
-                                "SELECT node_json FROM workflow_run_nodes
+                                "SELECT status, leased_at, node_json FROM workflow_run_nodes
                                  WHERE run_id=$1 AND node_id=$2",
                                 &[&root_run_id, &workflow_node_id],
                             )
                             .map_err(|error| error.to_string())?
-                            .map(|row| row.get(0));
-                        if let Some(node_json_text) = node_json_text {
+                            .map(|row| (row.get(0), row.get(1), row.get(2)));
+                        if let Some((_status, _leased_at, node_json_text)) =
+                            workflow_row.filter(|(status, leased_at, node_json)| {
+                                status == "running"
+                                    && leased_at.is_some()
+                                    && serde_json::from_str::<Value>(node_json)
+                                        .ok()
+                                        .and_then(|value| {
+                                            value
+                                                .get("recursive_node_id")
+                                                .and_then(Value::as_str)
+                                                .map(|id| id == workflow_node_id)
+                                        })
+                                        .unwrap_or(false)
+                            })
+                        {
                             let mut node_json: Value = serde_json::from_str(&node_json_text)
                                 .map_err(|error| error.to_string())?;
                             if let Some(object) = node_json.as_object_mut() {
@@ -882,7 +1033,8 @@ impl LocalProductStore {
                             tx.execute(
                                 "UPDATE workflow_run_nodes SET status='failed', completed_at=$1,
                                  leased_at=NULL, blocked_reason=$2, node_json=$3
-                                 WHERE run_id=$4 AND node_id=$5",
+                                 WHERE run_id=$4 AND node_id=$5 AND status='running'
+                                   AND leased_at IS NOT NULL",
                                 &[
                                     &now,
                                     &terminal_reason.unwrap_or("recursive_execution_paused"),
@@ -1155,16 +1307,10 @@ mod tests {
     use super::*;
     use crate::recursive_execution::{RecursiveBudget, RecursiveScope};
     use std::collections::BTreeSet;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     #[test]
     fn scheduler_lifecycle_sync_is_restart_safe_and_retry_bounded() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
         std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
         let store = LocalProductStore::new(":memory:").expect("store");
@@ -1256,7 +1402,7 @@ mod tests {
 
     #[test]
     fn pause_terminalizes_recursive_leases_and_late_usage_is_idempotent() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
         std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
         let store = LocalProductStore::new(":memory:").expect("store");
         let tree = RecursiveTree::new(
@@ -1339,7 +1485,7 @@ mod tests {
     #[cfg(feature = "pg-tests")]
     #[test]
     fn postgres_scheduler_lifecycle_sync_is_restart_safe() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
         let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
             eprintln!("ACP_TEST_DATABASE_URL not set; skipping recursive PostgreSQL test");
             return;
@@ -1402,6 +1548,80 @@ mod tests {
         let root = loaded.nodes.get(&loaded.root_node_id).expect("root");
         assert_eq!(root.status, "failed");
         assert!(loaded.active_leases.is_empty());
+
+        let paused_run_id = format!("recursive-pg-paused-{}", uuid::Uuid::new_v4());
+        let paused_tree = RecursiveTree::new(
+            &paused_run_id,
+            "recursive-pg-paused-workflow",
+            "paused root objective",
+            RecursiveScope {
+                repository: Some("fixture".to_string()),
+                allowed_paths: BTreeSet::from(["docs/".to_string()]),
+                capabilities: BTreeSet::from(["read".to_string()]),
+            },
+            BTreeSet::from(["read".to_string()]),
+            RecursiveBudget {
+                calls_remaining: 4,
+                tokens_remaining: 40,
+                cost_micros_remaining: 40,
+                time_ms_remaining: 400,
+            },
+        );
+        store
+            .save_recursive_tree(&paused_tree)
+            .expect("save paused tree");
+        store
+            .with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                sync_recursive_lease_pg(
+                    &mut tx,
+                    &paused_run_id,
+                    &paused_tree.root_node_id,
+                    "lease-pg-pause",
+                    "2026-07-18T00:00:03Z",
+                )?;
+                tx.commit().map_err(|error| error.to_string())
+            })
+            .expect("pause lease");
+        store
+            .set_recursive_execution_paused(true, Some("recursive_execution_paused"))
+            .expect("pause postgres trees");
+        store
+            .with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let usage = RecursiveBudget {
+                    calls_remaining: 1,
+                    tokens_remaining: 7,
+                    cost_micros_remaining: 2,
+                    time_ms_remaining: 9,
+                };
+                assert!(record_recursive_late_usage_pg(
+                    &mut tx,
+                    &paused_run_id,
+                    &paused_tree.root_node_id,
+                    "late-pg-attempt-1",
+                    &usage,
+                    "2026-07-18T00:00:04Z",
+                )?);
+                assert!(record_recursive_late_usage_pg(
+                    &mut tx,
+                    &paused_run_id,
+                    &paused_tree.root_node_id,
+                    "late-pg-attempt-1",
+                    &usage,
+                    "2026-07-18T00:00:05Z",
+                )?);
+                tx.commit().map_err(|error| error.to_string())
+            })
+            .expect("late postgres usage");
+        let paused_loaded = store
+            .load_recursive_tree(&paused_run_id)
+            .expect("load paused tree")
+            .expect("paused tree");
+        assert!(paused_loaded.paused);
+        assert!(paused_loaded.active_leases.is_empty());
+        assert_eq!(paused_loaded.spent_budget.tokens_remaining, 7);
+        assert_eq!(paused_loaded.usage_receipts.len(), 1);
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 }

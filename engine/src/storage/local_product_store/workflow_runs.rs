@@ -4879,9 +4879,9 @@ fn recursive_usage_from_output(
 fn recursive_retry_usage() -> crate::recursive_execution::RecursiveBudget {
     crate::recursive_execution::RecursiveBudget {
         calls_remaining: 1,
-        tokens_remaining: 0,
-        cost_micros_remaining: 0,
-        time_ms_remaining: 0,
+        tokens_remaining: u64::MAX,
+        cost_micros_remaining: u64::MAX,
+        time_ms_remaining: u64::MAX,
     }
 }
 
