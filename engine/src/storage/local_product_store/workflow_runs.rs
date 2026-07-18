@@ -1086,6 +1086,16 @@ impl LocalProductStore {
                 };
 
                 let now = self.now();
+                let recursive_claim = agent_concurrency_caps.is_none()
+                    && conn
+                        .query_row(
+                            "SELECT task_type FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                            params![run_id, node_id],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .map(|task_type| task_type == "agent_step")
+                        .unwrap_or(false)
+                    && workflow_node_is_recursive_locked(conn, run_id, &node_id)?;
                 let updated = if found_is_agent_step {
                     let (global_cap, per_run_cap) = agent_concurrency_caps
                         .ok_or_else(|| "agent concurrency caps are required".to_string())?;
@@ -1099,6 +1109,18 @@ impl LocalProductStore {
                            AND (SELECT COUNT(*) FROM workflow_run_nodes
                                 WHERE run_id=?2 AND task_type='agent_step' AND status='running') < ?5",
                         params![now, run_id, node_id, global_cap as i64, per_run_cap as i64],
+                    )
+                    .map_err(|e| e.to_string())?
+                } else if recursive_claim {
+                    conn.execute(
+                        "UPDATE workflow_run_nodes
+                         SET status = 'running', started_at = ?1, leased_at = ?1,
+                             attempt_count = attempt_count + 1
+                         WHERE run_id = ?2 AND node_id = ?3 AND status = 'pending'
+                           AND (SELECT COUNT(*) FROM workflow_run_nodes
+                                WHERE task_type='agent_step' AND status='running'
+                                  AND json_extract(node_json, '$.recursive_node_id') IS NOT NULL) < ?4",
+                        params![now, run_id, node_id, MAX_RECURSIVE_LEASES as i64],
                     )
                     .map_err(|e| e.to_string())?
                 } else {
@@ -1442,11 +1464,33 @@ impl LocalProductStore {
                 };
 
                 let now = self.now();
-                let updated = tx.execute(
-                    "UPDATE workflow_run_nodes SET status = 'running', started_at = $1, leased_at = $1, attempt_count = attempt_count + 1
-                     WHERE run_id = $2 AND node_id = $3 AND status = 'pending'",
-                    &[&now, &run_id, &node_id],
-                ).map_err(|e| e.to_string())?;
+                let recursive_claim = agent_concurrency_caps.is_none()
+                    && tx
+                        .query_one(
+                            "SELECT task_type FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
+                            &[&run_id, &node_id],
+                        )
+                        .map(|row| row.get::<_, String>(0) == "agent_step")
+                        .unwrap_or(false)
+                    && pg_workflow_node_is_recursive(&mut tx, run_id, &node_id)?;
+                let updated = if recursive_claim {
+                    tx.execute(
+                        "UPDATE workflow_run_nodes SET status = 'running', started_at = $1, leased_at = $1, attempt_count = attempt_count + 1
+                         WHERE run_id = $2 AND node_id = $3 AND status = 'pending'
+                           AND (SELECT COUNT(*) FROM workflow_run_nodes
+                                WHERE task_type = 'agent_step' AND status = 'running'
+                                  AND node_json::jsonb ? 'recursive_node_id') < $4",
+                        &[&now, &run_id, &node_id, &(MAX_RECURSIVE_LEASES as i64)],
+                    )
+                    .map_err(|e| e.to_string())?
+                } else {
+                    tx.execute(
+                        "UPDATE workflow_run_nodes SET status = 'running', started_at = $1, leased_at = $1, attempt_count = attempt_count + 1
+                         WHERE run_id = $2 AND node_id = $3 AND status = 'pending'",
+                        &[&now, &run_id, &node_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                };
                 if updated == 0 {
                     if found_is_agent_step {
                         pg_append_audit(
@@ -1699,12 +1743,27 @@ impl LocalProductStore {
                             .get("recursive_node_id")
                             .and_then(Value::as_str)
                             .map(str::to_string);
-                        let should_retry = retryable_node_failure(&output)
+                        let requested_retry = retryable_node_failure(&output)
                             && attempt <= if recursive_node_id.is_some() {
                                 1
                             } else {
                                 max_retries
                             };
+
+                        let should_retry = if requested_retry {
+                            if let Some(recursive_node_id) = recursive_node_id.as_deref() {
+                                super::recursive_execution::recursive_retry_allowed_sqlite(
+                                    conn,
+                                    run_id,
+                                    recursive_node_id,
+                                    &recursive_usage_from_output(&output),
+                                )?
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        };
 
                         let actual_status = if should_retry { "pending" } else { final_status };
                         let completed_at = if matches!(actual_status, "completed" | "failed" | "cancelled" | "recovered") {
@@ -1925,12 +1984,27 @@ impl LocalProductStore {
                             .get("recursive_node_id")
                             .and_then(Value::as_str)
                             .map(str::to_string);
-                        let should_retry = retryable_node_failure(&output)
+                        let requested_retry = retryable_node_failure(&output)
                             && attempt <= if recursive_node_id.is_some() {
                                 1
                             } else {
                                 max_retries
                             };
+
+                        let should_retry = if requested_retry {
+                            if let Some(recursive_node_id) = recursive_node_id.as_deref() {
+                                super::recursive_execution::recursive_retry_allowed_pg(
+                                    &mut tx,
+                                    run_id,
+                                    recursive_node_id,
+                                    &recursive_usage_from_output(&output),
+                                )?
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        };
 
                         let actual_status = if should_retry { "pending" } else { final_status };
                         let completed_at = if matches!(actual_status, "completed" | "failed" | "cancelled" | "recovered") {
@@ -3501,35 +3575,53 @@ impl LocalProductStore {
                 };
                 let mut count = 0_i64;
                 for (run_id, node_id, leased_at) in &stale_nodes {
+                    let recursive_state: Option<(String, i64)> = tx
+                        .query_row(
+                            "SELECT node_json, attempt_count FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                            params![run_id, node_id],
+                            |row| {
+                                let node_json: String = row.get(0)?;
+                                let attempt_count: i64 = row.get(1)?;
+                                Ok((node_json, attempt_count))
+                            },
+                        )
+                        .ok()
+                        .and_then(|(node_json, attempt_count)| {
+                            serde_json::from_str::<Value>(&node_json)
+                                .ok()
+                                .and_then(|value| {
+                                    value
+                                        .get("recursive_node_id")
+                                        .and_then(Value::as_str)
+                                        .map(|node_id| (node_id.to_string(), attempt_count))
+                                })
+                        });
+                    let recursive_retry = if let Some((recursive_node_id, attempt)) =
+                        recursive_state.as_ref()
+                    {
+                        *attempt <= 1
+                            && super::recursive_execution::recursive_retry_allowed_sqlite(
+                                &tx,
+                                run_id,
+                                recursive_node_id,
+                                &recursive_retry_usage(),
+                            )?
+                    } else {
+                        false
+                    };
+                    let recovery_status = if recursive_state.is_some() && !recursive_retry {
+                        "failed"
+                    } else {
+                        "pending"
+                    };
                     let updated = tx
                         .execute(
-                            queue_lease::SQLITE_RECOVER_STALE_LEASE_SQL,
-                            params![run_id, node_id, leased_at],
+                            "UPDATE workflow_run_nodes SET status = ?1, leased_at = NULL WHERE run_id = ?2 AND node_id = ?3 AND status = 'running' AND leased_at = ?4",
+                            params![recovery_status, run_id, node_id, leased_at],
                         )
                         .map_err(|e| e.to_string())?;
                     if updated > 0 {
                         count += updated as i64;
-                        let recursive_state: Option<(String, i64)> = tx
-                            .query_row(
-                                "SELECT node_json, attempt_count FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
-                                params![run_id, node_id],
-                                |row| {
-                                    let node_json: String = row.get(0)?;
-                                    let attempt_count: i64 = row.get(1)?;
-                                    Ok((node_json, attempt_count))
-                                },
-                            )
-                            .ok()
-                            .and_then(|(node_json, attempt_count)| {
-                                serde_json::from_str::<Value>(&node_json)
-                                    .ok()
-                                    .and_then(|value| {
-                                        value
-                                            .get("recursive_node_id")
-                                            .and_then(Value::as_str)
-                                            .map(|node_id| (node_id.to_string(), attempt_count))
-                                    })
-                            });
                         if let Some((recursive_node_id, attempt)) = recursive_state {
                             super::recursive_execution::sync_recursive_completion_sqlite(
                                 &tx,
@@ -3537,7 +3629,7 @@ impl LocalProductStore {
                                 &recursive_node_id,
                                 &format!("workflow:{run_id}:{node_id}:{attempt}"),
                                 false,
-                                true,
+                                recursive_retry,
                                 &recursive_retry_usage(),
                                 &now,
                             )?;
@@ -3598,33 +3690,51 @@ impl LocalProductStore {
                     .collect();
                 let mut count = 0_i64;
                 for (run_id, node_id, leased_at) in &stale_nodes {
+                    let recursive_state: Option<(String, i64)> = tx
+                        .query_opt(
+                            "SELECT node_json, attempt_count FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
+                            &[run_id, node_id],
+                        )
+                        .ok()
+                        .flatten()
+                        .and_then(|row| {
+                            let node_json: String = row.get(0);
+                            let attempt_count: i32 = row.get(1);
+                            serde_json::from_str::<Value>(&node_json)
+                                .ok()
+                                .and_then(|value| {
+                                    value
+                                        .get("recursive_node_id")
+                                        .and_then(Value::as_str)
+                                        .map(|node_id| (node_id.to_string(), i64::from(attempt_count)))
+                                })
+                        });
+                    let recursive_retry = if let Some((recursive_node_id, attempt)) =
+                        recursive_state.as_ref()
+                    {
+                        *attempt <= 1
+                            && super::recursive_execution::recursive_retry_allowed_pg(
+                                &mut tx,
+                                run_id,
+                                recursive_node_id,
+                                &recursive_retry_usage(),
+                            )?
+                    } else {
+                        false
+                    };
+                    let recovery_status = if recursive_state.is_some() && !recursive_retry {
+                        "failed"
+                    } else {
+                        "pending"
+                    };
                     let updated = tx
                         .execute(
-                            queue_lease::PG_RECOVER_STALE_LEASE_SQL,
-                            &[run_id, node_id, leased_at],
+                            "UPDATE workflow_run_nodes SET status = $1, leased_at = NULL WHERE run_id = $2 AND node_id = $3 AND status = 'running' AND leased_at = $4",
+                            &[&recovery_status, run_id, node_id, leased_at],
                         )
                         .map_err(|e| e.to_string())?;
                     if updated > 0 {
                         count += updated as i64;
-                        let recursive_state: Option<(String, i64)> = tx
-                            .query_opt(
-                                "SELECT node_json, attempt_count FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
-                                &[run_id, node_id],
-                            )
-                            .ok()
-                            .flatten()
-                            .and_then(|row| {
-                                let node_json: String = row.get(0);
-                                let attempt_count: i32 = row.get(1);
-                                serde_json::from_str::<Value>(&node_json)
-                                    .ok()
-                                    .and_then(|value| {
-                                        value
-                                            .get("recursive_node_id")
-                                            .and_then(Value::as_str)
-                                            .map(|node_id| (node_id.to_string(), i64::from(attempt_count)))
-                                    })
-                            });
                         if let Some((recursive_node_id, attempt)) = recursive_state {
                             super::recursive_execution::sync_recursive_completion_pg(
                                 &mut tx,
@@ -3632,7 +3742,7 @@ impl LocalProductStore {
                                 &recursive_node_id,
                                 &format!("workflow:{run_id}:{node_id}:{attempt}"),
                                 false,
-                                true,
+                                recursive_retry,
                                 &recursive_retry_usage(),
                                 &now,
                             )?;

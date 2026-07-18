@@ -70,7 +70,7 @@ pub struct RecursiveBudget {
 }
 
 impl RecursiveBudget {
-    fn can_spend(&self, usage: &Self) -> bool {
+    pub(crate) fn can_spend(&self, usage: &Self) -> bool {
         self.calls_remaining >= usage.calls_remaining
             && self.tokens_remaining >= usage.tokens_remaining
             && self.cost_micros_remaining >= usage.cost_micros_remaining
@@ -515,7 +515,19 @@ impl RecursiveTree {
             .get_mut(node_id)
             .ok_or(RecursiveFailureReason::StaleParent)?;
         if node.retry_count >= MAX_RECURSIVE_RETRIES {
-            return Err(RecursiveFailureReason::TreeBudgetExhausted);
+            // Keep the node terminal when the scheduler asks to recover a
+            // second stale lease.  Returning an error here would roll back
+            // the surrounding queue transaction and leave the workflow node
+            // pending forever.
+            node.status = "failed".to_string();
+            node.failure_reason = Some(
+                RecursiveFailureReason::TreeBudgetExhausted
+                    .as_str()
+                    .to_string(),
+            );
+            node.version += 1;
+            self.version += 1;
+            return Ok(());
         }
         node.retry_count += 1;
         node.status = "ready".to_string();
@@ -523,6 +535,30 @@ impl RecursiveTree {
         node.version += 1;
         self.version += 1;
         Ok(())
+    }
+
+    pub(crate) fn retry_allowed(
+        &self,
+        node_id: &str,
+        usage: &RecursiveBudget,
+    ) -> Result<bool, RecursiveFailureReason> {
+        let node = self
+            .nodes
+            .get(node_id)
+            .ok_or(RecursiveFailureReason::StaleParent)?;
+        let mut remaining = node.budget.clone();
+        let current_attempt_fits = remaining.can_spend(usage);
+        if current_attempt_fits {
+            remaining.spend(usage);
+        }
+        Ok(recursive_enabled()
+            && !kill_switch_active()
+            && !self.paused
+            && node.retry_count < MAX_RECURSIVE_RETRIES
+            && current_attempt_fits
+            // A retry is another bounded scheduler call.  Do not enqueue it
+            // after this attempt consumes the node's complete call budget.
+            && remaining.calls_remaining > 0)
     }
 
     pub fn pause(&mut self) {
@@ -716,9 +752,12 @@ mod tests {
             Ok(())
         );
         assert_eq!(tree.retry_node(&admitted.node.node_id), Ok(()));
+        assert_eq!(tree.retry_node(&admitted.node.node_id), Ok(()));
+        let node = tree.nodes.get(&admitted.node.node_id).expect("node");
+        assert_eq!(node.status, "failed");
         assert_eq!(
-            tree.retry_node(&admitted.node.node_id),
-            Err(RecursiveFailureReason::TreeBudgetExhausted)
+            node.failure_reason.as_deref(),
+            Some(RecursiveFailureReason::TreeBudgetExhausted.as_str())
         );
         let evidence = tree.redacted_read_model();
         assert!(evidence["nodes"]

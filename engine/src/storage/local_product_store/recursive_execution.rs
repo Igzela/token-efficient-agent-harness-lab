@@ -31,6 +31,19 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
         return Err("recursive tree exceeds bounded node or lease limit".to_string());
     }
     validate_scope(&tree.root_scope)?;
+    let root = tree
+        .nodes
+        .get(&tree.root_node_id)
+        .ok_or_else(|| "recursive tree root node is missing".to_string())?;
+    if root.root_run_id != tree.root_run_id
+        || root.parent_node_id.is_some()
+        || root.depth != 0
+        || root.scope != tree.root_scope
+        || root.capabilities != tree.root_capabilities
+    {
+        return Err("recursive tree root identity is inconsistent".to_string());
+    }
+    let mut child_counts = std::collections::BTreeMap::<String, usize>::new();
     for node in tree.nodes.values() {
         if node.depth > MAX_RECURSIVE_DEPTH
             || node.accepted_children > MAX_ACCEPTED_CHILDREN_PER_NODE
@@ -38,6 +51,24 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
             || node.ancestor_fingerprints.len() > MAX_RECURSIVE_DEPTH as usize
         {
             return Err("recursive node exceeds bounded shape".to_string());
+        }
+        if node.root_run_id != tree.root_run_id
+            || node.node_id.is_empty()
+            || (node.node_id != tree.root_node_id && node.parent_node_id.is_none())
+        {
+            return Err("recursive node identity is inconsistent".to_string());
+        }
+        if let Some(parent_node_id) = node.parent_node_id.as_deref() {
+            if !tree.nodes.contains_key(parent_node_id) {
+                return Err("recursive node parent is missing".to_string());
+            }
+            *child_counts.entry(parent_node_id.to_string()).or_default() += 1;
+        }
+        match (node.status.as_str(), node.lease_id.as_deref()) {
+            ("leased", Some(lease_id)) if tree.active_leases.contains(lease_id) => {}
+            ("leased", _) => return Err("recursive lease identity is inconsistent".to_string()),
+            (_, Some(_)) => return Err("non-leased recursive node has a lease".to_string()),
+            _ => {}
         }
         validate_scope(&node.scope)?;
         if node.evidence_refs.len() > MAX_RECURSIVE_DECISION_EVIDENCE_REFS
@@ -48,6 +79,21 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
         {
             return Err("recursive node evidence exceeds bounded shape".to_string());
         }
+    }
+    if tree
+        .nodes
+        .values()
+        .any(|node| node.accepted_children != child_counts.get(&node.node_id).copied().unwrap_or(0))
+    {
+        return Err("recursive child count is inconsistent".to_string());
+    }
+    if tree.active_leases.iter().any(|lease_id| {
+        !tree
+            .nodes
+            .values()
+            .any(|node| node.lease_id.as_deref() == Some(lease_id))
+    }) {
+        return Err("recursive active lease index is inconsistent".to_string());
     }
     if tree.rejected_proposals.len() > MAX_RECURSIVE_NODES_PER_ROOT
         || tree.rejected_proposals.values().any(|decision| {
@@ -499,6 +545,19 @@ pub(crate) fn sync_recursive_lease_sqlite(
     persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))
 }
 
+pub(crate) fn recursive_retry_allowed_sqlite(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    recursive_node_id: &str,
+    usage: &crate::recursive_execution::RecursiveBudget,
+) -> Result<bool, String> {
+    let Some(tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
+        return Err("stale_parent".to_string());
+    };
+    tree.retry_allowed(recursive_node_id, usage)
+        .map_err(|reason| reason.as_str().to_string())
+}
+
 pub(crate) fn sync_recursive_completion_sqlite(
     conn: &rusqlite::Connection,
     root_run_id: &str,
@@ -513,9 +572,13 @@ pub(crate) fn sync_recursive_completion_sqlite(
         return Err("stale_parent".to_string());
     };
     let expected_version = tree.version;
+    let retry_allowed = retry
+        && tree
+            .retry_allowed(recursive_node_id, usage)
+            .map_err(|reason| reason.as_str().to_string())?;
     tree.complete_node_with_usage(recursive_node_id, lease_id, success, usage)
         .map_err(|reason| reason.as_str().to_string())?;
-    if retry {
+    if retry_allowed {
         tree.retry_node(recursive_node_id)
             .map_err(|reason| reason.as_str().to_string())?;
     }
@@ -547,6 +610,7 @@ fn load_recursive_tree_pg(
             if tree.root_run_id != root_run_id || tree.schema_version != RECURSIVE_SCHEMA_VERSION {
                 return Err("recursive tree identity or schema conflict".to_string());
             }
+            validate_tree_for_persistence(&tree)?;
             Ok(tree)
         })
         .transpose()
@@ -570,6 +634,20 @@ pub(crate) fn sync_recursive_lease_pg(
 }
 
 #[cfg(feature = "pg")]
+pub(crate) fn recursive_retry_allowed_pg(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+    recursive_node_id: &str,
+    usage: &crate::recursive_execution::RecursiveBudget,
+) -> Result<bool, String> {
+    let Some(tree) = load_recursive_tree_pg(client, root_run_id)? else {
+        return Err("stale_parent".to_string());
+    };
+    tree.retry_allowed(recursive_node_id, usage)
+        .map_err(|reason| reason.as_str().to_string())
+}
+
+#[cfg(feature = "pg")]
 pub(crate) fn sync_recursive_completion_pg(
     client: &mut impl postgres::GenericClient,
     root_run_id: &str,
@@ -584,9 +662,13 @@ pub(crate) fn sync_recursive_completion_pg(
         return Err("stale_parent".to_string());
     };
     let expected_version = tree.version;
+    let retry_allowed = retry
+        && tree
+            .retry_allowed(recursive_node_id, usage)
+            .map_err(|reason| reason.as_str().to_string())?;
     tree.complete_node_with_usage(recursive_node_id, lease_id, success, usage)
         .map_err(|reason| reason.as_str().to_string())?;
-    if retry {
+    if retry_allowed {
         tree.retry_node(recursive_node_id)
             .map_err(|reason| reason.as_str().to_string())?;
     }
