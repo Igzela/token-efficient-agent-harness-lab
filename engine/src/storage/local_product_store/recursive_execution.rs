@@ -285,8 +285,7 @@ fn check_workflow_binding_sqlite(
     let root_exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM workflow_run_nodes
-             WHERE run_id=?1 AND node_id=?2 AND task_type='agent_step'
-               AND json_extract(node_json, '$.recursive_node_id')=?2",
+             WHERE run_id=?1 AND node_id=?2 AND task_type='agent_step'",
             params![tree.root_run_id, tree.root_node_id],
             |row| row.get(0),
         )
@@ -317,8 +316,7 @@ fn check_workflow_binding_pg(
     let root_exists: i64 = client
         .query_one(
             "SELECT COUNT(*) FROM workflow_run_nodes
-             WHERE run_id=$1 AND node_id=$2 AND task_type='agent_step'
-               AND node_json::jsonb ->> 'recursive_node_id'=$2",
+             WHERE run_id=$1 AND node_id=$2 AND task_type='agent_step'",
             &[&tree.root_run_id, &tree.root_node_id],
         )
         .map_err(|error| error.to_string())?
@@ -1972,6 +1970,24 @@ mod tests {
                 }],
             })
             .expect("persist PostgreSQL workflow node");
+        let persisted_proposal = store
+            .get_proposal_in_run(&proposal.proposal_id, &run_id)
+            .expect("load PostgreSQL proposal")
+            .expect("PostgreSQL proposal exists");
+        assert_eq!(persisted_proposal["status"], "accepted");
+        let persisted_run = store
+            .get_workflow_run(&run_id)
+            .expect("load PostgreSQL workflow run")
+            .expect("PostgreSQL workflow run exists");
+        assert!(persisted_run["nodes"].as_array().is_some_and(|nodes| {
+            nodes.iter().any(|persisted| {
+                persisted["node_id"] == node["node_id"]
+                    && persisted["recursive_node_id"] == node["recursive_node_id"]
+            })
+        }));
+        assert!(persisted_run["edges"]
+            .as_array()
+            .is_some_and(|edges| { edges.iter().any(|persisted| persisted == &edge) }));
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 }
