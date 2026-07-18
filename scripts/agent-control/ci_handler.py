@@ -297,6 +297,13 @@ def _reselect_unsupported(issue, pr, sha, branch, event_run):
                 "run_identity": "exact" if exc.ci_run_id else "unavailable",
                 "dispatch_nonce": exc.dispatch_nonce,
             }
+        except ci_verifier.CIStaleBinding as exc:
+            return {
+                "status": "ci_stale_binding",
+                "workflow_run_id": event_run.get("databaseId", 0),
+                "observed_run": event_run,
+                "reason": str(exc),
+            }
         except ci_verifier.CIVerificationError:
             return None
     refreshed_pr = sm.get_pr_info(pr)
@@ -339,7 +346,7 @@ def _reselect_unsupported(issue, pr, sha, branch, event_run):
 
 
 def _process_reselection_result(issue, pr, sha, replacement):
-    if replacement.get("status") == "ci_control_stopped":
+    if replacement.get("status") in {"ci_control_stopped", "ci_stale_binding"}:
         run_id = int(replacement["workflow_run_id"])
         run = replacement.get("observed_run") or {
             "databaseId": run_id,
@@ -347,9 +354,22 @@ def _process_reselection_result(issue, pr, sha, replacement):
             "conclusion": "",
             "headSha": sha,
         }
+        stopped = replacement.get("status") == "ci_control_stopped"
+        terminal_code = "ci_control_stopped" if stopped else "ci_stale_binding"
+        reason = replacement.get("reason", "reselection_stopped" if stopped else "reselection_stale")
+        prefix = "ci_control_stopped:" if stopped else "ci_stale_binding:"
+        if not reason.startswith(prefix):
+            reason = f"{prefix}{reason}"
         return _record_ci_terminal(
-            issue, pr, sha, run_id, run, "ci_control_stopped",
-            reason=f"ci_control_stopped:{replacement.get('reason', 'reselection_stopped')}",
+            issue, pr, sha, run_id, run, terminal_code,
+            action="blocked" if stopped else "stale",
+            reason=reason,
+            extra={
+                "run_identity": replacement.get(
+                    "run_identity", "exact" if run_id else "unavailable"
+                ),
+                "dispatch_nonce": replacement.get("dispatch_nonce"),
+            },
         )
     return process_ci_dispatch(issue, pr, sha, int(replacement["workflow_run_id"]))
 
@@ -467,6 +487,7 @@ def _record_ci_terminal(
     *,
     action="blocked",
     reason=None,
+    extra=None,
 ):
     """Persist a typed terminal CI result before capacity compensation."""
     run = run or {}
@@ -486,6 +507,7 @@ def _record_ci_terminal(
         "workflow_run_id": ci_run_id,
         "observed_conclusion": str(run.get("conclusion") or ""),
         "run_attempt": run.get("attempt"),
+        **(extra or {}),
     }
     if not sm.record_ci_terminal_state(
         issue, pr_number, head_sha, ci_run_id, terminal_status,

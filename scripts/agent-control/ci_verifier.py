@@ -888,10 +888,17 @@ def acquire_exact_ci(
     that have not yet split acquisition from completion.  It first binds
     a trustworthy run via :func:`acquire_exact_run` and then boundedly
     waits for that run to reach a terminal state via
-    :func:`wait_for_run_completion`.  When the bound run is already
-    completed at acquisition time, the wait is skipped and the
-    synchronous terminal evidence is used directly.
+    :func:`wait_for_run_completion`.  Even when the bound run is already
+    completed at acquisition time, the completion path is re-entered so
+    the final live PR/binding/control validator is not bypassed.
     """
+
+    production_identity = (
+        os.environ.get("AGENT_CI_FIXTURE_MODE") != "true"
+        and bool(os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_ACTIONS") == "true")
+    )
+    if production_identity and final_validator is None:
+        raise CIVerificationError("final_binding_validator_required")
 
     acquisition = acquire_exact_run(
         pr_number,
@@ -900,15 +907,32 @@ def acquire_exact_ci(
         observe_seconds=observe_seconds,
         dispatch_timeout_seconds=dispatch_timeout_seconds,
     )
-    bound_status = acquisition.get("bound_status")
-    if bound_status == "completed":
+    if acquisition.get("bound_status") == "completed":
         conclusion = acquisition.get("bound_conclusion")
         completion_status = (
             "success" if conclusion == "success"
-            else "failure" if conclusion == "failure"
-            else None
+            else "failure" if conclusion == "failure" else None
         )
         if completion_status in {"success", "failure"}:
+            if final_validator is not None:
+                _, final_binding_failure = final_validator()
+                if final_binding_failure:
+                    observed_run = {
+                        "databaseId": acquisition["workflow_run_id"],
+                        "status": "completed",
+                        "conclusion": conclusion,
+                        "headSha": head_sha,
+                        "headBranch": branch,
+                        "workflowName": load_requirements()["workflow_name"],
+                    }
+                    if final_binding_failure.startswith("ci_control_stopped:"):
+                        raise CIControlStopped(
+                            final_binding_failure,
+                            ci_run_id=acquisition["workflow_run_id"],
+                            head_sha=head_sha,
+                            observed_run=observed_run,
+                        )
+                    raise CIStaleBinding(final_binding_failure)
             return {
                 "kind": "agent-orchestrator-ci-acquisition",
                 "pr_number": int(pr_number),

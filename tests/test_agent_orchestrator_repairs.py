@@ -358,16 +358,42 @@ class TestWorkflowContracts(unittest.TestCase):
                 "ci_run_id": 9001,
                 "terminal_status": f"terminal_{action}",
             }
-            with self.subTest(action=action), mock.patch.object(
-                ci_handler.sm, "release_and_record_ci_terminal", return_value=(True, "released")
-            ) as release:
+            active_labels = {state_manager.LABEL_RUNNING}
+            comments = []
+
+            def release_capacity(issue, *new_labels, repo=""):
+                active_labels.difference_update(state_manager.ACTIVE_LABELS)
+                active_labels.update(new_labels)
+                return True
+
+            def write_comment(issue, body, repo=""):
+                comments.append({"author": {"login": "github-actions[bot]"}, "body": body})
+                return True
+
+            with self.subTest(action=action), \
+                 mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+                 mock.patch.object(state_manager, "comment_on_issue", side_effect=write_comment), \
+                 mock.patch.object(state_manager, "get_issue_labels_checked", return_value=active_labels), \
+                 mock.patch.object(state_manager, "read_worker_state", return_value={"pr_number": 207, "head_sha": "a" * 40}), \
+                 mock.patch.object(state_manager, "read_ci_state", return_value={"workflow_run_id": 9001}), \
+                 mock.patch.object(state_manager, "has_inflight_ci_dispatch", return_value=False), \
+                 mock.patch.object(state_manager, "verify_ci_terminal_binding", return_value=(True, "ok")), \
+                 mock.patch.object(state_manager, "set_labels", side_effect=release_capacity):
                 self.assertEqual(ci_handler.validate_ci_dispatch_decision(result), "release_terminal_capacity")
-                release(42, 207, "a" * 40, 9001, result["terminal_status"], "test", "completed")
-                release.assert_called_once()
+                released = state_manager.release_and_record_ci_terminal(
+                    42, 207, "a" * 40, 9001,
+                    result["terminal_status"], "test", "completed",
+                )
+                self.assertEqual(released, (True, "released"))
+                self.assertFalse(active_labels & state_manager.ACTIVE_LABELS)
 
         monitor = self.read("agent-ci-monitor.yml")
         self.assertIn("terminal_ci_followup_dispatch_failed", monitor)
         self.assertIn('"ci_followup_dispatch_failed:$ACTION" "$OBSERVED_STATUS"', monitor)
+        self.assertIn("Reconcile a cancelled follow-up dispatch claim", monitor)
+        self.assertIn("state_manager.py reconcile-dispatch", monitor)
+        self.assertIn("if: always() && steps.decision.outputs.terminal_status == ''", monitor)
+        self.assertIn("reconcile_claimed_dispatch", (CONTROL / "state_manager.py").read_text())
         self.assertIn("terminal_ci_merge_dispatch_failed", monitor)
         self.assertIn("ci_merge_dispatch_failed:merge_ready", monitor)
         self.assertIn("capacity_retained", monitor)
@@ -579,6 +605,53 @@ class TestCITerminalState(unittest.TestCase):
             )
 
         self.assertEqual(result, (True, "dispatch_in_flight"))
+        release.assert_not_called()
+
+    def test_cancelled_claim_reconciliation_releases_only_unfinished_claim(self):
+        claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "status": "claimed",
+            "action": "repair",
+            "details": {
+                "target_label": state_manager.LABEL_CI_REPAIRING,
+                "pr_number": 207,
+                "head_sha": "a" * 40,
+                "ci_run_id": "9001",
+            },
+        }
+        with mock.patch.object(state_manager, "read_dispatch_state", return_value=claim), \
+             mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")) as release, \
+             mock.patch.object(state_manager, "record_dispatch_state", return_value=True) as record:
+            result = state_manager.reconcile_claimed_dispatch(
+                42, "repair:207:" + "a" * 40 + ":9001:0",
+                "workflow_cancelled:followup_dispatch",
+            )
+        self.assertEqual(result, (True, "released"))
+        release.assert_called_once_with(
+            42,
+            state_manager.LABEL_CI_REPAIRING,
+            state_manager.LABEL_BLOCKED,
+            expected_sha="a" * 40,
+            repo="",
+            expected_pr=207,
+            expected_run_id="9001",
+        )
+        self.assertEqual(record.call_args.args[3], "failed")
+
+    def test_cancelled_dispatched_claim_remains_owned_by_child_workflow(self):
+        claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "status": "dispatched",
+            "action": "review",
+            "details": {"target_label": state_manager.LABEL_REVIEW_RUNNING},
+        }
+        with mock.patch.object(state_manager, "read_dispatch_state", return_value=claim), \
+             mock.patch.object(state_manager, "release_failed_capacity") as release:
+            result = state_manager.reconcile_claimed_dispatch(
+                42, "review:207:" + "a" * 40,
+                "workflow_cancelled:followup_dispatch",
+            )
+        self.assertEqual(result, (True, "dispatched_in_flight"))
         release.assert_not_called()
 
     def test_legacy_generic_issue_mutators_are_not_exposed(self):
@@ -820,6 +893,22 @@ class TestDispatcher(unittest.TestCase):
             claimed = dispatcher._claim(12, state_manager.LABEL_RUNNING, "worker:12", "worker", {"issue_number": 12})
         self.assertTrue(claimed[0])
         self.assertEqual(calls[:2], ["state", "label"])
+
+    def test_reselection_stop_preserves_identity_unavailable_audit_fields(self):
+        replacement = {
+            "status": "ci_control_stopped",
+            "workflow_run_id": 0,
+            "observed_run": {"status": "unknown", "dispatch_nonce": "nonce-1"},
+            "reason": "ci_control_stopped:fallback_run_identity_missing",
+            "run_identity": "unavailable",
+            "dispatch_nonce": "nonce-1",
+        }
+        with mock.patch.object(ci_handler, "_record_ci_terminal", return_value={}) as record:
+            ci_handler._process_reselection_result(42, 207, "a" * 40, replacement)
+        self.assertEqual(record.call_args.kwargs["extra"], {
+            "run_identity": "unavailable",
+            "dispatch_nonce": "nonce-1",
+        })
 
     def test_final_dispatch_audit_failure_retains_claim_and_blocks_duplicate(self):
         labels = {state_manager.LABEL_RUNNING}
@@ -1634,6 +1723,26 @@ class TestExactHeadCI(unittest.TestCase):
                     head_sha=sha,
                     completion_timeout_seconds=30,
                     poll_seconds=1,
+                    final_validator=validator,
+                )
+        validator.assert_called_once_with()
+
+    def test_completed_acquisition_still_runs_final_binding_validator(self):
+        sha = "x" * 40
+        acquisition = {
+            "workflow_run_id": 122,
+            "bound_status": "completed",
+            "bound_conclusion": "success",
+            "source": "pull_request",
+        }
+        validator = mock.Mock(return_value=(None, "ci_stale_binding:pr_closed"))
+        with mock.patch.object(ci_verifier, "acquire_exact_run", return_value=acquisition):
+            with self.assertRaisesRegex(ci_verifier.CIStaleBinding, "pr_closed"):
+                ci_verifier.acquire_exact_ci(
+                    207,
+                    "agent/issue-x",
+                    sha,
+                    observe_seconds=0,
                     final_validator=validator,
                 )
         validator.assert_called_once_with()

@@ -1058,6 +1058,65 @@ def read_dispatch_state(issue_number, dispatch_id=None, repo=""):
     return None
 
 
+def reconcile_claimed_dispatch(issue_number, dispatch_id, reason, repo=""):
+    """Compensate a dispatch claim left incomplete by workflow cancellation.
+
+    A ``claimed`` state means the dispatcher recorded ownership before the
+    active label mutation, but did not durably record that the child
+    workflow was accepted.  Reconcile only that state.  A ``dispatched``
+    state remains owned by the child workflow and is never released here.
+    """
+
+    try:
+        state = read_dispatch_state(issue_number, dispatch_id, repo)
+    except StateUnavailableError:
+        return False, "dispatch_state_unavailable"
+    if not state:
+        return True, "not_claimed"
+    status = state.get("status")
+    if status == "dispatched":
+        return True, "dispatched_in_flight"
+    if status != "claimed":
+        return True, "already_terminal"
+    details = state.get("details")
+    if not isinstance(details, dict):
+        return False, "dispatch_claim_details_invalid"
+    target_label = details.get("target_label")
+    if target_label == LABEL_REVIEW_RUNNING:
+        terminal_label = LABEL_REVIEW_BLOCKED
+    elif target_label in {LABEL_RUNNING, LABEL_CI_REPAIRING}:
+        terminal_label = LABEL_BLOCKED
+    else:
+        return False, "dispatch_claim_target_invalid"
+    expected_pr = details.get("pr_number")
+    expected_sha = details.get("head_sha")
+    expected_run_id = (
+        details.get("ci_run_id") if target_label == LABEL_CI_REPAIRING else None
+    )
+    release_ok, release_reason = release_failed_capacity(
+        issue_number,
+        target_label,
+        terminal_label,
+        expected_sha=expected_sha or None,
+        repo=repo,
+        expected_pr=expected_pr,
+        expected_run_id=expected_run_id,
+    )
+    if not release_ok:
+        return False, f"capacity_release_failed:{release_reason}"
+    failed_details = {
+        **details,
+        "reason": reason,
+        "capacity_release": release_reason,
+    }
+    if not record_dispatch_state(
+        issue_number, dispatch_id, state.get("action", "unknown"),
+        "failed", failed_details, repo,
+    ):
+        return False, "dispatch_state_failure_record_failed"
+    return True, "released"
+
+
 def has_inflight_ci_dispatch(issue_number, pr_number, head_sha, ci_run_id, repo=""):
     """Find an accepted downstream dispatch that still owns this CI phase."""
 
@@ -2042,6 +2101,18 @@ def main():
         if not record_dispatch_state(issue_number, dispatch_id, action, status, details, repo):
             print("FATAL: unable to persist dispatch state", file=sys.stderr)
             sys.exit(1)
+
+    elif command == "reconcile-dispatch":
+        issue_number = int(sys.argv[2])
+        dispatch_id = sys.argv[3]
+        reason = sys.argv[4]
+        ok, outcome = reconcile_claimed_dispatch(
+            issue_number, dispatch_id, reason, repo
+        )
+        if not ok:
+            print(f"FATAL: unable to reconcile dispatch claim: {outcome}", file=sys.stderr)
+            sys.exit(1)
+        print(outcome)
 
     elif command == "record-review":
         issue_number = int(sys.argv[2])

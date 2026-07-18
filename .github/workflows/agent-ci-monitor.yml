@@ -145,6 +145,22 @@ jobs:
           REVIEW_CAPACITY_RETAINED: ${{ steps.dispatch_review.outputs.capacity_retained }}
         run: |
           set -euo pipefail
+          if [ "$ACTION" = "trigger_repair" ]; then
+            DISPATCH_ID="repair:${PR_NUMBER}:${HEAD_SHA}:${CI_RUN_ID}:${{ steps.decision.outputs.repair_count }}"
+          else
+            DISPATCH_ID="review:${PR_NUMBER}:${HEAD_SHA}"
+          fi
+          set +e
+          CLAIM_OUTCOME=$(python3 scripts/agent-control/state_manager.py reconcile-dispatch \
+            "$ISSUE_NUMBER" "$DISPATCH_ID" "workflow_cancelled:followup_dispatch" 2>&1)
+          CLAIM_STATUS=$?
+          set -e
+          if [ "$CLAIM_STATUS" -eq 0 ] && [ "$CLAIM_OUTCOME" = "dispatched_in_flight" ]; then
+            exit 0
+          fi
+          if [ "$CLAIM_STATUS" -eq 0 ] && [ "$CLAIM_OUTCOME" = "released" ]; then
+            exit 0
+          fi
           if python3 scripts/agent-control/control_state.py require-live >/dev/null; then
             if [ "$ACTION" = "trigger_repair" ]; then
               if [ "$REPAIR_OUTCOME" = "success" ] || [ "$REPAIR_CAPACITY_RETAINED" = "true" ]; then
@@ -164,6 +180,35 @@ jobs:
           python3 scripts/agent-control/state_manager.py release-ci-terminal \
             "$ISSUE_NUMBER" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" \
             terminal_ci_control_stopped ci_control_stopped:before_followup_dispatch "$OBSERVED_STATUS"
+      - name: Reconcile a cancelled follow-up dispatch claim
+        id: reconcile_claim
+        if: always() && steps.decision.outputs.terminal_status == '' && (steps.decision.outputs.action == 'trigger_repair' || steps.decision.outputs.action == 'trigger_review')
+        continue-on-error: true
+        env:
+          ISSUE_NUMBER: ${{ steps.decision.outputs.issue_number }}
+          PR_NUMBER: ${{ steps.decision.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.decision.outputs.head_sha }}
+          CI_RUN_ID: ${{ steps.decision.outputs.ci_run_id }}
+          REPAIR_COUNT: ${{ steps.decision.outputs.repair_count }}
+          ACTION: ${{ steps.decision.outputs.action }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTION" = "trigger_repair" ]; then
+            DISPATCH_ID="repair:${PR_NUMBER}:${HEAD_SHA}:${CI_RUN_ID}:${REPAIR_COUNT}"
+          else
+            DISPATCH_ID="review:${PR_NUMBER}:${HEAD_SHA}"
+          fi
+          set +e
+          OUTCOME=$(python3 scripts/agent-control/state_manager.py reconcile-dispatch \
+            "$ISSUE_NUMBER" "$DISPATCH_ID" "workflow_cancelled:followup_dispatch" 2>&1)
+          STATUS=$?
+          set -e
+          echo "outcome=$OUTCOME" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" -ne 0 ]; then
+            printf '%s\n' "$OUTCOME"
+            exit "$STATUS"
+          fi
+          printf '%s\n' "$OUTCOME"
       - name: Dispatch merge only through the auto-merge control gate
         id: dispatch_merge
         if: steps.decision.outputs.terminal_status == '' && steps.decision.outputs.action == 'merge_ready'
