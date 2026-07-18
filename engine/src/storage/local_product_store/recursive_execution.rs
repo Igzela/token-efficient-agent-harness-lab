@@ -4,8 +4,9 @@ use serde_json::Value;
 use super::{DatabaseConnection, LocalProductStore};
 use crate::recursive_execution::{
     RecursiveNode, RecursiveScope, RecursiveTree, MAX_ACCEPTED_CHILDREN_PER_NODE,
-    MAX_RECURSIVE_DEPTH, MAX_RECURSIVE_LEASES, MAX_RECURSIVE_NODES_PER_ROOT,
-    MAX_RECURSIVE_TREE_BYTES, MAX_SCOPE_ITEMS, MAX_SCOPE_VALUE_BYTES, RECURSIVE_SCHEMA_VERSION,
+    MAX_RECURSIVE_DECISION_EVIDENCE_REFS, MAX_RECURSIVE_DEPTH, MAX_RECURSIVE_EVIDENCE_REF_BYTES,
+    MAX_RECURSIVE_LEASES, MAX_RECURSIVE_NODES_PER_ROOT, MAX_RECURSIVE_TREE_BYTES, MAX_SCOPE_ITEMS,
+    MAX_SCOPE_VALUE_BYTES, RECURSIVE_SCHEMA_VERSION,
 };
 
 fn node_values(node: &RecursiveNode) -> (&str, Option<&str>, Option<&str>, i64, &str, &str, i64) {
@@ -39,6 +40,26 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
             return Err("recursive node exceeds bounded shape".to_string());
         }
         validate_scope(&node.scope)?;
+        if node.evidence_refs.len() > MAX_RECURSIVE_DECISION_EVIDENCE_REFS
+            || node
+                .evidence_refs
+                .iter()
+                .any(|reference| reference.len() > MAX_RECURSIVE_EVIDENCE_REF_BYTES)
+        {
+            return Err("recursive node evidence exceeds bounded shape".to_string());
+        }
+    }
+    if tree.rejected_proposals.len() > MAX_RECURSIVE_NODES_PER_ROOT
+        || tree.rejected_proposals.values().any(|decision| {
+            decision.evidence_refs.len() > MAX_RECURSIVE_DECISION_EVIDENCE_REFS
+                || decision
+                    .evidence_refs
+                    .iter()
+                    .any(|reference| reference.len() > MAX_RECURSIVE_EVIDENCE_REF_BYTES)
+                || decision.reason_code.len() > 128
+        })
+    {
+        return Err("recursive decision evidence exceeds bounded shape".to_string());
     }
     let tree_json = serde_json::to_string(tree).map_err(|error| error.to_string())?;
     if tree_json.len() > MAX_RECURSIVE_TREE_BYTES {
@@ -253,6 +274,11 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                     .map_err(|error| error.to_string())?;
+                check_expected_sqlite(
+                    &tx,
+                    &tree.root_run_id,
+                    tree.version.saturating_sub(1),
+                )?;
                 tx.execute(
                     "INSERT INTO recursive_execution_trees
                      (root_run_id, workflow_id, root_node_id, tree_schema_version, tree_json, version, created_at, updated_at)
@@ -310,6 +336,27 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                tx.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    &[&tree.root_run_id],
+                )
+                .map_err(|error| error.to_string())?;
+                let current: Option<i64> = tx
+                    .query_opt(
+                        "SELECT version FROM recursive_execution_trees WHERE root_run_id=$1 FOR UPDATE",
+                        &[&tree.root_run_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .map(|row| row.get(0));
+                let expected_version = tree.version.saturating_sub(1);
+                let matches = if expected_version == 0 {
+                    current.is_none()
+                } else {
+                    current == Some(expected_version as i64)
+                };
+                if !matches {
+                    return Err("stale_parent".to_string());
+                }
                 tx.execute(
                     "INSERT INTO recursive_execution_trees
                      (root_run_id, workflow_id, root_node_id, tree_schema_version, tree_json, version, created_at, updated_at)
@@ -398,6 +445,7 @@ impl LocalProductStore {
                 {
                     return Err("recursive tree identity or schema conflict".to_string());
                 }
+                validate_tree_for_persistence(&tree)?;
                 Ok(tree)
             })
             .transpose()
@@ -429,6 +477,7 @@ fn load_recursive_tree_sqlite(
             if tree.root_run_id != root_run_id || tree.schema_version != RECURSIVE_SCHEMA_VERSION {
                 return Err("recursive tree identity or schema conflict".to_string());
             }
+            validate_tree_for_persistence(&tree)?;
             Ok(tree)
         })
         .transpose()
@@ -442,7 +491,7 @@ pub(crate) fn sync_recursive_lease_sqlite(
     now: &str,
 ) -> Result<(), String> {
     let Some(mut tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
-        return Ok(());
+        return Err("stale_parent".to_string());
     };
     let expected_version = tree.version;
     tree.lease_node(recursive_node_id, lease_id)
@@ -460,7 +509,7 @@ pub(crate) fn sync_recursive_completion_sqlite(
     now: &str,
 ) -> Result<(), String> {
     let Some(mut tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
-        return Ok(());
+        return Err("stale_parent".to_string());
     };
     let expected_version = tree.version;
     tree.complete_node(recursive_node_id, lease_id, success)
@@ -511,7 +560,7 @@ pub(crate) fn sync_recursive_lease_pg(
     now: &str,
 ) -> Result<(), String> {
     let Some(mut tree) = load_recursive_tree_pg(client, root_run_id)? else {
-        return Ok(());
+        return Err("stale_parent".to_string());
     };
     let expected_version = tree.version;
     tree.lease_node(recursive_node_id, lease_id)
@@ -530,7 +579,7 @@ pub(crate) fn sync_recursive_completion_pg(
     now: &str,
 ) -> Result<(), String> {
     let Some(mut tree) = load_recursive_tree_pg(client, root_run_id)? else {
-        return Ok(());
+        return Err("stale_parent".to_string());
     };
     let expected_version = tree.version;
     tree.complete_node(recursive_node_id, lease_id, success)

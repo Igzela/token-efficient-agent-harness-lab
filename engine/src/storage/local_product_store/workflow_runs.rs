@@ -8,6 +8,7 @@ use super::{
 };
 use crate::agent_memory::build_memory_context_for_node;
 use crate::provider::redaction::contains_sensitive_patterns;
+use crate::recursive_execution::MAX_RECURSIVE_LEASES;
 use crate::workflow::context_pack::{
     assemble_context_injection_with_bridge, ContextAssemblyConfig, ContextSource,
 };
@@ -969,6 +970,28 @@ impl LocalProductStore {
                             )
                             .unwrap_or_default();
                         if node_task_type == "agent_step" {
+                            let is_recursive = workflow_node_is_recursive_locked(conn, run_id, &nid)?;
+                            if is_recursive {
+                                let recursive_running = count_running_recursive_steps_locked(conn)?;
+                                if recursive_running >= MAX_RECURSIVE_LEASES as i64 {
+                                    append_audit_locked(
+                                        conn,
+                                        &now,
+                                        "scheduler",
+                                        "recursive.claim_conflict",
+                                        &nid,
+                                        &json!({
+                                            "run_id": run_id,
+                                            "node_id": nid,
+                                            "reason": "scheduler_capacity_exhausted",
+                                            "running": recursive_running,
+                                            "cap": MAX_RECURSIVE_LEASES,
+                                        }),
+                                    )?;
+                                    capped_skip.push(nid);
+                                    continue;
+                                }
+                            }
                             let global_running = count_running_agent_steps_locked(conn)?;
                             let per_run_running = count_running_agent_steps_for_run_locked(conn, run_id)?;
                             if global_running >= global_cap as i64 {
@@ -1273,6 +1296,28 @@ impl LocalProductStore {
                                 "SELECT pg_advisory_xact_lock(734775128237)",
                             )
                             .map_err(|error| error.to_string())?;
+                            let is_recursive = pg_workflow_node_is_recursive(&mut tx, run_id, &nid)?;
+                            if is_recursive {
+                                let recursive_running = pg_count_running_recursive_steps(&mut tx)?;
+                                if recursive_running >= MAX_RECURSIVE_LEASES as i64 {
+                                    pg_append_audit(
+                                        &mut tx,
+                                        &now,
+                                        "scheduler",
+                                        "recursive.claim_conflict",
+                                        &nid,
+                                        &json!({
+                                            "run_id": run_id,
+                                            "node_id": nid,
+                                            "reason": "scheduler_capacity_exhausted",
+                                            "running": recursive_running,
+                                            "cap": MAX_RECURSIVE_LEASES,
+                                        }),
+                                    )?;
+                                    capped_skip.push(nid);
+                                    continue;
+                                }
+                            }
                             let global_running = pg_count_running_agent_steps(&mut tx)?;
                             let per_run_running = pg_count_running_agent_steps_for_run(&mut tx, run_id)?;
                             if global_running >= global_cap as i64 {
@@ -4478,6 +4523,58 @@ fn count_running_agent_steps_locked(conn: &rusqlite::Connection) -> Result<i64, 
     .map_err(|e| e.to_string())
 }
 
+fn workflow_node_is_recursive_locked(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    node_id: &str,
+) -> Result<bool, String> {
+    let node_json: String = conn
+        .query_row(
+            "SELECT node_json FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+            params![run_id, node_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::from_str::<Value>(&node_json)
+        .ok()
+        .and_then(|metadata| {
+            metadata
+                .get("recursive_node_id")
+                .and_then(Value::as_str)
+                .map(|_| ())
+        })
+        .is_some())
+}
+
+fn count_running_recursive_steps_locked(conn: &rusqlite::Connection) -> Result<i64, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT node_json FROM workflow_run_nodes
+             WHERE task_type = 'agent_step' AND status = 'running'",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut count = 0_i64;
+    for row in rows {
+        let node_json = row.map_err(|e| e.to_string())?;
+        if serde_json::from_str::<Value>(&node_json)
+            .ok()
+            .and_then(|metadata| {
+                metadata
+                    .get("recursive_node_id")
+                    .and_then(Value::as_str)
+                    .map(|_| ())
+            })
+            .is_some()
+        {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
 /// Count agent_step nodes running for a specific run (inside SQLite lock).
 fn count_running_agent_steps_for_run_locked(
     conn: &rusqlite::Connection,
@@ -4500,6 +4597,58 @@ fn pg_count_running_agent_steps(client: &mut impl postgres::GenericClient) -> Re
         )
         .map_err(|e| e.to_string())
         .map(|row| row.get(0))
+}
+
+#[cfg(feature = "pg")]
+fn pg_workflow_node_is_recursive(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+    node_id: &str,
+) -> Result<bool, String> {
+    let row = client
+        .query_one(
+            "SELECT node_json FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
+            &[&run_id, &node_id],
+        )
+        .map_err(|e| e.to_string())?;
+    let node_json: String = row.get(0);
+    Ok(serde_json::from_str::<Value>(&node_json)
+        .ok()
+        .and_then(|metadata| {
+            metadata
+                .get("recursive_node_id")
+                .and_then(Value::as_str)
+                .map(|_| ())
+        })
+        .is_some())
+}
+
+#[cfg(feature = "pg")]
+fn pg_count_running_recursive_steps(
+    client: &mut impl postgres::GenericClient,
+) -> Result<i64, String> {
+    let rows = client
+        .query(
+            "SELECT node_json FROM workflow_run_nodes
+             WHERE task_type = 'agent_step' AND status = 'running'",
+            &[],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .filter(|row| {
+            let node_json: String = row.get(0);
+            serde_json::from_str::<Value>(&node_json)
+                .ok()
+                .and_then(|metadata| {
+                    metadata
+                        .get("recursive_node_id")
+                        .and_then(Value::as_str)
+                        .map(|_| ())
+                })
+                .is_some()
+        })
+        .count() as i64)
 }
 
 #[cfg(feature = "pg")]
@@ -5358,4 +5507,55 @@ fn pg_get_run_row(
         return Err(format!("workflow run not found: {run_id}"));
     };
     Ok(pg_workflow_run_summary_row(&row))
+}
+
+#[cfg(test)]
+mod recursive_scheduler_tests {
+    use super::*;
+
+    #[test]
+    fn global_recursive_lease_counter_ignores_non_recursive_agent_steps() {
+        let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
+        conn.execute(
+            "CREATE TABLE workflow_run_nodes (
+                run_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                node_json TEXT NOT NULL
+            )",
+            [],
+        )
+        .expect("schema");
+        for index in 0..3 {
+            conn.execute(
+                "INSERT INTO workflow_run_nodes
+                 (run_id, node_id, task_type, status, node_json)
+                 VALUES (?1, ?2, 'agent_step', 'running', ?3)",
+                params![
+                    format!("run-{index}"),
+                    format!("node-{index}"),
+                    json!({"recursive_node_id": format!("recursive-{index}")}).to_string()
+                ],
+            )
+            .expect("recursive row");
+        }
+        conn.execute(
+            "INSERT INTO workflow_run_nodes
+             (run_id, node_id, task_type, status, node_json)
+             VALUES ('ordinary-run', 'ordinary-node', 'agent_step', 'running', '{}')",
+            [],
+        )
+        .expect("ordinary row");
+
+        assert_eq!(
+            count_running_recursive_steps_locked(&conn).expect("count"),
+            3
+        );
+        assert!(workflow_node_is_recursive_locked(&conn, "run-0", "node-0").expect("marker"));
+        assert!(
+            !workflow_node_is_recursive_locked(&conn, "ordinary-run", "ordinary-node")
+                .expect("marker")
+        );
+    }
 }

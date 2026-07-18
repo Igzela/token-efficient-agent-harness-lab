@@ -20,6 +20,8 @@ const MAX_CONTEXT_BYTES: usize = 8192;
 pub const MAX_RECURSIVE_TREE_BYTES: usize = 131_072;
 pub const MAX_SCOPE_VALUE_BYTES: usize = 1024;
 pub const MAX_SCOPE_ITEMS: usize = 64;
+pub const MAX_RECURSIVE_DECISION_EVIDENCE_REFS: usize = 8;
+pub const MAX_RECURSIVE_EVIDENCE_REF_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,13 +70,6 @@ pub struct RecursiveBudget {
 }
 
 impl RecursiveBudget {
-    fn can_spend(&self, calls: u64, tokens: u64, cost: u64, time_ms: u64) -> bool {
-        self.calls_remaining >= calls
-            && self.tokens_remaining >= tokens
-            && self.cost_micros_remaining >= cost
-            && self.time_ms_remaining >= time_ms
-    }
-
     fn spend(&mut self, other: &Self) {
         self.calls_remaining = self.calls_remaining.saturating_sub(other.calls_remaining);
         self.tokens_remaining = self.tokens_remaining.saturating_sub(other.tokens_remaining);
@@ -84,6 +79,22 @@ impl RecursiveBudget {
         self.time_ms_remaining = self
             .time_ms_remaining
             .saturating_sub(other.time_ms_remaining);
+    }
+
+    fn bounded_by(&self, other: &Self) -> Self {
+        Self {
+            calls_remaining: self.calls_remaining.min(other.calls_remaining),
+            tokens_remaining: self.tokens_remaining.min(other.tokens_remaining),
+            cost_micros_remaining: self.cost_micros_remaining.min(other.cost_micros_remaining),
+            time_ms_remaining: self.time_ms_remaining.min(other.time_ms_remaining),
+        }
+    }
+
+    fn is_nonzero(&self) -> bool {
+        self.calls_remaining > 0
+            && self.tokens_remaining > 0
+            && self.cost_micros_remaining > 0
+            && self.time_ms_remaining > 0
     }
 }
 
@@ -132,6 +143,16 @@ pub struct RecursiveNode {
     pub retry_count: u8,
     pub version: u64,
     pub lease_id: Option<String>,
+    #[serde(default)]
+    pub failure_reason: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecursiveDecisionEvidence {
+    pub reason_code: String,
+    pub evidence_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +170,8 @@ pub struct RecursiveTree {
     pub accepted_proposals: BTreeSet<String>,
     pub receipts: BTreeMap<String, String>,
     pub active_leases: BTreeSet<String>,
+    #[serde(default)]
+    pub rejected_proposals: BTreeMap<String, RecursiveDecisionEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,6 +272,8 @@ impl RecursiveTree {
             retry_count: 0,
             version: 1,
             lease_id: None,
+            failure_reason: None,
+            evidence_refs: Vec::new(),
         };
         let mut nodes = BTreeMap::new();
         nodes.insert(node_id.clone(), node);
@@ -266,6 +291,7 @@ impl RecursiveTree {
             accepted_proposals: BTreeSet::new(),
             receipts: BTreeMap::new(),
             active_leases: BTreeSet::new(),
+            rejected_proposals: BTreeMap::new(),
         }
     }
 
@@ -337,17 +363,15 @@ impl RecursiveTree {
         {
             return Err(RecursiveFailureReason::DuplicateObjective);
         }
-        if !parent.budget.can_spend(
-            proposal.budget.calls_remaining,
-            proposal.budget.tokens_remaining,
-            proposal.budget.cost_micros_remaining,
-            proposal.budget.time_ms_remaining,
-        ) || !self.root_budget.can_spend(
-            proposal.budget.calls_remaining,
-            proposal.budget.tokens_remaining,
-            proposal.budget.cost_micros_remaining,
-            proposal.budget.time_ms_remaining,
-        ) {
+        // The proposal is only an upper bound. The control plane derives the
+        // effective child budget from both remaining authorities, so a model
+        // cannot choose a budget that bypasses the parent or whole-tree
+        // allowance.
+        let effective_budget = proposal
+            .budget
+            .bounded_by(&parent.budget)
+            .bounded_by(&self.root_budget);
+        if !effective_budget.is_nonzero() {
             return Err(RecursiveFailureReason::TreeBudgetExhausted);
         }
         let node = RecursiveNode {
@@ -365,18 +389,20 @@ impl RecursiveTree {
                 .collect(),
             scope: proposal.requested_scope.clone(),
             capabilities: proposal.requested_capabilities.clone(),
-            budget: proposal.budget.clone(),
+            budget: effective_budget.clone(),
             status: "ready".to_string(),
             accepted_children: 0,
             retry_count: 0,
             version: 1,
             lease_id: None,
+            failure_reason: None,
+            evidence_refs: Vec::new(),
         };
         let parent_entry = self.nodes.get_mut(&parent.node_id).expect("parent checked");
         parent_entry.accepted_children += 1;
-        parent_entry.budget.spend(&proposal.budget);
+        parent_entry.budget.spend(&effective_budget);
         parent_entry.version += 1;
-        self.root_budget.spend(&proposal.budget);
+        self.root_budget.spend(&effective_budget);
         self.nodes.insert(node.node_id.clone(), node.clone());
         self.accepted_proposals.insert(proposal.proposal_id.clone());
         self.receipts.insert(
@@ -433,6 +459,7 @@ impl RecursiveTree {
             return Err(RecursiveFailureReason::ReceiptConflict);
         }
         node.status = if success { "completed" } else { "failed" }.to_string();
+        node.failure_reason = (!success).then(|| "recursive_node_execution_failed".to_string());
         node.lease_id = None;
         node.version += 1;
         self.active_leases.remove(lease_id);
@@ -450,6 +477,7 @@ impl RecursiveTree {
         }
         node.retry_count += 1;
         node.status = "ready".to_string();
+        node.failure_reason = None;
         node.version += 1;
         self.version += 1;
         Ok(())
@@ -462,6 +490,17 @@ impl RecursiveTree {
 
     pub fn resume(&mut self) {
         self.paused = false;
+        self.version += 1;
+    }
+
+    pub fn record_rejection(&mut self, proposal_id: &str, reason: RecursiveFailureReason) {
+        self.rejected_proposals.insert(
+            proposal_id.to_string(),
+            RecursiveDecisionEvidence {
+                reason_code: reason.as_str().to_string(),
+                evidence_refs: vec![format!("recursive-proposal:{proposal_id}")],
+            },
+        );
         self.version += 1;
     }
 
@@ -482,6 +521,14 @@ impl RecursiveTree {
                     "retry_count": node.retry_count,
                     "version": node.version,
                     "leased": node.lease_id.is_some(),
+                    "failure_reason": node.failure_reason,
+                    "evidence_refs": node.evidence_refs,
+                    "budget": {
+                        "calls_remaining": node.budget.calls_remaining,
+                        "tokens_remaining": node.budget.tokens_remaining,
+                        "cost_micros_remaining": node.budget.cost_micros_remaining,
+                        "time_ms_remaining": node.budget.time_ms_remaining,
+                    },
                 })
             })
             .collect();
@@ -495,6 +542,8 @@ impl RecursiveTree {
             "node_count": self.nodes.len(),
             "active_lease_count": self.active_leases.len(),
             "accepted_proposal_count": self.accepted_proposals.len(),
+            "rejected_proposal_count": self.rejected_proposals.len(),
+            "rejected_proposals": self.rejected_proposals,
             "nodes": nodes,
         })
     }
@@ -634,6 +683,41 @@ mod tests {
             .to_string()
             .contains("objective_fingerprint"));
         assert!(!evidence["nodes"].to_string().contains("child objective"));
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn child_budget_is_derived_from_remaining_authorities() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let mut tree = RecursiveTree::new(
+            "run-budget",
+            "fixture",
+            "root",
+            scope(),
+            ["read".to_string()].into_iter().collect(),
+            budget(),
+        );
+        let mut child_proposal = proposal(&tree);
+        child_proposal.budget = RecursiveBudget {
+            calls_remaining: 100,
+            tokens_remaining: 10_000,
+            cost_micros_remaining: 10_000,
+            time_ms_remaining: 60_000,
+        };
+        let admitted = tree
+            .admit_child(&child_proposal)
+            .expect("bounded admission");
+        assert_eq!(admitted.node.budget, budget());
+        assert_eq!(
+            tree.root_budget,
+            RecursiveBudget {
+                calls_remaining: 0,
+                tokens_remaining: 0,
+                cost_micros_remaining: 0,
+                time_ms_remaining: 0,
+            }
+        );
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 }

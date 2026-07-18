@@ -123,6 +123,28 @@ fn action_type(action: &AgentAction) -> &'static str {
     }
 }
 
+fn recursive_failure_reason_code(error: &str) -> Option<&'static str> {
+    const REASONS: [&str; 14] = [
+        "recursive_disabled",
+        "depth_exceeded",
+        "child_limit_exceeded",
+        "tree_budget_exhausted",
+        "duplicate_objective",
+        "ancestor_cycle",
+        "capability_escalation",
+        "scope_mismatch",
+        "stale_parent",
+        "proposal_conflict",
+        "receipt_conflict",
+        "scheduler_capacity_exhausted",
+        "recursive_kill_switch_active",
+        "recursive_node_execution_failed",
+    ];
+    REASONS
+        .into_iter()
+        .find(|reason| error == *reason || error.starts_with(&format!("{reason}:")))
+}
+
 fn action_authorized_by_capabilities(action: &AgentAction, state: &AgentState) -> bool {
     match action {
         AgentAction::Wait | AgentAction::Complete => true,
@@ -2745,6 +2767,17 @@ impl NodeExecutor for AgentStepExecutor {
         let (action, provider_usage) = match decision {
             Ok(value) => value,
             Err(e) => {
+                if let Some(reason_code) = recursive_failure_reason_code(&e) {
+                    self.append_agent_step_audit_best_effort(
+                        "agent_step.recursive_proposal_rejected",
+                        &agent_id,
+                        &input.run_id,
+                        &json!({
+                            "reason_code": reason_code,
+                            "evidence_ref": format!("recursive-proposal:agent-step:{}", input.node_id),
+                        }),
+                    );
+                }
                 self.append_agent_step_audit_best_effort(
                     "agent_step.decision_failed",
                     &agent_id,

@@ -86,7 +86,7 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
         )
         .map(|row| row.get::<_, bool>(0))
         .map_err(|error| format!("failed to read migration 25 marker: {error}"))?;
-    if current_version < 24 || (current_version > 25 && !marker_exists) {
+    if current_version < 24 {
         return Err(format!(
             "migration 25 requires a contiguous version 24 predecessor; found {current_version}"
         ));
@@ -211,6 +211,32 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
         }
     }
     let invalid_schema = !missing_columns.is_empty() || !pg_v25_operation_schema_valid(&mut tx)?;
+    if current_version > version && !marker_exists {
+        if invalid_schema && pg_table_present(&mut tx, "provider_embedding_operations")? {
+            let occupied: bool = tx
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
+                    &[],
+                )
+                .map(|row| row.get(0))
+                .map_err(|error| {
+                    format!("failed to inspect partial migration 25 receipts: {error}")
+                })?;
+            if occupied {
+                return Err(format!(
+                    "migration 25 cannot repair an occupied partial operation table; missing or invalid {}",
+                    if missing_columns.is_empty() {
+                        "constraints/indexes/foreign-keys".to_string()
+                    } else {
+                        missing_columns.join(",")
+                    }
+                ));
+            }
+        }
+        return Err(format!(
+            "migration 25 requires a contiguous version 24 predecessor; found {current_version}"
+        ));
+    }
     if invalid_schema {
         let occupied: bool = tx
             .query_one(
@@ -278,6 +304,22 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
     }
     tx.commit()
         .map_err(|error| format!("failed to commit migration 25: {error}"))
+}
+
+fn pg_table_present(
+    client: &mut impl postgres::GenericClient,
+    table: &str,
+) -> Result<bool, String> {
+    client
+        .query_one(
+            "SELECT EXISTS(
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = current_schema() AND table_name = $1
+            )",
+            &[&table],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| error.to_string())
 }
 
 fn apply_pg_v26_migration(client: &mut postgres::Client) -> Result<(), String> {
