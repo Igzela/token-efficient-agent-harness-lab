@@ -284,7 +284,9 @@ fn check_workflow_binding_sqlite(
     }
     let root_exists: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2",
+            "SELECT COUNT(*) FROM workflow_run_nodes
+             WHERE run_id=?1 AND node_id=?2 AND task_type='agent_step'
+               AND json_extract(node_json, '$.recursive_node_id')=?2",
             params![tree.root_run_id, tree.root_node_id],
             |row| row.get(0),
         )
@@ -314,7 +316,9 @@ fn check_workflow_binding_pg(
     }
     let root_exists: i64 = client
         .query_one(
-            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2",
+            "SELECT COUNT(*) FROM workflow_run_nodes
+             WHERE run_id=$1 AND node_id=$2 AND task_type='agent_step'
+               AND node_json::jsonb ->> 'recursive_node_id'=$2",
             &[&tree.root_run_id, &tree.root_node_id],
         )
         .map_err(|error| error.to_string())?
@@ -1424,8 +1428,12 @@ pub(crate) fn record_recursive_late_usage_pg(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "pg-tests")]
+    use super::super::{AgentActionMutation, AgentMutationOp};
     use super::*;
-    use crate::recursive_execution::{RecursiveBudget, RecursiveProposal, RecursiveScope};
+    #[cfg(feature = "pg-tests")]
+    use crate::recursive_execution::RecursiveProposal;
+    use crate::recursive_execution::{RecursiveBudget, RecursiveScope};
     use std::collections::BTreeSet;
 
     fn bind_test_workflow(
@@ -1935,6 +1943,35 @@ mod tests {
                 Ok(())
             })
             .expect("validate PostgreSQL snapshot binding");
+        store
+            .create_proposal(
+                &proposal.proposal_id,
+                "corr-pg-binding",
+                &run_id,
+                &tree.root_node_id,
+                "agent-pg-binding",
+                "child_task",
+                &proposal.objective,
+                &proposal.context_summary,
+                None,
+                node.get("node_id").and_then(Value::as_str),
+                edge.get("edge_id").and_then(Value::as_str),
+            )
+            .expect("create PostgreSQL proposal");
+        store
+            .apply_agent_action_once(&AgentActionMutation {
+                run_id: run_id.clone(),
+                node_id: tree.root_node_id.clone(),
+                agent_id: "agent-pg-binding".to_string(),
+                action_sha256: "b".repeat(64),
+                action_type: "propose_child_task".to_string(),
+                result_json: json!({"action": "propose_child_task"}).to_string(),
+                operations: vec![AgentMutationOp::PersistRecursiveWorkflow {
+                    node: node.clone(),
+                    edge: edge.clone(),
+                }],
+            })
+            .expect("persist PostgreSQL workflow node");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 }
