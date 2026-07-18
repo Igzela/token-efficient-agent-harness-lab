@@ -424,11 +424,13 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
         let primary_key: bool = client
             .query_one(
                 "SELECT EXISTS(
-                     SELECT 1 FROM pg_index i
-                     JOIN pg_class t ON t.oid=i.indrelid
-                     JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=ANY(i.indkey)
+                     SELECT 1 FROM pg_constraint c
+                     JOIN pg_class t ON t.oid=c.conrelid
                      WHERE t.relnamespace=current_schema()::regnamespace
-                       AND t.relname=$1 AND i.indisprimary AND a.attname=$2
+                       AND t.relname=$1 AND c.contype='p'
+                       AND cardinality(c.conkey)=1
+                       AND (SELECT a.attname FROM pg_attribute a
+                            WHERE a.attrelid=t.oid AND a.attnum=c.conkey[1])=$2
                  )",
                 &[&table, &column],
             )
@@ -440,21 +442,36 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
             ));
         }
     }
-    for index in [
-        "idx_recursive_execution_trees_workflow",
-        "idx_recursive_execution_nodes_root",
-        "idx_recursive_execution_nodes_parent",
+    for (index, expected_columns) in [
+        (
+            "idx_recursive_execution_trees_workflow",
+            "(workflow_id,updated_at)",
+        ),
+        (
+            "idx_recursive_execution_nodes_root",
+            "(root_run_id,depth,node_id)",
+        ),
+        (
+            "idx_recursive_execution_nodes_parent",
+            "(parent_node_id,status,node_id)",
+        ),
     ] {
-        let exists: bool = client
-            .query_one(
-                "SELECT EXISTS(SELECT 1 FROM pg_indexes
-                 WHERE schemaname=current_schema() AND indexname=$1)",
+        let definition: Option<String> = client
+            .query_opt(
+                "SELECT indexdef FROM pg_indexes
+                 WHERE schemaname=current_schema() AND indexname=$1",
                 &[&index],
             )
             .map_err(|error| error.to_string())?
-            .get(0);
-        if !exists {
-            return Err(format!("PostgreSQL v26 schema missing index {index}"));
+            .map(|row| row.get(0));
+        if !definition
+            .as_deref()
+            .map(|value| value.to_ascii_lowercase().replace(' ', ""))
+            .is_some_and(|value| value.contains(expected_columns))
+        {
+            return Err(format!(
+                "PostgreSQL v26 schema missing or malformed index {index}"
+            ));
         }
     }
     let foreign_key: bool = client
@@ -468,6 +485,11 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
                    AND child.relname='recursive_execution_nodes'
                    AND parent.relname='recursive_execution_trees'
                    AND c.contype='f'
+                   AND cardinality(c.conkey)=1 AND cardinality(c.confkey)=1
+                   AND (SELECT a.attname FROM pg_attribute a
+                        WHERE a.attrelid=child.oid AND a.attnum=c.conkey[1])='root_run_id'
+                   AND (SELECT a.attname FROM pg_attribute a
+                        WHERE a.attrelid=parent.oid AND a.attnum=c.confkey[1])='root_run_id'
              )",
             &[],
         )
@@ -483,7 +505,11 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
                  JOIN pg_class t ON t.oid=c.conrelid
                  WHERE t.relnamespace=current_schema()::regnamespace
                    AND t.relname='recursive_execution_nodes'
-                   AND c.contype='c' AND pg_get_constraintdef(c.oid) LIKE '%depth%'
+                   AND c.contype='c'
+                   AND regexp_replace(
+                       lower(pg_get_expr(c.conbin, c.conrelid)),
+                       '[[:space:]()]', '', 'g'
+                   ) IN ('depth>=0anddepth<=2', 'depthbetween0and2')
              )",
             &[],
         )
@@ -500,8 +526,11 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
                  WHERE t.relnamespace=current_schema()::regnamespace
                    AND t.relname='recursive_execution_nodes'
                    AND c.contype='u'
-                   AND pg_get_constraintdef(c.oid) LIKE '%root_run_id%'
-                   AND pg_get_constraintdef(c.oid) LIKE '%objective_fingerprint%'
+                   AND cardinality(c.conkey)=2
+                   AND (SELECT a.attname FROM pg_attribute a
+                        WHERE a.attrelid=t.oid AND a.attnum=c.conkey[1])='root_run_id'
+                   AND (SELECT a.attname FROM pg_attribute a
+                        WHERE a.attrelid=t.oid AND a.attnum=c.conkey[2])='objective_fingerprint'
              )",
             &[],
         )
@@ -518,7 +547,10 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
                  WHERE t.relnamespace=current_schema()::regnamespace
                    AND t.relname='recursive_execution_nodes'
                    AND c.contype='c'
-                   AND lower(pg_get_constraintdef(c.oid)) LIKE '%length(objective_fingerprint)%'
+                   AND regexp_replace(
+                       lower(pg_get_expr(c.conbin, c.conrelid)),
+                       '[[:space:]()]', '', 'g'
+                   )='lengthobjective_fingerprint=64'
              )",
             &[],
         )
@@ -1317,6 +1349,57 @@ mod tests {
             "unexpected error: {error}"
         );
         assert_eq!(fixture.store.schema_version().expect("version"), 26);
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn already_versioned_pg_v26_rejects_weakened_constraints_and_indexes() {
+        let cases = [
+            (
+                "ALTER TABLE recursive_execution_nodes
+                 DROP CONSTRAINT recursive_execution_nodes_depth_check;
+                 ALTER TABLE recursive_execution_nodes
+                 ADD CONSTRAINT recursive_execution_nodes_depth_check CHECK (depth >= 0);",
+                "missing recursive depth constraint",
+            ),
+            (
+                "ALTER TABLE recursive_execution_nodes
+                 DROP CONSTRAINT recursive_execution_nodes_objective_fingerprint_check;
+                 ALTER TABLE recursive_execution_nodes
+                 ADD CONSTRAINT recursive_execution_nodes_objective_fingerprint_check
+                 CHECK (length(objective_fingerprint) > 0);",
+                "missing objective fingerprint length constraint",
+            ),
+            (
+                "ALTER TABLE recursive_execution_nodes
+                 DROP CONSTRAINT recursive_execution_nodes_root_run_id_fkey;
+                 ALTER TABLE recursive_execution_nodes
+                 ADD CONSTRAINT recursive_execution_nodes_root_run_id_fkey
+                 FOREIGN KEY (node_id) REFERENCES recursive_execution_trees(root_run_id);",
+                "missing recursive root foreign key",
+            ),
+            (
+                "DROP INDEX idx_recursive_execution_nodes_parent;
+                 CREATE INDEX idx_recursive_execution_nodes_parent
+                 ON recursive_execution_nodes(status);",
+                "missing or malformed index idx_recursive_execution_nodes_parent",
+            ),
+        ];
+        for (ddl, expected) in cases {
+            let Some(fixture) = IsolatedPgStore::from_environment() else {
+                return;
+            };
+            fixture
+                .store
+                .with_pg_conn(|client| client.batch_execute(ddl).map_err(|error| error.to_string()))
+                .expect("malform v26 constraint");
+            let error = fixture
+                .store
+                .run_pg_migrations_internal()
+                .expect_err("weakened v26 schema must fail closed");
+            assert!(error.contains(expected), "unexpected error: {error}");
+            assert_eq!(fixture.store.schema_version().expect("version"), 26);
+        }
     }
 
     #[test]

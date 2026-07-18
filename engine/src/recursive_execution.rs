@@ -72,8 +72,8 @@ pub enum RecursiveFailureReason {
     RetryExhausted,
     RecursiveTreeMissing,
     RecursiveNodeMissing,
-    FixtureUsageContractMissing,
     RecursiveUsageUnavailable,
+    FixtureUsageContractMissing,
 }
 
 impl RecursiveFailureReason {
@@ -98,8 +98,8 @@ impl RecursiveFailureReason {
             Self::RetryExhausted => "recursive_retry_exhausted",
             Self::RecursiveTreeMissing => "recursive_tree_missing",
             Self::RecursiveNodeMissing => "recursive_node_missing",
-            Self::FixtureUsageContractMissing => "fixture_usage_contract_missing",
             Self::RecursiveUsageUnavailable => "recursive_usage_unavailable",
+            Self::FixtureUsageContractMissing => "fixture_usage_contract_missing",
         }
     }
 }
@@ -198,6 +198,10 @@ pub struct RecursiveNode {
     pub ancestor_fingerprints: Vec<String>,
     pub scope: RecursiveScope,
     pub capabilities: BTreeSet<String>,
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
     pub budget: RecursiveBudget,
     #[serde(default)]
     pub child_budget: RecursiveBudget,
@@ -236,6 +240,10 @@ pub struct RecursiveTree {
     pub root_creation_receipt_sha256: String,
     pub root_scope: RecursiveScope,
     pub root_capabilities: BTreeSet<String>,
+    #[serde(default)]
+    pub root_tenant_id: Option<String>,
+    #[serde(default)]
+    pub root_workspace_id: Option<String>,
     pub root_budget: RecursiveBudget,
     /// Remaining unallocated tree authority. `spent_budget` records actual
     /// usage separately so reservation and execution accounting cannot be
@@ -328,7 +336,7 @@ pub(crate) fn derived_node_id_for_persistence(
     derived_node_id(root_run_id, proposal_id, fingerprint)
 }
 
-fn recursive_enabled() -> bool {
+pub(crate) fn recursive_enabled() -> bool {
     std::env::var("ACP_RECURSIVE_EXECUTION_ENABLED")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
@@ -360,7 +368,14 @@ impl RecursiveTree {
     ) -> Self {
         let root_run_id = root_run_id.into();
         let fingerprint = objective_fingerprint(objective);
-        let node_id = format!("recursive-root-{}", &fingerprint[..24]);
+        let mut root_identity = Sha256::new();
+        root_identity.update(root_run_id.as_bytes());
+        root_identity.update([0]);
+        root_identity.update(fingerprint.as_bytes());
+        let node_id = format!(
+            "recursive-root-{}",
+            &hex::encode(root_identity.finalize())[..24]
+        );
         Self::new_with_root_node_id(
             root_run_id,
             workflow_id,
@@ -394,6 +409,8 @@ impl RecursiveTree {
             ancestor_fingerprints: Vec::new(),
             scope: scope.clone(),
             capabilities: capabilities.clone(),
+            tenant_id: None,
+            workspace_id: None,
             budget: budget.clone(),
             status: "ready".to_string(),
             accepted_children: 0,
@@ -418,6 +435,8 @@ impl RecursiveTree {
             root_creation_receipt_sha256: String::new(),
             root_scope: scope,
             root_capabilities: capabilities,
+            root_tenant_id: None,
+            root_workspace_id: None,
             root_budget_limit: Some(budget.clone()),
             root_budget: budget,
             spent_budget: RecursiveBudget {
@@ -459,6 +478,35 @@ impl RecursiveTree {
         self.root_agent_id = agent_id.to_string();
         self.root_recursive_marker = recursive_marker.to_string();
         self.root_creation_receipt_sha256 = creation_receipt_sha256.to_string();
+        Ok(())
+    }
+
+    pub fn bind_root_execution_scope(
+        &mut self,
+        tenant_id: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> Result<(), RecursiveFailureReason> {
+        let tenant_id = tenant_id.map(str::to_string);
+        let workspace_id = workspace_id.map(str::to_string);
+        if self
+            .root_tenant_id
+            .as_ref()
+            .is_some_and(|value| Some(value) != tenant_id.as_ref())
+            || self
+                .root_workspace_id
+                .as_ref()
+                .is_some_and(|value| Some(value) != workspace_id.as_ref())
+        {
+            return Err(RecursiveFailureReason::ReceiptConflict);
+        }
+        self.root_tenant_id = tenant_id.clone();
+        self.root_workspace_id = workspace_id.clone();
+        let root = self
+            .nodes
+            .get_mut(&self.root_node_id)
+            .ok_or(RecursiveFailureReason::RecursiveNodeMissing)?;
+        root.tenant_id = tenant_id;
+        root.workspace_id = workspace_id;
         Ok(())
     }
 
@@ -576,6 +624,8 @@ impl RecursiveTree {
                 .collect(),
             scope: proposal.requested_scope.clone(),
             capabilities: proposal.requested_capabilities.clone(),
+            tenant_id: parent.tenant_id.clone(),
+            workspace_id: parent.workspace_id.clone(),
             budget: effective_budget.clone(),
             child_budget: effective_budget.clone(),
             reservation: effective_budget.clone(),
@@ -945,6 +995,8 @@ impl RecursiveTree {
                         "cost_micros": node.actual_usage.cost_micros_remaining,
                         "time_ms": node.actual_usage.time_ms_remaining,
                     },
+                    "tenant_bound": node.tenant_id.is_some(),
+                    "workspace_bound": node.workspace_id.is_some(),
                 })
             })
             .collect();
@@ -1004,6 +1056,31 @@ mod tests {
             cost_micros_remaining: 100,
             time_ms_remaining: 1000,
         }
+    }
+
+    #[test]
+    fn root_node_identity_binds_run_and_objective() {
+        let first = RecursiveTree::new(
+            "root-identity-run-a",
+            "root-identity-workflow",
+            "review docs",
+            scope(),
+            BTreeSet::from(["read".to_string()]),
+            budget(),
+        );
+        let second = RecursiveTree::new(
+            "root-identity-run-b",
+            "root-identity-workflow",
+            "review docs",
+            scope(),
+            BTreeSet::from(["read".to_string()]),
+            budget(),
+        );
+        assert_ne!(first.root_node_id, second.root_node_id);
+        assert_eq!(
+            first.nodes[&first.root_node_id].objective_fingerprint,
+            second.nodes[&second.root_node_id].objective_fingerprint
+        );
     }
 
     fn proposal(tree: &RecursiveTree) -> RecursiveProposal {

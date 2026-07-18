@@ -1087,6 +1087,7 @@ impl LocalProductStore {
 
                 let now = self.now();
                 let recursive_claim = agent_concurrency_caps.is_none()
+                    && crate::recursive_execution::recursive_enabled()
                     && conn
                         .query_row(
                             "SELECT task_type FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
@@ -1119,7 +1120,8 @@ impl LocalProductStore {
                          WHERE run_id = ?2 AND node_id = ?3 AND status = 'pending'
                            AND (SELECT COUNT(*) FROM workflow_run_nodes
                                 WHERE task_type='agent_step' AND status='running'
-                                  AND json_extract(node_json, '$.recursive_node_id') IS NOT NULL) < ?4",
+                                  AND (json_extract(node_json, '$.recursive_node_id') IS NOT NULL
+                                    OR json_extract(node_json, '$.recursive_root_node_id') IS NOT NULL)) < ?4",
                         params![now, run_id, node_id, MAX_RECURSIVE_LEASES as i64],
                     )
                     .map_err(|e| e.to_string())?
@@ -1465,6 +1467,7 @@ impl LocalProductStore {
 
                 let now = self.now();
                 let recursive_claim = agent_concurrency_caps.is_none()
+                    && crate::recursive_execution::recursive_enabled()
                     && tx
                         .query_one(
                             "SELECT task_type FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
@@ -1479,7 +1482,8 @@ impl LocalProductStore {
                          WHERE run_id = $2 AND node_id = $3 AND status = 'pending'
                            AND (SELECT COUNT(*) FROM workflow_run_nodes
                                 WHERE task_type = 'agent_step' AND status = 'running'
-                                  AND node_json::jsonb ? 'recursive_node_id') < $4",
+                                  AND (node_json::jsonb ? 'recursive_node_id'
+                                    OR node_json::jsonb ? 'recursive_root_node_id')) < $4",
                         &[&now, &run_id, &node_id, &(MAX_RECURSIVE_LEASES as i64)],
                     )
                     .map_err(|e| e.to_string())?
@@ -1743,11 +1747,23 @@ impl LocalProductStore {
                             .get("recursive_node_id")
                             .and_then(Value::as_str)
                             .map(str::to_string);
-                        let recursive_usage = recursive_node_id
+                        let recursive_usage_result = recursive_node_id
                             .as_deref()
                             .map(|_| recursive_usage_from_output(&output, &node_json))
-                            .transpose()?;
-                        let requested_retry = retryable_node_failure(&output)
+                            .transpose();
+                        let recursive_usage_unavailable = matches!(
+                            recursive_usage_result.as_ref(),
+                            Err(error) if error == RecursiveFailureReason::RecursiveUsageUnavailable.as_str()
+                        );
+                        let recursive_usage = match recursive_usage_result {
+                            Ok(usage) => usage,
+                            Err(_error) if recursive_usage_unavailable => {
+                                Some(crate::recursive_execution::RecursiveBudget::default())
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        let requested_retry = !recursive_usage_unavailable
+                            && retryable_node_failure(&output)
                             && attempt <= if recursive_node_id.is_some() {
                                 1
                             } else {
@@ -1769,7 +1785,13 @@ impl LocalProductStore {
                             false
                         };
 
-                        let actual_status = if should_retry { "pending" } else { final_status };
+                        let actual_status = if recursive_usage_unavailable {
+                            "failed"
+                        } else if should_retry {
+                            "pending"
+                        } else {
+                            final_status
+                        };
                         let completed_at = if matches!(actual_status, "completed" | "failed" | "cancelled" | "recovered") {
                             Some(now.as_str())
                         } else {
@@ -1785,6 +1807,22 @@ impl LocalProductStore {
                         ).map_err(|e| e.to_string())?;
                         if finalized != 1 {
                             if let Some(recursive_node_id) = recursive_node_id.as_deref() {
+                                if recursive_usage_unavailable {
+                                    append_audit_locked(
+                                        conn,
+                                        &now,
+                                        actor,
+                                        "workflow_node.late_usage_refused",
+                                        &node_id,
+                                        &json!({
+                                            "run_id": run_id,
+                                            "node_id": node_id,
+                                            "attempt": attempt,
+                                            "recursive_node_id": recursive_node_id,
+                                            "reason": RecursiveFailureReason::RecursiveUsageUnavailable.as_str(),
+                                        }),
+                                    )?;
+                                } else {
                                 let usage = recursive_usage.as_ref().expect("recursive usage");
                                 let _ = match super::recursive_execution::record_recursive_late_usage_sqlite(
                                     conn,
@@ -1823,6 +1861,7 @@ impl LocalProductStore {
                                         }),
                                     )?,
                                 };
+                                }
                             }
                             append_audit_locked(
                                 conn,
@@ -1851,7 +1890,16 @@ impl LocalProductStore {
                         }
 
                         let recursive_status = if let Some(recursive_node_id) = recursive_node_id.as_deref() {
-                            Some(super::recursive_execution::sync_recursive_completion_sqlite(
+                            Some(if recursive_usage_unavailable {
+                                super::recursive_execution::sync_recursive_usage_unavailable_sqlite(
+                                    conn,
+                                    run_id,
+                                    recursive_node_id,
+                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &now,
+                                )?
+                            } else {
+                            super::recursive_execution::sync_recursive_completion_sqlite(
                                 conn,
                                 run_id,
                                 recursive_node_id,
@@ -1860,7 +1908,8 @@ impl LocalProductStore {
                                 should_retry,
                                 recursive_usage.as_ref().expect("recursive usage"),
                                 &now,
-                            )?)
+                            )?
+                            })
                         } else {
                             None
                         };
@@ -2055,11 +2104,23 @@ impl LocalProductStore {
                             .get("recursive_node_id")
                             .and_then(Value::as_str)
                             .map(str::to_string);
-                        let recursive_usage = recursive_node_id
+                        let recursive_usage_result = recursive_node_id
                             .as_deref()
                             .map(|_| recursive_usage_from_output(&output, &node_json))
-                            .transpose()?;
-                        let requested_retry = retryable_node_failure(&output)
+                            .transpose();
+                        let recursive_usage_unavailable = matches!(
+                            recursive_usage_result.as_ref(),
+                            Err(error) if error == RecursiveFailureReason::RecursiveUsageUnavailable.as_str()
+                        );
+                        let recursive_usage = match recursive_usage_result {
+                            Ok(usage) => usage,
+                            Err(_error) if recursive_usage_unavailable => {
+                                Some(crate::recursive_execution::RecursiveBudget::default())
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        let requested_retry = !recursive_usage_unavailable
+                            && retryable_node_failure(&output)
                             && attempt <= if recursive_node_id.is_some() {
                                 1
                             } else {
@@ -2081,7 +2142,13 @@ impl LocalProductStore {
                             false
                         };
 
-                        let actual_status = if should_retry { "pending" } else { final_status };
+                        let actual_status = if recursive_usage_unavailable {
+                            "failed"
+                        } else if should_retry {
+                            "pending"
+                        } else {
+                            final_status
+                        };
                         let completed_at = if matches!(actual_status, "completed" | "failed" | "cancelled" | "recovered") {
                             Some(now.as_str())
                         } else {
@@ -2099,6 +2166,22 @@ impl LocalProductStore {
                         ).map_err(|e| e.to_string())?;
                         if finalized != 1 {
                             if let Some(recursive_node_id) = recursive_node_id.as_deref() {
+                                if recursive_usage_unavailable {
+                                    pg_append_audit(
+                                        &mut tx,
+                                        &now,
+                                        actor,
+                                        "workflow_node.late_usage_refused",
+                                        &node_id,
+                                        &json!({
+                                            "run_id": run_id,
+                                            "node_id": node_id,
+                                            "attempt": attempt,
+                                            "recursive_node_id": recursive_node_id,
+                                            "reason": RecursiveFailureReason::RecursiveUsageUnavailable.as_str(),
+                                        }),
+                                    )?;
+                                } else {
                                 let usage = recursive_usage.as_ref().expect("recursive usage");
                                 match super::recursive_execution::record_recursive_late_usage_pg(
                                     &mut tx,
@@ -2137,6 +2220,7 @@ impl LocalProductStore {
                                         }),
                                     )?,
                                 };
+                                }
                             }
                             pg_append_audit(
                                 &mut tx,
@@ -2165,7 +2249,16 @@ impl LocalProductStore {
                         }
 
                         let recursive_status = if let Some(recursive_node_id) = recursive_node_id.as_deref() {
-                            Some(super::recursive_execution::sync_recursive_completion_pg(
+                            Some(if recursive_usage_unavailable {
+                                super::recursive_execution::sync_recursive_usage_unavailable_pg(
+                                    &mut tx,
+                                    run_id,
+                                    recursive_node_id,
+                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &now,
+                                )?
+                            } else {
+                            super::recursive_execution::sync_recursive_completion_pg(
                                 &mut tx,
                                 run_id,
                                 recursive_node_id,
@@ -2174,7 +2267,8 @@ impl LocalProductStore {
                                 should_retry,
                                 recursive_usage.as_ref().expect("recursive usage"),
                                 &now,
-                            )?)
+                            )?
+                            })
                         } else {
                             None
                         };
@@ -5221,7 +5315,12 @@ fn pg_count_running_recursive_steps(
 fn recursive_marker_from_node_json(node_json: &str) -> Result<bool, String> {
     let metadata: Value = serde_json::from_str(node_json)
         .map_err(|_| "recursive_node_identity_malformed".to_string())?;
-    let Some(marker) = metadata.get("recursive_node_id") else {
+    let child_marker = metadata.get("recursive_node_id");
+    let root_marker = metadata.get("recursive_root_node_id");
+    if child_marker.is_some() && root_marker.is_some() {
+        return Err("recursive_node_identity_malformed".to_string());
+    }
+    let Some(marker) = child_marker.or(root_marker) else {
         return Ok(false);
     };
     let marker = marker
@@ -5513,6 +5612,13 @@ fn pg_next_sequence(
     table: &str,
     column: &str,
 ) -> Result<i64, String> {
+    let sequence_owner = format!("local_product_store_sequence:{table}:{column}");
+    client
+        .execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1))",
+            &[&sequence_owner],
+        )
+        .map_err(|e| e.to_string())?;
     let sql = format!("SELECT COALESCE(MAX({column}), 0) + 1 FROM {table}");
     let val: i64 = client
         .query_one(&sql, &[])
@@ -6098,6 +6204,7 @@ mod recursive_scheduler_tests {
         RecursiveBudget, RecursiveProposal, RecursiveScope, RecursiveTree,
     };
     use std::collections::BTreeSet;
+    use std::sync::{Arc, Condvar, Mutex};
 
     struct RecursiveCapExecutor;
 
@@ -6119,6 +6226,125 @@ mod recursive_scheduler_tests {
         fn executor_type_name(&self) -> &str {
             "agent_step"
         }
+    }
+
+    struct BlockingRecursiveExecutor {
+        gate: Arc<(Mutex<(usize, usize)>, Condvar)>,
+        slot: usize,
+    }
+
+    impl NodeExecutor for BlockingRecursiveExecutor {
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            let (lock, ready) = &*self.gate;
+            let mut state = lock.lock().expect("recursive claim gate");
+            state.0 += 1;
+            ready.notify_all();
+            while state.1 <= self.slot {
+                state = ready.wait(state).expect("recursive claim release");
+            }
+            RecursiveCapExecutor.execute_node(_input)
+        }
+
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+    }
+
+    fn assert_concurrent_recursive_claim_cap(
+        factory: Arc<dyn Fn() -> LocalProductStore + Send + Sync>,
+        suffix: &str,
+    ) {
+        let _env_lock = crate::recursive_execution::test_env_lock()
+            .lock()
+            .expect("recursive environment lock");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let setup = factory();
+        let run_ids = (0..=MAX_RECURSIVE_LEASES)
+            .map(|index| format!("recursive-concurrent-cap-run-{suffix}-{index}"))
+            .collect::<Vec<_>>();
+        for (index, run_id) in run_ids.iter().enumerate() {
+            let node_id = format!("recursive-concurrent-cap-node-{suffix}-{index}");
+            setup
+                .import_workflow_run(&json!({
+                    "run_id": run_id,
+                    "workflow_id": format!("recursive-concurrent-cap-workflow-{suffix}-{index}"),
+                    "status": "running",
+                    "boundaries": {
+                        "execution_authority": "managed",
+                        "tenant_id": format!("recursive-cap-tenant-{index}"),
+                        "workspace_id": format!("recursive-cap-workspace-{index}")
+                    },
+                    "nodes": [{
+                        "node_id": node_id,
+                        "task_type": "agent_step",
+                        "status": "pending",
+                        "agent_id": format!("recursive-concurrent-cap-agent-{suffix}-{index}"),
+                        "recursive_root_node_id": node_id,
+                        "decision_source": "fixture"
+                    }],
+                    "edges": [],
+                    "events": [],
+                    "approvals": []
+                }))
+                .expect("concurrent recursive run");
+        }
+
+        let gate = Arc::new((Mutex::new((0usize, 0usize)), Condvar::new()));
+        let mut workers = Vec::new();
+        for (index, run_id) in run_ids
+            .iter()
+            .take(MAX_RECURSIVE_LEASES)
+            .cloned()
+            .enumerate()
+        {
+            let worker_factory = factory.clone();
+            let worker_gate = gate.clone();
+            workers.push(std::thread::spawn(move || {
+                worker_factory().tick_with_executor(
+                    &run_id,
+                    &format!("recursive-concurrent-scheduler-{index}"),
+                    0,
+                    &BlockingRecursiveExecutor {
+                        gate: worker_gate,
+                        slot: index,
+                    },
+                )
+            }));
+        }
+        let (lock, ready) = &*gate;
+        let mut state = lock.lock().expect("recursive claim gate");
+        while state.0 < MAX_RECURSIVE_LEASES {
+            state = ready.wait(state).expect("three recursive claims");
+        }
+        drop(state);
+
+        let fourth = factory()
+            .tick_with_executor(
+                &run_ids[MAX_RECURSIVE_LEASES],
+                "recursive-concurrent-scheduler-fourth",
+                0,
+                &RecursiveCapExecutor,
+            )
+            .expect("fourth recursive claim");
+        assert_eq!(fourth["action"], "no_ready_node");
+        let fourth_run = setup
+            .get_workflow_run(&run_ids[MAX_RECURSIVE_LEASES])
+            .expect("fourth run")
+            .expect("fourth run exists");
+        assert_eq!(fourth_run["nodes"][0]["db_status"], "pending");
+
+        for (index, worker) in workers.into_iter().enumerate() {
+            let mut state = lock.lock().expect("recursive release gate");
+            state.1 = index + 1;
+            ready.notify_all();
+            drop(state);
+            let result = worker
+                .join()
+                .expect("recursive claim worker")
+                .expect("tick");
+            assert_eq!(result["action"], "node_executed");
+        }
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 
     #[test]
@@ -6208,6 +6434,8 @@ mod recursive_scheduler_tests {
         );
         tree.bind_root_identity(&agent_id, &root_node_id, &root_receipt)
             .expect("root identity");
+        tree.bind_root_execution_scope(Some("fixture-tenant"), Some("fixture-workspace"))
+            .expect("root execution scope");
         std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
         let admission = tree
             .admit_child(&RecursiveProposal {
@@ -6244,7 +6472,7 @@ mod recursive_scheduler_tests {
                         "task_type": "agent_step",
                         "status": "completed",
                         "agent_id": agent_id,
-                        "recursive_node_id": root_node_id,
+                        "recursive_root_node_id": root_node_id,
                         "creation_receipt_sha256": root_receipt
                     },
                     {
@@ -6256,6 +6484,8 @@ mod recursive_scheduler_tests {
                         "recursive_capabilities": admission.node.capabilities,
                         "recursive_scope": serde_json::to_value(&admission.node.scope)
                             .expect("scope json"),
+                        "recursive_tenant_id": admission.node.tenant_id,
+                        "recursive_workspace_id": admission.node.workspace_id,
                         "decision_source": "fixture",
                         "usage_contract": {
                             "kind": "fixture",
@@ -6312,6 +6542,390 @@ mod recursive_scheduler_tests {
         );
     }
 
+    fn assert_unavailable_recursive_usage_terminalizes(store: LocalProductStore, suffix: &str) {
+        let _env_lock = crate::recursive_execution::test_env_lock()
+            .lock()
+            .expect("recursive environment lock");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let run_id = format!("recursive-usage-unavailable-run-{suffix}");
+        let workflow_id = format!("recursive-usage-unavailable-workflow-{suffix}");
+        let root_node_id = format!("recursive-usage-unavailable-root-{suffix}");
+        let agent_id = format!("recursive-usage-unavailable-agent-{suffix}");
+        let root_receipt = format!("recursive-usage-unavailable-receipt-{suffix}");
+        let scope = RecursiveScope {
+            repository: Some("fixture".to_string()),
+            allowed_paths: BTreeSet::from(["docs/".to_string()]),
+            capabilities: BTreeSet::from(["read".to_string()]),
+        };
+        let mut tree = RecursiveTree::new_with_root_node_id(
+            &run_id,
+            &workflow_id,
+            &root_node_id,
+            "root objective",
+            scope.clone(),
+            scope.capabilities.clone(),
+            RecursiveBudget {
+                calls_remaining: 2,
+                tokens_remaining: 20,
+                cost_micros_remaining: 20,
+                time_ms_remaining: 200,
+            },
+        );
+        tree.bind_root_identity(&agent_id, &root_node_id, &root_receipt)
+            .expect("root identity");
+        let admission = tree
+            .admit_child(&RecursiveProposal {
+                proposal_id: format!("recursive-usage-unavailable-proposal-{suffix}"),
+                parent_node_id: root_node_id.clone(),
+                parent_version: tree.nodes[&root_node_id].version,
+                objective: "provider child".to_string(),
+                context_summary: "fixture".to_string(),
+                requested_scope: scope.clone(),
+                requested_capabilities: scope.capabilities.clone(),
+                budget: RecursiveBudget {
+                    calls_remaining: 1,
+                    tokens_remaining: 10,
+                    cost_micros_remaining: 10,
+                    time_ms_remaining: 100,
+                },
+                receipt_sha256: format!("recursive-usage-unavailable-action-{suffix}"),
+            })
+            .expect("admit child");
+        let child_id = admission.node.node_id.clone();
+        store
+            .import_workflow_run(&json!({
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "status": "running",
+                "boundaries": {"execution_authority": "managed"},
+                "nodes": [
+                    {
+                        "node_id": root_node_id,
+                        "task_type": "agent_step",
+                        "status": "completed",
+                        "agent_id": agent_id,
+                        "recursive_root_node_id": root_node_id,
+                        "creation_receipt_sha256": root_receipt
+                    },
+                    {
+                        "node_id": child_id,
+                        "task_type": "agent_step",
+                        "status": "pending",
+                        "recursive_node_id": child_id,
+                        "parent_node_id": root_node_id,
+                        "recursive_capabilities": admission.node.capabilities,
+                        "recursive_scope": admission.node.scope,
+                        "recursive_tenant_id": admission.node.tenant_id,
+                        "recursive_workspace_id": admission.node.workspace_id,
+                        "decision_source": "provider",
+                        "usage_contract": {"kind": "unavailable"}
+                    }
+                ],
+                "edges": [],
+                "events": [],
+                "approvals": []
+            }))
+            .expect("workflow");
+        store
+            .save_recursive_tree_with_expected_version(&tree, 0)
+            .expect("tree");
+        let tick = store
+            .tick_with_executor(
+                &run_id,
+                "scheduler-usage-unavailable",
+                0,
+                &RecursiveCapExecutor,
+            )
+            .expect("terminal tick");
+        assert_eq!(tick["action"], "node_executed");
+        let loaded = store
+            .load_recursive_tree(&run_id)
+            .expect("tree")
+            .expect("tree exists");
+        assert_eq!(
+            loaded.execution_state,
+            crate::recursive_execution::RecursiveExecutionState::TerminalFailed
+        );
+        assert_eq!(
+            loaded.nodes[&child_id].failure_reason.as_deref(),
+            Some(RecursiveFailureReason::RecursiveUsageUnavailable.as_str())
+        );
+        assert!(loaded.active_leases.is_empty());
+        assert_eq!(loaded.reserved_budget, RecursiveBudget::default());
+        let run = store
+            .get_workflow_run(&run_id)
+            .expect("run")
+            .expect("run exists");
+        assert_eq!(
+            run["nodes"]
+                .as_array()
+                .expect("nodes")
+                .iter()
+                .find(|node| node["node_id"] == child_id)
+                .expect("child")["db_status"],
+            "failed"
+        );
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn unavailable_recursive_usage_terminalizes_sqlite() {
+        assert_unavailable_recursive_usage_terminalizes(
+            LocalProductStore::new(":memory:").expect("store"),
+            "sqlite",
+        );
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn unavailable_recursive_usage_terminalizes_postgres() {
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            if std::env::var("CI").as_deref() == Ok("true") {
+                panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+            }
+            return;
+        };
+        assert_unavailable_recursive_usage_terminalizes(
+            LocalProductStore::new_postgres(&url, || "2026-07-18T00:00:00Z".to_string())
+                .expect("PostgreSQL store"),
+            &uuid::Uuid::new_v4().to_string(),
+        );
+    }
+
+    fn assert_one_stale_retry_then_terminal(store: LocalProductStore, suffix: &str) {
+        let _env_lock = crate::recursive_execution::test_env_lock()
+            .lock()
+            .expect("recursive environment lock");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let run_id = format!("recursive-stale-run-{suffix}");
+        let workflow_id = format!("recursive-stale-workflow-{suffix}");
+        let root_id = format!("recursive-stale-root-{suffix}");
+        let agent_id = format!("recursive-stale-agent-{suffix}");
+        let root_receipt = format!("recursive-stale-root-receipt-{suffix}");
+        let scope = RecursiveScope {
+            repository: Some("fixture".to_string()),
+            allowed_paths: BTreeSet::from(["docs/".to_string()]),
+            capabilities: BTreeSet::from(["read".to_string()]),
+        };
+        let mut tree = RecursiveTree::new_with_root_node_id(
+            &run_id,
+            &workflow_id,
+            &root_id,
+            "root objective",
+            scope.clone(),
+            scope.capabilities.clone(),
+            RecursiveBudget {
+                calls_remaining: 3,
+                tokens_remaining: 30,
+                cost_micros_remaining: 30,
+                time_ms_remaining: 300,
+            },
+        );
+        tree.bind_root_identity(&agent_id, &root_id, &root_receipt)
+            .expect("root identity");
+        let child = tree
+            .admit_child(&RecursiveProposal {
+                proposal_id: format!("recursive-stale-proposal-{suffix}"),
+                parent_node_id: root_id.clone(),
+                parent_version: 1,
+                objective: "stale child".to_string(),
+                context_summary: "fixture".to_string(),
+                requested_scope: scope,
+                requested_capabilities: BTreeSet::from(["read".to_string()]),
+                budget: RecursiveBudget {
+                    calls_remaining: 1,
+                    tokens_remaining: 10,
+                    cost_micros_remaining: 10,
+                    time_ms_remaining: 100,
+                },
+                receipt_sha256: format!("recursive-stale-action-{suffix}"),
+            })
+            .expect("child");
+        let child_id = child.node.node_id.clone();
+        store
+            .import_workflow_run(&json!({
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "status": "running",
+                "boundaries": {"execution_authority": "managed"},
+                "nodes": [
+                    {
+                        "node_id": root_id,
+                        "task_type": "agent_step",
+                        "status": "completed",
+                        "agent_id": agent_id,
+                        "recursive_root_node_id": root_id,
+                        "creation_receipt_sha256": root_receipt
+                    },
+                    {
+                        "node_id": child_id,
+                        "task_type": "agent_step",
+                        "status": "pending",
+                        "attempt_count": 0,
+                        "recursive_node_id": child_id,
+                        "recursive_capabilities": child.node.capabilities,
+                        "recursive_scope": child.node.scope,
+                        "recursive_tenant_id": child.node.tenant_id,
+                        "recursive_workspace_id": child.node.workspace_id,
+                        "usage_contract": {"kind": "fixture", "calls": 1, "tokens": 1, "cost_micros": 1, "time_ms": 1},
+                        "decision_source": "fixture"
+                    }
+                ],
+                "edges": [],
+                "events": [],
+                "approvals": []
+            }))
+            .expect("workflow");
+        store
+            .save_recursive_tree_with_expected_version(&tree, 0)
+            .expect("tree");
+
+        let seed_attempt = |store: &LocalProductStore, attempt: i64| -> Result<(), String> {
+            let lease_id = format!("workflow:{run_id}:{child_id}:{attempt}");
+            match &store.db {
+                DatabaseConnection::Sqlite(_) => store.with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE workflow_run_nodes SET status='running', attempt_count=?1,
+                         leased_at='2026-07-17T00:00:00Z' WHERE run_id=?2 AND node_id=?3",
+                        params![attempt, run_id, child_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    super::super::recursive_execution::sync_recursive_lease_sqlite(
+                        conn,
+                        &run_id,
+                        &child_id,
+                        &lease_id,
+                        "2026-07-17T00:00:00Z",
+                    )
+                }),
+                #[cfg(feature = "pg")]
+                DatabaseConnection::Pg(_) => store.with_pg_conn(|client| {
+                    let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                    let attempt = i32::try_from(attempt).map_err(|error| error.to_string())?;
+                    tx.execute(
+                        "UPDATE workflow_run_nodes SET status='running', attempt_count=$1,
+                         leased_at='2026-07-17T00:00:00Z' WHERE run_id=$2 AND node_id=$3",
+                        &[&attempt, &run_id, &child_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    super::super::recursive_execution::sync_recursive_lease_pg(
+                        &mut tx,
+                        &run_id,
+                        &child_id,
+                        &lease_id,
+                        "2026-07-17T00:00:00Z",
+                    )?;
+                    tx.commit().map_err(|error| error.to_string())
+                }),
+            }
+        };
+
+        seed_attempt(&store, 1).expect("first attempt");
+        assert!(store.recover_stale_leases(0).expect("first recovery") >= 1);
+        let after_first = store
+            .load_recursive_tree(&run_id)
+            .expect("tree")
+            .expect("tree exists");
+        assert_eq!(after_first.nodes[&child_id].retry_count, 1);
+        assert_eq!(after_first.nodes[&child_id].status, "ready");
+        assert_eq!(
+            after_first.nodes[&child_id].actual_usage,
+            RecursiveBudget::default()
+        );
+        let stale_lease_id = format!("workflow:{run_id}:{child_id}:1");
+        let late_completion = match &store.db {
+            DatabaseConnection::Sqlite(_) => store.with_conn(|conn| {
+                super::super::recursive_execution::sync_recursive_completion_sqlite(
+                    conn,
+                    &run_id,
+                    &child_id,
+                    &stale_lease_id,
+                    true,
+                    false,
+                    &RecursiveBudget {
+                        calls_remaining: 1,
+                        tokens_remaining: 1,
+                        cost_micros_remaining: 1,
+                        time_ms_remaining: 1,
+                    },
+                    "2026-07-18T00:00:00Z",
+                )
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => store.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                super::super::recursive_execution::sync_recursive_completion_pg(
+                    &mut tx,
+                    &run_id,
+                    &child_id,
+                    &stale_lease_id,
+                    true,
+                    false,
+                    &RecursiveBudget {
+                        calls_remaining: 1,
+                        tokens_remaining: 1,
+                        cost_micros_remaining: 1,
+                        time_ms_remaining: 1,
+                    },
+                    "2026-07-18T00:00:00Z",
+                )
+            }),
+        };
+        assert!(late_completion.is_err(), "stale completion must be fenced");
+        let after_late = store
+            .load_recursive_tree(&run_id)
+            .expect("tree")
+            .expect("tree exists");
+        assert_eq!(after_late.nodes[&child_id].retry_count, 1);
+        assert_eq!(after_late.nodes[&child_id].status, "ready");
+        assert_eq!(
+            after_late.nodes[&child_id].actual_usage,
+            RecursiveBudget::default()
+        );
+
+        seed_attempt(&store, 2).expect("replacement attempt");
+        assert!(store.recover_stale_leases(0).expect("second recovery") >= 1);
+        let terminal = store
+            .load_recursive_tree(&run_id)
+            .expect("tree")
+            .expect("tree exists");
+        assert_eq!(terminal.nodes[&child_id].status, "failed");
+        assert_eq!(
+            terminal.nodes[&child_id].failure_reason.as_deref(),
+            Some(RecursiveFailureReason::RetryExhausted.as_str())
+        );
+        assert_eq!(
+            terminal.nodes[&child_id].actual_usage,
+            RecursiveBudget::default()
+        );
+        assert!(terminal.active_leases.is_empty());
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn sqlite_scheduler_retries_one_stale_recursive_lease() {
+        assert_one_stale_retry_then_terminal(
+            LocalProductStore::new(":memory:").expect("store"),
+            "sqlite",
+        );
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn postgres_scheduler_retries_one_stale_recursive_lease() {
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            if std::env::var("CI").as_deref() == Ok("true") {
+                panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+            }
+            return;
+        };
+        assert_one_stale_retry_then_terminal(
+            LocalProductStore::new_postgres(&url, || "2026-07-18T00:00:00Z".to_string())
+                .expect("PostgreSQL store"),
+            &uuid::Uuid::new_v4().to_string(),
+        );
+    }
+
     #[test]
     fn global_recursive_lease_counter_ignores_non_recursive_agent_steps() {
         let conn = rusqlite::Connection::open_in_memory().expect("sqlite");
@@ -6334,7 +6948,12 @@ mod recursive_scheduler_tests {
                 params![
                     format!("run-{index}"),
                     format!("node-{index}"),
-                    json!({"recursive_node_id": format!("recursive-{index}")}).to_string()
+                    if index == 0 {
+                        json!({"recursive_root_node_id": format!("recursive-root-{index}")})
+                            .to_string()
+                    } else {
+                        json!({"recursive_node_id": format!("recursive-{index}")}).to_string()
+                    }
                 ],
             )
             .expect("recursive row");
@@ -6387,7 +7006,98 @@ mod recursive_scheduler_tests {
     }
 
     #[test]
+    fn concurrent_sqlite_claims_enforce_global_three_lease_cap() {
+        let suffix = uuid::Uuid::new_v4().to_string();
+        let path = std::env::temp_dir().join(format!("recursive-cap-{suffix}.sqlite3"));
+        let path_text = path.to_string_lossy().to_string();
+        let factory: Arc<dyn Fn() -> LocalProductStore + Send + Sync> =
+            Arc::new(move || LocalProductStore::new(&path_text).expect("concurrent SQLite store"));
+        assert_concurrent_recursive_claim_cap(factory, &suffix);
+        std::fs::remove_file(path).expect("remove concurrent SQLite fixture");
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn concurrent_postgres_claims_enforce_global_three_lease_cap() {
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            if std::env::var("CI").as_deref() == Ok("true") {
+                panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+            }
+            return;
+        };
+        let factory: Arc<dyn Fn() -> LocalProductStore + Send + Sync> = Arc::new(move || {
+            LocalProductStore::new_postgres(&url, || "2026-07-18T00:00:00Z".to_string())
+                .expect("concurrent PostgreSQL store")
+        });
+        assert_concurrent_recursive_claim_cap(factory, &uuid::Uuid::new_v4().to_string());
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn postgres_malformed_recursive_metadata_cannot_bypass_global_lease_cap() {
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            if std::env::var("CI").as_deref() == Ok("true") {
+                panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+            }
+            return;
+        };
+        let store = LocalProductStore::new_postgres(&url, || "2026-07-18T00:00:00Z".to_string())
+            .expect("PostgreSQL store");
+        let suffix = uuid::Uuid::new_v4().to_string();
+        let run_id = format!("recursive-pg-malformed-run-{suffix}");
+        let node_id = format!("recursive-pg-malformed-node-{suffix}");
+        store
+            .import_workflow_run(&json!({
+                "run_id": run_id,
+                "workflow_id": format!("recursive-pg-malformed-workflow-{suffix}"),
+                "status": "running",
+                "boundaries": {"execution_authority": "managed"},
+                "nodes": [{
+                    "node_id": node_id,
+                    "task_type": "agent_step",
+                    "status": "running",
+                    "agent_id": format!("recursive-pg-malformed-agent-{suffix}")
+                }],
+                "edges": [],
+                "events": [],
+                "approvals": []
+            }))
+            .expect("workflow");
+        store
+            .with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                tx.execute(
+                    "UPDATE workflow_run_nodes SET node_json='{' WHERE run_id=$1 AND node_id=$2",
+                    &[&run_id, &node_id],
+                )
+                .map_err(|error| error.to_string())?;
+                assert_eq!(
+                    pg_count_running_recursive_steps(&mut tx)
+                        .expect_err("malformed metadata must fail closed"),
+                    "recursive_node_identity_malformed"
+                );
+                tx.rollback().map_err(|error| error.to_string())
+            })
+            .expect("malformed identity check");
+        store
+            .with_pg_conn(|client| {
+                client
+                    .execute(
+                        "UPDATE workflow_run_nodes SET status='completed' WHERE run_id=$1 AND node_id=$2",
+                        &[&run_id, &node_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .expect("release malformed recursive fixture capacity");
+    }
+
+    #[test]
     fn recursive_scheduler_claim_refuses_fourth_running_lease() {
+        let _env_lock = crate::recursive_execution::test_env_lock()
+            .lock()
+            .expect("recursive environment lock");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
         let store = LocalProductStore::new(":memory:").expect("store");
         let plan = store
             .create_workflow_plan("recursive lease cap", "test", "actor", |ids, _| {
@@ -6496,5 +7206,88 @@ mod recursive_scheduler_tests {
             })
             .collect();
         assert_eq!(conflicts.len(), 1, "expected one bounded-cap conflict");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn postgres_recursive_scheduler_claim_refuses_fourth_running_lease() {
+        let _env_lock = crate::recursive_execution::test_env_lock()
+            .lock()
+            .expect("recursive environment lock");
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            if std::env::var("CI").as_deref() == Ok("true") {
+                panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+            }
+            return;
+        };
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let store = LocalProductStore::new_postgres(&url, || "2026-07-18T00:00:00Z".to_string())
+            .expect("PostgreSQL store");
+        let suffix = uuid::Uuid::new_v4().to_string();
+        let run_id = format!("recursive-pg-cap-run-{suffix}");
+        let nodes = (0..=MAX_RECURSIVE_LEASES)
+            .map(|index| {
+                let node_id = format!("recursive-pg-cap-node-{suffix}-{index}");
+                let marker = if index == 0 {
+                    json!({"recursive_root_node_id": node_id})
+                } else {
+                    json!({"recursive_node_id": node_id})
+                };
+                let mut node = json!({
+                    "node_id": node_id,
+                    "task_type": "agent_step",
+                    "status": if index < MAX_RECURSIVE_LEASES { "running" } else { "pending" },
+                    "agent_id": format!("recursive-pg-cap-agent-{suffix}-{index}"),
+                    "leased_at": "2026-07-18T00:00:00Z",
+                });
+                node.as_object_mut()
+                    .expect("node object")
+                    .extend(marker.as_object().expect("marker object").clone());
+                node
+            })
+            .collect::<Vec<_>>();
+        store
+            .import_workflow_run(&json!({
+                "run_id": run_id,
+                "workflow_id": format!("recursive-pg-cap-workflow-{suffix}"),
+                "status": "running",
+                "boundaries": {"execution_authority": "managed"},
+                "nodes": nodes,
+                "edges": [],
+                "events": [],
+                "approvals": []
+            }))
+            .expect("workflow");
+        let result = store
+            .tick_with_executor(&run_id, "scheduler-test", 0, &RecursiveCapExecutor)
+            .expect("tick");
+        assert_eq!(result["action"], "no_ready_node");
+        let run = store
+            .get_workflow_run(&run_id)
+            .expect("load run")
+            .expect("run exists");
+        let fourth = format!("recursive-pg-cap-node-{suffix}-3");
+        assert_eq!(
+            run["nodes"]
+                .as_array()
+                .expect("nodes")
+                .iter()
+                .find(|node| node["node_id"] == fourth)
+                .expect("fourth node")["db_status"],
+            "pending"
+        );
+        store
+            .with_pg_conn(|client| {
+                client
+                    .execute(
+                        "UPDATE workflow_run_nodes SET status='completed' WHERE run_id=$1",
+                        &[&run_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .expect("release recursive capacity after assertion");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 }
