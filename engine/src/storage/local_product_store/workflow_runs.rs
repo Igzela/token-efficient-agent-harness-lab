@@ -3708,6 +3708,13 @@ impl LocalProductStore {
                     } else {
                         "pending"
                     };
+                    let recovery_reason = if recursive_tree_missing {
+                        "recursive_tree_missing"
+                    } else if recursive_node_missing {
+                        "recursive_node_missing"
+                    } else {
+                        "recursive_retry_exhausted"
+                    };
                     let mut recovered_node_json = recursive_state
                         .as_ref()
                         .map(|(_, _, node_json)| serde_json::from_str::<Value>(node_json))
@@ -3728,12 +3735,14 @@ impl LocalProductStore {
                     let updated = tx
                         .execute(
                             "UPDATE workflow_run_nodes SET status = ?1, completed_at = ?2,
-                             leased_at = NULL, node_json = COALESCE(?3, node_json)
-                             WHERE run_id = ?4 AND node_id = ?5 AND status = 'running'
-                               AND leased_at = ?6",
+                             blocked_reason = ?3, leased_at = NULL,
+                             node_json = COALESCE(?4, node_json)
+                             WHERE run_id = ?5 AND node_id = ?6 AND status = 'running'
+                               AND leased_at = ?7",
                             params![
                                 recovery_status,
                                 completed_at,
+                                (recovery_status == "failed").then_some(recovery_reason),
                                 recovered_node_json.map(|value| value.to_string()),
                                 run_id,
                                 node_id,
@@ -3891,6 +3900,13 @@ impl LocalProductStore {
                     } else {
                         "pending"
                     };
+                    let recovery_reason = if recursive_tree_missing {
+                        "recursive_tree_missing"
+                    } else if recursive_node_missing {
+                        "recursive_node_missing"
+                    } else {
+                        "recursive_retry_exhausted"
+                    };
                     let mut recovered_node_json = recursive_state
                         .as_ref()
                         .map(|(_, _, node_json)| serde_json::from_str::<Value>(node_json))
@@ -3911,12 +3927,14 @@ impl LocalProductStore {
                     let updated = tx
                         .execute(
                             "UPDATE workflow_run_nodes SET status = $1, completed_at = $2,
-                             leased_at = NULL, node_json = COALESCE($3, node_json)
-                             WHERE run_id = $4 AND node_id = $5 AND status = 'running'
-                               AND leased_at = $6",
+                             blocked_reason = $3, leased_at = NULL,
+                             node_json = COALESCE($4, node_json)
+                             WHERE run_id = $5 AND node_id = $6 AND status = 'running'
+                               AND leased_at = $7",
                             &[
                                 &recovery_status,
                                 &completed_at,
+                                &(recovery_status == "failed").then_some(recovery_reason),
                                 &recovered_node_json.map(|value| value.to_string()),
                                 run_id,
                                 node_id,

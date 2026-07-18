@@ -124,7 +124,7 @@ fn action_type(action: &AgentAction) -> &'static str {
 }
 
 fn recursive_failure_reason_code(error: &str) -> Option<&'static str> {
-    const REASONS: [&str; 14] = [
+    const REASONS: [&str; 16] = [
         "recursive_disabled",
         "depth_exceeded",
         "child_limit_exceeded",
@@ -136,6 +136,8 @@ fn recursive_failure_reason_code(error: &str) -> Option<&'static str> {
         "stale_parent",
         "proposal_conflict",
         "receipt_conflict",
+        "recursive_tree_missing",
+        "recursive_node_missing",
         "scheduler_capacity_exhausted",
         "recursive_kill_switch_active",
         "recursive_node_execution_failed",
@@ -2914,11 +2916,18 @@ impl NodeExecutor for AgentStepExecutor {
                     .unwrap_or_else(|error| agent_step_fail(&error, &start))
             }
             Err(e) => {
+                let mut failure_details = json!({
+                    "action_type": "failed",
+                    "error": "agent_step_error",
+                });
+                if let Some(reason_code) = recursive_failure_reason_code(&e) {
+                    failure_details["reason_code"] = json!(reason_code);
+                }
                 self.append_agent_step_audit_best_effort(
                     "agent_step.failed",
                     &agent_id,
                     &input.run_id,
-                    &json!({"action_type": "failed", "error": "agent_step_error"}),
+                    &failure_details,
                 );
                 agent_step_fail(&e, &start)
             }
@@ -3114,9 +3123,32 @@ mod tests {
 
     // ── AR-2 agent step tests ────────────────────────────────────────────
 
-    // Serializes env-var access. All tests that set/remove ACP_ENABLE_AGENT_RUNTIME
-    // or ACP_AGENT_RUNTIME_KILL_SWITCH must hold this lock.
-    static AGENT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Serializes all process-global agent and recursive execution gates.
+    static AGENT_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct CombinedEnvLock;
+
+    struct CombinedEnvGuard {
+        _agent: std::sync::MutexGuard<'static, ()>,
+        _recursive: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl CombinedEnvLock {
+        fn lock(&self) -> Result<CombinedEnvGuard, &'static str> {
+            let agent = AGENT_ENV_MUTEX
+                .lock()
+                .map_err(|_| "agent env lock poisoned")?;
+            let recursive = crate::recursive_execution::test_env_lock()
+                .lock()
+                .map_err(|_| "recursive env lock poisoned")?;
+            Ok(CombinedEnvGuard {
+                _agent: agent,
+                _recursive: recursive,
+            })
+        }
+    }
+
+    static AGENT_ENV_LOCK: CombinedEnvLock = CombinedEnvLock;
 
     fn ar2_store() -> LocalProductStore {
         LocalProductStore::new(":memory:").expect("failed to create in-memory store")
@@ -4089,7 +4121,6 @@ mod tests {
     #[test]
     fn test_agent_step_recursive_child_is_control_admitted_and_persisted() {
         let _lock = AGENT_ENV_LOCK.lock().unwrap();
-        let _recursive_lock = crate::recursive_execution::test_env_lock().lock().unwrap();
         let store = Arc::new(ar2_store());
         create_test_agent(&store, "agent-recursive", "run-recursive");
         std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
@@ -4125,7 +4156,6 @@ mod tests {
     #[test]
     fn test_agent_step_ar3_no_provider_or_cli_called() {
         let _lock = AGENT_ENV_LOCK.lock().unwrap();
-        let _recursive_lock = crate::recursive_execution::test_env_lock().lock().unwrap();
         let store = Arc::new(ar2_store());
         create_test_agent(&store, "agent-ar3np", "run-ar3np");
         std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
@@ -4149,7 +4179,6 @@ mod tests {
     #[test]
     fn test_agent_step_cancel_proposal() {
         let _lock = AGENT_ENV_LOCK.lock().unwrap();
-        let _recursive_lock = crate::recursive_execution::test_env_lock().lock().unwrap();
         let store = Arc::new(ar2_store());
         create_test_agent(&store, "agent-ar3c", "run-ar3c");
         std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");

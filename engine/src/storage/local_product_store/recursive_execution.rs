@@ -265,6 +265,68 @@ fn check_node_index_pg(
     Ok(())
 }
 
+fn check_workflow_binding_sqlite(
+    conn: &rusqlite::Connection,
+    tree: &RecursiveTree,
+) -> Result<(), String> {
+    let workflow_id: Option<String> = conn
+        .query_row(
+            "SELECT workflow_id FROM workflow_runs WHERE run_id=?1",
+            [tree.root_run_id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(workflow_id) = workflow_id else {
+        return Ok(());
+    };
+    if workflow_id != tree.workflow_id {
+        return Err("recursive workflow identity is not bound to workflow run".to_string());
+    }
+    let root_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2",
+            params![tree.root_run_id, tree.root_node_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if root_exists != 1 {
+        return Err("recursive root node is not bound to workflow run".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn check_workflow_binding_pg(
+    client: &mut impl postgres::GenericClient,
+    tree: &RecursiveTree,
+) -> Result<(), String> {
+    let workflow_id: Option<String> = client
+        .query_opt(
+            "SELECT workflow_id FROM workflow_runs WHERE run_id=$1",
+            &[&tree.root_run_id],
+        )
+        .map_err(|error| error.to_string())?
+        .map(|row| row.get(0));
+    let Some(workflow_id) = workflow_id else {
+        return Ok(());
+    };
+    if workflow_id != tree.workflow_id {
+        return Err("recursive workflow identity is not bound to workflow run".to_string());
+    }
+    let root_exists: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2",
+            &[&tree.root_run_id, &tree.root_node_id],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if root_exists != 1 {
+        return Err("recursive root node is not bound to workflow run".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn persist_recursive_tree_sqlite(
     tx: &rusqlite::Connection,
     tree: &RecursiveTree,
@@ -275,6 +337,7 @@ pub(crate) fn persist_recursive_tree_sqlite(
     if let Some(expected_version) = expected_version {
         check_expected_sqlite(tx, &tree.root_run_id, expected_version)?;
     }
+    check_workflow_binding_sqlite(tx, tree)?;
     tx.execute(
         "INSERT INTO recursive_execution_trees
          (root_run_id, workflow_id, root_node_id, tree_schema_version, tree_json, version, created_at, updated_at)
@@ -571,6 +634,7 @@ impl LocalProductStore {
                 if !matches {
                     return Err("stale_parent".to_string());
                 }
+                check_workflow_binding_pg(&mut tx, tree)?;
                 tx.execute(
                     "INSERT INTO recursive_execution_trees
                      (root_run_id, workflow_id, root_node_id, tree_schema_version, tree_json, version, created_at, updated_at)
@@ -663,62 +727,15 @@ impl LocalProductStore {
     }
 
     pub fn load_recursive_tree(&self, root_run_id: &str) -> Result<Option<RecursiveTree>, String> {
-        let stored = match &self.db {
-            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                conn.query_row(
-                    "SELECT workflow_id, root_node_id, tree_schema_version, tree_json
-                     FROM recursive_execution_trees WHERE root_run_id=?1",
-                    params![root_run_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(|error| error.to_string())
-            })?,
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => {
+                self.with_conn(|conn| load_recursive_tree_sqlite(conn, root_run_id))
+            }
             #[cfg(feature = "pg")]
-            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                client
-                    .query_opt(
-                        "SELECT workflow_id, root_node_id, tree_schema_version, tree_json
-                         FROM recursive_execution_trees WHERE root_run_id=$1",
-                        &[&root_run_id],
-                    )
-                    .map(|row| {
-                        row.map(|row| {
-                            (
-                                row.get::<_, String>(0),
-                                row.get::<_, String>(1),
-                                row.get::<_, String>(2),
-                                row.get::<_, String>(3),
-                            )
-                        })
-                    })
-                    .map_err(|error| error.to_string())
-            })?,
-        };
-        stored
-            .map(|(workflow_id, root_node_id, schema_version, value)| {
-                let mut tree: RecursiveTree =
-                    serde_json::from_str(&value).map_err(|error| error.to_string())?;
-                if tree.root_run_id != root_run_id
-                    || tree.workflow_id != workflow_id
-                    || tree.root_node_id != root_node_id
-                    || tree.schema_version != schema_version
-                    || tree.schema_version != RECURSIVE_SCHEMA_VERSION
-                {
-                    return Err("recursive tree identity or schema conflict".to_string());
-                }
-                normalize_loaded_tree(&mut tree);
-                validate_tree_for_persistence(&tree)?;
-                Ok(tree)
-            })
-            .transpose()
+            DatabaseConnection::Pg(_) => {
+                self.with_pg_conn(|client| load_recursive_tree_pg(client, root_run_id))
+            }
+        }
     }
 
     pub fn recursive_tree_operator_evidence(&self, root_run_id: &str) -> Result<Value, String> {
@@ -901,7 +918,10 @@ impl LocalProductStore {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
                 let now = self.now();
                 let rows = tx
-                    .query("SELECT root_run_id FROM recursive_execution_trees", &[])
+                    .query(
+                        "SELECT root_run_id FROM recursive_execution_trees ORDER BY root_run_id",
+                        &[],
+                    )
                     .map_err(|error| error.to_string())?;
                 let mut changed = 0;
                 for row in rows {
@@ -1084,6 +1104,7 @@ fn load_recursive_tree_sqlite(
                 return Err("recursive tree identity or schema conflict".to_string());
             }
             normalize_loaded_tree(&mut tree);
+            check_workflow_binding_sqlite(conn, &tree)?;
             validate_tree_for_persistence(&tree)?;
             Ok(tree)
         })
@@ -1209,6 +1230,7 @@ fn load_recursive_tree_pg(
                 return Err("recursive tree identity or schema conflict".to_string());
             }
             normalize_loaded_tree(&mut tree);
+            check_workflow_binding_pg(client, &tree)?;
             validate_tree_for_persistence(&tree)?;
             Ok(tree)
         })
