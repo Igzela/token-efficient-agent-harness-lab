@@ -569,6 +569,7 @@ fn apply_sqlite_operation(
                 &mutation.run_id,
                 node,
                 edge,
+                &mutation.agent_id,
             )?;
             super::workflow_runs::dag_mutations::insert_workflow_run_node_locked(
                 conn,
@@ -1182,6 +1183,7 @@ fn apply_pg_operation(
                 &mutation.run_id,
                 node,
                 edge,
+                &mutation.agent_id,
             )?;
             super::workflow_runs::dag_mutations::pg_insert_workflow_run_node(
                 client,

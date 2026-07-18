@@ -329,6 +329,7 @@ fn validate_recursive_workflow_payload(
     tree: &RecursiveTree,
     node: &Value,
     edge: &Value,
+    agent_id: &str,
 ) -> Result<(), String> {
     let workflow_node_id = node
         .get("node_id")
@@ -345,6 +346,11 @@ fn validate_recursive_workflow_payload(
     if workflow_node_id != recursive_node_id
         || !tree.accepted_proposals.contains(proposal_id)
         || !tree.receipts.contains_key(proposal_id)
+        || node.get("task_type").and_then(Value::as_str) != Some("agent_step")
+        || node.get("status").and_then(Value::as_str) != Some("pending")
+        || node.get("attempt_count").and_then(Value::as_i64) != Some(0)
+        || node.get("agent_id").and_then(Value::as_str) != Some(agent_id)
+        || node.get("acceptance_reason").and_then(Value::as_str) != Some("accepted")
     {
         return Err("recursive workflow node is not bound to accepted tree proposal".to_string());
     }
@@ -369,6 +375,7 @@ fn validate_recursive_workflow_payload(
         || edge.get("from_node_id").and_then(Value::as_str)
             != recursive_node.parent_node_id.as_deref()
         || edge.get("to_node_id").and_then(Value::as_str) != Some(workflow_node_id)
+        || edge.get("edge_type").and_then(Value::as_str) != Some("dependency")
         || edge.get("recursive") != Some(&Value::Bool(true))
     {
         return Err("recursive workflow edge does not match accepted tree snapshot".to_string());
@@ -381,10 +388,11 @@ pub(crate) fn validate_recursive_workflow_mutation_sqlite(
     root_run_id: &str,
     node: &Value,
     edge: &Value,
+    agent_id: &str,
 ) -> Result<(), String> {
     let tree = load_recursive_tree_sqlite(conn, root_run_id)?
         .ok_or_else(|| "recursive_tree_missing".to_string())?;
-    validate_recursive_workflow_payload(&tree, node, edge)
+    validate_recursive_workflow_payload(&tree, node, edge, agent_id)
 }
 
 #[cfg(feature = "pg")]
@@ -393,10 +401,11 @@ pub(crate) fn validate_recursive_workflow_mutation_pg(
     root_run_id: &str,
     node: &Value,
     edge: &Value,
+    agent_id: &str,
 ) -> Result<(), String> {
     let tree = load_recursive_tree_pg(client, root_run_id)?
         .ok_or_else(|| "recursive_tree_missing".to_string())?;
-    validate_recursive_workflow_payload(&tree, node, edge)
+    validate_recursive_workflow_payload(&tree, node, edge, agent_id)
 }
 
 pub(crate) fn persist_recursive_tree_sqlite(
