@@ -1780,6 +1780,46 @@ impl LocalProductStore {
                             params![actual_status, completed_at, run_id, node_id, attempt],
                         ).map_err(|e| e.to_string())?;
                         if finalized != 1 {
+                            if let Some(recursive_node_id) = recursive_node_id.as_deref() {
+                                let usage = recursive_usage_from_output(&output);
+                                let _ = match super::recursive_execution::record_recursive_late_usage_sqlite(
+                                    conn,
+                                    run_id,
+                                    recursive_node_id,
+                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &usage,
+                                    &now,
+                                ) {
+                                    Ok(within_tree_budget) => append_audit_locked(
+                                        conn,
+                                        &now,
+                                        actor,
+                                        "workflow_node.late_usage_accounted",
+                                        &node_id,
+                                        &json!({
+                                            "run_id": run_id,
+                                            "node_id": node_id,
+                                            "attempt": attempt,
+                                            "recursive_node_id": recursive_node_id,
+                                            "within_tree_budget": within_tree_budget,
+                                        }),
+                                    )?,
+                                    Err(error) => append_audit_locked(
+                                        conn,
+                                        &now,
+                                        actor,
+                                        "workflow_node.late_usage_refused",
+                                        &node_id,
+                                        &json!({
+                                            "run_id": run_id,
+                                            "node_id": node_id,
+                                            "attempt": attempt,
+                                            "recursive_node_id": recursive_node_id,
+                                            "reason": error,
+                                        }),
+                                    )?,
+                                };
+                            }
                             append_audit_locked(
                                 conn,
                                 &now,
@@ -2023,6 +2063,46 @@ impl LocalProductStore {
                             &[&actual_status, &completed_at, &run_id, &node_id, &expected_attempt],
                         ).map_err(|e| e.to_string())?;
                         if finalized != 1 {
+                            if let Some(recursive_node_id) = recursive_node_id.as_deref() {
+                                let usage = recursive_usage_from_output(&output);
+                                match super::recursive_execution::record_recursive_late_usage_pg(
+                                    &mut tx,
+                                    run_id,
+                                    recursive_node_id,
+                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &usage,
+                                    &now,
+                                ) {
+                                    Ok(within_tree_budget) => pg_append_audit(
+                                        &mut tx,
+                                        &now,
+                                        actor,
+                                        "workflow_node.late_usage_accounted",
+                                        &node_id,
+                                        &json!({
+                                            "run_id": run_id,
+                                            "node_id": node_id,
+                                            "attempt": attempt,
+                                            "recursive_node_id": recursive_node_id,
+                                            "within_tree_budget": within_tree_budget,
+                                        }),
+                                    )?,
+                                    Err(error) => pg_append_audit(
+                                        &mut tx,
+                                        &now,
+                                        actor,
+                                        "workflow_node.late_usage_refused",
+                                        &node_id,
+                                        &json!({
+                                            "run_id": run_id,
+                                            "node_id": node_id,
+                                            "attempt": attempt,
+                                            "recursive_node_id": recursive_node_id,
+                                            "reason": error,
+                                        }),
+                                    )?,
+                                };
+                            }
                             pg_append_audit(
                                 &mut tx,
                                 &now,
@@ -3597,6 +3677,7 @@ impl LocalProductStore {
                                 })
                         });
                     let mut recursive_tree_missing = false;
+                    let mut recursive_node_missing = false;
                     let recursive_retry = if let Some((recursive_node_id, attempt)) =
                         recursive_state.as_ref()
                     {
@@ -3607,8 +3688,12 @@ impl LocalProductStore {
                             &recursive_retry_usage(),
                         ) {
                             Ok(allowed) => *attempt <= 1 && allowed,
-                            Err(error) if error == "stale_parent" => {
+                            Err(error) if error == "recursive_tree_missing" => {
                                 recursive_tree_missing = true;
+                                false
+                            }
+                            Err(error) if error == "recursive_node_missing" => {
+                                recursive_node_missing = true;
                                 false
                             }
                             Err(error) => return Err(error),
@@ -3641,6 +3726,20 @@ impl LocalProductStore {
                                         "run_id": run_id,
                                         "node_id": node_id,
                                         "reason": "stale_parent",
+                                    }),
+                                )?;
+                            } else if recursive_node_missing {
+                                append_audit_locked(
+                                    &tx,
+                                    &now,
+                                    "scheduler",
+                                    "recursive.node_missing_terminalized",
+                                    node_id,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": node_id,
+                                        "recursive_node_id": recursive_node_id,
+                                        "reason": "recursive_node_missing",
                                     }),
                                 )?;
                             } else {
@@ -3732,6 +3831,7 @@ impl LocalProductStore {
                                 })
                         });
                     let mut recursive_tree_missing = false;
+                    let mut recursive_node_missing = false;
                     let recursive_retry = if let Some((recursive_node_id, attempt)) =
                         recursive_state.as_ref()
                     {
@@ -3742,8 +3842,12 @@ impl LocalProductStore {
                             &recursive_retry_usage(),
                         ) {
                             Ok(allowed) => *attempt <= 1 && allowed,
-                            Err(error) if error == "stale_parent" => {
+                            Err(error) if error == "recursive_tree_missing" => {
                                 recursive_tree_missing = true;
+                                false
+                            }
+                            Err(error) if error == "recursive_node_missing" => {
+                                recursive_node_missing = true;
                                 false
                             }
                             Err(error) => return Err(error),
@@ -3776,6 +3880,20 @@ impl LocalProductStore {
                                         "run_id": run_id,
                                         "node_id": node_id,
                                         "reason": "stale_parent",
+                                    }),
+                                )?;
+                            } else if recursive_node_missing {
+                                pg_append_audit(
+                                    &mut tx,
+                                    &now,
+                                    "scheduler",
+                                    "recursive.node_missing_terminalized",
+                                    node_id,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": node_id,
+                                        "recursive_node_id": recursive_node_id,
+                                        "reason": "recursive_node_missing",
                                     }),
                                 )?;
                             } else {
@@ -3951,7 +4069,7 @@ fn valid_scope_identifier(value: &str) -> bool {
         })
 }
 
-fn insert_workflow_run_event_locked(
+pub(crate) fn insert_workflow_run_event_locked(
     conn: &rusqlite::Connection,
     run_id: &str,
     node_id: Option<&str>,
@@ -5243,7 +5361,7 @@ fn pg_next_event_sequence(client: &mut impl postgres::GenericClient) -> Result<i
 }
 
 #[cfg(feature = "pg")]
-fn pg_insert_workflow_run_event(
+pub(crate) fn pg_insert_workflow_run_event(
     client: &mut impl postgres::GenericClient,
     run_id: &str,
     node_id: Option<&str>,

@@ -31,8 +31,18 @@ pub(crate) fn insert_workflow_run_node_locked(
         .and_then(Value::as_str)
         .unwrap_or("pending");
     let profile_id = node.get("profile_id").and_then(Value::as_str);
+    let existing: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2",
+            params![run_id, node_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if existing > 0 {
+        return Err(format!("duplicate node_id: {node_id}"));
+    }
     conn.execute(
-        "INSERT OR REPLACE INTO workflow_run_nodes
+        "INSERT INTO workflow_run_nodes
          (run_id, node_id, task_type, status, node_json,
           started_at, completed_at, attempt_count, timeout_ms, blocked_reason, leased_at, profile_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -78,8 +88,32 @@ pub(crate) fn insert_workflow_run_edge_locked(
         .get("edge_type")
         .and_then(Value::as_str)
         .unwrap_or("dependency");
+    let endpoints: (i64, i64) = conn
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2),
+                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?3)",
+            params![run_id, from_node_id, to_node_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    if endpoints != (1, 1) {
+        return Err(format!(
+            "workflow edge {edge_id} references missing endpoint"
+        ));
+    }
+    let existing: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM workflow_run_edges WHERE run_id=?1 AND edge_id=?2",
+            params![run_id, edge_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if existing > 0 {
+        return Err(format!("duplicate edge_id: {edge_id}"));
+    }
     conn.execute(
-        "INSERT OR REPLACE INTO workflow_run_edges
+        "INSERT INTO workflow_run_edges
          (run_id, edge_id, from_node_id, to_node_id, edge_type, edge_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
@@ -114,6 +148,16 @@ pub(crate) fn pg_insert_workflow_run_node(
         .and_then(Value::as_str)
         .unwrap_or("pending");
     let profile_id = node.get("profile_id").and_then(Value::as_str);
+    let existing: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2",
+            &[&run_id, &node_id],
+        )
+        .map_err(|e| e.to_string())?
+        .get(0);
+    if existing > 0 {
+        return Err(format!("duplicate node_id: {node_id}"));
+    }
     let node_json = node.to_string();
     let started_at = node.get("started_at").and_then(Value::as_str);
     let completed_at = node.get("completed_at").and_then(Value::as_str);
@@ -147,12 +191,7 @@ pub(crate) fn pg_insert_workflow_run_node(
              (run_id, node_id, task_type, status, node_json,
               started_at, completed_at, attempt_count, timeout_ms, blocked_reason, leased_at, profile_id)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-             ON CONFLICT (run_id, node_id) DO UPDATE SET
-              task_type = EXCLUDED.task_type, status = EXCLUDED.status, node_json = EXCLUDED.node_json,
-              started_at = EXCLUDED.started_at, completed_at = EXCLUDED.completed_at,
-              attempt_count = EXCLUDED.attempt_count, timeout_ms = EXCLUDED.timeout_ms,
-              blocked_reason = EXCLUDED.blocked_reason, leased_at = EXCLUDED.leased_at,
-              profile_id = EXCLUDED.profile_id",
+             ",
             &params,
         )
         .map_err(|e| e.to_string())?;
@@ -181,6 +220,30 @@ pub(crate) fn pg_insert_workflow_run_edge(
         .get("edge_type")
         .and_then(Value::as_str)
         .unwrap_or("dependency");
+    let endpoint_row = client
+        .query_one(
+            "SELECT
+                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2),
+                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$3)",
+            &[&run_id, &from_node_id, &to_node_id],
+        )
+        .map_err(|e| e.to_string())?;
+    let endpoints = (endpoint_row.get::<_, i64>(0), endpoint_row.get::<_, i64>(1));
+    if endpoints != (1, 1) {
+        return Err(format!(
+            "workflow edge {edge_id} references missing endpoint"
+        ));
+    }
+    let existing: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM workflow_run_edges WHERE run_id=$1 AND edge_id=$2",
+            &[&run_id, &edge_id],
+        )
+        .map_err(|e| e.to_string())?
+        .get(0);
+    if existing > 0 {
+        return Err(format!("duplicate edge_id: {edge_id}"));
+    }
     let edge_json = edge.to_string();
     let params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
         &run_id,
@@ -195,9 +258,7 @@ pub(crate) fn pg_insert_workflow_run_edge(
             "INSERT INTO workflow_run_edges
              (run_id, edge_id, from_node_id, to_node_id, edge_type, edge_json)
              VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (run_id, edge_id) DO UPDATE SET
-              from_node_id = EXCLUDED.from_node_id, to_node_id = EXCLUDED.to_node_id,
-              edge_type = EXCLUDED.edge_type, edge_json = EXCLUDED.edge_json",
+             ",
             &params,
         )
         .map_err(|e| e.to_string())?;

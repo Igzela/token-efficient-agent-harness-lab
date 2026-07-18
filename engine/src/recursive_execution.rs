@@ -197,6 +197,8 @@ pub struct RecursiveTree {
     pub active_leases: BTreeSet<String>,
     #[serde(default)]
     pub rejected_proposals: BTreeMap<String, RecursiveDecisionEvidence>,
+    #[serde(default)]
+    pub usage_receipts: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,6 +326,7 @@ impl RecursiveTree {
             receipts: BTreeMap::new(),
             active_leases: BTreeSet::new(),
             rejected_proposals: BTreeMap::new(),
+            usage_receipts: BTreeMap::new(),
         }
     }
 
@@ -520,18 +523,7 @@ impl RecursiveTree {
             }
             node.budget.can_spend(usage)
         };
-        let within_tree_budget = self
-            .root_budget_limit
-            .as_ref()
-            .map(|limit| {
-                limit.can_spend(&self.spent_budget) && {
-                    let mut after = self.spent_budget.clone();
-                    after.add(usage);
-                    limit.can_spend(&after)
-                }
-            })
-            .unwrap_or(true);
-        self.spent_budget.add(usage);
+        let within_tree_budget = self.record_usage(lease_id, usage)?;
         let within_budget = within_node_budget && within_tree_budget;
         let node = self
             .nodes
@@ -558,6 +550,51 @@ impl RecursiveTree {
         self.active_leases.remove(lease_id);
         self.version += 1;
         Ok(())
+    }
+
+    fn record_usage(
+        &mut self,
+        receipt_id: &str,
+        usage: &RecursiveBudget,
+    ) -> Result<bool, RecursiveFailureReason> {
+        let usage_fingerprint =
+            serde_json::to_string(usage).map_err(|_| RecursiveFailureReason::ReceiptConflict)?;
+        if let Some(previous) = self.usage_receipts.get(receipt_id) {
+            if previous == &usage_fingerprint {
+                return Ok(true);
+            }
+            return Err(RecursiveFailureReason::ReceiptConflict);
+        }
+        let within_tree_budget = self
+            .root_budget_limit
+            .as_ref()
+            .map(|limit| {
+                limit.can_spend(&self.spent_budget) && {
+                    let mut after = self.spent_budget.clone();
+                    after.add(usage);
+                    limit.can_spend(&after)
+                }
+            })
+            .unwrap_or(true);
+        self.spent_budget.add(usage);
+        self.usage_receipts
+            .insert(receipt_id.to_string(), usage_fingerprint);
+        Ok(within_tree_budget)
+    }
+
+    /// Account a result that arrived after its workflow lease was replaced or
+    /// terminalized. The result cannot mutate node state, but its measured
+    /// usage is still charged exactly once to the persisted tree budget.
+    pub(crate) fn record_late_usage(
+        &mut self,
+        node_id: &str,
+        attempt_receipt: &str,
+        usage: &RecursiveBudget,
+    ) -> Result<bool, RecursiveFailureReason> {
+        if !self.nodes.contains_key(node_id) {
+            return Err(RecursiveFailureReason::StaleParent);
+        }
+        self.record_usage(attempt_receipt, usage)
     }
 
     pub fn retry_node(&mut self, node_id: &str) -> Result<(), RecursiveFailureReason> {

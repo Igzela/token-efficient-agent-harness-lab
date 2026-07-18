@@ -426,7 +426,27 @@ fn apply_sqlite_operation(
                 conn,
                 &mutation.run_id,
                 edge,
+            )?;
+            let actor = format!("agent:{}", mutation.agent_id);
+            super::workflow_runs::insert_workflow_run_event_locked(
+                conn,
+                &mutation.run_id,
+                node.get("node_id").and_then(Value::as_str),
+                "dag.mutation.node_added",
+                &actor,
+                &json!({"recursive": true, "metadata_only": true}),
+                now,
+            )?;
+            super::workflow_runs::insert_workflow_run_event_locked(
+                conn,
+                &mutation.run_id,
+                None,
+                "dag.mutation.edge_added",
+                &actor,
+                &json!({"recursive": true, "metadata_only": true}),
+                now,
             )
+            .map(|_| ())
         }
         AgentMutationOp::UpdateProposalStatus {
             proposal_id,
@@ -939,7 +959,27 @@ fn apply_pg_operation(
                 client,
                 &mutation.run_id,
                 edge,
+            )?;
+            let actor = format!("agent:{}", mutation.agent_id);
+            super::workflow_runs::pg_insert_workflow_run_event(
+                client,
+                &mutation.run_id,
+                node.get("node_id").and_then(Value::as_str),
+                "dag.mutation.node_added",
+                &actor,
+                &json!({"recursive": true, "metadata_only": true}),
+                now,
+            )?;
+            super::workflow_runs::pg_insert_workflow_run_event(
+                client,
+                &mutation.run_id,
+                None,
+                "dag.mutation.edge_added",
+                &actor,
+                &json!({"recursive": true, "metadata_only": true}),
+                now,
             )
+            .map(|_| ())
         }
         AgentMutationOp::UpdateProposalStatus {
             proposal_id,

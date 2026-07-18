@@ -1,5 +1,5 @@
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::{DatabaseConnection, LocalProductStore};
 use crate::recursive_execution::{
@@ -31,6 +31,14 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
         return Err("recursive tree exceeds bounded node or lease limit".to_string());
     }
     validate_scope(&tree.root_scope)?;
+    if tree.root_run_id.is_empty() || tree.workflow_id.is_empty() || tree.root_node_id.is_empty() {
+        return Err("recursive tree identity is empty".to_string());
+    }
+    if let Some(limit) = tree.root_budget_limit.as_ref() {
+        if !limit.can_spend(&tree.root_budget) {
+            return Err("recursive tree aggregate budget is inconsistent".to_string());
+        }
+    }
     let root = tree
         .nodes
         .get(&tree.root_node_id)
@@ -44,6 +52,8 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
         return Err("recursive tree root identity is inconsistent".to_string());
     }
     let mut child_counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut fingerprints = std::collections::BTreeSet::new();
+    let mut proposal_ids = std::collections::BTreeSet::new();
     for node in tree.nodes.values() {
         if node.depth > MAX_RECURSIVE_DEPTH
             || node.accepted_children > MAX_ACCEPTED_CHILDREN_PER_NODE
@@ -58,11 +68,40 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
         {
             return Err("recursive node identity is inconsistent".to_string());
         }
+        if !fingerprints.insert(node.objective_fingerprint.clone()) {
+            return Err("recursive objective fingerprint is duplicated".to_string());
+        }
+        if node.node_id == tree.root_node_id && !node.ancestor_fingerprints.is_empty() {
+            return Err("recursive root lineage is not empty".to_string());
+        }
         if let Some(parent_node_id) = node.parent_node_id.as_deref() {
-            if !tree.nodes.contains_key(parent_node_id) {
+            let Some(parent) = tree.nodes.get(parent_node_id) else {
                 return Err("recursive node parent is missing".to_string());
+            };
+            if node.depth != parent.depth.saturating_add(1)
+                || node.ancestor_fingerprints
+                    != parent
+                        .ancestor_fingerprints
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(parent.objective_fingerprint.clone()))
+                        .collect::<Vec<_>>()
+                || !node.capabilities.is_subset(&parent.capabilities)
+                || !node.scope.is_subset_of(&parent.scope)
+            {
+                return Err("recursive node lineage or authority is inconsistent".to_string());
             }
             *child_counts.entry(parent_node_id.to_string()).or_default() += 1;
+        }
+        if let Some(proposal_id) = node.proposal_id.as_deref() {
+            if !proposal_ids.insert(proposal_id.to_string())
+                || !tree.accepted_proposals.contains(proposal_id)
+                || !tree.receipts.contains_key(proposal_id)
+            {
+                return Err("recursive proposal identity is inconsistent".to_string());
+            }
+        } else if node.node_id != tree.root_node_id {
+            return Err("recursive child proposal identity is missing".to_string());
         }
         match (node.status.as_str(), node.lease_id.as_deref()) {
             ("leased", Some(lease_id)) if tree.active_leases.contains(lease_id) => {}
@@ -94,6 +133,19 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
             .any(|node| node.lease_id.as_deref() == Some(lease_id))
     }) {
         return Err("recursive active lease index is inconsistent".to_string());
+    }
+    if tree.accepted_proposals.len() != tree.receipts.len()
+        || tree.accepted_proposals.iter().any(|proposal_id| {
+            !proposal_ids.contains(proposal_id)
+                || tree.receipts.get(proposal_id).is_none_or(String::is_empty)
+        })
+    {
+        return Err("recursive accepted proposal receipt set is inconsistent".to_string());
+    }
+    if tree.usage_receipts.len() > MAX_RECURSIVE_NODES_PER_ROOT * 2
+        || tree.usage_receipts.keys().any(String::is_empty)
+    {
+        return Err("recursive usage receipt set exceeds bounded shape".to_string());
     }
     if tree.rejected_proposals.len() > MAX_RECURSIVE_NODES_PER_ROOT
         || tree.rejected_proposals.values().any(|decision| {
@@ -476,12 +528,20 @@ impl LocalProductStore {
     }
 
     pub fn load_recursive_tree(&self, root_run_id: &str) -> Result<Option<RecursiveTree>, String> {
-        let tree_json = match &self.db {
+        let stored = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 conn.query_row(
-                    "SELECT tree_json FROM recursive_execution_trees WHERE root_run_id=?1",
+                    "SELECT workflow_id, root_node_id, tree_schema_version, tree_json
+                     FROM recursive_execution_trees WHERE root_run_id=?1",
                     params![root_run_id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(|error| error.to_string())
@@ -490,18 +550,31 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 client
                     .query_opt(
-                        "SELECT tree_json FROM recursive_execution_trees WHERE root_run_id=$1",
+                        "SELECT workflow_id, root_node_id, tree_schema_version, tree_json
+                         FROM recursive_execution_trees WHERE root_run_id=$1",
                         &[&root_run_id],
                     )
-                    .map(|row| row.map(|row| row.get::<_, String>(0)))
+                    .map(|row| {
+                        row.map(|row| {
+                            (
+                                row.get::<_, String>(0),
+                                row.get::<_, String>(1),
+                                row.get::<_, String>(2),
+                                row.get::<_, String>(3),
+                            )
+                        })
+                    })
                     .map_err(|error| error.to_string())
             })?,
         };
-        tree_json
-            .map(|value| {
+        stored
+            .map(|(workflow_id, root_node_id, schema_version, value)| {
                 let mut tree: RecursiveTree =
                     serde_json::from_str(&value).map_err(|error| error.to_string())?;
                 if tree.root_run_id != root_run_id
+                    || tree.workflow_id != workflow_id
+                    || tree.root_node_id != root_node_id
+                    || tree.schema_version != schema_version
                     || tree.schema_version != RECURSIVE_SCHEMA_VERSION
                 {
                     return Err("recursive tree identity or schema conflict".to_string());
@@ -518,25 +591,203 @@ impl LocalProductStore {
             .map(|tree| tree.redacted_read_model())
             .ok_or_else(|| "recursive tree not found".to_string())
     }
+
+    /// Pause recursive admission and terminally block any currently leased
+    /// recursive nodes. This is called by the existing scheduler operator
+    /// controls so recursive leases cannot outlive a pause/kill transition.
+    pub(crate) fn set_recursive_execution_paused(
+        &self,
+        paused: bool,
+        terminal_reason: Option<&str>,
+    ) -> Result<usize, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let now = self.now();
+                let rows: Vec<(String, String)> = {
+                    let mut stmt = tx
+                        .prepare("SELECT root_run_id, tree_json FROM recursive_execution_trees")
+                        .map_err(|error| error.to_string())?;
+                    let rows = stmt
+                        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                        .map_err(|error| error.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| error.to_string())?;
+                    rows
+                };
+                let mut changed = 0;
+                for (root_run_id, tree_json) in rows {
+                    let mut tree: RecursiveTree =
+                        serde_json::from_str(&tree_json).map_err(|error| error.to_string())?;
+                    normalize_loaded_tree(&mut tree);
+                    validate_tree_for_persistence(&tree)?;
+                    let expected_version = tree.version;
+                    let mut terminated = Vec::new();
+                    if tree.paused != paused {
+                        tree.paused = paused;
+                        tree.version += 1;
+                    }
+                    if let Some(reason) = terminal_reason {
+                        for node in tree.nodes.values_mut() {
+                            if node.lease_id.take().is_some() {
+                                terminated.push(node.node_id.clone());
+                                node.status = "failed".to_string();
+                                node.failure_reason = Some(reason.to_string());
+                                node.version += 1;
+                            }
+                        }
+                        if !terminated.is_empty() {
+                            tree.active_leases.clear();
+                            tree.version += 1;
+                        }
+                    }
+                    if tree.version == expected_version {
+                        continue;
+                    }
+                    persist_recursive_tree_sqlite(&tx, &tree, &now, Some(expected_version))?;
+                    changed += 1;
+                    for workflow_node_id in terminated {
+                        let node_json_text: Option<String> = tx
+                            .query_row(
+                                "SELECT node_json FROM workflow_run_nodes
+                                 WHERE run_id=?1 AND node_id=?2",
+                                params![root_run_id, workflow_node_id],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .map_err(|error| error.to_string())?;
+                        if let Some(node_json_text) = node_json_text {
+                            let mut node_json: Value = serde_json::from_str(&node_json_text)
+                                .map_err(|error| error.to_string())?;
+                            if let Some(object) = node_json.as_object_mut() {
+                                object.insert("status".to_string(), json!("failed"));
+                                object.insert("completed_at".to_string(), json!(now));
+                            }
+                            tx.execute(
+                                "UPDATE workflow_run_nodes SET status='failed', completed_at=?1,
+                                 leased_at=NULL, blocked_reason=?2, node_json=?3
+                                 WHERE run_id=?4 AND node_id=?5",
+                                params![
+                                    now,
+                                    terminal_reason.unwrap_or("recursive_execution_paused"),
+                                    node_json.to_string(),
+                                    root_run_id,
+                                    workflow_node_id,
+                                ],
+                            )
+                            .map_err(|error| error.to_string())?;
+                        }
+                    }
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(changed)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let now = self.now();
+                let rows = tx
+                    .query(
+                        "SELECT root_run_id, tree_json FROM recursive_execution_trees FOR UPDATE",
+                        &[],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut changed = 0;
+                for row in rows {
+                    let root_run_id: String = row.get(0);
+                    let tree_json: String = row.get(1);
+                    let mut tree: RecursiveTree =
+                        serde_json::from_str(&tree_json).map_err(|error| error.to_string())?;
+                    normalize_loaded_tree(&mut tree);
+                    validate_tree_for_persistence(&tree)?;
+                    let expected_version = tree.version;
+                    let mut terminated = Vec::new();
+                    if tree.paused != paused {
+                        tree.paused = paused;
+                        tree.version += 1;
+                    }
+                    if let Some(reason) = terminal_reason {
+                        for node in tree.nodes.values_mut() {
+                            if node.lease_id.take().is_some() {
+                                terminated.push(node.node_id.clone());
+                                node.status = "failed".to_string();
+                                node.failure_reason = Some(reason.to_string());
+                                node.version += 1;
+                            }
+                        }
+                        if !terminated.is_empty() {
+                            tree.active_leases.clear();
+                            tree.version += 1;
+                        }
+                    }
+                    if tree.version == expected_version {
+                        continue;
+                    }
+                    persist_recursive_tree_pg(&mut tx, &tree, &now, Some(expected_version))?;
+                    changed += 1;
+                    for workflow_node_id in terminated {
+                        let node_json_text: Option<String> = tx
+                            .query_opt(
+                                "SELECT node_json FROM workflow_run_nodes
+                                 WHERE run_id=$1 AND node_id=$2",
+                                &[&root_run_id, &workflow_node_id],
+                            )
+                            .map_err(|error| error.to_string())?
+                            .map(|row| row.get(0));
+                        if let Some(node_json_text) = node_json_text {
+                            let mut node_json: Value = serde_json::from_str(&node_json_text)
+                                .map_err(|error| error.to_string())?;
+                            if let Some(object) = node_json.as_object_mut() {
+                                object.insert("status".to_string(), json!("failed"));
+                                object.insert("completed_at".to_string(), json!(now));
+                            }
+                            tx.execute(
+                                "UPDATE workflow_run_nodes SET status='failed', completed_at=$1,
+                                 leased_at=NULL, blocked_reason=$2, node_json=$3
+                                 WHERE run_id=$4 AND node_id=$5",
+                                &[
+                                    &now,
+                                    &terminal_reason.unwrap_or("recursive_execution_paused"),
+                                    &node_json.to_string(),
+                                    &root_run_id,
+                                    &workflow_node_id,
+                                ],
+                            )
+                            .map_err(|error| error.to_string())?;
+                        }
+                    }
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(changed)
+            }),
+        }
+    }
 }
 
 fn load_recursive_tree_sqlite(
     conn: &rusqlite::Connection,
     root_run_id: &str,
 ) -> Result<Option<RecursiveTree>, String> {
-    let tree_json: Option<String> = conn
+    let stored: Option<(String, String, String, String)> = conn
         .query_row(
-            "SELECT tree_json FROM recursive_execution_trees WHERE root_run_id=?1",
+            "SELECT workflow_id, root_node_id, tree_schema_version, tree_json
+             FROM recursive_execution_trees WHERE root_run_id=?1",
             params![root_run_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()
         .map_err(|error| error.to_string())?;
-    tree_json
-        .map(|value| {
+    stored
+        .map(|(workflow_id, root_node_id, schema_version, value)| {
             let mut tree: RecursiveTree =
                 serde_json::from_str(&value).map_err(|error| error.to_string())?;
-            if tree.root_run_id != root_run_id || tree.schema_version != RECURSIVE_SCHEMA_VERSION {
+            if tree.root_run_id != root_run_id
+                || tree.workflow_id != workflow_id
+                || tree.root_node_id != root_node_id
+                || tree.schema_version != schema_version
+                || tree.schema_version != RECURSIVE_SCHEMA_VERSION
+            {
                 return Err("recursive tree identity or schema conflict".to_string());
             }
             normalize_loaded_tree(&mut tree);
@@ -554,7 +805,7 @@ pub(crate) fn sync_recursive_lease_sqlite(
     now: &str,
 ) -> Result<(), String> {
     let Some(mut tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
-        return Err("stale_parent".to_string());
+        return Err("recursive_tree_missing".to_string());
     };
     let expected_version = tree.version;
     tree.lease_node(recursive_node_id, lease_id)
@@ -569,8 +820,11 @@ pub(crate) fn recursive_retry_allowed_sqlite(
     usage: &crate::recursive_execution::RecursiveBudget,
 ) -> Result<bool, String> {
     let Some(tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
-        return Err("stale_parent".to_string());
+        return Err("recursive_tree_missing".to_string());
     };
+    if !tree.nodes.contains_key(recursive_node_id) {
+        return Err("recursive_node_missing".to_string());
+    }
     tree.retry_allowed(recursive_node_id, usage)
         .map_err(|reason| reason.as_str().to_string())
 }
@@ -586,7 +840,7 @@ pub(crate) fn sync_recursive_completion_sqlite(
     now: &str,
 ) -> Result<(), String> {
     let Some(mut tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
-        return Err("stale_parent".to_string());
+        return Err("recursive_tree_missing".to_string());
     };
     let expected_version = tree.version;
     let retry_allowed = retry
@@ -602,6 +856,25 @@ pub(crate) fn sync_recursive_completion_sqlite(
     persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))
 }
 
+pub(crate) fn record_recursive_late_usage_sqlite(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    recursive_node_id: &str,
+    attempt_receipt: &str,
+    usage: &crate::recursive_execution::RecursiveBudget,
+    now: &str,
+) -> Result<bool, String> {
+    let Some(mut tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
+        return Err("recursive_tree_missing".to_string());
+    };
+    let expected_version = tree.version;
+    let within_tree_budget = tree
+        .record_late_usage(recursive_node_id, attempt_receipt, usage)
+        .map_err(|reason| reason.as_str().to_string())?;
+    persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))?;
+    Ok(within_tree_budget)
+}
+
 #[cfg(feature = "pg")]
 fn load_recursive_tree_pg(
     client: &mut impl postgres::GenericClient,
@@ -613,18 +886,24 @@ fn load_recursive_tree_pg(
             &[&root_run_id],
         )
         .map_err(|error| error.to_string())?;
-    let tree_json: Option<String> = client
+    let stored: Option<(String, String, String, String)> = client
         .query_opt(
-            "SELECT tree_json FROM recursive_execution_trees WHERE root_run_id=$1 FOR UPDATE",
+            "SELECT workflow_id, root_node_id, tree_schema_version, tree_json
+             FROM recursive_execution_trees WHERE root_run_id=$1 FOR UPDATE",
             &[&root_run_id],
         )
         .map_err(|error| error.to_string())?
-        .map(|row| row.get(0));
-    tree_json
-        .map(|value| {
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3)));
+    stored
+        .map(|(workflow_id, root_node_id, schema_version, value)| {
             let mut tree: RecursiveTree =
                 serde_json::from_str(&value).map_err(|error| error.to_string())?;
-            if tree.root_run_id != root_run_id || tree.schema_version != RECURSIVE_SCHEMA_VERSION {
+            if tree.root_run_id != root_run_id
+                || tree.workflow_id != workflow_id
+                || tree.root_node_id != root_node_id
+                || tree.schema_version != schema_version
+                || tree.schema_version != RECURSIVE_SCHEMA_VERSION
+            {
                 return Err("recursive tree identity or schema conflict".to_string());
             }
             normalize_loaded_tree(&mut tree);
@@ -643,7 +922,7 @@ pub(crate) fn sync_recursive_lease_pg(
     now: &str,
 ) -> Result<(), String> {
     let Some(mut tree) = load_recursive_tree_pg(client, root_run_id)? else {
-        return Err("stale_parent".to_string());
+        return Err("recursive_tree_missing".to_string());
     };
     let expected_version = tree.version;
     tree.lease_node(recursive_node_id, lease_id)
@@ -659,8 +938,11 @@ pub(crate) fn recursive_retry_allowed_pg(
     usage: &crate::recursive_execution::RecursiveBudget,
 ) -> Result<bool, String> {
     let Some(tree) = load_recursive_tree_pg(client, root_run_id)? else {
-        return Err("stale_parent".to_string());
+        return Err("recursive_tree_missing".to_string());
     };
+    if !tree.nodes.contains_key(recursive_node_id) {
+        return Err("recursive_node_missing".to_string());
+    }
     tree.retry_allowed(recursive_node_id, usage)
         .map_err(|reason| reason.as_str().to_string())
 }
@@ -677,7 +959,7 @@ pub(crate) fn sync_recursive_completion_pg(
     now: &str,
 ) -> Result<(), String> {
     let Some(mut tree) = load_recursive_tree_pg(client, root_run_id)? else {
-        return Err("stale_parent".to_string());
+        return Err("recursive_tree_missing".to_string());
     };
     let expected_version = tree.version;
     let retry_allowed = retry
@@ -691,6 +973,26 @@ pub(crate) fn sync_recursive_completion_pg(
             .map_err(|reason| reason.as_str().to_string())?;
     }
     persist_recursive_tree_pg(client, &tree, now, Some(expected_version))
+}
+
+#[cfg(feature = "pg")]
+pub(crate) fn record_recursive_late_usage_pg(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+    recursive_node_id: &str,
+    attempt_receipt: &str,
+    usage: &crate::recursive_execution::RecursiveBudget,
+    now: &str,
+) -> Result<bool, String> {
+    let Some(mut tree) = load_recursive_tree_pg(client, root_run_id)? else {
+        return Err("recursive_tree_missing".to_string());
+    };
+    let expected_version = tree.version;
+    let within_tree_budget = tree
+        .record_late_usage(recursive_node_id, attempt_receipt, usage)
+        .map_err(|reason| reason.as_str().to_string())?;
+    persist_recursive_tree_pg(client, &tree, now, Some(expected_version))?;
+    Ok(within_tree_budget)
 }
 
 #[cfg(test)]
@@ -763,6 +1065,119 @@ mod tests {
         assert_eq!(root.status, "ready");
         assert_eq!(root.retry_count, 1);
         assert!(loaded.active_leases.is_empty());
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn persisted_tree_rejects_forged_lineage() {
+        let store = LocalProductStore::new(":memory:").expect("store");
+        let mut tree = RecursiveTree::new(
+            "recursive-forged-run",
+            "recursive-forged-workflow",
+            "root objective",
+            RecursiveScope {
+                repository: Some("fixture".to_string()),
+                allowed_paths: BTreeSet::from(["docs/".to_string()]),
+                capabilities: BTreeSet::from(["read".to_string()]),
+            },
+            BTreeSet::from(["read".to_string()]),
+            RecursiveBudget {
+                calls_remaining: 2,
+                tokens_remaining: 20,
+                cost_micros_remaining: 20,
+                time_ms_remaining: 200,
+            },
+        );
+        tree.nodes
+            .get_mut(&tree.root_node_id)
+            .expect("root")
+            .ancestor_fingerprints
+            .push("forged".to_string());
+        let error = store
+            .save_recursive_tree(&tree)
+            .expect_err("forged lineage must fail closed");
+        assert!(error.contains("root lineage"));
+    }
+
+    #[test]
+    fn pause_terminalizes_recursive_leases_and_late_usage_is_idempotent() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let store = LocalProductStore::new(":memory:").expect("store");
+        let tree = RecursiveTree::new(
+            "recursive-pause-run",
+            "recursive-pause-workflow",
+            "root objective",
+            RecursiveScope {
+                repository: Some("fixture".to_string()),
+                allowed_paths: BTreeSet::from(["docs/".to_string()]),
+                capabilities: BTreeSet::from(["read".to_string()]),
+            },
+            BTreeSet::from(["read".to_string()]),
+            RecursiveBudget {
+                calls_remaining: 4,
+                tokens_remaining: 40,
+                cost_micros_remaining: 40,
+                time_ms_remaining: 400,
+            },
+        );
+        store.save_recursive_tree(&tree).expect("save");
+        store
+            .with_conn(|conn| {
+                sync_recursive_lease_sqlite(
+                    conn,
+                    "recursive-pause-run",
+                    &tree.root_node_id,
+                    "pause-lease",
+                    "2026-07-18T00:00:00Z",
+                )
+            })
+            .expect("lease");
+        store
+            .set_recursive_execution_paused(true, Some("recursive_execution_paused"))
+            .expect("pause");
+        let paused = store
+            .load_recursive_tree("recursive-pause-run")
+            .expect("load")
+            .expect("tree");
+        let root = paused.nodes.get(&paused.root_node_id).expect("root");
+        assert!(paused.paused);
+        assert_eq!(root.status, "failed");
+        assert!(paused.active_leases.is_empty());
+
+        store
+            .with_conn(|conn| {
+                let usage = RecursiveBudget {
+                    calls_remaining: 1,
+                    tokens_remaining: 7,
+                    cost_micros_remaining: 2,
+                    time_ms_remaining: 9,
+                };
+                assert!(record_recursive_late_usage_sqlite(
+                    conn,
+                    "recursive-pause-run",
+                    &tree.root_node_id,
+                    "late-attempt-1",
+                    &usage,
+                    "2026-07-18T00:00:01Z",
+                )?);
+                assert!(record_recursive_late_usage_sqlite(
+                    conn,
+                    "recursive-pause-run",
+                    &tree.root_node_id,
+                    "late-attempt-1",
+                    &usage,
+                    "2026-07-18T00:00:02Z",
+                )?);
+                Ok(())
+            })
+            .expect("late usage");
+        let loaded = store
+            .load_recursive_tree("recursive-pause-run")
+            .expect("load")
+            .expect("tree");
+        assert_eq!(loaded.spent_budget.tokens_remaining, 7);
+        assert_eq!(loaded.usage_receipts.len(), 1);
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 

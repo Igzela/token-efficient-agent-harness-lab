@@ -1547,19 +1547,31 @@ impl AgentStepExecutor {
         reason: RecursiveFailureReason,
     ) -> bool {
         tree.record_rejection(proposal_id, reason);
-        let mut persisted = self
-            .store
-            .save_recursive_tree_with_expected_version(tree, expected_version)
-            .is_ok();
-        if !persisted {
-            if let Ok(Some(mut current)) = self.store.load_recursive_tree(run_id) {
-                let current_version = current.version;
-                current.record_rejection(proposal_id, reason);
-                persisted = self
-                    .store
-                    .save_recursive_tree_with_expected_version(&current, current_version)
-                    .is_ok();
+        let mut persisted = false;
+        let mut candidate = tree.clone();
+        let mut version = expected_version;
+        for _ in 0..3 {
+            if self
+                .store
+                .save_recursive_tree_with_expected_version(&candidate, version)
+                .is_ok()
+            {
+                persisted = true;
+                break;
             }
+            let Ok(Some(mut current)) = self.store.load_recursive_tree(run_id) else {
+                break;
+            };
+            current.record_rejection(proposal_id, reason);
+            version = current.version;
+            candidate = current;
+        }
+        if persisted {
+            *tree = candidate;
+        } else {
+            // Keep the original failure code in the audit even if a bounded
+            // CAS retry could not win the concurrent update.
+            tree.record_rejection(proposal_id, reason);
         }
         self.append_agent_step_audit_best_effort(
             "agent_step.recursive_proposal_rejected",
