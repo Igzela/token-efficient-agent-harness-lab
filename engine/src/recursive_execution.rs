@@ -1,0 +1,630 @@
+//! Bounded recursive task-tree policy for PE7.
+//!
+//! This module owns admission decisions only. Execution remains owned by the
+//! existing agent runtime and scheduler; callers persist the returned tree
+//! through `LocalProductStore`.
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+
+pub const RECURSIVE_SCHEMA_VERSION: &str = "recursive_execution.v1";
+pub const MAX_RECURSIVE_DEPTH: u8 = 2;
+pub const MAX_ACCEPTED_CHILDREN_PER_NODE: usize = 3;
+pub const MAX_RECURSIVE_NODES_PER_ROOT: usize = 12;
+pub const MAX_RECURSIVE_LEASES: usize = 3;
+pub const MAX_RECURSIVE_RETRIES: u8 = 1;
+const MAX_OBJECTIVE_BYTES: usize = 4096;
+const MAX_CONTEXT_BYTES: usize = 8192;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecursiveFailureReason {
+    RecursiveDisabled,
+    DepthExceeded,
+    ChildLimitExceeded,
+    TreeBudgetExhausted,
+    DuplicateObjective,
+    AncestorCycle,
+    CapabilityEscalation,
+    ScopeMismatch,
+    StaleParent,
+    ProposalConflict,
+    ReceiptConflict,
+    SchedulerCapacityExhausted,
+    RecursiveKillSwitchActive,
+}
+
+impl RecursiveFailureReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RecursiveDisabled => "recursive_disabled",
+            Self::DepthExceeded => "depth_exceeded",
+            Self::ChildLimitExceeded => "child_limit_exceeded",
+            Self::TreeBudgetExhausted => "tree_budget_exhausted",
+            Self::DuplicateObjective => "duplicate_objective",
+            Self::AncestorCycle => "ancestor_cycle",
+            Self::CapabilityEscalation => "capability_escalation",
+            Self::ScopeMismatch => "scope_mismatch",
+            Self::StaleParent => "stale_parent",
+            Self::ProposalConflict => "proposal_conflict",
+            Self::ReceiptConflict => "receipt_conflict",
+            Self::SchedulerCapacityExhausted => "scheduler_capacity_exhausted",
+            Self::RecursiveKillSwitchActive => "recursive_kill_switch_active",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecursiveBudget {
+    pub calls_remaining: u64,
+    pub tokens_remaining: u64,
+    pub cost_micros_remaining: u64,
+    pub time_ms_remaining: u64,
+}
+
+impl RecursiveBudget {
+    fn can_spend(&self, calls: u64, tokens: u64, cost: u64, time_ms: u64) -> bool {
+        self.calls_remaining >= calls
+            && self.tokens_remaining >= tokens
+            && self.cost_micros_remaining >= cost
+            && self.time_ms_remaining >= time_ms
+    }
+
+    fn spend(&mut self, other: &Self) {
+        self.calls_remaining = self.calls_remaining.saturating_sub(other.calls_remaining);
+        self.tokens_remaining = self.tokens_remaining.saturating_sub(other.tokens_remaining);
+        self.cost_micros_remaining = self
+            .cost_micros_remaining
+            .saturating_sub(other.cost_micros_remaining);
+        self.time_ms_remaining = self
+            .time_ms_remaining
+            .saturating_sub(other.time_ms_remaining);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecursiveScope {
+    pub repository: Option<String>,
+    pub allowed_paths: BTreeSet<String>,
+    pub capabilities: BTreeSet<String>,
+}
+
+impl RecursiveScope {
+    pub fn is_subset_of(&self, parent: &Self) -> bool {
+        self.repository == parent.repository
+            && self.allowed_paths.is_subset(&parent.allowed_paths)
+            && self.capabilities.is_subset(&parent.capabilities)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecursiveProposal {
+    pub proposal_id: String,
+    pub parent_node_id: String,
+    pub parent_version: u64,
+    pub objective: String,
+    pub context_summary: String,
+    pub requested_scope: RecursiveScope,
+    pub requested_capabilities: BTreeSet<String>,
+    pub budget: RecursiveBudget,
+    pub receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecursiveNode {
+    pub node_id: String,
+    pub root_run_id: String,
+    pub parent_node_id: Option<String>,
+    pub proposal_id: Option<String>,
+    pub depth: u8,
+    pub objective_fingerprint: String,
+    pub ancestor_fingerprints: Vec<String>,
+    pub scope: RecursiveScope,
+    pub capabilities: BTreeSet<String>,
+    pub budget: RecursiveBudget,
+    pub status: String,
+    pub accepted_children: usize,
+    pub retry_count: u8,
+    pub version: u64,
+    pub lease_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecursiveTree {
+    pub schema_version: String,
+    pub root_run_id: String,
+    pub workflow_id: String,
+    pub root_node_id: String,
+    pub root_scope: RecursiveScope,
+    pub root_capabilities: BTreeSet<String>,
+    pub root_budget: RecursiveBudget,
+    pub paused: bool,
+    pub version: u64,
+    pub nodes: BTreeMap<String, RecursiveNode>,
+    pub accepted_proposals: BTreeSet<String>,
+    pub receipts: BTreeMap<String, String>,
+    pub active_leases: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecursiveAdmission {
+    pub node: RecursiveNode,
+    pub parent_version: u64,
+}
+
+pub fn normalize_objective(objective: &str) -> String {
+    objective.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+pub fn objective_fingerprint(objective: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(normalize_objective(objective).as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn derived_node_id(root_run_id: &str, proposal_id: &str, fingerprint: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(root_run_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(proposal_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(fingerprint.as_bytes());
+    format!("recursive-{}", hex::encode(hasher.finalize()))
+}
+
+fn recursive_enabled() -> bool {
+    std::env::var("ACP_RECURSIVE_EXECUTION_ENABLED")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn kill_switch_active() -> bool {
+    std::env::var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn shape_is_valid(proposal: &RecursiveProposal) -> bool {
+    !proposal.proposal_id.is_empty()
+        && !proposal.parent_node_id.is_empty()
+        && !proposal.receipt_sha256.is_empty()
+        && !normalize_objective(&proposal.objective).is_empty()
+        && proposal.objective.len() <= MAX_OBJECTIVE_BYTES
+        && proposal.context_summary.len() <= MAX_CONTEXT_BYTES
+}
+
+impl RecursiveTree {
+    pub fn new(
+        root_run_id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        objective: &str,
+        scope: RecursiveScope,
+        capabilities: BTreeSet<String>,
+        budget: RecursiveBudget,
+    ) -> Self {
+        let root_run_id = root_run_id.into();
+        let fingerprint = objective_fingerprint(objective);
+        let node_id = format!("recursive-root-{}", &fingerprint[..24]);
+        Self::new_with_root_node_id(
+            root_run_id,
+            workflow_id,
+            node_id,
+            objective,
+            scope,
+            capabilities,
+            budget,
+        )
+    }
+
+    pub fn new_with_root_node_id(
+        root_run_id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        node_id: impl Into<String>,
+        objective: &str,
+        scope: RecursiveScope,
+        capabilities: BTreeSet<String>,
+        budget: RecursiveBudget,
+    ) -> Self {
+        let root_run_id = root_run_id.into();
+        let node_id = node_id.into();
+        let fingerprint = objective_fingerprint(objective);
+        let node = RecursiveNode {
+            node_id: node_id.clone(),
+            root_run_id: root_run_id.clone(),
+            parent_node_id: None,
+            proposal_id: None,
+            depth: 0,
+            objective_fingerprint: fingerprint.clone(),
+            ancestor_fingerprints: Vec::new(),
+            scope: scope.clone(),
+            capabilities: capabilities.clone(),
+            budget: budget.clone(),
+            status: "ready".to_string(),
+            accepted_children: 0,
+            retry_count: 0,
+            version: 1,
+            lease_id: None,
+        };
+        let mut nodes = BTreeMap::new();
+        nodes.insert(node_id.clone(), node);
+        Self {
+            schema_version: RECURSIVE_SCHEMA_VERSION.to_string(),
+            root_run_id,
+            workflow_id: workflow_id.into(),
+            root_node_id: node_id,
+            root_scope: scope,
+            root_capabilities: capabilities,
+            root_budget: budget,
+            paused: false,
+            version: 1,
+            nodes,
+            accepted_proposals: BTreeSet::new(),
+            receipts: BTreeMap::new(),
+            active_leases: BTreeSet::new(),
+        }
+    }
+
+    pub fn admit_child(
+        &mut self,
+        proposal: &RecursiveProposal,
+    ) -> Result<RecursiveAdmission, RecursiveFailureReason> {
+        if !recursive_enabled() {
+            return Err(RecursiveFailureReason::RecursiveDisabled);
+        }
+        if kill_switch_active() {
+            return Err(RecursiveFailureReason::RecursiveKillSwitchActive);
+        }
+        if self.paused {
+            return Err(RecursiveFailureReason::RecursiveKillSwitchActive);
+        }
+        if !shape_is_valid(proposal) {
+            return Err(RecursiveFailureReason::ProposalConflict);
+        }
+        if self.accepted_proposals.contains(&proposal.proposal_id) {
+            return Err(RecursiveFailureReason::ProposalConflict);
+        }
+        if self
+            .receipts
+            .get(&proposal.proposal_id)
+            .is_some_and(|receipt| receipt != &proposal.receipt_sha256)
+        {
+            return Err(RecursiveFailureReason::ReceiptConflict);
+        }
+        let parent = self
+            .nodes
+            .get(&proposal.parent_node_id)
+            .cloned()
+            .ok_or(RecursiveFailureReason::StaleParent)?;
+        if parent.version != proposal.parent_version {
+            return Err(RecursiveFailureReason::StaleParent);
+        }
+        if parent.depth >= MAX_RECURSIVE_DEPTH {
+            return Err(RecursiveFailureReason::DepthExceeded);
+        }
+        if parent.accepted_children >= MAX_ACCEPTED_CHILDREN_PER_NODE {
+            return Err(RecursiveFailureReason::ChildLimitExceeded);
+        }
+        if self.nodes.len() >= MAX_RECURSIVE_NODES_PER_ROOT {
+            return Err(RecursiveFailureReason::TreeBudgetExhausted);
+        }
+        if self.active_leases.len() >= MAX_RECURSIVE_LEASES {
+            return Err(RecursiveFailureReason::SchedulerCapacityExhausted);
+        }
+        if !proposal
+            .requested_capabilities
+            .is_subset(&parent.capabilities)
+        {
+            return Err(RecursiveFailureReason::CapabilityEscalation);
+        }
+        if !proposal.requested_scope.is_subset_of(&parent.scope) {
+            return Err(RecursiveFailureReason::ScopeMismatch);
+        }
+        let fingerprint = objective_fingerprint(&proposal.objective);
+        if parent.ancestor_fingerprints.contains(&fingerprint)
+            || parent.objective_fingerprint == fingerprint
+        {
+            return Err(RecursiveFailureReason::AncestorCycle);
+        }
+        if self
+            .nodes
+            .values()
+            .any(|node| node.objective_fingerprint == fingerprint)
+        {
+            return Err(RecursiveFailureReason::DuplicateObjective);
+        }
+        if !parent.budget.can_spend(
+            proposal.budget.calls_remaining,
+            proposal.budget.tokens_remaining,
+            proposal.budget.cost_micros_remaining,
+            proposal.budget.time_ms_remaining,
+        ) || !self.root_budget.can_spend(
+            proposal.budget.calls_remaining,
+            proposal.budget.tokens_remaining,
+            proposal.budget.cost_micros_remaining,
+            proposal.budget.time_ms_remaining,
+        ) {
+            return Err(RecursiveFailureReason::TreeBudgetExhausted);
+        }
+        let node = RecursiveNode {
+            node_id: derived_node_id(&self.root_run_id, &proposal.proposal_id, &fingerprint),
+            root_run_id: self.root_run_id.clone(),
+            parent_node_id: Some(parent.node_id.clone()),
+            proposal_id: Some(proposal.proposal_id.clone()),
+            depth: parent.depth + 1,
+            objective_fingerprint: fingerprint.clone(),
+            ancestor_fingerprints: parent
+                .ancestor_fingerprints
+                .iter()
+                .cloned()
+                .chain(std::iter::once(parent.objective_fingerprint.clone()))
+                .collect(),
+            scope: proposal.requested_scope.clone(),
+            capabilities: proposal.requested_capabilities.clone(),
+            budget: proposal.budget.clone(),
+            status: "ready".to_string(),
+            accepted_children: 0,
+            retry_count: 0,
+            version: 1,
+            lease_id: None,
+        };
+        let parent_entry = self.nodes.get_mut(&parent.node_id).expect("parent checked");
+        parent_entry.accepted_children += 1;
+        parent_entry.budget.spend(&proposal.budget);
+        parent_entry.version += 1;
+        self.root_budget.spend(&proposal.budget);
+        self.nodes.insert(node.node_id.clone(), node.clone());
+        self.accepted_proposals.insert(proposal.proposal_id.clone());
+        self.receipts.insert(
+            proposal.proposal_id.clone(),
+            proposal.receipt_sha256.clone(),
+        );
+        self.version += 1;
+        Ok(RecursiveAdmission {
+            node,
+            parent_version: parent.version + 1,
+        })
+    }
+
+    pub fn lease_node(
+        &mut self,
+        node_id: &str,
+        lease_id: &str,
+    ) -> Result<(), RecursiveFailureReason> {
+        if self.active_leases.len() >= MAX_RECURSIVE_LEASES {
+            return Err(RecursiveFailureReason::SchedulerCapacityExhausted);
+        }
+        let node = self
+            .nodes
+            .get_mut(node_id)
+            .ok_or(RecursiveFailureReason::StaleParent)?;
+        if node.lease_id.is_some() || node.status != "ready" {
+            return Err(RecursiveFailureReason::ProposalConflict);
+        }
+        node.lease_id = Some(lease_id.to_string());
+        node.status = "leased".to_string();
+        node.version += 1;
+        self.active_leases.insert(lease_id.to_string());
+        self.version += 1;
+        Ok(())
+    }
+
+    pub fn complete_node(
+        &mut self,
+        node_id: &str,
+        lease_id: &str,
+        success: bool,
+    ) -> Result<(), RecursiveFailureReason> {
+        let node = self
+            .nodes
+            .get_mut(node_id)
+            .ok_or(RecursiveFailureReason::StaleParent)?;
+        if node.lease_id.as_deref() != Some(lease_id) {
+            return Err(RecursiveFailureReason::ReceiptConflict);
+        }
+        node.status = if success { "completed" } else { "failed" }.to_string();
+        node.lease_id = None;
+        node.version += 1;
+        self.active_leases.remove(lease_id);
+        self.version += 1;
+        Ok(())
+    }
+
+    pub fn retry_node(&mut self, node_id: &str) -> Result<(), RecursiveFailureReason> {
+        let node = self
+            .nodes
+            .get_mut(node_id)
+            .ok_or(RecursiveFailureReason::StaleParent)?;
+        if node.retry_count >= MAX_RECURSIVE_RETRIES {
+            return Err(RecursiveFailureReason::TreeBudgetExhausted);
+        }
+        node.retry_count += 1;
+        node.status = "ready".to_string();
+        node.version += 1;
+        self.version += 1;
+        Ok(())
+    }
+
+    pub fn pause(&mut self) {
+        self.paused = true;
+        self.version += 1;
+    }
+
+    pub fn resume(&mut self) {
+        self.paused = false;
+        self.version += 1;
+    }
+
+    pub fn redacted_read_model(&self) -> Value {
+        let nodes: Vec<Value> = self
+            .nodes
+            .values()
+            .map(|node| {
+                json!({
+                    "node_id": node.node_id,
+                    "parent_node_id": node.parent_node_id,
+                    "proposal_id": node.proposal_id,
+                    "depth": node.depth,
+                    "objective_fingerprint": node.objective_fingerprint,
+                    "ancestor_count": node.ancestor_fingerprints.len(),
+                    "status": node.status,
+                    "accepted_children": node.accepted_children,
+                    "retry_count": node.retry_count,
+                    "version": node.version,
+                    "leased": node.lease_id.is_some(),
+                })
+            })
+            .collect();
+        json!({
+            "schema_version": self.schema_version,
+            "root_run_id": self.root_run_id,
+            "workflow_id": self.workflow_id,
+            "root_node_id": self.root_node_id,
+            "paused": self.paused,
+            "version": self.version,
+            "node_count": self.nodes.len(),
+            "active_lease_count": self.active_leases.len(),
+            "accepted_proposal_count": self.accepted_proposals.len(),
+            "nodes": nodes,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn scope() -> RecursiveScope {
+        RecursiveScope {
+            repository: Some("fixture".to_string()),
+            allowed_paths: ["docs/".to_string()].into_iter().collect(),
+            capabilities: ["read".to_string(), "write".to_string()]
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn budget() -> RecursiveBudget {
+        RecursiveBudget {
+            calls_remaining: 10,
+            tokens_remaining: 100,
+            cost_micros_remaining: 100,
+            time_ms_remaining: 1000,
+        }
+    }
+
+    fn proposal(tree: &RecursiveTree) -> RecursiveProposal {
+        RecursiveProposal {
+            proposal_id: "proposal-1".to_string(),
+            parent_node_id: tree.root_node_id.clone(),
+            parent_version: 1,
+            objective: "  child   objective ".to_string(),
+            context_summary: "fixture context".to_string(),
+            requested_scope: scope(),
+            requested_capabilities: ["read".to_string()].into_iter().collect(),
+            budget: RecursiveBudget {
+                calls_remaining: 1,
+                tokens_remaining: 10,
+                cost_micros_remaining: 1,
+                time_ms_remaining: 10,
+            },
+            receipt_sha256: "receipt-1".to_string(),
+        }
+    }
+
+    #[test]
+    fn default_off_and_kill_switch_are_fail_closed() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+        let mut tree = RecursiveTree::new(
+            "run",
+            "fixture",
+            "root",
+            scope(),
+            ["read".to_string()].into_iter().collect(),
+            budget(),
+        );
+        assert_eq!(
+            tree.admit_child(&proposal(&tree)),
+            Err(RecursiveFailureReason::RecursiveDisabled)
+        );
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH", "1");
+        assert_eq!(
+            tree.admit_child(&proposal(&tree)),
+            Err(RecursiveFailureReason::RecursiveKillSwitchActive)
+        );
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+    }
+
+    #[test]
+    fn admission_is_deterministic_and_narrowing() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+        let mut tree = RecursiveTree::new(
+            "run",
+            "fixture",
+            "root",
+            scope(),
+            ["read".to_string(), "write".to_string()]
+                .into_iter()
+                .collect(),
+            budget(),
+        );
+        let p = proposal(&tree);
+        let admitted = tree.admit_child(&p).unwrap();
+        assert_eq!(admitted.node.depth, 1);
+        assert_eq!(admitted.node.scope.repository, Some("fixture".to_string()));
+        assert_eq!(
+            objective_fingerprint("a  b"),
+            objective_fingerprint(" a b ")
+        );
+        assert_eq!(
+            tree.admit_child(&p),
+            Err(RecursiveFailureReason::ProposalConflict)
+        );
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn limits_and_operator_evidence_are_bounded() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let mut tree = RecursiveTree::new(
+            "run",
+            "fixture",
+            "root",
+            scope(),
+            ["read".to_string()].into_iter().collect(),
+            budget(),
+        );
+        let p = proposal(&tree);
+        let admitted = tree.admit_child(&p).unwrap();
+        assert_eq!(tree.lease_node(&admitted.node.node_id, "lease-1"), Ok(()));
+        assert_eq!(
+            tree.complete_node(&admitted.node.node_id, "lease-1", false),
+            Ok(())
+        );
+        assert_eq!(tree.retry_node(&admitted.node.node_id), Ok(()));
+        assert_eq!(
+            tree.retry_node(&admitted.node.node_id),
+            Err(RecursiveFailureReason::TreeBudgetExhausted)
+        );
+        let evidence = tree.redacted_read_model();
+        assert!(evidence["nodes"]
+            .to_string()
+            .contains("objective_fingerprint"));
+        assert!(!evidence["nodes"].to_string().contains("child objective"));
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+}

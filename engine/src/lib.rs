@@ -34,6 +34,7 @@ pub mod orchestration;
 pub mod provider;
 pub mod quality;
 pub mod read_only_planner;
+pub mod recursive_execution;
 pub mod routing;
 pub mod runtime;
 pub mod scheduler;

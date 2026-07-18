@@ -19,8 +19,8 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION`. Restore the existing runner, pass readiness, run the replacement smoke, record acceptance, and continue. Runner/egress recovery is operational work, not a permission blocker.
-2. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — `READY_FOR_EXECUTION`. This is the AR7 runtime-extension slice. It is an independent fixture/local lane and must not enable Issue #208, call a provider, or depend on the Vader runner.
+1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` after replacement smoke Issue #238 reached the Vader worker and failed at `model_execution` with `Codex authentication rejected execution`; runner/egress recovery itself is complete and was not a permission blocker. Resume after the existing authenticated Codex interface is repaired without creating or rotating credentials.
+2. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — `IN_PROGRESS` on branch `pe7-bounded-recursive-execution-1`. This is the AR7 runtime-extension slice. It is an independent fixture/local lane and must not enable Issue #208, call a provider, or depend on the Vader runner.
 3. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `BLOCKED_PREREQUISITE` on bounded recursive execution. It introduces a pinned OpenCode release or commit only as a controlled, local/fixture external executor with networked tools disabled.
 4. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on both bounded recursive execution and the controlled OpenCode adapter. It establishes candidate lineage, equal-budget evaluation, sealed holdout discipline, and PR-only promotion.
 5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result. It may test whether an evolved improver improves `Improvement@K`; it may not modify the authoritative evaluator, permissions, sealed set, or release owner.
@@ -91,7 +91,7 @@ Stop and report `BLOCKED` rather than improvising when:
 
 ## Packet PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1 — Remaining external acceptance
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `BLOCKED_PREREQUISITE`
 
 **Goal:** Complete the already-merged external acceptance chain by restoring the named Vader runner and running one bounded replacement smoke. Provider catalog admission remains a separate fail-closed concern and is not a prerequisite for this documentation-only smoke.
 
@@ -103,13 +103,15 @@ Stop and report `BLOCKED` rather than improvising when:
 4. restore the emergency stop immediately after terminal review or unexpected behavior;
 5. record the exact Issue/PR/head/run/review/evidence bindings and acceptance, then continue future work.
 
-The prior smoke history remains as recorded in `CURRENT_STATUS.md`; the current runner offline observation is a repair target, not a governance hard stop. No provider POST is active.
+The prior smoke history remains as recorded in `CURRENT_STATUS.md`; the runner is now online/idle, but Issue #238 failed before artifact creation because the existing worker Codex session was rejected. No provider-backed repository/embedding POST is active.
 
 **Completion:** one replacement repository-agent smoke reaches PR creation, exact-head CI, and independent review; any provider-backed acceptance separately proves current identity, pricing, audit, and cost evidence.
 
 ## Packet PE7-BOUNDED-RECURSIVE-EXECUTION-1 — Recursive task-tree contract
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `IN_PROGRESS`
+
+**Current owner:** branch `pe7-bounded-recursive-execution-1`; the implementation is not merged or accepted yet.
 
 **Goal:** Extend the existing Agent Runtime child-task proposal mechanism into a persistent, bounded task tree without adding a second runtime, scheduler, queue, mailbox, or storage authority. This packet is the AR7 runtime-extension slice.
 

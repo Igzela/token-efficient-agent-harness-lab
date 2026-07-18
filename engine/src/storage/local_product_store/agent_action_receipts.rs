@@ -6,6 +6,7 @@ use super::agent_runtime::{
     MAX_PROPOSAL_CONTEXT_BYTES, MAX_PROPOSAL_OBJECTIVE_BYTES, MAX_SCRATCHPAD_BYTES,
 };
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
+use crate::recursive_execution::RecursiveTree;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentActionMutation {
@@ -39,6 +40,9 @@ pub(crate) enum AgentMutationOp {
         target_agent_id: Option<String>,
         proposed_node_id: Option<String>,
         proposed_edge_id: Option<String>,
+    },
+    PersistRecursiveTree {
+        tree: RecursiveTree,
     },
     UpdateProposalStatus {
         proposal_id: String,
@@ -395,6 +399,9 @@ fn apply_sqlite_operation(
                 }),
             )?;
             Ok(())
+        }
+        AgentMutationOp::PersistRecursiveTree { tree } => {
+            super::recursive_execution::persist_recursive_tree_sqlite(conn, tree, now)
         }
         AgentMutationOp::UpdateProposalStatus {
             proposal_id,
@@ -887,6 +894,9 @@ fn apply_pg_operation(
                     "parent_node_id": parent_node_id,
                 }),
             )
+        }
+        AgentMutationOp::PersistRecursiveTree { tree } => {
+            super::recursive_execution::persist_recursive_tree_pg(client, tree, now)
         }
         AgentMutationOp::UpdateProposalStatus {
             proposal_id,

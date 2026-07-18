@@ -413,6 +413,52 @@ fn pg_v25_operation_schema_valid(
 }
 
 impl LocalProductStore {
+    pub(in crate::storage::local_product_store) fn rollback_pg_v26_to_v25_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.with_pg_conn(|client| {
+            let mut tx = client.transaction().map_err(|error| error.to_string())?;
+            let current_version = tx
+                .query_one(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                    &[],
+                )
+                .map(|row| row.get::<_, i64>(0))
+                .map_err(|error| error.to_string())?;
+            super::super::migrations::require_v26_rollback_source(current_version)?;
+            for table in super::super::migrations::V26_TABLES {
+                let occupied = tx
+                    .query_one(&format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)"), &[])
+                    .map(|row| row.get::<_, bool>(0))
+                    .map_err(|error| error.to_string())?;
+                if occupied {
+                    return Err(format!(
+                        "v26 rollback blocked: authoritative recursive execution data exists in {table}"
+                    ));
+                }
+            }
+            tx.batch_execute(
+                "DROP TABLE recursive_execution_nodes;
+                 DROP TABLE recursive_execution_trees;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1,$2,'schema.rollback.v26_to_v25','local_product_store',$3)",
+                &[&now, &actor, &super::super::migrations::v26_rollback_audit_details()],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version=$1",
+                &[&super::super::migrations::V26_SCHEMA_VERSION],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
+
     pub(crate) fn run_pg_migrations_internal(&self) -> Result<(), String> {
         self.with_pg_conn(|client: &mut postgres::Client| {
             ensure_schema_migrations_table(client)?;
@@ -510,6 +556,7 @@ impl LocalProductStore {
                     }
                     23 => schema::V23_DDL,
                     24 => schema::V24_DDL,
+                    26 => schema::V26_DDL,
                     _ => {
                         return Err(format!(
                             "unknown pg migration version: {}",
@@ -957,6 +1004,10 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     fn prepare_v23_rollback_fixture(store: &LocalProductStore) {
+        assert_eq!(store.schema_version().unwrap(), 26);
+        store
+            .rollback_v26_to_v25("migration-test-setup", true)
+            .unwrap();
         assert_eq!(store.schema_version().unwrap(), 25);
         store
             .rollback_v25_to_v24("migration-test-setup", true)

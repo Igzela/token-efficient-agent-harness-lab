@@ -20,6 +20,9 @@ pub(crate) fn build_operator_evidence(
     let pending_mailbox_count = store.count_mailbox(None, Some(run_id), Some("pending"))?;
     let raw_proposals = store.list_proposals_by_run(run_id, 500, 0)?;
     let scorecard_artifacts = store.native_scorecard_artifacts_by_run(run_id, 20)?;
+    let recursive_execution = store
+        .load_recursive_tree(run_id)?
+        .map(|tree| tree.redacted_read_model());
 
     let mut type_counts: std::collections::HashMap<String, (i64, i64)> =
         std::collections::HashMap::new();
@@ -199,6 +202,7 @@ pub(crate) fn build_operator_evidence(
         "debate_count": debate_count,
         "scorecard_artifact_count": scorecard_views.len(),
         "scorecards": scorecard_views,
+        "recursive_execution": recursive_execution,
         "blocked_signals_count": blocked_signals,
         "needs_human_decision": needs_human_decision,
         "operator_summary": {

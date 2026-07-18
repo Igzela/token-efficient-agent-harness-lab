@@ -1,7 +1,7 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -17,6 +17,9 @@ use crate::orchestration::schemas::{
     MAX_REVIEW_DEBATE_TEXT_BYTES, REVIEW_VERDICTS,
 };
 use crate::provider::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
+use crate::recursive_execution::{
+    RecursiveBudget, RecursiveProposal, RecursiveScope, RecursiveTree,
+};
 use crate::storage::local_product_store::{
     AgentActionMutation, AgentMutationOp, LocalProductStore,
 };
@@ -1516,6 +1519,7 @@ impl AgentStepExecutor {
         &self,
         agent_id: &str,
         run_id: &str,
+        workflow_id: &str,
         input_node_id: &str,
         agent_state: &AgentState,
         mailbox_pending_count: i64,
@@ -1727,12 +1731,109 @@ impl AgentStepExecutor {
                     ));
                 }
                 let proposal_id = format!("prop-{}", &action_sha256[..24]);
+                let (recursive_node_id, recursive_tree) =
+                    if std::env::var("ACP_RECURSIVE_EXECUTION_ENABLED").as_deref() == Ok("1") {
+                        let capabilities: BTreeSet<String> =
+                            agent_state.capability_profile.iter().cloned().collect();
+                        let requested_scope = RecursiveScope {
+                            repository: agent_state
+                                .metadata
+                                .get("repository")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                            allowed_paths: agent_state
+                                .metadata
+                                .get("allowed_paths")
+                                .and_then(Value::as_array)
+                                .map(|paths| {
+                                    paths
+                                        .iter()
+                                        .filter_map(Value::as_str)
+                                        .map(str::to_string)
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            capabilities: capabilities.clone(),
+                        };
+                        let mut tree =
+                            self.store.load_recursive_tree(run_id)?.unwrap_or_else(|| {
+                                RecursiveTree::new_with_root_node_id(
+                                    run_id,
+                                    workflow_id,
+                                    proposal.parent_node_id.clone(),
+                                    agent_state
+                                        .objective
+                                        .as_deref()
+                                        .unwrap_or(&proposal.objective),
+                                    requested_scope.clone(),
+                                    capabilities.clone(),
+                                    RecursiveBudget {
+                                        calls_remaining: 12,
+                                        tokens_remaining: 120_000,
+                                        cost_micros_remaining: 1_000_000,
+                                        time_ms_remaining: 600_000,
+                                    },
+                                )
+                            });
+                        let parent_version = tree
+                            .nodes
+                            .get(&proposal.parent_node_id)
+                            .ok_or_else(|| "stale_parent".to_string())?
+                            .version;
+                        let admission = tree
+                            .admit_child(&RecursiveProposal {
+                                proposal_id: proposal_id.clone(),
+                                parent_node_id: proposal.parent_node_id.clone(),
+                                parent_version,
+                                objective: proposal.objective.clone(),
+                                context_summary: proposal.context_summary.clone(),
+                                requested_scope,
+                                requested_capabilities: capabilities,
+                                budget: RecursiveBudget {
+                                    calls_remaining: 1,
+                                    tokens_remaining: 10_000,
+                                    cost_micros_remaining: 10_000,
+                                    time_ms_remaining: 60_000,
+                                },
+                                receipt_sha256: action_sha256.clone(),
+                            })
+                            .map_err(|reason| reason.as_str().to_string())?;
+                        let node_id = admission.node.node_id.clone();
+                        (Some(node_id), Some(tree))
+                    } else {
+                        (None, None)
+                    };
                 let result = action_result_with_state_metrics(
                     json!({"action":"propose_child_task","proposal_id": proposal_id,
-                          "correlation_id": proposal.correlation_id}),
+                          "correlation_id": proposal.correlation_id,
+                          "recursive_node_id": recursive_node_id}),
                     memory_state_read_bytes,
                     0,
                 );
+                let mut operations = vec![AgentMutationOp::InsertProposal {
+                    proposal_id: proposal_id.clone(),
+                    correlation_id: proposal.correlation_id.clone(),
+                    parent_node_id: proposal.parent_node_id.clone(),
+                    proposal_type: "child_task".to_string(),
+                    objective: proposal.objective.clone(),
+                    context_summary: proposal.context_summary.clone(),
+                    target_agent_id: None,
+                    proposed_node_id: proposal.proposed_node_id.clone(),
+                    proposed_edge_id: proposal.proposed_edge_id.clone(),
+                }];
+                if let Some(tree) = recursive_tree {
+                    operations.push(AgentMutationOp::PersistRecursiveTree { tree });
+                }
+                operations.push(AgentMutationOp::AppendAudit {
+                    action: "agent_step.propose_child_task".to_string(),
+                    resource: format!("agent_state/{agent_id}/{run_id}"),
+                    details: json!({
+                        "proposal_id": proposal_id,
+                        "correlation_id": proposal.correlation_id,
+                        "agent_id": agent_id,
+                        "run_id": run_id,
+                    }),
+                });
                 apply(&AgentActionMutation {
                     run_id: run_id.to_string(),
                     node_id: input_node_id.to_string(),
@@ -1740,29 +1841,7 @@ impl AgentStepExecutor {
                     action_sha256,
                     action_type: "propose_child_task".to_string(),
                     result_json: result,
-                    operations: vec![
-                        AgentMutationOp::InsertProposal {
-                            proposal_id: proposal_id.clone(),
-                            correlation_id: proposal.correlation_id.clone(),
-                            parent_node_id: proposal.parent_node_id.clone(),
-                            proposal_type: "child_task".to_string(),
-                            objective: proposal.objective.clone(),
-                            context_summary: proposal.context_summary.clone(),
-                            target_agent_id: None,
-                            proposed_node_id: proposal.proposed_node_id.clone(),
-                            proposed_edge_id: proposal.proposed_edge_id.clone(),
-                        },
-                        AgentMutationOp::AppendAudit {
-                            action: "agent_step.propose_child_task".to_string(),
-                            resource: format!("agent_state/{agent_id}/{run_id}"),
-                            details: json!({
-                                "proposal_id": proposal_id,
-                                "correlation_id": proposal.correlation_id,
-                                "agent_id": agent_id,
-                                "run_id": run_id,
-                            }),
-                        },
-                    ],
+                    operations,
                 })
             }
             AgentAction::RequestHandoff(request) => {
@@ -2663,6 +2742,7 @@ impl NodeExecutor for AgentStepExecutor {
         match self.execute_action(
             &agent_id,
             &input.run_id,
+            &input.workflow_id,
             &input.node_id,
             &agent_state,
             mailbox_count,
@@ -3851,6 +3931,41 @@ mod tests {
             "expected >=4 AR-3 audit events, got {}",
             ar3_events.len()
         );
+    }
+
+    #[test]
+    fn test_agent_step_recursive_child_is_control_admitted_and_persisted() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-recursive", "run-recursive");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+
+        let proposal = stub_child_task_proposal("agent-recursive", "run-recursive");
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ProposeChildTask(proposal)),
+        );
+        let output = executor.execute_node(&agent_step_input("agent-recursive", "run-recursive"));
+        assert_eq!(output.status, "completed");
+        let tree = store
+            .load_recursive_tree("run-recursive")
+            .expect("load recursive tree")
+            .expect("recursive tree persisted");
+        assert_eq!(tree.nodes.len(), 2);
+        assert!(tree
+            .redacted_read_model()
+            .to_string()
+            .contains("objective_fingerprint"));
+        assert!(!tree
+            .redacted_read_model()
+            .to_string()
+            .contains("implement feature X"));
+
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
     }
 
     #[test]

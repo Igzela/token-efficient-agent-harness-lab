@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 25;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 25;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 26;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 26;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -116,6 +116,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
         version: 25,
         description:
             "bind provider embedding identity, pricing, and restart-safe operation receipts",
+    },
+    SchemaMigration {
+        version: 26,
+        description: "add bounded recursive execution tree and node identity state",
     },
 ];
 
@@ -300,6 +304,7 @@ CREATE TABLE IF NOT EXISTS external_runtime_invocations (
 );
 CREATE INDEX IF NOT EXISTS idx_external_runtime_invocations_scope
     ON external_runtime_invocations(tenant_id, workspace_id, run_id, node_id, updated_at);
+
 ";
 
 pub(super) const V25_DDL: &str = "
@@ -357,6 +362,40 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_embedding_operations_retrieval_id
     ON provider_embedding_operations(tenant_id,workspace_id,run_id,node_id,query_sha256,provider_id,
         requested_model_id,resolved_model_id,dimensions,request_identity_sha256)
     WHERE operation_kind='retrieval_query';
+";
+
+pub(super) const V26_DDL: &str = "
+CREATE TABLE IF NOT EXISTS recursive_execution_trees (
+    root_run_id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    root_node_id TEXT NOT NULL,
+    tree_schema_version TEXT NOT NULL,
+    tree_json TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recursive_execution_trees_workflow
+    ON recursive_execution_trees(workflow_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS recursive_execution_nodes (
+    node_id TEXT PRIMARY KEY,
+    root_run_id TEXT NOT NULL,
+    parent_node_id TEXT,
+    proposal_id TEXT,
+    depth BIGINT NOT NULL CHECK (depth BETWEEN 0 AND 2),
+    objective_fingerprint TEXT NOT NULL CHECK (length(objective_fingerprint) = 64),
+    status TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(root_run_id, objective_fingerprint),
+    FOREIGN KEY(root_run_id) REFERENCES recursive_execution_trees(root_run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_root
+    ON recursive_execution_nodes(root_run_id, depth, node_id);
+CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_parent
+    ON recursive_execution_nodes(parent_node_id, status, node_id);
 ";
 
 pub(super) const SQLITE_DDL: &str = "
@@ -1025,6 +1064,38 @@ CREATE TABLE IF NOT EXISTS external_runtime_invocations (
 );
 CREATE INDEX IF NOT EXISTS idx_external_runtime_invocations_scope
     ON external_runtime_invocations(tenant_id, workspace_id, run_id, node_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS recursive_execution_trees (
+    root_run_id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    root_node_id TEXT NOT NULL,
+    tree_schema_version TEXT NOT NULL,
+    tree_json TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recursive_execution_trees_workflow
+    ON recursive_execution_trees(workflow_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS recursive_execution_nodes (
+    node_id TEXT PRIMARY KEY,
+    root_run_id TEXT NOT NULL,
+    parent_node_id TEXT,
+    proposal_id TEXT,
+    depth BIGINT NOT NULL CHECK (depth BETWEEN 0 AND 2),
+    objective_fingerprint TEXT NOT NULL CHECK (length(objective_fingerprint) = 64),
+    status TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(root_run_id, objective_fingerprint),
+    FOREIGN KEY(root_run_id) REFERENCES recursive_execution_trees(root_run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_root
+    ON recursive_execution_nodes(root_run_id, depth, node_id);
+CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_parent
+    ON recursive_execution_nodes(parent_node_id, status, node_id);
 ";
 
 pub(crate) const POSTGRES_DDL: &str = "
@@ -1728,6 +1799,38 @@ CREATE TABLE IF NOT EXISTS external_runtime_invocations (
 );
 CREATE INDEX IF NOT EXISTS idx_external_runtime_invocations_scope
     ON external_runtime_invocations(tenant_id, workspace_id, run_id, node_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS recursive_execution_trees (
+    root_run_id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    root_node_id TEXT NOT NULL,
+    tree_schema_version TEXT NOT NULL,
+    tree_json TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recursive_execution_trees_workflow
+    ON recursive_execution_trees(workflow_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS recursive_execution_nodes (
+    node_id TEXT PRIMARY KEY,
+    root_run_id TEXT NOT NULL,
+    parent_node_id TEXT,
+    proposal_id TEXT,
+    depth BIGINT NOT NULL CHECK (depth BETWEEN 0 AND 2),
+    objective_fingerprint TEXT NOT NULL CHECK (length(objective_fingerprint) = 64),
+    status TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(root_run_id, objective_fingerprint),
+    FOREIGN KEY(root_run_id) REFERENCES recursive_execution_trees(root_run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_root
+    ON recursive_execution_nodes(root_run_id, depth, node_id);
+CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_parent
+    ON recursive_execution_nodes(parent_node_id, status, node_id);
 ";
 
 #[cfg(test)]
@@ -1776,6 +1879,9 @@ mod tests {
             "idx_regression_report_artifacts_registry",
             "idx_regression_report_artifacts_scenario",
             "idx_regression_report_artifacts_created",
+            "recursive_execution_trees",
+            "recursive_execution_nodes",
+            "idx_recursive_execution_nodes_parent",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),
