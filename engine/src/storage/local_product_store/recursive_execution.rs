@@ -747,4 +747,73 @@ mod tests {
         assert!(loaded.active_leases.is_empty());
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn postgres_scheduler_lifecycle_sync_is_restart_safe() {
+        let _guard = env_lock().lock().unwrap();
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            eprintln!("ACP_TEST_DATABASE_URL not set; skipping recursive PostgreSQL test");
+            return;
+        };
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+        let store = LocalProductStore::new_postgres(&url, || "2026-07-18T00:00:00Z".to_string())
+            .expect("store");
+        let root_run_id = format!("recursive-pg-{}", uuid::Uuid::new_v4());
+        let tree = RecursiveTree::new(
+            &root_run_id,
+            "recursive-pg-workflow",
+            "root objective",
+            RecursiveScope {
+                repository: Some("fixture".to_string()),
+                allowed_paths: BTreeSet::from(["docs/".to_string()]),
+                capabilities: BTreeSet::from(["read".to_string()]),
+            },
+            BTreeSet::from(["read".to_string()]),
+            RecursiveBudget {
+                calls_remaining: 2,
+                tokens_remaining: 120,
+                cost_micros_remaining: 120,
+                time_ms_remaining: 1200,
+            },
+        );
+        store.save_recursive_tree(&tree).expect("save");
+        store
+            .with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                sync_recursive_lease_pg(
+                    &mut tx,
+                    &root_run_id,
+                    &tree.root_node_id,
+                    "lease-pg-1",
+                    "2026-07-18T00:00:01Z",
+                )?;
+                sync_recursive_completion_pg(
+                    &mut tx,
+                    &root_run_id,
+                    &tree.root_node_id,
+                    "lease-pg-1",
+                    false,
+                    false,
+                    &RecursiveBudget {
+                        calls_remaining: 0,
+                        tokens_remaining: 0,
+                        cost_micros_remaining: 0,
+                        time_ms_remaining: 0,
+                    },
+                    "2026-07-18T00:00:02Z",
+                )?;
+                tx.commit().map_err(|error| error.to_string())
+            })
+            .expect("sync lifecycle");
+        let loaded = store
+            .load_recursive_tree(&root_run_id)
+            .expect("load")
+            .expect("tree");
+        let root = loaded.nodes.get(&loaded.root_node_id).expect("root");
+        assert_eq!(root.status, "failed");
+        assert!(loaded.active_leases.is_empty());
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
 }
