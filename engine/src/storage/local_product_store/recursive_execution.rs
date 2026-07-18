@@ -1425,7 +1425,7 @@ pub(crate) fn record_recursive_late_usage_pg(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recursive_execution::{RecursiveBudget, RecursiveScope};
+    use crate::recursive_execution::{RecursiveBudget, RecursiveProposal, RecursiveScope};
     use std::collections::BTreeSet;
 
     fn bind_test_workflow(
@@ -1822,6 +1822,119 @@ mod tests {
         assert!(paused_loaded.active_leases.is_empty());
         assert_eq!(paused_loaded.spent_budget.tokens_remaining, 7);
         assert_eq!(paused_loaded.usage_receipts.len(), 1);
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn postgres_recursive_workflow_snapshot_binding_is_enforced() {
+        let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            eprintln!("ACP_TEST_DATABASE_URL not set; skipping recursive PostgreSQL test");
+            return;
+        };
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let store = LocalProductStore::new_postgres(&url, || "2026-07-18T00:00:00Z".to_string())
+            .expect("store");
+        let run_id = format!("recursive-pg-binding-{}", uuid::Uuid::new_v4());
+        let tree = RecursiveTree::new(
+            &run_id,
+            "recursive-pg-binding-workflow",
+            "root objective",
+            RecursiveScope {
+                repository: Some("fixture".to_string()),
+                allowed_paths: BTreeSet::from(["docs/".to_string()]),
+                capabilities: BTreeSet::from(["read".to_string()]),
+            },
+            BTreeSet::from(["read".to_string()]),
+            RecursiveBudget {
+                calls_remaining: 2,
+                tokens_remaining: 120,
+                cost_micros_remaining: 120,
+                time_ms_remaining: 1200,
+            },
+        );
+        assert!(store
+            .save_recursive_tree(&tree)
+            .expect_err("orphan tree must fail closed")
+            .contains("workflow run binding"));
+        bind_test_workflow(&store, &run_id, &tree.workflow_id, &tree.root_node_id);
+        store.save_recursive_tree(&tree).expect("save root");
+
+        let proposal = RecursiveProposal {
+            proposal_id: "proposal-pg-binding".to_string(),
+            parent_node_id: tree.root_node_id.clone(),
+            parent_version: tree.nodes[&tree.root_node_id].version,
+            objective: "child objective".to_string(),
+            context_summary: "bounded context".to_string(),
+            requested_scope: tree.root_scope.clone(),
+            requested_capabilities: tree.root_capabilities.clone(),
+            budget: RecursiveBudget {
+                calls_remaining: 1,
+                tokens_remaining: 10,
+                cost_micros_remaining: 10,
+                time_ms_remaining: 100,
+            },
+            receipt_sha256: "a".repeat(64),
+        };
+        let mut accepted_tree = tree.clone();
+        let admission = accepted_tree.admit_child(&proposal).expect("admit child");
+        store
+            .save_recursive_tree_with_expected_version(&accepted_tree, tree.version)
+            .expect("save accepted tree");
+        let node = json!({
+            "node_id": admission.node.node_id,
+            "task_type": "agent_step",
+            "status": "pending",
+            "attempt_count": 0,
+            "agent_id": "agent-pg-binding",
+            "recursive_node_id": admission.node.node_id,
+            "parent_node_id": tree.root_node_id,
+            "objective_fingerprint": admission.node.objective_fingerprint,
+            "proposal_id": proposal.proposal_id,
+            "acceptance_reason": "accepted",
+            "evidence_refs": admission.node.evidence_refs,
+        });
+        let edge = json!({
+            "edge_id": format!("recursive-edge-{}", admission.node.node_id),
+            "from_node_id": tree.root_node_id,
+            "to_node_id": admission.node.node_id,
+            "edge_type": "dependency",
+            "recursive": true,
+        });
+        store
+            .with_pg_conn(|client| {
+                validate_recursive_workflow_mutation_pg(
+                    client,
+                    &run_id,
+                    &node,
+                    &edge,
+                    "agent-pg-binding",
+                )?;
+                let mut tampered_edge = edge.clone();
+                tampered_edge["edge_type"] = json!("control");
+                assert!(validate_recursive_workflow_mutation_pg(
+                    client,
+                    &run_id,
+                    &node,
+                    &tampered_edge,
+                    "agent-pg-binding",
+                )
+                .is_err());
+                assert_eq!(
+                    validate_recursive_workflow_mutation_pg(
+                        client,
+                        "recursive-pg-binding-missing",
+                        &node,
+                        &edge,
+                        "agent-pg-binding",
+                    )
+                    .expect_err("missing tree must fail closed"),
+                    "recursive_tree_missing"
+                );
+                Ok(())
+            })
+            .expect("validate PostgreSQL snapshot binding");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 }
