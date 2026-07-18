@@ -42,7 +42,7 @@ pub(crate) enum AgentMutationOp {
         proposed_edge_id: Option<String>,
     },
     PersistRecursiveTree {
-        tree: RecursiveTree,
+        tree: Box<RecursiveTree>,
         /// The tree version observed before admission. `Some(0)` means the
         /// action is creating the tree and requires it to be absent.
         expected_version: Option<u64>,

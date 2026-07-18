@@ -1896,7 +1896,7 @@ impl AgentStepExecutor {
                 }];
                 if let Some(tree) = recursive_tree {
                     operations.push(AgentMutationOp::PersistRecursiveTree {
-                        tree,
+                        tree: Box::new(tree),
                         expected_version: recursive_expected_version,
                     });
                 }
