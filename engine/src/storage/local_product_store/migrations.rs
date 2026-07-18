@@ -1264,19 +1264,41 @@ fn validate_sqlite_v26_schema(conn: &Connection) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         let actual = stmt
             .query_map([], |row| {
-                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(5)?,
+                ))
             })
             .map_err(|error| error.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
         for &(name, type_name) in *columns {
-            let Some((_, actual_type)) = actual.iter().find(|(actual_name, _)| actual_name == name)
+            let Some((_, actual_type, not_null, primary_key)) = actual
+                .iter()
+                .find(|(actual_name, _, _, _)| actual_name == name)
             else {
                 return Err(format!("SQLite v26 schema missing {table}.{name}"));
             };
             if !actual_type.eq_ignore_ascii_case(type_name) {
                 return Err(format!(
                     "SQLite v26 schema type mismatch for {table}.{name}"
+                ));
+            }
+            let expected_not_null = !(*table == "recursive_execution_nodes"
+                && matches!(name, "parent_node_id" | "proposal_id"));
+            let expected_primary_key = (*table == "recursive_execution_trees"
+                && name == "root_run_id")
+                || (*table == "recursive_execution_nodes" && name == "node_id");
+            if expected_not_null && *not_null != 1 && !expected_primary_key {
+                return Err(format!(
+                    "SQLite v26 schema nullability mismatch for {table}.{name}"
+                ));
+            }
+            if expected_primary_key && *primary_key != 1 {
+                return Err(format!(
+                    "SQLite v26 schema primary key mismatch for {table}.{name}"
                 ));
             }
         }

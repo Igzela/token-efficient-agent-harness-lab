@@ -6094,6 +6094,10 @@ fn pg_get_run_row(
 mod recursive_scheduler_tests {
     use super::*;
     use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
+    use crate::recursive_execution::{
+        RecursiveBudget, RecursiveProposal, RecursiveScope, RecursiveTree,
+    };
+    use std::collections::BTreeSet;
 
     struct RecursiveCapExecutor;
 
@@ -6171,6 +6175,140 @@ mod recursive_scheduler_tests {
                 .expect("measured usage")
                 .tokens_remaining,
             5
+        );
+    }
+
+    fn assert_scheduler_admitted_fixture_child_completes(store: LocalProductStore, suffix: &str) {
+        let _env_lock = crate::recursive_execution::test_env_lock()
+            .lock()
+            .expect("recursive environment lock");
+        let run_id = format!("recursive-scheduler-fixture-run-{suffix}");
+        let workflow_id = format!("recursive-scheduler-fixture-workflow-{suffix}");
+        let root_node_id = format!("recursive-scheduler-fixture-root-{suffix}");
+        let agent_id = format!("recursive-scheduler-fixture-agent-{suffix}");
+        let root_receipt = format!("recursive-scheduler-fixture-root-receipt-{suffix}");
+        let scope = RecursiveScope {
+            repository: Some("fixture".to_string()),
+            allowed_paths: BTreeSet::from(["docs/".to_string()]),
+            capabilities: BTreeSet::from(["read".to_string()]),
+        };
+        let mut tree = RecursiveTree::new_with_root_node_id(
+            &run_id,
+            &workflow_id,
+            &root_node_id,
+            "root fixture objective",
+            scope.clone(),
+            scope.capabilities.clone(),
+            RecursiveBudget {
+                calls_remaining: 4,
+                tokens_remaining: 40,
+                cost_micros_remaining: 40,
+                time_ms_remaining: 400,
+            },
+        );
+        tree.bind_root_identity(&agent_id, &root_node_id, &root_receipt)
+            .expect("root identity");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let admission = tree
+            .admit_child(&RecursiveProposal {
+                proposal_id: format!("recursive-scheduler-fixture-proposal-{suffix}"),
+                parent_node_id: root_node_id.clone(),
+                parent_version: tree.nodes[&root_node_id].version,
+                objective: "review docs".to_string(),
+                context_summary: "fixture context".to_string(),
+                requested_scope: scope.clone(),
+                requested_capabilities: scope.capabilities.clone(),
+                budget: RecursiveBudget {
+                    calls_remaining: 1,
+                    tokens_remaining: 2,
+                    cost_micros_remaining: 3,
+                    time_ms_remaining: 4,
+                },
+                receipt_sha256: format!("recursive-scheduler-fixture-action-receipt-{suffix}"),
+            })
+            .expect("admit child");
+        let child_id = admission.node.node_id.clone();
+        store
+            .import_workflow_run(&json!({
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "status": "running",
+                "boundaries": {
+                    "execution_authority": "managed",
+                    "tenant_id": "fixture-tenant",
+                    "workspace_id": "fixture-workspace"
+                },
+                "nodes": [
+                    {
+                        "node_id": root_node_id,
+                        "task_type": "agent_step",
+                        "status": "completed",
+                        "agent_id": agent_id,
+                        "recursive_node_id": root_node_id,
+                        "creation_receipt_sha256": root_receipt
+                    },
+                    {
+                        "node_id": child_id,
+                        "task_type": "agent_step",
+                        "status": "pending",
+                        "recursive_node_id": child_id,
+                        "parent_node_id": root_node_id,
+                        "recursive_capabilities": admission.node.capabilities,
+                        "recursive_scope": serde_json::to_value(&admission.node.scope)
+                            .expect("scope json"),
+                        "decision_source": "fixture",
+                        "usage_contract": {
+                            "kind": "fixture",
+                            "calls": 1,
+                            "tokens": 2,
+                            "cost_micros": 3,
+                            "time_ms": 4
+                        }
+                    }
+                ],
+                "edges": [],
+                "events": [],
+                "approvals": []
+            }))
+            .expect("workflow");
+        store
+            .save_recursive_tree_with_expected_version(&tree, 0)
+            .expect("tree");
+        let tick = store
+            .tick_with_executor(&run_id, "scheduler-fixture", 0, &RecursiveCapExecutor)
+            .expect("scheduler tick");
+        assert_eq!(tick["action"], "node_executed");
+        let loaded = store
+            .load_recursive_tree(&run_id)
+            .expect("tree load")
+            .expect("tree exists");
+        assert_eq!(loaded.nodes[&child_id].status, "completed");
+        assert_eq!(loaded.nodes[&child_id].actual_usage.tokens_remaining, 2);
+        assert!(loaded.active_leases.is_empty());
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn scheduler_admitted_fixture_child_leases_and_completes() {
+        assert_scheduler_admitted_fixture_child_completes(
+            LocalProductStore::new(":memory:").expect("store"),
+            "sqlite",
+        );
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn postgres_scheduler_admitted_fixture_child_leases_and_completes() {
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            if std::env::var("CI").as_deref() == Ok("true") {
+                panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+            }
+            return;
+        };
+        assert_scheduler_admitted_fixture_child_completes(
+            LocalProductStore::new_postgres(&url, || "2026-07-18T00:00:00Z".to_string())
+                .expect("PostgreSQL store"),
+            &uuid::Uuid::new_v4().to_string(),
         );
     }
 

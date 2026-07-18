@@ -3,6 +3,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
 use crate::http_server::middleware::{
@@ -17,6 +18,22 @@ use crate::provider::redaction::contains_sensitive_patterns;
 use crate::read_only_planner::ReadOnlyPlanner;
 
 const MAX_AGENT_OBJECTIVE_BYTES: usize = 4096;
+
+fn agent_step_creation_receipt_sha256(
+    workflow_id: &str,
+    node_id: &str,
+    agent_id: &str,
+    objective: &str,
+) -> String {
+    let canonical = json!({
+        "kind": "agent_step_creation.v1",
+        "workflow_id": workflow_id,
+        "node_id": node_id,
+        "agent_id": agent_id,
+        "objective": objective,
+    });
+    hex::encode(Sha256::digest(canonical.to_string().as_bytes()))
+}
 
 pub(crate) async fn api_create_plan(
     State(state): State<AxumApiState>,
@@ -278,8 +295,9 @@ fn agent_steps_plan(
         .iter()
         .enumerate()
         .map(|(index, agent_step)| {
+            let node_id = format!("agent-node-{:03}", index + 1);
             json!({
-                "node_id": format!("agent-node-{:03}", index + 1),
+                "node_id": node_id.clone(),
                 "task_type": "agent_step",
                 "status": "pending",
                 "agent_id": agent_step.agent_id,
@@ -291,6 +309,13 @@ fn agent_steps_plan(
                 "model": agent_step.model,
                 "decision_source": "provider_typed_action",
                 "max_actions": 1,
+                "recursive_root_node_id": node_id.clone(),
+                "creation_receipt_sha256": agent_step_creation_receipt_sha256(
+                    &ids.workflow_id,
+                    &node_id,
+                    &agent_step.agent_id,
+                    raw_request,
+                ),
             })
         })
         .collect::<Vec<_>>();
@@ -481,5 +506,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(validated[0].model.as_deref(), Some("bounded-model"));
+    }
+
+    #[test]
+    fn agent_plan_binds_deterministic_recursive_root_creation_identity() {
+        let ids = crate::read_only_planner::WorkflowPlanIds::for_sequence(7);
+        let request = agent_step(None);
+        let plan = agent_steps_plan(
+            &ids,
+            "review docs",
+            "fixture",
+            "2026-07-18T00:00:00Z",
+            std::slice::from_ref(&request),
+        );
+        let node = &plan["graph"]["nodes"][0];
+        assert_eq!(node["recursive_root_node_id"], node["node_id"]);
+        let receipt = node["creation_receipt_sha256"]
+            .as_str()
+            .expect("creation receipt");
+        assert_eq!(receipt.len(), 64);
+        assert_eq!(
+            receipt,
+            agent_step_creation_receipt_sha256(
+                &ids.workflow_id,
+                "agent-node-001",
+                &request.agent_id,
+                "review docs",
+            )
+        );
     }
 }

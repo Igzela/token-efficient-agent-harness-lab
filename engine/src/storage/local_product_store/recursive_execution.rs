@@ -300,9 +300,12 @@ fn check_workflow_binding_sqlite(
         .map_err(|error| error.to_string())?;
     let metadata: Value = serde_json::from_str(&root_metadata)
         .map_err(|_| "recursive root node identity is malformed".to_string())?;
+    let root_marker = metadata
+        .get("recursive_root_node_id")
+        .or_else(|| metadata.get("recursive_node_id"))
+        .and_then(Value::as_str);
     if metadata.get("agent_id").and_then(Value::as_str) != Some(tree.root_agent_id.as_str())
-        || metadata.get("recursive_node_id").and_then(Value::as_str)
-            != Some(tree.root_recursive_marker.as_str())
+        || root_marker != Some(tree.root_recursive_marker.as_str())
         || metadata
             .get("creation_receipt_sha256")
             .and_then(Value::as_str)
@@ -340,9 +343,12 @@ fn check_workflow_binding_pg(
         .get(0);
     let metadata: Value = serde_json::from_str(&root_metadata)
         .map_err(|_| "recursive root node identity is malformed".to_string())?;
+    let root_marker = metadata
+        .get("recursive_root_node_id")
+        .or_else(|| metadata.get("recursive_node_id"))
+        .and_then(Value::as_str);
     if metadata.get("agent_id").and_then(Value::as_str) != Some(tree.root_agent_id.as_str())
-        || metadata.get("recursive_node_id").and_then(Value::as_str)
-            != Some(tree.root_recursive_marker.as_str())
+        || root_marker != Some(tree.root_recursive_marker.as_str())
         || metadata
             .get("creation_receipt_sha256")
             .and_then(Value::as_str)
@@ -509,18 +515,31 @@ pub(crate) fn record_recursive_cas_rejection_sqlite(
     conn: &rusqlite::Connection,
     candidate: &RecursiveTree,
     now: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<(String, String)>, String> {
     let Some(mut current) = load_recursive_tree_sqlite(conn, &candidate.root_run_id)? else {
         return Err("recursive_tree_missing".to_string());
     };
     let expected_version = current.version;
-    let rejected: Vec<String> = candidate
+    let mut rejected = candidate
         .accepted_proposals
         .difference(&current.accepted_proposals)
-        .cloned()
-        .collect();
-    for proposal_id in &rejected {
+        .map(|proposal_id| {
+            (
+                proposal_id.clone(),
+                RecursiveFailureReason::StaleParent.as_str().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (proposal_id, _) in &rejected {
         current.record_rejection(proposal_id, RecursiveFailureReason::StaleParent);
+    }
+    for (proposal_id, evidence) in &candidate.rejected_proposals {
+        if !current.rejected_proposals.contains_key(proposal_id)
+            && !current.accepted_proposals.contains(proposal_id)
+        {
+            current.record_rejection_evidence(proposal_id, evidence.clone());
+            rejected.push((proposal_id.clone(), evidence.reason_code.clone()));
+        }
     }
     if !rejected.is_empty() {
         persist_recursive_tree_sqlite(conn, &current, now, Some(expected_version))?;
@@ -622,18 +641,31 @@ pub(crate) fn record_recursive_cas_rejection_pg(
     client: &mut impl postgres::GenericClient,
     candidate: &RecursiveTree,
     now: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<(String, String)>, String> {
     let Some(mut current) = load_recursive_tree_pg(client, &candidate.root_run_id)? else {
         return Err("recursive_tree_missing".to_string());
     };
     let expected_version = current.version;
-    let rejected: Vec<String> = candidate
+    let mut rejected = candidate
         .accepted_proposals
         .difference(&current.accepted_proposals)
-        .cloned()
-        .collect();
-    for proposal_id in &rejected {
+        .map(|proposal_id| {
+            (
+                proposal_id.clone(),
+                RecursiveFailureReason::StaleParent.as_str().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (proposal_id, _) in &rejected {
         current.record_rejection(proposal_id, RecursiveFailureReason::StaleParent);
+    }
+    for (proposal_id, evidence) in &candidate.rejected_proposals {
+        if !current.rejected_proposals.contains_key(proposal_id)
+            && !current.accepted_proposals.contains(proposal_id)
+        {
+            current.record_rejection_evidence(proposal_id, evidence.clone());
+            rejected.push((proposal_id.clone(), evidence.reason_code.clone()));
+        }
     }
     if !rejected.is_empty() {
         persist_recursive_tree_pg(client, &current, now, Some(expected_version))?;
@@ -918,6 +950,9 @@ impl LocalProductStore {
                         if !terminated.is_empty() {
                             tree.active_leases.clear();
                             tree.version += 1;
+                            for node_id in &terminated {
+                                tree.release_node_reservation_for_persistence(node_id);
+                            }
                         }
                     }
                     if tree.version == expected_version {
@@ -1123,6 +1158,9 @@ impl LocalProductStore {
                         if !terminated.is_empty() {
                             tree.active_leases.clear();
                             tree.version += 1;
+                            for node_id in &terminated {
+                                tree.release_node_reservation_for_persistence(node_id);
+                            }
                         }
                     }
                     if tree.version == expected_version {
@@ -1499,12 +1537,9 @@ pub(crate) fn record_recursive_late_usage_pg(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "pg-tests")]
     use super::super::{AgentActionMutation, AgentMutationOp};
     use super::*;
-    #[cfg(feature = "pg-tests")]
-    use crate::recursive_execution::RecursiveProposal;
-    use crate::recursive_execution::{RecursiveBudget, RecursiveScope};
+    use crate::recursive_execution::{RecursiveBudget, RecursiveProposal, RecursiveScope};
     use std::collections::BTreeSet;
 
     fn bind_test_workflow(
@@ -1658,6 +1693,123 @@ mod tests {
     }
 
     #[test]
+    fn rejected_proposal_cas_race_preserves_original_reason_and_receipt() {
+        let store = LocalProductStore::new(":memory:").expect("store");
+        let mut tree = RecursiveTree::new(
+            "recursive-rejection-cas-run",
+            "recursive-rejection-cas-workflow",
+            "root objective",
+            RecursiveScope {
+                repository: Some("fixture".to_string()),
+                allowed_paths: BTreeSet::from(["docs/".to_string()]),
+                capabilities: BTreeSet::from(["read".to_string()]),
+            },
+            BTreeSet::from(["read".to_string()]),
+            RecursiveBudget {
+                calls_remaining: 4,
+                tokens_remaining: 40,
+                cost_micros_remaining: 40,
+                time_ms_remaining: 400,
+            },
+        );
+        bind_test_tree_identity(&mut tree);
+        bind_test_workflow(
+            &store,
+            &tree.root_run_id,
+            &tree.workflow_id,
+            &tree.root_node_id,
+        );
+        store.save_recursive_tree(&tree).expect("initial tree");
+
+        let proposal_id = "recursive-cas-rejected-proposal";
+        let mut candidate = tree.clone();
+        candidate.record_rejection(proposal_id, RecursiveFailureReason::AncestorCycle);
+        let mut advanced = tree.clone();
+        advanced.pause();
+        store
+            .save_recursive_tree_with_expected_version(&advanced, tree.version)
+            .expect("concurrent tree update");
+
+        let mutation = AgentActionMutation {
+            run_id: tree.root_run_id.clone(),
+            node_id: tree.root_node_id.clone(),
+            agent_id: "test-agent".to_string(),
+            action_sha256: "c".repeat(64),
+            action_type: "propose_child_task".to_string(),
+            result_json: json!({
+                "decision": "rejected",
+                "reason_code": RecursiveFailureReason::AncestorCycle.as_str(),
+            })
+            .to_string(),
+            operations: vec![
+                AgentMutationOp::InsertProposal {
+                    proposal_id: proposal_id.to_string(),
+                    correlation_id: "recursive-cas-correlation".to_string(),
+                    parent_node_id: tree.root_node_id.clone(),
+                    proposal_type: "child_task".to_string(),
+                    objective: "duplicate ancestor objective".to_string(),
+                    context_summary: "fixture".to_string(),
+                    target_agent_id: None,
+                    proposed_node_id: None,
+                    proposed_edge_id: None,
+                },
+                AgentMutationOp::PersistRecursiveTree {
+                    tree: Box::new(candidate),
+                    expected_version: Some(tree.version),
+                },
+            ],
+        };
+        let first = store
+            .apply_agent_action_once(&mutation)
+            .expect("persist rejected CAS decision");
+        let persisted = store
+            .load_recursive_tree(&tree.root_run_id)
+            .expect("load tree")
+            .expect("tree");
+        assert_eq!(
+            persisted.rejected_proposals[proposal_id].reason_code,
+            RecursiveFailureReason::AncestorCycle.as_str()
+        );
+        assert_eq!(
+            store
+                .get_proposal_in_run(proposal_id, &tree.root_run_id)
+                .expect("proposal")
+                .expect("proposal exists")["status"],
+            "rejected"
+        );
+        let version = persisted.version;
+        let audit_count = store
+            .audit_events(100)
+            .expect("audit")
+            .iter()
+            .filter(|event| event["action"] == "agent_step.recursive_proposal_rejected")
+            .count();
+        assert_eq!(
+            store
+                .apply_agent_action_once(&mutation)
+                .expect("exact replay"),
+            first
+        );
+        assert_eq!(
+            store
+                .load_recursive_tree(&tree.root_run_id)
+                .expect("load replayed tree")
+                .expect("tree")
+                .version,
+            version
+        );
+        assert_eq!(
+            store
+                .audit_events(100)
+                .expect("audit")
+                .iter()
+                .filter(|event| event["action"] == "agent_step.recursive_proposal_rejected")
+                .count(),
+            audit_count
+        );
+    }
+
+    #[test]
     fn persisted_tree_requires_authoritative_workflow_binding() {
         let store = LocalProductStore::new(":memory:").expect("store");
         let mut tree = RecursiveTree::new(
@@ -1707,19 +1859,65 @@ mod tests {
             },
         );
         bind_test_tree_identity(&mut tree);
-        bind_test_workflow(
-            &store,
-            &tree.root_run_id,
-            &tree.workflow_id,
-            &tree.root_node_id,
-        );
-        store.save_recursive_tree(&tree).expect("save");
+        let admission = tree
+            .admit_child(&RecursiveProposal {
+                proposal_id: "recursive-pause-proposal".to_string(),
+                parent_node_id: tree.root_node_id.clone(),
+                parent_version: tree.nodes[&tree.root_node_id].version,
+                objective: "pause child".to_string(),
+                context_summary: "fixture".to_string(),
+                requested_scope: tree.root_scope.clone(),
+                requested_capabilities: tree.root_capabilities.clone(),
+                budget: RecursiveBudget {
+                    calls_remaining: 1,
+                    tokens_remaining: 10,
+                    cost_micros_remaining: 10,
+                    time_ms_remaining: 100,
+                },
+                receipt_sha256: "recursive-pause-receipt".to_string(),
+            })
+            .expect("admit child");
+        let child_id = admission.node.node_id;
+        store
+            .import_workflow_run(&json!({
+                "run_id": tree.root_run_id,
+                "workflow_id": tree.workflow_id,
+                "status": "running",
+                "boundaries": {"execution_authority": "disabled"},
+                "nodes": [
+                    {
+                        "node_id": tree.root_node_id,
+                        "task_type": "agent_step",
+                        "status": "completed",
+                        "recursive_node_id": tree.root_node_id,
+                        "agent_id": "test-agent",
+                        "creation_receipt_sha256": "test-root-receipt"
+                    },
+                    {
+                        "node_id": child_id,
+                        "task_type": "agent_step",
+                        "status": "running",
+                        "leased_at": "2026-07-18T00:00:00Z",
+                        "recursive_node_id": child_id,
+                        "agent_id": "test-agent",
+                        "recursive_capabilities": admission.node.capabilities,
+                        "recursive_scope": admission.node.scope
+                    }
+                ],
+                "edges": [],
+                "events": [],
+                "approvals": []
+            }))
+            .expect("bind pause workflow");
+        store
+            .save_recursive_tree_with_expected_version(&tree, 0)
+            .expect("save");
         store
             .with_conn(|conn| {
                 sync_recursive_lease_sqlite(
                     conn,
                     "recursive-pause-run",
-                    &tree.root_node_id,
+                    &child_id,
                     "pause-lease",
                     "2026-07-18T00:00:00Z",
                 )
@@ -1732,13 +1930,14 @@ mod tests {
             .load_recursive_tree("recursive-pause-run")
             .expect("load")
             .expect("tree");
-        let root = paused.nodes.get(&paused.root_node_id).expect("root");
+        let child = paused.nodes.get(&child_id).expect("child");
         assert_eq!(
             paused.execution_state,
             crate::recursive_execution::RecursiveExecutionState::OperatorPaused
         );
-        assert_eq!(root.status, "failed");
+        assert_eq!(child.status, "failed");
         assert!(paused.active_leases.is_empty());
+        assert_eq!(paused.reserved_budget, RecursiveBudget::default());
 
         store
             .with_conn(|conn| {
@@ -1751,7 +1950,7 @@ mod tests {
                 assert!(record_recursive_late_usage_sqlite(
                     conn,
                     "recursive-pause-run",
-                    &tree.root_node_id,
+                    &child_id,
                     "late-attempt-1",
                     &usage,
                     "2026-07-18T00:00:01Z",
@@ -1759,7 +1958,7 @@ mod tests {
                 assert!(record_recursive_late_usage_sqlite(
                     conn,
                     "recursive-pause-run",
-                    &tree.root_node_id,
+                    &child_id,
                     "late-attempt-1",
                     &usage,
                     "2026-07-18T00:00:02Z",
@@ -1934,6 +2133,7 @@ mod tests {
             crate::recursive_execution::RecursiveExecutionState::OperatorPaused
         );
         assert!(paused_loaded.active_leases.is_empty());
+        assert_eq!(paused_loaded.reserved_budget, RecursiveBudget::default());
         assert_eq!(paused_loaded.spent_budget.tokens_remaining, 7);
         assert_eq!(paused_loaded.usage_receipts.len(), 1);
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
@@ -2008,6 +2208,9 @@ mod tests {
             "proposal_id": proposal.proposal_id,
             "acceptance_reason": "accepted",
             "evidence_refs": admission.node.evidence_refs,
+            "recursive_capabilities": admission.node.capabilities,
+            "recursive_scope": serde_json::to_value(&admission.node.scope)
+                .expect("scope json"),
         });
         let edge = json!({
             "edge_id": format!("recursive-edge-{}", admission.node.node_id),

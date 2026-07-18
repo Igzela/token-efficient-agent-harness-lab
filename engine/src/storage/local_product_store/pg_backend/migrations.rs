@@ -369,37 +369,74 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
         return Err(format!("PostgreSQL v26 schema version mismatch: {version}"));
     }
     let required = [
-        ("recursive_execution_trees", "root_run_id", "text"),
-        ("recursive_execution_trees", "workflow_id", "text"),
-        ("recursive_execution_trees", "root_node_id", "text"),
-        ("recursive_execution_trees", "tree_schema_version", "text"),
-        ("recursive_execution_trees", "tree_json", "text"),
-        ("recursive_execution_trees", "version", "bigint"),
-        ("recursive_execution_trees", "created_at", "text"),
-        ("recursive_execution_trees", "updated_at", "text"),
-        ("recursive_execution_nodes", "node_id", "text"),
-        ("recursive_execution_nodes", "root_run_id", "text"),
-        ("recursive_execution_nodes", "parent_node_id", "text"),
-        ("recursive_execution_nodes", "proposal_id", "text"),
-        ("recursive_execution_nodes", "depth", "bigint"),
-        ("recursive_execution_nodes", "objective_fingerprint", "text"),
-        ("recursive_execution_nodes", "status", "text"),
-        ("recursive_execution_nodes", "version", "bigint"),
-        ("recursive_execution_nodes", "created_at", "text"),
-        ("recursive_execution_nodes", "updated_at", "text"),
+        ("recursive_execution_trees", "root_run_id", "text", true),
+        ("recursive_execution_trees", "workflow_id", "text", true),
+        ("recursive_execution_trees", "root_node_id", "text", true),
+        (
+            "recursive_execution_trees",
+            "tree_schema_version",
+            "text",
+            true,
+        ),
+        ("recursive_execution_trees", "tree_json", "text", true),
+        ("recursive_execution_trees", "version", "bigint", true),
+        ("recursive_execution_trees", "created_at", "text", true),
+        ("recursive_execution_trees", "updated_at", "text", true),
+        ("recursive_execution_nodes", "node_id", "text", true),
+        ("recursive_execution_nodes", "root_run_id", "text", true),
+        ("recursive_execution_nodes", "parent_node_id", "text", false),
+        ("recursive_execution_nodes", "proposal_id", "text", false),
+        ("recursive_execution_nodes", "depth", "bigint", true),
+        (
+            "recursive_execution_nodes",
+            "objective_fingerprint",
+            "text",
+            true,
+        ),
+        ("recursive_execution_nodes", "status", "text", true),
+        ("recursive_execution_nodes", "version", "bigint", true),
+        ("recursive_execution_nodes", "created_at", "text", true),
+        ("recursive_execution_nodes", "updated_at", "text", true),
     ];
-    for (table, column, expected_type) in required {
-        let actual: Option<String> = client
+    for (table, column, expected_type, expected_not_null) in required {
+        let actual: Option<(String, String)> = client
             .query_opt(
-                "SELECT data_type FROM information_schema.columns
+                "SELECT data_type, is_nullable FROM information_schema.columns
                  WHERE table_schema=current_schema() AND table_name=$1 AND column_name=$2",
                 &[&table, &column],
             )
             .map_err(|error| error.to_string())?
-            .map(|row| row.get(0));
-        if actual.as_deref() != Some(expected_type) {
+            .map(|row| (row.get(0), row.get(1)));
+        if actual.as_ref().map(|(data_type, _)| data_type.as_str()) != Some(expected_type)
+            || actual
+                .as_ref()
+                .is_some_and(|(_, nullable)| expected_not_null && nullable != "NO")
+        {
             return Err(format!(
-                "PostgreSQL v26 schema type mismatch for {table}.{column}"
+                "PostgreSQL v26 schema type or nullability mismatch for {table}.{column}"
+            ));
+        }
+    }
+    for (table, column) in [
+        ("recursive_execution_trees", "root_run_id"),
+        ("recursive_execution_nodes", "node_id"),
+    ] {
+        let primary_key: bool = client
+            .query_one(
+                "SELECT EXISTS(
+                     SELECT 1 FROM pg_index i
+                     JOIN pg_class t ON t.oid=i.indrelid
+                     JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=ANY(i.indkey)
+                     WHERE t.relnamespace=current_schema()::regnamespace
+                       AND t.relname=$1 AND i.indisprimary AND a.attname=$2
+                 )",
+                &[&table, &column],
+            )
+            .map_err(|error| error.to_string())?
+            .get(0);
+        if !primary_key {
+            return Err(format!(
+                "PostgreSQL v26 schema missing primary key for {table}.{column}"
             ));
         }
     }
@@ -426,7 +463,9 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
                  SELECT 1 FROM pg_constraint c
                  JOIN pg_class child ON child.oid=c.conrelid
                  JOIN pg_class parent ON parent.oid=c.confrelid
-                 WHERE child.relname='recursive_execution_nodes'
+                 WHERE child.relnamespace=current_schema()::regnamespace
+                   AND parent.relnamespace=current_schema()::regnamespace
+                   AND child.relname='recursive_execution_nodes'
                    AND parent.relname='recursive_execution_trees'
                    AND c.contype='f'
              )",
@@ -442,7 +481,8 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
             "SELECT EXISTS(
                  SELECT 1 FROM pg_constraint c
                  JOIN pg_class t ON t.oid=c.conrelid
-                 WHERE t.relname='recursive_execution_nodes'
+                 WHERE t.relnamespace=current_schema()::regnamespace
+                   AND t.relname='recursive_execution_nodes'
                    AND c.contype='c' AND pg_get_constraintdef(c.oid) LIKE '%depth%'
              )",
             &[],
@@ -457,7 +497,8 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
             "SELECT EXISTS(
                  SELECT 1 FROM pg_constraint c
                  JOIN pg_class t ON t.oid=c.conrelid
-                 WHERE t.relname='recursive_execution_nodes'
+                 WHERE t.relnamespace=current_schema()::regnamespace
+                   AND t.relname='recursive_execution_nodes'
                    AND c.contype='u'
                    AND pg_get_constraintdef(c.oid) LIKE '%root_run_id%'
                    AND pg_get_constraintdef(c.oid) LIKE '%objective_fingerprint%'
@@ -468,6 +509,25 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
         .get(0);
     if !unique_identity {
         return Err("PostgreSQL v26 schema missing recursive objective uniqueness".to_string());
+    }
+    let fingerprint_check: bool = client
+        .query_one(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_constraint c
+                 JOIN pg_class t ON t.oid=c.conrelid
+                 WHERE t.relnamespace=current_schema()::regnamespace
+                   AND t.relname='recursive_execution_nodes'
+                   AND c.contype='c'
+                   AND lower(pg_get_constraintdef(c.oid)) LIKE '%length(objective_fingerprint)%'
+             )",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if !fingerprint_check {
+        return Err(
+            "PostgreSQL v26 schema missing objective fingerprint length constraint".to_string(),
+        );
     }
     Ok(())
 }
@@ -1229,6 +1289,34 @@ mod tests {
             .rollback_v23_to_v22("migration-test-setup", true)
             .unwrap();
         assert_eq!(store.schema_version().unwrap(), 22);
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn already_versioned_malformed_pg_v26_schema_is_rejected_fail_closed() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        fixture
+            .store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "ALTER TABLE recursive_execution_nodes
+                         DROP CONSTRAINT recursive_execution_nodes_pkey;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .expect("malform v26 node identity");
+        let error = fixture
+            .store
+            .run_pg_migrations_internal()
+            .expect_err("malformed v26 schema must fail closed");
+        assert!(
+            error.contains("missing primary key for recursive_execution_nodes.node_id"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(fixture.store.schema_version().expect("version"), 26);
     }
 
     #[test]

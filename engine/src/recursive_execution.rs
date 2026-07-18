@@ -26,6 +26,14 @@ pub const MAX_RECURSIVE_DECISION_EVIDENCE_REFS: usize = 8;
 pub const MAX_RECURSIVE_EVIDENCE_REF_BYTES: usize = 256;
 pub const OBJECTIVE_IDENTITY_VERSION: &str = "recursive-objective.v2";
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct RecursiveObjectiveIdentity {
+    version: &'static str,
+    intent: String,
+    subject: String,
+    qualifiers: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecursiveExecutionState {
@@ -280,12 +288,25 @@ pub fn normalize_objective(objective: &str) -> String {
 }
 
 pub fn objective_fingerprint(objective: &str) -> String {
-    let canonical = json!({
-        "version": OBJECTIVE_IDENTITY_VERSION,
-        "objective": normalize_objective(objective),
-    });
+    let tokens = normalize_objective(objective)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let intent = tokens.first().cloned().unwrap_or_default();
+    let subject = tokens.get(1).cloned().unwrap_or_default();
+    let qualifiers = tokens.into_iter().skip(2).collect::<Vec<_>>();
+    let canonical = RecursiveObjectiveIdentity {
+        version: OBJECTIVE_IDENTITY_VERSION,
+        intent,
+        subject,
+        qualifiers,
+    };
     let mut hasher = Sha256::new();
-    hasher.update(canonical.to_string().as_bytes());
+    hasher.update(
+        serde_json::to_vec(&canonical)
+            .expect("recursive objective identity serialization is infallible")
+            .as_slice(),
+    );
     hex::encode(hasher.finalize())
 }
 
@@ -862,13 +883,22 @@ impl RecursiveTree {
     }
 
     pub fn record_rejection(&mut self, proposal_id: &str, reason: RecursiveFailureReason) {
-        self.rejected_proposals.insert(
-            proposal_id.to_string(),
+        self.record_rejection_evidence(
+            proposal_id,
             RecursiveDecisionEvidence {
                 reason_code: reason.as_str().to_string(),
                 evidence_refs: vec![format!("agent_proposal/{proposal_id}")],
             },
         );
+    }
+
+    pub(crate) fn record_rejection_evidence(
+        &mut self,
+        proposal_id: &str,
+        evidence: RecursiveDecisionEvidence,
+    ) {
+        self.rejected_proposals
+            .insert(proposal_id.to_string(), evidence);
         self.version += 1;
     }
 
@@ -897,6 +927,24 @@ impl RecursiveTree {
                         "cost_micros_remaining": node.budget.cost_micros_remaining,
                         "time_ms_remaining": node.budget.time_ms_remaining,
                     },
+                    "child_budget": {
+                        "calls_remaining": node.child_budget.calls_remaining,
+                        "tokens_remaining": node.child_budget.tokens_remaining,
+                        "cost_micros_remaining": node.child_budget.cost_micros_remaining,
+                        "time_ms_remaining": node.child_budget.time_ms_remaining,
+                    },
+                    "reservation": {
+                        "calls_remaining": node.reservation.calls_remaining,
+                        "tokens_remaining": node.reservation.tokens_remaining,
+                        "cost_micros_remaining": node.reservation.cost_micros_remaining,
+                        "time_ms_remaining": node.reservation.time_ms_remaining,
+                    },
+                    "actual_usage": {
+                        "calls": node.actual_usage.calls_remaining,
+                        "tokens": node.actual_usage.tokens_remaining,
+                        "cost_micros": node.actual_usage.cost_micros_remaining,
+                        "time_ms": node.actual_usage.time_ms_remaining,
+                    },
                 })
             })
             .collect();
@@ -917,6 +965,12 @@ impl RecursiveTree {
                 "tokens": self.spent_budget.tokens_remaining,
                 "cost_micros": self.spent_budget.cost_micros_remaining,
                 "time_ms": self.spent_budget.time_ms_remaining,
+            },
+            "reserved_budget": {
+                "calls": self.reserved_budget.calls_remaining,
+                "tokens": self.reserved_budget.tokens_remaining,
+                "cost_micros": self.reserved_budget.cost_micros_remaining,
+                "time_ms": self.reserved_budget.time_ms_remaining,
             },
             "nodes": nodes,
         })

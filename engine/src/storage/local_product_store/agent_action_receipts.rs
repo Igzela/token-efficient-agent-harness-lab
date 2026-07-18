@@ -602,7 +602,7 @@ fn apply_sqlite_operation(
                         }
                         Err(error) => return Err(error),
                     };
-                for proposal_id in rejected {
+                for (proposal_id, reason_code) in rejected {
                     let resource = format!("agent_proposal/{proposal_id}");
                     conn.execute(
                         "UPDATE agent_proposals SET status='rejected', updated_at=?1
@@ -619,7 +619,7 @@ fn apply_sqlite_operation(
                         &json!({
                             "run_id": mutation.run_id,
                             "proposal_id": proposal_id,
-                            "reason_code": "stale_parent",
+                            "reason_code": reason_code,
                             "evidence_persisted": true,
                         }),
                     )?;
@@ -1217,7 +1217,7 @@ fn apply_pg_operation(
                     }
                     Err(error) => return Err(error),
                 };
-                for proposal_id in rejected {
+                for (proposal_id, reason_code) in rejected {
                     let resource = format!("agent_proposal/{proposal_id}");
                     client
                         .execute(
@@ -1235,7 +1235,7 @@ fn apply_pg_operation(
                         &json!({
                             "run_id": mutation.run_id,
                             "proposal_id": proposal_id,
-                            "reason_code": "stale_parent",
+                            "reason_code": reason_code,
                             "evidence_persisted": true,
                         }),
                     )?;
