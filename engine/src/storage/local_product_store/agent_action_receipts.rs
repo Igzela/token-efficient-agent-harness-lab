@@ -43,6 +43,13 @@ pub(crate) enum AgentMutationOp {
     },
     PersistRecursiveTree {
         tree: RecursiveTree,
+        /// The tree version observed before admission. `Some(0)` means the
+        /// action is creating the tree and requires it to be absent.
+        expected_version: Option<u64>,
+    },
+    PersistRecursiveWorkflow {
+        node: Value,
+        edge: Value,
     },
     UpdateProposalStatus {
         proposal_id: String,
@@ -400,8 +407,26 @@ fn apply_sqlite_operation(
             )?;
             Ok(())
         }
-        AgentMutationOp::PersistRecursiveTree { tree } => {
-            super::recursive_execution::persist_recursive_tree_sqlite(conn, tree, now)
+        AgentMutationOp::PersistRecursiveTree {
+            tree,
+            expected_version,
+        } => super::recursive_execution::persist_recursive_tree_sqlite(
+            conn,
+            tree,
+            now,
+            *expected_version,
+        ),
+        AgentMutationOp::PersistRecursiveWorkflow { node, edge } => {
+            super::workflow_runs::dag_mutations::insert_workflow_run_node_locked(
+                conn,
+                &mutation.run_id,
+                node,
+            )?;
+            super::workflow_runs::dag_mutations::insert_workflow_run_edge_locked(
+                conn,
+                &mutation.run_id,
+                edge,
+            )
         }
         AgentMutationOp::UpdateProposalStatus {
             proposal_id,
@@ -895,8 +920,26 @@ fn apply_pg_operation(
                 }),
             )
         }
-        AgentMutationOp::PersistRecursiveTree { tree } => {
-            super::recursive_execution::persist_recursive_tree_pg(client, tree, now)
+        AgentMutationOp::PersistRecursiveTree {
+            tree,
+            expected_version,
+        } => super::recursive_execution::persist_recursive_tree_pg(
+            client,
+            tree,
+            now,
+            *expected_version,
+        ),
+        AgentMutationOp::PersistRecursiveWorkflow { node, edge } => {
+            super::workflow_runs::dag_mutations::pg_insert_workflow_run_node(
+                client,
+                &mutation.run_id,
+                node,
+            )?;
+            super::workflow_runs::dag_mutations::pg_insert_workflow_run_edge(
+                client,
+                &mutation.run_id,
+                edge,
+            )
         }
         AgentMutationOp::UpdateProposalStatus {
             proposal_id,

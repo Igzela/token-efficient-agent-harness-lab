@@ -2,7 +2,11 @@ use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::Value;
 
 use super::{DatabaseConnection, LocalProductStore};
-use crate::recursive_execution::{RecursiveNode, RecursiveTree, RECURSIVE_SCHEMA_VERSION};
+use crate::recursive_execution::{
+    RecursiveNode, RecursiveScope, RecursiveTree, MAX_ACCEPTED_CHILDREN_PER_NODE,
+    MAX_RECURSIVE_DEPTH, MAX_RECURSIVE_LEASES, MAX_RECURSIVE_NODES_PER_ROOT,
+    MAX_RECURSIVE_TREE_BYTES, MAX_SCOPE_ITEMS, MAX_SCOPE_VALUE_BYTES, RECURSIVE_SCHEMA_VERSION,
+};
 
 fn node_values(node: &RecursiveNode) -> (&str, Option<&str>, Option<&str>, i64, &str, &str, i64) {
     (
@@ -20,15 +24,79 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
     if tree.schema_version != RECURSIVE_SCHEMA_VERSION {
         return Err("recursive tree schema version mismatch".to_string());
     }
-    serde_json::to_string(tree).map_err(|error| error.to_string())
+    if tree.nodes.len() > MAX_RECURSIVE_NODES_PER_ROOT
+        || tree.active_leases.len() > MAX_RECURSIVE_LEASES
+    {
+        return Err("recursive tree exceeds bounded node or lease limit".to_string());
+    }
+    validate_scope(&tree.root_scope)?;
+    for node in tree.nodes.values() {
+        if node.depth > MAX_RECURSIVE_DEPTH
+            || node.accepted_children > MAX_ACCEPTED_CHILDREN_PER_NODE
+            || node.objective_fingerprint.len() != 64
+            || node.ancestor_fingerprints.len() > MAX_RECURSIVE_DEPTH as usize
+        {
+            return Err("recursive node exceeds bounded shape".to_string());
+        }
+        validate_scope(&node.scope)?;
+    }
+    let tree_json = serde_json::to_string(tree).map_err(|error| error.to_string())?;
+    if tree_json.len() > MAX_RECURSIVE_TREE_BYTES {
+        return Err("recursive tree exceeds persistence byte cap".to_string());
+    }
+    Ok(tree_json)
+}
+
+fn validate_scope(scope: &RecursiveScope) -> Result<(), String> {
+    if scope.allowed_paths.len() > MAX_SCOPE_ITEMS || scope.capabilities.len() > MAX_SCOPE_ITEMS {
+        return Err("recursive scope exceeds bounded item cap".to_string());
+    }
+    let mut values = scope
+        .repository
+        .iter()
+        .chain(scope.allowed_paths.iter())
+        .chain(scope.capabilities.iter());
+    if values.any(|value| value.len() > MAX_SCOPE_VALUE_BYTES) {
+        return Err("recursive scope value exceeds byte cap".to_string());
+    }
+    Ok(())
+}
+
+fn check_expected_sqlite(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    expected_version: u64,
+) -> Result<(), String> {
+    let current: Option<i64> = conn
+        .query_row(
+            "SELECT version FROM recursive_execution_trees WHERE root_run_id=?1",
+            [root_run_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let matches = if expected_version == 0 {
+        current.is_none()
+    } else {
+        current == Some(expected_version as i64)
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err("stale_parent".to_string())
+    }
 }
 
 pub(crate) fn persist_recursive_tree_sqlite(
     tx: &rusqlite::Connection,
     tree: &RecursiveTree,
     now: &str,
+    expected_version: Option<u64>,
 ) -> Result<(), String> {
     let tree_json = validate_tree_for_persistence(tree)?;
+    if let Some(expected_version) = expected_version {
+        check_expected_sqlite(tx, &tree.root_run_id, expected_version)?;
+    }
     tx.execute(
         "INSERT INTO recursive_execution_trees
          (root_run_id, workflow_id, root_node_id, tree_schema_version, tree_json, version, created_at, updated_at)
@@ -89,8 +157,26 @@ pub(crate) fn persist_recursive_tree_pg(
     client: &mut impl postgres::GenericClient,
     tree: &RecursiveTree,
     now: &str,
+    expected_version: Option<u64>,
 ) -> Result<(), String> {
     let tree_json = validate_tree_for_persistence(tree)?;
+    if let Some(expected_version) = expected_version {
+        let current: Option<i64> = client
+            .query_opt(
+                "SELECT version FROM recursive_execution_trees WHERE root_run_id=$1",
+                &[&tree.root_run_id],
+            )
+            .map_err(|error| error.to_string())?
+            .map(|row| row.get(0));
+        let matches = if expected_version == 0 {
+            current.is_none()
+        } else {
+            current == Some(expected_version as i64)
+        };
+        if !matches {
+            return Err("stale_parent".to_string());
+        }
+    }
     client
         .execute(
             "INSERT INTO recursive_execution_trees
@@ -155,7 +241,7 @@ impl LocalProductStore {
         if tree.schema_version != RECURSIVE_SCHEMA_VERSION {
             return Err("recursive tree schema version mismatch".to_string());
         }
-        let tree_json = serde_json::to_string(tree).map_err(|error| error.to_string())?;
+        let tree_json = validate_tree_for_persistence(tree)?;
         let now = self.now();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {

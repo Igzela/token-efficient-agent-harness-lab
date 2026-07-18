@@ -17,6 +17,9 @@ pub const MAX_RECURSIVE_LEASES: usize = 3;
 pub const MAX_RECURSIVE_RETRIES: u8 = 1;
 const MAX_OBJECTIVE_BYTES: usize = 4096;
 const MAX_CONTEXT_BYTES: usize = 8192;
+pub const MAX_RECURSIVE_TREE_BYTES: usize = 131_072;
+pub const MAX_SCOPE_VALUE_BYTES: usize = 1024;
+pub const MAX_SCOPE_ITEMS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -282,15 +285,15 @@ impl RecursiveTree {
         if !shape_is_valid(proposal) {
             return Err(RecursiveFailureReason::ProposalConflict);
         }
-        if self.accepted_proposals.contains(&proposal.proposal_id) {
-            return Err(RecursiveFailureReason::ProposalConflict);
-        }
         if self
             .receipts
             .get(&proposal.proposal_id)
             .is_some_and(|receipt| receipt != &proposal.receipt_sha256)
         {
             return Err(RecursiveFailureReason::ReceiptConflict);
+        }
+        if self.accepted_proposals.contains(&proposal.proposal_id) {
+            return Err(RecursiveFailureReason::ProposalConflict);
         }
         let parent = self
             .nodes

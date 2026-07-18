@@ -1731,78 +1731,106 @@ impl AgentStepExecutor {
                     ));
                 }
                 let proposal_id = format!("prop-{}", &action_sha256[..24]);
-                let (recursive_node_id, recursive_tree) =
-                    if std::env::var("ACP_RECURSIVE_EXECUTION_ENABLED").as_deref() == Ok("1") {
-                        let capabilities: BTreeSet<String> =
-                            agent_state.capability_profile.iter().cloned().collect();
-                        let requested_scope = RecursiveScope {
-                            repository: agent_state
-                                .metadata
-                                .get("repository")
-                                .and_then(Value::as_str)
-                                .map(str::to_string),
-                            allowed_paths: agent_state
-                                .metadata
-                                .get("allowed_paths")
-                                .and_then(Value::as_array)
-                                .map(|paths| {
-                                    paths
-                                        .iter()
-                                        .filter_map(Value::as_str)
-                                        .map(str::to_string)
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
-                            capabilities: capabilities.clone(),
-                        };
-                        let mut tree =
-                            self.store.load_recursive_tree(run_id)?.unwrap_or_else(|| {
-                                RecursiveTree::new_with_root_node_id(
-                                    run_id,
-                                    workflow_id,
-                                    proposal.parent_node_id.clone(),
-                                    agent_state
-                                        .objective
-                                        .as_deref()
-                                        .unwrap_or(&proposal.objective),
-                                    requested_scope.clone(),
-                                    capabilities.clone(),
-                                    RecursiveBudget {
-                                        calls_remaining: 12,
-                                        tokens_remaining: 120_000,
-                                        cost_micros_remaining: 1_000_000,
-                                        time_ms_remaining: 600_000,
-                                    },
-                                )
-                            });
-                        let parent_version = tree
-                            .nodes
-                            .get(&proposal.parent_node_id)
-                            .ok_or_else(|| "stale_parent".to_string())?
-                            .version;
-                        let admission = tree
-                            .admit_child(&RecursiveProposal {
-                                proposal_id: proposal_id.clone(),
-                                parent_node_id: proposal.parent_node_id.clone(),
-                                parent_version,
-                                objective: proposal.objective.clone(),
-                                context_summary: proposal.context_summary.clone(),
-                                requested_scope,
-                                requested_capabilities: capabilities,
-                                budget: RecursiveBudget {
-                                    calls_remaining: 1,
-                                    tokens_remaining: 10_000,
-                                    cost_micros_remaining: 10_000,
-                                    time_ms_remaining: 60_000,
-                                },
-                                receipt_sha256: action_sha256.clone(),
+                let (
+                    recursive_node_id,
+                    recursive_tree,
+                    recursive_expected_version,
+                    recursive_workflow,
+                ) = if std::env::var("ACP_RECURSIVE_EXECUTION_ENABLED").as_deref() == Ok("1") {
+                    let capabilities: BTreeSet<String> =
+                        agent_state.capability_profile.iter().cloned().collect();
+                    let requested_scope = RecursiveScope {
+                        repository: agent_state
+                            .metadata
+                            .get("repository")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        allowed_paths: agent_state
+                            .metadata
+                            .get("allowed_paths")
+                            .and_then(Value::as_array)
+                            .map(|paths| {
+                                paths
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_string)
+                                    .collect()
                             })
-                            .map_err(|reason| reason.as_str().to_string())?;
-                        let node_id = admission.node.node_id.clone();
-                        (Some(node_id), Some(tree))
-                    } else {
-                        (None, None)
+                            .unwrap_or_default(),
+                        capabilities: capabilities.clone(),
                     };
+                    let stored_tree = self.store.load_recursive_tree(run_id)?;
+                    let expected_version = stored_tree.as_ref().map_or(0, |tree| tree.version);
+                    let mut tree = stored_tree.unwrap_or_else(|| {
+                        RecursiveTree::new_with_root_node_id(
+                            run_id,
+                            workflow_id,
+                            proposal.parent_node_id.clone(),
+                            agent_state
+                                .objective
+                                .as_deref()
+                                .unwrap_or(&proposal.objective),
+                            requested_scope.clone(),
+                            capabilities.clone(),
+                            RecursiveBudget {
+                                calls_remaining: 12,
+                                tokens_remaining: 120_000,
+                                cost_micros_remaining: 1_000_000,
+                                time_ms_remaining: 600_000,
+                            },
+                        )
+                    });
+                    let parent_version = tree
+                        .nodes
+                        .get(&proposal.parent_node_id)
+                        .ok_or_else(|| "stale_parent".to_string())?
+                        .version;
+                    let admission = tree
+                        .admit_child(&RecursiveProposal {
+                            proposal_id: proposal_id.clone(),
+                            parent_node_id: proposal.parent_node_id.clone(),
+                            parent_version,
+                            objective: proposal.objective.clone(),
+                            context_summary: proposal.context_summary.clone(),
+                            requested_scope,
+                            requested_capabilities: capabilities,
+                            budget: RecursiveBudget {
+                                calls_remaining: 1,
+                                tokens_remaining: 10_000,
+                                cost_micros_remaining: 10_000,
+                                time_ms_remaining: 60_000,
+                            },
+                            receipt_sha256: action_sha256.clone(),
+                        })
+                        .map_err(|reason| reason.as_str().to_string())?;
+                    let node_id = admission.node.node_id.clone();
+                    let workflow = if self.store.get_workflow_run(run_id)?.is_some() {
+                        Some((
+                            json!({
+                                "node_id": node_id,
+                                "task_type": "agent_step",
+                                "status": "pending",
+                                "attempt_count": 0,
+                                "agent_id": agent_id,
+                                "recursive_node_id": node_id,
+                                "parent_node_id": proposal.parent_node_id,
+                                "objective_fingerprint": admission.node.objective_fingerprint,
+                            }),
+                            json!({
+                                "edge_id": format!("recursive-edge-{node_id}"),
+                                "from_node_id": proposal.parent_node_id,
+                                "to_node_id": node_id,
+                                "edge_type": "dependency",
+                                "recursive": true,
+                            }),
+                        ))
+                    } else {
+                        None
+                    };
+                    (Some(node_id), Some(tree), Some(expected_version), workflow)
+                } else {
+                    (None, None, None, None)
+                };
                 let result = action_result_with_state_metrics(
                     json!({"action":"propose_child_task","proposal_id": proposal_id,
                           "correlation_id": proposal.correlation_id,
@@ -1822,7 +1850,13 @@ impl AgentStepExecutor {
                     proposed_edge_id: proposal.proposed_edge_id.clone(),
                 }];
                 if let Some(tree) = recursive_tree {
-                    operations.push(AgentMutationOp::PersistRecursiveTree { tree });
+                    operations.push(AgentMutationOp::PersistRecursiveTree {
+                        tree,
+                        expected_version: recursive_expected_version,
+                    });
+                }
+                if let Some((node, edge)) = recursive_workflow {
+                    operations.push(AgentMutationOp::PersistRecursiveWorkflow { node, edge });
                 }
                 operations.push(AgentMutationOp::AppendAudit {
                     action: "agent_step.propose_child_task".to_string(),

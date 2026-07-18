@@ -13,7 +13,7 @@ use super::{
 };
 use crate::workflow::dag_manager::{types::DAGMutationProposal, DAGManager};
 
-pub(super) fn insert_workflow_run_node_locked(
+pub(crate) fn insert_workflow_run_node_locked(
     conn: &rusqlite::Connection,
     run_id: &str,
     node: &Value,
@@ -57,7 +57,7 @@ pub(super) fn insert_workflow_run_node_locked(
     Ok(())
 }
 
-pub(super) fn insert_workflow_run_edge_locked(
+pub(crate) fn insert_workflow_run_edge_locked(
     conn: &rusqlite::Connection,
     run_id: &str,
     edge: &Value,
@@ -96,7 +96,7 @@ pub(super) fn insert_workflow_run_edge_locked(
 }
 
 #[cfg(feature = "pg")]
-pub(super) fn pg_insert_workflow_run_node(
+pub(crate) fn pg_insert_workflow_run_node(
     client: &mut impl postgres::GenericClient,
     run_id: &str,
     node: &Value,
@@ -160,7 +160,7 @@ pub(super) fn pg_insert_workflow_run_node(
 }
 
 #[cfg(feature = "pg")]
-pub(super) fn pg_insert_workflow_run_edge(
+pub(crate) fn pg_insert_workflow_run_edge(
     client: &mut impl postgres::GenericClient,
     run_id: &str,
     edge: &Value,

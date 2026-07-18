@@ -11,7 +11,7 @@ use crate::provider::redaction::contains_sensitive_patterns;
 use crate::workflow::context_pack::{
     assemble_context_injection_with_bridge, ContextAssemblyConfig, ContextSource,
 };
-mod dag_mutations;
+pub(crate) mod dag_mutations;
 mod operator_approvals;
 mod queue_lease;
 

@@ -1004,11 +1004,7 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     fn prepare_v23_rollback_fixture(store: &LocalProductStore) {
-        assert_eq!(store.schema_version().unwrap(), 26);
-        store
-            .rollback_v26_to_v25("migration-test-setup", true)
-            .unwrap();
-        assert_eq!(store.schema_version().unwrap(), 25);
+        prepare_v25_rollback_fixture(store);
         store
             .rollback_v25_to_v24("migration-test-setup", true)
             .unwrap();
@@ -1017,6 +1013,15 @@ mod tests {
             .rollback_v24_to_v23("migration-test-setup", true)
             .unwrap();
         assert_eq!(store.schema_version().unwrap(), 23);
+    }
+
+    #[cfg(feature = "pg-tests")]
+    fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
+        assert_eq!(store.schema_version().unwrap(), 26);
+        store
+            .rollback_v26_to_v25("migration-test-setup", true)
+            .unwrap();
+        assert_eq!(store.schema_version().unwrap(), 25);
     }
 
     #[cfg(feature = "pg-tests")]
@@ -1035,6 +1040,7 @@ mod tests {
             return;
         };
         let store = &fixture.store;
+        prepare_v25_rollback_fixture(store);
         store
             .with_pg_conn(|client| {
                 client
@@ -1063,7 +1069,7 @@ mod tests {
             .rollback_v25_to_v24("migration-test", true)
             .unwrap_err();
         assert!(error.contains("provider embedding bindings exist"));
-        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.schema_version().unwrap(), 26);
         store
             .with_pg_conn(|client| {
                 client
@@ -1091,6 +1097,7 @@ mod tests {
             return;
         };
         let store = &fixture.store;
+        prepare_v25_rollback_fixture(store);
         store
             .rollback_v25_to_v24("migration-test-setup", true)
             .unwrap();
@@ -1121,7 +1128,7 @@ mod tests {
         left.unwrap();
         right.unwrap();
 
-        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.schema_version().unwrap(), 26);
         store
             .with_pg_conn(|client| {
                 assert!(pg_column_exists(
@@ -1147,7 +1154,7 @@ mod tests {
             .unwrap();
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.schema_version().unwrap(), 26);
 
         store
             .with_pg_conn(|client| {
@@ -1180,6 +1187,7 @@ mod tests {
             return;
         };
         let store = &fixture.store;
+        prepare_v25_rollback_fixture(store);
         store
             .with_pg_conn(|client| {
                 client
@@ -1232,6 +1240,7 @@ mod tests {
             return;
         };
         let store = &fixture.store;
+        prepare_v25_rollback_fixture(store);
         store
             .rollback_v25_to_v24("migration-test-setup", true)
             .unwrap();
@@ -1265,7 +1274,7 @@ mod tests {
             })
         );
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.schema_version().unwrap(), 26);
         for table in super::super::super::migrations::V24_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -1315,7 +1324,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.schema_version().unwrap(), 26);
         for table in super::super::super::migrations::V23_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -1424,7 +1433,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.schema_version().unwrap(), 26);
         for table in super::super::super::migrations::V22_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
