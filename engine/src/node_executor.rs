@@ -1913,7 +1913,10 @@ impl AgentStepExecutor {
                                 "agent_id": agent_id,
                                 "recursive_node_id": node_id,
                                 "parent_node_id": proposal.parent_node_id,
-                                "objective_fingerprint": admission.node.objective_fingerprint,
+                                "objective_fingerprint": admission.node.objective_fingerprint.clone(),
+                                "proposal_id": proposal_id,
+                                "acceptance_reason": "accepted",
+                                "evidence_refs": admission.node.evidence_refs.clone(),
                             }),
                             json!({
                                 "edge_id": format!("recursive-edge-{node_id}"),

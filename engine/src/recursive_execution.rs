@@ -438,7 +438,7 @@ impl RecursiveTree {
             version: 1,
             lease_id: None,
             failure_reason: None,
-            evidence_refs: Vec::new(),
+            evidence_refs: vec![format!("recursive-proposal:{}", proposal.proposal_id)],
         };
         let parent_entry = self.nodes.get_mut(&parent.node_id).expect("parent checked");
         parent_entry.accepted_children += 1;
@@ -560,8 +560,14 @@ impl RecursiveTree {
         let usage_fingerprint =
             serde_json::to_string(usage).map_err(|_| RecursiveFailureReason::ReceiptConflict)?;
         if let Some(previous) = self.usage_receipts.get(receipt_id) {
-            if previous == &usage_fingerprint {
-                return Ok(true);
+            if let Some(previous_usage) = previous.strip_prefix("1:") {
+                if previous_usage == usage_fingerprint {
+                    return Ok(true);
+                }
+            } else if let Some(previous_usage) = previous.strip_prefix("0:") {
+                if previous_usage == usage_fingerprint {
+                    return Ok(false);
+                }
             }
             return Err(RecursiveFailureReason::ReceiptConflict);
         }
@@ -577,8 +583,13 @@ impl RecursiveTree {
             })
             .unwrap_or(true);
         self.spent_budget.add(usage);
-        self.usage_receipts
-            .insert(receipt_id.to_string(), usage_fingerprint);
+        self.usage_receipts.insert(
+            receipt_id.to_string(),
+            format!(
+                "{}:{usage_fingerprint}",
+                if within_tree_budget { 1 } else { 0 }
+            ),
+        );
         Ok(within_tree_budget)
     }
 

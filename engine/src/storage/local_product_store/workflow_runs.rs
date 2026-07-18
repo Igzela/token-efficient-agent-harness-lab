@@ -4849,21 +4849,30 @@ fn optional_json_text(value: Option<&Value>) -> Option<String> {
 fn recursive_usage_from_output(
     output: &crate::node_executor::NodeExecutionOutput,
 ) -> crate::recursive_execution::RecursiveBudget {
-    let token_count = output
-        .input_tokens
-        .unwrap_or(0)
-        .saturating_add(output.output_tokens.unwrap_or(0))
-        .max(0) as u64;
+    // A recursive node must not turn an unmeasured dimension into free
+    // budget. Saturated maxima force the node/tree into a terminal budget
+    // failure while preserving the bounded receipt and audit path.
+    let token_count = match (output.input_tokens, output.output_tokens) {
+        (Some(input), Some(output)) if input >= 0 && output >= 0 => {
+            (input as u64).saturating_add(output as u64)
+        }
+        _ => u64::MAX,
+    };
     let cost_micros = output
         .estimated_cost
         .filter(|cost| cost.is_finite() && *cost >= 0.0)
         .map(|cost| (cost * 1_000_000.0).ceil() as u64)
-        .unwrap_or(0);
+        .unwrap_or(u64::MAX);
+    let time_ms = output
+        .latency_ms
+        .filter(|latency| *latency >= 0)
+        .map(|latency| latency as u64)
+        .unwrap_or(u64::MAX);
     crate::recursive_execution::RecursiveBudget {
         calls_remaining: 1,
         tokens_remaining: token_count,
         cost_micros_remaining: cost_micros,
-        time_ms_remaining: output.latency_ms.unwrap_or(0).max(0) as u64,
+        time_ms_remaining: time_ms,
     }
 }
 
@@ -5334,7 +5343,7 @@ fn pg_ensure_run_exists(
 }
 
 #[cfg(feature = "pg")]
-fn pg_append_audit(
+pub(crate) fn pg_append_audit(
     client: &mut impl postgres::GenericClient,
     now: &str,
     actor: &str,
