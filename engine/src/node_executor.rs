@@ -1427,6 +1427,14 @@ fn validate_agent_decision_usage(usage: &AgentDecisionUsage) -> Result<(), Strin
     ) {
         return Err("provider usage provenance is invalid".to_string());
     }
+    let has_complete_tokens = usage.input_tokens.is_some() && usage.output_tokens.is_some();
+    if (usage.token_provenance == "provider_reported") != has_complete_tokens {
+        return Err("provider token usage and provenance are inconsistent".to_string());
+    }
+    let has_cost = usage.estimated_cost_usd.is_some();
+    if (usage.cost_provenance == "harness_derived") != has_cost {
+        return Err("provider cost usage and provenance are inconsistent".to_string());
+    }
     Ok(())
 }
 
@@ -1454,6 +1462,8 @@ fn completed_agent_step_output(
                 .ok_or_else(|| format!("stored provider usage {field} is invalid"))
         }
     };
+    let input_tokens = optional_i64("input_tokens")?;
+    let output_tokens = optional_i64("output_tokens")?;
     let estimated_cost = match usage.and_then(|value| value.get("estimated_cost_usd")) {
         None | Some(Value::Null) => None,
         Some(value) => Some(
@@ -1463,14 +1473,32 @@ fn completed_agent_step_output(
                 .ok_or_else(|| "stored provider usage estimated_cost_usd is invalid".to_string())?,
         ),
     };
+    if let Some(usage) = usage {
+        let token_provenance = usage
+            .get("token_provenance")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "stored provider token provenance is invalid".to_string())?;
+        let cost_provenance = usage
+            .get("cost_provenance")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "stored provider cost provenance is invalid".to_string())?;
+        if !matches!(token_provenance, "provider_reported" | "unavailable")
+            || !matches!(cost_provenance, "harness_derived" | "unavailable")
+            || ((token_provenance == "provider_reported")
+                != (input_tokens.is_some() && output_tokens.is_some()))
+            || ((cost_provenance == "harness_derived") != estimated_cost.is_some())
+        {
+            return Err("stored provider usage and provenance are inconsistent".to_string());
+        }
+    }
     Ok(NodeExecutionOutput {
         status: "completed".to_string(),
         executor_type: "agent_step".to_string(),
         output: Some(result),
         error_domain: None,
         error_message: None,
-        input_tokens: optional_i64("input_tokens")?,
-        output_tokens: optional_i64("output_tokens")?,
+        input_tokens,
+        output_tokens,
         estimated_cost,
         latency_ms: Some(start.elapsed().as_millis() as i64),
     })
@@ -4418,6 +4446,24 @@ mod tests {
 
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+    }
+
+    #[test]
+    fn provider_usage_rejects_values_with_unavailable_provenance() {
+        let usage = AgentDecisionUsage {
+            provider_id: "measured-provider".to_string(),
+            model: "measured-model".to_string(),
+            input_tokens: Some(7),
+            output_tokens: Some(3),
+            estimated_cost_usd: Some(0.000_01),
+            reserved_cost_usd: 0.001,
+            token_provenance: "unavailable".to_string(),
+            cost_provenance: "unavailable".to_string(),
+        };
+        assert_eq!(
+            validate_agent_decision_usage(&usage).expect_err("usage must fail closed"),
+            "provider token usage and provenance are inconsistent"
+        );
     }
 
     #[cfg(feature = "pg-tests")]

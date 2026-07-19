@@ -3,10 +3,11 @@ use serde_json::{json, Value};
 
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::recursive_execution::{
-    RecursiveBudget, RecursiveFailureReason, RecursiveNode, RecursiveScope, RecursiveTree,
-    MAX_ACCEPTED_CHILDREN_PER_NODE, MAX_RECURSIVE_DECISION_EVIDENCE_REFS, MAX_RECURSIVE_DEPTH,
-    MAX_RECURSIVE_EVIDENCE_REF_BYTES, MAX_RECURSIVE_LEASES, MAX_RECURSIVE_NODES_PER_ROOT,
-    MAX_RECURSIVE_TREE_BYTES, MAX_SCOPE_ITEMS, MAX_SCOPE_VALUE_BYTES, RECURSIVE_SCHEMA_VERSION,
+    RecursiveBudget, RecursiveFailureReason, RecursiveNode, RecursiveNodeStatus, RecursiveScope,
+    RecursiveTree, MAX_ACCEPTED_CHILDREN_PER_NODE, MAX_RECURSIVE_DECISION_EVIDENCE_REFS,
+    MAX_RECURSIVE_DEPTH, MAX_RECURSIVE_EVIDENCE_REF_BYTES, MAX_RECURSIVE_LEASES,
+    MAX_RECURSIVE_NODES_PER_ROOT, MAX_RECURSIVE_TREE_BYTES, MAX_SCOPE_ITEMS, MAX_SCOPE_VALUE_BYTES,
+    RECURSIVE_SCHEMA_VERSION,
 };
 
 fn node_values(node: &RecursiveNode) -> (&str, Option<&str>, Option<&str>, i64, &str, &str, i64) {
@@ -16,7 +17,7 @@ fn node_values(node: &RecursiveNode) -> (&str, Option<&str>, Option<&str>, i64, 
         node.proposal_id.as_deref(),
         i64::from(node.depth),
         &node.objective_fingerprint,
-        &node.status,
+        node.status.as_str(),
         node.version as i64,
     )
 }
@@ -131,9 +132,12 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
         } else if node.node_id != tree.root_node_id {
             return Err("recursive child proposal identity is missing".to_string());
         }
-        match (node.status.as_str(), node.lease_id.as_deref()) {
-            ("leased", Some(lease_id)) if tree.active_leases.contains(lease_id) => {}
-            ("leased", _) => return Err("recursive lease identity is inconsistent".to_string()),
+        match (node.status, node.lease_id.as_deref()) {
+            (RecursiveNodeStatus::Leased, Some(lease_id))
+                if tree.active_leases.contains(lease_id) => {}
+            (RecursiveNodeStatus::Leased, _) => {
+                return Err("recursive lease identity is inconsistent".to_string())
+            }
             (_, Some(_)) => return Err("non-leased recursive node has a lease".to_string()),
             _ => {}
         }
@@ -186,7 +190,7 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
                     .evidence_refs
                     .iter()
                     .any(|reference| reference.len() > MAX_RECURSIVE_EVIDENCE_REF_BYTES)
-                || decision.reason_code.len() > 128
+                || decision.reason_code.as_str().len() > 128
         })
     {
         return Err("recursive decision evidence exceeds bounded shape".to_string());
@@ -585,7 +589,10 @@ pub(crate) fn record_recursive_cas_rejection_sqlite(
             && !current.accepted_proposals.contains(proposal_id)
         {
             current.record_rejection_evidence(proposal_id, evidence.clone());
-            rejected.push((proposal_id.clone(), evidence.reason_code.clone()));
+            rejected.push((
+                proposal_id.clone(),
+                evidence.reason_code.as_str().to_string(),
+            ));
         }
     }
     if !rejected.is_empty() {
@@ -711,7 +718,10 @@ pub(crate) fn record_recursive_cas_rejection_pg(
             && !current.accepted_proposals.contains(proposal_id)
         {
             current.record_rejection_evidence(proposal_id, evidence.clone());
-            rejected.push((proposal_id.clone(), evidence.reason_code.clone()));
+            rejected.push((
+                proposal_id.clone(),
+                evidence.reason_code.as_str().to_string(),
+            ));
         }
     }
     if !rejected.is_empty() {
@@ -955,8 +965,7 @@ impl LocalProductStore {
                     let budget_exhausted = tree.execution_state
                         == crate::recursive_execution::RecursiveExecutionState::BudgetExhausted
                         || tree.nodes.values().any(|node| {
-                            node.failure_reason.as_deref()
-                                == Some(RecursiveFailureReason::TreeBudgetExhausted.as_str())
+                            node.failure_reason == Some(RecursiveFailureReason::TreeBudgetExhausted)
                         });
                     let effective_state = if budget_exhausted {
                         crate::recursive_execution::RecursiveExecutionState::BudgetExhausted
@@ -982,15 +991,15 @@ impl LocalProductStore {
                     };
                     let terminal_node_reason = match effective_state {
                         crate::recursive_execution::RecursiveExecutionState::KillStopped => {
-                            RecursiveFailureReason::RecursiveKillSwitchActive.as_str()
+                            RecursiveFailureReason::RecursiveKillSwitchActive
                         }
                         crate::recursive_execution::RecursiveExecutionState::BudgetExhausted => {
-                            RecursiveFailureReason::TreeBudgetExhausted.as_str()
+                            RecursiveFailureReason::TreeBudgetExhausted
                         }
                         crate::recursive_execution::RecursiveExecutionState::TerminalFailed => {
-                            RecursiveFailureReason::TerminalFailed.as_str()
+                            RecursiveFailureReason::TerminalFailed
                         }
-                        _ => RecursiveFailureReason::OperatorPaused.as_str(),
+                        _ => RecursiveFailureReason::OperatorPaused,
                     };
                     if tree.execution_state != effective_state {
                         tree.execution_state = effective_state;
@@ -999,14 +1008,17 @@ impl LocalProductStore {
                     if terminal_reason.is_some() {
                         for node in tree.nodes.values_mut() {
                             if (node.parent_node_id.is_some() || node.lease_id.is_some())
-                                && matches!(node.status.as_str(), "ready" | "leased")
+                                && matches!(
+                                    node.status,
+                                    RecursiveNodeStatus::Ready | RecursiveNodeStatus::Leased
+                                )
                             {
                                 if let Some(lease_id) = node.lease_id.take() {
                                     tree.active_leases.remove(&lease_id);
                                 }
                                 terminated.push(node.node_id.clone());
-                                node.status = "failed".to_string();
-                                node.failure_reason = Some(terminal_node_reason.to_string());
+                                node.status = RecursiveNodeStatus::Failed;
+                                node.failure_reason = Some(terminal_node_reason);
                                 node.version += 1;
                             }
                         }
@@ -1107,7 +1119,7 @@ impl LocalProductStore {
                                      OR (status='pending' AND leased_at IS NULL))",
                                 params![
                                     now,
-                                    terminal_node_reason,
+                                    terminal_node_reason.as_str(),
                                     node_json.to_string(),
                                     root_run_id,
                                     workflow_node_id,
@@ -1181,8 +1193,7 @@ impl LocalProductStore {
                     let budget_exhausted = tree.execution_state
                         == crate::recursive_execution::RecursiveExecutionState::BudgetExhausted
                         || tree.nodes.values().any(|node| {
-                            node.failure_reason.as_deref()
-                                == Some(RecursiveFailureReason::TreeBudgetExhausted.as_str())
+                            node.failure_reason == Some(RecursiveFailureReason::TreeBudgetExhausted)
                         });
                     let effective_state = if budget_exhausted {
                         crate::recursive_execution::RecursiveExecutionState::BudgetExhausted
@@ -1208,15 +1219,15 @@ impl LocalProductStore {
                     };
                     let terminal_node_reason = match effective_state {
                         crate::recursive_execution::RecursiveExecutionState::KillStopped => {
-                            RecursiveFailureReason::RecursiveKillSwitchActive.as_str()
+                            RecursiveFailureReason::RecursiveKillSwitchActive
                         }
                         crate::recursive_execution::RecursiveExecutionState::BudgetExhausted => {
-                            RecursiveFailureReason::TreeBudgetExhausted.as_str()
+                            RecursiveFailureReason::TreeBudgetExhausted
                         }
                         crate::recursive_execution::RecursiveExecutionState::TerminalFailed => {
-                            RecursiveFailureReason::TerminalFailed.as_str()
+                            RecursiveFailureReason::TerminalFailed
                         }
-                        _ => RecursiveFailureReason::OperatorPaused.as_str(),
+                        _ => RecursiveFailureReason::OperatorPaused,
                     };
                     if tree.execution_state != effective_state {
                         tree.execution_state = effective_state;
@@ -1225,14 +1236,17 @@ impl LocalProductStore {
                     if terminal_reason.is_some() {
                         for node in tree.nodes.values_mut() {
                             if (node.parent_node_id.is_some() || node.lease_id.is_some())
-                                && matches!(node.status.as_str(), "ready" | "leased")
+                                && matches!(
+                                    node.status,
+                                    RecursiveNodeStatus::Ready | RecursiveNodeStatus::Leased
+                                )
                             {
                                 if let Some(lease_id) = node.lease_id.take() {
                                     tree.active_leases.remove(&lease_id);
                                 }
                                 terminated.push(node.node_id.clone());
-                                node.status = "failed".to_string();
-                                node.failure_reason = Some(terminal_node_reason.to_string());
+                                node.status = RecursiveNodeStatus::Failed;
+                                node.failure_reason = Some(terminal_node_reason);
                                 node.version += 1;
                             }
                         }
@@ -1332,7 +1346,7 @@ impl LocalProductStore {
                                      OR (status='pending' AND leased_at IS NULL))",
                                 &[
                                     &now,
-                                    &terminal_node_reason,
+                                    &terminal_node_reason.as_str(),
                                     &node_json.to_string(),
                                     &root_run_id,
                                     &workflow_node_id,
@@ -1448,10 +1462,14 @@ fn sync_terminal_workflow_nodes_sqlite(
 ) -> Result<(), String> {
     for node in tree.nodes.values().filter(|node| {
         node.parent_node_id.is_some()
-            && node.status == "failed"
+            && node.status == RecursiveNodeStatus::Failed
             && matches!(
-                node.failure_reason.as_deref(),
-                Some("tree_budget_exhausted" | "terminal_failed" | "recursive_usage_unavailable")
+                node.failure_reason,
+                Some(
+                    RecursiveFailureReason::TreeBudgetExhausted
+                        | RecursiveFailureReason::TerminalFailed
+                        | RecursiveFailureReason::RecursiveUsageUnavailable
+                )
             )
     }) {
         let row: Option<(String, String)> = conn
@@ -1485,7 +1503,7 @@ fn sync_terminal_workflow_nodes_sqlite(
              WHERE run_id=?4 AND node_id=?5 AND status IN ('pending','running')",
             params![
                 now,
-                node.failure_reason.as_deref(),
+                node.failure_reason.map(RecursiveFailureReason::as_str),
                 node_json.to_string(),
                 tree.root_run_id,
                 node.node_id,
@@ -1529,7 +1547,7 @@ pub(crate) fn sync_recursive_completion_sqlite(
     let status = tree
         .nodes
         .get(recursive_node_id)
-        .map(|node| node.status.clone())
+        .map(|node| node.status.as_str().to_string())
         .ok_or_else(|| "recursive_node_missing".to_string())?;
     persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))?;
     Ok(status)
@@ -1583,12 +1601,8 @@ pub(crate) fn sync_recursive_usage_unavailable_sqlite(
             .as_str()
             .to_string()
     })?;
-    node.failure_reason = Some(
-        RecursiveFailureReason::RecursiveUsageUnavailable
-            .as_str()
-            .to_string(),
-    );
-    node.status = "failed".to_string();
+    node.failure_reason = Some(RecursiveFailureReason::RecursiveUsageUnavailable);
+    node.status = RecursiveNodeStatus::Failed;
     node.version += 1;
     tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
     tree.terminalize_remaining_nodes(
@@ -1708,10 +1722,14 @@ fn sync_terminal_workflow_nodes_pg(
 ) -> Result<(), String> {
     for node in tree.nodes.values().filter(|node| {
         node.parent_node_id.is_some()
-            && node.status == "failed"
+            && node.status == RecursiveNodeStatus::Failed
             && matches!(
-                node.failure_reason.as_deref(),
-                Some("tree_budget_exhausted" | "terminal_failed" | "recursive_usage_unavailable")
+                node.failure_reason,
+                Some(
+                    RecursiveFailureReason::TreeBudgetExhausted
+                        | RecursiveFailureReason::TerminalFailed
+                        | RecursiveFailureReason::RecursiveUsageUnavailable
+                )
             )
     }) {
         let row = client
@@ -1746,7 +1764,7 @@ fn sync_terminal_workflow_nodes_pg(
                  WHERE run_id=$4 AND node_id=$5 AND status IN ('pending','running')",
                 &[
                     &now,
-                    &node.failure_reason.as_deref(),
+                    &node.failure_reason.map(RecursiveFailureReason::as_str),
                     &node_json.to_string(),
                     &tree.root_run_id,
                     &node.node_id,
@@ -1791,7 +1809,7 @@ pub(crate) fn sync_recursive_completion_pg(
     let status = tree
         .nodes
         .get(recursive_node_id)
-        .map(|node| node.status.clone())
+        .map(|node| node.status.as_str().to_string())
         .ok_or_else(|| "recursive_node_missing".to_string())?;
     persist_recursive_tree_pg(client, &tree, now, Some(expected_version))?;
     Ok(status)
@@ -1847,12 +1865,8 @@ pub(crate) fn sync_recursive_usage_unavailable_pg(
             .as_str()
             .to_string()
     })?;
-    node.failure_reason = Some(
-        RecursiveFailureReason::RecursiveUsageUnavailable
-            .as_str()
-            .to_string(),
-    );
-    node.status = "failed".to_string();
+    node.failure_reason = Some(RecursiveFailureReason::RecursiveUsageUnavailable);
+    node.status = RecursiveNodeStatus::Failed;
     node.version += 1;
     tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
     tree.terminalize_remaining_nodes(

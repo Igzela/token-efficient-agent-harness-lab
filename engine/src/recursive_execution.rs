@@ -104,6 +104,54 @@ impl RecursiveFailureReason {
     }
 }
 
+impl std::ops::Deref for RecursiveFailureReason {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        (*self).as_str()
+    }
+}
+
+impl PartialEq<&str> for RecursiveFailureReason {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecursiveNodeStatus {
+    Ready,
+    Leased,
+    Completed,
+    Failed,
+}
+
+impl RecursiveNodeStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Leased => "leased",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::ops::Deref for RecursiveNodeStatus {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        (*self).as_str()
+    }
+}
+
+impl PartialEq<&str> for RecursiveNodeStatus {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RecursiveBudget {
     pub calls_remaining: u64,
@@ -209,20 +257,20 @@ pub struct RecursiveNode {
     pub reservation: RecursiveBudget,
     #[serde(default)]
     pub actual_usage: RecursiveBudget,
-    pub status: String,
+    pub status: RecursiveNodeStatus,
     pub accepted_children: usize,
     pub retry_count: u8,
     pub version: u64,
     pub lease_id: Option<String>,
     #[serde(default)]
-    pub failure_reason: Option<String>,
+    pub failure_reason: Option<RecursiveFailureReason>,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecursiveDecisionEvidence {
-    pub reason_code: String,
+    pub reason_code: RecursiveFailureReason,
     pub evidence_refs: Vec<String>,
 }
 
@@ -416,7 +464,7 @@ impl RecursiveTree {
             tenant_id: None,
             workspace_id: None,
             budget: budget.clone(),
-            status: "ready".to_string(),
+            status: RecursiveNodeStatus::Ready,
             accepted_children: 0,
             retry_count: 0,
             child_budget: budget.clone(),
@@ -637,7 +685,7 @@ impl RecursiveTree {
             child_budget: effective_budget.clone(),
             reservation: effective_budget.clone(),
             actual_usage: RecursiveBudget::default(),
-            status: "ready".to_string(),
+            status: RecursiveNodeStatus::Ready,
             accepted_children: 0,
             retry_count: 0,
             version: 1,
@@ -697,11 +745,11 @@ impl RecursiveTree {
             .nodes
             .get_mut(node_id)
             .ok_or(RecursiveFailureReason::StaleParent)?;
-        if node.lease_id.is_some() || node.status != "ready" {
+        if node.lease_id.is_some() || node.status != RecursiveNodeStatus::Ready {
             return Err(RecursiveFailureReason::ProposalConflict);
         }
         node.lease_id = Some(lease_id.to_string());
-        node.status = "leased".to_string();
+        node.status = RecursiveNodeStatus::Leased;
         node.version += 1;
         self.active_leases.insert(lease_id.to_string());
         self.version += 1;
@@ -758,25 +806,16 @@ impl RecursiveTree {
         node.actual_usage.add(usage);
         node.reservation.spend(usage);
         node.status = if success && within_budget {
-            "completed"
+            RecursiveNodeStatus::Completed
         } else {
-            "failed"
-        }
-        .to_string();
+            RecursiveNodeStatus::Failed
+        };
         node.failure_reason = if !within_budget {
-            Some(
-                RecursiveFailureReason::TreeBudgetExhausted
-                    .as_str()
-                    .to_string(),
-            )
+            Some(RecursiveFailureReason::TreeBudgetExhausted)
         } else if !success && node.retry_count >= MAX_RECURSIVE_RETRIES {
-            Some(RecursiveFailureReason::RetryExhausted.as_str().to_string())
+            Some(RecursiveFailureReason::RetryExhausted)
         } else {
-            (!success).then(|| {
-                RecursiveFailureReason::ExecutionFailure
-                    .as_str()
-                    .to_string()
-            })
+            (!success).then_some(RecursiveFailureReason::ExecutionFailure)
         };
         node.lease_id = None;
         node.version += 1;
@@ -816,14 +855,16 @@ impl RecursiveTree {
         except_node_id: Option<&str>,
         reason: RecursiveFailureReason,
     ) -> Vec<String> {
-        let reason = reason.as_str().to_string();
         let terminalized = self
             .nodes
             .values()
             .filter(|node| {
                 node.parent_node_id.is_some()
                     && Some(node.node_id.as_str()) != except_node_id
-                    && matches!(node.status.as_str(), "ready" | "leased")
+                    && matches!(
+                        node.status,
+                        RecursiveNodeStatus::Ready | RecursiveNodeStatus::Leased
+                    )
             })
             .map(|node| node.node_id.clone())
             .collect::<Vec<_>>();
@@ -832,8 +873,8 @@ impl RecursiveTree {
                 if let Some(lease_id) = node.lease_id.take() {
                     self.active_leases.remove(&lease_id);
                 }
-                node.status = "failed".to_string();
-                node.failure_reason = Some(reason.clone());
+                node.status = RecursiveNodeStatus::Failed;
+                node.failure_reason = Some(reason);
                 node.version += 1;
             }
         }
@@ -959,14 +1000,14 @@ impl RecursiveTree {
             // second stale lease.  Returning an error here would roll back
             // the surrounding queue transaction and leave the workflow node
             // pending forever.
-            node.status = "failed".to_string();
-            node.failure_reason = Some(RecursiveFailureReason::RetryExhausted.as_str().to_string());
+            node.status = RecursiveNodeStatus::Failed;
+            node.failure_reason = Some(RecursiveFailureReason::RetryExhausted);
             node.version += 1;
             self.version += 1;
             return Ok(());
         }
         node.retry_count += 1;
-        node.status = "ready".to_string();
+        node.status = RecursiveNodeStatus::Ready;
         node.failure_reason = None;
         node.version += 1;
         self.version += 1;
@@ -1015,15 +1056,15 @@ impl RecursiveTree {
         self.active_leases.remove(lease_id);
         if retry && node.retry_count < MAX_RECURSIVE_RETRIES {
             node.retry_count += 1;
-            node.status = "ready".to_string();
+            node.status = RecursiveNodeStatus::Ready;
             node.failure_reason = None;
         } else {
-            node.status = "failed".to_string();
-            node.failure_reason = Some(RecursiveFailureReason::RetryExhausted.as_str().to_string());
+            node.status = RecursiveNodeStatus::Failed;
+            node.failure_reason = Some(RecursiveFailureReason::RetryExhausted);
         }
         node.version += 1;
         self.version += 1;
-        Ok(node.status.clone())
+        Ok(node.status.as_str().to_string())
     }
 
     pub fn pause(&mut self) {
@@ -1044,7 +1085,7 @@ impl RecursiveTree {
         self.record_rejection_evidence(
             proposal_id,
             RecursiveDecisionEvidence {
-                reason_code: reason.as_str().to_string(),
+                reason_code: reason,
                 evidence_refs: vec![format!("agent_proposal/{proposal_id}")],
             },
         );
@@ -1483,6 +1524,26 @@ mod tests {
     }
 
     #[test]
+    fn persisted_node_state_and_reason_reject_unknown_values() {
+        let tree = RecursiveTree::new(
+            "typed-state-run",
+            "fixture",
+            "root",
+            scope(),
+            BTreeSet::from(["read".to_string()]),
+            budget(),
+        );
+        let mut unknown_status = serde_json::to_value(&tree).expect("tree json");
+        unknown_status["nodes"][tree.root_node_id.as_str()]["status"] = json!("unknown_state");
+        assert!(serde_json::from_value::<RecursiveTree>(unknown_status).is_err());
+
+        let mut unknown_reason = serde_json::to_value(&tree).expect("tree json");
+        unknown_reason["nodes"][tree.root_node_id.as_str()]["failure_reason"] =
+            json!("unknown_reason");
+        assert!(serde_json::from_value::<RecursiveTree>(unknown_reason).is_err());
+    }
+
+    #[test]
     fn stale_lease_retries_once_and_late_completion_cannot_replace_attempt() {
         let _guard = test_env_lock().lock().unwrap();
         std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
@@ -1513,8 +1574,8 @@ mod tests {
             .expect("second stale completion");
         tree.retry_node(&admission.node.node_id)
             .expect("terminalize");
-        let status = tree.nodes[&admission.node.node_id].status.clone();
-        let reason = tree.nodes[&admission.node.node_id].failure_reason.clone();
+        let status = tree.nodes[&admission.node.node_id].status;
+        let reason = tree.nodes[&admission.node.node_id].failure_reason;
         tree.record_late_usage(
             &admission.node.node_id,
             "late-replacement-attempt",

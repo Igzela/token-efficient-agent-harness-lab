@@ -1291,7 +1291,7 @@ fn validate_sqlite_v26_schema(conn: &Connection) -> Result<(), String> {
             let expected_primary_key = (*table == "recursive_execution_trees"
                 && name == "root_run_id")
                 || (*table == "recursive_execution_nodes" && name == "node_id");
-            if expected_not_null && *not_null != 1 && !expected_primary_key {
+            if !expected_primary_key && (*not_null == 1) != expected_not_null {
                 return Err(format!(
                     "SQLite v26 schema nullability mismatch for {table}.{name}"
                 ));
@@ -2214,6 +2214,58 @@ mod tests {
         };
         assert!(
             error.contains("SQLite v26 schema missing") || error.contains("no such column"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn already_versioned_v26_rejects_required_null_parent_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("not-null-parent-v26.db");
+        {
+            let conn = rusqlite::Connection::open(&path).expect("sqlite");
+            conn.execute_batch(
+                "PRAGMA foreign_keys=ON;
+                 PRAGMA user_version=26;
+                 CREATE TABLE recursive_execution_trees (
+                    root_run_id TEXT PRIMARY KEY,
+                    workflow_id TEXT NOT NULL,
+                    root_node_id TEXT NOT NULL,
+                    tree_schema_version TEXT NOT NULL,
+                    tree_json TEXT NOT NULL,
+                    version BIGINT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                 );
+                 CREATE INDEX idx_recursive_execution_trees_workflow
+                    ON recursive_execution_trees(workflow_id, updated_at);
+                 CREATE TABLE recursive_execution_nodes (
+                    node_id TEXT PRIMARY KEY,
+                    root_run_id TEXT NOT NULL,
+                    parent_node_id TEXT NOT NULL,
+                    proposal_id TEXT NOT NULL,
+                    depth BIGINT NOT NULL CHECK (depth BETWEEN 0 AND 2),
+                    objective_fingerprint TEXT NOT NULL CHECK (length(objective_fingerprint) = 64),
+                    status TEXT NOT NULL,
+                    version BIGINT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(root_run_id, objective_fingerprint),
+                    FOREIGN KEY(root_run_id) REFERENCES recursive_execution_trees(root_run_id)
+                 );
+                 CREATE INDEX idx_recursive_execution_nodes_root
+                    ON recursive_execution_nodes(root_run_id, depth, node_id);
+                 CREATE INDEX idx_recursive_execution_nodes_parent
+                    ON recursive_execution_nodes(parent_node_id, status, node_id);",
+            )
+            .expect("malformed v26 schema");
+        }
+        let error = match LocalProductStore::new(&path) {
+            Ok(_) => panic!("incorrectly non-null parent identity must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("SQLite v26 schema nullability mismatch"),
             "unexpected error: {error}"
         );
     }

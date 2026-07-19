@@ -410,7 +410,7 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
         if actual.as_ref().map(|(data_type, _)| data_type.as_str()) != Some(expected_type)
             || actual
                 .as_ref()
-                .is_some_and(|(_, nullable)| expected_not_null && nullable != "NO")
+                .is_some_and(|(_, nullable)| (nullable == "NO") != expected_not_null)
         {
             return Err(format!(
                 "PostgreSQL v26 schema type or nullability mismatch for {table}.{column}"
@@ -1346,6 +1346,36 @@ mod tests {
             .expect_err("malformed v26 schema must fail closed");
         assert!(
             error.contains("missing primary key for recursive_execution_nodes.node_id"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(fixture.store.schema_version().expect("version"), 26);
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn already_versioned_pg_v26_rejects_non_nullable_parent_identity() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        fixture
+            .store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "ALTER TABLE recursive_execution_nodes
+                         ALTER COLUMN parent_node_id SET NOT NULL;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .expect("malform v26 parent identity");
+        let error = fixture
+            .store
+            .run_pg_migrations_internal()
+            .expect_err("incorrectly non-null parent identity must fail closed");
+        assert!(
+            error.contains(
+                "PostgreSQL v26 schema type or nullability mismatch for recursive_execution_nodes.parent_node_id"
+            ),
             "unexpected error: {error}"
         );
         assert_eq!(fixture.store.schema_version().expect("version"), 26);
