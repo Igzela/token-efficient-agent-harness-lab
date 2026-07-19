@@ -133,6 +133,7 @@ pub(crate) async fn api_create_plan(
         .as_ref()
         .map(|steps| validate_agent_step_plan_requests(steps, provider_agent_model.as_deref()))
         .transpose()?;
+    let measured_agent_execution = provider_agent_model.is_some();
     let planner = ReadOnlyPlanner::new();
     let plan = store
         .create_workflow_plan(
@@ -147,6 +148,7 @@ pub(crate) async fn api_create_plan(
                         request_source,
                         created_at,
                         &agent_steps,
+                        measured_agent_execution,
                     ))
                 } else if let Some(adaptive_execution) = adaptive_execution {
                     Ok(adaptive_execution_plan(
@@ -290,11 +292,17 @@ fn agent_steps_plan(
     request_source: &str,
     created_at: &str,
     agent_steps: &[AgentStepPlanApiRequest],
+    measured_execution: bool,
 ) -> serde_json::Value {
-    let recursive_usage_contract = if request_source == "fixture" {
-        json!({"kind": "fixture", "calls": 1, "tokens": 1, "cost_micros": 1, "time_ms": 1})
-    } else {
+    let recursive_usage_contract = if measured_execution {
         json!({"kind": "measured"})
+    } else {
+        json!({"kind": "fixture", "calls": 1, "tokens": 1, "cost_micros": 1, "time_ms": 1})
+    };
+    let decision_source = if measured_execution {
+        "provider_typed_action"
+    } else {
+        "fixture"
     };
     let nodes = agent_steps
         .iter()
@@ -317,7 +325,7 @@ fn agent_steps_plan(
                 "capability_profile": agent_step.capability_profile,
                 "profile_id": agent_step.profile_id,
                 "model": agent_step.model,
-                "decision_source": "provider_typed_action",
+                "decision_source": decision_source,
                 "max_actions": 1,
             });
             if index == 0 {
@@ -573,6 +581,7 @@ mod tests {
             "fixture",
             "2026-07-18T00:00:00Z",
             std::slice::from_ref(&request),
+            false,
         );
         let node = &plan["graph"]["nodes"][0];
         assert_eq!(node["recursive_root_node_id"], node["node_id"]);
@@ -596,6 +605,26 @@ mod tests {
     }
 
     #[test]
+    fn caller_fixture_provenance_cannot_downgrade_measured_usage() {
+        let ids = crate::read_only_planner::WorkflowPlanIds::for_sequence(8);
+        let request = agent_step(Some("bounded-model"));
+        let plan = agent_steps_plan(
+            &ids,
+            "review docs",
+            "fixture",
+            "2026-07-18T00:00:00Z",
+            std::slice::from_ref(&request),
+            true,
+        );
+        let node = &plan["graph"]["nodes"][0];
+        assert_eq!(node["decision_source"], "provider_typed_action");
+        assert_eq!(
+            node["recursive_root_authority"]["usage_contract"],
+            json!({"kind": "measured"})
+        );
+    }
+
+    #[test]
     fn api_created_fixture_plan_runs_recursive_root_to_completion() {
         let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
         std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
@@ -610,6 +639,7 @@ mod tests {
                     "fixture",
                     created_at,
                     std::slice::from_ref(&request),
+                    false,
                 ))
             })
             .expect("fixture plan");

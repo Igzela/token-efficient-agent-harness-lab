@@ -1242,7 +1242,14 @@ impl RecursiveTree {
                 if within_tree_budget { 1 } else { 0 }
             ),
         );
-        if !within_tree_budget {
+        if !within_tree_budget
+            && !matches!(
+                self.execution_state,
+                RecursiveExecutionState::Completed
+                    | RecursiveExecutionState::KillStopped
+                    | RecursiveExecutionState::TerminalFailed
+            )
+        {
             self.execution_state = RecursiveExecutionState::BudgetExhausted;
             self.version += 1;
         }
@@ -1294,11 +1301,18 @@ impl RecursiveTree {
                 attempt_receipt.to_string(),
                 format!("0:{usage_fingerprint}"),
             );
-            self.execution_state = RecursiveExecutionState::BudgetExhausted;
-            self.terminalize_remaining_nodes(
-                Some(node_id),
-                RecursiveFailureReason::TreeBudgetExhausted,
-            );
+            if !matches!(
+                self.execution_state,
+                RecursiveExecutionState::Completed
+                    | RecursiveExecutionState::KillStopped
+                    | RecursiveExecutionState::TerminalFailed
+            ) {
+                self.execution_state = RecursiveExecutionState::BudgetExhausted;
+                self.terminalize_remaining_nodes(
+                    Some(node_id),
+                    RecursiveFailureReason::TreeBudgetExhausted,
+                );
+            }
         }
         self.version += 1;
         Ok(within_budget)

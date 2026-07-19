@@ -1036,7 +1036,11 @@ async fn axum_agent_step_plan_creates_typed_node_and_run_scoped_agent_state() {
     assert_eq!(node["task_type"], "agent_step");
     assert_eq!(node["agent_id"], "agent-runtime-1");
     assert_eq!(node["profile_id"], "profile-runtime-1");
-    assert_eq!(node["decision_source"], "provider_typed_action");
+    assert_eq!(node["decision_source"], "fixture");
+    assert_eq!(
+        node["recursive_root_authority"]["usage_contract"],
+        json!({"kind": "fixture", "calls": 1, "tokens": 1, "cost_micros": 1, "time_ms": 1})
+    );
     assert_eq!(
         plan_body["plan"]["advisory"]["requires_executor"],
         "agent_step"
