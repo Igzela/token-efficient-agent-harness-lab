@@ -1698,7 +1698,9 @@ pub(crate) fn sync_recursive_stale_recovery_sqlite(
         .map_err(|reason| reason.as_str().to_string())?;
     if !retry {
         tree.release_node_reservation_for_persistence(recursive_node_id);
+        tree.finalize_terminal_tree(Some(recursive_node_id));
     }
+    sync_terminal_workflow_nodes_sqlite(conn, &tree, now)?;
     persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))?;
     Ok(status)
 }
@@ -1790,6 +1792,11 @@ pub(crate) fn sync_recursive_completion_sqlite(
             .map_err(|reason| reason.as_str().to_string())?;
     } else {
         tree.release_node_reservation_for_persistence(recursive_node_id);
+        let failed = tree
+            .nodes
+            .get(recursive_node_id)
+            .is_some_and(|node| node.status == RecursiveNodeStatus::Failed);
+        tree.finalize_terminal_tree(failed.then_some(recursive_node_id));
     }
     sync_terminal_workflow_nodes_sqlite(conn, &tree, now)?;
     let status = tree
@@ -1815,6 +1822,7 @@ pub(crate) fn sync_recursive_root_completion_sqlite(
     let expected_version = tree.version;
     tree.complete_root_with_usage(receipt_id, success, usage)
         .map_err(|reason| reason.as_str().to_string())?;
+    tree.finalize_terminal_tree(None);
     sync_terminal_workflow_nodes_sqlite(conn, &tree, now)?;
     let status = tree.nodes[&tree.root_node_id].status.as_str().to_string();
     persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))?;
@@ -1909,6 +1917,9 @@ pub(crate) fn sync_recursive_root_terminal_failure_sqlite(
     reason: RecursiveFailureReason,
     now: &str,
 ) -> Result<String, String> {
+    if reason == RecursiveFailureReason::RecursiveNodeIdentityMalformed {
+        return sync_corrupt_recursive_root_terminal_failure_sqlite(conn, root_run_id, reason, now);
+    }
     sync_recursive_root_completion_sqlite(
         conn,
         root_run_id,
@@ -1937,6 +1948,71 @@ pub(crate) fn sync_recursive_root_terminal_failure_sqlite(
     tree.version += 1;
     sync_terminal_workflow_nodes_sqlite(conn, &tree, now)?;
     persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))?;
+    Ok("failed".to_string())
+}
+
+fn sync_corrupt_recursive_root_terminal_failure_sqlite(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    reason: RecursiveFailureReason,
+    now: &str,
+) -> Result<String, String> {
+    let (tree_json, stored_version): (String, i64) = conn
+        .query_row(
+            "SELECT tree_json, version FROM recursive_execution_trees WHERE root_run_id=?1",
+            [root_run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut tree: RecursiveTree =
+        serde_json::from_str(&tree_json).map_err(|error| error.to_string())?;
+    normalize_loaded_tree(&mut tree);
+    let root_id = tree.root_node_id.clone();
+    let root = tree
+        .nodes
+        .get_mut(&root_id)
+        .ok_or_else(|| "recursive_node_missing".to_string())?;
+    if let Some(lease_id) = root.lease_id.take() {
+        tree.active_leases.remove(&lease_id);
+    }
+    root.status = RecursiveNodeStatus::Failed;
+    root.failure_reason = Some(reason);
+    root.version += 1;
+    tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
+    tree.terminalize_remaining_nodes(Some(&root_id), RecursiveFailureReason::TerminalFailed);
+    tree.version += 1;
+    sync_terminal_workflow_nodes_sqlite(conn, &tree, now)?;
+    let canonical = validate_tree_for_persistence(&tree)?;
+    let updated = conn
+        .execute(
+            "UPDATE recursive_execution_trees SET tree_json=?1, version=?2, updated_at=?3
+             WHERE root_run_id=?4 AND version=?5",
+            params![
+                canonical,
+                tree.version as i64,
+                now,
+                root_run_id,
+                stored_version
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if updated != 1 {
+        return Err("stale_parent".to_string());
+    }
+    for node in tree.nodes.values() {
+        conn.execute(
+            "UPDATE recursive_execution_nodes SET status=?1, version=?2, updated_at=?3
+             WHERE node_id=?4 AND root_run_id=?5",
+            params![
+                node.status.as_str(),
+                node.version as i64,
+                now,
+                node.node_id,
+                root_run_id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    }
     Ok("failed".to_string())
 }
 
@@ -2034,7 +2110,9 @@ pub(crate) fn sync_recursive_stale_recovery_pg(
         .map_err(|reason| reason.as_str().to_string())?;
     if !retry {
         tree.release_node_reservation_for_persistence(recursive_node_id);
+        tree.finalize_terminal_tree(Some(recursive_node_id));
     }
+    sync_terminal_workflow_nodes_pg(client, &tree, now)?;
     persist_recursive_tree_pg(client, &tree, now, Some(expected_version))?;
     Ok(status)
 }
@@ -2129,6 +2207,11 @@ pub(crate) fn sync_recursive_completion_pg(
             .map_err(|reason| reason.as_str().to_string())?;
     } else {
         tree.release_node_reservation_for_persistence(recursive_node_id);
+        let failed = tree
+            .nodes
+            .get(recursive_node_id)
+            .is_some_and(|node| node.status == RecursiveNodeStatus::Failed);
+        tree.finalize_terminal_tree(failed.then_some(recursive_node_id));
     }
     sync_terminal_workflow_nodes_pg(client, &tree, now)?;
     let status = tree
@@ -2155,6 +2238,7 @@ pub(crate) fn sync_recursive_root_completion_pg(
     let expected_version = tree.version;
     tree.complete_root_with_usage(receipt_id, success, usage)
         .map_err(|reason| reason.as_str().to_string())?;
+    tree.finalize_terminal_tree(None);
     sync_terminal_workflow_nodes_pg(client, &tree, now)?;
     let status = tree.nodes[&tree.root_node_id].status.as_str().to_string();
     persist_recursive_tree_pg(client, &tree, now, Some(expected_version))?;
@@ -2253,6 +2337,9 @@ pub(crate) fn sync_recursive_root_terminal_failure_pg(
     reason: RecursiveFailureReason,
     now: &str,
 ) -> Result<String, String> {
+    if reason == RecursiveFailureReason::RecursiveNodeIdentityMalformed {
+        return sync_corrupt_recursive_root_terminal_failure_pg(client, root_run_id, reason, now);
+    }
     sync_recursive_root_completion_pg(
         client,
         root_run_id,
@@ -2281,6 +2368,81 @@ pub(crate) fn sync_recursive_root_terminal_failure_pg(
     tree.version += 1;
     sync_terminal_workflow_nodes_pg(client, &tree, now)?;
     persist_recursive_tree_pg(client, &tree, now, Some(expected_version))?;
+    Ok("failed".to_string())
+}
+
+#[cfg(feature = "pg")]
+fn sync_corrupt_recursive_root_terminal_failure_pg(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+    reason: RecursiveFailureReason,
+    now: &str,
+) -> Result<String, String> {
+    client
+        .execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1))",
+            &[&root_run_id],
+        )
+        .map_err(|error| error.to_string())?;
+    let row = client
+        .query_one(
+            "SELECT tree_json, version FROM recursive_execution_trees
+             WHERE root_run_id=$1 FOR UPDATE",
+            &[&root_run_id],
+        )
+        .map_err(|error| error.to_string())?;
+    let tree_json: String = row.get(0);
+    let stored_version: i64 = row.get(1);
+    let mut tree: RecursiveTree =
+        serde_json::from_str(&tree_json).map_err(|error| error.to_string())?;
+    normalize_loaded_tree(&mut tree);
+    let root_id = tree.root_node_id.clone();
+    let root = tree
+        .nodes
+        .get_mut(&root_id)
+        .ok_or_else(|| "recursive_node_missing".to_string())?;
+    if let Some(lease_id) = root.lease_id.take() {
+        tree.active_leases.remove(&lease_id);
+    }
+    root.status = RecursiveNodeStatus::Failed;
+    root.failure_reason = Some(reason);
+    root.version += 1;
+    tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
+    tree.terminalize_remaining_nodes(Some(&root_id), RecursiveFailureReason::TerminalFailed);
+    tree.version += 1;
+    sync_terminal_workflow_nodes_pg(client, &tree, now)?;
+    let canonical = validate_tree_for_persistence(&tree)?;
+    let updated = client
+        .execute(
+            "UPDATE recursive_execution_trees SET tree_json=$1, version=$2, updated_at=$3
+             WHERE root_run_id=$4 AND version=$5",
+            &[
+                &canonical,
+                &(tree.version as i64),
+                &now,
+                &root_run_id,
+                &stored_version,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if updated != 1 {
+        return Err("stale_parent".to_string());
+    }
+    for node in tree.nodes.values() {
+        client
+            .execute(
+                "UPDATE recursive_execution_nodes SET status=$1, version=$2, updated_at=$3
+                 WHERE node_id=$4 AND root_run_id=$5",
+                &[
+                    &node.status.as_str(),
+                    &(node.version as i64),
+                    &now,
+                    &node.node_id,
+                    &root_run_id,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+    }
     Ok("failed".to_string())
 }
 
@@ -2500,6 +2662,163 @@ mod tests {
             error.contains("recursive node budget authority is inconsistent"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn malformed_indexed_root_terminalizes_without_revalidating_corrupt_workflow_json() {
+        let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let store = LocalProductStore::new(":memory:").expect("store");
+        let mut tree = RecursiveTree::new(
+            "recursive-corrupt-root-run",
+            "recursive-corrupt-root-workflow",
+            "root objective",
+            RecursiveScope {
+                repository: Some("fixture".to_string()),
+                allowed_paths: BTreeSet::from(["docs/".to_string()]),
+                capabilities: BTreeSet::from(["read".to_string()]),
+            },
+            BTreeSet::from(["read".to_string()]),
+            RecursiveBudget {
+                calls_remaining: 2,
+                tokens_remaining: 20,
+                cost_micros_remaining: 20,
+                time_ms_remaining: 200,
+            },
+        );
+        bind_test_tree_identity(&mut tree);
+        bind_test_workflow(&store, &tree);
+        store.save_recursive_tree(&tree).expect("tree");
+        let root_id = tree.root_node_id.clone();
+        store
+            .with_conn(|conn| {
+                sync_recursive_lease_sqlite(
+                    conn,
+                    &tree.root_run_id,
+                    &root_id,
+                    "corrupt-root-lease",
+                    "2026-07-18T00:00:00Z",
+                )?;
+                conn.execute(
+                    "UPDATE workflow_run_nodes SET node_json='{}'
+                     WHERE run_id=?1 AND node_id=?2",
+                    params![tree.root_run_id, root_id],
+                )
+                .map_err(|error| error.to_string())?;
+                sync_recursive_root_terminal_failure_sqlite(
+                    conn,
+                    &tree.root_run_id,
+                    "corrupt-root-lease",
+                    RecursiveFailureReason::RecursiveNodeIdentityMalformed,
+                    "2026-07-18T00:00:01Z",
+                )?;
+                let stored: String = conn
+                    .query_row(
+                        "SELECT tree_json FROM recursive_execution_trees WHERE root_run_id=?1",
+                        [&tree.root_run_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let terminal: RecursiveTree =
+                    serde_json::from_str(&stored).map_err(|error| error.to_string())?;
+                assert_eq!(
+                    terminal.execution_state,
+                    crate::recursive_execution::RecursiveExecutionState::TerminalFailed
+                );
+                assert_eq!(terminal.nodes[&root_id].status, RecursiveNodeStatus::Failed);
+                assert_eq!(
+                    terminal.nodes[&root_id].failure_reason,
+                    Some(RecursiveFailureReason::RecursiveNodeIdentityMalformed)
+                );
+                assert!(terminal.active_leases.is_empty());
+                Ok(())
+            })
+            .expect("corrupt root terminalization");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn postgres_malformed_indexed_root_terminalizes_without_revalidating_corrupt_workflow_json() {
+        let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
+        let Some(url) = postgres_test_url() else {
+            return;
+        };
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let run_id = format!("recursive-corrupt-root-pg-run-{}", uuid::Uuid::new_v4());
+        let workflow_id = format!(
+            "recursive-corrupt-root-pg-workflow-{}",
+            uuid::Uuid::new_v4()
+        );
+        let store = LocalProductStore::new_postgres(&url, || "2026-07-18T00:00:00Z".to_string())
+            .expect("store");
+        let mut tree = RecursiveTree::new(
+            &run_id,
+            &workflow_id,
+            "root objective",
+            RecursiveScope {
+                repository: Some("fixture".to_string()),
+                allowed_paths: BTreeSet::from(["docs/".to_string()]),
+                capabilities: BTreeSet::from(["read".to_string()]),
+            },
+            BTreeSet::from(["read".to_string()]),
+            RecursiveBudget {
+                calls_remaining: 2,
+                tokens_remaining: 20,
+                cost_micros_remaining: 20,
+                time_ms_remaining: 200,
+            },
+        );
+        bind_test_tree_identity(&mut tree);
+        bind_test_workflow(&store, &tree);
+        store.save_recursive_tree(&tree).expect("tree");
+        let root_id = tree.root_node_id.clone();
+        store
+            .with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                sync_recursive_lease_pg(
+                    &mut tx,
+                    &run_id,
+                    &root_id,
+                    "corrupt-root-pg-lease",
+                    "2026-07-18T00:00:00Z",
+                )?;
+                tx.execute(
+                    "UPDATE workflow_run_nodes SET node_json='{}'::jsonb
+                     WHERE run_id=$1 AND node_id=$2",
+                    &[&run_id, &root_id],
+                )
+                .map_err(|error| error.to_string())?;
+                sync_recursive_root_terminal_failure_pg(
+                    &mut tx,
+                    &run_id,
+                    "corrupt-root-pg-lease",
+                    RecursiveFailureReason::RecursiveNodeIdentityMalformed,
+                    "2026-07-18T00:00:01Z",
+                )?;
+                let stored: String = tx
+                    .query_one(
+                        "SELECT tree_json FROM recursive_execution_trees WHERE root_run_id=$1",
+                        &[&run_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .get(0);
+                let terminal: RecursiveTree =
+                    serde_json::from_str(&stored).map_err(|error| error.to_string())?;
+                assert_eq!(
+                    terminal.execution_state,
+                    crate::recursive_execution::RecursiveExecutionState::TerminalFailed
+                );
+                assert_eq!(terminal.nodes[&root_id].status, RecursiveNodeStatus::Failed);
+                assert_eq!(
+                    terminal.nodes[&root_id].failure_reason,
+                    Some(RecursiveFailureReason::RecursiveNodeIdentityMalformed)
+                );
+                assert!(terminal.active_leases.is_empty());
+                tx.commit().map_err(|error| error.to_string())
+            })
+            .expect("PostgreSQL corrupt root terminalization");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 
     fn assert_depth_two_tree_round_trips(store: LocalProductStore, suffix: &str) {

@@ -291,6 +291,11 @@ fn agent_steps_plan(
     created_at: &str,
     agent_steps: &[AgentStepPlanApiRequest],
 ) -> serde_json::Value {
+    let recursive_usage_contract = if request_source == "fixture" {
+        json!({"kind": "fixture", "calls": 1, "tokens": 1, "cost_micros": 1, "time_ms": 1})
+    } else {
+        json!({"kind": "measured"})
+    };
     let nodes = agent_steps
         .iter()
         .enumerate()
@@ -330,7 +335,7 @@ fn agent_steps_plan(
                         "capabilities": recursive_capabilities,
                         "tree_budget": crate::recursive_execution::default_recursive_tree_budget(),
                         "child_budget": crate::recursive_execution::default_recursive_child_budget(),
-                        "usage_contract": {"kind": "measured"},
+                        "usage_contract": recursive_usage_contract,
                     }),
                 );
                 object.insert(
@@ -497,6 +502,29 @@ pub(crate) async fn api_plan_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
+
+    struct FixtureAgentStepExecutor;
+
+    impl NodeExecutor for FixtureAgentStepExecutor {
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "agent_step".to_string(),
+                output: Some("fixture root completed".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+    }
 
     fn agent_step(model: Option<&str>) -> AgentStepPlanApiRequest {
         AgentStepPlanApiRequest {
@@ -548,6 +576,10 @@ mod tests {
         );
         let node = &plan["graph"]["nodes"][0];
         assert_eq!(node["recursive_root_node_id"], node["node_id"]);
+        assert_eq!(
+            node["recursive_root_authority"]["usage_contract"],
+            json!({"kind": "fixture", "calls": 1, "tokens": 1, "cost_micros": 1, "time_ms": 1})
+        );
         let receipt = node["creation_receipt_sha256"]
             .as_str()
             .expect("creation receipt");
@@ -561,5 +593,48 @@ mod tests {
                 "review docs",
             )
         );
+    }
+
+    #[test]
+    fn api_created_fixture_plan_runs_recursive_root_to_completion() {
+        let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+        let store = crate::storage::LocalProductStore::new(":memory:").expect("store");
+        let request = agent_step(None);
+        let plan = store
+            .create_workflow_plan("review docs", "fixture", "test", |ids, created_at| {
+                Ok(agent_steps_plan(
+                    ids,
+                    "review docs",
+                    "fixture",
+                    created_at,
+                    std::slice::from_ref(&request),
+                ))
+            })
+            .expect("fixture plan");
+        let run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().expect("plan id"), "test")
+            .expect("fixture run");
+        let run_id = run["run_id"].as_str().expect("run id");
+
+        let tick = store
+            .tick_with_executor(run_id, "fixture-scheduler", 0, &FixtureAgentStepExecutor)
+            .expect("fixture scheduler tick");
+        assert_eq!(tick["action"], "node_executed");
+        let tree = store
+            .load_recursive_tree(run_id)
+            .expect("load tree")
+            .expect("recursive tree");
+        assert_eq!(
+            tree.execution_state,
+            crate::recursive_execution::RecursiveExecutionState::Completed
+        );
+        assert_eq!(tree.spent_budget.calls_remaining, 1);
+        assert_eq!(tree.spent_budget.tokens_remaining, 1);
+        assert_eq!(tree.spent_budget.cost_micros_remaining, 1);
+        assert_eq!(tree.spent_budget.time_ms_remaining, 1);
+
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 }

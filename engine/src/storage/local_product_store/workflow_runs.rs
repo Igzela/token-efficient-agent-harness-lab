@@ -1122,7 +1122,11 @@ impl LocalProductStore {
                          WHERE run_id = ?2 AND node_id = ?3 AND status = 'pending'
                            AND (SELECT COUNT(*) FROM workflow_run_nodes
                                 WHERE task_type='agent_step' AND status='running'
-                                  AND (json_extract(node_json, '$.recursive_node_id') IS NOT NULL
+                                  AND (EXISTS (
+                                        SELECT 1 FROM recursive_execution_nodes rn
+                                        WHERE rn.node_id=workflow_run_nodes.node_id
+                                          AND rn.root_run_id=workflow_run_nodes.run_id)
+                                    OR json_extract(node_json, '$.recursive_node_id') IS NOT NULL
                                     OR json_extract(node_json, '$.recursive_root_node_id') IS NOT NULL)) < ?4",
                         params![now, run_id, node_id, MAX_RECURSIVE_LEASES as i64],
                     )
@@ -1516,7 +1520,11 @@ impl LocalProductStore {
                          WHERE run_id = $2 AND node_id = $3 AND status = 'pending'
                            AND (SELECT COUNT(*) FROM workflow_run_nodes
                                 WHERE task_type = 'agent_step' AND status = 'running'
-                                  AND (node_json::jsonb ? 'recursive_node_id'
+                                  AND (EXISTS (
+                                        SELECT 1 FROM recursive_execution_nodes rn
+                                        WHERE rn.node_id=workflow_run_nodes.node_id
+                                          AND rn.root_run_id=workflow_run_nodes.run_id)
+                                    OR node_json::jsonb ? 'recursive_node_id'
                                     OR node_json::jsonb ? 'recursive_root_node_id')) < $4",
                         &[&now, &run_id, &node_id, &(MAX_RECURSIVE_LEASES as i64)],
                     )
@@ -5589,23 +5597,26 @@ fn workflow_node_is_recursive_locked(
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
-    recursive_marker_from_node_json(&node_json)
+    let indexed_root = indexed_recursive_root_sqlite(conn, run_id, node_id)?;
+    recursive_identity_for_claim(node_id, &node_json, indexed_root.as_deref())
 }
 
 fn count_running_recursive_steps_locked(conn: &rusqlite::Connection) -> Result<i64, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT node_json FROM workflow_run_nodes
+            "SELECT run_id, node_id FROM workflow_run_nodes
              WHERE task_type = 'agent_step' AND status = 'running'",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|e| e.to_string())?;
     let mut count = 0_i64;
     for row in rows {
-        let node_json = row.map_err(|e| e.to_string())?;
-        if recursive_marker_from_node_json(&node_json)? {
+        let (run_id, node_id) = row.map_err(|e| e.to_string())?;
+        if workflow_node_is_recursive_locked(conn, &run_id, &node_id)? {
             count += 1;
         }
     }
@@ -5649,7 +5660,8 @@ fn pg_workflow_node_is_recursive(
         )
         .map_err(|e| e.to_string())?;
     let node_json: String = row.get(0);
-    recursive_marker_from_node_json(&node_json)
+    let indexed_root = indexed_recursive_root_pg(client, run_id, node_id)?;
+    recursive_identity_for_claim(node_id, &node_json, indexed_root.as_deref())
 }
 
 #[cfg(feature = "pg")]
@@ -5658,15 +5670,16 @@ fn pg_count_running_recursive_steps(
 ) -> Result<i64, String> {
     let rows = client
         .query(
-            "SELECT node_json FROM workflow_run_nodes
+            "SELECT run_id, node_id FROM workflow_run_nodes
              WHERE task_type = 'agent_step' AND status = 'running'",
             &[],
         )
         .map_err(|e| e.to_string())?;
     let mut count = 0_i64;
     for row in rows {
-        let node_json: String = row.get(0);
-        if recursive_marker_from_node_json(&node_json)? {
+        let run_id: String = row.get(0);
+        let node_id: String = row.get(1);
+        if pg_workflow_node_is_recursive(client, &run_id, &node_id)? {
             count += 1;
         }
     }
@@ -5693,6 +5706,37 @@ fn recursive_marker_from_node_json(node_json: &str) -> Result<bool, String> {
         .ok_or_else(|| "recursive_node_identity_malformed".to_string())?;
     let _ = marker;
     Ok(true)
+}
+
+fn recursive_identity_for_claim(
+    node_id: &str,
+    node_json: &str,
+    indexed_root_node_id: Option<&str>,
+) -> Result<bool, String> {
+    let metadata: Value = serde_json::from_str(node_json)
+        .map_err(|_| "recursive_node_identity_malformed".to_string())?;
+    let child = metadata.get("recursive_node_id").and_then(Value::as_str);
+    let root = metadata
+        .get("recursive_root_node_id")
+        .and_then(Value::as_str);
+    if let Some(indexed_root) = indexed_root_node_id {
+        let exact = if indexed_root == node_id {
+            child.is_none() && root == Some(node_id)
+        } else {
+            child == Some(node_id) && root.is_none()
+        };
+        return exact
+            .then_some(true)
+            .ok_or_else(|| "recursive_node_identity_malformed".to_string());
+    }
+    if !recursive_marker_from_node_json(node_json)? {
+        return Ok(false);
+    }
+    if child == Some(node_id) || root == Some(node_id) {
+        Ok(true)
+    } else {
+        Err("recursive_node_identity_malformed".to_string())
+    }
 }
 
 #[cfg(feature = "pg")]
@@ -7082,6 +7126,10 @@ mod recursive_scheduler_tests {
         assert_eq!(tree.nodes[&root_id].status, "completed");
         assert_eq!(tree.nodes[&root_id].actual_usage.calls_remaining, 1);
         assert!(tree.active_leases.is_empty());
+        assert_eq!(
+            tree.execution_state,
+            crate::recursive_execution::RecursiveExecutionState::Completed
+        );
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 
@@ -7929,6 +7977,16 @@ mod recursive_scheduler_tests {
             [],
         )
         .expect("schema");
+        conn.execute(
+            "CREATE TABLE recursive_execution_nodes (node_id TEXT, root_run_id TEXT)",
+            [],
+        )
+        .expect("recursive index schema");
+        conn.execute(
+            "CREATE TABLE recursive_execution_trees (root_run_id TEXT, root_node_id TEXT)",
+            [],
+        )
+        .expect("recursive tree schema");
         for index in 0..3 {
             conn.execute(
                 "INSERT INTO workflow_run_nodes
@@ -7938,10 +7996,9 @@ mod recursive_scheduler_tests {
                     format!("run-{index}"),
                     format!("node-{index}"),
                     if index == 0 {
-                        json!({"recursive_root_node_id": format!("recursive-root-{index}")})
-                            .to_string()
+                        json!({"recursive_root_node_id": format!("node-{index}")}).to_string()
                     } else {
-                        json!({"recursive_node_id": format!("recursive-{index}")}).to_string()
+                        json!({"recursive_node_id": format!("node-{index}")}).to_string()
                     }
                 ],
             )
@@ -8076,6 +8133,16 @@ mod recursive_scheduler_tests {
         )
         .expect("schema");
         conn.execute(
+            "CREATE TABLE recursive_execution_nodes (node_id TEXT, root_run_id TEXT)",
+            [],
+        )
+        .expect("recursive index schema");
+        conn.execute(
+            "CREATE TABLE recursive_execution_trees (root_run_id TEXT, root_node_id TEXT)",
+            [],
+        )
+        .expect("recursive tree schema");
+        conn.execute(
             "INSERT INTO workflow_run_nodes
              (run_id, node_id, task_type, status, node_json)
              VALUES ('malformed-run', 'malformed-node', 'agent_step', 'running', '{')",
@@ -8085,6 +8152,35 @@ mod recursive_scheduler_tests {
         assert_eq!(
             count_running_recursive_steps_locked(&conn)
                 .expect_err("malformed metadata must fail closed"),
+            "recursive_node_identity_malformed"
+        );
+    }
+
+    #[test]
+    fn indexed_recursive_claim_requires_the_exact_persisted_marker() {
+        assert_eq!(
+            recursive_identity_for_claim("root-node", "{}", Some("root-node"))
+                .expect_err("indexed root missing marker must fail closed"),
+            "recursive_node_identity_malformed"
+        );
+        assert_eq!(
+            recursive_identity_for_claim("child-node", "{}", Some("root-node"))
+                .expect_err("indexed child missing marker must fail closed"),
+            "recursive_node_identity_malformed"
+        );
+        assert!(recursive_identity_for_claim(
+            "child-node",
+            r#"{"recursive_node_id":"child-node"}"#,
+            Some("root-node")
+        )
+        .expect("exact indexed child marker"));
+        assert_eq!(
+            recursive_identity_for_claim(
+                "child-node",
+                r#"{"recursive_node_id":"other-node"}"#,
+                Some("root-node")
+            )
+            .expect_err("mismatched indexed child marker must fail closed"),
             "recursive_node_identity_malformed"
         );
     }
@@ -8199,7 +8295,7 @@ mod recursive_scheduler_tests {
                             "profile_id": "recursive-cap-profile",
                             "decision_source": "fixture",
                             "max_actions": 1,
-                            "recursive_node_id": format!("recursive-cap-{index}"),
+                            "recursive_node_id": format!("recursive-cap-node-{index}"),
                         })
                     })
                     .collect();

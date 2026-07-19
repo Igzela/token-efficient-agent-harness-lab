@@ -4674,6 +4674,10 @@ mod tests {
             .expect("tree exists");
         assert_eq!(completed.spent_budget.calls_remaining, 2);
         assert_eq!(completed.reserved_budget.calls_remaining, 0);
+        assert_eq!(
+            completed.execution_state,
+            crate::recursive_execution::RecursiveExecutionState::Completed
+        );
         assert!(completed
             .nodes
             .values()
@@ -4980,7 +4984,7 @@ mod tests {
         assert!(first
             .output
             .as_deref()
-            .is_some_and(|result| result.contains("ancestor_cycle")));
+            .is_some_and(|result| result.contains("proposal_conflict")));
         let version = store
             .load_recursive_tree(&run_id)
             .expect("tree")

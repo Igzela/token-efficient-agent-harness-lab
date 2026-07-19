@@ -75,6 +75,7 @@ struct RecursiveObjectiveIdentity {
 #[serde(rename_all = "snake_case")]
 pub enum RecursiveExecutionState {
     Running,
+    Completed,
     OperatorPaused,
     BudgetExhausted,
     KillStopped,
@@ -664,6 +665,9 @@ impl RecursiveTree {
         }
         match self.execution_state {
             RecursiveExecutionState::Running => {}
+            RecursiveExecutionState::Completed => {
+                return Err(RecursiveFailureReason::ProposalConflict)
+            }
             RecursiveExecutionState::OperatorPaused => {
                 return Err(RecursiveFailureReason::OperatorPaused)
             }
@@ -817,6 +821,9 @@ impl RecursiveTree {
         }
         match self.execution_state {
             RecursiveExecutionState::Running => {}
+            RecursiveExecutionState::Completed => {
+                return Err(RecursiveFailureReason::ProposalConflict)
+            }
             RecursiveExecutionState::OperatorPaused => {
                 return Err(RecursiveFailureReason::OperatorPaused)
             }
@@ -1009,6 +1016,9 @@ impl RecursiveTree {
             );
         }
         self.version += 1;
+        if success && within_budget {
+            self.finalize_terminal_tree(None);
+        }
         Ok(())
     }
 
@@ -1101,6 +1111,73 @@ impl RecursiveTree {
             self.version += 1;
         }
         terminalized
+    }
+
+    pub(crate) fn finalize_terminal_tree(&mut self, failed_node_id: Option<&str>) {
+        if matches!(
+            self.execution_state,
+            RecursiveExecutionState::BudgetExhausted
+                | RecursiveExecutionState::KillStopped
+                | RecursiveExecutionState::TerminalFailed
+                | RecursiveExecutionState::Completed
+        ) {
+            return;
+        }
+        if let Some(node_id) = failed_node_id {
+            let descendants = self
+                .nodes
+                .values()
+                .filter(|candidate| {
+                    let mut parent = candidate.parent_node_id.as_deref();
+                    while let Some(parent_id) = parent {
+                        if parent_id == node_id {
+                            return matches!(
+                                candidate.status,
+                                RecursiveNodeStatus::Ready | RecursiveNodeStatus::Leased
+                            );
+                        }
+                        parent = self
+                            .nodes
+                            .get(parent_id)
+                            .and_then(|ancestor| ancestor.parent_node_id.as_deref());
+                    }
+                    false
+                })
+                .map(|node| node.node_id.clone())
+                .collect::<Vec<_>>();
+            for descendant_id in &descendants {
+                if let Some(descendant) = self.nodes.get_mut(descendant_id) {
+                    if let Some(lease_id) = descendant.lease_id.take() {
+                        self.active_leases.remove(&lease_id);
+                    }
+                    descendant.status = RecursiveNodeStatus::Failed;
+                    descendant.failure_reason = Some(RecursiveFailureReason::TerminalFailed);
+                    descendant.version += 1;
+                }
+            }
+            for descendant_id in &descendants {
+                self.release_node_reservation_for_persistence(descendant_id);
+            }
+        }
+        if self.active_leases.is_empty()
+            && self.nodes.values().all(|node| {
+                matches!(
+                    node.status,
+                    RecursiveNodeStatus::Completed | RecursiveNodeStatus::Failed
+                )
+            })
+        {
+            self.execution_state = if self
+                .nodes
+                .values()
+                .all(|node| node.status == RecursiveNodeStatus::Completed)
+            {
+                RecursiveExecutionState::Completed
+            } else {
+                RecursiveExecutionState::TerminalFailed
+            };
+            self.version += 1;
+        }
     }
 
     fn record_usage(
@@ -1757,6 +1834,59 @@ mod tests {
         assert_eq!(tree.reserved_budget, RecursiveBudget::default());
         assert_eq!(tree.spent_budget.calls_remaining, 1);
         assert_eq!(tree.spent_budget.tokens_remaining, 10);
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn terminal_parent_failure_terminalizes_descendants_without_freezing_siblings() {
+        let _guard = test_env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let mut tree = RecursiveTree::new(
+            "descendant-terminal-run",
+            "fixture",
+            "root",
+            scope(),
+            BTreeSet::from(["read".to_string()]),
+            RecursiveBudget {
+                calls_remaining: 12,
+                tokens_remaining: 120,
+                cost_micros_remaining: 120,
+                time_ms_remaining: 1200,
+            },
+        );
+        let mut child_proposal = proposal(&tree);
+        child_proposal.proposal_id = "failed-parent".to_string();
+        child_proposal.objective = "failed parent work".to_string();
+        let child = tree.admit_child(&child_proposal).expect("child");
+        let mut sibling_proposal = proposal(&tree);
+        sibling_proposal.proposal_id = "ready-sibling".to_string();
+        sibling_proposal.objective = "independent sibling work".to_string();
+        sibling_proposal.parent_version = tree.nodes[&tree.root_node_id].version;
+        let sibling = tree.admit_child(&sibling_proposal).expect("sibling");
+        tree.lease_node(&child.node.node_id, "failed-parent-lease")
+            .expect("lease child");
+        let mut descendant_proposal = proposal(&tree);
+        descendant_proposal.proposal_id = "blocked-descendant".to_string();
+        descendant_proposal.objective = "blocked descendant work".to_string();
+        descendant_proposal.parent_node_id = child.node.node_id.clone();
+        descendant_proposal.parent_version = tree.nodes[&child.node.node_id].version;
+        let descendant = tree.admit_child(&descendant_proposal).expect("descendant");
+        tree.complete_node(&child.node.node_id, "failed-parent-lease", false)
+            .expect("terminal failure");
+        tree.finalize_terminal_tree(Some(&child.node.node_id));
+        assert_eq!(
+            tree.nodes[&descendant.node.node_id].status,
+            RecursiveNodeStatus::Failed
+        );
+        assert_eq!(
+            tree.nodes[&descendant.node.node_id].failure_reason,
+            Some(RecursiveFailureReason::TerminalFailed)
+        );
+        assert_eq!(
+            tree.nodes[&sibling.node.node_id].status,
+            RecursiveNodeStatus::Ready
+        );
+        assert_eq!(tree.execution_state, RecursiveExecutionState::Running);
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 
