@@ -866,6 +866,7 @@ impl LocalProductStore {
         expected_execution_owner: Option<&str>,
     ) -> Result<Value, String> {
         let agent_executor = executor.executor_type_name() == "agent_step";
+        let recursive_usage_mode = executor.recursive_usage_mode();
         // Phase 1: Lease a ready node. SQLite needs an immediate transaction here:
         // the in-process mutex only protects one LocalProductStore connection, while
         // production restarts and concurrent API owners can open the same database
@@ -1831,9 +1832,19 @@ impl LocalProductStore {
                                     .node_json
                                     .get("recursive_root_authority")
                                     .ok_or_else(|| "recursive_node_identity_malformed".to_string())
-                                    .and_then(|metadata| recursive_usage_from_output(&output, metadata))
+                                    .and_then(|metadata| {
+                                        recursive_usage_from_output(
+                                            &output,
+                                            metadata,
+                                            recursive_usage_mode,
+                                        )
+                                    })
                             } else {
-                                recursive_usage_from_output(&output, &identity.node_json)
+                                recursive_usage_from_output(
+                                    &output,
+                                    &identity.node_json,
+                                    recursive_usage_mode,
+                                )
                             };
                             match usage_result {
                                 Ok(usage) => Some(usage),
@@ -2239,9 +2250,19 @@ impl LocalProductStore {
                                     .node_json
                                     .get("recursive_root_authority")
                                     .ok_or_else(|| "recursive_node_identity_malformed".to_string())
-                                    .and_then(|metadata| recursive_usage_from_output(&output, metadata))
+                                    .and_then(|metadata| {
+                                        recursive_usage_from_output(
+                                            &output,
+                                            metadata,
+                                            recursive_usage_mode,
+                                        )
+                                    })
                             } else {
-                                recursive_usage_from_output(&output, &identity.node_json)
+                                recursive_usage_from_output(
+                                    &output,
+                                    &identity.node_json,
+                                    recursive_usage_mode,
+                                )
                             };
                             match usage_result {
                                 Ok(usage) => Some(usage),
@@ -5302,6 +5323,7 @@ fn optional_json_text(value: Option<&Value>) -> Option<String> {
 fn recursive_usage_from_output(
     output: &crate::node_executor::NodeExecutionOutput,
     node_metadata: &Value,
+    executor_mode: crate::node_executor::RecursiveUsageMode,
 ) -> Result<crate::recursive_execution::RecursiveBudget, String> {
     let contract: crate::recursive_execution::RecursiveUsageContract = serde_json::from_value(
         node_metadata
@@ -5310,8 +5332,23 @@ fn recursive_usage_from_output(
             .ok_or_else(|| "fixture_usage_contract_missing".to_string())?,
     )
     .map_err(|_| "fixture_usage_contract_invalid".to_string())?;
-    match &contract {
-        crate::recursive_execution::RecursiveUsageContract::Fixture { .. } => {
+    if matches!(
+        contract,
+        crate::recursive_execution::RecursiveUsageContract::Unavailable
+    ) || matches!(
+        executor_mode,
+        crate::node_executor::RecursiveUsageMode::Unavailable
+    ) {
+        return Err("recursive_usage_unavailable".to_string());
+    }
+    match executor_mode {
+        crate::node_executor::RecursiveUsageMode::Fixture => {
+            if !matches!(
+                contract,
+                crate::recursive_execution::RecursiveUsageContract::Fixture { .. }
+            ) {
+                return Err("fixture_usage_contract_invalid".to_string());
+            }
             let usage = contract
                 .fixture_usage()
                 .expect("fixture contract has fixture usage");
@@ -5324,10 +5361,8 @@ fn recursive_usage_from_output(
             }
             return Ok(usage);
         }
-        crate::recursive_execution::RecursiveUsageContract::Unavailable => {
-            return Err("recursive_usage_unavailable".to_string())
-        }
-        crate::recursive_execution::RecursiveUsageContract::Measured => {}
+        crate::node_executor::RecursiveUsageMode::Measured => {}
+        crate::node_executor::RecursiveUsageMode::Unavailable => unreachable!(),
     }
     let reported_usage = output
         .output
@@ -6665,11 +6700,54 @@ mod recursive_scheduler_tests {
         fn executor_type_name(&self) -> &str {
             "agent_step"
         }
+
+        fn recursive_usage_mode(&self) -> crate::node_executor::RecursiveUsageMode {
+            crate::node_executor::RecursiveUsageMode::Fixture
+        }
     }
 
     struct BlockingRecursiveExecutor {
         gate: Arc<(Mutex<(usize, usize)>, Condvar)>,
         slot: usize,
+    }
+
+    struct MeasuredRecursiveExecutor;
+
+    impl NodeExecutor for MeasuredRecursiveExecutor {
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "agent_step".to_string(),
+                output: Some(
+                    json!({
+                        "provider_usage": {
+                            "provider_id": "measured-provider",
+                            "model": "measured-model",
+                            "input_tokens": 2,
+                            "output_tokens": 3,
+                            "estimated_cost_usd": 0.000004,
+                            "token_provenance": "provider_reported",
+                            "cost_provenance": "harness_derived"
+                        }
+                    })
+                    .to_string(),
+                ),
+                error_domain: None,
+                error_message: None,
+                input_tokens: Some(2),
+                output_tokens: Some(3),
+                estimated_cost: Some(0.000004),
+                latency_ms: Some(9),
+            }
+        }
+
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+
+        fn recursive_usage_mode(&self) -> crate::node_executor::RecursiveUsageMode {
+            crate::node_executor::RecursiveUsageMode::Measured
+        }
     }
 
     impl NodeExecutor for BlockingRecursiveExecutor {
@@ -6686,6 +6764,10 @@ mod recursive_scheduler_tests {
 
         fn executor_type_name(&self) -> &str {
             "agent_step"
+        }
+
+        fn recursive_usage_mode(&self) -> crate::node_executor::RecursiveUsageMode {
+            crate::node_executor::RecursiveUsageMode::Fixture
         }
     }
 
@@ -6846,18 +6928,24 @@ mod recursive_scheduler_tests {
                     "time_ms": 4
                 }
             }),
+            crate::node_executor::RecursiveUsageMode::Fixture,
         )
         .expect("bounded fixture usage");
         assert_eq!(fixture.tokens_remaining, 2);
         assert_eq!(
-            recursive_usage_from_output(&fixture_output, &json!({"decision_source": "fixture"}))
-                .expect_err("missing fixture contract"),
+            recursive_usage_from_output(
+                &fixture_output,
+                &json!({"decision_source": "fixture"}),
+                crate::node_executor::RecursiveUsageMode::Fixture,
+            )
+            .expect_err("missing fixture contract"),
             "fixture_usage_contract_missing"
         );
         assert_eq!(
             recursive_usage_from_output(
                 &fixture_output,
-                &json!({"usage_contract": {"kind": "unavailable"}})
+                &json!({"usage_contract": {"kind": "unavailable"}}),
+                crate::node_executor::RecursiveUsageMode::Fixture,
             )
             .expect_err("unavailable usage"),
             "recursive_usage_unavailable"
@@ -6888,6 +6976,7 @@ mod recursive_scheduler_tests {
             recursive_usage_from_output(
                 &measured,
                 &json!({"usage_contract": {"kind": "measured"}}),
+                crate::node_executor::RecursiveUsageMode::Measured,
             )
             .expect("measured usage")
             .tokens_remaining,
@@ -6914,6 +7003,7 @@ mod recursive_scheduler_tests {
             recursive_usage_from_output(
                 &unproven,
                 &json!({"usage_contract": {"kind": "measured"}}),
+                crate::node_executor::RecursiveUsageMode::Measured,
             )
             .expect_err("unproven numeric usage must fail closed"),
             "recursive_usage_unavailable"
@@ -7043,7 +7133,12 @@ mod recursive_scheduler_tests {
         );
     }
 
-    fn assert_fixture_root_without_children_is_accounted(store: LocalProductStore, suffix: &str) {
+    fn assert_root_without_children_is_accounted(
+        store: LocalProductStore,
+        suffix: &str,
+        executor: &dyn NodeExecutor,
+        expected_usage: RecursiveBudget,
+    ) {
         let _env_lock = crate::recursive_execution::test_env_lock()
             .lock()
             .expect("recursive environment lock");
@@ -7115,7 +7210,7 @@ mod recursive_scheduler_tests {
             .expect("tree read")
             .is_none());
         let tick = store
-            .tick_with_executor(&run_id, "root-only-scheduler", 0, &RecursiveCapExecutor)
+            .tick_with_executor(&run_id, "root-only-scheduler", 0, executor)
             .expect("root-only tick");
         assert_eq!(tick["action"], "node_executed");
         let tree = store
@@ -7124,7 +7219,7 @@ mod recursive_scheduler_tests {
             .expect("root tree initialized");
         assert_eq!(tree.root_node_id, root_id);
         assert_eq!(tree.nodes[&root_id].status, "completed");
-        assert_eq!(tree.nodes[&root_id].actual_usage.calls_remaining, 1);
+        assert_eq!(tree.nodes[&root_id].actual_usage, expected_usage);
         assert!(tree.active_leases.is_empty());
         assert_eq!(
             tree.execution_state,
@@ -7135,9 +7230,31 @@ mod recursive_scheduler_tests {
 
     #[test]
     fn sqlite_fixture_root_without_children_is_leased_and_accounted() {
-        assert_fixture_root_without_children_is_accounted(
+        assert_root_without_children_is_accounted(
             LocalProductStore::new(":memory:").expect("store"),
             "sqlite",
+            &RecursiveCapExecutor,
+            RecursiveBudget {
+                calls_remaining: 1,
+                tokens_remaining: 1,
+                cost_micros_remaining: 1,
+                time_ms_remaining: 1,
+            },
+        );
+    }
+
+    #[test]
+    fn sqlite_measured_executor_cannot_use_fixture_accounting() {
+        assert_root_without_children_is_accounted(
+            LocalProductStore::new(":memory:").expect("store"),
+            "sqlite-measured",
+            &MeasuredRecursiveExecutor,
+            RecursiveBudget {
+                calls_remaining: 1,
+                tokens_remaining: 5,
+                cost_micros_remaining: 4,
+                time_ms_remaining: 9,
+            },
         );
     }
 
@@ -7150,10 +7267,40 @@ mod recursive_scheduler_tests {
             }
             return;
         };
-        assert_fixture_root_without_children_is_accounted(
+        assert_root_without_children_is_accounted(
             LocalProductStore::new_postgres(&url, || "2026-07-19T00:00:00Z".to_string())
                 .expect("PostgreSQL store"),
             &uuid::Uuid::new_v4().to_string(),
+            &RecursiveCapExecutor,
+            RecursiveBudget {
+                calls_remaining: 1,
+                tokens_remaining: 1,
+                cost_micros_remaining: 1,
+                time_ms_remaining: 1,
+            },
+        );
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn postgres_measured_executor_cannot_use_fixture_accounting() {
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            if std::env::var("CI").as_deref() == Ok("true") {
+                panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+            }
+            return;
+        };
+        assert_root_without_children_is_accounted(
+            LocalProductStore::new_postgres(&url, || "2026-07-19T00:00:00Z".to_string())
+                .expect("PostgreSQL store"),
+            &uuid::Uuid::new_v4().to_string(),
+            &MeasuredRecursiveExecutor,
+            RecursiveBudget {
+                calls_remaining: 1,
+                tokens_remaining: 5,
+                cost_micros_remaining: 4,
+                time_ms_remaining: 9,
+            },
         );
     }
 

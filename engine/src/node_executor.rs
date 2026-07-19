@@ -758,9 +758,20 @@ impl NodeExecutionOutput {
 }
 
 /// Trait for executing individual workflow nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecursiveUsageMode {
+    Unavailable,
+    Fixture,
+    Measured,
+}
+
 pub trait NodeExecutor: Send + Sync {
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput;
     fn executor_type_name(&self) -> &str;
+
+    fn recursive_usage_mode(&self) -> RecursiveUsageMode {
+        RecursiveUsageMode::Unavailable
+    }
 }
 
 /// Noop executor that always succeeds immediately.
@@ -3093,6 +3104,13 @@ impl NodeExecutor for AgentStepExecutor {
         "agent_step"
     }
 
+    fn recursive_usage_mode(&self) -> RecursiveUsageMode {
+        match &self.decision_source {
+            AgentDecisionSource::Fixture(_) => RecursiveUsageMode::Fixture,
+            AgentDecisionSource::Provider(_) => RecursiveUsageMode::Measured,
+        }
+    }
+
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
         let start = std::time::Instant::now();
 
@@ -3639,6 +3657,10 @@ mod tests {
     impl NodeExecutor for RecursiveFixtureExecutor {
         fn executor_type_name(&self) -> &str {
             "agent_step"
+        }
+
+        fn recursive_usage_mode(&self) -> RecursiveUsageMode {
+            RecursiveUsageMode::Fixture
         }
 
         fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {

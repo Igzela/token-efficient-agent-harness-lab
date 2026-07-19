@@ -510,13 +510,19 @@ pub(crate) async fn api_plan_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
+    use crate::node_executor::{
+        NodeExecutionInput, NodeExecutionOutput, NodeExecutor, RecursiveUsageMode,
+    };
 
     struct FixtureAgentStepExecutor;
 
     impl NodeExecutor for FixtureAgentStepExecutor {
         fn executor_type_name(&self) -> &str {
             "agent_step"
+        }
+
+        fn recursive_usage_mode(&self) -> RecursiveUsageMode {
+            RecursiveUsageMode::Fixture
         }
 
         fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
