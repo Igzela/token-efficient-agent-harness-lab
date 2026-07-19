@@ -1,5 +1,6 @@
 use engine::recursive_execution::{
-    RecursiveBudget, RecursiveScope, RecursiveTree, RECURSIVE_SCHEMA_VERSION,
+    recursive_root_creation_receipt_sha256, RecursiveBudget, RecursiveScope, RecursiveTree,
+    RECURSIVE_ROOT_AUTHORITY_VERSION, RECURSIVE_SCHEMA_VERSION,
 };
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::json;
@@ -22,19 +23,45 @@ fn budget() -> RecursiveBudget {
     }
 }
 
-fn bind_test_workflow(store: &LocalProductStore, run_id: &str, workflow_id: &str, node_id: &str) {
+fn bind_test_workflow(store: &LocalProductStore, tree: &mut RecursiveTree) {
+    let root_node_id = tree.root_node_id.clone();
+    tree.bind_root_identity(
+        "test-agent",
+        &root_node_id,
+        &recursive_root_creation_receipt_sha256(
+            "test-root-receipt",
+            &tree.root_run_id,
+            &tree.workflow_id,
+            &root_node_id,
+            "test-agent",
+        ),
+    )
+    .expect("bind root identity");
     store
         .import_workflow_run(&json!({
-            "run_id": run_id,
-            "workflow_id": workflow_id,
+            "run_id": tree.root_run_id,
+            "workflow_id": tree.workflow_id,
             "status": "created",
-            "boundaries": {"execution_authority": "disabled"},
+            "boundaries": {
+                "execution_authority": "disabled",
+                "repository": tree.root_scope.repository,
+                "allowed_paths": tree.root_scope.allowed_paths
+            },
             "nodes": [{
-                "node_id": node_id,
+                "node_id": tree.root_node_id,
                 "task_type": "agent_step",
                 "status": "pending",
-                "recursive_node_id": node_id,
+                "recursive_root_node_id": tree.root_node_id,
                 "agent_id": "test-agent",
+                "capability_profile": tree.root_capabilities,
+                "recursive_root_authority": {
+                    "schema_version": RECURSIVE_ROOT_AUTHORITY_VERSION,
+                    "scope": tree.root_scope,
+                    "capabilities": tree.root_capabilities,
+                    "tree_budget": tree.root_budget_limit,
+                    "child_budget": tree.root_child_budget_limit,
+                    "usage_contract": {"kind": "fixture", "calls": 1, "tokens": 1, "cost_micros": 1, "time_ms": 1}
+                },
                 "creation_receipt_sha256": "test-root-receipt"
             }],
             "edges": [],
@@ -55,18 +82,7 @@ fn recursive_tree_round_trips_through_local_store() {
         BTreeSet::from(["read".to_string()]),
         budget(),
     );
-    bind_test_workflow(
-        &store,
-        &tree.root_run_id,
-        &tree.workflow_id,
-        &tree.root_node_id,
-    );
-    tree.bind_root_identity(
-        "test-agent",
-        &tree.root_node_id.clone(),
-        "test-root-receipt",
-    )
-    .expect("bind root identity");
+    bind_test_workflow(&store, &mut tree);
 
     store.save_recursive_tree(&tree).expect("save");
     let loaded = store
@@ -96,18 +112,7 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
         BTreeSet::from(["read".to_string()]),
         budget(),
     );
-    bind_test_workflow(
-        &occupied,
-        &tree.root_run_id,
-        &tree.workflow_id,
-        &tree.root_node_id,
-    );
-    tree.bind_root_identity(
-        "test-agent",
-        &tree.root_node_id.clone(),
-        "test-root-receipt",
-    )
-    .expect("bind root identity");
+    bind_test_workflow(&occupied, &mut tree);
     occupied.save_recursive_tree(&tree).expect("save");
     let error = occupied
         .rollback_v26_to_v25("test", true)

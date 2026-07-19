@@ -442,32 +442,56 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
             ));
         }
     }
-    for (index, expected_columns) in [
+    for (index, expected_table, expected_columns) in [
         (
             "idx_recursive_execution_trees_workflow",
-            "(workflow_id,updated_at)",
+            "recursive_execution_trees",
+            ["workflow_id", "updated_at"].as_slice(),
         ),
         (
             "idx_recursive_execution_nodes_root",
-            "(root_run_id,depth,node_id)",
+            "recursive_execution_nodes",
+            ["root_run_id", "depth", "node_id"].as_slice(),
         ),
         (
             "idx_recursive_execution_nodes_parent",
-            "(parent_node_id,status,node_id)",
+            "recursive_execution_nodes",
+            ["parent_node_id", "status", "node_id"].as_slice(),
         ),
     ] {
-        let definition: Option<String> = client
+        let definition: Option<(String, String, bool, bool, Vec<String>)> = client
             .query_opt(
-                "SELECT indexdef FROM pg_indexes
-                 WHERE schemaname=current_schema() AND indexname=$1",
+                "SELECT table_class.relname, access_method.amname,
+                        index_meta.indisunique, index_meta.indpred IS NULL,
+                        array_agg(attribute.attname ORDER BY key.ordinality)
+                 FROM pg_class index_class
+                 JOIN pg_namespace namespace ON namespace.oid=index_class.relnamespace
+                 JOIN pg_index index_meta ON index_meta.indexrelid=index_class.oid
+                 JOIN pg_class table_class ON table_class.oid=index_meta.indrelid
+                 JOIN pg_am access_method ON access_method.oid=index_class.relam
+                 JOIN LATERAL unnest(index_meta.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+                   ON TRUE
+                 JOIN pg_attribute attribute
+                   ON attribute.attrelid=table_class.oid AND attribute.attnum=key.attnum
+                 WHERE namespace.oid=current_schema()::regnamespace AND index_class.relname=$1
+                 GROUP BY table_class.relname, access_method.amname,
+                          index_meta.indisunique, index_meta.indpred",
                 &[&index],
             )
             .map_err(|error| error.to_string())?
-            .map(|row| row.get(0));
-        if !definition
-            .as_deref()
-            .map(|value| value.to_ascii_lowercase().replace(' ', ""))
-            .is_some_and(|value| value.contains(expected_columns))
+            .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)));
+        let expected_columns = expected_columns
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
+        if definition
+            != Some((
+                expected_table.to_string(),
+                "btree".to_string(),
+                false,
+                true,
+                expected_columns,
+            ))
         {
             return Err(format!(
                 "PostgreSQL v26 schema missing or malformed index {index}"
@@ -712,6 +736,11 @@ impl LocalProductStore {
                 .map(|row| row.get::<_, i64>(0))
                 .map_err(|error| error.to_string())?;
             super::super::migrations::require_v26_rollback_source(current_version)?;
+            tx.batch_execute(
+                "LOCK TABLE recursive_execution_nodes, recursive_execution_trees
+                 IN ACCESS EXCLUSIVE MODE",
+            )
+            .map_err(|error| error.to_string())?;
             for table in super::super::migrations::V26_TABLES {
                 let occupied = tx
                     .query_one(&format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)"), &[])

@@ -36,6 +36,24 @@ pub fn default_recursive_child_budget() -> RecursiveBudget {
         time_ms_remaining: 60_000,
     }
 }
+
+pub fn recursive_root_creation_receipt_sha256(
+    plan_creation_receipt_sha256: &str,
+    root_run_id: &str,
+    workflow_id: &str,
+    root_node_id: &str,
+    agent_id: &str,
+) -> String {
+    let canonical = json!({
+        "kind": "recursive_root_creation.v1",
+        "plan_creation_receipt_sha256": plan_creation_receipt_sha256,
+        "root_run_id": root_run_id,
+        "workflow_id": workflow_id,
+        "root_node_id": root_node_id,
+        "agent_id": agent_id,
+    });
+    hex::encode(Sha256::digest(canonical.to_string().as_bytes()))
+}
 const MAX_OBJECTIVE_BYTES: usize = 4096;
 const MAX_CONTEXT_BYTES: usize = 8192;
 pub const MAX_RECURSIVE_TREE_BYTES: usize = 131_072;
@@ -398,7 +416,7 @@ pub fn normalize_objective(objective: &str) -> String {
         .split_whitespace()
         .filter(|token| !matches!(*token, "a" | "an" | "the" | "to" | "please"))
         .map(|token| match token {
-            "inspect" | "examine" => "review",
+            "inspect" | "examine" | "check" => "review",
             "documentation" => "docs",
             other => other,
         })
@@ -553,7 +571,7 @@ impl RecursiveTree {
             root_tenant_id: None,
             root_workspace_id: None,
             root_budget_limit: Some(budget.clone()),
-            root_child_budget_limit: None,
+            root_child_budget_limit: Some(budget.clone()),
             root_budget: budget,
             spent_budget: RecursiveBudget {
                 calls_remaining: 0,
@@ -939,6 +957,11 @@ impl RecursiveTree {
                 _ => Err(RecursiveFailureReason::ReceiptConflict),
             };
         }
+        if root.lease_id.as_deref() != Some(receipt_id)
+            || root.status != RecursiveNodeStatus::Leased
+        {
+            return Err(RecursiveFailureReason::ReceiptConflict);
+        }
         let within_node_budget = root.budget.can_spend(usage);
         let within_tree_budget = self.record_unreserved_usage(receipt_id, usage)?;
         let within_budget = within_node_budget && within_tree_budget;
@@ -958,7 +981,9 @@ impl RecursiveTree {
         } else {
             (!success).then_some(RecursiveFailureReason::ExecutionFailure)
         };
+        root.lease_id = None;
         root.version += 1;
+        self.active_leases.remove(receipt_id);
         if !within_budget {
             self.execution_state = RecursiveExecutionState::BudgetExhausted;
             self.terminalize_remaining_nodes(
@@ -974,6 +999,40 @@ impl RecursiveTree {
         }
         self.version += 1;
         Ok(())
+    }
+
+    pub(crate) fn record_root_late_usage(
+        &mut self,
+        receipt_id: &str,
+        usage: &RecursiveBudget,
+    ) -> Result<bool, RecursiveFailureReason> {
+        let usage_fingerprint =
+            serde_json::to_string(usage).map_err(|_| RecursiveFailureReason::ReceiptConflict)?;
+        if let Some(previous) = self.usage_receipts.get(receipt_id) {
+            if previous.strip_prefix("1:") == Some(usage_fingerprint.as_str()) {
+                return Ok(true);
+            }
+            if previous.strip_prefix("0:") == Some(usage_fingerprint.as_str()) {
+                return Ok(false);
+            }
+            return Err(RecursiveFailureReason::ReceiptConflict);
+        }
+        let within_root_budget = self
+            .nodes
+            .get(&self.root_node_id)
+            .ok_or(RecursiveFailureReason::RecursiveNodeMissing)?
+            .budget
+            .can_spend(usage);
+        let within_tree_budget = self.record_unreserved_usage(receipt_id, usage)?;
+        let root = self
+            .nodes
+            .get_mut(&self.root_node_id)
+            .ok_or(RecursiveFailureReason::RecursiveNodeMissing)?;
+        root.budget.spend(usage);
+        root.actual_usage.add(usage);
+        root.version += 1;
+        self.version += 1;
+        Ok(within_root_budget && within_tree_budget)
     }
 
     pub(crate) fn release_node_reservation_for_persistence(&mut self, node_id: &str) {
@@ -1501,6 +1560,41 @@ mod tests {
             tree.admit_child(&conflicting),
             Err(RecursiveFailureReason::ScopeMismatch)
         );
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn deterministic_objective_identity_rejects_declared_paraphrase_and_accepts_distinct_work() {
+        let _guard = test_env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let mut tree = RecursiveTree::new(
+            "objective-identity-run",
+            "fixture",
+            "root objective",
+            scope(),
+            BTreeSet::from(["read".to_string()]),
+            budget(),
+        );
+        let mut first = proposal(&tree);
+        first.objective = "Please inspect the documentation".to_string();
+        tree.admit_child(&first).expect("first objective");
+
+        let mut equivalent = proposal(&tree);
+        equivalent.proposal_id = "proposal-equivalent".to_string();
+        equivalent.receipt_sha256 = "receipt-equivalent".to_string();
+        equivalent.parent_version = tree.nodes[&tree.root_node_id].version;
+        equivalent.objective = "review docs".to_string();
+        assert_eq!(
+            tree.admit_child(&equivalent),
+            Err(RecursiveFailureReason::DuplicateObjective)
+        );
+
+        let mut distinct = equivalent;
+        distinct.proposal_id = "proposal-distinct".to_string();
+        distinct.receipt_sha256 = "receipt-distinct".to_string();
+        distinct.objective = "review source code".to_string();
+        tree.admit_child(&distinct)
+            .expect("genuinely distinct objective");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 

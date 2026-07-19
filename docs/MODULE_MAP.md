@@ -44,7 +44,7 @@ Full Agent Autonomy Mode remains active for repository-scoped work that is testa
 | Managed external runtime | Rust-leased `langgraph_external` node, v24 receipts/checkpoints, locked adapter package | connected in fixture/guarded-live modes; Python owns no queue, authority, or product store |
 | Efficiency/tool-discovery benchmark | native/LangGraph runtime binaries, benchmark script, scorecard matrix API/Dashboard | deterministic fixture evidence connected; provider-backed result not verified |
 | Target repository output | app-owned workspaces/worktrees, approvals, receipts, branch/patch output, compensation | connected and externally accepted on a disposable target after PR #226; no direct target `main` or merge authority |
-| GitHub/Vader repository maintenance | control Issue, Actions workflows, Vader artifact worker, GitHub-hosted finalizer | implemented but production-disabled; runner/readiness recovered, replacement smoke #238 blocked at worker Codex authentication before artifact creation |
+| GitHub/Vader repository maintenance | control Issue, Actions workflows, Vader artifact worker, GitHub-hosted finalizer | implemented but production-disabled; replacement smoke blocked by offline runner/TLS token-exchange path |
 
 ## Approved Recursive-Execution Ownership
 
@@ -83,7 +83,7 @@ The authoritative evaluator, sealed set, permissions, credentials, budget owner,
 
 ### Repository-maintenance orchestrator
 
-The orchestrator is disabled and emergency-stopped after replacement smoke #238 failed at worker Codex authentication. `control_state.py` owns setup and control transitions; GitHub-hosted finalizers own branch/PR/label/comment mutations; Vader remains artifact-only. Recursive and evolution packets remain local/fixture-only and may not enable Issue #208, call a provider, or use the repository-agent path.
+The orchestrator remains disabled and emergency-stopped. `control_state.py` owns setup and control transitions; GitHub-hosted finalizers own branch/PR/label/comment mutations; Vader remains artifact-only. No recursive or evolution packet may enable Issue #208, consume the offline runner, or use this path until the replacement smoke is accepted.
 
 ### Provider/live benchmark
 
@@ -99,7 +99,7 @@ PR #214 merged the active v2 owner-evidence repair. Existing fixed scenario regi
 
 ## Active Routing
 
-1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is blocked on the exact worker Codex authentication failure; runner recovery is complete.
+1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is blocked on external runner/catalog prerequisites.
 2. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is in progress on its focused branch and remains the first eligible independent implementation packet.
 3. `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the recursive packet merges and is refreshed against actual `main`.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` remains blocked until a stable, independently reviewed Level-1 lab result exists.

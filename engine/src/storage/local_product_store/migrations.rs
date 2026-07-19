@@ -1329,20 +1329,49 @@ fn validate_sqlite_v26_schema(conn: &Connection) -> Result<(), String> {
             }
         }
     }
-    for index in [
-        "idx_recursive_execution_trees_workflow",
-        "idx_recursive_execution_nodes_root",
-        "idx_recursive_execution_nodes_parent",
+    for (table, index, expected_columns) in [
+        (
+            "recursive_execution_trees",
+            "idx_recursive_execution_trees_workflow",
+            ["workflow_id", "updated_at"].as_slice(),
+        ),
+        (
+            "recursive_execution_nodes",
+            "idx_recursive_execution_nodes_root",
+            ["root_run_id", "depth", "node_id"].as_slice(),
+        ),
+        (
+            "recursive_execution_nodes",
+            "idx_recursive_execution_nodes_parent",
+            ["parent_node_id", "status", "node_id"].as_slice(),
+        ),
     ] {
-        let exists: i64 = conn
+        let properties: Option<(i64, i64)> = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
-                [index],
-                |row| row.get(0),
+                "SELECT \"unique\", partial FROM pragma_index_list(?1) WHERE name=?2",
+                rusqlite::params![table, index],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
+            .optional()
             .map_err(|error| error.to_string())?;
-        if exists != 1 {
-            return Err(format!("SQLite v26 schema missing index {index}"));
+        let columns = conn
+            .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([index], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|error| error.to_string())?;
+        if properties != Some((0, 0))
+            || columns
+                != expected_columns
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+        {
+            return Err(format!(
+                "SQLite v26 schema missing or malformed index {index}"
+            ));
         }
     }
     let foreign_key: i64 = conn
@@ -2268,5 +2297,42 @@ mod tests {
             error.contains("SQLite v26 schema nullability mismatch"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn already_versioned_v26_rejects_malformed_named_indexes() {
+        for (suffix, replacement) in [
+            (
+                "wrong-columns",
+                "CREATE INDEX idx_recursive_execution_nodes_parent
+                 ON recursive_execution_nodes(status);",
+            ),
+            (
+                "partial",
+                "CREATE INDEX idx_recursive_execution_nodes_parent
+                 ON recursive_execution_nodes(parent_node_id, status, node_id)
+                 WHERE status = 'ready';",
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join(format!("malformed-index-{suffix}.db"));
+            drop(LocalProductStore::new(&path).expect("valid v26 store"));
+            let conn = rusqlite::Connection::open(&path).expect("sqlite");
+            conn.execute_batch(&format!(
+                "DROP INDEX idx_recursive_execution_nodes_parent; {replacement}"
+            ))
+            .expect("malform named index");
+            drop(conn);
+            let error = match LocalProductStore::new(&path) {
+                Ok(_) => panic!("malformed named v26 index must fail closed"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains(
+                    "SQLite v26 schema missing or malformed index idx_recursive_execution_nodes_parent"
+                ),
+                "unexpected error: {error}"
+            );
+        }
     }
 }
