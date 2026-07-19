@@ -13,10 +13,11 @@ use super::{
 };
 use crate::workflow::dag_manager::{types::DAGMutationProposal, DAGManager};
 
-pub(crate) fn insert_workflow_run_node_locked(
+fn insert_workflow_run_node_with_mode(
     conn: &rusqlite::Connection,
     run_id: &str,
     node: &Value,
+    strict: bool,
 ) -> Result<(), String> {
     let node_id = node
         .get("node_id")
@@ -31,21 +32,19 @@ pub(crate) fn insert_workflow_run_node_locked(
         .and_then(Value::as_str)
         .unwrap_or("pending");
     let profile_id = node.get("profile_id").and_then(Value::as_str);
-    let existing: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2",
-            params![run_id, node_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if existing > 0 {
-        return Err(format!("duplicate node_id: {node_id}"));
-    }
-    conn.execute(
+    let statement = if strict {
         "INSERT INTO workflow_run_nodes
          (run_id, node_id, task_type, status, node_json,
           started_at, completed_at, attempt_count, timeout_ms, blocked_reason, leased_at, profile_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+    } else {
+        "INSERT OR REPLACE INTO workflow_run_nodes
+         (run_id, node_id, task_type, status, node_json,
+          started_at, completed_at, attempt_count, timeout_ms, blocked_reason, leased_at, profile_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+    };
+    conn.execute(
+        statement,
         params![
             run_id,
             node_id,
@@ -67,10 +66,19 @@ pub(crate) fn insert_workflow_run_node_locked(
     Ok(())
 }
 
-pub(crate) fn insert_workflow_run_edge_locked(
+pub(crate) fn insert_workflow_run_node_locked(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    node: &Value,
+) -> Result<(), String> {
+    insert_workflow_run_node_with_mode(conn, run_id, node, false)
+}
+
+fn insert_workflow_run_edge_with_mode(
     conn: &rusqlite::Connection,
     run_id: &str,
     edge: &Value,
+    strict: bool,
 ) -> Result<(), String> {
     let edge_id = edge
         .get("edge_id")
@@ -88,34 +96,17 @@ pub(crate) fn insert_workflow_run_edge_locked(
         .get("edge_type")
         .and_then(Value::as_str)
         .unwrap_or("dependency");
-    let endpoints: (i64, i64) = conn
-        .query_row(
-            "SELECT
-                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2),
-                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?3)",
-            params![run_id, from_node_id, to_node_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|e| e.to_string())?;
-    if endpoints != (1, 1) {
-        return Err(format!(
-            "workflow edge {edge_id} references missing endpoint"
-        ));
-    }
-    let existing: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM workflow_run_edges WHERE run_id=?1 AND edge_id=?2",
-            params![run_id, edge_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if existing > 0 {
-        return Err(format!("duplicate edge_id: {edge_id}"));
-    }
-    conn.execute(
+    let statement = if strict {
         "INSERT INTO workflow_run_edges
          (run_id, edge_id, from_node_id, to_node_id, edge_type, edge_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+    } else {
+        "INSERT OR REPLACE INTO workflow_run_edges
+         (run_id, edge_id, from_node_id, to_node_id, edge_type, edge_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+    };
+    conn.execute(
+        statement,
         params![
             run_id,
             edge_id,
@@ -129,11 +120,20 @@ pub(crate) fn insert_workflow_run_edge_locked(
     Ok(())
 }
 
+pub(crate) fn insert_workflow_run_edge_locked(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    edge: &Value,
+) -> Result<(), String> {
+    insert_workflow_run_edge_with_mode(conn, run_id, edge, false)
+}
+
 #[cfg(feature = "pg")]
-pub(crate) fn pg_insert_workflow_run_node(
+fn pg_insert_workflow_run_node_with_mode(
     client: &mut impl postgres::GenericClient,
     run_id: &str,
     node: &Value,
+    strict: bool,
 ) -> Result<(), String> {
     let node_id = node
         .get("node_id")
@@ -148,16 +148,6 @@ pub(crate) fn pg_insert_workflow_run_node(
         .and_then(Value::as_str)
         .unwrap_or("pending");
     let profile_id = node.get("profile_id").and_then(Value::as_str);
-    let existing: i64 = client
-        .query_one(
-            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2",
-            &[&run_id, &node_id],
-        )
-        .map_err(|e| e.to_string())?
-        .get(0);
-    if existing > 0 {
-        return Err(format!("duplicate node_id: {node_id}"));
-    }
     let node_json = node.to_string();
     let started_at = node.get("started_at").and_then(Value::as_str);
     let completed_at = node.get("completed_at").and_then(Value::as_str);
@@ -185,24 +175,44 @@ pub(crate) fn pg_insert_workflow_run_node(
         &leased_at,
         &profile_id,
     ];
-    client
-        .execute(
-            "INSERT INTO workflow_run_nodes
+    let statement = if strict {
+        "INSERT INTO workflow_run_nodes
+         (run_id, node_id, task_type, status, node_json,
+          started_at, completed_at, attempt_count, timeout_ms, blocked_reason, leased_at, profile_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
+    } else {
+        "INSERT INTO workflow_run_nodes
              (run_id, node_id, task_type, status, node_json,
               started_at, completed_at, attempt_count, timeout_ms, blocked_reason, leased_at, profile_id)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-             ",
-            &params,
-        )
+             ON CONFLICT (run_id, node_id) DO UPDATE SET
+              task_type = EXCLUDED.task_type, status = EXCLUDED.status, node_json = EXCLUDED.node_json,
+              started_at = EXCLUDED.started_at, completed_at = EXCLUDED.completed_at,
+              attempt_count = EXCLUDED.attempt_count, timeout_ms = EXCLUDED.timeout_ms,
+              blocked_reason = EXCLUDED.blocked_reason, leased_at = EXCLUDED.leased_at,
+              profile_id = EXCLUDED.profile_id"
+    };
+    client
+        .execute(statement, &params)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[cfg(feature = "pg")]
-pub(crate) fn pg_insert_workflow_run_edge(
+pub(crate) fn pg_insert_workflow_run_node(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+    node: &Value,
+) -> Result<(), String> {
+    pg_insert_workflow_run_node_with_mode(client, run_id, node, false)
+}
+
+#[cfg(feature = "pg")]
+fn pg_insert_workflow_run_edge_with_mode(
     client: &mut impl postgres::GenericClient,
     run_id: &str,
     edge: &Value,
+    strict: bool,
 ) -> Result<(), String> {
     let edge_id = edge
         .get("edge_id")
@@ -220,30 +230,6 @@ pub(crate) fn pg_insert_workflow_run_edge(
         .get("edge_type")
         .and_then(Value::as_str)
         .unwrap_or("dependency");
-    let endpoint_row = client
-        .query_one(
-            "SELECT
-                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2),
-                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$3)",
-            &[&run_id, &from_node_id, &to_node_id],
-        )
-        .map_err(|e| e.to_string())?;
-    let endpoints = (endpoint_row.get::<_, i64>(0), endpoint_row.get::<_, i64>(1));
-    if endpoints != (1, 1) {
-        return Err(format!(
-            "workflow edge {edge_id} references missing endpoint"
-        ));
-    }
-    let existing: i64 = client
-        .query_one(
-            "SELECT COUNT(*) FROM workflow_run_edges WHERE run_id=$1 AND edge_id=$2",
-            &[&run_id, &edge_id],
-        )
-        .map_err(|e| e.to_string())?
-        .get(0);
-    if existing > 0 {
-        return Err(format!("duplicate edge_id: {edge_id}"));
-    }
     let edge_json = edge.to_string();
     let params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
         &run_id,
@@ -253,16 +239,157 @@ pub(crate) fn pg_insert_workflow_run_edge(
         &edge_type,
         &edge_json,
     ];
-    client
-        .execute(
-            "INSERT INTO workflow_run_edges
+    let statement = if strict {
+        "INSERT INTO workflow_run_edges
+         (run_id, edge_id, from_node_id, to_node_id, edge_type, edge_json)
+         VALUES ($1, $2, $3, $4, $5, $6)"
+    } else {
+        "INSERT INTO workflow_run_edges
              (run_id, edge_id, from_node_id, to_node_id, edge_type, edge_json)
              VALUES ($1, $2, $3, $4, $5, $6)
-             ",
-            &params,
-        )
+             ON CONFLICT (run_id, edge_id) DO UPDATE SET
+              from_node_id = EXCLUDED.from_node_id, to_node_id = EXCLUDED.to_node_id,
+              edge_type = EXCLUDED.edge_type, edge_json = EXCLUDED.edge_json"
+    };
+    client
+        .execute(statement, &params)
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(feature = "pg")]
+pub(crate) fn pg_insert_workflow_run_edge(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+    edge: &Value,
+) -> Result<(), String> {
+    pg_insert_workflow_run_edge_with_mode(client, run_id, edge, false)
+}
+
+pub(crate) fn insert_recursive_workflow_run_node_locked(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    node: &Value,
+) -> Result<(), String> {
+    let node_id = node
+        .get("node_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "workflow node missing node_id".to_string())?;
+    let existing: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2",
+            params![run_id, node_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if existing != 0 {
+        return Err(format!("duplicate node_id: {node_id}"));
+    }
+    insert_workflow_run_node_with_mode(conn, run_id, node, true)
+}
+
+pub(crate) fn insert_recursive_workflow_run_edge_locked(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    edge: &Value,
+) -> Result<(), String> {
+    let edge_id = edge
+        .get("edge_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "workflow edge missing edge_id".to_string())?;
+    let from_node_id = edge
+        .get("from_node_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("workflow edge {edge_id} missing from_node_id"))?;
+    let to_node_id = edge
+        .get("to_node_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("workflow edge {edge_id} missing to_node_id"))?;
+    let (from_count, to_count, edge_count): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2),
+                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?3),
+                (SELECT COUNT(*) FROM workflow_run_edges WHERE run_id=?1 AND edge_id=?4)",
+            params![run_id, from_node_id, to_node_id, edge_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    if (from_count, to_count) != (1, 1) {
+        return Err(format!(
+            "workflow edge {edge_id} references missing endpoint"
+        ));
+    }
+    if edge_count != 0 {
+        return Err(format!("duplicate edge_id: {edge_id}"));
+    }
+    insert_workflow_run_edge_with_mode(conn, run_id, edge, true)
+}
+
+#[cfg(feature = "pg")]
+pub(crate) fn pg_insert_recursive_workflow_run_node(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+    node: &Value,
+) -> Result<(), String> {
+    let node_id = node
+        .get("node_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "workflow node missing node_id".to_string())?;
+    let existing: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2",
+            &[&run_id, &node_id],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if existing != 0 {
+        return Err(format!("duplicate node_id: {node_id}"));
+    }
+    pg_insert_workflow_run_node_with_mode(client, run_id, node, true)
+}
+
+#[cfg(feature = "pg")]
+pub(crate) fn pg_insert_recursive_workflow_run_edge(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+    edge: &Value,
+) -> Result<(), String> {
+    let edge_id = edge
+        .get("edge_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "workflow edge missing edge_id".to_string())?;
+    let from_node_id = edge
+        .get("from_node_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("workflow edge {edge_id} missing from_node_id"))?;
+    let to_node_id = edge
+        .get("to_node_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("workflow edge {edge_id} missing to_node_id"))?;
+    let row = client
+        .query_one(
+            "SELECT
+                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2),
+                (SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$3),
+                (SELECT COUNT(*) FROM workflow_run_edges WHERE run_id=$1 AND edge_id=$4)",
+            &[&run_id, &from_node_id, &to_node_id, &edge_id],
+        )
+        .map_err(|error| error.to_string())?;
+    let identity = (
+        row.get::<_, i64>(0),
+        row.get::<_, i64>(1),
+        row.get::<_, i64>(2),
+    );
+    if (identity.0, identity.1) != (1, 1) {
+        return Err(format!(
+            "workflow edge {edge_id} references missing endpoint"
+        ));
+    }
+    if identity.2 != 0 {
+        return Err(format!("duplicate edge_id: {edge_id}"));
+    }
+    pg_insert_workflow_run_edge_with_mode(client, run_id, edge, true)
 }
 
 impl LocalProductStore {

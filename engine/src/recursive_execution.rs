@@ -17,6 +17,25 @@ pub const MAX_ACCEPTED_CHILDREN_PER_NODE: usize = 3;
 pub const MAX_RECURSIVE_NODES_PER_ROOT: usize = 12;
 pub const MAX_RECURSIVE_LEASES: usize = 3;
 pub const MAX_RECURSIVE_RETRIES: u8 = 1;
+pub const RECURSIVE_ROOT_AUTHORITY_VERSION: &str = "recursive_root_authority.v1";
+
+pub fn default_recursive_tree_budget() -> RecursiveBudget {
+    RecursiveBudget {
+        calls_remaining: 12,
+        tokens_remaining: 120_000,
+        cost_micros_remaining: 1_000_000,
+        time_ms_remaining: 600_000,
+    }
+}
+
+pub fn default_recursive_child_budget() -> RecursiveBudget {
+    RecursiveBudget {
+        calls_remaining: 1,
+        tokens_remaining: 10_000,
+        cost_micros_remaining: 10_000,
+        time_ms_remaining: 60_000,
+    }
+}
 const MAX_OBJECTIVE_BYTES: usize = 4096;
 const MAX_CONTEXT_BYTES: usize = 8192;
 pub const MAX_RECURSIVE_TREE_BYTES: usize = 131_072;
@@ -160,6 +179,48 @@ pub struct RecursiveBudget {
     pub time_ms_remaining: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RecursiveUsageContract {
+    Fixture {
+        calls: u64,
+        tokens: u64,
+        cost_micros: u64,
+        time_ms: u64,
+    },
+    Measured,
+    Unavailable,
+}
+
+impl RecursiveUsageContract {
+    pub fn fixture_usage(&self) -> Option<RecursiveBudget> {
+        match self {
+            Self::Fixture {
+                calls,
+                tokens,
+                cost_micros,
+                time_ms,
+            } => Some(RecursiveBudget {
+                calls_remaining: *calls,
+                tokens_remaining: *tokens,
+                cost_micros_remaining: *cost_micros,
+                time_ms_remaining: *time_ms,
+            }),
+            Self::Measured | Self::Unavailable => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecursiveRootAuthority {
+    pub schema_version: String,
+    pub scope: RecursiveScope,
+    pub capabilities: BTreeSet<String>,
+    pub tree_budget: RecursiveBudget,
+    pub child_budget: RecursiveBudget,
+    pub usage_contract: RecursiveUsageContract,
+}
+
 impl RecursiveBudget {
     pub(crate) fn can_spend(&self, usage: &Self) -> bool {
         self.calls_remaining >= usage.calls_remaining
@@ -298,6 +359,8 @@ pub struct RecursiveTree {
     /// confused.
     #[serde(default)]
     pub root_budget_limit: Option<RecursiveBudget>,
+    #[serde(default)]
+    pub root_child_budget_limit: Option<RecursiveBudget>,
     #[serde(default)]
     pub spent_budget: RecursiveBudget,
     #[serde(default)]
@@ -490,6 +553,7 @@ impl RecursiveTree {
             root_tenant_id: None,
             root_workspace_id: None,
             root_budget_limit: Some(budget.clone()),
+            root_child_budget_limit: None,
             root_budget: budget,
             spent_budget: RecursiveBudget {
                 calls_remaining: 0,
@@ -831,6 +895,87 @@ impl RecursiveTree {
         Ok(())
     }
 
+    pub fn complete_root_with_usage(
+        &mut self,
+        receipt_id: &str,
+        success: bool,
+        usage: &RecursiveBudget,
+    ) -> Result<(), RecursiveFailureReason> {
+        let root_id = self.root_node_id.clone();
+        let root = self
+            .nodes
+            .get(&root_id)
+            .ok_or(RecursiveFailureReason::RecursiveNodeMissing)?;
+        if root.parent_node_id.is_some() {
+            return Err(RecursiveFailureReason::ReceiptConflict);
+        }
+        if matches!(
+            root.status,
+            RecursiveNodeStatus::Completed | RecursiveNodeStatus::Failed
+        ) {
+            let usage_fingerprint = serde_json::to_string(usage)
+                .map_err(|_| RecursiveFailureReason::ReceiptConflict)?;
+            return match self.usage_receipts.get(receipt_id) {
+                Some(previous)
+                    if previous.strip_prefix("1:") == Some(usage_fingerprint.as_str())
+                        && ((success
+                            && root.status == RecursiveNodeStatus::Completed
+                            && root.failure_reason.is_none())
+                            || (!success
+                                && root.status == RecursiveNodeStatus::Failed
+                                && root.failure_reason
+                                    == Some(RecursiveFailureReason::ExecutionFailure))) =>
+                {
+                    Ok(())
+                }
+                Some(previous)
+                    if previous.strip_prefix("0:") == Some(usage_fingerprint.as_str())
+                        && root.status == RecursiveNodeStatus::Failed
+                        && root.failure_reason
+                            == Some(RecursiveFailureReason::TreeBudgetExhausted) =>
+                {
+                    Ok(())
+                }
+                _ => Err(RecursiveFailureReason::ReceiptConflict),
+            };
+        }
+        let within_node_budget = root.budget.can_spend(usage);
+        let within_tree_budget = self.record_unreserved_usage(receipt_id, usage)?;
+        let within_budget = within_node_budget && within_tree_budget;
+        let root = self
+            .nodes
+            .get_mut(&root_id)
+            .ok_or(RecursiveFailureReason::RecursiveNodeMissing)?;
+        root.budget.spend(usage);
+        root.actual_usage.add(usage);
+        root.status = if success && within_budget {
+            RecursiveNodeStatus::Completed
+        } else {
+            RecursiveNodeStatus::Failed
+        };
+        root.failure_reason = if !within_budget {
+            Some(RecursiveFailureReason::TreeBudgetExhausted)
+        } else {
+            (!success).then_some(RecursiveFailureReason::ExecutionFailure)
+        };
+        root.version += 1;
+        if !within_budget {
+            self.execution_state = RecursiveExecutionState::BudgetExhausted;
+            self.terminalize_remaining_nodes(
+                Some(root_id.as_str()),
+                RecursiveFailureReason::TreeBudgetExhausted,
+            );
+        } else if !success {
+            self.execution_state = RecursiveExecutionState::TerminalFailed;
+            self.terminalize_remaining_nodes(
+                Some(root_id.as_str()),
+                RecursiveFailureReason::TerminalFailed,
+            );
+        }
+        self.version += 1;
+        Ok(())
+    }
+
     pub(crate) fn release_node_reservation_for_persistence(&mut self, node_id: &str) {
         let (parent_node_id, remaining) = {
             let Some(node) = self.nodes.get_mut(node_id) else {
@@ -892,6 +1037,23 @@ impl RecursiveTree {
         receipt_id: &str,
         usage: &RecursiveBudget,
     ) -> Result<bool, RecursiveFailureReason> {
+        self.record_usage_internal(receipt_id, usage, true)
+    }
+
+    fn record_unreserved_usage(
+        &mut self,
+        receipt_id: &str,
+        usage: &RecursiveBudget,
+    ) -> Result<bool, RecursiveFailureReason> {
+        self.record_usage_internal(receipt_id, usage, false)
+    }
+
+    fn record_usage_internal(
+        &mut self,
+        receipt_id: &str,
+        usage: &RecursiveBudget,
+        consumes_reservation: bool,
+    ) -> Result<bool, RecursiveFailureReason> {
         let usage_fingerprint =
             serde_json::to_string(usage).map_err(|_| RecursiveFailureReason::ReceiptConflict)?;
         if let Some(previous) = self.usage_receipts.get(receipt_id) {
@@ -913,14 +1075,18 @@ impl RecursiveTree {
                 let mut after_spent = self.spent_budget.clone();
                 after_spent.add(usage);
                 let mut after_reserved = self.reserved_budget.clone();
-                after_reserved.spend(usage);
+                if consumes_reservation {
+                    after_reserved.spend(usage);
+                }
                 let mut after_total = after_spent.clone();
                 after_total.add(&after_reserved);
                 limit.can_spend(&after_total)
             })
             .unwrap_or(true);
         self.spent_budget.add(usage);
-        self.reserved_budget.spend(usage);
+        if consumes_reservation {
+            self.reserved_budget.spend(usage);
+        }
         self.usage_receipts.insert(
             receipt_id.to_string(),
             format!(

@@ -1751,9 +1751,30 @@ impl LocalProductStore {
                             .get("recursive_node_id")
                             .and_then(Value::as_str)
                             .map(str::to_string);
-                        let recursive_usage_result = recursive_node_id
-                            .as_deref()
-                            .map(|_| recursive_usage_from_output(&output, &node_json))
+                        let recursive_root_node_id = node_json
+                            .get("recursive_root_node_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        if recursive_node_id.is_some() && recursive_root_node_id.is_some() {
+                            return Err("recursive_node_identity_malformed".to_string());
+                        }
+                        let recursive_root_active = recursive_root_node_id.is_some()
+                            && super::recursive_execution::load_recursive_tree_sqlite(conn, run_id)?
+                                .is_some();
+                        let recursive_identity = recursive_node_id.as_ref().or(if recursive_root_active {
+                            recursive_root_node_id.as_ref()
+                        } else {
+                            None
+                        });
+                        let usage_metadata = if recursive_root_active {
+                            node_json
+                                .get("recursive_root_authority")
+                                .ok_or_else(|| "recursive root authority is missing".to_string())?
+                        } else {
+                            &node_json
+                        };
+                        let recursive_usage_result = recursive_identity
+                            .map(|_| recursive_usage_from_output(&output, usage_metadata))
                             .transpose();
                         let recursive_usage_unavailable = matches!(
                             recursive_usage_result.as_ref(),
@@ -1810,7 +1831,7 @@ impl LocalProductStore {
                             params![actual_status, completed_at, run_id, node_id, attempt],
                         ).map_err(|e| e.to_string())?;
                         if finalized != 1 {
-                            if let Some(recursive_node_id) = recursive_node_id.as_deref() {
+                            if let Some(recursive_node_id) = recursive_identity.map(String::as_str) {
                                 if recursive_usage_unavailable {
                                     append_audit_locked(
                                         conn,
@@ -1893,8 +1914,24 @@ impl LocalProductStore {
                             }));
                         }
 
-                        let recursive_status = if let Some(recursive_node_id) = recursive_node_id.as_deref() {
-                            Some(if recursive_usage_unavailable {
+                        let recursive_status = if let Some(recursive_node_id) = recursive_identity.map(String::as_str) {
+                            Some(if recursive_root_active && recursive_usage_unavailable {
+                                super::recursive_execution::sync_recursive_root_usage_unavailable_sqlite(
+                                    conn,
+                                    run_id,
+                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &now,
+                                )?
+                            } else if recursive_root_active {
+                                super::recursive_execution::sync_recursive_root_completion_sqlite(
+                                    conn,
+                                    run_id,
+                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    final_status == "completed",
+                                    recursive_usage.as_ref().expect("recursive usage"),
+                                    &now,
+                                )?
+                            } else if recursive_usage_unavailable {
                                 super::recursive_execution::sync_recursive_usage_unavailable_sqlite(
                                     conn,
                                     run_id,
@@ -1918,15 +1955,15 @@ impl LocalProductStore {
                             None
                         };
                         let persisted_status = recursive_status.as_deref().unwrap_or(actual_status);
-                        let recursive_failure_reason = recursive_node_id
-                            .as_deref()
+                        let recursive_failure_reason = recursive_identity
+                            .map(String::as_str)
                             .map(|recursive_node_id| {
                                 recursive_failure_reason_sqlite(conn, run_id, recursive_node_id)
                             })
                             .transpose()?
                             .flatten();
                         if persisted_status != actual_status
-                            || (recursive_node_id.is_some() && persisted_status == "failed")
+                            || (recursive_identity.is_some() && persisted_status == "failed")
                         {
                             conn.execute(
                                 "UPDATE workflow_run_nodes SET status=?1, blocked_reason=?2
@@ -2110,9 +2147,30 @@ impl LocalProductStore {
                             .get("recursive_node_id")
                             .and_then(Value::as_str)
                             .map(str::to_string);
-                        let recursive_usage_result = recursive_node_id
-                            .as_deref()
-                            .map(|_| recursive_usage_from_output(&output, &node_json))
+                        let recursive_root_node_id = node_json
+                            .get("recursive_root_node_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        if recursive_node_id.is_some() && recursive_root_node_id.is_some() {
+                            return Err("recursive_node_identity_malformed".to_string());
+                        }
+                        let recursive_root_active = recursive_root_node_id.is_some()
+                            && super::recursive_execution::load_recursive_tree_pg(&mut tx, run_id)?
+                                .is_some();
+                        let recursive_identity = recursive_node_id.as_ref().or(if recursive_root_active {
+                            recursive_root_node_id.as_ref()
+                        } else {
+                            None
+                        });
+                        let usage_metadata = if recursive_root_active {
+                            node_json
+                                .get("recursive_root_authority")
+                                .ok_or_else(|| "recursive root authority is missing".to_string())?
+                        } else {
+                            &node_json
+                        };
+                        let recursive_usage_result = recursive_identity
+                            .map(|_| recursive_usage_from_output(&output, usage_metadata))
                             .transpose();
                         let recursive_usage_unavailable = matches!(
                             recursive_usage_result.as_ref(),
@@ -2171,7 +2229,7 @@ impl LocalProductStore {
                             &[&actual_status, &completed_at, &run_id, &node_id, &expected_attempt],
                         ).map_err(|e| e.to_string())?;
                         if finalized != 1 {
-                            if let Some(recursive_node_id) = recursive_node_id.as_deref() {
+                            if let Some(recursive_node_id) = recursive_identity.map(String::as_str) {
                                 if recursive_usage_unavailable {
                                     pg_append_audit(
                                         &mut tx,
@@ -2254,8 +2312,24 @@ impl LocalProductStore {
                             }));
                         }
 
-                        let recursive_status = if let Some(recursive_node_id) = recursive_node_id.as_deref() {
-                            Some(if recursive_usage_unavailable {
+                        let recursive_status = if let Some(recursive_node_id) = recursive_identity.map(String::as_str) {
+                            Some(if recursive_root_active && recursive_usage_unavailable {
+                                super::recursive_execution::sync_recursive_root_usage_unavailable_pg(
+                                    &mut tx,
+                                    run_id,
+                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &now,
+                                )?
+                            } else if recursive_root_active {
+                                super::recursive_execution::sync_recursive_root_completion_pg(
+                                    &mut tx,
+                                    run_id,
+                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    final_status == "completed",
+                                    recursive_usage.as_ref().expect("recursive usage"),
+                                    &now,
+                                )?
+                            } else if recursive_usage_unavailable {
                                 super::recursive_execution::sync_recursive_usage_unavailable_pg(
                                     &mut tx,
                                     run_id,
@@ -2279,15 +2353,15 @@ impl LocalProductStore {
                             None
                         };
                         let persisted_status = recursive_status.as_deref().unwrap_or(actual_status);
-                        let recursive_failure_reason = recursive_node_id
-                            .as_deref()
+                        let recursive_failure_reason = recursive_identity
+                            .map(String::as_str)
                             .map(|recursive_node_id| {
                                 recursive_failure_reason_pg(&mut tx, run_id, recursive_node_id)
                             })
                             .transpose()?
                             .flatten();
                         if persisted_status != actual_status
-                            || (recursive_node_id.is_some() && persisted_status == "failed")
+                            || (recursive_identity.is_some() && persisted_status == "failed")
                         {
                             tx.execute(
                                 "UPDATE workflow_run_nodes SET status=$1, blocked_reason=$2
@@ -5077,26 +5151,31 @@ fn recursive_usage_from_output(
     output: &crate::node_executor::NodeExecutionOutput,
     node_metadata: &Value,
 ) -> Result<crate::recursive_execution::RecursiveBudget, String> {
-    let usage_contract = node_metadata.get("usage_contract");
-    let contract_kind = usage_contract
-        .and_then(|value| value.get("kind"))
-        .and_then(Value::as_str);
-    if output.executor_type == "agent_step"
-        && node_metadata.get("decision_source").and_then(Value::as_str) == Some("fixture")
-    {
-        let Some(contract) = usage_contract else {
-            return Err("fixture_usage_contract_missing".to_string());
-        };
-        if contract_kind != Some("fixture") {
-            return Err("fixture_usage_contract_invalid".to_string());
+    let contract: crate::recursive_execution::RecursiveUsageContract = serde_json::from_value(
+        node_metadata
+            .get("usage_contract")
+            .cloned()
+            .ok_or_else(|| "fixture_usage_contract_missing".to_string())?,
+    )
+    .map_err(|_| "fixture_usage_contract_invalid".to_string())?;
+    match &contract {
+        crate::recursive_execution::RecursiveUsageContract::Fixture { .. } => {
+            let usage = contract
+                .fixture_usage()
+                .expect("fixture contract has fixture usage");
+            if usage.calls_remaining == 0
+                || usage.tokens_remaining == 0
+                || usage.cost_micros_remaining == 0
+                || usage.time_ms_remaining == 0
+            {
+                return Err("fixture_usage_contract_invalid".to_string());
+            }
+            return Ok(usage);
         }
-        return bounded_fixture_usage(contract);
-    }
-    if contract_kind == Some("unavailable") {
-        return Err("recursive_usage_unavailable".to_string());
-    }
-    if contract_kind != Some("measured") {
-        return Err("recursive_usage_unavailable".to_string());
+        crate::recursive_execution::RecursiveUsageContract::Unavailable => {
+            return Err("recursive_usage_unavailable".to_string())
+        }
+        crate::recursive_execution::RecursiveUsageContract::Measured => {}
     }
     let reported_usage = output
         .output
@@ -5211,31 +5290,6 @@ fn recursive_failure_reason_pg(
             })
         }),
     )
-}
-
-fn bounded_fixture_usage(
-    contract: &Value,
-) -> Result<crate::recursive_execution::RecursiveBudget, String> {
-    let read = |key: &str| {
-        contract
-            .get(key)
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "fixture_usage_contract_invalid".to_string())
-    };
-    let usage = crate::recursive_execution::RecursiveBudget {
-        calls_remaining: read("calls")?,
-        tokens_remaining: read("tokens")?,
-        cost_micros_remaining: read("cost_micros")?,
-        time_ms_remaining: read("time_ms")?,
-    };
-    if usage.calls_remaining == 0
-        || usage.tokens_remaining == 0
-        || usage.cost_micros_remaining == 0
-        || usage.time_ms_remaining == 0
-    {
-        return Err("fixture_usage_contract_invalid".to_string());
-    }
-    Ok(usage)
 }
 
 fn escape_like(value: &str) -> String {
@@ -7641,4 +7695,56 @@ mod recursive_scheduler_tests {
             .expect("release recursive capacity after assertion");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
+}
+#[cfg(test)]
+fn assert_nonrecursive_import_preserves_upsert_compatibility(
+    store: LocalProductStore,
+    suffix: &str,
+) {
+    let run_id = format!("nonrecursive-import-upsert-{suffix}");
+    store
+        .import_workflow_run(&json!({
+            "run_id": run_id,
+            "workflow_id": format!("nonrecursive-import-workflow-{suffix}"),
+            "status": "completed",
+            "boundaries": {"execution_authority": "disabled"},
+            "nodes": [
+                {"node_id": "same-node", "task_type": "noop", "status": "pending"},
+                {"node_id": "same-node", "task_type": "noop", "status": "completed"}
+            ],
+            "edges": [],
+            "events": [],
+            "approvals": []
+        }))
+        .expect("legacy import upsert");
+    let run = store
+        .get_workflow_run(&run_id)
+        .expect("run")
+        .expect("run exists");
+    assert_eq!(run["nodes"].as_array().expect("nodes").len(), 1);
+    assert_eq!(run["nodes"][0]["db_status"], "completed");
+}
+
+#[test]
+fn sqlite_nonrecursive_import_preserves_upsert_compatibility() {
+    assert_nonrecursive_import_preserves_upsert_compatibility(
+        LocalProductStore::new(":memory:").expect("store"),
+        "sqlite",
+    );
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn postgres_nonrecursive_import_preserves_upsert_compatibility() {
+    let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        if std::env::var("CI").as_deref() == Ok("true") {
+            panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+        }
+        return;
+    };
+    assert_nonrecursive_import_preserves_upsert_compatibility(
+        LocalProductStore::new_postgres(&url, || "2026-07-19T00:00:00Z".to_string())
+            .expect("PostgreSQL store"),
+        &uuid::Uuid::new_v4().to_string(),
+    );
 }

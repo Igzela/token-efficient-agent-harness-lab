@@ -18,7 +18,8 @@ use crate::orchestration::schemas::{
 };
 use crate::provider::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
 use crate::recursive_execution::{
-    RecursiveBudget, RecursiveFailureReason, RecursiveProposal, RecursiveScope, RecursiveTree,
+    RecursiveFailureReason, RecursiveProposal, RecursiveRootAuthority, RecursiveTree,
+    RECURSIVE_ROOT_AUTHORITY_VERSION,
 };
 use crate::storage::local_product_store::{
     AgentActionMutation, AgentMutationOp, LocalProductStore,
@@ -150,6 +151,90 @@ fn recursive_failure_reason_code(error: &str) -> Option<&'static str> {
     REASONS
         .into_iter()
         .find(|reason| error == *reason || error.starts_with(&format!("{reason}:")))
+}
+
+fn persisted_recursive_root_authority(
+    workflow_run: &Value,
+    root_node_id: &str,
+    agent_id: &str,
+) -> Result<(RecursiveRootAuthority, String), String> {
+    let root = workflow_run
+        .get("nodes")
+        .and_then(Value::as_array)
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| node.get("node_id").and_then(Value::as_str) == Some(root_node_id))
+        })
+        .ok_or_else(|| "recursive root workflow node is missing".to_string())?;
+    if root.get("task_type").and_then(Value::as_str) != Some("agent_step")
+        || root.get("recursive_root_node_id").and_then(Value::as_str) != Some(root_node_id)
+        || root.get("agent_id").and_then(Value::as_str) != Some(agent_id)
+    {
+        return Err("recursive root workflow identity is not exact".to_string());
+    }
+    let receipt = root
+        .get("creation_receipt_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "recursive root creation receipt is missing".to_string())?
+        .to_string();
+    let authority: RecursiveRootAuthority = serde_json::from_value(
+        root.get("recursive_root_authority")
+            .cloned()
+            .ok_or_else(|| "recursive root authority is missing".to_string())?,
+    )
+    .map_err(|_| "recursive root authority is malformed".to_string())?;
+    let node_capabilities = root
+        .get("capability_profile")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "recursive root capability authority is missing".to_string())?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "recursive root capability authority is malformed".to_string())
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let fixture_usage_valid = authority
+        .usage_contract
+        .fixture_usage()
+        .is_none_or(|usage| {
+            usage.calls_remaining > 0
+                && usage.tokens_remaining > 0
+                && usage.cost_micros_remaining > 0
+                && usage.time_ms_remaining > 0
+        });
+    if authority.schema_version != RECURSIVE_ROOT_AUTHORITY_VERSION
+        || authority.capabilities.is_empty()
+        || authority.capabilities != node_capabilities
+        || authority.scope.capabilities != authority.capabilities
+        || !authority.tree_budget.can_spend(&authority.child_budget)
+        || authority.tree_budget.calls_remaining == 0
+        || authority.child_budget.calls_remaining == 0
+        || !fixture_usage_valid
+    {
+        return Err("recursive root authority is inconsistent".to_string());
+    }
+    if let Some(boundaries) = workflow_run.get("boundaries") {
+        if boundaries.get("repository").is_some()
+            && boundaries.get("repository") != Some(&json!(authority.scope.repository))
+        {
+            return Err("recursive root repository authority is inconsistent".to_string());
+        }
+        if boundaries.get("allowed_paths").is_some()
+            && boundaries.get("allowed_paths")
+                != Some(&json!(authority
+                    .scope
+                    .allowed_paths
+                    .iter()
+                    .collect::<Vec<_>>()))
+        {
+            return Err("recursive root path authority is inconsistent".to_string());
+        }
+    }
+    Ok((authority, receipt))
 }
 
 fn action_authorized_by_capabilities(action: &AgentAction, state: &AgentState) -> bool {
@@ -1556,6 +1641,48 @@ impl AgentStepExecutor {
         agent_state: &AgentState,
     ) -> Result<AgentState, String> {
         let persisted_tree = self.store.load_recursive_tree(&input.run_id)?;
+        if let Some(root_node_id) = input
+            .node_metadata
+            .get("recursive_root_node_id")
+            .and_then(Value::as_str)
+        {
+            if root_node_id != input.node_id {
+                return Err("recursive root workflow identity is not exact".to_string());
+            }
+            let workflow_run = self
+                .store
+                .get_workflow_run(&input.run_id)?
+                .ok_or_else(|| "recursive root workflow run is missing".to_string())?;
+            let (authority, _) = persisted_recursive_root_authority(
+                &workflow_run,
+                root_node_id,
+                &agent_state.agent_id,
+            )?;
+            if persisted_tree.as_ref().is_some_and(|tree| {
+                tree.root_node_id != root_node_id
+                    || tree.root_scope != authority.scope
+                    || tree.root_capabilities != authority.capabilities
+                    || tree.root_budget_limit.as_ref() != Some(&authority.tree_budget)
+                    || tree.root_child_budget_limit.as_ref() != Some(&authority.child_budget)
+            }) {
+                return Err("recursive root authority conflicts with persisted tree".to_string());
+            }
+            let mut effective = agent_state.clone();
+            effective.capability_profile = authority.capabilities.iter().cloned().collect();
+            effective.metadata.insert(
+                "repository".to_string(),
+                authority
+                    .scope
+                    .repository
+                    .as_ref()
+                    .map_or(Value::Null, |value| json!(value)),
+            );
+            effective.metadata.insert(
+                "allowed_paths".to_string(),
+                json!(authority.scope.allowed_paths.iter().collect::<Vec<_>>()),
+            );
+            return Ok(effective);
+        }
         let Some(recursive_node_id) = input
             .node_metadata
             .get("recursive_node_id")
@@ -1873,62 +2000,32 @@ impl AgentStepExecutor {
                     recursive_workflow,
                     recursive_rejection_reason,
                 ) = if crate::recursive_execution::recursive_enabled() {
-                    let capabilities: BTreeSet<String> =
-                        agent_state.capability_profile.iter().cloned().collect();
-                    let requested_scope = RecursiveScope {
-                        repository: agent_state
-                            .metadata
-                            .get("repository")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        allowed_paths: agent_state
-                            .metadata
-                            .get("allowed_paths")
-                            .and_then(Value::as_array)
-                            .map(|paths| {
-                                paths
-                                    .iter()
-                                    .filter_map(Value::as_str)
-                                    .map(str::to_string)
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        capabilities: capabilities.clone(),
-                    };
                     let stored_tree = self.store.load_recursive_tree(run_id)?;
                     let expected_version = stored_tree.as_ref().map_or(0, |tree| tree.version);
                     let workflow_run = self.store.get_workflow_run(run_id)?;
-                    let root_creation_receipt = if let Some(receipt) = stored_tree
+                    let root_node_id = stored_tree
                         .as_ref()
-                        .filter(|tree| !tree.root_creation_receipt_sha256.is_empty())
-                        .map(|tree| tree.root_creation_receipt_sha256.clone())
-                    {
-                        receipt
-                    } else {
-                        workflow_run
-                            .as_ref()
-                            .and_then(|run| {
-                                run.get("nodes")
-                                    .and_then(Value::as_array)
-                                    .and_then(|nodes| {
-                                        nodes.iter().find(|node| {
-                                            node.get("node_id").and_then(Value::as_str)
-                                                == Some(proposal.parent_node_id.as_str())
-                                                || node
-                                                    .get("recursive_node_id")
-                                                    .and_then(Value::as_str)
-                                                    == Some(proposal.parent_node_id.as_str())
-                                        })
-                                    })
-                                    .and_then(|node| {
-                                        node.get("creation_receipt_sha256")
-                                            .and_then(Value::as_str)
-                                            .map(str::to_string)
-                                    })
+                        .map(|tree| tree.root_node_id.as_str())
+                        .unwrap_or(proposal.parent_node_id.as_str());
+                    let root_binding_present = workflow_run.as_ref().is_some_and(|run| {
+                        run.get("nodes")
+                            .and_then(Value::as_array)
+                            .and_then(|nodes| {
+                                nodes.iter().find(|node| {
+                                    node.get("node_id").and_then(Value::as_str)
+                                        == Some(root_node_id)
+                                })
                             })
-                            .unwrap_or_default()
-                    };
-                    if root_creation_receipt.is_empty() {
+                            .is_some_and(|node| {
+                                node.get("recursive_root_node_id").and_then(Value::as_str)
+                                    == Some(root_node_id)
+                                    && node
+                                        .get("creation_receipt_sha256")
+                                        .and_then(Value::as_str)
+                                        .is_some_and(|receipt| !receipt.is_empty())
+                            })
+                    });
+                    if !root_binding_present {
                         (
                             None,
                             None,
@@ -1937,8 +2034,14 @@ impl AgentStepExecutor {
                             Some(RecursiveFailureReason::RecursiveTreeMissing),
                         )
                     } else {
+                        let (root_authority, root_creation_receipt) =
+                            persisted_recursive_root_authority(
+                                workflow_run.as_ref().expect("workflow checked"),
+                                root_node_id,
+                                agent_id,
+                            )?;
                         let mut tree = stored_tree.unwrap_or_else(|| {
-                            RecursiveTree::new_with_root_node_id(
+                            let mut tree = RecursiveTree::new_with_root_node_id(
                                 run_id,
                                 workflow_id,
                                 proposal.parent_node_id.clone(),
@@ -1946,16 +2049,26 @@ impl AgentStepExecutor {
                                     .objective
                                     .as_deref()
                                     .unwrap_or(&proposal.objective),
-                                requested_scope.clone(),
-                                capabilities.clone(),
-                                RecursiveBudget {
-                                    calls_remaining: 12,
-                                    tokens_remaining: 120_000,
-                                    cost_micros_remaining: 1_000_000,
-                                    time_ms_remaining: 600_000,
-                                },
-                            )
+                                root_authority.scope.clone(),
+                                root_authority.capabilities.clone(),
+                                root_authority.tree_budget.clone(),
+                            );
+                            tree.root_child_budget_limit =
+                                Some(root_authority.child_budget.clone());
+                            if let Some(root) = tree.nodes.get_mut(&tree.root_node_id) {
+                                root.child_budget = root_authority.child_budget.clone();
+                            }
+                            tree
                         });
+                        if tree.root_scope != root_authority.scope
+                            || tree.root_capabilities != root_authority.capabilities
+                            || tree.root_budget_limit.as_ref() != Some(&root_authority.tree_budget)
+                            || tree.root_child_budget_limit.as_ref()
+                                != Some(&root_authority.child_budget)
+                        {
+                            return Err("recursive root authority conflicts with persisted tree"
+                                .to_string());
+                        }
                         let root_marker = tree.root_node_id.clone();
                         tree.bind_root_identity(agent_id, &root_marker, &root_creation_receipt)
                             .map_err(|reason| reason.as_str().to_string())?;
@@ -1972,6 +2085,8 @@ impl AgentStepExecutor {
                         .map_err(|reason| reason.as_str().to_string())?;
                         let (recursive_node_id, recursive_workflow, recursive_rejection_reason) =
                             if let Some(parent) = tree.nodes.get(&proposal.parent_node_id) {
+                                let requested_scope = parent.scope.clone();
+                                let requested_capabilities = parent.capabilities.clone();
                                 let recursive_proposal = RecursiveProposal {
                                     proposal_id: proposal_id.clone(),
                                     parent_node_id: proposal.parent_node_id.clone(),
@@ -1979,13 +2094,8 @@ impl AgentStepExecutor {
                                     objective: proposal.objective.clone(),
                                     context_summary: proposal.context_summary.clone(),
                                     requested_scope,
-                                    requested_capabilities: capabilities,
-                                    budget: RecursiveBudget {
-                                        calls_remaining: 1,
-                                        tokens_remaining: 10_000,
-                                        cost_micros_remaining: 10_000,
-                                        time_ms_remaining: 60_000,
-                                    },
+                                    requested_capabilities,
+                                    budget: root_authority.child_budget.clone(),
                                     receipt_sha256: action_sha256.clone(),
                                 };
                                 match tree.admit_child(&recursive_proposal) {
@@ -3390,14 +3500,43 @@ mod tests {
             .import_workflow_run(&json!({
                 "run_id": run_id,
                 "workflow_id": workflow_id,
-                "status": "created",
-                "boundaries": {"execution_authority": "disabled"},
+                "status": "running",
+                "boundaries": {
+                    "execution_authority": "managed",
+                    "tenant_id": "fixture-tenant",
+                    "workspace_id": "fixture-workspace"
+                },
                 "nodes": [{
                     "node_id": "agent-node-001",
                     "task_type": "agent_step",
                     "status": "pending",
                     "recursive_root_node_id": "agent-node-001",
                     "agent_id": "agent-recursive",
+                    "capability_profile": [
+                        "mailbox", "memory", "child_task", "handoff", "review", "debate"
+                    ],
+                    "recursive_root_authority": {
+                        "schema_version": crate::recursive_execution::RECURSIVE_ROOT_AUTHORITY_VERSION,
+                        "scope": {
+                            "repository": null,
+                            "allowed_paths": [],
+                            "capabilities": [
+                                "mailbox", "memory", "child_task", "handoff", "review", "debate"
+                            ]
+                        },
+                        "capabilities": [
+                            "mailbox", "memory", "child_task", "handoff", "review", "debate"
+                        ],
+                        "tree_budget": crate::recursive_execution::default_recursive_tree_budget(),
+                        "child_budget": crate::recursive_execution::default_recursive_child_budget(),
+                        "usage_contract": {
+                            "kind": "fixture",
+                            "calls": 1,
+                            "tokens": 1,
+                            "cost_micros": 1,
+                            "time_ms": 1
+                        }
+                    },
                     "creation_receipt_sha256": "test-recursive-root-receipt"
                 }],
                 "edges": [],
@@ -3407,10 +3546,8 @@ mod tests {
             .expect("import test workflow");
     }
 
-    #[cfg(feature = "pg-tests")]
     struct RecursiveFixtureExecutor;
 
-    #[cfg(feature = "pg-tests")]
     impl NodeExecutor for RecursiveFixtureExecutor {
         fn executor_type_name(&self) -> &str {
             "agent_step"
@@ -4393,6 +4530,145 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_charges_and_completes_fixture_root_before_child_execution() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        import_test_workflow(&store, "run-recursive-root-scheduler", "wf-ar2-001");
+        create_test_agent(&store, "agent-recursive", "run-recursive-root-scheduler");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+
+        let proposal = stub_child_task_proposal("agent-recursive", "run-recursive-root-scheduler");
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ProposeChildTask(proposal)),
+        );
+        let root_tick = store
+            .tick_with_executor(
+                "run-recursive-root-scheduler",
+                "scheduler-root",
+                0,
+                &executor,
+            )
+            .expect("root scheduler tick");
+        assert_eq!(root_tick["action"], "node_executed");
+        let after_root = store
+            .load_recursive_tree("run-recursive-root-scheduler")
+            .expect("tree")
+            .expect("tree exists");
+        assert_eq!(
+            after_root.nodes[&after_root.root_node_id].status,
+            crate::recursive_execution::RecursiveNodeStatus::Completed
+        );
+        assert_eq!(
+            after_root.nodes[&after_root.root_node_id]
+                .actual_usage
+                .calls_remaining,
+            1
+        );
+        assert_eq!(after_root.spent_budget.calls_remaining, 1);
+        assert_eq!(after_root.reserved_budget.calls_remaining, 1);
+
+        let child_tick = store
+            .tick_with_executor(
+                "run-recursive-root-scheduler",
+                "scheduler-child",
+                0,
+                &RecursiveFixtureExecutor,
+            )
+            .expect("child scheduler tick");
+        assert_eq!(child_tick["action"], "node_executed");
+        let completed = store
+            .load_recursive_tree("run-recursive-root-scheduler")
+            .expect("tree")
+            .expect("tree exists");
+        assert_eq!(completed.spent_budget.calls_remaining, 2);
+        assert_eq!(completed.reserved_budget.calls_remaining, 0);
+        assert!(completed
+            .nodes
+            .values()
+            .all(|node| node.status == crate::recursive_execution::RecursiveNodeStatus::Completed));
+
+        std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn recursive_root_uses_persisted_narrower_authority_than_agent_state() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        store
+            .import_workflow_run(&json!({
+                "run_id": "run-recursive-root-authority",
+                "workflow_id": "wf-ar2-001",
+                "status": "running",
+                "boundaries": {
+                    "execution_authority": "managed",
+                    "tenant_id": "fixture-tenant",
+                    "workspace_id": "fixture-workspace"
+                },
+                "nodes": [{
+                    "node_id": "agent-node-001",
+                    "task_type": "agent_step",
+                    "status": "pending",
+                    "recursive_root_node_id": "agent-node-001",
+                    "agent_id": "agent-recursive",
+                    "capability_profile": ["child_task"],
+                    "recursive_root_authority": {
+                        "schema_version": crate::recursive_execution::RECURSIVE_ROOT_AUTHORITY_VERSION,
+                        "scope": {
+                            "repository": null,
+                            "allowed_paths": [],
+                            "capabilities": ["child_task"]
+                        },
+                        "capabilities": ["child_task"],
+                        "tree_budget": crate::recursive_execution::default_recursive_tree_budget(),
+                        "child_budget": crate::recursive_execution::default_recursive_child_budget(),
+                        "usage_contract": {
+                            "kind": "fixture",
+                            "calls": 1,
+                            "tokens": 1,
+                            "cost_micros": 1,
+                            "time_ms": 1
+                        }
+                    },
+                    "creation_receipt_sha256": "root-authority-receipt"
+                }],
+                "edges": [],
+                "events": [],
+                "approvals": []
+            }))
+            .expect("workflow");
+        create_test_agent(&store, "agent-recursive", "run-recursive-root-authority");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::EmitNote("must be denied".to_string())),
+        );
+        let output = executor.execute_node(&persisted_recursive_agent_step_input(
+            &store,
+            "agent-recursive",
+            "run-recursive-root-authority",
+            "agent-node-001",
+        ));
+        assert_eq!(output.status, "failed");
+        assert!(
+            output
+                .error_message
+                .as_deref()
+                .is_some_and(|message| message.contains("does not authorize")),
+            "unexpected output: {output:?}"
+        );
+        std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
     fn provider_backed_recursive_child_requires_measured_usage() {
         let _lock = AGENT_ENV_LOCK.lock().unwrap();
         let store = Arc::new(ar2_store());
@@ -4497,9 +4773,34 @@ mod tests {
                 "nodes": [{
                     "node_id": root_id,
                     "task_type": "agent_step",
-                    "status": "completed",
+                    "status": "pending",
                     "recursive_root_node_id": root_id,
                     "agent_id": "agent-recursive",
+                    "capability_profile": [
+                        "mailbox", "memory", "child_task", "handoff", "review", "debate"
+                    ],
+                    "recursive_root_authority": {
+                        "schema_version": crate::recursive_execution::RECURSIVE_ROOT_AUTHORITY_VERSION,
+                        "scope": {
+                            "repository": null,
+                            "allowed_paths": [],
+                            "capabilities": [
+                                "mailbox", "memory", "child_task", "handoff", "review", "debate"
+                            ]
+                        },
+                        "capabilities": [
+                            "mailbox", "memory", "child_task", "handoff", "review", "debate"
+                        ],
+                        "tree_budget": crate::recursive_execution::default_recursive_tree_budget(),
+                        "child_budget": crate::recursive_execution::default_recursive_child_budget(),
+                        "usage_contract": {
+                            "kind": "fixture",
+                            "calls": 1,
+                            "tokens": 1,
+                            "cost_micros": 1,
+                            "time_ms": 1
+                        }
+                    },
                     "creation_receipt_sha256": format!("recursive-pg-e2e-receipt-{suffix}")
                 }],
                 "edges": [],
@@ -4521,13 +4822,19 @@ mod tests {
             store.clone(),
             stub_decision(AgentAction::ProposeChildTask(proposal)),
         );
-        let output =
-            executor.execute_node(&agent_step_input_at("agent-recursive", &run_id, &root_id));
-        assert_eq!(output.status, "completed", "{:?}", output.error_message);
+        let root_tick = store
+            .tick_with_executor(&run_id, "scheduler-pg-root", 0, &executor)
+            .expect("root scheduler tick");
+        assert_eq!(root_tick["action"], "node_executed");
         let admitted = store
             .load_recursive_tree(&run_id)
             .expect("tree")
             .expect("tree exists");
+        assert_eq!(
+            admitted.nodes[&root_id].status,
+            crate::recursive_execution::RecursiveNodeStatus::Completed
+        );
+        assert_eq!(admitted.nodes[&root_id].actual_usage.calls_remaining, 1);
         let child_id = admitted
             .nodes
             .keys()
@@ -4627,6 +4934,8 @@ mod tests {
             "test-recursive-root-receipt",
         )
         .expect("root identity");
+        tree.bind_root_execution_scope(Some("fixture-tenant"), Some("fixture-workspace"))
+            .expect("root execution scope");
         let admission = tree
             .admit_child(&RecursiveProposal {
                 proposal_id: "authority-proposal".to_string(),

@@ -3,12 +3,34 @@ use serde_json::{json, Value};
 
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::recursive_execution::{
-    RecursiveBudget, RecursiveFailureReason, RecursiveNode, RecursiveNodeStatus, RecursiveScope,
-    RecursiveTree, MAX_ACCEPTED_CHILDREN_PER_NODE, MAX_RECURSIVE_DECISION_EVIDENCE_REFS,
-    MAX_RECURSIVE_DEPTH, MAX_RECURSIVE_EVIDENCE_REF_BYTES, MAX_RECURSIVE_LEASES,
-    MAX_RECURSIVE_NODES_PER_ROOT, MAX_RECURSIVE_TREE_BYTES, MAX_SCOPE_ITEMS, MAX_SCOPE_VALUE_BYTES,
-    RECURSIVE_SCHEMA_VERSION,
+    RecursiveBudget, RecursiveFailureReason, RecursiveNode, RecursiveNodeStatus,
+    RecursiveRootAuthority, RecursiveScope, RecursiveTree, MAX_ACCEPTED_CHILDREN_PER_NODE,
+    MAX_RECURSIVE_DECISION_EVIDENCE_REFS, MAX_RECURSIVE_DEPTH, MAX_RECURSIVE_EVIDENCE_REF_BYTES,
+    MAX_RECURSIVE_LEASES, MAX_RECURSIVE_NODES_PER_ROOT, MAX_RECURSIVE_TREE_BYTES, MAX_SCOPE_ITEMS,
+    MAX_SCOPE_VALUE_BYTES, RECURSIVE_ROOT_AUTHORITY_VERSION, RECURSIVE_SCHEMA_VERSION,
 };
+
+fn validate_root_authority_binding(metadata: &Value, tree: &RecursiveTree) -> Result<(), String> {
+    let Some(expected_child_budget) = tree.root_child_budget_limit.as_ref() else {
+        return Ok(());
+    };
+    let authority: RecursiveRootAuthority = serde_json::from_value(
+        metadata
+            .get("recursive_root_authority")
+            .cloned()
+            .ok_or_else(|| "recursive root authority binding is missing".to_string())?,
+    )
+    .map_err(|_| "recursive root authority binding is malformed".to_string())?;
+    if authority.schema_version != RECURSIVE_ROOT_AUTHORITY_VERSION
+        || authority.scope != tree.root_scope
+        || authority.capabilities != tree.root_capabilities
+        || tree.root_budget_limit.as_ref() != Some(&authority.tree_budget)
+        || expected_child_budget != &authority.child_budget
+    {
+        return Err("recursive root authority is not bound to workflow run".to_string());
+    }
+    Ok(())
+}
 
 fn node_values(node: &RecursiveNode) -> (&str, Option<&str>, Option<&str>, i64, &str, &str, i64) {
     (
@@ -345,6 +367,7 @@ fn check_workflow_binding_sqlite(
     {
         return Err("recursive root node identity is not bound to workflow run".to_string());
     }
+    validate_root_authority_binding(&metadata, tree)?;
     Ok(())
 }
 
@@ -405,6 +428,7 @@ fn check_workflow_binding_pg(
     {
         return Err("recursive root node identity is not bound to workflow run".to_string());
     }
+    validate_root_authority_binding(&metadata, tree)?;
     Ok(())
 }
 
@@ -1553,6 +1577,26 @@ pub(crate) fn sync_recursive_completion_sqlite(
     Ok(status)
 }
 
+pub(crate) fn sync_recursive_root_completion_sqlite(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    receipt_id: &str,
+    success: bool,
+    usage: &RecursiveBudget,
+    now: &str,
+) -> Result<String, String> {
+    let Some(mut tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
+        return Err("recursive_tree_missing".to_string());
+    };
+    let expected_version = tree.version;
+    tree.complete_root_with_usage(receipt_id, success, usage)
+        .map_err(|reason| reason.as_str().to_string())?;
+    sync_terminal_workflow_nodes_sqlite(conn, &tree, now)?;
+    let status = tree.nodes[&tree.root_node_id].status.as_str().to_string();
+    persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))?;
+    Ok(status)
+}
+
 pub(crate) fn record_recursive_late_usage_sqlite(
     conn: &rusqlite::Connection,
     root_run_id: &str,
@@ -1607,6 +1651,43 @@ pub(crate) fn sync_recursive_usage_unavailable_sqlite(
     tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
     tree.terminalize_remaining_nodes(
         Some(recursive_node_id),
+        RecursiveFailureReason::TerminalFailed,
+    );
+    tree.version += 1;
+    sync_terminal_workflow_nodes_sqlite(conn, &tree, now)?;
+    persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))?;
+    Ok("failed".to_string())
+}
+
+pub(crate) fn sync_recursive_root_usage_unavailable_sqlite(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    receipt_id: &str,
+    now: &str,
+) -> Result<String, String> {
+    sync_recursive_root_completion_sqlite(
+        conn,
+        root_run_id,
+        receipt_id,
+        false,
+        &RecursiveBudget::default(),
+        now,
+    )?;
+    let mut tree = load_recursive_tree_sqlite(conn, root_run_id)?
+        .ok_or_else(|| "recursive_tree_missing".to_string())?;
+    let expected_version = tree.version;
+    let root_id = tree.root_node_id.clone();
+    let root = tree.nodes.get_mut(&root_id).ok_or_else(|| {
+        RecursiveFailureReason::RecursiveNodeMissing
+            .as_str()
+            .to_string()
+    })?;
+    root.failure_reason = Some(RecursiveFailureReason::RecursiveUsageUnavailable);
+    root.status = RecursiveNodeStatus::Failed;
+    root.version += 1;
+    tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
+    tree.terminalize_remaining_nodes(
+        Some(root_id.as_str()),
         RecursiveFailureReason::TerminalFailed,
     );
     tree.version += 1;
@@ -1816,6 +1897,27 @@ pub(crate) fn sync_recursive_completion_pg(
 }
 
 #[cfg(feature = "pg")]
+pub(crate) fn sync_recursive_root_completion_pg(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+    receipt_id: &str,
+    success: bool,
+    usage: &RecursiveBudget,
+    now: &str,
+) -> Result<String, String> {
+    let Some(mut tree) = load_recursive_tree_pg(client, root_run_id)? else {
+        return Err("recursive_tree_missing".to_string());
+    };
+    let expected_version = tree.version;
+    tree.complete_root_with_usage(receipt_id, success, usage)
+        .map_err(|reason| reason.as_str().to_string())?;
+    sync_terminal_workflow_nodes_pg(client, &tree, now)?;
+    let status = tree.nodes[&tree.root_node_id].status.as_str().to_string();
+    persist_recursive_tree_pg(client, &tree, now, Some(expected_version))?;
+    Ok(status)
+}
+
+#[cfg(feature = "pg")]
 pub(crate) fn record_recursive_late_usage_pg(
     client: &mut impl postgres::GenericClient,
     root_run_id: &str,
@@ -1871,6 +1973,44 @@ pub(crate) fn sync_recursive_usage_unavailable_pg(
     tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
     tree.terminalize_remaining_nodes(
         Some(recursive_node_id),
+        RecursiveFailureReason::TerminalFailed,
+    );
+    tree.version += 1;
+    sync_terminal_workflow_nodes_pg(client, &tree, now)?;
+    persist_recursive_tree_pg(client, &tree, now, Some(expected_version))?;
+    Ok("failed".to_string())
+}
+
+#[cfg(feature = "pg")]
+pub(crate) fn sync_recursive_root_usage_unavailable_pg(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+    receipt_id: &str,
+    now: &str,
+) -> Result<String, String> {
+    sync_recursive_root_completion_pg(
+        client,
+        root_run_id,
+        receipt_id,
+        false,
+        &RecursiveBudget::default(),
+        now,
+    )?;
+    let mut tree = load_recursive_tree_pg(client, root_run_id)?
+        .ok_or_else(|| "recursive_tree_missing".to_string())?;
+    let expected_version = tree.version;
+    let root_id = tree.root_node_id.clone();
+    let root = tree.nodes.get_mut(&root_id).ok_or_else(|| {
+        RecursiveFailureReason::RecursiveNodeMissing
+            .as_str()
+            .to_string()
+    })?;
+    root.failure_reason = Some(RecursiveFailureReason::RecursiveUsageUnavailable);
+    root.status = RecursiveNodeStatus::Failed;
+    root.version += 1;
+    tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
+    tree.terminalize_remaining_nodes(
+        Some(root_id.as_str()),
         RecursiveFailureReason::TerminalFailed,
     );
     tree.version += 1;

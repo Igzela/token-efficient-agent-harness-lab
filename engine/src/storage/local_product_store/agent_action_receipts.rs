@@ -717,12 +717,12 @@ fn apply_sqlite_operation(
                 edge,
                 &mutation.agent_id,
             )?;
-            super::workflow_runs::dag_mutations::insert_workflow_run_node_locked(
+            super::workflow_runs::dag_mutations::insert_recursive_workflow_run_node_locked(
                 conn,
                 &mutation.run_id,
                 node,
             )?;
-            super::workflow_runs::dag_mutations::insert_workflow_run_edge_locked(
+            super::workflow_runs::dag_mutations::insert_recursive_workflow_run_edge_locked(
                 conn,
                 &mutation.run_id,
                 edge,
@@ -1351,12 +1351,12 @@ fn apply_pg_operation(
                 edge,
                 &mutation.agent_id,
             )?;
-            super::workflow_runs::dag_mutations::pg_insert_workflow_run_node(
+            super::workflow_runs::dag_mutations::pg_insert_recursive_workflow_run_node(
                 client,
                 &mutation.run_id,
                 node,
             )?;
-            super::workflow_runs::dag_mutations::pg_insert_workflow_run_edge(
+            super::workflow_runs::dag_mutations::pg_insert_recursive_workflow_run_edge(
                 client,
                 &mutation.run_id,
                 edge,
