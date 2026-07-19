@@ -334,6 +334,14 @@ impl LocalProductStore {
                 for operation in &mutation.operations {
                     apply_sqlite_operation(&tx, mutation, operation, &now)?;
                 }
+                let committed_result: String = tx
+                    .query_row(
+                        "SELECT result_json FROM agent_action_receipts
+                         WHERE run_id=?1 AND node_id=?2",
+                        params![mutation.run_id, mutation.node_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
                 append_audit_locked(
                     &tx,
                     &now,
@@ -349,7 +357,7 @@ impl LocalProductStore {
                     }),
                 )?;
                 tx.commit().map_err(|error| error.to_string())?;
-                Ok(mutation.result_json.clone())
+                Ok(committed_result)
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
@@ -377,6 +385,14 @@ impl LocalProductStore {
                 for operation in &mutation.operations {
                     apply_pg_operation(&mut tx, mutation, operation, &now)?;
                 }
+                let committed_result: String = tx
+                    .query_one(
+                        "SELECT result_json FROM agent_action_receipts
+                         WHERE run_id=$1 AND node_id=$2",
+                        &[&mutation.run_id, &mutation.node_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .get(0);
                 pg_append_audit(
                     &mut tx,
                     &now,
@@ -392,7 +408,7 @@ impl LocalProductStore {
                     }),
                 )?;
                 tx.commit().map_err(|error| error.to_string())?;
-                Ok(mutation.result_json.clone())
+                Ok(committed_result)
             }),
         }
     }
@@ -414,6 +430,21 @@ fn validate_mutation(mutation: &AgentActionMutation) -> Result<(), String> {
     serde_json::from_str::<Value>(&mutation.result_json)
         .map_err(|error| format!("invalid agent action result JSON: {error}"))?;
     Ok(())
+}
+
+fn recursive_rejection_result_json(
+    mutation: &AgentActionMutation,
+    reason_code: &str,
+) -> Result<String, String> {
+    let mut result: Value = serde_json::from_str(&mutation.result_json)
+        .map_err(|error| format!("invalid recursive action result JSON: {error}"))?;
+    let object = result
+        .as_object_mut()
+        .ok_or_else(|| "recursive action result must be an object".to_string())?;
+    object.insert("recursive_node_id".to_string(), Value::Null);
+    object.insert("decision".to_string(), json!("rejected"));
+    object.insert("reason_code".to_string(), json!(reason_code));
+    Ok(result.to_string())
 }
 
 fn existing_receipt_sqlite(
@@ -602,6 +633,22 @@ fn apply_sqlite_operation(
                         }
                         Err(error) => return Err(error),
                     };
+                if let Some((_, reason_code)) = rejected.first() {
+                    let result_json = recursive_rejection_result_json(mutation, reason_code)?;
+                    let updated = conn
+                        .execute(
+                            "UPDATE agent_action_receipts SET result_json=?1
+                             WHERE run_id=?2 AND node_id=?3 AND action_sha256=?4",
+                            params![
+                                result_json,
+                                mutation.run_id,
+                                mutation.node_id,
+                                mutation.action_sha256,
+                            ],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    require_one(updated, "recursive rejection receipt update failed")?;
+                }
                 for (proposal_id, reason_code) in rejected {
                     let resource = format!("agent_proposal/{proposal_id}");
                     conn.execute(
@@ -1217,6 +1264,25 @@ fn apply_pg_operation(
                     }
                     Err(error) => return Err(error),
                 };
+                if let Some((_, reason_code)) = rejected.first() {
+                    let result_json = recursive_rejection_result_json(mutation, reason_code)?;
+                    let updated = client
+                        .execute(
+                            "UPDATE agent_action_receipts SET result_json=$1
+                             WHERE run_id=$2 AND node_id=$3 AND action_sha256=$4",
+                            &[
+                                &result_json,
+                                &mutation.run_id,
+                                &mutation.node_id,
+                                &mutation.action_sha256,
+                            ],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    require_one(
+                        updated as usize,
+                        "recursive rejection receipt update failed",
+                    )?;
+                }
                 for (proposal_id, reason_code) in rejected {
                     let resource = format!("agent_proposal/{proposal_id}");
                     client

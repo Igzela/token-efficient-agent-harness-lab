@@ -1925,7 +1925,9 @@ impl LocalProductStore {
                             })
                             .transpose()?
                             .flatten();
-                        if persisted_status != actual_status {
+                        if persisted_status != actual_status
+                            || (recursive_node_id.is_some() && persisted_status == "failed")
+                        {
                             conn.execute(
                                 "UPDATE workflow_run_nodes SET status=?1, blocked_reason=?2
                                  WHERE run_id=?3 AND node_id=?4",
@@ -2284,7 +2286,9 @@ impl LocalProductStore {
                             })
                             .transpose()?
                             .flatten();
-                        if persisted_status != actual_status {
+                        if persisted_status != actual_status
+                            || (recursive_node_id.is_some() && persisted_status == "failed")
+                        {
                             tx.execute(
                                 "UPDATE workflow_run_nodes SET status=$1, blocked_reason=$2
                                  WHERE run_id=$3 AND node_id=$4",
@@ -3941,14 +3945,12 @@ impl LocalProductStore {
                                     }),
                                 )?;
                             } else {
-                            super::recursive_execution::sync_recursive_completion_sqlite(
+                            super::recursive_execution::sync_recursive_stale_recovery_sqlite(
                                 &tx,
                                 run_id,
                                 &recursive_node_id,
                                 &format!("workflow:{run_id}:{node_id}:{attempt}"),
-                                false,
                                 recursive_retry,
-                                &recursive_retry_usage(),
                                 &now,
                             )?;
                             }
@@ -4133,14 +4135,12 @@ impl LocalProductStore {
                                     }),
                                 )?;
                             } else {
-                            super::recursive_execution::sync_recursive_completion_pg(
+                            super::recursive_execution::sync_recursive_stale_recovery_pg(
                                 &mut tx,
                                 run_id,
                                 &recursive_node_id,
                                 &format!("workflow:{run_id}:{node_id}:{attempt}"),
-                                false,
                                 recursive_retry,
-                                &recursive_retry_usage(),
                                 &now,
                             )?;
                             }
@@ -6602,6 +6602,25 @@ mod recursive_scheduler_tests {
             })
             .expect("admit child");
         let child_id = admission.node.node_id.clone();
+        let sibling = tree
+            .admit_child(&RecursiveProposal {
+                proposal_id: format!("recursive-usage-unavailable-sibling-proposal-{suffix}"),
+                parent_node_id: root_node_id.clone(),
+                parent_version: tree.nodes[&root_node_id].version,
+                objective: "independent provider sibling".to_string(),
+                context_summary: "fixture".to_string(),
+                requested_scope: scope.clone(),
+                requested_capabilities: scope.capabilities.clone(),
+                budget: RecursiveBudget {
+                    calls_remaining: 1,
+                    tokens_remaining: 10,
+                    cost_micros_remaining: 10,
+                    time_ms_remaining: 100,
+                },
+                receipt_sha256: format!("recursive-usage-unavailable-sibling-action-{suffix}"),
+            })
+            .expect("admit sibling");
+        let sibling_id = sibling.node.node_id.clone();
         store
             .import_workflow_run(&json!({
                 "run_id": run_id,
@@ -6629,6 +6648,19 @@ mod recursive_scheduler_tests {
                         "recursive_workspace_id": admission.node.workspace_id,
                         "decision_source": "provider",
                         "usage_contract": {"kind": "unavailable"}
+                    },
+                    {
+                        "node_id": sibling_id,
+                        "task_type": "agent_step",
+                        "status": "pending",
+                        "recursive_node_id": sibling_id,
+                        "parent_node_id": root_node_id,
+                        "recursive_capabilities": sibling.node.capabilities,
+                        "recursive_scope": sibling.node.scope,
+                        "recursive_tenant_id": sibling.node.tenant_id,
+                        "recursive_workspace_id": sibling.node.workspace_id,
+                        "decision_source": "provider",
+                        "usage_contract": {"kind": "unavailable"}
                     }
                 ],
                 "edges": [],
@@ -6648,6 +6680,13 @@ mod recursive_scheduler_tests {
             )
             .expect("terminal tick");
         assert_eq!(tick["action"], "node_executed");
+        let failed_node_id = tick["node_id"].as_str().expect("executed node id");
+        let terminalized_node_id = if failed_node_id == child_id {
+            sibling_id.as_str()
+        } else {
+            assert_eq!(failed_node_id, sibling_id);
+            child_id.as_str()
+        };
         let loaded = store
             .load_recursive_tree(&run_id)
             .expect("tree")
@@ -6657,8 +6696,13 @@ mod recursive_scheduler_tests {
             crate::recursive_execution::RecursiveExecutionState::TerminalFailed
         );
         assert_eq!(
-            loaded.nodes[&child_id].failure_reason.as_deref(),
+            loaded.nodes[failed_node_id].failure_reason.as_deref(),
             Some(RecursiveFailureReason::RecursiveUsageUnavailable.as_str())
+        );
+        assert_eq!(loaded.nodes[terminalized_node_id].status, "failed");
+        assert_eq!(
+            loaded.nodes[terminalized_node_id].failure_reason.as_deref(),
+            Some(RecursiveFailureReason::TerminalFailed.as_str())
         );
         assert!(loaded.active_leases.is_empty());
         assert_eq!(loaded.reserved_budget, RecursiveBudget::default());
@@ -6666,14 +6710,27 @@ mod recursive_scheduler_tests {
             .get_workflow_run(&run_id)
             .expect("run")
             .expect("run exists");
+        let failed_node = run["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .find(|node| node["node_id"] == failed_node_id)
+            .expect("failed node");
+        assert_eq!(failed_node["db_status"], "failed");
         assert_eq!(
-            run["nodes"]
-                .as_array()
-                .expect("nodes")
-                .iter()
-                .find(|node| node["node_id"] == child_id)
-                .expect("child")["db_status"],
-            "failed"
+            failed_node["blocked_reason"],
+            RecursiveFailureReason::RecursiveUsageUnavailable.as_str()
+        );
+        let terminalized_node = run["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .find(|node| node["node_id"] == terminalized_node_id)
+            .expect("terminalized node");
+        assert_eq!(terminalized_node["db_status"], "failed");
+        assert_eq!(
+            terminalized_node["blocked_reason"],
+            RecursiveFailureReason::TerminalFailed.as_str()
         );
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
@@ -6841,6 +6898,10 @@ mod recursive_scheduler_tests {
         assert_eq!(
             after_first.nodes[&child_id].actual_usage,
             RecursiveBudget::default()
+        );
+        assert!(
+            after_first.usage_receipts.is_empty(),
+            "stale recovery must leave the attempt receipt available for measured late usage"
         );
         let stale_lease_id = format!("workflow:{run_id}:{child_id}:1");
         let late_completion = match &store.db {
