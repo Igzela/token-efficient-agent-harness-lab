@@ -1824,6 +1824,8 @@ impl LocalProductStore {
                         let recursive_identity = identity.recursive_node_id.as_ref();
                         let recursive_root_active = identity.root;
                         let mut recursive_terminal_reason = identity.terminal_reason;
+                        let workflow_receipt =
+                            format!("workflow:{run_id}:{node_id}:{attempt}");
                         let recursive_usage = if recursive_identity.is_some()
                             && recursive_terminal_reason.is_none()
                         {
@@ -1853,12 +1855,17 @@ impl LocalProductStore {
                                     if recursive_terminal_reason.is_none() {
                                         return Err(error);
                                     }
-                                    Some(crate::recursive_execution::RecursiveBudget::default())
+                                    Some(RecursiveUsageEvidence {
+                                        budget: crate::recursive_execution::RecursiveBudget::default(),
+                                        receipt_id: None,
+                                    })
                                 }
                             }
                         } else {
-                            recursive_identity
-                                .map(|_| crate::recursive_execution::RecursiveBudget::default())
+                            recursive_identity.map(|_| RecursiveUsageEvidence {
+                                budget: crate::recursive_execution::RecursiveBudget::default(),
+                                receipt_id: None,
+                            })
                         };
                         let recursive_terminal_failure = recursive_terminal_reason.is_some();
                         let requested_retry = !recursive_terminal_failure
@@ -1875,7 +1882,7 @@ impl LocalProductStore {
                                     conn,
                                     run_id,
                                     recursive_node_id,
-                                    recursive_usage.as_ref().expect("recursive usage"),
+                                    &recursive_usage.as_ref().expect("recursive usage").budget,
                                 )?
                             } else {
                                 true
@@ -1925,12 +1932,14 @@ impl LocalProductStore {
                                     )?;
                                 } else {
                                 let usage = recursive_usage.as_ref().expect("recursive usage");
+                                let usage_receipt =
+                                    usage.receipt_id.as_deref().unwrap_or(&workflow_receipt);
                                 let late_usage = if recursive_root_active {
                                     super::recursive_execution::record_recursive_root_late_usage_sqlite(
                                         conn,
                                         run_id,
-                                        &format!("workflow:{run_id}:{node_id}:{attempt}"),
-                                        usage,
+                                        usage_receipt,
+                                        &usage.budget,
                                         &now,
                                     )
                                 } else {
@@ -1938,8 +1947,8 @@ impl LocalProductStore {
                                         conn,
                                         run_id,
                                         recursive_node_id,
-                                        &format!("workflow:{run_id}:{node_id}:{attempt}"),
-                                        usage,
+                                        usage_receipt,
+                                        &usage.budget,
                                         &now,
                                     )
                                 };
@@ -2006,17 +2015,19 @@ impl LocalProductStore {
                                 super::recursive_execution::sync_recursive_root_terminal_failure_sqlite(
                                     conn,
                                     run_id,
-                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &workflow_receipt,
                                     recursive_terminal_reason.expect("recursive terminal reason"),
                                     &now,
                                 )?
                             } else if recursive_root_active {
-                                super::recursive_execution::sync_recursive_root_completion_sqlite(
+                                let usage = recursive_usage.as_ref().expect("recursive usage");
+                                super::recursive_execution::sync_recursive_root_completion_sqlite_with_receipt(
                                     conn,
                                     run_id,
-                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &workflow_receipt,
+                                    usage.receipt_id.as_deref().unwrap_or(&workflow_receipt),
                                     final_status == "completed",
-                                    recursive_usage.as_ref().expect("recursive usage"),
+                                    &usage.budget,
                                     &now,
                                 )?
                             } else if recursive_terminal_failure {
@@ -2024,19 +2035,21 @@ impl LocalProductStore {
                                     conn,
                                     run_id,
                                     recursive_node_id,
-                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &workflow_receipt,
                                     recursive_terminal_reason.expect("recursive terminal reason"),
                                     &now,
                                 )?
                             } else {
-                            super::recursive_execution::sync_recursive_completion_sqlite(
+                            let usage = recursive_usage.as_ref().expect("recursive usage");
+                            super::recursive_execution::sync_recursive_completion_sqlite_with_receipt(
                                 conn,
                                 run_id,
                                 recursive_node_id,
-                                &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                &workflow_receipt,
+                                usage.receipt_id.as_deref().unwrap_or(&workflow_receipt),
                                 final_status == "completed",
                                 should_retry,
-                                recursive_usage.as_ref().expect("recursive usage"),
+                                &usage.budget,
                                 &now,
                             )?
                             })
@@ -2242,6 +2255,8 @@ impl LocalProductStore {
                         let recursive_identity = identity.recursive_node_id.as_ref();
                         let recursive_root_active = identity.root;
                         let mut recursive_terminal_reason = identity.terminal_reason;
+                        let workflow_receipt =
+                            format!("workflow:{run_id}:{node_id}:{attempt}");
                         let recursive_usage = if recursive_identity.is_some()
                             && recursive_terminal_reason.is_none()
                         {
@@ -2271,12 +2286,17 @@ impl LocalProductStore {
                                     if recursive_terminal_reason.is_none() {
                                         return Err(error);
                                     }
-                                    Some(crate::recursive_execution::RecursiveBudget::default())
+                                    Some(RecursiveUsageEvidence {
+                                        budget: crate::recursive_execution::RecursiveBudget::default(),
+                                        receipt_id: None,
+                                    })
                                 }
                             }
                         } else {
-                            recursive_identity
-                                .map(|_| crate::recursive_execution::RecursiveBudget::default())
+                            recursive_identity.map(|_| RecursiveUsageEvidence {
+                                budget: crate::recursive_execution::RecursiveBudget::default(),
+                                receipt_id: None,
+                            })
                         };
                         let recursive_terminal_failure = recursive_terminal_reason.is_some();
                         let requested_retry = !recursive_terminal_failure
@@ -2293,7 +2313,7 @@ impl LocalProductStore {
                                     &mut tx,
                                     run_id,
                                     recursive_node_id,
-                                    recursive_usage.as_ref().expect("recursive usage"),
+                                    &recursive_usage.as_ref().expect("recursive usage").budget,
                                 )?
                             } else {
                                 true
@@ -2345,12 +2365,14 @@ impl LocalProductStore {
                                     )?;
                                 } else {
                                 let usage = recursive_usage.as_ref().expect("recursive usage");
+                                let usage_receipt =
+                                    usage.receipt_id.as_deref().unwrap_or(&workflow_receipt);
                                 let late_usage = if recursive_root_active {
                                     super::recursive_execution::record_recursive_root_late_usage_pg(
                                         &mut tx,
                                         run_id,
-                                        &format!("workflow:{run_id}:{node_id}:{attempt}"),
-                                        usage,
+                                        usage_receipt,
+                                        &usage.budget,
                                         &now,
                                     )
                                 } else {
@@ -2358,8 +2380,8 @@ impl LocalProductStore {
                                         &mut tx,
                                         run_id,
                                         recursive_node_id,
-                                        &format!("workflow:{run_id}:{node_id}:{attempt}"),
-                                        usage,
+                                        usage_receipt,
+                                        &usage.budget,
                                         &now,
                                     )
                                 };
@@ -2426,17 +2448,19 @@ impl LocalProductStore {
                                 super::recursive_execution::sync_recursive_root_terminal_failure_pg(
                                     &mut tx,
                                     run_id,
-                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &workflow_receipt,
                                     recursive_terminal_reason.expect("recursive terminal reason"),
                                     &now,
                                 )?
                             } else if recursive_root_active {
-                                super::recursive_execution::sync_recursive_root_completion_pg(
+                                let usage = recursive_usage.as_ref().expect("recursive usage");
+                                super::recursive_execution::sync_recursive_root_completion_pg_with_receipt(
                                     &mut tx,
                                     run_id,
-                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &workflow_receipt,
+                                    usage.receipt_id.as_deref().unwrap_or(&workflow_receipt),
                                     final_status == "completed",
-                                    recursive_usage.as_ref().expect("recursive usage"),
+                                    &usage.budget,
                                     &now,
                                 )?
                             } else if recursive_terminal_failure {
@@ -2444,19 +2468,21 @@ impl LocalProductStore {
                                     &mut tx,
                                     run_id,
                                     recursive_node_id,
-                                    &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    &workflow_receipt,
                                     recursive_terminal_reason.expect("recursive terminal reason"),
                                     &now,
                                 )?
                             } else {
-                            super::recursive_execution::sync_recursive_completion_pg(
+                            let usage = recursive_usage.as_ref().expect("recursive usage");
+                            super::recursive_execution::sync_recursive_completion_pg_with_receipt(
                                 &mut tx,
                                 run_id,
                                 recursive_node_id,
-                                &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                &workflow_receipt,
+                                usage.receipt_id.as_deref().unwrap_or(&workflow_receipt),
                                 final_status == "completed",
                                 should_retry,
-                                recursive_usage.as_ref().expect("recursive usage"),
+                                &usage.budget,
                                 &now,
                             )?
                             })
@@ -5320,11 +5346,17 @@ fn optional_json_text(value: Option<&Value>) -> Option<String> {
     }
 }
 
+#[derive(Debug)]
+struct RecursiveUsageEvidence {
+    budget: crate::recursive_execution::RecursiveBudget,
+    receipt_id: Option<String>,
+}
+
 fn recursive_usage_from_output(
     output: &crate::node_executor::NodeExecutionOutput,
     node_metadata: &Value,
     executor_mode: crate::node_executor::RecursiveUsageMode,
-) -> Result<crate::recursive_execution::RecursiveBudget, String> {
+) -> Result<RecursiveUsageEvidence, String> {
     let contract: crate::recursive_execution::RecursiveUsageContract = serde_json::from_value(
         node_metadata
             .get("usage_contract")
@@ -5359,7 +5391,10 @@ fn recursive_usage_from_output(
             {
                 return Err("fixture_usage_contract_invalid".to_string());
             }
-            return Ok(usage);
+            return Ok(RecursiveUsageEvidence {
+                budget: usage,
+                receipt_id: recursive_usage_receipt_from_output(output)?,
+            });
         }
         crate::node_executor::RecursiveUsageMode::Measured => {}
         crate::node_executor::RecursiveUsageMode::Unavailable => unreachable!(),
@@ -5411,12 +5446,42 @@ fn recursive_usage_from_output(
         .filter(|latency| *latency >= 0)
         .map(|latency| latency as u64)
         .ok_or_else(|| "recursive_usage_unavailable".to_string())?;
-    Ok(crate::recursive_execution::RecursiveBudget {
-        calls_remaining: 1,
-        tokens_remaining: token_count,
-        cost_micros_remaining: cost_micros,
-        time_ms_remaining: time_ms,
+    let receipt_id = recursive_usage_receipt_from_output(output)?
+        .ok_or_else(|| "recursive_usage_unavailable".to_string())?;
+    Ok(RecursiveUsageEvidence {
+        budget: crate::recursive_execution::RecursiveBudget {
+            calls_remaining: 1,
+            tokens_remaining: token_count,
+            cost_micros_remaining: cost_micros,
+            time_ms_remaining: time_ms,
+        },
+        receipt_id: Some(receipt_id),
     })
+}
+
+fn recursive_usage_receipt_from_output(
+    output: &crate::node_executor::NodeExecutionOutput,
+) -> Result<Option<String>, String> {
+    let Some(receipt) = output
+        .output
+        .as_deref()
+        .and_then(|result| serde_json::from_str::<Value>(result).ok())
+        .and_then(|result| {
+            result
+                .get("execution_usage_receipt")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+    else {
+        return Ok(None);
+    };
+    let hash = receipt
+        .strip_prefix("agent-action:")
+        .ok_or_else(|| "recursive_usage_unavailable".to_string())?;
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("recursive_usage_unavailable".to_string());
+    }
+    Ok(Some(receipt))
 }
 
 fn recursive_usage_failure_reason(error: &str) -> Option<RecursiveFailureReason> {
@@ -6720,6 +6785,10 @@ mod recursive_scheduler_tests {
                 executor_type: "agent_step".to_string(),
                 output: Some(
                     json!({
+                        "execution_usage_receipt": concat!(
+                            "agent-action:",
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        ),
                         "provider_usage": {
                             "provider_id": "measured-provider",
                             "model": "measured-model",
@@ -6931,7 +7000,7 @@ mod recursive_scheduler_tests {
             crate::node_executor::RecursiveUsageMode::Fixture,
         )
         .expect("bounded fixture usage");
-        assert_eq!(fixture.tokens_remaining, 2);
+        assert_eq!(fixture.budget.tokens_remaining, 2);
         assert_eq!(
             recursive_usage_from_output(
                 &fixture_output,
@@ -6954,6 +7023,10 @@ mod recursive_scheduler_tests {
             executor_type: "agent_step".to_string(),
             output: Some(
                 json!({
+                    "execution_usage_receipt": concat!(
+                        "agent-action:",
+                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    ),
                     "provider_usage": {
                         "provider_id": "measured-provider",
                         "model": "measured-model",
@@ -6979,6 +7052,7 @@ mod recursive_scheduler_tests {
                 crate::node_executor::RecursiveUsageMode::Measured,
             )
             .expect("measured usage")
+            .budget
             .tokens_remaining,
             5
         );

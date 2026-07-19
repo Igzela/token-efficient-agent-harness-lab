@@ -885,7 +885,21 @@ impl RecursiveTree {
         success: bool,
         usage: &RecursiveBudget,
     ) -> Result<(), RecursiveFailureReason> {
-        let within_node_budget = {
+        self.complete_node_with_usage_receipt(node_id, lease_id, lease_id, success, usage)
+    }
+
+    pub fn complete_node_with_usage_receipt(
+        &mut self,
+        node_id: &str,
+        lease_id: &str,
+        usage_receipt_id: &str,
+        success: bool,
+        usage: &RecursiveBudget,
+    ) -> Result<(), RecursiveFailureReason> {
+        let usage_previously_recorded = self.usage_receipts.contains_key(usage_receipt_id);
+        let within_node_budget = if usage_previously_recorded {
+            true
+        } else {
             let node = self
                 .nodes
                 .get(node_id)
@@ -895,15 +909,27 @@ impl RecursiveTree {
             }
             node.budget.can_spend(usage)
         };
-        let within_tree_budget = self.record_usage(lease_id, usage)?;
+        if self
+            .nodes
+            .get(node_id)
+            .ok_or(RecursiveFailureReason::StaleParent)?
+            .lease_id
+            .as_deref()
+            != Some(lease_id)
+        {
+            return Err(RecursiveFailureReason::ReceiptConflict);
+        }
+        let within_tree_budget = self.record_usage(usage_receipt_id, usage)?;
         let within_budget = within_node_budget && within_tree_budget;
         let node = self
             .nodes
             .get_mut(node_id)
             .ok_or(RecursiveFailureReason::StaleParent)?;
-        node.budget.spend(usage);
-        node.actual_usage.add(usage);
-        node.reservation.spend(usage);
+        if !usage_previously_recorded {
+            node.budget.spend(usage);
+            node.actual_usage.add(usage);
+            node.reservation.spend(usage);
+        }
         node.status = if success && within_budget {
             RecursiveNodeStatus::Completed
         } else {
@@ -932,7 +958,17 @@ impl RecursiveTree {
 
     pub fn complete_root_with_usage(
         &mut self,
-        receipt_id: &str,
+        lease_id: &str,
+        success: bool,
+        usage: &RecursiveBudget,
+    ) -> Result<(), RecursiveFailureReason> {
+        self.complete_root_with_usage_receipt(lease_id, lease_id, success, usage)
+    }
+
+    pub fn complete_root_with_usage_receipt(
+        &mut self,
+        lease_id: &str,
+        usage_receipt_id: &str,
         success: bool,
         usage: &RecursiveBudget,
     ) -> Result<(), RecursiveFailureReason> {
@@ -950,7 +986,7 @@ impl RecursiveTree {
         ) {
             let usage_fingerprint = serde_json::to_string(usage)
                 .map_err(|_| RecursiveFailureReason::ReceiptConflict)?;
-            return match self.usage_receipts.get(receipt_id) {
+            return match self.usage_receipts.get(usage_receipt_id) {
                 Some(previous)
                     if previous.strip_prefix("1:") == Some(usage_fingerprint.as_str())
                         && ((success
@@ -974,21 +1010,25 @@ impl RecursiveTree {
                 _ => Err(RecursiveFailureReason::ReceiptConflict),
             };
         }
-        if root.lease_id.as_deref() != Some(receipt_id)
-            || root.status != RecursiveNodeStatus::Leased
+        if root.lease_id.as_deref() != Some(lease_id) || root.status != RecursiveNodeStatus::Leased
         {
             return Err(RecursiveFailureReason::ReceiptConflict);
         }
-        let within_node_budget = root.budget.can_spend(usage);
-        let within_tree_budget = self.record_unreserved_usage(receipt_id, usage)?;
-        self.root_budget.spend(usage);
+        let usage_previously_recorded = self.usage_receipts.contains_key(usage_receipt_id);
+        let within_node_budget = usage_previously_recorded || root.budget.can_spend(usage);
+        let within_tree_budget = self.record_unreserved_usage(usage_receipt_id, usage)?;
+        if !usage_previously_recorded {
+            self.root_budget.spend(usage);
+        }
         let within_budget = within_node_budget && within_tree_budget;
         let root = self
             .nodes
             .get_mut(&root_id)
             .ok_or(RecursiveFailureReason::RecursiveNodeMissing)?;
-        root.budget.spend(usage);
-        root.actual_usage.add(usage);
+        if !usage_previously_recorded {
+            root.budget.spend(usage);
+            root.actual_usage.add(usage);
+        }
         root.status = if success && within_budget {
             RecursiveNodeStatus::Completed
         } else {
@@ -1001,7 +1041,7 @@ impl RecursiveTree {
         };
         root.lease_id = None;
         root.version += 1;
-        self.active_leases.remove(receipt_id);
+        self.active_leases.remove(lease_id);
         if !within_budget {
             self.execution_state = RecursiveExecutionState::BudgetExhausted;
             self.terminalize_remaining_nodes(
@@ -2038,6 +2078,88 @@ mod tests {
                 .actual_usage
                 .tokens_remaining,
             1
+        );
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn replayed_action_usage_is_charged_once_across_replacement_lease() {
+        let _guard = test_env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let mut tree = RecursiveTree::new(
+            "usage-replay-run",
+            "fixture",
+            "root",
+            scope(),
+            BTreeSet::from(["read".to_string()]),
+            budget(),
+        );
+        let admission = tree.admit_child(&proposal(&tree)).expect("child");
+        let node_id = admission.node.node_id;
+        tree.lease_node(&node_id, "lease-one").expect("first lease");
+        tree.recover_stale_lease(&node_id, "lease-one", true)
+            .expect("recover first lease");
+        tree.lease_node(&node_id, "lease-two")
+            .expect("replacement lease");
+        let usage = RecursiveBudget {
+            calls_remaining: 1,
+            tokens_remaining: 2,
+            cost_micros_remaining: 1,
+            time_ms_remaining: 4,
+        };
+        let usage_receipt = concat!(
+            "agent-action:",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+
+        assert!(tree
+            .record_late_usage(&node_id, usage_receipt, &usage)
+            .expect("late usage"));
+        let spent_after_late = tree.spent_budget.clone();
+        let actual_after_late = tree.nodes[&node_id].actual_usage.clone();
+        tree.complete_node_with_usage_receipt(&node_id, "lease-two", usage_receipt, true, &usage)
+            .expect("replacement completion replay");
+
+        assert_eq!(tree.spent_budget, spent_after_late);
+        assert_eq!(tree.nodes[&node_id].actual_usage, actual_after_late);
+        assert_eq!(tree.nodes[&node_id].actual_usage, usage);
+        assert_eq!(tree.usage_receipts.len(), 1);
+        assert_eq!(tree.nodes[&node_id].status, RecursiveNodeStatus::Completed);
+        assert!(tree.active_leases.is_empty());
+
+        let mut replacement_first = RecursiveTree::new(
+            "usage-replay-reverse-run",
+            "fixture",
+            "root",
+            scope(),
+            BTreeSet::from(["read".to_string()]),
+            budget(),
+        );
+        let admission = replacement_first
+            .admit_child(&proposal(&replacement_first))
+            .expect("child");
+        let node_id = admission.node.node_id;
+        replacement_first
+            .lease_node(&node_id, "lease-one")
+            .expect("first lease");
+        replacement_first
+            .recover_stale_lease(&node_id, "lease-one", true)
+            .expect("recover first lease");
+        replacement_first
+            .lease_node(&node_id, "lease-two")
+            .expect("replacement lease");
+        replacement_first
+            .complete_node_with_usage_receipt(&node_id, "lease-two", usage_receipt, true, &usage)
+            .expect("replacement completion");
+        let spent_after_replacement = replacement_first.spent_budget.clone();
+        let actual_after_replacement = replacement_first.nodes[&node_id].actual_usage.clone();
+        assert!(replacement_first
+            .record_late_usage(&node_id, usage_receipt, &usage)
+            .expect("late replay"));
+        assert_eq!(replacement_first.spent_budget, spent_after_replacement);
+        assert_eq!(
+            replacement_first.nodes[&node_id].actual_usage,
+            actual_after_replacement
         );
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }

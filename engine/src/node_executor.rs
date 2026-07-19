@@ -1588,6 +1588,13 @@ fn completed_agent_step_output(
                 .ok_or_else(|| "stored provider usage estimated_cost_usd is invalid".to_string())?,
         ),
     };
+    let latency_ms = match parsed.get("execution_latency_ms") {
+        Some(value) => value
+            .as_i64()
+            .filter(|latency| *latency >= 0)
+            .ok_or_else(|| "stored agent execution latency is invalid".to_string())?,
+        None => start.elapsed().as_millis() as i64,
+    };
     if let Some(usage) = usage {
         let token_provenance = usage
             .get("token_provenance")
@@ -1615,7 +1622,7 @@ fn completed_agent_step_output(
         input_tokens,
         output_tokens,
         estimated_cost,
-        latency_ms: Some(start.elapsed().as_millis() as i64),
+        latency_ms: Some(latency_ms),
     })
 }
 
@@ -1856,22 +1863,37 @@ impl AgentStepExecutor {
         memory_state_read_bytes: i64,
         action: &AgentAction,
         provider_usage: Option<&AgentDecisionUsage>,
+        execution_latency_ms: i64,
     ) -> Result<String, String> {
         let action_sha256 = hex::encode(Sha256::digest(
             serde_json::to_vec(action)
                 .map_err(|error| format!("failed to canonicalize agent action: {error}"))?,
         ));
+        let execution_usage_receipt = format!(
+            "agent-action:{}",
+            hex::encode(Sha256::digest(
+                [run_id, input_node_id, agent_id, action_sha256.as_str()].join("\0")
+            ))
+        );
         let apply = |mutation: &AgentActionMutation| {
             let mut mutation = mutation.clone();
+            let mut result: Value = serde_json::from_str(&mutation.result_json)
+                .map_err(|error| format!("invalid agent action result JSON: {error}"))?;
+            let result_object = result
+                .as_object_mut()
+                .ok_or_else(|| "agent action result must be an object".to_string())?;
+            result_object.insert(
+                "execution_usage_receipt".to_string(),
+                json!(execution_usage_receipt),
+            );
+            result_object.insert(
+                "execution_latency_ms".to_string(),
+                json!(execution_latency_ms.max(0)),
+            );
             if let Some(usage) = provider_usage {
-                let mut result: Value = serde_json::from_str(&mutation.result_json)
-                    .map_err(|error| format!("invalid agent action result JSON: {error}"))?;
-                let result_object = result
-                    .as_object_mut()
-                    .ok_or_else(|| "agent action result must be an object".to_string())?;
                 result_object.insert("provider_usage".to_string(), usage.to_value());
-                mutation.result_json = result.to_string();
             }
+            mutation.result_json = result.to_string();
             self.store.apply_agent_action_once(&mutation)
         };
         match action {
@@ -3270,6 +3292,7 @@ impl NodeExecutor for AgentStepExecutor {
             memory_state_read_bytes,
             &action,
             provider_usage.as_ref(),
+            start.elapsed().as_millis() as i64,
         ) {
             Ok(result) => {
                 self.append_agent_step_audit_best_effort(
@@ -4296,8 +4319,14 @@ mod tests {
 
         let output = executor.execute_node(&input);
         assert_eq!(output.status, "completed");
+        let first_latency = output.latency_ms;
         let result = output.output.unwrap();
         assert!(result.contains("request_handoff"));
+        let first_result: Value = serde_json::from_str(&result).expect("action result");
+        assert!(first_result
+            .get("execution_usage_receipt")
+            .and_then(Value::as_str)
+            .is_some_and(|receipt| receipt.starts_with("agent-action:")));
 
         // Close every handle and reopen the durable store to model a process
         // restart after the action committed but before scheduler completion.
@@ -4316,6 +4345,7 @@ mod tests {
         let replay = replay_executor.execute_node(&input);
         assert_eq!(replay.status, "completed");
         assert_eq!(replay.output.as_deref(), Some(result.as_str()));
+        assert_eq!(replay.latency_ms, first_latency);
         assert_eq!(
             replay_decisions.load(std::sync::atomic::Ordering::SeqCst),
             0

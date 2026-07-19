@@ -379,7 +379,7 @@ CREATE INDEX IF NOT EXISTS idx_recursive_execution_trees_workflow
     ON recursive_execution_trees(workflow_id, updated_at);
 
 CREATE TABLE IF NOT EXISTS recursive_execution_nodes (
-    node_id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL,
     root_run_id TEXT NOT NULL,
     parent_node_id TEXT,
     proposal_id TEXT,
@@ -389,13 +389,14 @@ CREATE TABLE IF NOT EXISTS recursive_execution_nodes (
     version BIGINT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    PRIMARY KEY(root_run_id, node_id),
     UNIQUE(root_run_id, objective_fingerprint),
     FOREIGN KEY(root_run_id) REFERENCES recursive_execution_trees(root_run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_root
     ON recursive_execution_nodes(root_run_id, depth, node_id);
 CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_parent
-    ON recursive_execution_nodes(parent_node_id, status, node_id);
+    ON recursive_execution_nodes(root_run_id, parent_node_id, status, node_id);
 ";
 
 pub(super) const SQLITE_DDL: &str = "
@@ -1079,7 +1080,7 @@ CREATE INDEX IF NOT EXISTS idx_recursive_execution_trees_workflow
     ON recursive_execution_trees(workflow_id, updated_at);
 
 CREATE TABLE IF NOT EXISTS recursive_execution_nodes (
-    node_id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL,
     root_run_id TEXT NOT NULL,
     parent_node_id TEXT,
     proposal_id TEXT,
@@ -1089,13 +1090,14 @@ CREATE TABLE IF NOT EXISTS recursive_execution_nodes (
     version BIGINT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    PRIMARY KEY(root_run_id, node_id),
     UNIQUE(root_run_id, objective_fingerprint),
     FOREIGN KEY(root_run_id) REFERENCES recursive_execution_trees(root_run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_root
     ON recursive_execution_nodes(root_run_id, depth, node_id);
 CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_parent
-    ON recursive_execution_nodes(parent_node_id, status, node_id);
+    ON recursive_execution_nodes(root_run_id, parent_node_id, status, node_id);
 ";
 
 pub(crate) const POSTGRES_DDL: &str = "
@@ -1814,7 +1816,7 @@ CREATE INDEX IF NOT EXISTS idx_recursive_execution_trees_workflow
     ON recursive_execution_trees(workflow_id, updated_at);
 
 CREATE TABLE IF NOT EXISTS recursive_execution_nodes (
-    node_id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL,
     root_run_id TEXT NOT NULL,
     parent_node_id TEXT,
     proposal_id TEXT,
@@ -1824,13 +1826,14 @@ CREATE TABLE IF NOT EXISTS recursive_execution_nodes (
     version BIGINT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    PRIMARY KEY(root_run_id, node_id),
     UNIQUE(root_run_id, objective_fingerprint),
     FOREIGN KEY(root_run_id) REFERENCES recursive_execution_trees(root_run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_root
     ON recursive_execution_nodes(root_run_id, depth, node_id);
 CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_parent
-    ON recursive_execution_nodes(parent_node_id, status, node_id);
+    ON recursive_execution_nodes(root_run_id, parent_node_id, status, node_id);
 ";
 
 #[cfg(test)]

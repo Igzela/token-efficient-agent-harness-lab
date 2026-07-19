@@ -493,44 +493,6 @@ fn check_expected_sqlite(
     }
 }
 
-fn check_node_index_sqlite(
-    conn: &rusqlite::Connection,
-    node_id: &str,
-    root_run_id: &str,
-) -> Result<(), String> {
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT root_run_id FROM recursive_execution_nodes WHERE node_id=?1",
-            [node_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?;
-    if existing.is_some_and(|existing| existing != root_run_id) {
-        return Err("recursive node identity is already bound to another root".to_string());
-    }
-    Ok(())
-}
-
-#[cfg(feature = "pg")]
-fn check_node_index_pg(
-    client: &mut impl postgres::GenericClient,
-    node_id: &str,
-    root_run_id: &str,
-) -> Result<(), String> {
-    let existing: Option<String> = client
-        .query_opt(
-            "SELECT root_run_id FROM recursive_execution_nodes WHERE node_id=$1",
-            &[&node_id],
-        )
-        .map_err(|error| error.to_string())?
-        .map(|row| row.get(0));
-    if existing.is_some_and(|existing| existing != root_run_id) {
-        return Err("recursive node identity is already bound to another root".to_string());
-    }
-    Ok(())
-}
-
 fn check_workflow_binding_sqlite(
     conn: &rusqlite::Connection,
     tree: &RecursiveTree,
@@ -785,15 +747,13 @@ fn persist_recursive_tree_sqlite_inner(
     )
     .map_err(|error| error.to_string())?;
     for node in tree.nodes.values() {
-        check_node_index_sqlite(tx, &node.node_id, &tree.root_run_id)?;
         let (node_id, parent_node_id, proposal_id, depth, fingerprint, status, version) =
             node_values(node);
         tx.execute(
             "INSERT INTO recursive_execution_nodes
              (node_id, root_run_id, parent_node_id, proposal_id, depth, objective_fingerprint, status, version, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
-             ON CONFLICT(node_id) DO UPDATE SET
-               root_run_id=excluded.root_run_id,
+             ON CONFLICT(root_run_id, node_id) DO UPDATE SET
                parent_node_id=excluded.parent_node_id,
                proposal_id=excluded.proposal_id,
                depth=excluded.depth,
@@ -912,7 +872,6 @@ pub(crate) fn persist_recursive_tree_pg(
         )
         .map_err(|error| error.to_string())?;
     for node in tree.nodes.values() {
-        check_node_index_pg(client, &node.node_id, &tree.root_run_id)?;
         let (node_id, parent_node_id, proposal_id, depth, fingerprint, status, version) =
             node_values(node);
         client
@@ -920,8 +879,7 @@ pub(crate) fn persist_recursive_tree_pg(
                 "INSERT INTO recursive_execution_nodes
                  (node_id, root_run_id, parent_node_id, proposal_id, depth, objective_fingerprint, status, version, created_at, updated_at)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
-                 ON CONFLICT(node_id) DO UPDATE SET
-                   root_run_id=EXCLUDED.root_run_id,
+                 ON CONFLICT(root_run_id, node_id) DO UPDATE SET
                    parent_node_id=EXCLUDED.parent_node_id,
                    proposal_id=EXCLUDED.proposal_id,
                    depth=EXCLUDED.depth,
@@ -1036,15 +994,13 @@ impl LocalProductStore {
                 )
                 .map_err(|error| error.to_string())?;
                 for node in tree.nodes.values() {
-                    check_node_index_sqlite(&tx, &node.node_id, &tree.root_run_id)?;
                     let (node_id, parent_node_id, proposal_id, depth, fingerprint, status, version) =
                         node_values(node);
                     tx.execute(
                         "INSERT INTO recursive_execution_nodes
                          (node_id, root_run_id, parent_node_id, proposal_id, depth, objective_fingerprint, status, version, created_at, updated_at)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
-                         ON CONFLICT(node_id) DO UPDATE SET
-                           root_run_id=excluded.root_run_id,
+                         ON CONFLICT(root_run_id, node_id) DO UPDATE SET
                            parent_node_id=excluded.parent_node_id,
                            proposal_id=excluded.proposal_id,
                            depth=excluded.depth,
@@ -1115,15 +1071,13 @@ impl LocalProductStore {
                 )
                 .map_err(|error| error.to_string())?;
                 for node in tree.nodes.values() {
-                    check_node_index_pg(&mut tx, &node.node_id, &tree.root_run_id)?;
                     let (node_id, parent_node_id, proposal_id, depth, fingerprint, status, version) =
                         node_values(node);
                     tx.execute(
                         "INSERT INTO recursive_execution_nodes
                          (node_id, root_run_id, parent_node_id, proposal_id, depth, objective_fingerprint, status, version, created_at, updated_at)
                          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
-                         ON CONFLICT(node_id) DO UPDATE SET
-                           root_run_id=EXCLUDED.root_run_id,
+                         ON CONFLICT(root_run_id, node_id) DO UPDATE SET
                            parent_node_id=EXCLUDED.parent_node_id,
                            proposal_id=EXCLUDED.proposal_id,
                            depth=EXCLUDED.depth,
@@ -1860,6 +1814,30 @@ pub(crate) fn sync_recursive_completion_sqlite(
     usage: &crate::recursive_execution::RecursiveBudget,
     now: &str,
 ) -> Result<String, String> {
+    sync_recursive_completion_sqlite_with_receipt(
+        conn,
+        root_run_id,
+        recursive_node_id,
+        lease_id,
+        lease_id,
+        success,
+        retry,
+        usage,
+        now,
+    )
+}
+
+pub(crate) fn sync_recursive_completion_sqlite_with_receipt(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    recursive_node_id: &str,
+    lease_id: &str,
+    usage_receipt_id: &str,
+    success: bool,
+    retry: bool,
+    usage: &crate::recursive_execution::RecursiveBudget,
+    now: &str,
+) -> Result<String, String> {
     let Some(mut tree) = load_recursive_tree_sqlite(conn, root_run_id)? else {
         return Err("recursive_tree_missing".to_string());
     };
@@ -1871,8 +1849,14 @@ pub(crate) fn sync_recursive_completion_sqlite(
         && tree
             .retry_allowed(recursive_node_id, usage)
             .map_err(|reason| reason.as_str().to_string())?;
-    tree.complete_node_with_usage(recursive_node_id, lease_id, success, usage)
-        .map_err(|reason| reason.as_str().to_string())?;
+    tree.complete_node_with_usage_receipt(
+        recursive_node_id,
+        lease_id,
+        usage_receipt_id,
+        success,
+        usage,
+    )
+    .map_err(|reason| reason.as_str().to_string())?;
     if retry_allowed {
         tree.retry_node(recursive_node_id)
             .map_err(|reason| reason.as_str().to_string())?;
@@ -1897,7 +1881,27 @@ pub(crate) fn sync_recursive_completion_sqlite(
 pub(crate) fn sync_recursive_root_completion_sqlite(
     conn: &rusqlite::Connection,
     root_run_id: &str,
-    receipt_id: &str,
+    lease_id: &str,
+    success: bool,
+    usage: &RecursiveBudget,
+    now: &str,
+) -> Result<String, String> {
+    sync_recursive_root_completion_sqlite_with_receipt(
+        conn,
+        root_run_id,
+        lease_id,
+        lease_id,
+        success,
+        usage,
+        now,
+    )
+}
+
+pub(crate) fn sync_recursive_root_completion_sqlite_with_receipt(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    lease_id: &str,
+    usage_receipt_id: &str,
     success: bool,
     usage: &RecursiveBudget,
     now: &str,
@@ -1906,7 +1910,7 @@ pub(crate) fn sync_recursive_root_completion_sqlite(
         return Err("recursive_tree_missing".to_string());
     };
     let expected_version = tree.version;
-    tree.complete_root_with_usage(receipt_id, success, usage)
+    tree.complete_root_with_usage_receipt(lease_id, usage_receipt_id, success, usage)
         .map_err(|reason| reason.as_str().to_string())?;
     tree.finalize_terminal_tree(None);
     sync_terminal_workflow_nodes_sqlite(conn, &tree, now)?;
@@ -2275,6 +2279,31 @@ pub(crate) fn sync_recursive_completion_pg(
     usage: &crate::recursive_execution::RecursiveBudget,
     now: &str,
 ) -> Result<String, String> {
+    sync_recursive_completion_pg_with_receipt(
+        client,
+        root_run_id,
+        recursive_node_id,
+        lease_id,
+        lease_id,
+        success,
+        retry,
+        usage,
+        now,
+    )
+}
+
+#[cfg(feature = "pg")]
+pub(crate) fn sync_recursive_completion_pg_with_receipt(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+    recursive_node_id: &str,
+    lease_id: &str,
+    usage_receipt_id: &str,
+    success: bool,
+    retry: bool,
+    usage: &crate::recursive_execution::RecursiveBudget,
+    now: &str,
+) -> Result<String, String> {
     let Some(mut tree) = load_recursive_tree_pg(client, root_run_id)? else {
         return Err("recursive_tree_missing".to_string());
     };
@@ -2286,8 +2315,14 @@ pub(crate) fn sync_recursive_completion_pg(
         && tree
             .retry_allowed(recursive_node_id, usage)
             .map_err(|reason| reason.as_str().to_string())?;
-    tree.complete_node_with_usage(recursive_node_id, lease_id, success, usage)
-        .map_err(|reason| reason.as_str().to_string())?;
+    tree.complete_node_with_usage_receipt(
+        recursive_node_id,
+        lease_id,
+        usage_receipt_id,
+        success,
+        usage,
+    )
+    .map_err(|reason| reason.as_str().to_string())?;
     if retry_allowed {
         tree.retry_node(recursive_node_id)
             .map_err(|reason| reason.as_str().to_string())?;
@@ -2313,7 +2348,28 @@ pub(crate) fn sync_recursive_completion_pg(
 pub(crate) fn sync_recursive_root_completion_pg(
     client: &mut impl postgres::GenericClient,
     root_run_id: &str,
-    receipt_id: &str,
+    lease_id: &str,
+    success: bool,
+    usage: &RecursiveBudget,
+    now: &str,
+) -> Result<String, String> {
+    sync_recursive_root_completion_pg_with_receipt(
+        client,
+        root_run_id,
+        lease_id,
+        lease_id,
+        success,
+        usage,
+        now,
+    )
+}
+
+#[cfg(feature = "pg")]
+pub(crate) fn sync_recursive_root_completion_pg_with_receipt(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+    lease_id: &str,
+    usage_receipt_id: &str,
     success: bool,
     usage: &RecursiveBudget,
     now: &str,
@@ -2322,7 +2378,7 @@ pub(crate) fn sync_recursive_root_completion_pg(
         return Err("recursive_tree_missing".to_string());
     };
     let expected_version = tree.version;
-    tree.complete_root_with_usage(receipt_id, success, usage)
+    tree.complete_root_with_usage_receipt(lease_id, usage_receipt_id, success, usage)
         .map_err(|reason| reason.as_str().to_string())?;
     tree.finalize_terminal_tree(None);
     sync_terminal_workflow_nodes_pg(client, &tree, now)?;
@@ -2591,6 +2647,94 @@ mod tests {
         );
         tree.bind_root_identity("test-agent", &root_node_id, &receipt)
             .expect("bind test tree identity");
+    }
+
+    fn assert_same_workflow_node_id_is_scoped_by_run(store: LocalProductStore, suffix: &str) {
+        let shared_root_id = "agent-node-001";
+        let mut run_ids = Vec::new();
+        for index in 0..2 {
+            let run_id = format!("recursive-run-scoped-node-{suffix}-{index}");
+            let workflow_id = format!("recursive-run-scoped-workflow-{suffix}-{index}");
+            let mut tree = RecursiveTree::new_with_root_node_id(
+                &run_id,
+                &workflow_id,
+                shared_root_id,
+                &format!("root objective {index}"),
+                RecursiveScope {
+                    repository: Some("fixture".to_string()),
+                    allowed_paths: BTreeSet::from(["docs/".to_string()]),
+                    capabilities: BTreeSet::from(["read".to_string()]),
+                },
+                BTreeSet::from(["read".to_string()]),
+                RecursiveBudget {
+                    calls_remaining: 2,
+                    tokens_remaining: 20,
+                    cost_micros_remaining: 20,
+                    time_ms_remaining: 200,
+                },
+            );
+            bind_test_tree_identity(&mut tree);
+            bind_test_workflow(&store, &tree);
+            store
+                .save_recursive_tree(&tree)
+                .expect("persist scoped tree");
+            run_ids.push(run_id);
+        }
+
+        for run_id in &run_ids {
+            let loaded = store
+                .load_recursive_tree(run_id)
+                .expect("load scoped tree")
+                .expect("scoped tree exists");
+            assert_eq!(loaded.root_node_id, shared_root_id);
+            assert_eq!(loaded.root_run_id, *run_id);
+        }
+        let indexed_count = match &store.db {
+            DatabaseConnection::Sqlite(_) => store
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM recursive_execution_nodes WHERE node_id=?1",
+                        [shared_root_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(|error| error.to_string())
+                })
+                .expect("count SQLite identities"),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => store
+                .with_pg_conn(|client| {
+                    client
+                        .query_one(
+                            "SELECT COUNT(*) FROM recursive_execution_nodes WHERE node_id=$1 AND root_run_id = ANY($2)",
+                            &[&shared_root_id, &run_ids],
+                        )
+                        .map(|row| row.get::<_, i64>(0))
+                        .map_err(|error| error.to_string())
+                })
+                .expect("count PostgreSQL identities"),
+        };
+        assert_eq!(indexed_count, 2);
+    }
+
+    #[test]
+    fn sqlite_recursive_node_identity_is_run_scoped() {
+        assert_same_workflow_node_id_is_scoped_by_run(
+            LocalProductStore::new(":memory:").expect("store"),
+            "sqlite",
+        );
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn postgres_recursive_node_identity_is_run_scoped() {
+        let Some(url) = postgres_test_url() else {
+            return;
+        };
+        assert_same_workflow_node_id_is_scoped_by_run(
+            LocalProductStore::new_postgres(&url, || "2026-07-19T00:00:00Z".to_string())
+                .expect("PostgreSQL store"),
+            &uuid::Uuid::new_v4().to_string(),
+        );
     }
 
     #[cfg(feature = "pg-tests")]

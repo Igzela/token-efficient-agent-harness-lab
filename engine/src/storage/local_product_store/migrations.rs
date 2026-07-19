@@ -1288,15 +1288,17 @@ fn validate_sqlite_v26_schema(conn: &Connection) -> Result<(), String> {
             }
             let expected_not_null = !(*table == "recursive_execution_nodes"
                 && matches!(name, "parent_node_id" | "proposal_id"));
-            let expected_primary_key = (*table == "recursive_execution_trees"
-                && name == "root_run_id")
-                || (*table == "recursive_execution_nodes" && name == "node_id");
-            if !expected_primary_key && (*not_null == 1) != expected_not_null {
+            let expected_primary_key = match (*table, name) {
+                ("recursive_execution_trees" | "recursive_execution_nodes", "root_run_id") => 1,
+                ("recursive_execution_nodes", "node_id") => 2,
+                _ => 0,
+            };
+            if expected_primary_key == 0 && (*not_null == 1) != expected_not_null {
                 return Err(format!(
                     "SQLite v26 schema nullability mismatch for {table}.{name}"
                 ));
             }
-            if expected_primary_key && *primary_key != 1 {
+            if *primary_key != expected_primary_key {
                 return Err(format!(
                     "SQLite v26 schema primary key mismatch for {table}.{name}"
                 ));
@@ -1308,6 +1310,7 @@ fn validate_sqlite_v26_schema(conn: &Connection) -> Result<(), String> {
         (
             "recursive_execution_nodes",
             [
+                "primary key(root_run_id, node_id)",
                 "unique(root_run_id, objective_fingerprint)",
                 "check (depth between 0 and 2)",
                 "check (length(objective_fingerprint) = 64)",
@@ -1343,7 +1346,7 @@ fn validate_sqlite_v26_schema(conn: &Connection) -> Result<(), String> {
         (
             "recursive_execution_nodes",
             "idx_recursive_execution_nodes_parent",
-            ["parent_node_id", "status", "node_id"].as_slice(),
+            ["root_run_id", "parent_node_id", "status", "node_id"].as_slice(),
         ),
     ] {
         let properties: Option<(i64, i64)> = conn
@@ -2232,7 +2235,9 @@ mod tests {
                     workflow_id TEXT NOT NULL
                  );
                  CREATE TABLE recursive_execution_nodes (
-                    node_id TEXT PRIMARY KEY
+                    node_id TEXT NOT NULL,
+                    root_run_id TEXT NOT NULL,
+                    PRIMARY KEY(root_run_id, node_id)
                  );",
             )
             .expect("partial v26 schema");
@@ -2269,7 +2274,7 @@ mod tests {
                  CREATE INDEX idx_recursive_execution_trees_workflow
                     ON recursive_execution_trees(workflow_id, updated_at);
                  CREATE TABLE recursive_execution_nodes (
-                    node_id TEXT PRIMARY KEY,
+                    node_id TEXT NOT NULL,
                     root_run_id TEXT NOT NULL,
                     parent_node_id TEXT NOT NULL,
                     proposal_id TEXT NOT NULL,
@@ -2279,13 +2284,14 @@ mod tests {
                     version BIGINT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    PRIMARY KEY(root_run_id, node_id),
                     UNIQUE(root_run_id, objective_fingerprint),
                     FOREIGN KEY(root_run_id) REFERENCES recursive_execution_trees(root_run_id)
                  );
                  CREATE INDEX idx_recursive_execution_nodes_root
                     ON recursive_execution_nodes(root_run_id, depth, node_id);
                  CREATE INDEX idx_recursive_execution_nodes_parent
-                    ON recursive_execution_nodes(parent_node_id, status, node_id);",
+                    ON recursive_execution_nodes(root_run_id, parent_node_id, status, node_id);",
             )
             .expect("malformed v26 schema");
         }
@@ -2310,7 +2316,7 @@ mod tests {
             (
                 "partial",
                 "CREATE INDEX idx_recursive_execution_nodes_parent
-                 ON recursive_execution_nodes(parent_node_id, status, node_id)
+                 ON recursive_execution_nodes(root_run_id, parent_node_id, status, node_id)
                  WHERE status = 'ready';",
             ),
         ] {

@@ -417,9 +417,12 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
             ));
         }
     }
-    for (table, column) in [
-        ("recursive_execution_trees", "root_run_id"),
-        ("recursive_execution_nodes", "node_id"),
+    for (table, expected_columns) in [
+        ("recursive_execution_trees", ["root_run_id"].as_slice()),
+        (
+            "recursive_execution_nodes",
+            ["root_run_id", "node_id"].as_slice(),
+        ),
     ] {
         let primary_key: bool = client
             .query_one(
@@ -428,17 +431,18 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
                      JOIN pg_class t ON t.oid=c.conrelid
                      WHERE t.relnamespace=current_schema()::regnamespace
                        AND t.relname=$1 AND c.contype='p'
-                       AND cardinality(c.conkey)=1
-                       AND (SELECT a.attname FROM pg_attribute a
-                            WHERE a.attrelid=t.oid AND a.attnum=c.conkey[1])=$2
+                       AND (SELECT array_agg(a.attname ORDER BY key.ordinality)
+                            FROM unnest(c.conkey) WITH ORDINALITY AS key(attnum, ordinality)
+                            JOIN pg_attribute a
+                              ON a.attrelid=t.oid AND a.attnum=key.attnum)=$2
                  )",
-                &[&table, &column],
+                &[&table, &expected_columns],
             )
             .map_err(|error| error.to_string())?
             .get(0);
         if !primary_key {
             return Err(format!(
-                "PostgreSQL v26 schema missing primary key for {table}.{column}"
+                "PostgreSQL v26 schema missing primary key for {table}"
             ));
         }
     }
@@ -456,7 +460,7 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
         (
             "idx_recursive_execution_nodes_parent",
             "recursive_execution_nodes",
-            ["parent_node_id", "status", "node_id"].as_slice(),
+            ["root_run_id", "parent_node_id", "status", "node_id"].as_slice(),
         ),
     ] {
         let definition: Option<(String, String, bool, bool, Vec<String>)> = client
@@ -1374,7 +1378,7 @@ mod tests {
             .run_pg_migrations_internal()
             .expect_err("malformed v26 schema must fail closed");
         assert!(
-            error.contains("missing primary key for recursive_execution_nodes.node_id"),
+            error.contains("missing primary key for recursive_execution_nodes"),
             "unexpected error: {error}"
         );
         assert_eq!(fixture.store.schema_version().expect("version"), 26);
