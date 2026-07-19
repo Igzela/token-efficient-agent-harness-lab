@@ -80,17 +80,27 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
     {
         return Err("recursive root creation identity is incomplete".to_string());
     }
+    if tree.root_child_budget_limit.is_none() {
+        return Err("recursive root child budget authority is missing".to_string());
+    }
+    let recorded_overrun = tree.execution_state
+        == crate::recursive_execution::RecursiveExecutionState::BudgetExhausted
+        && tree
+            .usage_receipts
+            .values()
+            .any(|receipt| receipt.starts_with("0:"));
     if let Some(limit) = tree.root_budget_limit.as_ref() {
         let mut total = tree.spent_budget.clone();
         total.add(&tree.reserved_budget);
-        let recorded_overrun = tree.execution_state
-            == crate::recursive_execution::RecursiveExecutionState::BudgetExhausted
-            && tree
-                .usage_receipts
-                .values()
-                .any(|receipt| receipt.starts_with("0:"));
         if !limit.can_spend(&tree.root_budget) || (!limit.can_spend(&total) && !recorded_overrun) {
             return Err("recursive tree aggregate budget is inconsistent".to_string());
+        }
+        if !recorded_overrun {
+            let mut accounted = tree.root_budget.clone();
+            accounted.add(&total);
+            if &accounted != limit {
+                return Err("recursive tree aggregate budget is not conserved".to_string());
+            }
         }
     }
     let root = tree
@@ -108,6 +118,9 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
         return Err("recursive tree root identity is inconsistent".to_string());
     }
     let mut child_counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut child_authority = std::collections::BTreeMap::<String, RecursiveBudget>::new();
+    let mut total_actual_usage = RecursiveBudget::default();
+    let mut total_reservations = RecursiveBudget::default();
     let mut fingerprints = std::collections::BTreeSet::new();
     let mut proposal_ids = std::collections::BTreeSet::new();
     for node in tree.nodes.values() {
@@ -125,6 +138,35 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
         {
             return Err("recursive node identity is inconsistent".to_string());
         }
+        let mut execution_accounted = node.budget.clone();
+        execution_accounted.add(&node.actual_usage);
+        let execution_is_recorded_overrun = recorded_overrun
+            && execution_accounted != node.budget_limit
+            && execution_accounted.can_spend(&node.budget_limit);
+        if !node.budget_limit.can_spend(&node.budget)
+            || !node.child_budget_limit.can_spend(&node.child_budget)
+            || (execution_accounted != node.budget_limit && !execution_is_recorded_overrun)
+        {
+            return Err("recursive node budget authority is inconsistent".to_string());
+        }
+        let terminal = matches!(
+            node.status,
+            RecursiveNodeStatus::Completed | RecursiveNodeStatus::Failed
+        );
+        if node.node_id == tree.root_node_id {
+            if node.reservation != RecursiveBudget::default()
+                || tree.root_budget_limit.as_ref() != Some(&node.budget_limit)
+                || tree.root_child_budget_limit.as_ref() != Some(&node.child_budget_limit)
+            {
+                return Err("recursive root node budget authority is inconsistent".to_string());
+            }
+        } else if (terminal && node.reservation != RecursiveBudget::default())
+            || (!terminal && node.reservation != node.budget)
+        {
+            return Err("recursive node reservation is inconsistent".to_string());
+        }
+        total_actual_usage.add(&node.actual_usage);
+        total_reservations.add(&node.reservation);
         if !fingerprints.insert(node.objective_fingerprint.clone()) {
             return Err("recursive objective fingerprint is duplicated".to_string());
         }
@@ -151,6 +193,11 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
                 return Err("recursive node lineage or authority is inconsistent".to_string());
             }
             *child_counts.entry(parent_node_id.to_string()).or_default() += 1;
+            let authority = child_authority
+                .entry(parent_node_id.to_string())
+                .or_default();
+            authority.add(&node.actual_usage);
+            authority.add(&node.reservation);
         }
         if let Some(proposal_id) = node.proposal_id.as_deref() {
             if node.node_id
@@ -196,6 +243,18 @@ fn validate_tree_for_persistence(tree: &RecursiveTree) -> Result<String, String>
         .any(|node| node.accepted_children != child_counts.get(&node.node_id).copied().unwrap_or(0))
     {
         return Err("recursive child count is inconsistent".to_string());
+    }
+    if tree.nodes.values().any(|node| {
+        let mut accounted = node.child_budget.clone();
+        if let Some(children) = child_authority.get(&node.node_id) {
+            accounted.add(children);
+        }
+        accounted != node.child_budget_limit
+            && !(recorded_overrun && accounted.can_spend(&node.child_budget_limit))
+    }) || total_actual_usage != tree.spent_budget
+        || total_reservations != tree.reserved_budget
+    {
+        return Err("recursive node accounting is inconsistent".to_string());
     }
     if tree.active_leases.iter().any(|lease_id| {
         !tree
@@ -254,6 +313,153 @@ fn validate_scope(scope: &RecursiveScope) -> Result<(), String> {
         return Err("recursive scope value exceeds byte cap".to_string());
     }
     Ok(())
+}
+
+fn recursive_root_tree_from_metadata(
+    root_run_id: &str,
+    workflow_id: &str,
+    node_id: &str,
+    metadata: &Value,
+    boundaries: &Value,
+) -> Result<RecursiveTree, String> {
+    if metadata
+        .get("recursive_root_node_id")
+        .and_then(Value::as_str)
+        != Some(node_id)
+        || metadata.get("task_type").and_then(Value::as_str) != Some("agent_step")
+    {
+        return Err("recursive_node_identity_malformed".to_string());
+    }
+    let agent_id = metadata
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "recursive root agent identity is missing".to_string())?;
+    let objective = metadata
+        .get("agent_objective")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "recursive root objective is missing".to_string())?;
+    let plan_receipt = metadata
+        .get("creation_receipt_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "recursive root plan creation receipt is missing".to_string())?;
+    let authority: RecursiveRootAuthority = serde_json::from_value(
+        metadata
+            .get("recursive_root_authority")
+            .cloned()
+            .ok_or_else(|| "recursive root authority binding is missing".to_string())?,
+    )
+    .map_err(|_| "recursive root authority binding is malformed".to_string())?;
+    if authority.schema_version != RECURSIVE_ROOT_AUTHORITY_VERSION
+        || authority.capabilities.is_empty()
+        || authority.scope.capabilities != authority.capabilities
+        || !authority.tree_budget.can_spend(&authority.child_budget)
+        || !authority.tree_budget.is_nonzero()
+        || !authority.child_budget.is_nonzero()
+    {
+        return Err("recursive root authority binding is inconsistent".to_string());
+    }
+    let mut tree = RecursiveTree::new_with_root_node_id(
+        root_run_id,
+        workflow_id,
+        node_id,
+        objective,
+        authority.scope.clone(),
+        authority.capabilities.clone(),
+        authority.tree_budget.clone(),
+    );
+    tree.root_child_budget_limit = Some(authority.child_budget.clone());
+    let root = tree
+        .nodes
+        .get_mut(node_id)
+        .ok_or_else(|| "recursive root node is missing".to_string())?;
+    root.child_budget = authority.child_budget.clone();
+    root.child_budget_limit = authority.child_budget;
+    tree.bind_root_identity(
+        agent_id,
+        node_id,
+        &recursive_root_creation_receipt_sha256(
+            plan_receipt,
+            root_run_id,
+            workflow_id,
+            node_id,
+            agent_id,
+        ),
+    )
+    .map_err(|reason| reason.as_str().to_string())?;
+    tree.bind_root_execution_scope(
+        boundaries.get("tenant_id").and_then(Value::as_str),
+        boundaries.get("workspace_id").and_then(Value::as_str),
+    )
+    .map_err(|reason| reason.as_str().to_string())?;
+    Ok(tree)
+}
+
+pub(crate) fn ensure_recursive_root_tree_sqlite(
+    conn: &rusqlite::Connection,
+    root_run_id: &str,
+    workflow_id: &str,
+    node_id: &str,
+    metadata: &Value,
+    now: &str,
+) -> Result<(), String> {
+    if let Some(tree) = load_recursive_tree_sqlite(conn, root_run_id)? {
+        return (tree.root_node_id == node_id)
+            .then_some(())
+            .ok_or_else(|| "recursive root conflicts with persisted tree".to_string());
+    }
+    let boundaries_json: String = conn
+        .query_row(
+            "SELECT boundaries_json FROM workflow_runs WHERE run_id=?1",
+            [root_run_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let boundaries: Value = serde_json::from_str(&boundaries_json)
+        .map_err(|_| "recursive workflow boundaries are malformed".to_string())?;
+    let tree = recursive_root_tree_from_metadata(
+        root_run_id,
+        workflow_id,
+        node_id,
+        metadata,
+        &boundaries,
+    )?;
+    persist_recursive_tree_sqlite(conn, &tree, now, Some(0))
+}
+
+#[cfg(feature = "pg")]
+pub(crate) fn ensure_recursive_root_tree_pg(
+    client: &mut impl postgres::GenericClient,
+    root_run_id: &str,
+    workflow_id: &str,
+    node_id: &str,
+    metadata: &Value,
+    now: &str,
+) -> Result<(), String> {
+    if let Some(tree) = load_recursive_tree_pg(client, root_run_id)? {
+        return (tree.root_node_id == node_id)
+            .then_some(())
+            .ok_or_else(|| "recursive root conflicts with persisted tree".to_string());
+    }
+    let boundaries_json: String = client
+        .query_one(
+            "SELECT boundaries_json FROM workflow_runs WHERE run_id=$1",
+            &[&root_run_id],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    let boundaries: Value = serde_json::from_str(&boundaries_json)
+        .map_err(|_| "recursive workflow boundaries are malformed".to_string())?;
+    let tree = recursive_root_tree_from_metadata(
+        root_run_id,
+        workflow_id,
+        node_id,
+        metadata,
+        &boundaries,
+    )?;
+    persist_recursive_tree_pg(client, &tree, now, Some(0))
 }
 
 fn normalize_loaded_tree(tree: &mut RecursiveTree) {
@@ -1656,11 +1862,12 @@ pub(crate) fn record_recursive_root_late_usage_sqlite(
     Ok(within_tree_budget)
 }
 
-pub(crate) fn sync_recursive_usage_unavailable_sqlite(
+pub(crate) fn sync_recursive_terminal_failure_sqlite(
     conn: &rusqlite::Connection,
     root_run_id: &str,
     recursive_node_id: &str,
     lease_id: &str,
+    reason: RecursiveFailureReason,
     now: &str,
 ) -> Result<String, String> {
     sync_recursive_completion_sqlite(
@@ -1681,7 +1888,7 @@ pub(crate) fn sync_recursive_usage_unavailable_sqlite(
             .as_str()
             .to_string()
     })?;
-    node.failure_reason = Some(RecursiveFailureReason::RecursiveUsageUnavailable);
+    node.failure_reason = Some(reason);
     node.status = RecursiveNodeStatus::Failed;
     node.version += 1;
     tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
@@ -1695,10 +1902,11 @@ pub(crate) fn sync_recursive_usage_unavailable_sqlite(
     Ok("failed".to_string())
 }
 
-pub(crate) fn sync_recursive_root_usage_unavailable_sqlite(
+pub(crate) fn sync_recursive_root_terminal_failure_sqlite(
     conn: &rusqlite::Connection,
     root_run_id: &str,
     receipt_id: &str,
+    reason: RecursiveFailureReason,
     now: &str,
 ) -> Result<String, String> {
     sync_recursive_root_completion_sqlite(
@@ -1718,7 +1926,7 @@ pub(crate) fn sync_recursive_root_usage_unavailable_sqlite(
             .as_str()
             .to_string()
     })?;
-    root.failure_reason = Some(RecursiveFailureReason::RecursiveUsageUnavailable);
+    root.failure_reason = Some(reason);
     root.status = RecursiveNodeStatus::Failed;
     root.version += 1;
     tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
@@ -1997,11 +2205,12 @@ pub(crate) fn record_recursive_root_late_usage_pg(
 }
 
 #[cfg(feature = "pg")]
-pub(crate) fn sync_recursive_usage_unavailable_pg(
+pub(crate) fn sync_recursive_terminal_failure_pg(
     client: &mut impl postgres::GenericClient,
     root_run_id: &str,
     recursive_node_id: &str,
     lease_id: &str,
+    reason: RecursiveFailureReason,
     now: &str,
 ) -> Result<String, String> {
     sync_recursive_completion_pg(
@@ -2022,7 +2231,7 @@ pub(crate) fn sync_recursive_usage_unavailable_pg(
             .as_str()
             .to_string()
     })?;
-    node.failure_reason = Some(RecursiveFailureReason::RecursiveUsageUnavailable);
+    node.failure_reason = Some(reason);
     node.status = RecursiveNodeStatus::Failed;
     node.version += 1;
     tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
@@ -2037,10 +2246,11 @@ pub(crate) fn sync_recursive_usage_unavailable_pg(
 }
 
 #[cfg(feature = "pg")]
-pub(crate) fn sync_recursive_root_usage_unavailable_pg(
+pub(crate) fn sync_recursive_root_terminal_failure_pg(
     client: &mut impl postgres::GenericClient,
     root_run_id: &str,
     receipt_id: &str,
+    reason: RecursiveFailureReason,
     now: &str,
 ) -> Result<String, String> {
     sync_recursive_root_completion_pg(
@@ -2060,7 +2270,7 @@ pub(crate) fn sync_recursive_root_usage_unavailable_pg(
             .as_str()
             .to_string()
     })?;
-    root.failure_reason = Some(RecursiveFailureReason::RecursiveUsageUnavailable);
+    root.failure_reason = Some(reason);
     root.status = RecursiveNodeStatus::Failed;
     root.version += 1;
     tree.execution_state = crate::recursive_execution::RecursiveExecutionState::TerminalFailed;
@@ -2254,6 +2464,42 @@ mod tests {
             .save_recursive_tree(&tree)
             .expect_err("forged lineage must fail closed");
         assert!(error.contains("root lineage"));
+    }
+
+    #[test]
+    fn persisted_tree_rejects_forged_per_node_budget_accounting() {
+        let store = LocalProductStore::new(":memory:").expect("store");
+        let mut tree = RecursiveTree::new(
+            "recursive-forged-budget-run",
+            "recursive-forged-budget-workflow",
+            "root objective",
+            RecursiveScope {
+                repository: Some("fixture".to_string()),
+                allowed_paths: BTreeSet::from(["docs/".to_string()]),
+                capabilities: BTreeSet::from(["read".to_string()]),
+            },
+            BTreeSet::from(["read".to_string()]),
+            RecursiveBudget {
+                calls_remaining: 2,
+                tokens_remaining: 20,
+                cost_micros_remaining: 20,
+                time_ms_remaining: 200,
+            },
+        );
+        bind_test_tree_identity(&mut tree);
+        bind_test_workflow(&store, &tree);
+        tree.nodes
+            .get_mut(&tree.root_node_id)
+            .expect("root")
+            .budget
+            .tokens_remaining -= 1;
+        let error = store
+            .save_recursive_tree(&tree)
+            .expect_err("forged per-node budget must fail closed");
+        assert!(
+            error.contains("recursive node budget authority is inconsistent"),
+            "unexpected error: {error}"
+        );
     }
 
     fn assert_depth_two_tree_round_trips(store: LocalProductStore, suffix: &str) {

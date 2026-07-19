@@ -125,7 +125,7 @@ fn action_type(action: &AgentAction) -> &'static str {
 }
 
 fn recursive_failure_reason_code(error: &str) -> Option<&'static str> {
-    const REASONS: [&str; 21] = [
+    const REASONS: [&str; 23] = [
         "recursive_disabled",
         "depth_exceeded",
         "child_limit_exceeded",
@@ -146,7 +146,9 @@ fn recursive_failure_reason_code(error: &str) -> Option<&'static str> {
         "recursive_node_execution_failed",
         "recursive_retry_exhausted",
         "fixture_usage_contract_missing",
+        "fixture_usage_contract_invalid",
         "recursive_usage_unavailable",
+        "recursive_node_identity_malformed",
     ];
     REASONS
         .into_iter()
@@ -1663,6 +1665,9 @@ impl AgentStepExecutor {
             .get("recursive_root_node_id")
             .and_then(Value::as_str)
         {
+            if !crate::recursive_execution::recursive_enabled() && persisted_tree.is_none() {
+                return Ok(agent_state.clone());
+            }
             if root_node_id != input.node_id {
                 return Err("recursive root workflow identity is not exact".to_string());
             }
@@ -1675,10 +1680,19 @@ impl AgentStepExecutor {
                 root_node_id,
                 &agent_state.agent_id,
             )?;
+            let boundaries = workflow_run.get("boundaries");
+            let tenant_id = boundaries
+                .and_then(|value| value.get("tenant_id"))
+                .and_then(Value::as_str);
+            let workspace_id = boundaries
+                .and_then(|value| value.get("workspace_id"))
+                .and_then(Value::as_str);
             if persisted_tree.as_ref().is_some_and(|tree| {
                 tree.root_node_id != root_node_id
                     || tree.root_scope != authority.scope
                     || tree.root_capabilities != authority.capabilities
+                    || tree.root_tenant_id.as_deref() != tenant_id
+                    || tree.root_workspace_id.as_deref() != workspace_id
                     || tree.root_budget_limit.as_ref() != Some(&authority.tree_budget)
                     || tree.root_child_budget_limit.as_ref() != Some(&authority.child_budget)
             }) {
@@ -1698,6 +1712,26 @@ impl AgentStepExecutor {
                 "allowed_paths".to_string(),
                 json!(authority.scope.allowed_paths.iter().collect::<Vec<_>>()),
             );
+            effective.metadata.insert(
+                "tenant_id".to_string(),
+                boundaries
+                    .and_then(|value| value.get("tenant_id"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            effective.metadata.insert(
+                "workspace_id".to_string(),
+                boundaries
+                    .and_then(|value| value.get("workspace_id"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            effective
+                .metadata
+                .insert("recursive_authority_enforced".to_string(), json!(true));
+            effective
+                .metadata
+                .insert("recursive_root_authority".to_string(), json!(true));
             return Ok(effective);
         }
         let Some(recursive_node_id) = input
@@ -1772,6 +1806,9 @@ impl AgentStepExecutor {
         effective
             .metadata
             .insert("recursive_authority_enforced".to_string(), json!(true));
+        effective
+            .metadata
+            .insert("recursive_child_authority".to_string(), json!(true));
         Ok(effective)
     }
 
@@ -1849,6 +1886,21 @@ impl AgentStepExecutor {
                     memory_state_read_bytes,
                     0,
                 );
+                let operations = if agent_state
+                    .metadata
+                    .get("recursive_child_authority")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                {
+                    vec![]
+                } else {
+                    vec![AgentMutationOp::UpdateAgentState {
+                        expected_updated_at: agent_state.updated_at.clone(),
+                        status: Some("completed".to_string()),
+                        scratchpad_summary: None,
+                        metadata_patch: None,
+                    }]
+                };
                 apply(&AgentActionMutation {
                     run_id: run_id.to_string(),
                     node_id: input_node_id.to_string(),
@@ -1856,12 +1908,7 @@ impl AgentStepExecutor {
                     action_sha256,
                     action_type: "complete".to_string(),
                     result_json: result,
-                    operations: vec![AgentMutationOp::UpdateAgentState {
-                        expected_updated_at: agent_state.updated_at.clone(),
-                        status: Some("completed".to_string()),
-                        scratchpad_summary: None,
-                        metadata_patch: None,
-                    }],
+                    operations,
                 })
             }
             AgentAction::UpdateScratchpadSummary(text) => {
@@ -2085,6 +2132,7 @@ impl AgentStepExecutor {
                                 Some(root_authority.child_budget.clone());
                             if let Some(root) = tree.nodes.get_mut(&tree.root_node_id) {
                                 root.child_budget = root_authority.child_budget.clone();
+                                root.child_budget_limit = root_authority.child_budget.clone();
                             }
                             tree
                         });
@@ -3075,18 +3123,6 @@ impl NodeExecutor for AgentStepExecutor {
             }
         }
 
-        match self
-            .store
-            .committed_agent_action_result(&input.run_id, &input.node_id, &agent_id)
-        {
-            Ok(Some(result)) => {
-                return completed_agent_step_output(result, &start)
-                    .unwrap_or_else(|error| agent_step_fail(&error, &start));
-            }
-            Ok(None) => {}
-            Err(error) => return agent_step_fail(&error, &start),
-        }
-
         let loaded_agent_state = match self.store.get_agent_state(&agent_id, &input.run_id) {
             Ok(Some(s)) => s,
             Ok(None) => {
@@ -3102,6 +3138,22 @@ impl NodeExecutor for AgentStepExecutor {
                 Ok(state) => state,
                 Err(error) => return agent_step_fail(&error, &start),
             };
+
+        // Exactly-once replay still has to prove the current workflow node is
+        // bound to the same persisted recursive authority. Otherwise a caller
+        // could strip or forge child metadata and receive a successful result
+        // before the narrower authority is derived.
+        match self
+            .store
+            .committed_agent_action_result(&input.run_id, &input.node_id, &agent_id)
+        {
+            Ok(Some(result)) => {
+                return completed_agent_step_output(result, &start)
+                    .unwrap_or_else(|error| agent_step_fail(&error, &start));
+            }
+            Ok(None) => {}
+            Err(error) => return agent_step_fail(&error, &start),
+        }
 
         let mailbox_count =
             match self
@@ -3547,6 +3599,7 @@ mod tests {
                     "status": "pending",
                     "recursive_root_node_id": "agent-node-001",
                     "agent_id": "agent-recursive",
+                    "agent_objective": "test recursive root objective",
                     "capability_profile": [
                         "read", "mailbox", "memory", "child_task", "handoff", "review", "debate"
                     ],
@@ -4699,6 +4752,27 @@ mod tests {
                 .is_some_and(|message| message.contains("does not authorize")),
             "unexpected output: {output:?}"
         );
+        let mut handoff = stub_handoff_request("agent-recursive", "run-recursive-root-authority");
+        handoff.node_id = "agent-node-001".to_string();
+        let handoff_output = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestHandoff(handoff)),
+        )
+        .execute_node(&persisted_recursive_agent_step_input(
+            &store,
+            "agent-recursive",
+            "run-recursive-root-authority",
+            "agent-node-001",
+        ));
+        assert_eq!(handoff_output.status, "failed");
+        assert!(handoff_output
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("does not authorize")));
+        assert!(store
+            .list_proposals_by_run("run-recursive-root-authority", 100, 0)
+            .expect("proposals")
+            .is_empty());
         std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
@@ -4811,6 +4885,7 @@ mod tests {
                     "status": "pending",
                     "recursive_root_node_id": root_id,
                     "agent_id": "agent-recursive",
+                    "agent_objective": "PostgreSQL recursive fixture root",
                     "capability_profile": [
                         "mailbox", "memory", "child_task", "handoff", "review", "debate"
                     ],
@@ -4983,6 +5058,10 @@ mod tests {
             .get_mut("agent-node-001")
             .expect("root")
             .child_budget = crate::recursive_execution::default_recursive_child_budget();
+        tree.nodes
+            .get_mut("agent-node-001")
+            .expect("root")
+            .child_budget_limit = crate::recursive_execution::default_recursive_child_budget();
         tree.bind_root_identity(
             "agent-recursive",
             "agent-node-001",
@@ -5083,6 +5162,36 @@ mod tests {
             .list_proposals_by_run("run-recursive-authority", 100, 0)
             .expect("proposals")
             .is_empty());
+        let status_before = store
+            .get_agent_state("agent-recursive", "run-recursive-authority")
+            .expect("agent state")
+            .expect("agent state exists")
+            .status;
+        let completed = AgentStepExecutor::new(store.clone(), stub_decision(AgentAction::Complete))
+            .execute_node(&NodeExecutionInput {
+                node_id: child_id.clone(),
+                task_type: "agent_step".to_string(),
+                run_id: "run-recursive-authority".to_string(),
+                workflow_id: "wf-ar2-001".to_string(),
+                node_metadata: json!({
+                    "agent_id": "agent-recursive",
+                    "recursive_node_id": child_id,
+                    "recursive_capabilities": child_caps,
+                    "recursive_scope": child_scope,
+                    "recursive_tenant_id": admission.node.tenant_id,
+                    "recursive_workspace_id": admission.node.workspace_id,
+                }),
+            });
+        assert_eq!(completed.status, "completed", "{completed:?}");
+        assert_eq!(
+            store
+                .get_agent_state("agent-recursive", "run-recursive-authority")
+                .expect("agent state")
+                .expect("agent state exists")
+                .status,
+            status_before,
+            "one recursive child must not terminalize the shared run-level agent state"
+        );
         let stripped = AgentStepExecutor::new(
             store,
             stub_decision(AgentAction::UpdateScratchpadSummary(

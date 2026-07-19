@@ -1180,28 +1180,47 @@ impl LocalProductStore {
                     )
                     .unwrap_or_default();
 
-                let node_metadata = conn
+                let node_metadata_text: String = conn
                     .query_row(
                         "SELECT node_json FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
                         params![run_id, node_id],
-                        |row| {
-                            let text: String = row.get(0)?;
-                            Ok::<Value, rusqlite::Error>(serde_json::from_str(&text).unwrap_or(Value::Null))
-                        },
+                        |row| row.get(0),
                     )
-                    .unwrap_or(Value::Null);
+                    .map_err(|error| error.to_string())?;
+                let node_metadata: Value = serde_json::from_str(&node_metadata_text)
+                    .map_err(|_| "recursive_node_identity_malformed".to_string())?;
+                if !node_metadata.is_object() {
+                    return Err("recursive_node_identity_malformed".to_string());
+                }
 
-                let recursive_node_id = if let Some(node_id) = node_metadata
+                let recursive_node_id = if let Some(recursive_marker) = node_metadata
                     .get("recursive_node_id")
                     .and_then(Value::as_str)
                 {
-                    Some(node_id.to_string())
+                    if recursive_marker != node_id {
+                        return Err("recursive_node_identity_malformed".to_string());
+                    }
+                    Some(recursive_marker.to_string())
                 } else if let Some(root_id) = node_metadata
                     .get("recursive_root_node_id")
                     .and_then(Value::as_str)
                 {
-                    super::recursive_execution::load_recursive_tree_sqlite(conn, run_id)?
-                        .map(|_| root_id.to_string())
+                    if crate::recursive_execution::recursive_enabled() {
+                        if root_id != node_id {
+                            return Err("recursive_node_identity_malformed".to_string());
+                        }
+                        super::recursive_execution::ensure_recursive_root_tree_sqlite(
+                            conn,
+                            run_id,
+                            &workflow_id,
+                            &node_id,
+                            &node_metadata,
+                            &now,
+                        )?;
+                        Some(root_id.to_string())
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -1555,28 +1574,47 @@ impl LocalProductStore {
                     .map(|r| r.get(0))
                     .unwrap_or_default();
 
-                let node_metadata = tx
+                let node_metadata_text: String = tx
                     .query_one(
                         "SELECT node_json FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
                         &[&run_id, &node_id],
                     )
-                    .map(|r| {
-                        let text: String = r.get(0);
-                        serde_json::from_str(&text).unwrap_or(Value::Null)
-                    })
-                    .unwrap_or(Value::Null);
+                    .map_err(|error| error.to_string())?
+                    .get(0);
+                let node_metadata: Value = serde_json::from_str(&node_metadata_text)
+                    .map_err(|_| "recursive_node_identity_malformed".to_string())?;
+                if !node_metadata.is_object() {
+                    return Err("recursive_node_identity_malformed".to_string());
+                }
 
-                let recursive_node_id = if let Some(node_id) = node_metadata
+                let recursive_node_id = if let Some(recursive_marker) = node_metadata
                     .get("recursive_node_id")
                     .and_then(Value::as_str)
                 {
-                    Some(node_id.to_string())
+                    if recursive_marker != node_id {
+                        return Err("recursive_node_identity_malformed".to_string());
+                    }
+                    Some(recursive_marker.to_string())
                 } else if let Some(root_id) = node_metadata
                     .get("recursive_root_node_id")
                     .and_then(Value::as_str)
                 {
-                    super::recursive_execution::load_recursive_tree_pg(&mut tx, run_id)?
-                        .map(|_| root_id.to_string())
+                    if crate::recursive_execution::recursive_enabled() {
+                        if root_id != node_id {
+                            return Err("recursive_node_identity_malformed".to_string());
+                        }
+                        super::recursive_execution::ensure_recursive_root_tree_pg(
+                            &mut tx,
+                            run_id,
+                            &workflow_id,
+                            &node_id,
+                            &node_metadata,
+                            &now,
+                        )?;
+                        Some(root_id.to_string())
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -1767,49 +1805,44 @@ impl LocalProductStore {
                                 |row| row.get(0),
                             )
                             .map_err(|e| e.to_string())?;
-                        let mut node_json: Value =
-                            serde_json::from_str(&node_json_text).unwrap_or(Value::Null);
-                        let recursive_node_id = node_json
-                            .get("recursive_node_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
-                        let recursive_root_node_id = node_json
-                            .get("recursive_root_node_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
-                        if recursive_node_id.is_some() && recursive_root_node_id.is_some() {
-                            return Err("recursive_node_identity_malformed".to_string());
-                        }
-                        let recursive_root_active = recursive_root_node_id.is_some()
-                            && super::recursive_execution::load_recursive_tree_sqlite(conn, run_id)?
-                                .is_some();
-                        let recursive_identity = recursive_node_id.as_ref().or(if recursive_root_active {
-                            recursive_root_node_id.as_ref()
-                        } else {
-                            None
-                        });
-                        let usage_metadata = if recursive_root_active {
-                            node_json
-                                .get("recursive_root_authority")
-                                .ok_or_else(|| "recursive root authority is missing".to_string())?
-                        } else {
-                            &node_json
-                        };
-                        let recursive_usage_result = recursive_identity
-                            .map(|_| recursive_usage_from_output(&output, usage_metadata))
-                            .transpose();
-                        let recursive_usage_unavailable = matches!(
-                            recursive_usage_result.as_ref(),
-                            Err(error) if error == RecursiveFailureReason::RecursiveUsageUnavailable.as_str()
-                        );
-                        let recursive_usage = match recursive_usage_result {
-                            Ok(usage) => usage,
-                            Err(_error) if recursive_usage_unavailable => {
-                                Some(crate::recursive_execution::RecursiveBudget::default())
+                        let indexed_root = indexed_recursive_root_sqlite(conn, run_id, &node_id)?;
+                        let mut identity = resolve_recursive_completion_identity(
+                            &node_id,
+                            &node_json_text,
+                            indexed_root.as_deref(),
+                            crate::recursive_execution::recursive_enabled(),
+                        )?;
+                        let recursive_identity = identity.recursive_node_id.as_ref();
+                        let recursive_root_active = identity.root;
+                        let mut recursive_terminal_reason = identity.terminal_reason;
+                        let recursive_usage = if recursive_identity.is_some()
+                            && recursive_terminal_reason.is_none()
+                        {
+                            let usage_result = if recursive_root_active {
+                                identity
+                                    .node_json
+                                    .get("recursive_root_authority")
+                                    .ok_or_else(|| "recursive_node_identity_malformed".to_string())
+                                    .and_then(|metadata| recursive_usage_from_output(&output, metadata))
+                            } else {
+                                recursive_usage_from_output(&output, &identity.node_json)
+                            };
+                            match usage_result {
+                                Ok(usage) => Some(usage),
+                                Err(error) => {
+                                    recursive_terminal_reason = recursive_usage_failure_reason(&error);
+                                    if recursive_terminal_reason.is_none() {
+                                        return Err(error);
+                                    }
+                                    Some(crate::recursive_execution::RecursiveBudget::default())
+                                }
                             }
-                            Err(error) => return Err(error),
+                        } else {
+                            recursive_identity
+                                .map(|_| crate::recursive_execution::RecursiveBudget::default())
                         };
-                        let requested_retry = !recursive_usage_unavailable
+                        let recursive_terminal_failure = recursive_terminal_reason.is_some();
+                        let requested_retry = !recursive_terminal_failure
                             && retryable_node_failure(&output)
                             && attempt <= if recursive_identity.is_some() {
                                 1
@@ -1832,7 +1865,7 @@ impl LocalProductStore {
                             false
                         };
 
-                        let actual_status = if recursive_usage_unavailable {
+                        let actual_status = if recursive_terminal_failure {
                             "failed"
                         } else if should_retry {
                             "pending"
@@ -1854,7 +1887,7 @@ impl LocalProductStore {
                         ).map_err(|e| e.to_string())?;
                         if finalized != 1 {
                             if let Some(recursive_node_id) = recursive_identity.map(String::as_str) {
-                                if recursive_usage_unavailable {
+                                if recursive_terminal_failure {
                                     append_audit_locked(
                                         conn,
                                         &now,
@@ -1866,7 +1899,9 @@ impl LocalProductStore {
                                             "node_id": node_id,
                                             "attempt": attempt,
                                             "recursive_node_id": recursive_node_id,
-                                            "reason": RecursiveFailureReason::RecursiveUsageUnavailable.as_str(),
+                                            "reason": recursive_terminal_reason
+                                                .expect("recursive terminal reason")
+                                                .as_str(),
                                         }),
                                     )?;
                                 } else {
@@ -1948,11 +1983,12 @@ impl LocalProductStore {
                         }
 
                         let recursive_status = if let Some(recursive_node_id) = recursive_identity.map(String::as_str) {
-                            Some(if recursive_root_active && recursive_usage_unavailable {
-                                super::recursive_execution::sync_recursive_root_usage_unavailable_sqlite(
+                            Some(if recursive_root_active && recursive_terminal_failure {
+                                super::recursive_execution::sync_recursive_root_terminal_failure_sqlite(
                                     conn,
                                     run_id,
                                     &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    recursive_terminal_reason.expect("recursive terminal reason"),
                                     &now,
                                 )?
                             } else if recursive_root_active {
@@ -1964,12 +2000,13 @@ impl LocalProductStore {
                                     recursive_usage.as_ref().expect("recursive usage"),
                                     &now,
                                 )?
-                            } else if recursive_usage_unavailable {
-                                super::recursive_execution::sync_recursive_usage_unavailable_sqlite(
+                            } else if recursive_terminal_failure {
+                                super::recursive_execution::sync_recursive_terminal_failure_sqlite(
                                     conn,
                                     run_id,
                                     recursive_node_id,
                                     &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    recursive_terminal_reason.expect("recursive terminal reason"),
                                     &now,
                                 )?
                             } else {
@@ -2015,7 +2052,8 @@ impl LocalProductStore {
                             .map_err(|e| e.to_string())?;
                         }
                         let result_json = output.to_value();
-                        if let Some(obj) = node_json.as_object_mut() {
+                        if identity.metadata_writable {
+                        if let Some(obj) = identity.node_json.as_object_mut() {
                             obj.insert("status".to_string(), json!(persisted_status));
                             obj.insert("result".to_string(), result_json.clone());
                             if persisted_status == "completed" {
@@ -2024,9 +2062,10 @@ impl LocalProductStore {
                         }
                         conn.execute(
                             "UPDATE workflow_run_nodes SET node_json = ?1 WHERE run_id = ?2 AND node_id = ?3",
-                            params![node_json.to_string(), run_id, node_id],
+                            params![identity.node_json.to_string(), run_id, node_id],
                         )
                         .map_err(|e| e.to_string())?;
+                        }
 
                         if should_retry {
                             conn.execute(
@@ -2174,49 +2213,44 @@ impl LocalProductStore {
                             )
                             .map_err(|e| e.to_string())?
                             .get(0);
-                        let mut node_json: Value =
-                            serde_json::from_str(&node_json_text).unwrap_or(Value::Null);
-                        let recursive_node_id = node_json
-                            .get("recursive_node_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
-                        let recursive_root_node_id = node_json
-                            .get("recursive_root_node_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
-                        if recursive_node_id.is_some() && recursive_root_node_id.is_some() {
-                            return Err("recursive_node_identity_malformed".to_string());
-                        }
-                        let recursive_root_active = recursive_root_node_id.is_some()
-                            && super::recursive_execution::load_recursive_tree_pg(&mut tx, run_id)?
-                                .is_some();
-                        let recursive_identity = recursive_node_id.as_ref().or(if recursive_root_active {
-                            recursive_root_node_id.as_ref()
-                        } else {
-                            None
-                        });
-                        let usage_metadata = if recursive_root_active {
-                            node_json
-                                .get("recursive_root_authority")
-                                .ok_or_else(|| "recursive root authority is missing".to_string())?
-                        } else {
-                            &node_json
-                        };
-                        let recursive_usage_result = recursive_identity
-                            .map(|_| recursive_usage_from_output(&output, usage_metadata))
-                            .transpose();
-                        let recursive_usage_unavailable = matches!(
-                            recursive_usage_result.as_ref(),
-                            Err(error) if error == RecursiveFailureReason::RecursiveUsageUnavailable.as_str()
-                        );
-                        let recursive_usage = match recursive_usage_result {
-                            Ok(usage) => usage,
-                            Err(_error) if recursive_usage_unavailable => {
-                                Some(crate::recursive_execution::RecursiveBudget::default())
+                        let indexed_root = indexed_recursive_root_pg(&mut tx, run_id, &node_id)?;
+                        let mut identity = resolve_recursive_completion_identity(
+                            &node_id,
+                            &node_json_text,
+                            indexed_root.as_deref(),
+                            crate::recursive_execution::recursive_enabled(),
+                        )?;
+                        let recursive_identity = identity.recursive_node_id.as_ref();
+                        let recursive_root_active = identity.root;
+                        let mut recursive_terminal_reason = identity.terminal_reason;
+                        let recursive_usage = if recursive_identity.is_some()
+                            && recursive_terminal_reason.is_none()
+                        {
+                            let usage_result = if recursive_root_active {
+                                identity
+                                    .node_json
+                                    .get("recursive_root_authority")
+                                    .ok_or_else(|| "recursive_node_identity_malformed".to_string())
+                                    .and_then(|metadata| recursive_usage_from_output(&output, metadata))
+                            } else {
+                                recursive_usage_from_output(&output, &identity.node_json)
+                            };
+                            match usage_result {
+                                Ok(usage) => Some(usage),
+                                Err(error) => {
+                                    recursive_terminal_reason = recursive_usage_failure_reason(&error);
+                                    if recursive_terminal_reason.is_none() {
+                                        return Err(error);
+                                    }
+                                    Some(crate::recursive_execution::RecursiveBudget::default())
+                                }
                             }
-                            Err(error) => return Err(error),
+                        } else {
+                            recursive_identity
+                                .map(|_| crate::recursive_execution::RecursiveBudget::default())
                         };
-                        let requested_retry = !recursive_usage_unavailable
+                        let recursive_terminal_failure = recursive_terminal_reason.is_some();
+                        let requested_retry = !recursive_terminal_failure
                             && retryable_node_failure(&output)
                             && attempt <= if recursive_identity.is_some() {
                                 1
@@ -2239,7 +2273,7 @@ impl LocalProductStore {
                             false
                         };
 
-                        let actual_status = if recursive_usage_unavailable {
+                        let actual_status = if recursive_terminal_failure {
                             "failed"
                         } else if should_retry {
                             "pending"
@@ -2263,7 +2297,7 @@ impl LocalProductStore {
                         ).map_err(|e| e.to_string())?;
                         if finalized != 1 {
                             if let Some(recursive_node_id) = recursive_identity.map(String::as_str) {
-                                if recursive_usage_unavailable {
+                                if recursive_terminal_failure {
                                     pg_append_audit(
                                         &mut tx,
                                         &now,
@@ -2275,7 +2309,9 @@ impl LocalProductStore {
                                             "node_id": node_id,
                                             "attempt": attempt,
                                             "recursive_node_id": recursive_node_id,
-                                            "reason": RecursiveFailureReason::RecursiveUsageUnavailable.as_str(),
+                                            "reason": recursive_terminal_reason
+                                                .expect("recursive terminal reason")
+                                                .as_str(),
                                         }),
                                     )?;
                                 } else {
@@ -2357,11 +2393,12 @@ impl LocalProductStore {
                         }
 
                         let recursive_status = if let Some(recursive_node_id) = recursive_identity.map(String::as_str) {
-                            Some(if recursive_root_active && recursive_usage_unavailable {
-                                super::recursive_execution::sync_recursive_root_usage_unavailable_pg(
+                            Some(if recursive_root_active && recursive_terminal_failure {
+                                super::recursive_execution::sync_recursive_root_terminal_failure_pg(
                                     &mut tx,
                                     run_id,
                                     &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    recursive_terminal_reason.expect("recursive terminal reason"),
                                     &now,
                                 )?
                             } else if recursive_root_active {
@@ -2373,12 +2410,13 @@ impl LocalProductStore {
                                     recursive_usage.as_ref().expect("recursive usage"),
                                     &now,
                                 )?
-                            } else if recursive_usage_unavailable {
-                                super::recursive_execution::sync_recursive_usage_unavailable_pg(
+                            } else if recursive_terminal_failure {
+                                super::recursive_execution::sync_recursive_terminal_failure_pg(
                                     &mut tx,
                                     run_id,
                                     recursive_node_id,
                                     &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                    recursive_terminal_reason.expect("recursive terminal reason"),
                                     &now,
                                 )?
                             } else {
@@ -2424,7 +2462,8 @@ impl LocalProductStore {
                             .map_err(|e| e.to_string())?;
                         }
                         let result_json = output.to_value();
-                        if let Some(obj) = node_json.as_object_mut() {
+                        if identity.metadata_writable {
+                        if let Some(obj) = identity.node_json.as_object_mut() {
                             obj.insert("status".to_string(), json!(persisted_status));
                             obj.insert("result".to_string(), result_json.clone());
                             if persisted_status == "completed" {
@@ -2433,9 +2472,10 @@ impl LocalProductStore {
                         }
                         tx.execute(
                             "UPDATE workflow_run_nodes SET node_json = $1 WHERE run_id = $2 AND node_id = $3",
-                            &[&node_json.to_string(), &run_id, &node_id],
+                            &[&identity.node_json.to_string(), &run_id, &node_id],
                         )
                         .map_err(|e| e.to_string())?;
+                        }
 
                         if should_retry {
                             tx.execute(
@@ -3949,18 +3989,26 @@ impl LocalProductStore {
                         )
                         .optional()
                         .map_err(|error| error.to_string())?;
+                    let indexed_root = indexed_recursive_root_sqlite(&tx, run_id, node_id)?;
                     let recursive_state = recursive_row
                         .map(|(node_json, attempt_count)| {
-                            stale_recursive_identity(node_json, attempt_count)
+                            stale_recursive_identity(
+                                node_id,
+                                node_json,
+                                attempt_count,
+                                indexed_root.as_deref(),
+                            )
                         })
                         .transpose()?
                         .flatten();
                     let mut recursive_tree_missing = false;
                     let mut recursive_node_missing = false;
-                    let recursive_retry = if let Some((recursive_node_id, attempt, _)) =
+                    let recursive_retry = if let Some((recursive_node_id, attempt, _, _, malformed)) =
                         recursive_state.as_ref()
                     {
-                        match super::recursive_execution::recursive_retry_allowed_sqlite(
+                        if *malformed {
+                            false
+                        } else { match super::recursive_execution::recursive_retry_allowed_sqlite(
                             &tx,
                             run_id,
                             recursive_node_id,
@@ -3976,7 +4024,7 @@ impl LocalProductStore {
                                 false
                             }
                             Err(error) => return Err(error),
-                        }
+                        }}
                     } else {
                         false
                     };
@@ -3985,7 +4033,12 @@ impl LocalProductStore {
                     } else {
                         "pending"
                     };
-                    let recovery_reason = if recursive_tree_missing {
+                    let recovery_reason = if recursive_state
+                        .as_ref()
+                        .is_some_and(|(_, _, _, _, malformed)| *malformed)
+                    {
+                        "recursive_node_identity_malformed"
+                    } else if recursive_tree_missing {
                         "recursive_tree_missing"
                     } else if recursive_node_missing {
                         "recursive_node_missing"
@@ -3994,9 +4047,7 @@ impl LocalProductStore {
                     };
                     let mut recovered_node_json = recursive_state
                         .as_ref()
-                        .map(|(_, _, node_json)| serde_json::from_str::<Value>(node_json))
-                        .transpose()
-                        .map_err(|error| error.to_string())?;
+                        .and_then(|(_, _, node_json, _, _)| node_json.clone());
                     if let Some(object) = recovered_node_json
                         .as_mut()
                         .and_then(Value::as_object_mut)
@@ -4029,8 +4080,27 @@ impl LocalProductStore {
                         .map_err(|e| e.to_string())?;
                     if updated > 0 {
                         count += updated as i64;
-                        if let Some((recursive_node_id, attempt, _)) = recursive_state {
-                            if recursive_tree_missing {
+                        if let Some((recursive_node_id, attempt, _, recursive_root, malformed)) = recursive_state {
+                            if malformed {
+                                if recursive_root {
+                                    super::recursive_execution::sync_recursive_root_terminal_failure_sqlite(
+                                        &tx,
+                                        run_id,
+                                        &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                        RecursiveFailureReason::RecursiveNodeIdentityMalformed,
+                                        &now,
+                                    )?;
+                                } else {
+                                    super::recursive_execution::sync_recursive_terminal_failure_sqlite(
+                                        &tx,
+                                        run_id,
+                                        &recursive_node_id,
+                                        &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                        RecursiveFailureReason::RecursiveNodeIdentityMalformed,
+                                        &now,
+                                    )?;
+                                }
+                            } else if recursive_tree_missing {
                                 append_audit_locked(
                                     &tx,
                                     &now,
@@ -4135,18 +4205,26 @@ impl LocalProductStore {
                             let attempt_count: i32 = row.get(1);
                             (node_json, i64::from(attempt_count))
                         });
+                    let indexed_root = indexed_recursive_root_pg(&mut tx, run_id, node_id)?;
                     let recursive_state = recursive_row
                         .map(|(node_json, attempt_count)| {
-                            stale_recursive_identity(node_json, attempt_count)
+                            stale_recursive_identity(
+                                node_id,
+                                node_json,
+                                attempt_count,
+                                indexed_root.as_deref(),
+                            )
                         })
                         .transpose()?
                         .flatten();
                     let mut recursive_tree_missing = false;
                     let mut recursive_node_missing = false;
-                    let recursive_retry = if let Some((recursive_node_id, attempt, _)) =
+                    let recursive_retry = if let Some((recursive_node_id, attempt, _, _, malformed)) =
                         recursive_state.as_ref()
                     {
-                        match super::recursive_execution::recursive_retry_allowed_pg(
+                        if *malformed {
+                            false
+                        } else { match super::recursive_execution::recursive_retry_allowed_pg(
                             &mut tx,
                             run_id,
                             recursive_node_id,
@@ -4162,7 +4240,7 @@ impl LocalProductStore {
                                 false
                             }
                             Err(error) => return Err(error),
-                        }
+                        }}
                     } else {
                         false
                     };
@@ -4171,7 +4249,12 @@ impl LocalProductStore {
                     } else {
                         "pending"
                     };
-                    let recovery_reason = if recursive_tree_missing {
+                    let recovery_reason = if recursive_state
+                        .as_ref()
+                        .is_some_and(|(_, _, _, _, malformed)| *malformed)
+                    {
+                        "recursive_node_identity_malformed"
+                    } else if recursive_tree_missing {
                         "recursive_tree_missing"
                     } else if recursive_node_missing {
                         "recursive_node_missing"
@@ -4180,9 +4263,7 @@ impl LocalProductStore {
                     };
                     let mut recovered_node_json = recursive_state
                         .as_ref()
-                        .map(|(_, _, node_json)| serde_json::from_str::<Value>(node_json))
-                        .transpose()
-                        .map_err(|error| error.to_string())?;
+                        .and_then(|(_, _, node_json, _, _)| node_json.clone());
                     if let Some(object) = recovered_node_json
                         .as_mut()
                         .and_then(Value::as_object_mut)
@@ -4215,8 +4296,27 @@ impl LocalProductStore {
                         .map_err(|e| e.to_string())?;
                     if updated > 0 {
                         count += updated as i64;
-                        if let Some((recursive_node_id, attempt, _)) = recursive_state {
-                            if recursive_tree_missing {
+                        if let Some((recursive_node_id, attempt, _, recursive_root, malformed)) = recursive_state {
+                            if malformed {
+                                if recursive_root {
+                                    super::recursive_execution::sync_recursive_root_terminal_failure_pg(
+                                        &mut tx,
+                                        run_id,
+                                        &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                        RecursiveFailureReason::RecursiveNodeIdentityMalformed,
+                                        &now,
+                                    )?;
+                                } else {
+                                    super::recursive_execution::sync_recursive_terminal_failure_pg(
+                                        &mut tx,
+                                        run_id,
+                                        &recursive_node_id,
+                                        &format!("workflow:{run_id}:{node_id}:{attempt}"),
+                                        RecursiveFailureReason::RecursiveNodeIdentityMalformed,
+                                        &now,
+                                    )?;
+                                }
+                            } else if recursive_tree_missing {
                                 pg_append_audit(
                                     &mut tx,
                                     &now,
@@ -5276,6 +5376,22 @@ fn recursive_usage_from_output(
     })
 }
 
+fn recursive_usage_failure_reason(error: &str) -> Option<RecursiveFailureReason> {
+    match error {
+        "fixture_usage_contract_missing" => {
+            Some(RecursiveFailureReason::FixtureUsageContractMissing)
+        }
+        "fixture_usage_contract_invalid" => {
+            Some(RecursiveFailureReason::FixtureUsageContractInvalid)
+        }
+        "recursive_usage_unavailable" => Some(RecursiveFailureReason::RecursiveUsageUnavailable),
+        "recursive_node_identity_malformed" => {
+            Some(RecursiveFailureReason::RecursiveNodeIdentityMalformed)
+        }
+        _ => None,
+    }
+}
+
 fn recursive_retry_usage() -> crate::recursive_execution::RecursiveBudget {
     crate::recursive_execution::RecursiveBudget {
         // A stale lease has no measured execution usage. Retry admission is
@@ -5288,25 +5404,123 @@ fn recursive_retry_usage() -> crate::recursive_execution::RecursiveBudget {
     }
 }
 
+struct RecursiveCompletionIdentity {
+    node_json: Value,
+    recursive_node_id: Option<String>,
+    root: bool,
+    terminal_reason: Option<RecursiveFailureReason>,
+    metadata_writable: bool,
+}
+
+fn resolve_recursive_completion_identity(
+    node_id: &str,
+    node_json_text: &str,
+    indexed_root_node_id: Option<&str>,
+    recursive_enabled: bool,
+) -> Result<RecursiveCompletionIdentity, String> {
+    let parsed = serde_json::from_str::<Value>(node_json_text).ok();
+    let indexed = indexed_root_node_id.is_some();
+    let root = indexed_root_node_id == Some(node_id);
+    let valid_object = parsed.as_ref().is_some_and(Value::is_object);
+    let marker_valid = parsed.as_ref().is_some_and(|metadata| {
+        let child_value = metadata.get("recursive_node_id");
+        let root_value = metadata.get("recursive_root_node_id");
+        let child = child_value.and_then(Value::as_str);
+        let root_marker = root_value.and_then(Value::as_str);
+        let markers_well_typed = child_value
+            .is_none_or(|value| value.as_str().is_some_and(|marker| !marker.is_empty()))
+            && root_value
+                .is_none_or(|value| value.as_str().is_some_and(|marker| !marker.is_empty()));
+        if !markers_well_typed || (child_value.is_some() && root_value.is_some()) {
+            return false;
+        }
+        if root {
+            child.is_none() && root_marker == Some(node_id)
+        } else if indexed {
+            child == Some(node_id) && root_marker.is_none()
+        } else if !recursive_enabled {
+            matches!(
+                (child, root_marker),
+                (None, None) | (Some(_), None) | (None, Some(_))
+            )
+        } else {
+            metadata.get("recursive_node_id").is_none()
+                && metadata.get("recursive_root_node_id").is_none()
+        }
+    });
+    if !indexed && !marker_valid {
+        return Err("recursive_node_identity_malformed".to_string());
+    }
+    let malformed = indexed && (!valid_object || !marker_valid);
+    Ok(RecursiveCompletionIdentity {
+        node_json: parsed.unwrap_or(Value::Null),
+        recursive_node_id: indexed.then(|| node_id.to_string()),
+        root,
+        terminal_reason: malformed
+            .then_some(RecursiveFailureReason::RecursiveNodeIdentityMalformed),
+        metadata_writable: !malformed && valid_object,
+    })
+}
+
+fn indexed_recursive_root_sqlite(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    node_id: &str,
+) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT t.root_node_id
+         FROM recursive_execution_nodes n
+         JOIN recursive_execution_trees t ON t.root_run_id=n.root_run_id
+         WHERE n.node_id=?1 AND n.root_run_id=?2",
+        params![node_id, run_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "pg")]
+fn indexed_recursive_root_pg(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+    node_id: &str,
+) -> Result<Option<String>, String> {
+    client
+        .query_opt(
+            "SELECT t.root_node_id
+             FROM recursive_execution_nodes n
+             JOIN recursive_execution_trees t ON t.root_run_id=n.root_run_id
+             WHERE n.node_id=$1 AND n.root_run_id=$2",
+            &[&node_id, &run_id],
+        )
+        .map_err(|error| error.to_string())
+        .map(|row| row.map(|row| row.get(0)))
+}
+
+type StaleRecursiveIdentity = (String, i64, Option<Value>, bool, bool);
+
 fn stale_recursive_identity(
+    node_id: &str,
     node_json: String,
     attempt_count: i64,
-) -> Result<Option<(String, i64, String)>, String> {
-    let value: Value = serde_json::from_str(&node_json)
-        .map_err(|_| "workflow node metadata is malformed during stale recovery".to_string())?;
-    match (
-        value.get("recursive_node_id"),
-        value.get("recursive_root_node_id"),
-    ) {
-        (None, None) => Ok(None),
-        (Some(_), Some(_)) => Err("recursive workflow node binding is malformed".to_string()),
-        (Some(Value::String(node_id)), None) | (None, Some(Value::String(node_id)))
-            if !node_id.is_empty() =>
-        {
-            Ok(Some((node_id.clone(), attempt_count, node_json)))
-        }
-        _ => Err("recursive workflow node binding is malformed".to_string()),
-    }
+    indexed_root_node_id: Option<&str>,
+) -> Result<Option<StaleRecursiveIdentity>, String> {
+    let identity = resolve_recursive_completion_identity(
+        node_id,
+        &node_json,
+        indexed_root_node_id,
+        crate::recursive_execution::recursive_enabled(),
+    )?;
+    Ok(identity.recursive_node_id.map(|recursive_node_id| {
+        (
+            recursive_node_id,
+            attempt_count,
+            identity.metadata_writable.then_some(identity.node_json),
+            identity.root,
+            identity.terminal_reason
+                == Some(RecursiveFailureReason::RecursiveNodeIdentityMalformed),
+        )
+    }))
 }
 
 fn recursive_failure_reason_sqlite(
@@ -6445,10 +6659,38 @@ mod recursive_scheduler_tests {
             .collect::<Vec<_>>();
         for (index, run_id) in run_ids.iter().enumerate() {
             let node_id = format!("recursive-concurrent-cap-node-{suffix}-{index}");
+            let workflow_id = format!("recursive-concurrent-cap-workflow-{suffix}-{index}");
+            let agent_id = format!("recursive-concurrent-cap-agent-{suffix}-{index}");
+            let plan_receipt = format!("recursive-concurrent-cap-receipt-{suffix}-{index}");
+            let scope = RecursiveScope {
+                repository: None,
+                allowed_paths: BTreeSet::new(),
+                capabilities: BTreeSet::from(["read".to_string()]),
+            };
+            let mut tree = RecursiveTree::new_with_root_node_id(
+                run_id,
+                &workflow_id,
+                &node_id,
+                "concurrent recursive root",
+                scope.clone(),
+                scope.capabilities.clone(),
+                RecursiveBudget {
+                    calls_remaining: 2,
+                    tokens_remaining: 20,
+                    cost_micros_remaining: 20,
+                    time_ms_remaining: 200,
+                },
+            );
+            tree.bind_root_execution_scope(
+                Some(&format!("recursive-cap-tenant-{index}")),
+                Some(&format!("recursive-cap-workspace-{index}")),
+            )
+            .expect("root scope");
+            bind_scheduler_tree_root(&mut tree, &agent_id, &plan_receipt);
             setup
                 .import_workflow_run(&json!({
                     "run_id": run_id,
-                    "workflow_id": format!("recursive-concurrent-cap-workflow-{suffix}-{index}"),
+                    "workflow_id": workflow_id,
                     "status": "running",
                     "boundaries": {
                         "execution_authority": "managed",
@@ -6459,8 +6701,12 @@ mod recursive_scheduler_tests {
                         "node_id": node_id,
                         "task_type": "agent_step",
                         "status": "pending",
-                        "agent_id": format!("recursive-concurrent-cap-agent-{suffix}-{index}"),
+                        "agent_id": agent_id,
                         "recursive_root_node_id": node_id,
+                        "agent_objective": "concurrent recursive root",
+                        "capability_profile": tree.root_capabilities,
+                        "recursive_root_authority": scheduler_root_authority(&tree),
+                        "creation_receipt_sha256": plan_receipt,
                         "decision_source": "fixture"
                     }],
                     "edges": [],
@@ -6468,6 +6714,9 @@ mod recursive_scheduler_tests {
                     "approvals": []
                 }))
                 .expect("concurrent recursive run");
+            setup
+                .save_recursive_tree_with_expected_version(&tree, 0)
+                .expect("concurrent recursive tree");
         }
 
         let gate = Arc::new((Mutex::new((0usize, 0usize)), Condvar::new()));
@@ -6750,6 +6999,116 @@ mod recursive_scheduler_tests {
         );
     }
 
+    fn assert_fixture_root_without_children_is_accounted(store: LocalProductStore, suffix: &str) {
+        let _env_lock = crate::recursive_execution::test_env_lock()
+            .lock()
+            .expect("recursive environment lock");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        let run_id = format!("recursive-root-only-run-{suffix}");
+        let workflow_id = format!("recursive-root-only-workflow-{suffix}");
+        let root_id = format!("recursive-root-only-node-{suffix}");
+        let agent_id = format!("recursive-root-only-agent-{suffix}");
+        let plan_receipt = format!("recursive-root-only-receipt-{suffix}");
+        let scope = RecursiveScope {
+            repository: None,
+            allowed_paths: BTreeSet::new(),
+            capabilities: BTreeSet::from(["read".to_string()]),
+        };
+        let tree_budget = RecursiveBudget {
+            calls_remaining: 2,
+            tokens_remaining: 20,
+            cost_micros_remaining: 20,
+            time_ms_remaining: 200,
+        };
+        let child_budget = RecursiveBudget {
+            calls_remaining: 1,
+            tokens_remaining: 10,
+            cost_micros_remaining: 10,
+            time_ms_remaining: 100,
+        };
+        store
+            .import_workflow_run(&json!({
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "status": "running",
+                "boundaries": {
+                    "execution_authority": "managed",
+                    "tenant_id": "root-only-tenant",
+                    "workspace_id": "root-only-workspace"
+                },
+                "nodes": [{
+                    "node_id": root_id,
+                    "task_type": "agent_step",
+                    "status": "pending",
+                    "agent_id": agent_id,
+                    "agent_objective": "finish the bounded root",
+                    "recursive_root_node_id": root_id,
+                    "capability_profile": scope.capabilities,
+                    "recursive_root_authority": {
+                        "schema_version": RECURSIVE_ROOT_AUTHORITY_VERSION,
+                        "scope": scope,
+                        "capabilities": ["read"],
+                        "tree_budget": tree_budget,
+                        "child_budget": child_budget,
+                        "usage_contract": {
+                            "kind": "fixture",
+                            "calls": 1,
+                            "tokens": 1,
+                            "cost_micros": 1,
+                            "time_ms": 1
+                        }
+                    },
+                    "creation_receipt_sha256": plan_receipt,
+                    "decision_source": "fixture"
+                }],
+                "edges": [],
+                "events": [],
+                "approvals": []
+            }))
+            .expect("root-only workflow");
+        assert!(store
+            .load_recursive_tree(&run_id)
+            .expect("tree read")
+            .is_none());
+        let tick = store
+            .tick_with_executor(&run_id, "root-only-scheduler", 0, &RecursiveCapExecutor)
+            .expect("root-only tick");
+        assert_eq!(tick["action"], "node_executed");
+        let tree = store
+            .load_recursive_tree(&run_id)
+            .expect("tree read")
+            .expect("root tree initialized");
+        assert_eq!(tree.root_node_id, root_id);
+        assert_eq!(tree.nodes[&root_id].status, "completed");
+        assert_eq!(tree.nodes[&root_id].actual_usage.calls_remaining, 1);
+        assert!(tree.active_leases.is_empty());
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+    }
+
+    #[test]
+    fn sqlite_fixture_root_without_children_is_leased_and_accounted() {
+        assert_fixture_root_without_children_is_accounted(
+            LocalProductStore::new(":memory:").expect("store"),
+            "sqlite",
+        );
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn postgres_fixture_root_without_children_is_leased_and_accounted() {
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            if std::env::var("CI").as_deref() == Ok("true") {
+                panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+            }
+            return;
+        };
+        assert_fixture_root_without_children_is_accounted(
+            LocalProductStore::new_postgres(&url, || "2026-07-19T00:00:00Z".to_string())
+                .expect("PostgreSQL store"),
+            &uuid::Uuid::new_v4().to_string(),
+        );
+    }
+
     #[cfg(feature = "pg-tests")]
     #[test]
     fn postgres_scheduler_admitted_fixture_child_leases_and_completes() {
@@ -6766,7 +7125,12 @@ mod recursive_scheduler_tests {
         );
     }
 
-    fn assert_unavailable_recursive_usage_terminalizes(store: LocalProductStore, suffix: &str) {
+    fn assert_invalid_recursive_usage_terminalizes(
+        store: LocalProductStore,
+        suffix: &str,
+        usage_contract: Value,
+        expected_reason: RecursiveFailureReason,
+    ) {
         let _env_lock = crate::recursive_execution::test_env_lock()
             .lock()
             .expect("recursive environment lock");
@@ -6862,7 +7226,7 @@ mod recursive_scheduler_tests {
                         "recursive_tenant_id": admission.node.tenant_id,
                         "recursive_workspace_id": admission.node.workspace_id,
                         "decision_source": "provider",
-                        "usage_contract": {"kind": "unavailable"}
+                        "usage_contract": usage_contract
                     },
                     {
                         "node_id": sibling_id,
@@ -6875,7 +7239,7 @@ mod recursive_scheduler_tests {
                         "recursive_tenant_id": sibling.node.tenant_id,
                         "recursive_workspace_id": sibling.node.workspace_id,
                         "decision_source": "provider",
-                        "usage_contract": {"kind": "unavailable"}
+                        "usage_contract": usage_contract
                     }
                 ],
                 "edges": [],
@@ -6912,7 +7276,7 @@ mod recursive_scheduler_tests {
         );
         assert_eq!(
             loaded.nodes[failed_node_id].failure_reason.as_deref(),
-            Some(RecursiveFailureReason::RecursiveUsageUnavailable.as_str())
+            Some(expected_reason.as_str())
         );
         assert_eq!(loaded.nodes[terminalized_node_id].status, "failed");
         assert_eq!(
@@ -6932,10 +7296,7 @@ mod recursive_scheduler_tests {
             .find(|node| node["node_id"] == failed_node_id)
             .expect("failed node");
         assert_eq!(failed_node["db_status"], "failed");
-        assert_eq!(
-            failed_node["blocked_reason"],
-            RecursiveFailureReason::RecursiveUsageUnavailable.as_str()
-        );
+        assert_eq!(failed_node["blocked_reason"], expected_reason.as_str());
         let terminalized_node = run["nodes"]
             .as_array()
             .expect("nodes")
@@ -6952,9 +7313,11 @@ mod recursive_scheduler_tests {
 
     #[test]
     fn unavailable_recursive_usage_terminalizes_sqlite() {
-        assert_unavailable_recursive_usage_terminalizes(
+        assert_invalid_recursive_usage_terminalizes(
             LocalProductStore::new(":memory:").expect("store"),
             "sqlite",
+            json!({"kind": "unavailable"}),
+            RecursiveFailureReason::RecursiveUsageUnavailable,
         );
     }
 
@@ -6967,10 +7330,40 @@ mod recursive_scheduler_tests {
             }
             return;
         };
-        assert_unavailable_recursive_usage_terminalizes(
+        assert_invalid_recursive_usage_terminalizes(
             LocalProductStore::new_postgres(&url, || "2026-07-18T00:00:00Z".to_string())
                 .expect("PostgreSQL store"),
             &uuid::Uuid::new_v4().to_string(),
+            json!({"kind": "unavailable"}),
+            RecursiveFailureReason::RecursiveUsageUnavailable,
+        );
+    }
+
+    #[test]
+    fn invalid_fixture_usage_contract_terminalizes_sqlite_with_exact_reason() {
+        assert_invalid_recursive_usage_terminalizes(
+            LocalProductStore::new(":memory:").expect("store"),
+            "sqlite-invalid-fixture",
+            json!({"kind": "fixture", "calls": 0, "tokens": 1, "cost_micros": 1, "time_ms": 1}),
+            RecursiveFailureReason::FixtureUsageContractInvalid,
+        );
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn invalid_fixture_usage_contract_terminalizes_postgres_with_exact_reason() {
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            if std::env::var("CI").as_deref() == Ok("true") {
+                panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+            }
+            return;
+        };
+        assert_invalid_recursive_usage_terminalizes(
+            LocalProductStore::new_postgres(&url, || "2026-07-19T00:00:00Z".to_string())
+                .expect("PostgreSQL store"),
+            &uuid::Uuid::new_v4().to_string(),
+            json!({"kind": "fixture", "calls": 0, "tokens": 1, "cost_micros": 1, "time_ms": 1}),
+            RecursiveFailureReason::FixtureUsageContractInvalid,
         );
     }
 
@@ -7468,7 +7861,7 @@ mod recursive_scheduler_tests {
         let error = store
             .recover_stale_leases(0)
             .expect_err("malformed recursive identity must fail closed");
-        assert!(error.contains("recursive workflow node binding is malformed"));
+        assert!(error.contains("recursive_node_identity_malformed"));
         let run = store
             .get_workflow_run(&run_id)
             .expect("run")

@@ -111,6 +111,8 @@ pub enum RecursiveFailureReason {
     RecursiveNodeMissing,
     RecursiveUsageUnavailable,
     FixtureUsageContractMissing,
+    FixtureUsageContractInvalid,
+    RecursiveNodeIdentityMalformed,
 }
 
 impl RecursiveFailureReason {
@@ -137,6 +139,8 @@ impl RecursiveFailureReason {
             Self::RecursiveNodeMissing => "recursive_node_missing",
             Self::RecursiveUsageUnavailable => "recursive_usage_unavailable",
             Self::FixtureUsageContractMissing => "fixture_usage_contract_missing",
+            Self::FixtureUsageContractInvalid => "fixture_usage_contract_invalid",
+            Self::RecursiveNodeIdentityMalformed => "recursive_node_identity_malformed",
         }
     }
 }
@@ -278,7 +282,7 @@ impl RecursiveBudget {
         }
     }
 
-    fn is_nonzero(&self) -> bool {
+    pub(crate) fn is_nonzero(&self) -> bool {
         self.calls_remaining > 0
             && self.tokens_remaining > 0
             && self.cost_micros_remaining > 0
@@ -330,8 +334,10 @@ pub struct RecursiveNode {
     #[serde(default)]
     pub workspace_id: Option<String>,
     pub budget: RecursiveBudget,
+    pub budget_limit: RecursiveBudget,
     #[serde(default)]
     pub child_budget: RecursiveBudget,
+    pub child_budget_limit: RecursiveBudget,
     #[serde(default)]
     pub reservation: RecursiveBudget,
     #[serde(default)]
@@ -545,10 +551,12 @@ impl RecursiveTree {
             tenant_id: None,
             workspace_id: None,
             budget: budget.clone(),
+            budget_limit: budget.clone(),
             status: RecursiveNodeStatus::Ready,
             accepted_children: 0,
             retry_count: 0,
             child_budget: budget.clone(),
+            child_budget_limit: budget.clone(),
             reservation: RecursiveBudget::default(),
             actual_usage: RecursiveBudget::default(),
             version: 1,
@@ -764,7 +772,9 @@ impl RecursiveTree {
             tenant_id: parent.tenant_id.clone(),
             workspace_id: parent.workspace_id.clone(),
             budget: effective_budget.clone(),
+            budget_limit: effective_budget.clone(),
             child_budget: effective_budget.clone(),
+            child_budget_limit: effective_budget.clone(),
             reservation: effective_budget.clone(),
             actual_usage: RecursiveBudget::default(),
             status: RecursiveNodeStatus::Ready,
@@ -964,6 +974,7 @@ impl RecursiveTree {
         }
         let within_node_budget = root.budget.can_spend(usage);
         let within_tree_budget = self.record_unreserved_usage(receipt_id, usage)?;
+        self.root_budget.spend(usage);
         let within_budget = within_node_budget && within_tree_budget;
         let root = self
             .nodes
@@ -1024,6 +1035,7 @@ impl RecursiveTree {
             .budget
             .can_spend(usage);
         let within_tree_budget = self.record_unreserved_usage(receipt_id, usage)?;
+        self.root_budget.spend(usage);
         let root = self
             .nodes
             .get_mut(&self.root_node_id)

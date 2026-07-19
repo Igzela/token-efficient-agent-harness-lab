@@ -301,7 +301,7 @@ fn agent_steps_plan(
                 .iter()
                 .cloned()
                 .collect::<std::collections::BTreeSet<_>>();
-            json!({
+            let mut node = json!({
                 "node_id": node_id.clone(),
                 "task_type": "agent_step",
                 "status": "pending",
@@ -314,26 +314,36 @@ fn agent_steps_plan(
                 "model": agent_step.model,
                 "decision_source": "provider_typed_action",
                 "max_actions": 1,
-                "recursive_root_node_id": node_id.clone(),
-                "recursive_root_authority": {
-                    "schema_version": crate::recursive_execution::RECURSIVE_ROOT_AUTHORITY_VERSION,
-                    "scope": {
-                        "repository": null,
-                        "allowed_paths": [],
-                        "capabilities": recursive_capabilities.clone(),
-                    },
-                    "capabilities": recursive_capabilities,
-                    "tree_budget": crate::recursive_execution::default_recursive_tree_budget(),
-                    "child_budget": crate::recursive_execution::default_recursive_child_budget(),
-                    "usage_contract": {"kind": "measured"},
-                },
-                "creation_receipt_sha256": agent_step_creation_receipt_sha256(
-                    &ids.workflow_id,
-                    &node_id,
-                    &agent_step.agent_id,
-                    raw_request,
-                ),
-            })
+            });
+            if index == 0 {
+                let object = node.as_object_mut().expect("agent node object");
+                object.insert("recursive_root_node_id".to_string(), json!(node_id));
+                object.insert(
+                    "recursive_root_authority".to_string(),
+                    json!({
+                        "schema_version": crate::recursive_execution::RECURSIVE_ROOT_AUTHORITY_VERSION,
+                        "scope": {
+                            "repository": null,
+                            "allowed_paths": [],
+                            "capabilities": recursive_capabilities.clone(),
+                        },
+                        "capabilities": recursive_capabilities,
+                        "tree_budget": crate::recursive_execution::default_recursive_tree_budget(),
+                        "child_budget": crate::recursive_execution::default_recursive_child_budget(),
+                        "usage_contract": {"kind": "measured"},
+                    }),
+                );
+                object.insert(
+                    "creation_receipt_sha256".to_string(),
+                    json!(agent_step_creation_receipt_sha256(
+                        &ids.workflow_id,
+                        &format!("agent-node-{:03}", index + 1),
+                        &agent_step.agent_id,
+                        raw_request,
+                    )),
+                );
+            }
+            node
         })
         .collect::<Vec<_>>();
     let edges = (1..agent_steps.len())
