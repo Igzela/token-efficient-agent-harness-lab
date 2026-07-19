@@ -1844,7 +1844,7 @@ impl AgentStepExecutor {
                     recursive_expected_version,
                     recursive_workflow,
                     recursive_rejection_reason,
-                ) = if std::env::var("ACP_RECURSIVE_EXECUTION_ENABLED").as_deref() == Ok("1") {
+                ) = if crate::recursive_execution::recursive_enabled() {
                     let capabilities: BTreeSet<String> =
                         agent_state.capability_profile.iter().cloned().collect();
                     let requested_scope = RecursiveScope {
@@ -1963,6 +1963,22 @@ impl AgentStepExecutor {
                                 match tree.admit_child(&recursive_proposal) {
                                     Ok(admission) => {
                                         let node_id = admission.node.node_id.clone();
+                                        let usage_contract = if provider_usage.is_some() {
+                                            json!({"kind": "measured"})
+                                        } else {
+                                            json!({
+                                                "kind": "fixture",
+                                                "calls": 1,
+                                                "tokens": 1,
+                                                "cost_micros": 1,
+                                                "time_ms": 1,
+                                            })
+                                        };
+                                        let decision_source = if provider_usage.is_some() {
+                                            "provider"
+                                        } else {
+                                            "fixture"
+                                        };
                                         let workflow = if self
                                             .store
                                             .get_workflow_run(run_id)?
@@ -1986,14 +2002,8 @@ impl AgentStepExecutor {
                                                         .map_err(|error| error.to_string())?,
                                                     "recursive_tenant_id": admission.node.tenant_id,
                                                     "recursive_workspace_id": admission.node.workspace_id,
-                                                    "decision_source": "fixture",
-                                                    "usage_contract": {
-                                                        "kind": "fixture",
-                                                        "calls": 1,
-                                                        "tokens": 1,
-                                                        "cost_micros": 1,
-                                                        "time_ms": 1,
-                                                    },
+                                                    "decision_source": decision_source,
+                                                    "usage_contract": usage_contract,
                                                 }),
                                                 json!({
                                                     "edge_id": format!("recursive-edge-{node_id}"),
@@ -4326,7 +4336,7 @@ mod tests {
         create_test_agent(&store, "agent-recursive", "run-recursive");
         std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
         std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
-        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "true");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
 
         let proposal = stub_child_task_proposal("agent-recursive", "run-recursive");
@@ -4349,6 +4359,62 @@ mod tests {
             .redacted_read_model()
             .to_string()
             .contains("implement feature X"));
+
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+    }
+
+    #[test]
+    fn provider_backed_recursive_child_requires_measured_usage() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        import_test_workflow(&store, "run-recursive-measured", "wf-ar2-001");
+        create_test_agent(&store, "agent-recursive", "run-recursive-measured");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+
+        let proposal = stub_child_task_proposal("agent-recursive", "run-recursive-measured");
+        let executor = AgentStepExecutor::new_measured(
+            store.clone(),
+            Box::new(move |_| {
+                Ok(AgentDecision {
+                    action: AgentAction::ProposeChildTask(proposal.clone()),
+                    usage: AgentDecisionUsage {
+                        provider_id: "measured-provider".to_string(),
+                        model: "measured-model".to_string(),
+                        input_tokens: Some(7),
+                        output_tokens: Some(3),
+                        estimated_cost_usd: Some(0.000_01),
+                        reserved_cost_usd: 0.001,
+                        token_provenance: "provider_reported".to_string(),
+                        cost_provenance: "harness_derived".to_string(),
+                    },
+                })
+            }),
+        );
+        let output = executor.execute_node(&agent_step_input(
+            "agent-recursive",
+            "run-recursive-measured",
+        ));
+        assert_eq!(output.status, "completed");
+        let run = store
+            .get_workflow_run("run-recursive-measured")
+            .expect("workflow")
+            .expect("workflow exists");
+        let child = run["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .find(|node| {
+                node.get("recursive_node_id")
+                    .is_some_and(|id| id.as_str() != Some("agent-node-001"))
+            })
+            .expect("recursive child");
+        assert_eq!(child["decision_source"], "provider");
+        assert_eq!(child["usage_contract"]["kind"], "measured");
+        assert!(child["usage_contract"].get("tokens").is_none());
 
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");

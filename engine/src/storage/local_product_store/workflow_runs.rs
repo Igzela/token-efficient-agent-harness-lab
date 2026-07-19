@@ -968,7 +968,8 @@ impl LocalProductStore {
                                 |row| row.get(0),
                             )
                             .unwrap_or_default();
-                        if node_task_type == "agent_step"
+                        if crate::recursive_execution::recursive_enabled()
+                            && node_task_type == "agent_step"
                             && workflow_node_is_recursive_locked(conn, run_id, &nid)?
                         {
                             let recursive_running = count_running_recursive_steps_locked(conn)?;
@@ -1003,7 +1004,8 @@ impl LocalProductStore {
                             )
                             .unwrap_or_default();
                         if node_task_type == "agent_step" {
-                            let is_recursive = workflow_node_is_recursive_locked(conn, run_id, &nid)?;
+                            let is_recursive = crate::recursive_execution::recursive_enabled()
+                                && workflow_node_is_recursive_locked(conn, run_id, &nid)?;
                             if is_recursive {
                                 let recursive_running = count_running_recursive_steps_locked(conn)?;
                                 if recursive_running >= MAX_RECURSIVE_LEASES as i64 {
@@ -1347,7 +1349,8 @@ impl LocalProductStore {
                             )
                             .map(|r| r.get(0))
                             .unwrap_or_default();
-                        if node_task_type == "agent_step"
+                        if crate::recursive_execution::recursive_enabled()
+                            && node_task_type == "agent_step"
                             && pg_workflow_node_is_recursive(&mut tx, run_id, &nid)?
                         {
                             tx.batch_execute("SELECT pg_advisory_xact_lock(734775128237)")
@@ -1388,7 +1391,8 @@ impl LocalProductStore {
                                 "SELECT pg_advisory_xact_lock(734775128237)",
                             )
                             .map_err(|error| error.to_string())?;
-                            let is_recursive = pg_workflow_node_is_recursive(&mut tx, run_id, &nid)?;
+                            let is_recursive = crate::recursive_execution::recursive_enabled()
+                                && pg_workflow_node_is_recursive(&mut tx, run_id, &nid)?;
                             if is_recursive {
                                 let recursive_running = pg_count_running_recursive_steps(&mut tx)?;
                                 if recursive_running >= MAX_RECURSIVE_LEASES as i64 {
@@ -5100,6 +5104,9 @@ fn recursive_usage_from_output(
     if contract_kind == Some("unavailable") {
         return Err("recursive_usage_unavailable".to_string());
     }
+    if contract_kind != Some("measured") {
+        return Err("recursive_usage_unavailable".to_string());
+    }
     let token_count = match (output.input_tokens, output.output_tokens) {
         (Some(input), Some(output)) if input >= 0 && output >= 0 => {
             (input as u64).saturating_add(output as u64)
@@ -6397,9 +6404,12 @@ mod recursive_scheduler_tests {
             ..fixture_output
         };
         assert_eq!(
-            recursive_usage_from_output(&measured, &json!({}))
-                .expect("measured usage")
-                .tokens_remaining,
+            recursive_usage_from_output(
+                &measured,
+                &json!({"usage_contract": {"kind": "measured"}}),
+            )
+            .expect("measured usage")
+            .tokens_remaining,
             5
         );
     }
@@ -6975,6 +6985,101 @@ mod recursive_scheduler_tests {
             !workflow_node_is_recursive_locked(&conn, "ordinary-run", "ordinary-node")
                 .expect("marker")
         );
+    }
+
+    #[test]
+    fn disabled_recursive_feature_does_not_apply_recursive_capacity() {
+        let _env_lock = crate::recursive_execution::test_env_lock()
+            .lock()
+            .expect("recursive environment lock");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+        let store = LocalProductStore::new(":memory:").expect("store");
+        store
+            .import_workflow_run(&json!({
+                "run_id": "recursive-disabled-cap-run",
+                "workflow_id": "recursive-disabled-cap-workflow",
+                "status": "running",
+                "boundaries": {"execution_authority": "managed"},
+                "nodes": [
+                    {"node_id": "occupied-1", "task_type": "agent_step", "status": "running", "recursive_root_node_id": "occupied-1"},
+                    {"node_id": "occupied-2", "task_type": "agent_step", "status": "running", "recursive_root_node_id": "occupied-2"},
+                    {"node_id": "occupied-3", "task_type": "agent_step", "status": "running", "recursive_root_node_id": "occupied-3"},
+                    {"node_id": "ordinary-root", "task_type": "agent_step", "status": "pending", "recursive_root_node_id": "ordinary-root"}
+                ],
+                "edges": [],
+                "events": [],
+                "approvals": []
+            }))
+            .expect("workflow");
+
+        let result = store
+            .tick_with_executor(
+                "recursive-disabled-cap-run",
+                "recursive-disabled-scheduler",
+                0,
+                &RecursiveCapExecutor,
+            )
+            .expect("ordinary root executes while recursive feature is disabled");
+        assert_eq!(result["action"], "node_executed");
+        assert_eq!(result["node_id"], "ordinary-root");
+    }
+
+    #[cfg(feature = "pg-tests")]
+    #[test]
+    fn postgres_disabled_recursive_feature_does_not_apply_recursive_capacity() {
+        let _env_lock = crate::recursive_execution::test_env_lock()
+            .lock()
+            .expect("recursive environment lock");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            if std::env::var("CI").as_deref() == Ok("true") {
+                panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+            }
+            return;
+        };
+        let store = LocalProductStore::new_postgres(&url, || "2026-07-18T00:00:00Z".to_string())
+            .expect("PostgreSQL store");
+        let suffix = uuid::Uuid::new_v4().to_string();
+        let run_id = format!("recursive-disabled-pg-cap-run-{suffix}");
+        store
+            .import_workflow_run(&json!({
+                "run_id": run_id,
+                "workflow_id": format!("recursive-disabled-pg-cap-workflow-{suffix}"),
+                "status": "running",
+                "boundaries": {"execution_authority": "managed"},
+                "nodes": [
+                    {"node_id": "occupied-1", "task_type": "agent_step", "status": "running", "recursive_root_node_id": "occupied-1"},
+                    {"node_id": "occupied-2", "task_type": "agent_step", "status": "running", "recursive_root_node_id": "occupied-2"},
+                    {"node_id": "occupied-3", "task_type": "agent_step", "status": "running", "recursive_root_node_id": "occupied-3"},
+                    {"node_id": "ordinary-root", "task_type": "agent_step", "status": "pending", "recursive_root_node_id": "ordinary-root"}
+                ],
+                "edges": [],
+                "events": [],
+                "approvals": []
+            }))
+            .expect("workflow");
+
+        let result = store
+            .tick_with_executor(
+                &run_id,
+                "recursive-disabled-pg-scheduler",
+                0,
+                &RecursiveCapExecutor,
+            )
+            .expect("ordinary root executes while recursive feature is disabled");
+        assert_eq!(result["action"], "node_executed");
+        assert_eq!(result["node_id"], "ordinary-root");
+        store
+            .with_pg_conn(|client| {
+                client
+                    .execute(
+                        "UPDATE workflow_run_nodes SET status='completed' WHERE run_id=$1",
+                        &[&run_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .expect("release disabled-feature PostgreSQL fixture capacity");
     }
 
     #[test]

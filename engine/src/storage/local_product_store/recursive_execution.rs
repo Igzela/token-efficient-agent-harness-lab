@@ -2400,6 +2400,8 @@ mod tests {
             .expect("load")
             .expect("tree");
         assert_eq!(loaded.spent_budget.tokens_remaining, 7);
+        assert_eq!(loaded.nodes[&child_id].actual_usage.tokens_remaining, 7);
+        assert_eq!(loaded.nodes[&child_id].budget.tokens_remaining, 3);
         assert_eq!(loaded.usage_receipts.len(), 1);
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
@@ -2586,6 +2588,12 @@ mod tests {
         assert!(paused_loaded.active_leases.is_empty());
         assert_eq!(paused_loaded.reserved_budget, RecursiveBudget::default());
         assert_eq!(paused_loaded.spent_budget.tokens_remaining, 7);
+        assert_eq!(
+            paused_loaded.nodes[&paused_tree.root_node_id]
+                .actual_usage
+                .tokens_remaining,
+            7
+        );
         assert_eq!(paused_loaded.usage_receipts.len(), 1);
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
