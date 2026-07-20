@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest a bounded improvement that fits local-first, fail-closed boundaries
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Features must stay **local-first**, **fail-closed**, and **auditable**.
+        Cloud multi-tenant SaaS, free provider proxies, and unmediated autonomous workers are out of scope.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or operator problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Smallest useful change. Name existing owners to reuse when you know them.
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: What this request must not change (runtime, security, provider, merge authority, etc.).
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Primary surface
+      options:
+        - Docs / contributor experience
+        - Dashboard
+        - Python SDK
+        - TypeScript SDK
+        - Rust engine
+        - CI / exact-head evidence
+        - Scripts
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context

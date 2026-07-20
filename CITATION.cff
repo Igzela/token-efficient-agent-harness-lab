@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it using these metadata.
+title: Token-Efficient Agent Harness Lab
+authors:
+  - family-names: Igzela
+    website: https://github.com/Igzela
+repository-code: https://github.com/Igzela/token-efficient-agent-harness-lab
+url: https://token-efficient-agent-harness-lab.vercel.app
+abstract: >-
+  Local-first evidence and safety infrastructure for coding-agent repository
+  workflows, including exact-head CI binding, budgets, audit, recovery, and a
+  fail-closed operator dashboard.
+keywords:
+  - agent harness
+  - control plane
+  - exact-head CI
+  - audit
+  - token efficiency
+  - local-first
+license: MIT
+type: software
