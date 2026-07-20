@@ -3,6 +3,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
 use crate::http_server::middleware::{
@@ -17,6 +18,22 @@ use crate::provider::redaction::contains_sensitive_patterns;
 use crate::read_only_planner::ReadOnlyPlanner;
 
 const MAX_AGENT_OBJECTIVE_BYTES: usize = 4096;
+
+fn agent_step_creation_receipt_sha256(
+    workflow_id: &str,
+    node_id: &str,
+    agent_id: &str,
+    objective: &str,
+) -> String {
+    let canonical = json!({
+        "kind": "agent_step_creation.v1",
+        "workflow_id": workflow_id,
+        "node_id": node_id,
+        "agent_id": agent_id,
+        "objective": objective,
+    });
+    hex::encode(Sha256::digest(canonical.to_string().as_bytes()))
+}
 
 pub(crate) async fn api_create_plan(
     State(state): State<AxumApiState>,
@@ -116,6 +133,7 @@ pub(crate) async fn api_create_plan(
         .as_ref()
         .map(|steps| validate_agent_step_plan_requests(steps, provider_agent_model.as_deref()))
         .transpose()?;
+    let measured_agent_execution = provider_agent_model.is_some();
     let planner = ReadOnlyPlanner::new();
     let plan = store
         .create_workflow_plan(
@@ -130,6 +148,7 @@ pub(crate) async fn api_create_plan(
                         request_source,
                         created_at,
                         &agent_steps,
+                        measured_agent_execution,
                     ))
                 } else if let Some(adaptive_execution) = adaptive_execution {
                     Ok(adaptive_execution_plan(
@@ -273,13 +292,33 @@ fn agent_steps_plan(
     request_source: &str,
     created_at: &str,
     agent_steps: &[AgentStepPlanApiRequest],
+    measured_execution: bool,
 ) -> serde_json::Value {
+    let recursive_usage_contract = if measured_execution {
+        json!({"kind": "measured"})
+    } else {
+        json!({"kind": "fixture", "calls": 1, "tokens": 1, "cost_micros": 1, "time_ms": 1})
+    };
+    let decision_source = if measured_execution {
+        "provider_typed_action"
+    } else {
+        "fixture"
+    };
     let nodes = agent_steps
         .iter()
         .enumerate()
         .map(|(index, agent_step)| {
-            json!({
-                "node_id": format!("agent-node-{:03}", index + 1),
+            let node_id = format!("agent-node-{:03}", index + 1);
+            let recursive_capabilities =
+                crate::recursive_execution::heritable_recursive_capabilities(
+                    &agent_step
+                        .capability_profile
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>(),
+                );
+            let mut node = json!({
+                "node_id": node_id.clone(),
                 "task_type": "agent_step",
                 "status": "pending",
                 "agent_id": agent_step.agent_id,
@@ -289,9 +328,38 @@ fn agent_steps_plan(
                 "capability_profile": agent_step.capability_profile,
                 "profile_id": agent_step.profile_id,
                 "model": agent_step.model,
-                "decision_source": "provider_typed_action",
+                "decision_source": decision_source,
                 "max_actions": 1,
-            })
+            });
+            if index == 0 {
+                let object = node.as_object_mut().expect("agent node object");
+                object.insert("recursive_root_node_id".to_string(), json!(node_id));
+                object.insert(
+                    "recursive_root_authority".to_string(),
+                    json!({
+                        "schema_version": crate::recursive_execution::RECURSIVE_ROOT_AUTHORITY_VERSION,
+                        "scope": {
+                            "repository": null,
+                            "allowed_paths": [],
+                            "capabilities": recursive_capabilities.clone(),
+                        },
+                        "capabilities": recursive_capabilities,
+                        "tree_budget": crate::recursive_execution::default_recursive_tree_budget(),
+                        "child_budget": crate::recursive_execution::default_recursive_child_budget(),
+                        "usage_contract": recursive_usage_contract,
+                    }),
+                );
+                object.insert(
+                    "creation_receipt_sha256".to_string(),
+                    json!(agent_step_creation_receipt_sha256(
+                        &ids.workflow_id,
+                        &format!("agent-node-{:03}", index + 1),
+                        &agent_step.agent_id,
+                        raw_request,
+                    )),
+                );
+            }
+            node
         })
         .collect::<Vec<_>>();
     let edges = (1..agent_steps.len())
@@ -445,6 +513,35 @@ pub(crate) async fn api_plan_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node_executor::{
+        NodeExecutionInput, NodeExecutionOutput, NodeExecutor, RecursiveUsageMode,
+    };
+
+    struct FixtureAgentStepExecutor;
+
+    impl NodeExecutor for FixtureAgentStepExecutor {
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+
+        fn recursive_usage_mode(&self) -> RecursiveUsageMode {
+            RecursiveUsageMode::Fixture
+        }
+
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "agent_step".to_string(),
+                output: Some("fixture root completed".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+    }
 
     fn agent_step(model: Option<&str>) -> AgentStepPlanApiRequest {
         AgentStepPlanApiRequest {
@@ -481,5 +578,135 @@ mod tests {
         )
         .unwrap();
         assert_eq!(validated[0].model.as_deref(), Some("bounded-model"));
+    }
+
+    #[test]
+    fn agent_plan_binds_deterministic_recursive_root_creation_identity() {
+        let ids = crate::read_only_planner::WorkflowPlanIds::for_sequence(7);
+        let request = agent_step(None);
+        let plan = agent_steps_plan(
+            &ids,
+            "review docs",
+            "fixture",
+            "2026-07-18T00:00:00Z",
+            std::slice::from_ref(&request),
+            false,
+        );
+        let node = &plan["graph"]["nodes"][0];
+        assert_eq!(node["recursive_root_node_id"], node["node_id"]);
+        assert_eq!(
+            node["recursive_root_authority"]["usage_contract"],
+            json!({"kind": "fixture", "calls": 1, "tokens": 1, "cost_micros": 1, "time_ms": 1})
+        );
+        let receipt = node["creation_receipt_sha256"]
+            .as_str()
+            .expect("creation receipt");
+        assert_eq!(receipt.len(), 64);
+        assert_eq!(
+            receipt,
+            agent_step_creation_receipt_sha256(
+                &ids.workflow_id,
+                "agent-node-001",
+                &request.agent_id,
+                "review docs",
+            )
+        );
+    }
+
+    #[test]
+    fn recursive_root_authority_excludes_non_heritable_capabilities() {
+        let ids = crate::read_only_planner::WorkflowPlanIds::for_sequence(9);
+        let mut request = agent_step(None);
+        request.capability_profile = vec![
+            "mailbox".to_string(),
+            "handoff".to_string(),
+            "child_task".to_string(),
+        ];
+        let plan = agent_steps_plan(
+            &ids,
+            "review docs",
+            "fixture",
+            "2026-07-18T00:00:00Z",
+            std::slice::from_ref(&request),
+            false,
+        );
+        let node = &plan["graph"]["nodes"][0];
+        // The caller-facing agent profile is unchanged ...
+        assert_eq!(
+            node["capability_profile"],
+            json!(["mailbox", "handoff", "child_task"])
+        );
+        // ... but the persisted recursive authority honestly excludes the
+        // non-heritable handoff capability the executor denies anyway.
+        let expected = json!(["child_task", "mailbox"]);
+        assert_eq!(node["recursive_root_authority"]["capabilities"], expected);
+        assert_eq!(
+            node["recursive_root_authority"]["scope"]["capabilities"],
+            expected
+        );
+    }
+
+    #[test]
+    fn caller_fixture_provenance_cannot_downgrade_measured_usage() {
+        let ids = crate::read_only_planner::WorkflowPlanIds::for_sequence(8);
+        let request = agent_step(Some("bounded-model"));
+        let plan = agent_steps_plan(
+            &ids,
+            "review docs",
+            "fixture",
+            "2026-07-18T00:00:00Z",
+            std::slice::from_ref(&request),
+            true,
+        );
+        let node = &plan["graph"]["nodes"][0];
+        assert_eq!(node["decision_source"], "provider_typed_action");
+        assert_eq!(
+            node["recursive_root_authority"]["usage_contract"],
+            json!({"kind": "measured"})
+        );
+    }
+
+    #[test]
+    fn api_created_fixture_plan_runs_recursive_root_to_completion() {
+        let _guard = crate::recursive_execution::test_env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+        let store = crate::storage::LocalProductStore::new(":memory:").expect("store");
+        let request = agent_step(None);
+        let plan = store
+            .create_workflow_plan("review docs", "fixture", "test", |ids, created_at| {
+                Ok(agent_steps_plan(
+                    ids,
+                    "review docs",
+                    "fixture",
+                    created_at,
+                    std::slice::from_ref(&request),
+                    false,
+                ))
+            })
+            .expect("fixture plan");
+        let run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().expect("plan id"), "test")
+            .expect("fixture run");
+        let run_id = run["run_id"].as_str().expect("run id");
+
+        let tick = store
+            .tick_with_executor(run_id, "fixture-scheduler", 0, &FixtureAgentStepExecutor)
+            .expect("fixture scheduler tick");
+        assert_eq!(tick["action"], "node_executed");
+        let tree = store
+            .load_recursive_tree(run_id)
+            .expect("load tree")
+            .expect("recursive tree");
+        assert_eq!(
+            tree.execution_state,
+            crate::recursive_execution::RecursiveExecutionState::Completed
+        );
+        assert_eq!(tree.spent_budget.calls_remaining, 1);
+        assert_eq!(tree.spent_budget.tokens_remaining, 1);
+        assert_eq!(tree.spent_budget.cost_micros_remaining, 1);
+        assert_eq!(tree.spent_budget.time_ms_remaining, 1);
+
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 }

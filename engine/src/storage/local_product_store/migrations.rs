@@ -6,6 +6,7 @@ pub(super) const V22_SCHEMA_VERSION: i64 = 22;
 pub(super) const V23_SCHEMA_VERSION: i64 = 23;
 pub(super) const V24_SCHEMA_VERSION: i64 = 24;
 pub(super) const V25_SCHEMA_VERSION: i64 = 25;
+pub(super) const V26_SCHEMA_VERSION: i64 = 26;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -24,6 +25,7 @@ pub(super) const V24_TABLES: [&str; 2] = [
     "external_runtime_checkpoints",
     "external_runtime_invocations",
 ];
+pub(super) const V26_TABLES: [&str; 2] = ["recursive_execution_trees", "recursive_execution_nodes"];
 
 #[allow(dead_code)]
 pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
@@ -31,11 +33,10 @@ pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VER
 impl LocalProductStore {
     pub(super) fn run_migrations(&self) -> Result<(), String> {
         self.with_conn(|conn| {
-            let current_version: i64 = conn
-                .query_row("PRAGMA user_version", [], |row| row.get(0))
-                .map_err(|e| e.to_string())?;
-
             for migration in schema::SQLITE_MIGRATIONS {
+                let current_version: i64 = conn
+                    .query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .map_err(|e| e.to_string())?;
                 if migration.version == V25_SCHEMA_VERSION && current_version >= V25_SCHEMA_VERSION
                 {
                     Self::migrate_v25_add_provider_embedding_bindings(conn)?;
@@ -73,10 +74,17 @@ impl LocalProductStore {
                         Self::migrate_v25_add_provider_embedding_bindings(conn)?;
                         continue;
                     }
+                    V26_SCHEMA_VERSION => Self::migrate_v26_add_recursive_execution_state(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
                     .map_err(|e| e.to_string())?;
+            }
+            let final_version: i64 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            if final_version == V26_SCHEMA_VERSION {
+                validate_sqlite_v26_schema(conn)?;
             }
             Ok(())
         })
@@ -574,6 +582,57 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.rollback_pg_v25_to_v24_internal(actor, &now),
         }
+    }
+
+    /// Roll back the additive recursive-execution schema only when no tree or node identity
+    /// has been persisted. This keeps recursive recovery data from being discarded silently.
+    pub fn rollback_v26_to_v25(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v26 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v26 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v26_to_v25(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v26_to_v25_internal(actor, &now),
+        }
+    }
+
+    fn rollback_sqlite_v26_to_v25(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            require_v26_rollback_source(current_version)?;
+            let occupied = occupied_sqlite_tables(&tx, &V26_TABLES)?;
+            require_empty_v26_tables(&occupied)?;
+            tx.execute_batch(
+                "DROP TABLE recursive_execution_nodes;
+                 DROP TABLE recursive_execution_trees;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v26_to_v25', 'local_product_store', ?3)",
+                rusqlite::params![now, actor, v26_rollback_audit_details()],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V25_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
     }
 
     fn rollback_sqlite_v25_to_v24(&self, actor: &str, now: &str) -> Result<(), String> {
@@ -1153,6 +1212,175 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         }
         tx.commit().map_err(|error| error.to_string())
     }
+
+    fn migrate_v26_add_recursive_execution_state(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(schema::V26_DDL)
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn validate_sqlite_v26_schema(conn: &Connection) -> Result<(), String> {
+    let required: &[(&str, &[(&str, &str)])] = &[
+        (
+            "recursive_execution_trees",
+            &[
+                ("root_run_id", "TEXT"),
+                ("workflow_id", "TEXT"),
+                ("root_node_id", "TEXT"),
+                ("tree_schema_version", "TEXT"),
+                ("tree_json", "TEXT"),
+                ("version", "BIGINT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        ),
+        (
+            "recursive_execution_nodes",
+            &[
+                ("node_id", "TEXT"),
+                ("root_run_id", "TEXT"),
+                ("parent_node_id", "TEXT"),
+                ("proposal_id", "TEXT"),
+                ("depth", "BIGINT"),
+                ("objective_fingerprint", "TEXT"),
+                ("status", "TEXT"),
+                ("version", "BIGINT"),
+                ("created_at", "TEXT"),
+                ("updated_at", "TEXT"),
+            ],
+        ),
+    ];
+    for (table, columns) in required {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(|error| error.to_string())?;
+        let actual = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        for &(name, type_name) in *columns {
+            let Some((_, actual_type, not_null, primary_key)) = actual
+                .iter()
+                .find(|(actual_name, _, _, _)| actual_name == name)
+            else {
+                return Err(format!("SQLite v26 schema missing {table}.{name}"));
+            };
+            if !actual_type.eq_ignore_ascii_case(type_name) {
+                return Err(format!(
+                    "SQLite v26 schema type mismatch for {table}.{name}"
+                ));
+            }
+            let expected_not_null = !(*table == "recursive_execution_nodes"
+                && matches!(name, "parent_node_id" | "proposal_id"));
+            let expected_primary_key = match (*table, name) {
+                ("recursive_execution_trees" | "recursive_execution_nodes", "root_run_id") => 1,
+                ("recursive_execution_nodes", "node_id") => 2,
+                _ => 0,
+            };
+            if expected_primary_key == 0 && (*not_null == 1) != expected_not_null {
+                return Err(format!(
+                    "SQLite v26 schema nullability mismatch for {table}.{name}"
+                ));
+            }
+            if *primary_key != expected_primary_key {
+                return Err(format!(
+                    "SQLite v26 schema primary key mismatch for {table}.{name}"
+                ));
+            }
+        }
+    }
+    for (table, fragments) in [
+        ("recursive_execution_trees", ["primary key"].as_slice()),
+        (
+            "recursive_execution_nodes",
+            [
+                "primary key(root_run_id, node_id)",
+                "unique(root_run_id, objective_fingerprint)",
+                "check (depth between 0 and 2)",
+                "check (length(objective_fingerprint) = 64)",
+            ]
+            .as_slice(),
+        ),
+    ] {
+        let ddl: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let normalized = ddl.to_ascii_lowercase().replace(['\n', '\t'], " ");
+        for fragment in fragments {
+            if !normalized.contains(fragment) {
+                return Err(format!("SQLite v26 schema missing constraint on {table}"));
+            }
+        }
+    }
+    for (table, index, expected_columns) in [
+        (
+            "recursive_execution_trees",
+            "idx_recursive_execution_trees_workflow",
+            ["workflow_id", "updated_at"].as_slice(),
+        ),
+        (
+            "recursive_execution_nodes",
+            "idx_recursive_execution_nodes_root",
+            ["root_run_id", "depth", "node_id"].as_slice(),
+        ),
+        (
+            "recursive_execution_nodes",
+            "idx_recursive_execution_nodes_parent",
+            ["root_run_id", "parent_node_id", "status", "node_id"].as_slice(),
+        ),
+    ] {
+        let properties: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT \"unique\", partial FROM pragma_index_list(?1) WHERE name=?2",
+                rusqlite::params![table, index],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let columns = conn
+            .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([index], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|error| error.to_string())?;
+        if properties != Some((0, 0))
+            || columns
+                != expected_columns
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+        {
+            return Err(format!(
+                "SQLite v26 schema missing or malformed index {index}"
+            ));
+        }
+    }
+    let foreign_key: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_list('recursive_execution_nodes')
+             WHERE \"table\"='recursive_execution_trees' AND \"from\"='root_run_id' AND \"to\"='root_run_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if foreign_key != 1 {
+        return Err("SQLite v26 schema missing recursive root foreign key".to_string());
+    }
+    Ok(())
 }
 
 fn sqlite_v25_operation_schema_valid(tx: &Transaction<'_>) -> Result<bool, String> {
@@ -1336,6 +1564,31 @@ pub(super) fn require_v25_rollback_source(current_version: i64) -> Result<(), St
     }
 }
 
+pub(super) fn require_v26_rollback_source(current_version: i64) -> Result<(), String> {
+    if current_version == V26_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(format!(
+            "v26 rollback requires current schema version 26; found {current_version}"
+        ))
+    }
+}
+
+pub(super) fn require_empty_v26_tables(occupied: &[String]) -> Result<(), String> {
+    if occupied.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "v26 rollback blocked: authoritative recursive execution data exists in {}",
+            occupied.join(", ")
+        ))
+    }
+}
+
+pub(super) fn v26_rollback_audit_details() -> &'static str {
+    r#"{"from_version":26,"to_version":25,"dropped_empty_tables":["recursive_execution_trees","recursive_execution_nodes"]}"#
+}
+
 pub(super) fn require_empty_v25_bindings(occupied: bool) -> Result<(), String> {
     if occupied {
         Err("v25 rollback blocked: authoritative provider embedding bindings exist".to_string())
@@ -1434,8 +1687,14 @@ mod tests {
             .unwrap()
     }
 
-    fn store_at_v22(path: impl AsRef<std::path::Path>) -> LocalProductStore {
+    fn store_at_v25(path: impl AsRef<std::path::Path>) -> LocalProductStore {
         let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v26_to_v25("migration-test", true).unwrap();
+        store
+    }
+
+    fn store_at_v22(path: impl AsRef<std::path::Path>) -> LocalProductStore {
+        let store = store_at_v25(path);
         store.rollback_v25_to_v24("migration-test", true).unwrap();
         store.rollback_v24_to_v23("migration-test", true).unwrap();
         store.rollback_v23_to_v22("migration-test", true).unwrap();
@@ -1488,7 +1747,7 @@ mod tests {
 
         drop(store);
         let upgraded = LocalProductStore::new(&path).unwrap();
-        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
+        assert_eq!(upgraded.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
         for table in V22_TABLES {
             assert!(table_exists(&upgraded, table), "{table} should be restored");
         }
@@ -1633,7 +1892,7 @@ mod tests {
     fn sqlite_v23_rollback_refuses_authority_and_can_upgrade_empty_schema() {
         let dir = tempdir().unwrap();
         let occupied_path = dir.path().join("v23-occupied.db");
-        let occupied = LocalProductStore::new(&occupied_path).unwrap();
+        let occupied = store_at_v25(&occupied_path);
         occupied
             .rollback_v25_to_v24("migration-test", true)
             .unwrap();
@@ -1659,7 +1918,7 @@ mod tests {
         assert_eq!(occupied.schema_version().unwrap(), V23_SCHEMA_VERSION);
 
         let empty_path = dir.path().join("v23-empty.db");
-        let empty = LocalProductStore::new(&empty_path).unwrap();
+        let empty = store_at_v25(&empty_path);
         empty.rollback_v25_to_v24("migration-test", true).unwrap();
         empty.rollback_v24_to_v23("migration-test", true).unwrap();
         empty.rollback_v23_to_v22("migration-test", true).unwrap();
@@ -1669,7 +1928,7 @@ mod tests {
         }
         drop(empty);
         let upgraded = LocalProductStore::new(&empty_path).unwrap();
-        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
+        assert_eq!(upgraded.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
         for table in V23_TABLES {
             assert!(table_exists(&upgraded, table));
         }
@@ -1682,7 +1941,7 @@ mod tests {
     fn sqlite_v24_rollback_refuses_authority_and_reapplies_cleanly() {
         let dir = tempdir().unwrap();
         let occupied_path = dir.path().join("v24-occupied.db");
-        let occupied = LocalProductStore::new(&occupied_path).unwrap();
+        let occupied = store_at_v25(&occupied_path);
         occupied
             .rollback_v25_to_v24("migration-test", true)
             .unwrap();
@@ -1707,7 +1966,7 @@ mod tests {
         assert_eq!(occupied.schema_version().unwrap(), V24_SCHEMA_VERSION);
 
         let empty_path = dir.path().join("v24-empty.db");
-        let empty = LocalProductStore::new(&empty_path).unwrap();
+        let empty = store_at_v25(&empty_path);
         empty.rollback_v25_to_v24("migration-test", true).unwrap();
         empty.rollback_v24_to_v23("migration-test", true).unwrap();
         assert_eq!(empty.schema_version().unwrap(), V23_SCHEMA_VERSION);
@@ -1716,7 +1975,7 @@ mod tests {
         }
         drop(empty);
         let upgraded = LocalProductStore::new(&empty_path).unwrap();
-        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
+        assert_eq!(upgraded.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
         for table in V24_TABLES {
             assert!(table_exists(&upgraded, table));
         }
@@ -1725,7 +1984,7 @@ mod tests {
     #[test]
     fn sqlite_v25_rollback_refuses_provider_bindings_and_reapplies_cleanly() {
         let dir = tempdir().unwrap();
-        let occupied = LocalProductStore::new(dir.path().join("v25-occupied.db")).unwrap();
+        let occupied = store_at_v25(dir.path().join("v25-occupied.db"));
         occupied
             .with_conn(|conn| {
                 conn.execute(
@@ -1749,7 +2008,7 @@ mod tests {
         assert_eq!(occupied.schema_version().unwrap(), V25_SCHEMA_VERSION);
 
         let path = dir.path().join("v25-empty.db");
-        let empty = LocalProductStore::new(&path).unwrap();
+        let empty = store_at_v25(&path);
         empty
             .with_conn(|conn| {
                 conn.execute(
@@ -1769,7 +2028,7 @@ mod tests {
         assert_eq!(empty.schema_version().unwrap(), V24_SCHEMA_VERSION);
         drop(empty);
         let upgraded = LocalProductStore::new(&path).unwrap();
-        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
+        assert_eq!(upgraded.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
         assert_eq!(
             upgraded
                 .inspect_durable_memory("legacy-memory")
@@ -1783,7 +2042,7 @@ mod tests {
     fn sqlite_v25_migration_is_atomic_and_concurrent_restart_safe() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("v25-atomic.db");
-        let store = LocalProductStore::new(&path).unwrap();
+        let store = store_at_v25(&path);
         store.rollback_v25_to_v24("migration-test", true).unwrap();
         drop(store);
         let barrier = std::sync::Barrier::new(2);
@@ -1798,11 +2057,11 @@ mod tests {
             });
             (left.join().unwrap(), right.join().unwrap())
         });
-        assert_eq!(left.unwrap(), V25_SCHEMA_VERSION);
-        assert_eq!(right.unwrap(), V25_SCHEMA_VERSION);
+        assert_eq!(left.unwrap(), CURRENT_SCHEMA_VERSION);
+        assert_eq!(right.unwrap(), CURRENT_SCHEMA_VERSION);
 
         let repair_path = dir.path().join("v25-empty-partial.db");
-        let repair = LocalProductStore::new(&repair_path).unwrap();
+        let repair = store_at_v25(&repair_path);
         repair.rollback_v25_to_v24("migration-test", true).unwrap();
         repair
             .with_conn(|conn| {
@@ -1815,7 +2074,7 @@ mod tests {
             })
             .unwrap();
         repair.run_migrations().unwrap();
-        assert_eq!(repair.schema_version().unwrap(), V25_SCHEMA_VERSION);
+        assert_eq!(repair.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
         repair
             .with_conn(|conn| {
                 assert!(column_exists(
@@ -1851,7 +2110,7 @@ mod tests {
         constraint_repair.run_migrations().unwrap();
         assert_eq!(
             constraint_repair.schema_version().unwrap(),
-            V25_SCHEMA_VERSION
+            CURRENT_SCHEMA_VERSION
         );
         constraint_repair
             .with_conn(|conn| {
@@ -1924,7 +2183,7 @@ mod tests {
         assert_eq!(partial_index.schema_version().unwrap(), V24_SCHEMA_VERSION);
 
         let failure_path = dir.path().join("v25-atomic-failure.db");
-        let failure = LocalProductStore::new(&failure_path).unwrap();
+        let failure = store_at_v25(&failure_path);
         failure.rollback_v25_to_v24("migration-test", true).unwrap();
         failure.with_conn(|conn|conn.execute_batch(
             "CREATE TABLE provider_embedding_operations (
@@ -1953,5 +2212,125 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn already_versioned_partial_v26_schema_is_rejected_fail_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("partial-v26.db");
+        {
+            let conn = rusqlite::Connection::open(&path).expect("sqlite");
+            conn.execute_batch(
+                "PRAGMA user_version=26;
+                 CREATE TABLE recursive_execution_trees (
+                    root_run_id TEXT PRIMARY KEY,
+                    workflow_id TEXT NOT NULL
+                 );
+                 CREATE TABLE recursive_execution_nodes (
+                    node_id TEXT NOT NULL,
+                    root_run_id TEXT NOT NULL,
+                    PRIMARY KEY(root_run_id, node_id)
+                 );",
+            )
+            .expect("partial v26 schema");
+        }
+        let error = match LocalProductStore::new(&path) {
+            Ok(_) => panic!("partial schema must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("SQLite v26 schema missing") || error.contains("no such column"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn already_versioned_v26_rejects_required_null_parent_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("not-null-parent-v26.db");
+        {
+            let conn = rusqlite::Connection::open(&path).expect("sqlite");
+            conn.execute_batch(
+                "PRAGMA foreign_keys=ON;
+                 PRAGMA user_version=26;
+                 CREATE TABLE recursive_execution_trees (
+                    root_run_id TEXT PRIMARY KEY,
+                    workflow_id TEXT NOT NULL,
+                    root_node_id TEXT NOT NULL,
+                    tree_schema_version TEXT NOT NULL,
+                    tree_json TEXT NOT NULL,
+                    version BIGINT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                 );
+                 CREATE INDEX idx_recursive_execution_trees_workflow
+                    ON recursive_execution_trees(workflow_id, updated_at);
+                 CREATE TABLE recursive_execution_nodes (
+                    node_id TEXT NOT NULL,
+                    root_run_id TEXT NOT NULL,
+                    parent_node_id TEXT NOT NULL,
+                    proposal_id TEXT NOT NULL,
+                    depth BIGINT NOT NULL CHECK (depth BETWEEN 0 AND 2),
+                    objective_fingerprint TEXT NOT NULL CHECK (length(objective_fingerprint) = 64),
+                    status TEXT NOT NULL,
+                    version BIGINT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(root_run_id, node_id),
+                    UNIQUE(root_run_id, objective_fingerprint),
+                    FOREIGN KEY(root_run_id) REFERENCES recursive_execution_trees(root_run_id)
+                 );
+                 CREATE INDEX idx_recursive_execution_nodes_root
+                    ON recursive_execution_nodes(root_run_id, depth, node_id);
+                 CREATE INDEX idx_recursive_execution_nodes_parent
+                    ON recursive_execution_nodes(root_run_id, parent_node_id, status, node_id);",
+            )
+            .expect("malformed v26 schema");
+        }
+        let error = match LocalProductStore::new(&path) {
+            Ok(_) => panic!("incorrectly non-null parent identity must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("SQLite v26 schema nullability mismatch"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn already_versioned_v26_rejects_malformed_named_indexes() {
+        for (suffix, replacement) in [
+            (
+                "wrong-columns",
+                "CREATE INDEX idx_recursive_execution_nodes_parent
+                 ON recursive_execution_nodes(status);",
+            ),
+            (
+                "partial",
+                "CREATE INDEX idx_recursive_execution_nodes_parent
+                 ON recursive_execution_nodes(root_run_id, parent_node_id, status, node_id)
+                 WHERE status = 'ready';",
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join(format!("malformed-index-{suffix}.db"));
+            drop(LocalProductStore::new(&path).expect("valid v26 store"));
+            let conn = rusqlite::Connection::open(&path).expect("sqlite");
+            conn.execute_batch(&format!(
+                "DROP INDEX idx_recursive_execution_nodes_parent; {replacement}"
+            ))
+            .expect("malform named index");
+            drop(conn);
+            let error = match LocalProductStore::new(&path) {
+                Ok(_) => panic!("malformed named v26 index must fail closed"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains(
+                    "SQLite v26 schema missing or malformed index idx_recursive_execution_nodes_parent"
+                ),
+                "unexpected error: {error}"
+            );
+        }
     }
 }

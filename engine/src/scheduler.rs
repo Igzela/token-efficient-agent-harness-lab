@@ -553,6 +553,8 @@ impl WorkflowScheduler {
     }
 
     pub fn pause(&self, _actor: &str) -> Result<(), String> {
+        self.store
+            .set_recursive_execution_paused(true, Some("recursive_execution_paused"))?;
         self.paused.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -561,11 +563,14 @@ impl WorkflowScheduler {
         if self.kill_requested.load(Ordering::SeqCst) {
             return Err("scheduler was killed and must be started again".to_string());
         }
+        self.store.set_recursive_execution_paused(false, None)?;
         self.paused.store(false, Ordering::SeqCst);
         Ok(())
     }
 
     pub fn kill(&mut self, _actor: &str) -> Result<(), String> {
+        self.store
+            .set_recursive_execution_paused(true, Some("recursive_kill_switch_active"))?;
         self.kill_requested.store(true, Ordering::SeqCst);
         self.running.store(false, Ordering::SeqCst);
         Ok(())

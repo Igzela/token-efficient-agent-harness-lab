@@ -12,7 +12,7 @@ A one-time bounded temporary lift of the Issue #208 emergency stop then ran a fr
 
 PR #237 (squash-merged into `main` at `1947d4b555bd14b7f104c1fc9aba31747099cb88` after all seven CI jobs passed on the exact head `068b2e9ac4bde16daea25bcb4846f7e26ba6cca9`, run `29628449688`) repaired the repository-agent CI cancellation and capacity-leak blocker that the Issue #235 smoke exposed. The prior chain shared one `agent-orchestrator-state` concurrency group across all seven workflows and set `cancel-in-progress: ${{ inputs.command == 'emergency-stop' }}` on `agent-controller`; because GitHub Actions does not run `if: always()` failure-handlers for jobs cancelled by a concurrency group, an emergency-stop cancelled unrelated in-flight workflows and leaked their claimed capacity. PR #237 reverted every workflow to per-resource concurrency groups with `cancel-in-progress: false`, so emergency-stop now only sets the control-state flag and each workflow reconciles its own claim through its own `if: always()` finalizer. The PR also split `ci_verifier` into `acquire_exact_run` (bind the run without waiting) plus `wait_for_run_completion` (bounded poll with per-cycle binding revalidation), made production CI identity fail-closed on every missing field in `_validate_run_identity`, added durable `claimed` → `dispatched` claim lifecycle records written before label mutation, and added `reconcile_claimed_dispatch` plus idempotent `release_and_record_ci_terminal` terminal compensation that preserves `dispatched` claims for their own child-workflow compensation. Two independent complete-diff reviews passed. Issue #208 remained `agent-control` + `agent-emergency-stop` throughout; no provider POST, no unrelated dispatch, and auto-merge stayed off. A fresh documentation-only replacement smoke remains to be run after the existing Vader runner is restored; runner and egress restoration are authorized operational repair, not a governance hard stop. Issue #208 remains stopped until the bounded smoke begins.
 
-A new research direction is documented: bounded recursive execution, then a controlled OpenCode external adapter, then an evidence-gated Harness evolution laboratory. This is an approved forward plan only. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (the AR7 runtime-extension slice) and the later PE7 packets are not implemented, no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
+A new research direction is documented: bounded recursive execution, then a controlled OpenCode external adapter, then an evidence-gated Harness evolution laboratory. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is currently being implemented on branch `pe7-bounded-recursive-execution-1` and is not merged or accepted. The later PE7 packets remain blocked; no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
 
 ## Verified Repository State
 
@@ -82,7 +82,7 @@ The intended interface remains ordinary language in GPT Web. The assistant, not 
 | GitHub/Vader repository orchestrator | Implemented/default-off; PR #237 is merged and accepted; replacement smoke remains the final live-acceptance task after authorized Vader runner recovery |
 | Dashboard | Functional; PR #225 is an independent presentation-only redesign |
 | Post-R7 wire/type governance | Implemented through `scripts/check_wire_codegen_drift.sh` |
-| PE7 bounded recursive execution | Approved in active documents; not implemented; no recursive tree admission or lineage schema exists yet |
+| PE7 bounded recursive execution | Implementation in progress on `pe7-bounded-recursive-execution-1`; default-off recursive admission, persistence, and bounded evidence are locally tested but not merged or accepted |
 | PE7 Harness evolution laboratory | Approved as a future default-off fixture/local lane; blocked on recursive execution; no candidate archive, evaluator vault, or promotion path exists yet |
 | PE7 meta-improver experiment | Deferred/blocked; no Level-2 or `Improvement@K` evidence exists |
 
@@ -125,14 +125,14 @@ A `langgraph_external` node performs one adapter invocation under a Rust lease. 
 1. Complete one documentation-only replacement smoke through PR creation, exact-head CI, and independent review while keeping auto-merge off; keep Issue #208 emergency-stopped until that succeeds.
 2. Obtain current provider catalog evidence that satisfies exact model identity and every modeled applicable charge dimension before any provider POST.
 3. Confirm disposable repository deletion remains limited to the already-absent `Igzela/acp-target-accept-20260716-1145` identity only.
-4. Implement and verify `PE7-BOUNDED-RECURSIVE-EXECUTION-1` before OpenCode adapter or Harness evolution.
+4. Merge and independently verify the in-progress `PE7-BOUNDED-RECURSIVE-EXECUTION-1` branch before OpenCode adapter or Harness evolution.
 
 The first three gaps continue to block production repository-agent use and provider-backed acceptance. They do not prevent fixture/local recursive-execution implementation.
 
 ## Open Work Coordination
 
-- PR #225 is the only known open PR and is presentation-only.
-- `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is the first eligible independent implementation packet.
+- PR #225 remains open and presentation-only; PR #239 is the active PE7-1 repair PR on the recursive execution branch and is not merged.
+- `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is in progress on `pe7-bounded-recursive-execution-1`; it remains the first eligible independent implementation packet.
 - `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the recursive packet merges and active state is refreshed.
 - provider-backed evolution, model-weight updates, evaluator/task-generator co-evolution, automatic multi-lineage recombination, and production continuous self-update remain deferred.
 - no new public tag, release, deployment, production installation, destructive production fault, provider call, protected-branch write, or persistent signing secret is authorized by this direction.

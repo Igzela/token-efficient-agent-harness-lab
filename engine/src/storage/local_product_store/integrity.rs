@@ -73,6 +73,8 @@ const INTEGRITY_TABLES: &[&str] = &[
     "operator_acknowledgements",
     "external_runtime_checkpoints",
     "external_runtime_invocations",
+    "recursive_execution_trees",
+    "recursive_execution_nodes",
 ];
 
 #[derive(Debug)]

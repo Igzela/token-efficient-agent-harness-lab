@@ -32,6 +32,7 @@ mod plans;
 mod policy_proposals;
 mod policy_replay_producer;
 mod provider_audit;
+mod recursive_execution;
 mod regression_report_artifacts;
 mod schema;
 mod supervised_patch;

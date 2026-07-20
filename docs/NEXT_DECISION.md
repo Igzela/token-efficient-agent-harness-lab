@@ -20,7 +20,7 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 ## Active Routing
 
 1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION`. Restore the existing runner, pass readiness, run the replacement smoke, record acceptance, and continue. Runner/egress recovery is operational work, not a permission blocker.
-2. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — `READY_FOR_EXECUTION`. This is the AR7 runtime-extension slice. It is an independent fixture/local lane and must not enable Issue #208, call a provider, or depend on the Vader runner.
+2. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — `IN_PROGRESS` on branch `pe7-bounded-recursive-execution-1`. This is the AR7 runtime-extension slice. It is an independent fixture/local lane and must not enable Issue #208, call a provider, or depend on the Vader runner.
 3. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `BLOCKED_PREREQUISITE` on bounded recursive execution. It introduces a pinned OpenCode release or commit only as a controlled, local/fixture external executor with networked tools disabled.
 4. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on both bounded recursive execution and the controlled OpenCode adapter. It establishes candidate lineage, equal-budget evaluation, sealed holdout discipline, and PR-only promotion.
 5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result. It may test whether an evolved improver improves `Improvement@K`; it may not modify the authoritative evaluator, permissions, sealed set, or release owner.
@@ -109,7 +109,9 @@ The prior smoke history remains as recorded in `CURRENT_STATUS.md`; the current 
 
 ## Packet PE7-BOUNDED-RECURSIVE-EXECUTION-1 — Recursive task-tree contract
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `IN_PROGRESS`
+
+**Current owner:** branch `pe7-bounded-recursive-execution-1`; the implementation is not merged or accepted yet.
 
 **Goal:** Extend the existing Agent Runtime child-task proposal mechanism into a persistent, bounded task tree without adding a second runtime, scheduler, queue, mailbox, or storage authority. This packet is the AR7 runtime-extension slice.
 
@@ -158,7 +160,7 @@ These defaults may be changed only through a later evidence-backed packet and ve
 
 - deterministic tree construction and ordering;
 - depth, child, total-node, token, cost, time, concurrency, retry, and lease bounds;
-- ancestor-cycle and semantic-duplicate refusal;
+- ancestor-cycle refusal and versioned deterministic lexical-equivalence duplicate refusal; this local/fixture contract canonicalizes only its declared normalization and synonym vocabulary and does not claim provider-grade semantic equivalence;
 - capability and scope reduction;
 - concurrent proposal acceptance races;
 - restart and exact receipt replay;

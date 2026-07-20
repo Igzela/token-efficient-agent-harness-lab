@@ -86,7 +86,7 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
         )
         .map(|row| row.get::<_, bool>(0))
         .map_err(|error| format!("failed to read migration 25 marker: {error}"))?;
-    if current_version < 24 || (current_version > 25 && !marker_exists) {
+    if current_version < 24 {
         return Err(format!(
             "migration 25 requires a contiguous version 24 predecessor; found {current_version}"
         ));
@@ -211,6 +211,32 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
         }
     }
     let invalid_schema = !missing_columns.is_empty() || !pg_v25_operation_schema_valid(&mut tx)?;
+    if current_version > version && !marker_exists {
+        if invalid_schema && pg_table_present(&mut tx, "provider_embedding_operations")? {
+            let occupied: bool = tx
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
+                    &[],
+                )
+                .map(|row| row.get(0))
+                .map_err(|error| {
+                    format!("failed to inspect partial migration 25 receipts: {error}")
+                })?;
+            if occupied {
+                return Err(format!(
+                    "migration 25 cannot repair an occupied partial operation table; missing or invalid {}",
+                    if missing_columns.is_empty() {
+                        "constraints/indexes/foreign-keys".to_string()
+                    } else {
+                        missing_columns.join(",")
+                    }
+                ));
+            }
+        }
+        return Err(format!(
+            "migration 25 requires a contiguous version 24 predecessor; found {current_version}"
+        ));
+    }
     if invalid_schema {
         let occupied: bool = tx
             .query_one(
@@ -278,6 +304,292 @@ fn apply_pg_v25_migration(client: &mut postgres::Client) -> Result<(), String> {
     }
     tx.commit()
         .map_err(|error| format!("failed to commit migration 25: {error}"))
+}
+
+fn pg_table_present(
+    client: &mut impl postgres::GenericClient,
+    table: &str,
+) -> Result<bool, String> {
+    client
+        .query_one(
+            "SELECT EXISTS(
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = current_schema() AND table_name = $1
+            )",
+            &[&table],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| error.to_string())
+}
+
+fn apply_pg_v26_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V26_SCHEMA_VERSION;
+    let mut tx = client
+        .transaction()
+        .map_err(|error| format!("failed to start migration 26 transaction: {error}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(
+             hashtext(current_database()), hashtext(current_schema())
+         )",
+        &[],
+    )
+    .map_err(|error| format!("failed to lock migration 26: {error}"))?;
+    let current_version = tx
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map(|row| row.get::<_, i64>(0))
+        .map_err(|error| format!("failed to re-read version for migration 26: {error}"))?;
+    if current_version >= version {
+        tx.commit()
+            .map_err(|error| format!("failed to finish migration 26 no-op: {error}"))?;
+        return Ok(());
+    }
+    tx.batch_execute(schema::V26_DDL)
+        .map_err(|error| format!("migration 26 failed: {error}"))?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|error| format!("failed to record migration {version}: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("failed to commit migration 26: {error}"))
+}
+
+fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    let version = client
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get::<_, i64>(0);
+    if version != super::super::migrations::V26_SCHEMA_VERSION {
+        return Err(format!("PostgreSQL v26 schema version mismatch: {version}"));
+    }
+    let required = [
+        ("recursive_execution_trees", "root_run_id", "text", true),
+        ("recursive_execution_trees", "workflow_id", "text", true),
+        ("recursive_execution_trees", "root_node_id", "text", true),
+        (
+            "recursive_execution_trees",
+            "tree_schema_version",
+            "text",
+            true,
+        ),
+        ("recursive_execution_trees", "tree_json", "text", true),
+        ("recursive_execution_trees", "version", "bigint", true),
+        ("recursive_execution_trees", "created_at", "text", true),
+        ("recursive_execution_trees", "updated_at", "text", true),
+        ("recursive_execution_nodes", "node_id", "text", true),
+        ("recursive_execution_nodes", "root_run_id", "text", true),
+        ("recursive_execution_nodes", "parent_node_id", "text", false),
+        ("recursive_execution_nodes", "proposal_id", "text", false),
+        ("recursive_execution_nodes", "depth", "bigint", true),
+        (
+            "recursive_execution_nodes",
+            "objective_fingerprint",
+            "text",
+            true,
+        ),
+        ("recursive_execution_nodes", "status", "text", true),
+        ("recursive_execution_nodes", "version", "bigint", true),
+        ("recursive_execution_nodes", "created_at", "text", true),
+        ("recursive_execution_nodes", "updated_at", "text", true),
+    ];
+    for (table, column, expected_type, expected_not_null) in required {
+        let actual: Option<(String, String)> = client
+            .query_opt(
+                "SELECT data_type, is_nullable FROM information_schema.columns
+                 WHERE table_schema=current_schema() AND table_name=$1 AND column_name=$2",
+                &[&table, &column],
+            )
+            .map_err(|error| error.to_string())?
+            .map(|row| (row.get(0), row.get(1)));
+        if actual.as_ref().map(|(data_type, _)| data_type.as_str()) != Some(expected_type)
+            || actual
+                .as_ref()
+                .is_some_and(|(_, nullable)| (nullable == "NO") != expected_not_null)
+        {
+            return Err(format!(
+                "PostgreSQL v26 schema type or nullability mismatch for {table}.{column}"
+            ));
+        }
+    }
+    for (table, expected_columns) in [
+        ("recursive_execution_trees", ["root_run_id"].as_slice()),
+        (
+            "recursive_execution_nodes",
+            ["root_run_id", "node_id"].as_slice(),
+        ),
+    ] {
+        let primary_key: bool = client
+            .query_one(
+                "SELECT EXISTS(
+                     SELECT 1 FROM pg_constraint c
+                     JOIN pg_class t ON t.oid=c.conrelid
+                     WHERE t.relnamespace=current_schema()::regnamespace
+                       AND t.relname=$1 AND c.contype='p'
+                       AND (SELECT array_agg(a.attname ORDER BY key.ordinality)
+                            FROM unnest(c.conkey) WITH ORDINALITY AS key(attnum, ordinality)
+                            JOIN pg_attribute a
+                              ON a.attrelid=t.oid AND a.attnum=key.attnum)=$2
+                 )",
+                &[&table, &expected_columns],
+            )
+            .map_err(|error| error.to_string())?
+            .get(0);
+        if !primary_key {
+            return Err(format!(
+                "PostgreSQL v26 schema missing primary key for {table}"
+            ));
+        }
+    }
+    for (index, expected_table, expected_columns) in [
+        (
+            "idx_recursive_execution_trees_workflow",
+            "recursive_execution_trees",
+            ["workflow_id", "updated_at"].as_slice(),
+        ),
+        (
+            "idx_recursive_execution_nodes_root",
+            "recursive_execution_nodes",
+            ["root_run_id", "depth", "node_id"].as_slice(),
+        ),
+        (
+            "idx_recursive_execution_nodes_parent",
+            "recursive_execution_nodes",
+            ["root_run_id", "parent_node_id", "status", "node_id"].as_slice(),
+        ),
+    ] {
+        let definition: Option<(String, String, bool, bool, Vec<String>)> = client
+            .query_opt(
+                "SELECT table_class.relname, access_method.amname,
+                        index_meta.indisunique, index_meta.indpred IS NULL,
+                        array_agg(attribute.attname ORDER BY key.ordinality)
+                 FROM pg_class index_class
+                 JOIN pg_namespace namespace ON namespace.oid=index_class.relnamespace
+                 JOIN pg_index index_meta ON index_meta.indexrelid=index_class.oid
+                 JOIN pg_class table_class ON table_class.oid=index_meta.indrelid
+                 JOIN pg_am access_method ON access_method.oid=index_class.relam
+                 JOIN LATERAL unnest(index_meta.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+                   ON TRUE
+                 JOIN pg_attribute attribute
+                   ON attribute.attrelid=table_class.oid AND attribute.attnum=key.attnum
+                 WHERE namespace.oid=current_schema()::regnamespace AND index_class.relname=$1
+                 GROUP BY table_class.relname, access_method.amname,
+                          index_meta.indisunique, index_meta.indpred",
+                &[&index],
+            )
+            .map_err(|error| error.to_string())?
+            .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)));
+        let expected_columns = expected_columns
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
+        if definition
+            != Some((
+                expected_table.to_string(),
+                "btree".to_string(),
+                false,
+                true,
+                expected_columns,
+            ))
+        {
+            return Err(format!(
+                "PostgreSQL v26 schema missing or malformed index {index}"
+            ));
+        }
+    }
+    let foreign_key: bool = client
+        .query_one(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_constraint c
+                 JOIN pg_class child ON child.oid=c.conrelid
+                 JOIN pg_class parent ON parent.oid=c.confrelid
+                 WHERE child.relnamespace=current_schema()::regnamespace
+                   AND parent.relnamespace=current_schema()::regnamespace
+                   AND child.relname='recursive_execution_nodes'
+                   AND parent.relname='recursive_execution_trees'
+                   AND c.contype='f'
+                   AND cardinality(c.conkey)=1 AND cardinality(c.confkey)=1
+                   AND (SELECT a.attname FROM pg_attribute a
+                        WHERE a.attrelid=child.oid AND a.attnum=c.conkey[1])='root_run_id'
+                   AND (SELECT a.attname FROM pg_attribute a
+                        WHERE a.attrelid=parent.oid AND a.attnum=c.confkey[1])='root_run_id'
+             )",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if !foreign_key {
+        return Err("PostgreSQL v26 schema missing recursive root foreign key".to_string());
+    }
+    let depth_check: bool = client
+        .query_one(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_constraint c
+                 JOIN pg_class t ON t.oid=c.conrelid
+                 WHERE t.relnamespace=current_schema()::regnamespace
+                   AND t.relname='recursive_execution_nodes'
+                   AND c.contype='c'
+                   AND regexp_replace(
+                       lower(pg_get_expr(c.conbin, c.conrelid)),
+                       '[[:space:]()]', '', 'g'
+                   ) IN ('depth>=0anddepth<=2', 'depthbetween0and2')
+             )",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if !depth_check {
+        return Err("PostgreSQL v26 schema missing recursive depth constraint".to_string());
+    }
+    let unique_identity: bool = client
+        .query_one(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_constraint c
+                 JOIN pg_class t ON t.oid=c.conrelid
+                 WHERE t.relnamespace=current_schema()::regnamespace
+                   AND t.relname='recursive_execution_nodes'
+                   AND c.contype='u'
+                   AND cardinality(c.conkey)=2
+                   AND (SELECT a.attname FROM pg_attribute a
+                        WHERE a.attrelid=t.oid AND a.attnum=c.conkey[1])='root_run_id'
+                   AND (SELECT a.attname FROM pg_attribute a
+                        WHERE a.attrelid=t.oid AND a.attnum=c.conkey[2])='objective_fingerprint'
+             )",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if !unique_identity {
+        return Err("PostgreSQL v26 schema missing recursive objective uniqueness".to_string());
+    }
+    let fingerprint_check: bool = client
+        .query_one(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_constraint c
+                 JOIN pg_class t ON t.oid=c.conrelid
+                 WHERE t.relnamespace=current_schema()::regnamespace
+                   AND t.relname='recursive_execution_nodes'
+                   AND c.contype='c'
+                   AND regexp_replace(
+                       lower(pg_get_expr(c.conbin, c.conrelid)),
+                       '[[:space:]()]', '', 'g'
+                   )='lengthobjective_fingerprint=64'
+             )",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if !fingerprint_check {
+        return Err(
+            "PostgreSQL v26 schema missing objective fingerprint length constraint".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn pg_v25_operation_schema_valid(
@@ -413,6 +725,57 @@ fn pg_v25_operation_schema_valid(
 }
 
 impl LocalProductStore {
+    pub(in crate::storage::local_product_store) fn rollback_pg_v26_to_v25_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.with_pg_conn(|client| {
+            let mut tx = client.transaction().map_err(|error| error.to_string())?;
+            let current_version = tx
+                .query_one(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                    &[],
+                )
+                .map(|row| row.get::<_, i64>(0))
+                .map_err(|error| error.to_string())?;
+            super::super::migrations::require_v26_rollback_source(current_version)?;
+            tx.batch_execute(
+                "LOCK TABLE recursive_execution_nodes, recursive_execution_trees
+                 IN ACCESS EXCLUSIVE MODE",
+            )
+            .map_err(|error| error.to_string())?;
+            for table in super::super::migrations::V26_TABLES {
+                let occupied = tx
+                    .query_one(&format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)"), &[])
+                    .map(|row| row.get::<_, bool>(0))
+                    .map_err(|error| error.to_string())?;
+                if occupied {
+                    return Err(format!(
+                        "v26 rollback blocked: authoritative recursive execution data exists in {table}"
+                    ));
+                }
+            }
+            tx.batch_execute(
+                "DROP TABLE recursive_execution_nodes;
+                 DROP TABLE recursive_execution_trees;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1,$2,'schema.rollback.v26_to_v25','local_product_store',$3)",
+                &[&now, &actor, &super::super::migrations::v26_rollback_audit_details()],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version=$1",
+                &[&super::super::migrations::V26_SCHEMA_VERSION],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
+
     pub(crate) fn run_pg_migrations_internal(&self) -> Result<(), String> {
         self.with_pg_conn(|client: &mut postgres::Client| {
             ensure_schema_migrations_table(client)?;
@@ -421,6 +784,10 @@ impl LocalProductStore {
             for migration in schema::POSTGRES_MIGRATIONS {
                 if migration.version == 25 {
                     apply_pg_v25_migration(client)?;
+                    continue;
+                }
+                if migration.version == 26 {
+                    apply_pg_v26_migration(client)?;
                     continue;
                 }
                 if migration.version <= current {
@@ -530,6 +897,8 @@ impl LocalProductStore {
                     apply_pg_migration(client, migration.version, sql)?;
                 }
             }
+
+            validate_pg_v26_schema(client)?;
 
             // Seed the scheduler_heartbeat singleton row.
             client
@@ -957,7 +1326,7 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     fn prepare_v23_rollback_fixture(store: &LocalProductStore) {
-        assert_eq!(store.schema_version().unwrap(), 25);
+        prepare_v25_rollback_fixture(store);
         store
             .rollback_v25_to_v24("migration-test-setup", true)
             .unwrap();
@@ -966,6 +1335,15 @@ mod tests {
             .rollback_v24_to_v23("migration-test-setup", true)
             .unwrap();
         assert_eq!(store.schema_version().unwrap(), 23);
+    }
+
+    #[cfg(feature = "pg-tests")]
+    fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
+        assert_eq!(store.schema_version().unwrap(), 26);
+        store
+            .rollback_v26_to_v25("migration-test-setup", true)
+            .unwrap();
+        assert_eq!(store.schema_version().unwrap(), 25);
     }
 
     #[cfg(feature = "pg-tests")]
@@ -979,11 +1357,121 @@ mod tests {
 
     #[test]
     #[cfg(feature = "pg-tests")]
+    fn already_versioned_malformed_pg_v26_schema_is_rejected_fail_closed() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        fixture
+            .store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "ALTER TABLE recursive_execution_nodes
+                         DROP CONSTRAINT recursive_execution_nodes_pkey;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .expect("malform v26 node identity");
+        let error = fixture
+            .store
+            .run_pg_migrations_internal()
+            .expect_err("malformed v26 schema must fail closed");
+        assert!(
+            error.contains("missing primary key for recursive_execution_nodes"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(fixture.store.schema_version().expect("version"), 26);
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn already_versioned_pg_v26_rejects_non_nullable_parent_identity() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        fixture
+            .store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "ALTER TABLE recursive_execution_nodes
+                         ALTER COLUMN parent_node_id SET NOT NULL;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .expect("malform v26 parent identity");
+        let error = fixture
+            .store
+            .run_pg_migrations_internal()
+            .expect_err("incorrectly non-null parent identity must fail closed");
+        assert!(
+            error.contains(
+                "PostgreSQL v26 schema type or nullability mismatch for recursive_execution_nodes.parent_node_id"
+            ),
+            "unexpected error: {error}"
+        );
+        assert_eq!(fixture.store.schema_version().expect("version"), 26);
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn already_versioned_pg_v26_rejects_weakened_constraints_and_indexes() {
+        let cases = [
+            (
+                "ALTER TABLE recursive_execution_nodes
+                 DROP CONSTRAINT recursive_execution_nodes_depth_check;
+                 ALTER TABLE recursive_execution_nodes
+                 ADD CONSTRAINT recursive_execution_nodes_depth_check CHECK (depth >= 0);",
+                "missing recursive depth constraint",
+            ),
+            (
+                "ALTER TABLE recursive_execution_nodes
+                 DROP CONSTRAINT recursive_execution_nodes_objective_fingerprint_check;
+                 ALTER TABLE recursive_execution_nodes
+                 ADD CONSTRAINT recursive_execution_nodes_objective_fingerprint_check
+                 CHECK (length(objective_fingerprint) > 0);",
+                "missing objective fingerprint length constraint",
+            ),
+            (
+                "ALTER TABLE recursive_execution_nodes
+                 DROP CONSTRAINT recursive_execution_nodes_root_run_id_fkey;
+                 ALTER TABLE recursive_execution_nodes
+                 ADD CONSTRAINT recursive_execution_nodes_root_run_id_fkey
+                 FOREIGN KEY (node_id) REFERENCES recursive_execution_trees(root_run_id);",
+                "missing recursive root foreign key",
+            ),
+            (
+                "DROP INDEX idx_recursive_execution_nodes_parent;
+                 CREATE INDEX idx_recursive_execution_nodes_parent
+                 ON recursive_execution_nodes(status);",
+                "missing or malformed index idx_recursive_execution_nodes_parent",
+            ),
+        ];
+        for (ddl, expected) in cases {
+            let Some(fixture) = IsolatedPgStore::from_environment() else {
+                return;
+            };
+            fixture
+                .store
+                .with_pg_conn(|client| client.batch_execute(ddl).map_err(|error| error.to_string()))
+                .expect("malform v26 constraint");
+            let error = fixture
+                .store
+                .run_pg_migrations_internal()
+                .expect_err("weakened v26 schema must fail closed");
+            assert!(error.contains(expected), "unexpected error: {error}");
+            assert_eq!(fixture.store.schema_version().expect("version"), 26);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
     fn pg_v25_rollback_refuses_provider_bindings_without_moving_marker() {
         let Some(fixture) = IsolatedPgStore::from_environment() else {
             return;
         };
         let store = &fixture.store;
+        prepare_v25_rollback_fixture(store);
         store
             .with_pg_conn(|client| {
                 client
@@ -1040,6 +1528,7 @@ mod tests {
             return;
         };
         let store = &fixture.store;
+        prepare_v25_rollback_fixture(store);
         store
             .rollback_v25_to_v24("migration-test-setup", true)
             .unwrap();
@@ -1070,7 +1559,7 @@ mod tests {
         left.unwrap();
         right.unwrap();
 
-        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.schema_version().unwrap(), 26);
         store
             .with_pg_conn(|client| {
                 assert!(pg_column_exists(
@@ -1096,7 +1585,7 @@ mod tests {
             .unwrap();
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.schema_version().unwrap(), 26);
 
         store
             .with_pg_conn(|client| {
@@ -1119,7 +1608,9 @@ mod tests {
             occupied_error.contains("occupied partial operation table"),
             "unexpected occupied constraint failure: {occupied_error}"
         );
-        assert_eq!(store.schema_version().unwrap(), 24);
+        // The refusal is atomic: deleting only the v25 marker does not move or
+        // silently rewrite the existing v26 marker.
+        assert_eq!(store.schema_version().unwrap(), 26);
     }
 
     #[test]
@@ -1129,6 +1620,7 @@ mod tests {
             return;
         };
         let store = &fixture.store;
+        prepare_v25_rollback_fixture(store);
         store
             .with_pg_conn(|client| {
                 client
@@ -1181,6 +1673,7 @@ mod tests {
             return;
         };
         let store = &fixture.store;
+        prepare_v25_rollback_fixture(store);
         store
             .rollback_v25_to_v24("migration-test-setup", true)
             .unwrap();
@@ -1214,7 +1707,7 @@ mod tests {
             })
         );
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.schema_version().unwrap(), 26);
         for table in super::super::super::migrations::V24_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -1264,7 +1757,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.schema_version().unwrap(), 26);
         for table in super::super::super::migrations::V23_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -1373,7 +1866,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.schema_version().unwrap(), 26);
         for table in super::super::super::migrations::V22_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
