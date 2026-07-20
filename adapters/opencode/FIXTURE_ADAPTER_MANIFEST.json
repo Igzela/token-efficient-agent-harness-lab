@@ -1,0 +1,34 @@
+{
+  "adapter_contract_version": "opencode_external_adapter.v1",
+  "adapter_version": "0.1.0",
+  "admission_status": "fixture_adapter_only",
+  "artifacts": [
+    {
+      "path": "src/acp_opencode_adapter/__init__.py",
+      "role": "package_init",
+      "sha256": "e1fa0d9ae0cef4424f651762309325b2a480018c417052336d15394b9b0d0e98"
+    },
+    {
+      "path": "src/acp_opencode_adapter/__main__.py",
+      "role": "entrypoint",
+      "sha256": "6d1b1e222c1250c0014ab3819d3dcc86029f21cf702159aa2d5b2c40aac3509b"
+    },
+    {
+      "path": "src/acp_opencode_adapter/adapter.py",
+      "role": "adapter_source",
+      "sha256": "d6ef91d2648bfcdee8510f3ca4503445f8f69b657a7e1c0acfadcfd67a7207c3"
+    },
+    {
+      "path": "pyproject.toml",
+      "role": "package_manifest",
+      "sha256": "b07e575082935c7ae3a053b77ac61aab513bd9241dd61b5dd09c8fb07456248d"
+    }
+  ],
+  "binary_admission_packet": "PE7-OPENCODE-BINARY-ADMISSION-1",
+  "binary_admission_status": "not_admitted",
+  "declared_fixture_opencode_version": "1.1.48",
+  "fixture_adapter_packet": "PE7-OPENCODE-FIXTURE-ADAPTER-1",
+  "notes": "Fixture adapter identity only. Upstream OpenCode binary pin and real checksums are deferred until PE7-OPENCODE-BINARY-ADMISSION-1 admits an exact artifact or source identity independently.",
+  "permission_profile_hash": "317731ccfbe9e3d2d3947389607f4431028bb1ba77afa035b2f1400b299ad597",
+  "schema_version": "opencode_fixture_adapter_manifest.v1"
+}

@@ -18,6 +18,7 @@ fn task_type_requires_exact_capability(task_type: &str) -> bool {
             | "claude_code_cli"
             | "codex_cli"
             | crate::external_runtime::LANGGRAPH_TASK_TYPE
+            | crate::opencode_runtime::OPENCODE_TASK_TYPE
     )
 }
 
@@ -702,6 +703,48 @@ mod tests {
         assert_eq!(entry.capabilities.supported_task_domains, ["agent_runtime"]);
         assert!(entry.capabilities.requires_auth);
         assert_eq!(entry.status.concurrency_limit, 3);
+    }
+
+    #[test]
+    fn reserved_opencode_external_never_falls_back_to_generic_executor() {
+        let pool = test_pool();
+        register_noop(&pool, 10);
+        register_code_executor(&pool, "code-wildcard", 5);
+        // Generic/stub/command-like wildcards must not execute opencode_external.
+        assert_eq!(
+            pool.best_for_task(crate::opencode_runtime::OPENCODE_TASK_TYPE, "code"),
+            None
+        );
+        assert_eq!(
+            pool.best_for_task(
+                crate::opencode_runtime::OPENCODE_TASK_TYPE,
+                "external_runtime"
+            ),
+            None
+        );
+
+        register_opencode_runtime_executor(&pool, Arc::new(NoopNodeExecutor), 1, 30_000);
+        assert_eq!(
+            pool.best_for_task(crate::opencode_runtime::OPENCODE_TASK_TYPE, "code"),
+            Some(crate::opencode_runtime::OPENCODE_EXECUTOR_TYPE.to_string())
+        );
+    }
+
+    #[test]
+    fn opencode_registration_declares_exact_capability_only() {
+        let pool = test_pool();
+        register_opencode_runtime_executor(&pool, Arc::new(NoopNodeExecutor), 2, 15_000);
+        let entry = pool
+            .snapshot()
+            .into_iter()
+            .find(|entry| entry.executor_type == crate::opencode_runtime::OPENCODE_EXECUTOR_TYPE)
+            .expect("opencode executor registered");
+        assert_eq!(
+            entry.capabilities.supported_task_types,
+            [crate::opencode_runtime::OPENCODE_TASK_TYPE]
+        );
+        assert_eq!(entry.status.concurrency_limit, 2);
+        assert_eq!(entry.capabilities.max_timeout_ms, 15_000);
     }
 
     #[test]

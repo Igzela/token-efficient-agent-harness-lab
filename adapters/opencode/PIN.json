@@ -4,10 +4,14 @@
   "upstream_identity": "anomalyco/opencode",
   "license": "MIT",
   "pinned_version": "1.1.48",
-  "pinned_commit": "fixture-pin-not-downloaded",
-  "artifact_checksum_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "pinned_commit": null,
+  "artifact_checksum_sha256": null,
   "adapter_version": "0.1.0",
   "adapter_contract_version": "opencode_external_adapter.v1",
   "initial_mode": "fixture_only",
-  "notes": "Fixture-first PE7 adapter pin. Real binary download/use requires a later evidence packet; checksum is placeholder until a release artifact is admitted."
+  "fixture_adapter_status": "PE7-OPENCODE-FIXTURE-ADAPTER-1",
+  "binary_admission_status": "not_admitted",
+  "binary_admission_packet": "PE7-OPENCODE-BINARY-ADMISSION-1",
+  "fixture_adapter_manifest": "FIXTURE_ADAPTER_MANIFEST.json",
+  "notes": "This PIN documents intended upstream identity only. It does NOT admit a real OpenCode binary: pinned_commit and artifact_checksum_sha256 are intentionally null until PE7-OPENCODE-BINARY-ADMISSION-1 independently admits an exact upstream artifact or source identity with a real checksum. Fixture adapter identity is owned by FIXTURE_ADAPTER_MANIFEST.json."
 }

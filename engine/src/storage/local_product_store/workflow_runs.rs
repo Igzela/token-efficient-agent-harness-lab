@@ -1772,9 +1772,15 @@ impl LocalProductStore {
                         executor.executor_type_name()
                             != crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE
                     }
+                    crate::opencode_runtime::OPENCODE_TASK_TYPE => {
+                        executor.executor_type_name()
+                            != crate::opencode_runtime::OPENCODE_EXECUTOR_TYPE
+                    }
                     _ => matches!(
                         executor.executor_type_name(),
-                        "agent_step" | crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE
+                        "agent_step"
+                            | crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE
+                            | crate::opencode_runtime::OPENCODE_EXECUTOR_TYPE
                     ),
                 };
                 let output = if reserved_executor_mismatch

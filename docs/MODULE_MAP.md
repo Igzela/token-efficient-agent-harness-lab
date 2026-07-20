@@ -44,7 +44,7 @@ Full Agent Autonomy Mode remains active for repository-scoped work that is testa
 | PE-3 operator decision center | derived queue, typed HTTP handlers, SDKs, Dashboard, existing mutation owners | connected; no generic executor and no new source of truth |
 | PE-4 replay and promotion | dispatch-history provenance, offline replay, shadow/canary, evidence-chain promotion, snapshots/rollback | connected; replay remains non-authorizing until explicit current-state-bound promotion |
 | Managed external runtime | Rust-leased `langgraph_external` node, v24 receipts/checkpoints, locked adapter package | connected in fixture/guarded-live modes; Python owns no queue, authority, or product store |
-| OpenCode external coding adapter | default-off `opencode_external` node (`engine/src/opencode_runtime.rs`), fixture adapter `adapters/opencode/` | PE7 fixture-first; deny-by-default permissions; no network/MCP/provider; pin in `adapters/opencode/PIN.json` |
+| OpenCode external coding adapter | default-off `opencode_external` node (`engine/src/opencode_runtime.rs`), fixture adapter `adapters/opencode/` | PE7 fixture-first; deny-by-default; reserved exact-capability routing; fixture identity in `FIXTURE_ADAPTER_MANIFEST.json`; `PIN.json` does not admit a real binary (`PE7-OPENCODE-BINARY-ADMISSION-1` deferred) |
 | Efficiency/tool-discovery benchmark | native/LangGraph runtime binaries, benchmark script, scorecard matrix API/Dashboard | deterministic fixture evidence connected; provider-backed result not verified |
 | Target repository output | app-owned workspaces/worktrees, approvals, receipts, branch/patch output, compensation | connected and externally accepted on a disposable target after PR #226; no direct target `main` or merge authority |
 | GitHub/Vader repository maintenance | control Issue, Actions workflows, Vader artifact worker, GitHub-hosted finalizer | implemented but production-disabled; replacement smoke blocked by offline runner/TLS token-exchange path |
@@ -67,7 +67,7 @@ No source file or schema addition is considered implemented until its packet PR 
 
 ## Approved Harness-Evolution Ownership
 
-`PE7-HARNESS-EVOLUTION-LAB-1` is approved as a default-off laboratory and remains blocked on `PE7-BOUNDED-RECURSIVE-EXECUTION-1`.
+`PE7-HARNESS-EVOLUTION-LAB-1` is approved as a default-off laboratory and remains blocked until the OpenCode fixture-adapter honesty repair merges (`PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1`). Recursive execution (PR #239) and the fixture adapter (PR #255) are already merged.
 
 | Laboratory function | Existing owner to reuse | Boundary |
 |---|---|---|
@@ -102,9 +102,9 @@ PR #214 merged the active v2 owner-evidence repair. Existing fixed scenario regi
 
 ## Active Routing
 
-1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is blocked on external runner/catalog prerequisites.
-2. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is in progress on its focused branch and remains the first eligible independent implementation packet.
-3. `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the recursive packet merges and is refreshed against actual `main`.
+1. `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` is the active PE7 Ship PR lane (fixture-only honesty repair).
+2. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is parked on Issue #254 (runner online/idle; Codex HTTP 403).
+3. `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the fixture-adapter repair merges; implement as focused sequential packets.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` remains blocked until a stable, independently reviewed Level-1 lab result exists.
 5. Extend existing owners; do not create another runtime, scheduler, queue, storage layer, evaluator authority, release pipeline, signing authority, recovery authority, artifact truth source, tool registry, or Dashboard mutation model without an explicit replacement decision, compatibility evidence, and rollback.
 

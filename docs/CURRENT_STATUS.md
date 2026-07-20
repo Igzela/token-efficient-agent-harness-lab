@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-07-20.
+Last updated: 2026-07-21.
 
 ## Summary
 
@@ -16,7 +16,7 @@ A one-time bounded temporary lift of the Issue #208 emergency stop then ran a fr
 
 PR #237 (squash-merged into `main` at `1947d4b555bd14b7f104c1fc9aba31747099cb88` after all seven CI jobs passed on the exact head `068b2e9ac4bde16daea25bcb4846f7e26ba6cca9`, run `29628449688`) repaired the repository-agent CI cancellation and capacity-leak blocker that the Issue #235 smoke exposed. The prior chain shared one `agent-orchestrator-state` concurrency group across all seven workflows and set `cancel-in-progress: ${{ inputs.command == 'emergency-stop' }}` on `agent-controller`; because GitHub Actions does not run `if: always()` failure-handlers for jobs cancelled by a concurrency group, an emergency-stop cancelled unrelated in-flight workflows and leaked their claimed capacity. PR #237 reverted every workflow to per-resource concurrency groups with `cancel-in-progress: false`, so emergency-stop now only sets the control-state flag and each workflow reconciles its own claim through its own `if: always()` finalizer. The PR also split `ci_verifier` into `acquire_exact_run` (bind the run without waiting) plus `wait_for_run_completion` (bounded poll with per-cycle binding revalidation), made production CI identity fail-closed on every missing field in `_validate_run_identity`, added durable `claimed` → `dispatched` claim lifecycle records written before label mutation, and added `reconcile_claimed_dispatch` plus idempotent `release_and_record_ci_terminal` terminal compensation that preserves `dispatched` claims for their own child-workflow compensation. Two independent complete-diff reviews passed. Issue #208 remained `agent-control` + `agent-emergency-stop` throughout; no provider POST, no unrelated dispatch, and auto-merge stayed off. A fresh documentation-only replacement smoke remains to be run after the existing Vader runner is restored; runner and egress restoration are authorized operational repair, not a governance hard stop. Issue #208 remains stopped until the bounded smoke begins.
 
-A new research direction is documented: bounded recursive execution, then a controlled OpenCode external adapter, then an evidence-gated Harness evolution laboratory. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is merged and accepted via PR #239. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` is merged and accepted via PR #255 (fixture-first default-off). Harness evolution remains unavailable as a product claim; no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
+A new research direction is documented: bounded recursive execution, then a controlled OpenCode external adapter, then an evidence-gated Harness evolution laboratory. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is merged and accepted via PR #239. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` is merged via PR #255 (fixture-first default-off); honest fixture-adapter repair is tracked as `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1`. Real OpenCode binary admission remains deferred (`PE7-OPENCODE-BINARY-ADMISSION-1`). Harness evolution remains unavailable as a product claim until `PE7-HARNESS-EVOLUTION-LAB-1` merges with verified evidence; no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
 
 ## Verified Repository State
 
@@ -32,10 +32,10 @@ A new research direction is documented: bounded recursive execution, then a cont
 - exact-head CI evidence recorded by the merged PRs remains the implementation evidence; documentation changes do not create new implementation evidence;
 - PR #225 remains open and presentation-only, touching the Dashboard visual system rather than runtime or authority;
 - repository Actions may create/approve pull requests and the required secret names exist, but Issue #208 remains emergency-stopped with orchestration and auto-merge disabled;
-- the unique Vader runner unit is `actions.runner.Igzela-token-efficient-agent-harness-lab.Vader.service` under user `igzela`; after Mihomo `节点选择` left `台湾家宽-IEPL 02` for `香港-IEPL 01` and the service was restarted (2026-07-20), GitHub runner readiness reports `online`/`idle`/`ready:true`. ChatGPT Codex API access from this host currently returns HTTP 403 on tested HK nodes (blocks the Vader Codex worker even when the runner is online). Egress can regress on Clash Verge reload or node congestion;
+- the unique Vader runner unit is `actions.runner.Igzela-token-efficient-agent-harness-lab.Vader.service` under user `igzela`; after Mihomo `节点选择` left `台湾家宽-IEPL 02` for `香港-IEPL 01` and the service was restarted (2026-07-20), GitHub runner readiness reports `online`/`idle`/`ready:true`. The parked Issue→CLI blocker is Codex/ChatGPT HTTP 403 from this host (not runner offline). Egress can regress on Clash Verge reload or node congestion;
 - PR #230 repaired the repository-agent empty-workspace-output defect (Codex returned prose without editing due to an 80KB prompt with conflicting governance constraints) and split terminal attribution so successful-exit/no-changes now records `reason_code: no_workspace_changes` instead of generic `model_execution_failure`. The repair merged;
 - bounded replacement smoke Issue #231 created PR #232 (`docs/agent-smoke-replacement-20260717-c.md` only) and exact-head canonical seven-job CI passed (run `29565496618`), but the GitHub-hosted `agent-ci-monitor` workflow that dispatches independent review did not fire because `workflow_run` is not dispatched for `workflow_dispatch`-triggered bot CI. PR #233 repaired the dispatch-trigger path (squashed into `main` at `282cfc6246cdd0bdd607f70a951e5709e73f9ffa`); a fail-closed smoke (Issue #234) reached the expected terminal state on run `29572989439`. A one-time bounded temporary lift of the emergency stop then ran a fresh end-to-end smoke (Issue #235 → PR #236) that proved Vader → artifact → branch → PR → exact-head seven-job CI green (run `29573762624`) → `agent-ci-monitor` `workflow_dispatch` (run `29574631602`, `action: trigger_review`), but the follow-up `dispatch-review` controller run `29574651817` was rejected with `issue_not_active` because the worker's failure-handler had already moved Issue #235 to `agent-blocked` during a CI-observation race. The smoke PR remains unmerged and Issue #208 is emergency-stopped;
-- PR #237 (squash-merged into `main` at `1947d4b555bd14b7f104c1fc9aba31747099cb88` after all seven CI jobs passed on exact head `068b2e9ac4bde16daea25bcb4846f7e26ba6cca9`, run `29628449688`) repaired the CI cancellation/capacity-leak and CI-observation-race blockers exposed by the Issue #235 smoke. Two independent complete-diff reviews passed. Issue #208 remained `agent-control` + `agent-emergency-stop` throughout; no provider POST and no unrelated dispatch occurred; auto-merge stayed off. A fresh documentation-only replacement smoke remains to be run after the existing Vader runner is restored; runner and egress restoration are authorized operational repair, not a governance hard stop. Issue #208 remains stopped until the bounded smoke begins.
+- PR #237 (squash-merged into `main` at `1947d4b555bd14b7f104c1fc9aba31747099cb88` after all seven CI jobs passed on exact head `068b2e9ac4bde16daea25bcb4846f7e26ba6cca9`, run `29628449688`) repaired the CI cancellation/capacity-leak and CI-observation-race blockers exposed by the Issue #235 smoke. Two independent complete-diff reviews passed. Issue #208 remained `agent-control` + `agent-emergency-stop` throughout; no provider POST and no unrelated dispatch occurred; auto-merge stayed off. A fresh documentation-only replacement smoke remains parked on Issue #254 until Codex/ChatGPT HTTP 403 is resolved; the runner itself is online/idle. Issue #208 remains stopped until that smoke is deliberately unparked.
 - the current authenticated OpenRouter embedding catalog proves the fixed model identity and explicit zero `prompt`/`completion` prices, but omits the potentially chargeable `request` price; merged PR #227 records Applicable/NotApplicable/Unknown receipt evidence without treating omitted fields as zero, and the live request remains blocked before POST;
 - disposable repository `Igzela/acp-target-accept-20260716-1145` no longer resolves via GitHub API/GraphQL (already absent or previously deleted); do not delete any other repository.
 
@@ -57,11 +57,11 @@ PR creation then failed because Actions PR creation was disabled at that time. P
 
 Operational consequence:
 
-- restore the existing Vader service/egress, pass the repository-owned readiness checker, then run the bounded replacement smoke;
-- keep Issue #208 stopped until that smoke begins, temporarily enable it only for the bounded smoke, and restore the emergency stop immediately afterward;
+- runner is restored (`online`/`idle`); do not treat offline-runner recovery as the active blocker;
+- the parked blocker is Codex/ChatGPT HTTP 403 on the Vader host (Issue #254). Do not hard-fix Issue→CLI smokes until deliberately unparked;
+- keep Issue #208 stopped until a replacement smoke is unparked; temporarily enable only for that bounded smoke and restore emergency stop immediately afterward;
 - keep Mihomo egress on a node that completes both `tokenghub` TLS and ChatGPT Codex API access; re-verify after any Clash reload;
-- rerun the bounded readiness checker before any re-enable;
-- complete one documentation-only replacement smoke through PR creation, exact-head CI, independent review, and manual merge decision before accepting the repository-agent path for normal bounded work. The Issue #235 smoke reached PR creation, exact-head seven-job CI green, and the trusted monitor `workflow_dispatch` path; the follow-up `dispatch-review` could not bind to the exact head because the worker moved Issue #235 to `agent-blocked` during a CI-observation race. PR #237 repaired that race at the orchestrator level by splitting `ci_verifier` into `acquire_exact_run` + `wait_for_run_completion` with per-cycle binding revalidation and by reverting to per-resource concurrency groups so emergency-stop no longer cancels unrelated workflows. The replacement smoke requires the uniquely named Vader runner to be restored to `online`/`idle`; recovery is authorized.
+- when unparked, complete one documentation-only replacement smoke through PR creation, exact-head CI, independent review, and manual merge decision before accepting the repository-agent path for normal bounded work.
 
 The intended interface remains ordinary language in GPT Web. The assistant, not the user, owns internal Issue/workflow parameters. Existing runner and egress recovery, bounded smoke execution, eligible manual merge, and continuation across `READY_FOR_EXECUTION` packets require no repeated permission.
 
@@ -86,9 +86,10 @@ The intended interface remains ordinary language in GPT Web. The assistant, not 
 | GitHub/Vader repository orchestrator | Implemented/default-off; PR #237 is merged and accepted; replacement smoke remains the final live-acceptance task after authorized Vader runner recovery |
 | Dashboard | Functional; PR #225 is an independent presentation-only redesign |
 | Post-R7 wire/type governance | Implemented through `scripts/check_wire_codegen_drift.sh` |
-| PE7 bounded recursive execution | Implemented and merged via PR #239; default-off recursive admission, persistence, bounded evidence, and kill switch under existing scheduler/storage owners; Harness evolution still unavailable |
-| PE7 Harness evolution laboratory | Approved as a future default-off fixture/local lane; blocked on recursive execution; no candidate archive, evaluator vault, or promotion path exists yet |
-| PE7 meta-improver experiment | Deferred/blocked; no Level-2 or `Improvement@K` evidence exists |
+| PE7 bounded recursive execution | Implemented and merged via PR #239; default-off recursive admission, persistence, bounded evidence, and kill switch under existing scheduler/storage owners |
+| PE7 OpenCode fixture adapter | Merged via PR #255; fixture-only default-off. Repair packet `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` strengthens routing, identity, patch grammar, process-tree, and fixture-manifest honesty. Real binary admission deferred (`PE7-OPENCODE-BINARY-ADMISSION-1`) |
+| PE7 Harness evolution laboratory | Approved as a future default-off fixture/local lane; next after the fixture-adapter repair is merged; no candidate archive, evaluator vault, or promotion path exists yet |
+| PE7 meta-improver experiment | Deferred/blocked until a stable Level-1 lab result exists; no Level-2 or `Improvement@K` evidence exists |
 
 ## Existing Architecture Relevant to PE7
 
@@ -122,22 +123,22 @@ A `langgraph_external` node performs one adapter invocation under a Rust lease. 
 
 ### Recursive/evolution boundary
 
-`PE7-BOUNDED-RECURSIVE-EXECUTION-1` is implemented and merged; it proceeded only in deterministic local/fixture mode and never enabled Issue #208, used the repository-agent smoke path, called a provider, mutated a real target repository, or altered evaluator, permission, budget, audit, target-output, merge, release, or rollback boundaries. The OpenCode adapter packet is now eligible; the Harness-evolution packet remains blocked until the OpenCode adapter is implemented and verified, and any evolution work remains fixture/local-only behind the same boundaries.
+`PE7-BOUNDED-RECURSIVE-EXECUTION-1` is implemented and merged; it proceeded only in deterministic local/fixture mode and never enabled Issue #208, used the repository-agent smoke path, called a provider, mutated a real target repository, or altered evaluator, permission, budget, audit, target-output, merge, release, or rollback boundaries. The OpenCode fixture adapter (PR #255) is merged; fixture-adapter honesty repair is the active PE7 implementation lane. Harness evolution remains blocked until that repair is merged and remains fixture/local-only behind the same boundaries.
 
 ## Confirmed Integration Gaps
 
-1. **Parked:** repository-agent replacement smoke (Issue **#254** / `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`) until Codex/ChatGPT works on the Vader host without hard-fix or TLS weakening. Keep Issue #208 emergency-stopped. Do not treat this as the default development path.
+1. **Parked:** repository-agent replacement smoke (Issue **#254** / `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`) until Codex/ChatGPT works on the Vader host without hard-fix or TLS weakening. Runner is online/idle; Issue #208 emergency-stopped. Do not treat this as the default development path.
 2. Obtain current provider catalog evidence that satisfies exact model identity and every modeled applicable charge dimension before any provider POST.
 3. Confirm disposable repository deletion remains limited to the already-absent `Igzela/acp-target-accept-20260716-1145` identity only.
-Gaps (1)–(2) still block production repository-agent use and provider-backed acceptance. They do **not** block Ship PR work or fixture/local PE7 (recursive execution merged; OpenCode adapter is the active READY implementation lane).
+Gaps (1)–(2) still block production repository-agent use and provider-backed acceptance. They do **not** block Ship PR work or fixture/local PE7 (recursive execution merged; OpenCode fixture-adapter repair is the active PE7 implementation lane).
 
 ## Open Work Coordination
 
 - PR #225 remains open and presentation-only; PE7 recursive execution (#239), Ship PR (#240), public-surface PRs #241–#253, and clean-environment external validation (#256) are squash-merged.
-- `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is **parked** on Issue #254 (runner restored; Codex 403 blocks smoke). Historical smoke PRs #232/#236 remain closed. Issue #208 emergency-stopped. No active Issue→CLI work.
-- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` COMPLETE via PR #255 (fixture-first default-off).
+- `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is **parked** on Issue #254 (runner online/idle; Codex HTTP 403 blocks smoke). Historical smoke PRs #232/#236 remain closed. Issue #208 emergency-stopped. No active Issue→CLI work.
+- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` COMPLETE via PR #255 (fixture-first default-off). Active honesty repair: `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1`. Binary admission deferred: `PE7-OPENCODE-BINARY-ADMISSION-1`.
 - `OSS-EXTERNAL-VALIDATION-1` COMPLETE via PR #256 (exact reviewed head `a3f6744616a75b36d185534993f21c2839b1ea76`; seven-job exact-head CI runs `29749430115` / `29749437488`; Ubuntu+macOS external-validation run `29749430155`; independent complete-diff review on PR comments). Not external adoption evidence.
-- `PE7-HARNESS-EVOLUTION-LAB-1` is the next PE7 lab packet when selected; evolution product claims remain unavailable.
+- `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the OpenCode fixture-adapter repair merges; evolution product claims remain unavailable.
 - provider-backed evolution, model-weight updates, evaluator/task-generator co-evolution, automatic multi-lineage recombination, and production continuous self-update remain deferred.
 - no new public tag, release, deployment, production installation, destructive production fault, provider call, protected-branch write, or persistent signing secret is authorized by this direction.
 
