@@ -10,6 +10,7 @@ Format is inspired by [Keep a Changelog](https://keepachangelog.com/). Versions 
 
 ### Added
 
+- PE7 OpenCode external coding adapter (fixture-first, default-off): `opencode_external` executor + `adapters/opencode/` deny-by-default fixture runner; no live OpenCode binary admission yet.
 - Growth closeout guards: README public-surface checker, site OG metadata + `site/og.svg`, `gh`/attestation doctor checks, in-repo `exact-head-check` workflow.
 - Exact-Head CI proof Action: `actions/exact-head-check/` (re-read live PR head, fail closed on move, JSON proof + Job Summary; no merge, no model).
 - Five-minute no-provider demo: `./scripts/demo.sh` (fixture dispatch, source-revision proof, stale-head rejection, cleanup).

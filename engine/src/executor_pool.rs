@@ -585,6 +585,31 @@ pub fn register_external_runtime_executor(
     });
 }
 
+pub fn register_opencode_runtime_executor(
+    pool: &ExecutorPool,
+    executor: Arc<dyn NodeExecutor>,
+    concurrency_limit: usize,
+    timeout_ms: u64,
+) {
+    pool.register(ExecutorEntry {
+        executor_type: crate::opencode_runtime::OPENCODE_EXECUTOR_TYPE.to_string(),
+        executor,
+        capabilities: ExecutorCapabilities {
+            supported_task_types: vec![crate::opencode_runtime::OPENCODE_TASK_TYPE.to_string()],
+            supported_task_domains: vec!["external_runtime".to_string(), "code".to_string()],
+            requires_auth: false,
+            requires_cli: false,
+            max_timeout_ms: timeout_ms,
+        },
+        status: ExecutorStatus {
+            concurrency_limit: concurrency_limit.max(1) as u64,
+            ..Default::default()
+        },
+        cost_profile: CostProfile::default(),
+        metrics: ExecutorMetrics::default(),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

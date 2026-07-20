@@ -1,0 +1,13 @@
+{
+  "schema_version": "opencode_pin.v1",
+  "upstream_repository": "https://github.com/anomalyco/opencode",
+  "upstream_identity": "anomalyco/opencode",
+  "license": "MIT",
+  "pinned_version": "1.1.48",
+  "pinned_commit": "fixture-pin-not-downloaded",
+  "artifact_checksum_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "adapter_version": "0.1.0",
+  "adapter_contract_version": "opencode_external_adapter.v1",
+  "initial_mode": "fixture_only",
+  "notes": "Fixture-first PE7 adapter pin. Real binary download/use requires a later evidence packet; checksum is placeholder until a release artifact is admitted."
+}

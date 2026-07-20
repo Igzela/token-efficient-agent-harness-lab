@@ -318,6 +318,7 @@ pub struct WorkflowScheduler {
     worker_executor: Option<Arc<dyn NodeExecutor>>,
     agent_step_executor: Option<Arc<dyn NodeExecutor>>,
     external_runtime_executor: Option<(Arc<dyn NodeExecutor>, u64)>,
+    opencode_runtime_executor: Option<(Arc<dyn NodeExecutor>, u64)>,
 }
 
 impl WorkflowScheduler {
@@ -350,6 +351,7 @@ impl WorkflowScheduler {
             worker_executor: None,
             agent_step_executor: None,
             external_runtime_executor: None,
+            opencode_runtime_executor: None,
         }
     }
 
@@ -391,6 +393,15 @@ impl WorkflowScheduler {
         timeout_ms: u64,
     ) -> Self {
         self.external_runtime_executor = Some((executor, timeout_ms));
+        self
+    }
+
+    pub fn with_opencode_runtime_executor(
+        mut self,
+        executor: Arc<dyn NodeExecutor>,
+        timeout_ms: u64,
+    ) -> Self {
+        self.opencode_runtime_executor = Some((executor, timeout_ms));
         self
     }
 
@@ -448,6 +459,11 @@ impl WorkflowScheduler {
             .as_ref()
             .map(|(_, timeout_ms)| max_execution_timeout_ms.max(*timeout_ms))
             .unwrap_or(max_execution_timeout_ms);
+        let max_execution_timeout_ms = self
+            .opencode_runtime_executor
+            .as_ref()
+            .map(|(_, timeout_ms)| max_execution_timeout_ms.max(*timeout_ms))
+            .unwrap_or(max_execution_timeout_ms);
         self.config
             .validate_lease_exceeds_execution_timeout(max_execution_timeout_ms)?;
         if env_flag_enabled("ACP_SUPERVISED_WORKERS_KILL_SWITCH") {
@@ -482,6 +498,14 @@ impl WorkflowScheduler {
         }
         if let Some((executor, timeout_ms)) = self.external_runtime_executor.clone() {
             executor_pool::register_external_runtime_executor(
+                &self.executor_pool,
+                executor,
+                self.config.max_concurrent,
+                timeout_ms,
+            );
+        }
+        if let Some((executor, timeout_ms)) = self.opencode_runtime_executor.clone() {
+            executor_pool::register_opencode_runtime_executor(
                 &self.executor_pool,
                 executor,
                 self.config.max_concurrent,

@@ -29,6 +29,7 @@ pub mod local_runner_provider;
 pub mod local_scorecard_import;
 pub mod model_selector;
 pub mod node_executor;
+pub mod opencode_runtime;
 pub mod operator_decision;
 pub mod orchestration;
 pub mod provider;

@@ -19,7 +19,7 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION`. **Default active implementation lane.** Fixture/local, default-off OpenCode external coding executor under existing Rust scheduler/finalizer. Does **not** use Issue #208, Vader, or the repository-agent Issue→local CLI path.
+1. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `IN_PROGRESS` / implementing fixture-first default-off OpenCode external coding executor under existing Rust scheduler (`opencode_external` node + `adapters/opencode`). Does **not** use Issue #208, Vader, or the repository-agent Issue→local CLI path.
 2. **Ship PR / open-source public surfaces — `COMPLETE`** (PR #240–#253). Formal marketing promotion and a user-facing tagged release remain optional and confirmation-gated.
 3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — **`PARKED` / `BLOCKED_PREREQUISITE`** on Vader-host Codex/ChatGPT execution (HTTP 403). **Not actively driven.** Parking Issue: **#254** (same acceptance *class* as historical docs smokes #231→PR #232 and #235→PR #236; not a re-open of those closed PRs). Runner restore already succeeded (`online`/`idle` after Mihomo left `台湾家宽-IEPL 02` for `香港-IEPL 01`). Issue #208 stays emergency-stopped. Do **not** hard-fix Codex 403 or retry Issue→CLI smokes until #254 is deliberately unparked.
 4. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on OpenCode adapter.
@@ -185,7 +185,7 @@ These defaults may be changed only through a later evidence-backed packet and ve
 
 ## Packet PE7-OPENCODE-EXTERNAL-ADAPTER-1 — Controlled coding executor
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION` (implementation in flight on branch `pe7-opencode-external-adapter-1`)
 
 **Prerequisite:** `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is merged and accepted.
 
