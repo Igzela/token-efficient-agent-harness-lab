@@ -42,8 +42,20 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the project maintainer at the GitHub repository's issue tracker.
-All complaints will be reviewed and investigated promptly and fairly.
+reported **privately** to the project maintainer by email:
+
+- `conduct@igzela.dev` with subject prefix `[TEAHL Conduct]`
+
+Do **not** open a public GitHub issue for conduct complaints. Public trackers
+are not appropriate for private safety matters.
+
+All complaints will be reviewed and investigated promptly and fairly. Maintainers
+are obligated to respect the privacy and security of the reporter of any incident.
+
+If the conduct address is unavailable, use a private GitHub Security Advisory-style
+channel only if the matter is also a security issue; otherwise contact the
+maintainer through a private GitHub user-to-user message without posting details
+in the public issue tracker.
 
 ## Attribution
 

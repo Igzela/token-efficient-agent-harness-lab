@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Token-Efficient Agent Harness Lab — Local control plane for measurable agents</title>
-  <meta name="description" content="Open-source, self-hosted agent control plane. Measure token efficiency, budget anomalies, adaptive routing, and audited workflows — fail-closed, local-first, MIT licensed." />
+  <title>Token-Efficient Agent Harness Lab — Evidence for coding-agent workflows</title>
+  <meta name="description" content="Open-source, self-hosted evidence and safety infrastructure for coding-agent repository workflows. Exact-head CI binding, budgets, audit, recovery — fail-closed, local-first, MIT." />
   <meta name="theme-color" content="#0f172a" />
   <meta property="og:title" content="Token-Efficient Agent Harness Lab" />
-  <meta property="og:description" content="Self-hosted control plane for token-efficient, auditable agent workflows. Rust engine · 1600+ tests · MIT." />
+  <meta property="og:description" content="Prove agent patches, reviews, and CI belong to the exact commit being shipped. Local-first · fail-closed · MIT." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://token-efficient-agent-harness-lab.vercel.app" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Token-Efficient Agent Harness Lab" />
-  <meta name="twitter:description" content="Stop guessing agent cost. Measure, pause, and prove token efficiency — on your machine." />
+  <meta name="twitter:description" content="Evidence and safety infrastructure for coding-agent repository workflows — on your machine." />
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -23,7 +23,7 @@
     <div class="wrap nav-inner">
       <a class="brand" href="#">
         <span class="brand-mark" aria-hidden="true"></span>
-        <span class="brand-text">Agent Harness Lab</span>
+        <span class="brand-text">Token-Efficient Agent Harness Lab</span>
       </a>
       <nav class="nav-links" aria-label="Primary">
         <a href="#why">Why</a>
@@ -34,7 +34,7 @@
       </nav>
       <div class="nav-cta">
         <a class="btn btn-ghost" href="https://github.com/Igzela/token-efficient-agent-harness-lab" rel="noopener">GitHub</a>
-        <a class="btn btn-primary" href="#start">Run locally</a>
+        <a class="btn btn-primary" href="#start">Run the demo path</a>
       </div>
     </div>
   </header>
@@ -49,18 +49,18 @@
             <span class="gradient">measure, pause, and prove</span>
           </h1>
           <p class="lead">
-            Token-Efficient Agent Harness Lab is a self-hosted control plane for studying and operating
-            event-sourced agent systems — with deterministic budgets, regression scorecards,
-            adaptive routing evidence, and an operator dashboard that refuses to invent facts.
+            Evidence and safety infrastructure for coding-agent repository workflows:
+            exact-head CI binding, deterministic budgets, audited dispatch, and an operator
+            dashboard that refuses to invent facts.
           </p>
           <div class="hero-actions">
-            <a class="btn btn-primary btn-lg" href="https://github.com/Igzela/token-efficient-agent-harness-lab" rel="noopener">
-              Star on GitHub
+            <a class="btn btn-primary btn-lg" href="#start">
+              Run locally
             </a>
-            <a class="btn btn-secondary btn-lg" href="#start">Get started in minutes</a>
+            <a class="btn btn-secondary btn-lg" href="https://github.com/Igzela/token-efficient-agent-harness-lab" rel="noopener">View on GitHub</a>
           </div>
           <ul class="trust-row" aria-label="Highlights">
-            <li><strong>1600+</strong> Rust tests</li>
+            <li><strong>Exact-head</strong> CI evidence</li>
             <li><strong>Fail-closed</strong> by design</li>
             <li><strong>SQLite</strong> local default</li>
             <li><strong>Rust + TS + Python</strong></li>
@@ -228,10 +228,11 @@ ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
 # Open http://127.0.0.1:8080</code></pre>
           </div>
           <div class="start-card">
-            <h3>2. Docker (optional)</h3>
-            <pre class="snippet"><code>docker run -d -p 8080:8080 -v acp-data:/data \
-  igzela/agent-control-plane:latest</code></pre>
-            <p class="muted">Or <code>docker compose --profile combined up -d</code> from a clone.</p>
+            <h3>2. Docker (source-built only)</h3>
+            <pre class="snippet"><code>git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
+cd token-efficient-agent-harness-lab
+docker compose --profile combined up --build -d</code></pre>
+            <p class="muted">No verified public <code>:latest</code> image is published. Use source-built compose only.</p>
           </div>
           <div class="start-card">
             <h3>3. Verify the stack</h3>

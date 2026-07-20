@@ -4,6 +4,8 @@ Last updated: 2026-07-20.
 
 ## Summary
 
+`SHIP-PR-DELIVERY-1` is merged: PR #240 squash-merged into `main` at `26b0851f` on exact reviewed head `16ebef2ba9ded4ae3f1fba842e2c77adb1a6da31` with seven-job exact-head CI green (explicit `workflow_dispatch` run `29731509771`, nonce `pr240-ship-pr-delivery-1-16ebef2b-20260720T092724Z`, exact-head verification executed successfully in all seven jobs; parallel `pull_request` run `29731497749` also green) and independent standards/spec complete-diff reviews with no merge blockers. Local Agent → focused branch → PR → exact-head CI → independent review → manual squash merge is the default daily development path; the Issue/Vader orchestrator remains optional and emergency-stopped.
+
 This repository is a local/small-team self-hosted Agent workflow control plane and research lab. Rust `engine/` remains the sole runtime, API, scheduler, policy, and application-owned storage implementation. The production-integration program through Agent Runtime AR-6 and product evolution PE-1 through PE-6 is merged. Durable memory, budget evidence, replay/promotion, managed external-runtime adapters, target-output authority, release provenance, and fault/recovery evidence are connected through existing bounded owners.
 
 Controlled staging drills and the repaired disposable target-repository path passed. PR #237 is merged and accepted on exact reviewed head `068b2e9ac4bde16daea25bcb4846f7e26ba6cca9` with seven-job CI run `29628449688` and two independent complete-diff reviews. The remaining repository-agent acceptance work is operational: restore the existing Vader runner and complete one replacement documentation-only smoke through PR creation, exact-head CI, and independent review. Issue #208 remains stopped only until that bounded smoke begins; its temporary enable/restore is already authorized. Auto-merge remains off. The current authenticated OpenRouter embedding catalog still omits the potentially chargeable `request` price; merged PR #227 keeps that path pre-send-blocked. No provider POST, provider-backed benchmark, public release, or production installation has been completed.
@@ -129,8 +131,10 @@ The first three gaps continue to block production repository-agent use and provi
 
 ## Open Work Coordination
 
-- PR #225 remains open and presentation-only; PR #239 (`PE7-BOUNDED-RECURSIVE-EXECUTION-1`) is squash-merged into `main` at `d554c5630c0347e99840067a216c772d5a2377ca` with exact-head seven-job CI green and two independent complete-diff reviews.
-- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` is now the first eligible PE7 implementation packet (`READY_FOR_EXECUTION`).
+- PR #225 remains open and presentation-only; PR #239 (`PE7-BOUNDED-RECURSIVE-EXECUTION-1`) and PR #240 (`SHIP-PR-DELIVERY-1`) are squash-merged.
+- Public-surface trust repair (`OSS-PUBLIC-TRUST-1`) is the next open-source readiness slice after Ship PR: README/CONTRIBUTING/SUPPORT/SECURITY/CoC/site consistency without runtime changes. Later: no-provider demo, then Exact-Head CI Proof Action.
+- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` remains `READY_FOR_EXECUTION` but is lower priority than public-trust repair for external readiness.
+- `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` (Vader restore + replacement smoke) remains authorized operational work and may proceed independently.
 - `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the OpenCode adapter merges and active state is refreshed.
 - provider-backed evolution, model-weight updates, evaluator/task-generator co-evolution, automatic multi-lineage recombination, and production continuous self-update remain deferred.
 - no new public tag, release, deployment, production installation, destructive production fault, provider call, protected-branch write, or persistent signing secret is authorized by this direction.
