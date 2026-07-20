@@ -19,13 +19,14 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. `OSS-PUBLIC-TRUST-1` — `READY_FOR_EXECUTION` (bounded maintenance). Repair public trust surfaces: README entry, CONTRIBUTING verification tiers, SUPPORT, SECURITY/CoC private paths, site install claims, remove unverified Docker `latest` / wrong cargo package install, clarify Claude pilot vs Claude Code. No runtime, migration, provider, or PE7 behavior changes. Prerequisite: `SHIP-PR-DELIVERY-1` merged (PR #240).
-2. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION`. Restore the existing runner, pass readiness, run the replacement smoke, record acceptance, and continue. Runner/egress recovery is operational work, not a permission blocker. Independent of public-trust docs work.
-3. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION`. Prerequisite (bounded recursive execution via PR #239) is satisfied. Lower priority than public-trust repair for external readiness; introduces a pinned OpenCode release or commit only as a controlled, local/fixture external executor with networked tools disabled.
-4. Later open-source slices (not yet execution-ready packets): no-provider five-minute demo; monorepo `actions/exact-head-check/` wedge. Do not begin formal external promotion until P0 public-trust items are clear.
-5. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on both bounded recursive execution and the controlled OpenCode adapter.
-6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result.
-7. PR #225 remains an independent presentation-only Dashboard PR.
+1. `OSS-CONTRIBUTOR-SURFACE-1` — `IN_PROGRESS` / `READY_FOR_EXECUTION` (bounded maintenance). Contributor and community surface from the open-source growth audit: issue forms, layered PR template, SUPPORT response policy, CHANGELOG, CITATION, CODEOWNERS, and eight `good first issue` seeds. No Dependabot enablement without a separate cost review. No second roadmap file. Prerequisite: `OSS-PUBLIC-TRUST-1` merged (PR #241).
+2. `OSS-PUBLIC-TRUST-1` — `COMPLETE` via PR #241.
+3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION`. Restore the existing runner, pass readiness, run the replacement smoke. Independent operational lane.
+4. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION`. Lower priority than public/contributor readiness for external adoption.
+5. Later open-source slices: no-provider five-minute demo; monorepo `actions/exact-head-check/` wedge.
+6. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on both bounded recursive execution and the controlled OpenCode adapter.
+7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result.
+8. PR #225 remains an independent presentation-only Dashboard PR.
 
 The recursive/evolution lane is independent of the external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. PR3 acceptance work and PE7 local/fixture work may proceed without repeated permission, using separate branches/sessions when they run concurrently. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
 

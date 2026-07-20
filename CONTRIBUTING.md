@@ -133,13 +133,30 @@ Target-repository output exists only behind explicit gates (`ACP_ENABLE_TARGET_R
 
 ## Reporting issues
 
-Use [issue templates](https://github.com/Igzela/token-efficient-agent-harness-lab/issues/new/choose) for bugs and features. Include OS, toolchain versions, reproduction steps, and expected vs actual behavior.
+Use [issue forms](https://github.com/Igzela/token-efficient-agent-harness-lab/issues/new/choose):
+
+- Bug report
+- Feature request
+- External validation (clean install / docs dry-run without code)
+
+Look for the `good first issue` label for starter work. Each starter issue should state allowed paths, non-goals, focused checks, and acceptance criteria.
 
 Security vulnerabilities: see [SECURITY.md](SECURITY.md) (private advisory path — not public issues).
 
 Conduct / harassment: see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) (private contact — not the public issue tracker).
 
-General help: [SUPPORT.md](SUPPORT.md).
+General help and response policy: [SUPPORT.md](SUPPORT.md).
+
+Forward plan: [docs/NEXT_DECISION.md](docs/NEXT_DECISION.md) only. Do not add a second roadmap document.
+
+## Dependency updates
+
+Dependabot is **not** enabled by default. Automatic dependency PRs can thrash CI and conflict with pinned Actions / release attestation work. Propose dependency bumps as manual, reviewed PRs with focused evidence until a maintainer documents an explicit Dependabot policy.
+
+## Citation and changelog
+
+- Cite with [CITATION.cff](CITATION.cff)
+- User-facing notes: [CHANGELOG.md](CHANGELOG.md)
 
 ## License
 

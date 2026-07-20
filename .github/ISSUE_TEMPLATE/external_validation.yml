@@ -1,0 +1,55 @@
+name: External validation feedback
+description: Report a clean-environment install, demo, or docs dry-run without writing code
+title: "[validation] "
+labels: ["help wanted"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when you tried the public path (clone, docs, install, or demo) and hit a snag.
+        You do **not** need to open a fix PR. Tell us the first place you got stuck.
+  - type: input
+    id: path
+    attributes:
+      label: Path you tried
+      description: e.g. README Quick Start, CONTRIBUTING docs-only, cargo install, site instructions
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / environment
+      placeholder: e.g. Ubuntu 24.04 clean VM, macOS 15, no prior Rust install
+    validations:
+      required: true
+  - type: textarea
+    id: stuck
+    attributes:
+      label: First place you got stuck
+      description: Exact command or page, and the first error or confusing sentence.
+    validations:
+      required: true
+  - type: dropdown
+    id: time
+    attributes:
+      label: Approximate time to first success or give-up
+      options:
+        - Under 5 minutes
+        - 5–15 minutes
+        - 15–30 minutes
+        - Over 30 minutes
+        - Did not succeed
+    validations:
+      required: true
+  - type: textarea
+    id: success
+    attributes:
+      label: What worked
+      description: Optional. Commands or pages that were clear.
+  - type: checkboxes
+    id: followup
+    attributes:
+      label: Follow-up
+      options:
+        - label: I am willing to re-test after a docs fix
+        - label: I may open a small PR if the fix is docs-only

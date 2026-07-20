@@ -372,7 +372,7 @@ R7 remains the architecture baseline. A later architecture direction must be exp
 
 ## Contributing
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style, and PR guidelines.
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for focused verification tiers (docs contributors are not required to run the full Rust matrix), [SUPPORT.md](SUPPORT.md) for help routing and response policy, and [CHANGELOG.md](CHANGELOG.md) / [CITATION.cff](CITATION.cff) for user-facing history and citation.
 
 ## License
 

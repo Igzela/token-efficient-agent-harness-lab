@@ -1,10 +1,12 @@
 ---
-name: Agent Task
-about: Define an executable task for the autonomous coding agent
-title: ''
-labels: agent-draft
-assignees: ''
+name: Agent Task (maintainers)
+description: Maintainer-only executable task for the repository agent orchestrator
+title: ""
+labels: ["agent-draft"]
+assignees: []
 ---
+
+> **Maintainer / orchestrator only.** External contributors should use Bug report, Feature request, or External validation.
 
 ## Goal
 
@@ -38,33 +40,8 @@ Edit this marker before applying `agent-ready`. Use explicit files or narrow dir
 
 - [ ] Focused tests pass
 - [ ] Existing tests remain green
-- [ ] Lint and format pass
-- [ ] No security baseline regression
-- [ ] Agent handoff guard passes
-- [ ] All required CI jobs green
+- [ ] Handoff / docs updated if behavior or contracts change
 
-## Dependencies
+## Risk and rollback
 
-<!-- Issues that must be complete before this one starts. Use "Depends on #N" syntax. -->
-
-## Contracts
-
-<!-- Input/output contracts, versioned schemas, reason codes, bounds, and permissions. -->
-
-## Authority
-
-<!-- What authority does this task need? What must it NOT do? -->
-
-## Failure States
-
-<!-- What should happen if the task cannot be completed? -->
-
-## Verification
-
-```bash
-# Commands to verify the implementation
-```
-
-## Rollback
-
-<!-- How to revert if needed. -->
+<!-- Risk class and exact rollback. -->
