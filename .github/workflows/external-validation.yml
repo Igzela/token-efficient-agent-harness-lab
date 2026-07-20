@@ -93,10 +93,14 @@ jobs:
           enable-cache: false
 
       - name: Run clean-environment validation
+        env:
+          # Hosted clean runners (especially macOS) can need longer first-start time.
+          ACP_EXTVAL_DEMO_TIMEOUT: "180"
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/acp-extval"
           ./scripts/external_validation.sh \
+            --demo-timeout "${ACP_EXTVAL_DEMO_TIMEOUT}" \
             --report "${RUNNER_TEMP}/acp-extval/external_validation_report.json"
           test -f "${RUNNER_TEMP}/acp-extval/external_validation_report.json"
           python3 - <<'PY'

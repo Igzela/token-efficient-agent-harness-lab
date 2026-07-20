@@ -35,6 +35,26 @@ def repo_root_from_script() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _sanitize_text(text: str) -> str:
+    """Drop absolute home/runner paths from bounded report/reason strings."""
+    cleaned = text
+    cleaned = re.sub(r"/home/[^/\s]+", "~", cleaned)
+    cleaned = re.sub(r"/Users/[^/\s]+", "~", cleaned)
+    cleaned = re.sub(r"/runner/work/[^\s:]+", "<runner>", cleaned)
+    return cleaned
+
+
+def _failure_core(text: str, limit: int = 280) -> str:
+    """Prefer the last meaningful line so truncated reasons keep the root error."""
+    lines = [ln.strip() for ln in _sanitize_text(text).splitlines() if ln.strip()]
+    if not lines:
+        return "unknown_failure"
+    core = lines[-1]
+    if len(core) > limit:
+        core = core[-limit:]
+    return core
+
+
 def git_head_sha(repo_root: Path) -> str:
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -110,21 +130,37 @@ def stage(
     print(f"{mark}  {name}: {reason}")
 
 
-def detect_tools(repo_root: Path, stages: list[dict[str, Any]]) -> dict[str, str]:
-    """Detect required tools; reuse doctor JSON when available."""
+def detect_tools(
+    repo_root: Path,
+    stages: list[dict[str, Any]],
+    *,
+    skip_demo: bool,
+) -> dict[str, str]:
+    """Detect required tools; reuse doctor JSON when available.
+
+    Full clean-env needs cargo/rustc/bun/uv. --skip-demo only needs git and jq
+    (install-contract parse + exact-head offline self-validation).
+    """
     versions: dict[str, str] = {
         "python": sys.version.split()[0],
         "os": platform.system(),
         "arch": platform.machine(),
         "platform": platform.platform(),
     }
-    required = {
-        "git": ["--version"],
-        "cargo": ["--version"],
-        "rustc": ["--version"],
-        "bun": ["--version"],
-        "uv": ["--version"],
-    }
+    if skip_demo:
+        required = {
+            "git": ["--version"],
+            "jq": ["--version"],
+        }
+    else:
+        required = {
+            "git": ["--version"],
+            "cargo": ["--version"],
+            "rustc": ["--version"],
+            "bun": ["--version"],
+            "uv": ["--version"],
+            "jq": ["--version"],
+        }
     missing: list[str] = []
     for name, args in required.items():
         path = shutil.which(name)
@@ -137,8 +173,9 @@ def detect_tools(repo_root: Path, stages: list[dict[str, Any]]) -> dict[str, str
         versions[name] = line[0] if line else "version unknown"
 
     # Doctor is advisory for public demo (auth/port warnings are expected).
+    # Skip when not doing a live demo to keep unit CI free of bun/cargo.
     doctor = repo_root / DOCTOR_SCRIPT
-    if doctor.exists():
+    if doctor.exists() and not skip_demo:
         result = run_capture(
             [sys.executable, str(doctor), "--json"],
             cwd=repo_root,
@@ -173,12 +210,16 @@ def detect_tools(repo_root: Path, stages: list[dict[str, Any]]) -> dict[str, str
         )
         raise RuntimeError(f"missing tools: {missing}")
 
+    tool_list = ", ".join(sorted(required.keys()))
     stage(
         stages,
         "detect_tools",
         "pass",
-        "git, cargo, rustc, bun, uv present",
-        detail={"tool": "cargo", "version": versions.get("cargo", "")[:80]},
+        f"{tool_list} present",
+        detail={
+            "tool": "git" if skip_demo else "cargo",
+            "version": versions.get("git" if skip_demo else "cargo", "")[:80],
+        },
     )
     return versions
 
@@ -206,7 +247,7 @@ def verify_install_contract(repo_root: Path, stages: list[dict[str, Any]]) -> No
         stage(stages, "install_contract", "fail", "README advertises docker :latest")
         raise RuntimeError("forbidden docker :latest advertisement")
 
-    # Prove the package/binary pair builds at the exact revision (disposable target dir).
+    # Manifest + public docs only; the disposable cargo build is a separate stage.
     stage(
         stages,
         "install_contract",
@@ -230,7 +271,15 @@ def build_engine(
     }
     # Avoid reusing a possibly stale workspace target/ by forcing disposable dir.
     result = run_capture(
-        ["cargo", "build", "-p", "engine", "--bin", "agent-control-plane"],
+        [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "engine",
+            "--bin",
+            "agent-control-plane",
+        ],
         cwd=repo_root,
         env=env,
         timeout=timeout,
@@ -319,18 +368,21 @@ def run_no_provider_demo(
             str(timeout),
         ],
         cwd=repo_root,
-        timeout=timeout + 60,
+        timeout=timeout + 90,
     )
     output = (result.stdout or "") + (result.stderr or "")
     if result.returncode != 0:
+        # Prefer the final meaningful line for logs/report (traceback heads truncate poorly).
+        tail = _sanitize_text(output[-2500:] if output else "no demo output")
+        print(tail, file=sys.stderr, flush=True)
         stage(
             stages,
             "no_provider_demo",
             "fail",
-            "demo exited non-zero",
+            _failure_core(f"demo exit {result.returncode}: {tail}"),
             detail={"exit_code": result.returncode},
         )
-        raise RuntimeError(f"demo failed:\n{output[-4000:]}")
+        raise RuntimeError(_failure_core(f"demo exit {result.returncode}: {tail}"))
 
     required_marks = (
         "PASS  local runtime healthy",
@@ -692,12 +744,24 @@ def main() -> int:
         help="Skip engine build and live demo (install contract + exact-head only)",
     )
     parser.add_argument("--build-timeout", type=float, default=900.0)
-    parser.add_argument("--demo-timeout", type=float, default=60.0)
+    parser.add_argument(
+        "--demo-timeout",
+        type=float,
+        default=120.0,
+        help="Seconds to wait for engine health during the no-provider demo",
+    )
     args = parser.parse_args()
     repo_root = args.repo_root.resolve()
 
     if args.self_test:
         return run_self_test()
+
+    # Line-buffer human progress so CI logs are ordered if stdout is not a TTY.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - best-effort on older interpreters
+        pass
 
     started = time.monotonic()
     stages: list[dict[str, Any]] = []
@@ -711,15 +775,28 @@ def main() -> int:
 
     try:
         source_revision = git_head_sha(repo_root)
-        print(f"INFO  source_revision={source_revision}")
-        print("INFO  clean-environment validation (no provider, no API key, no target write)")
-        print("INFO  self-validation only — not external adoption evidence")
+        print(f"INFO  source_revision={source_revision}", flush=True)
+        print(
+            "INFO  clean-environment validation (no provider, no API key, no target write)",
+            flush=True,
+        )
+        print(
+            "INFO  self-validation only - not external adoption evidence",
+            flush=True,
+        )
 
-        versions = detect_tools(repo_root, stages)
+        versions = detect_tools(repo_root, stages, skip_demo=args.skip_demo)
         verify_install_contract(repo_root, stages)
 
         if not args.skip_demo:
-            target_tmp = tempfile.TemporaryDirectory(prefix="acp-extval-target-")
+            # Prefer runner-provided temp when present (GitHub Actions RUNNER_TEMP).
+            tmp_parent = os.environ.get("RUNNER_TEMP") or None
+            if tmp_parent and not Path(tmp_parent).is_dir():
+                tmp_parent = None
+            target_tmp = tempfile.TemporaryDirectory(
+                prefix="acp-extval-target-",
+                dir=tmp_parent,
+            )
             target_dir = Path(target_tmp.name) / "target"
             target_dir.mkdir(parents=True, exist_ok=True)
             engine_bin = build_engine(
@@ -728,6 +805,15 @@ def main() -> int:
                 stages,
                 timeout=args.build_timeout,
             )
+            # Confirm the disposable binary is executable before the demo owns it.
+            if not os.access(engine_bin, os.X_OK):
+                stage(
+                    stages,
+                    "build_engine",
+                    "fail",
+                    "engine binary is not executable",
+                )
+                raise RuntimeError(f"engine binary not executable: {engine_bin.name}")
             dashboard_dir = build_dashboard(
                 repo_root,
                 stages,
@@ -759,9 +845,9 @@ def main() -> int:
         print("DONE  external validation passed (engineering usability only)")
         return 0
     except Exception as exc:  # noqa: BLE001 - top-level validation boundary
-        reason = f"{type(exc).__name__}: {exc}"[:300]
+        reason = _failure_core(f"{type(exc).__name__}: {exc}")
         status = "fail"
-        print(f"FAIL  {reason}", file=sys.stderr)
+        print(f"FAIL  {reason}", file=sys.stderr, flush=True)
         # Record a terminal stage if the last one was not already fail.
         if not stages or stages[-1].get("status") != "fail":
             stage(stages, "terminal", "fail", reason[:200])
