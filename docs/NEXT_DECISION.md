@@ -19,15 +19,15 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION` with **partial operational progress**. Vader runner restored to GitHub `online`/`idle` after Mihomo `节点选择` left broken `台湾家宽-IEPL 02` for `香港-IEPL 01` (readiness `ready:true`, run after restart). Bounded docs-only smoke Issue #254 reached worker run `29739968760` then terminal `agent-blocked` with `reason_code: model_execution_failure` because ChatGPT Codex API returned **HTTP 403** (`chatgpt.com/backend-api/codex/*`) under the Vader host path — not runner offline. Issue #208 emergency-stop restored; auto-merge off. **Remaining for COMPLETE:** restore working Codex/ChatGPT execution from the Vader host (without weakening TLS), then one full docs-only smoke through PR + exact-head CI + independent review.
-2. **Ship PR / open-source public surfaces — `COMPLETE` for current engineering gates** (PR #240–#253): default Ship PR path, public trust, contributor surface, no-provider demo, exact-head Action, smoke-Issue cleanup, README/site guards. Formal marketing promotion and a user-facing tagged release remain optional and confirmation-gated.
-3. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION`. Research lane; may proceed fixture/local independently of PR3 Codex host access.
-4. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on OpenCode adapter (recursive baseline already merged).
-5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result.
+1. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION`. **Default active implementation lane.** Fixture/local, default-off OpenCode external coding executor under existing Rust scheduler/finalizer. Does **not** use Issue #208, Vader, or the repository-agent Issue→local CLI path.
+2. **Ship PR / open-source public surfaces — `COMPLETE`** (PR #240–#253). Formal marketing promotion and a user-facing tagged release remain optional and confirmation-gated.
+3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — **`PARKED` / `BLOCKED_PREREQUISITE`** on Vader-host Codex/ChatGPT execution (HTTP 403). **Not actively driven.** Parking Issue: **#254** (same acceptance *class* as historical docs smokes #231→PR #232 and #235→PR #236; not a re-open of those closed PRs). Runner restore already succeeded (`online`/`idle` after Mihomo left `台湾家宽-IEPL 02` for `香港-IEPL 01`). Issue #208 stays emergency-stopped. Do **not** hard-fix Codex 403 or retry Issue→CLI smokes until #254 is deliberately unparked.
+4. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on OpenCode adapter.
+5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable Level-1 result.
 6. PR #225 remains an independent presentation-only Dashboard PR.
-7. Remaining good-first issues (SDK examples, dashboard empty states) are community backlog, not blockers for growth-audit closeout.
+7. Remaining good-first issues (#245–#247) are community backlog.
 
-The recursive/evolution lane is independent of the external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. PR3 acceptance work and PE7 local/fixture work may proceed without repeated permission, using separate branches/sessions when they run concurrently. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
+Default daily development is the Ship PR path. The repository-agent Issue→Vader→Codex CLI path is optional and parked; PE7 local/fixture work proceeds without it. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
 
 ## Verified Baseline
 

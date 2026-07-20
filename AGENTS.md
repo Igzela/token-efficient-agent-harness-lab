@@ -6,15 +6,17 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 
 Rust `engine/` is the sole runtime, API, scheduler, policy, and application-owned storage implementation. The dispatch kernel, V2 real output, Adaptive Fusion through AF-7, Agent Runtime through AR-6, Trusted Local Autonomous Execution through IAE-3, durable memory, the managed external-runtime path, and PE-1 through PE-6 implementation are present.
 
-The production-integration program and provider/target-output safety repairs are merged. Controlled staging drills and disposable target-repository acceptance passed. Default daily development is the Ship PR path (PR #240). Two external acceptance paths remain incomplete:
+The production-integration program and provider/target-output safety repairs are merged. Controlled staging drills and disposable target-repository acceptance passed. Default daily development is the Ship PR path (PR #240).
 
-- the GitHub Issues/Actions -> Vader repository-maintenance orchestrator: **named runner restored to online/idle** (Mihomo left broken `台湾家宽-IEPL 02` for `香港-IEPL 01`); one replacement documentation-only smoke still needs PR creation, exact-head CI, and independent review. Latest smoke Issue #254 failed at Vader Codex execution with ChatGPT HTTP 403 (not runner offline). Issue #208 remains emergency-stopped between smokes;
-- provider-backed embedding and benchmarking remain fail-closed until current catalog evidence establishes the exact admitted model identity and every modeled applicable price dimension.
+External paths:
 
-Forward research lane:
+- **Issue → Vader → local Codex CLI orchestrator: parked.** Runner is online/idle; live-seal smoke is parked on Issue **#254** (same *class* as #231→PR #232 / #235→PR #236, which stay closed). Codex/ChatGPT HTTP 403 blocked the last worker; do **not** hard-fix or re-run Issue→CLI smokes until #254 is unparked. Issue #208 stays emergency-stopped.
+- Provider-backed embedding and benchmarking remain fail-closed until catalog evidence covers every modeled applicable charge dimension.
 
-- `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — merged via PR #239 (default-off AR7 recursive trees);
-- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION` (fixture/local external executor; independent of Vader Codex host access);
+Active forward implementation (local/fixture, no Issue→CLI):
+
+- `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — merged via PR #239;
+- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION` (default active packet);
 - `PE7-HARNESS-EVOLUTION-LAB-1` — blocked on OpenCode adapter;
 - `PE7-META-IMPROVER-EXPERIMENT-1` — blocked until a stable Level-1 result exists.
 
@@ -72,7 +74,7 @@ The GPT Web assistant then owns the internal translation:
 7. merge only when the standing authority, repository classifier, exact-head CI, independent review, and rollback requirements permit it;
 8. restore emergency stop immediately on scope drift, secret exposure, contradictory state, duplicate dispatch, stale binding, unexpected mutation, or a worker that fails to reach a bounded terminal state.
 
-Current state: PR #237 repaired the CI cancellation/capacity-leak and CI-observation race. The uniquely named Vader runner is **online/idle** after Mihomo node repair (2026-07-20); remaining acceptance is one documentation-only smoke through PR, exact-head CI, and independent review. The latest attempt (Issue #254) failed because ChatGPT Codex returned HTTP 403 from the Vader host, not because the runner was offline. Issue #208 remains emergency-stopped between smokes; the agent may temporarily enable it for one bounded smoke and must restore the stop immediately after.
+Current state: PR #237 repaired the CI cancellation/capacity-leak and CI-observation race. The uniquely named Vader runner is **online/idle** after Mihomo node repair. Live-seal smoke is **parked on Issue #254** (Codex/ChatGPT 403); do not run further Issue→CLI smokes until that parking Issue is deliberately resumed. Issue #208 remains emergency-stopped. Default work is Ship PR and PE7 local/fixture packets, not the repository-agent path.
 
 ## Standing Operational Authorization
 

@@ -4,9 +4,9 @@ Last updated: 2026-07-20.
 
 ## Summary
 
-Default daily path remains local Agent → focused branch → PR → exact-head CI → independent review → manual squash merge (`SHIP-PR-DELIVERY-1`, PR #240). Open-source public surfaces through PR #253 are merged. The Issue/Vader orchestrator remains optional.
+Default daily path remains local Agent → focused branch → PR → exact-head CI → independent review → manual squash merge (`SHIP-PR-DELIVERY-1`, PR #240). Open-source public surfaces through PR #253 are merged.
 
-**PR3 live-seal progress (2026-07-20):** Vader was offline while Mihomo `节点选择` was pinned to broken `台湾家宽-IEPL 02`. After switching to `香港-IEPL 01` and restarting the runner unit, `runner_readiness.py` reported `ready:true` / `online` / `idle`. A bounded temporary enable of Issue #208 then ran docs-only smoke Issue #254; intake and controller succeeded; worker run `29739968760` failed at `vader-implementation` with `model_execution_failure` / Codex authentication rejection after ChatGPT returned HTTP 403 on the Codex API (reproduced on-host). No PR was opened. Issue #208 was restored to `agent-control` + `agent-emergency-stop`; auto-merge stayed off. Replacement smoke through PR/CI/review is still outstanding until Codex/ChatGPT execution works from the Vader host.
+**Repository-agent (Issue → Vader → Codex CLI) path is parked.** Vader runner is `online`/`idle` after Mihomo left broken `台湾家宽-IEPL 02` for `香港-IEPL 01`. Replacement live-seal is **not** actively driven: parking Issue **#254** (same smoke *class* as #231→PR #232 and #235→PR #236; those PRs stay closed). Last smoke failed at ChatGPT Codex HTTP 403 (worker `29739968760`), not runner offline. Issue #208 remains `agent-control` + `agent-emergency-stop`. Active implementation continues on **PE7 local/fixture** and Ship PR work without Issue→CLI.
 
 This repository is a local/small-team self-hosted Agent workflow control plane and research lab. Rust `engine/` remains the sole runtime, API, scheduler, policy, and application-owned storage implementation. The production-integration program through Agent Runtime AR-6 and product evolution PE-1 through PE-6 is merged. Durable memory, budget evidence, replay/promotion, managed external-runtime adapters, target-output authority, release provenance, and fault/recovery evidence are connected through existing bounded owners.
 
@@ -126,16 +126,16 @@ A `langgraph_external` node performs one adapter invocation under a Rust lease. 
 
 ## Confirmed Integration Gaps
 
-1. Complete one documentation-only replacement smoke through PR creation, exact-head CI, and independent review while keeping auto-merge off; keep Issue #208 emergency-stopped until that succeeds. **Current blocker after runner restore:** Vader host Codex/ChatGPT path returns HTTP 403 (Issue #254 worker `29739968760`).
+1. **Parked:** repository-agent replacement smoke (Issue **#254** / `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`) until Codex/ChatGPT works on the Vader host without hard-fix or TLS weakening. Keep Issue #208 emergency-stopped. Do not treat this as the default development path.
 2. Obtain current provider catalog evidence that satisfies exact model identity and every modeled applicable charge dimension before any provider POST.
 3. Confirm disposable repository deletion remains limited to the already-absent `Igzela/acp-target-accept-20260716-1145` identity only.
-The first three gaps continue to block production repository-agent use and provider-backed acceptance. They do not prevent fixture/local PE7 work: bounded recursive execution is merged (PR #239), and the controlled OpenCode adapter may proceed behind its own default-off gates.
+Gaps (1)–(2) still block production repository-agent use and provider-backed acceptance. They do **not** block Ship PR work or fixture/local PE7 (recursive execution merged; OpenCode adapter is the active READY implementation lane).
 
 ## Open Work Coordination
 
 - PR #225 remains open and presentation-only; PE7 recursive execution (#239), Ship PR (#240), and public-surface PRs #241–#253 are squash-merged.
-- `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`: runner online/idle restored; replacement smoke still incomplete (Codex/ChatGPT 403 on Vader host; Issue #254 blocked). Issue #208 emergency-stopped.
-- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` remains `READY_FOR_EXECUTION` for fixture/local work independent of Vader Codex access.
+- `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is **parked** on Issue #254 (runner restored; Codex 403 blocks smoke). Historical smoke PRs #232/#236 remain closed. Issue #208 emergency-stopped. No active Issue→CLI work.
+- Active READY implementation lane: `PE7-OPENCODE-EXTERNAL-ADAPTER-1` (fixture/local only).
 - `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the OpenCode adapter merges and active state is refreshed.
 - provider-backed evolution, model-weight updates, evaluator/task-generator co-evolution, automatic multi-lineage recombination, and production continuous self-update remain deferred.
 - no new public tag, release, deployment, production installation, destructive production fault, provider call, protected-branch write, or persistent signing secret is authorized by this direction.
