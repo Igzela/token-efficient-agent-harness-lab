@@ -877,7 +877,6 @@ impl LocalProductStore {
                     }
                     23 => schema::V23_DDL,
                     24 => schema::V24_DDL,
-                    26 => schema::V26_DDL,
                     _ => {
                         return Err(format!(
                             "unknown pg migration version: {}",

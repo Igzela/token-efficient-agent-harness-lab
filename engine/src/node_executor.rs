@@ -125,34 +125,7 @@ fn action_type(action: &AgentAction) -> &'static str {
 }
 
 fn recursive_failure_reason_code(error: &str) -> Option<&'static str> {
-    const REASONS: [&str; 23] = [
-        "recursive_disabled",
-        "depth_exceeded",
-        "child_limit_exceeded",
-        "tree_budget_exhausted",
-        "duplicate_objective",
-        "ancestor_cycle",
-        "capability_escalation",
-        "scope_mismatch",
-        "stale_parent",
-        "proposal_conflict",
-        "receipt_conflict",
-        "recursive_tree_missing",
-        "recursive_node_missing",
-        "scheduler_capacity_exhausted",
-        "recursive_kill_switch_active",
-        "operator_paused",
-        "terminal_failed",
-        "recursive_node_execution_failed",
-        "recursive_retry_exhausted",
-        "fixture_usage_contract_missing",
-        "fixture_usage_contract_invalid",
-        "recursive_usage_unavailable",
-        "recursive_node_identity_malformed",
-    ];
-    REASONS
-        .into_iter()
-        .find(|reason| error == *reason || error.starts_with(&format!("{reason}:")))
+    RecursiveFailureReason::code_for_error(error)
 }
 
 fn persisted_recursive_root_authority(
@@ -2201,8 +2174,12 @@ impl AgentStepExecutor {
                         .map_err(|reason| reason.as_str().to_string())?;
                         let (recursive_node_id, recursive_workflow, recursive_rejection_reason) =
                             if let Some(parent) = tree.nodes.get(&proposal.parent_node_id) {
-                                let requested_scope = parent.scope.clone();
-                                let requested_capabilities = parent.capabilities.clone();
+                                let mut requested_scope = parent.scope.clone();
+                                let requested_capabilities =
+                                    crate::recursive_execution::heritable_recursive_capabilities(
+                                        &parent.capabilities,
+                                    );
+                                requested_scope.capabilities = requested_capabilities.clone();
                                 let recursive_proposal = RecursiveProposal {
                                     proposal_id: proposal_id.clone(),
                                     parent_node_id: proposal.parent_node_id.clone(),

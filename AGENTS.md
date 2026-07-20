@@ -76,7 +76,7 @@ The recursive/evolution lane must obey these additional rules:
 - A model may propose a child task; the control plane derives root, parent, depth, ancestry, remaining budgets, scope, and authority.
 - Child capabilities may only remain equal or become narrower; capability or repository-scope escalation fails closed.
 - Whole-tree depth, child count, node count, call, token, cost, time, concurrency, retry, and lease limits are mandatory.
-- Ancestor cycles, semantic duplicate objectives, stale parents, changed active versions, and receipt conflicts must remain explicit failures.
+- Ancestor cycles, duplicate objectives under the versioned deterministic lexical-equivalence contract (declared normalization and synonym vocabulary only; no provider-grade semantic equivalence is claimed), stale parents, changed active versions, and receipt conflicts must remain explicit failures.
 - Evolution candidates run only in isolated app-owned workspaces/worktrees and may become `PR_READY` only.
 - The evaluator, sealed set, permissions, credentials, budgets, audit, active-version binding, promotion thresholds, target-output, merge, release, deployment, and rollback owners are immutable to the candidate and evolver.
 - Initial evolution work is deterministic fixture/local-only. It may not enable Issue #208, use the unavailable Vader runner, call a provider, mutate a real target repository, or infer live evidence from fixtures.

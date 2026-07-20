@@ -8,7 +8,9 @@ use super::{
 };
 use crate::agent_memory::build_memory_context_for_node;
 use crate::provider::redaction::contains_sensitive_patterns;
-use crate::recursive_execution::{RecursiveFailureReason, MAX_RECURSIVE_LEASES};
+use crate::recursive_execution::{
+    RecursiveFailureReason, MAX_RECURSIVE_LEASES, MAX_RECURSIVE_RETRIES,
+};
 use crate::workflow::context_pack::{
     assemble_context_injection_with_bridge, ContextAssemblyConfig, ContextSource,
 };
@@ -4069,7 +4071,7 @@ impl LocalProductStore {
                             recursive_node_id,
                             &recursive_retry_usage(),
                         ) {
-                            Ok(allowed) => *attempt <= 1 && allowed,
+                            Ok(allowed) => *attempt <= i64::from(MAX_RECURSIVE_RETRIES) && allowed,
                             Err(error) if error == "recursive_tree_missing" => {
                                 recursive_tree_missing = true;
                                 false
@@ -4285,7 +4287,7 @@ impl LocalProductStore {
                             recursive_node_id,
                             &recursive_retry_usage(),
                         ) {
-                            Ok(allowed) => *attempt <= 1 && allowed,
+                            Ok(allowed) => *attempt <= i64::from(MAX_RECURSIVE_RETRIES) && allowed,
                             Err(error) if error == "recursive_tree_missing" => {
                                 recursive_tree_missing = true;
                                 false

@@ -83,14 +83,6 @@ impl LocalProductStore {
             let final_version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if final_version == V25_SCHEMA_VERSION {
-                Self::migrate_v26_add_recursive_execution_state(conn)?;
-                conn.execute_batch(&format!("PRAGMA user_version = {}", V26_SCHEMA_VERSION))
-                    .map_err(|e| e.to_string())?;
-            }
-            let final_version: i64 = conn
-                .query_row("PRAGMA user_version", [], |row| row.get(0))
-                .map_err(|e| e.to_string())?;
             if final_version == V26_SCHEMA_VERSION {
                 validate_sqlite_v26_schema(conn)?;
             }

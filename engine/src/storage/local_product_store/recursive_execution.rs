@@ -1956,6 +1956,7 @@ pub(crate) fn record_recursive_root_late_usage_sqlite(
     let within_tree_budget = tree
         .record_root_late_usage(attempt_receipt, usage)
         .map_err(|reason| reason.as_str().to_string())?;
+    sync_terminal_workflow_nodes_sqlite(conn, &tree, now)?;
     persist_recursive_tree_sqlite(conn, &tree, now, Some(expected_version))?;
     Ok(within_tree_budget)
 }
@@ -2426,6 +2427,7 @@ pub(crate) fn record_recursive_root_late_usage_pg(
     let within_tree_budget = tree
         .record_root_late_usage(attempt_receipt, usage)
         .map_err(|reason| reason.as_str().to_string())?;
+    sync_terminal_workflow_nodes_pg(client, &tree, now)?;
     persist_recursive_tree_pg(client, &tree, now, Some(expected_version))?;
     Ok(within_tree_budget)
 }

@@ -309,11 +309,14 @@ fn agent_steps_plan(
         .enumerate()
         .map(|(index, agent_step)| {
             let node_id = format!("agent-node-{:03}", index + 1);
-            let recursive_capabilities = agent_step
-                .capability_profile
-                .iter()
-                .cloned()
-                .collect::<std::collections::BTreeSet<_>>();
+            let recursive_capabilities =
+                crate::recursive_execution::heritable_recursive_capabilities(
+                    &agent_step
+                        .capability_profile
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>(),
+                );
             let mut node = json!({
                 "node_id": node_id.clone(),
                 "task_type": "agent_step",
@@ -607,6 +610,39 @@ mod tests {
                 &request.agent_id,
                 "review docs",
             )
+        );
+    }
+
+    #[test]
+    fn recursive_root_authority_excludes_non_heritable_capabilities() {
+        let ids = crate::read_only_planner::WorkflowPlanIds::for_sequence(9);
+        let mut request = agent_step(None);
+        request.capability_profile = vec![
+            "mailbox".to_string(),
+            "handoff".to_string(),
+            "child_task".to_string(),
+        ];
+        let plan = agent_steps_plan(
+            &ids,
+            "review docs",
+            "fixture",
+            "2026-07-18T00:00:00Z",
+            std::slice::from_ref(&request),
+            false,
+        );
+        let node = &plan["graph"]["nodes"][0];
+        // The caller-facing agent profile is unchanged ...
+        assert_eq!(
+            node["capability_profile"],
+            json!(["mailbox", "handoff", "child_task"])
+        );
+        // ... but the persisted recursive authority honestly excludes the
+        // non-heritable handoff capability the executor denies anyway.
+        let expected = json!(["child_task", "mailbox"]);
+        assert_eq!(node["recursive_root_authority"]["capabilities"], expected);
+        assert_eq!(
+            node["recursive_root_authority"]["scope"]["capabilities"],
+            expected
         );
     }
 

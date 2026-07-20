@@ -19,6 +19,24 @@ pub const MAX_RECURSIVE_LEASES: usize = 3;
 pub const MAX_RECURSIVE_RETRIES: u8 = 1;
 pub const RECURSIVE_ROOT_AUTHORITY_VERSION: &str = "recursive_root_authority.v1";
 
+/// Capabilities that must never appear in a persisted recursive authority
+/// profile. A handoff transfers the objective to another agent outside the
+/// tree, so its authority would not be derived from the parent; the executor
+/// already denies handoff actions for recursively scoped agents, and the
+/// persisted profile must match that effective authority.
+pub const RECURSIVE_NON_HERITABLE_CAPABILITIES: [&str; 1] = ["handoff"];
+
+/// Reduce an inherited capability set to what a recursive node may honestly
+/// claim: equal or a strict subset of the parent, with non-heritable
+/// capabilities removed at the derivation boundary.
+pub fn heritable_recursive_capabilities(capabilities: &BTreeSet<String>) -> BTreeSet<String> {
+    capabilities
+        .iter()
+        .filter(|capability| !RECURSIVE_NON_HERITABLE_CAPABILITIES.contains(&capability.as_str()))
+        .cloned()
+        .collect()
+}
+
 pub fn default_recursive_tree_budget() -> RecursiveBudget {
     RecursiveBudget {
         calls_remaining: 12,
@@ -143,6 +161,44 @@ impl RecursiveFailureReason {
             Self::FixtureUsageContractInvalid => "fixture_usage_contract_invalid",
             Self::RecursiveNodeIdentityMalformed => "recursive_node_identity_malformed",
         }
+    }
+
+    /// Every variant, so reason-code parsing has exactly one list to maintain
+    /// next to the `as_str` source of truth.
+    pub const ALL: [Self; 23] = [
+        Self::RecursiveDisabled,
+        Self::DepthExceeded,
+        Self::ChildLimitExceeded,
+        Self::TreeBudgetExhausted,
+        Self::DuplicateObjective,
+        Self::AncestorCycle,
+        Self::CapabilityEscalation,
+        Self::ScopeMismatch,
+        Self::StaleParent,
+        Self::ProposalConflict,
+        Self::ReceiptConflict,
+        Self::SchedulerCapacityExhausted,
+        Self::RecursiveKillSwitchActive,
+        Self::OperatorPaused,
+        Self::TerminalFailed,
+        Self::ExecutionFailure,
+        Self::RetryExhausted,
+        Self::RecursiveTreeMissing,
+        Self::RecursiveNodeMissing,
+        Self::RecursiveUsageUnavailable,
+        Self::FixtureUsageContractMissing,
+        Self::FixtureUsageContractInvalid,
+        Self::RecursiveNodeIdentityMalformed,
+    ];
+
+    /// Classify an error string produced by recursive admission/persistence
+    /// into its reason code, accepting the exact code or a `code: detail`
+    /// prefix form.
+    pub fn code_for_error(error: &str) -> Option<&'static str> {
+        Self::ALL
+            .iter()
+            .map(|reason| reason.as_str())
+            .find(|code| error == *code || error.starts_with(&format!("{code}:")))
     }
 }
 
@@ -758,6 +814,14 @@ impl RecursiveTree {
                 return Err(RecursiveFailureReason::TreeBudgetExhausted);
             }
         }
+        // The persisted child authority is derived by the control plane:
+        // requested capabilities may only equal or narrow the parent, and
+        // non-heritable capabilities are stripped so the recorded profile
+        // matches the authority the executor actually grants.
+        let mut derived_scope = proposal.requested_scope.clone();
+        let derived_capabilities =
+            heritable_recursive_capabilities(&proposal.requested_capabilities);
+        derived_scope.capabilities = derived_capabilities.clone();
         let node = RecursiveNode {
             node_id: derived_node_id(&self.root_run_id, &proposal.proposal_id, &fingerprint),
             root_run_id: self.root_run_id.clone(),
@@ -771,8 +835,8 @@ impl RecursiveTree {
                 .cloned()
                 .chain(std::iter::once(parent.objective_fingerprint.clone()))
                 .collect(),
-            scope: proposal.requested_scope.clone(),
-            capabilities: proposal.requested_capabilities.clone(),
+            scope: derived_scope,
+            capabilities: derived_capabilities,
             tenant_id: parent.tenant_id.clone(),
             workspace_id: parent.workspace_id.clone(),
             budget: effective_budget.clone(),
@@ -1085,16 +1149,38 @@ impl RecursiveTree {
             .budget
             .can_spend(usage);
         let within_tree_budget = self.record_unreserved_usage(receipt_id, usage)?;
+        let within_budget = within_root_budget && within_tree_budget;
         self.root_budget.spend(usage);
+        let root_id = self.root_node_id.clone();
         let root = self
             .nodes
-            .get_mut(&self.root_node_id)
+            .get_mut(&root_id)
             .ok_or(RecursiveFailureReason::RecursiveNodeMissing)?;
         root.budget.spend(usage);
         root.actual_usage.add(usage);
         root.version += 1;
+        if !within_budget {
+            // Mirror the child late-usage path: an over-budget late receipt is
+            // recorded as out-of-budget, and the still-live remainder of the
+            // tree is terminalized so no node keeps running on an exhausted
+            // tree budget.
+            self.usage_receipts
+                .insert(receipt_id.to_string(), format!("0:{usage_fingerprint}"));
+            if !matches!(
+                self.execution_state,
+                RecursiveExecutionState::Completed
+                    | RecursiveExecutionState::KillStopped
+                    | RecursiveExecutionState::TerminalFailed
+            ) {
+                self.execution_state = RecursiveExecutionState::BudgetExhausted;
+                self.terminalize_remaining_nodes(
+                    Some(root_id.as_str()),
+                    RecursiveFailureReason::TreeBudgetExhausted,
+                );
+            }
+        }
         self.version += 1;
-        Ok(within_root_budget && within_tree_budget)
+        Ok(within_budget)
     }
 
     pub(crate) fn release_node_reservation_for_persistence(&mut self, node_id: &str) {
@@ -1642,6 +1728,93 @@ mod tests {
         );
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
         std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+    }
+
+    #[test]
+    fn heritable_capabilities_strip_non_heritable() {
+        let inherited: BTreeSet<String> = ["mailbox", "handoff", "child_task"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            heritable_recursive_capabilities(&inherited),
+            ["child_task", "mailbox"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+        let without_handoff: BTreeSet<String> = ["mailbox", "review"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            heritable_recursive_capabilities(&without_handoff),
+            without_handoff
+        );
+    }
+
+    #[test]
+    fn failure_reason_codes_round_trip_and_match_prefixed_errors() {
+        let mut codes = BTreeSet::new();
+        for reason in RecursiveFailureReason::ALL {
+            assert!(
+                codes.insert(reason.as_str()),
+                "duplicate {}",
+                reason.as_str()
+            );
+            assert_eq!(
+                RecursiveFailureReason::code_for_error(reason.as_str()),
+                Some(reason.as_str())
+            );
+            let detailed = format!("{}: detail", reason.as_str());
+            assert_eq!(
+                RecursiveFailureReason::code_for_error(&detailed),
+                Some(reason.as_str())
+            );
+        }
+        assert_eq!(RecursiveFailureReason::code_for_error("unrelated"), None);
+    }
+
+    #[test]
+    fn root_late_usage_over_budget_terminalizes_remaining_tree() {
+        let _guard = test_env_lock().lock().unwrap();
+        std::env::set_var("ACP_RECURSIVE_EXECUTION_ENABLED", "1");
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_KILL_SWITCH");
+        let mut tree = RecursiveTree::new(
+            "root-late-usage-run",
+            "fixture",
+            "root",
+            scope(),
+            ["read".to_string()].into_iter().collect(),
+            budget(),
+        );
+        let admission = tree.admit_child(&proposal(&tree)).expect("child");
+        tree.lease_node(&admission.node.node_id, "lease-one")
+            .expect("lease");
+        let over_budget = RecursiveBudget {
+            calls_remaining: 1,
+            tokens_remaining: 10_000,
+            cost_micros_remaining: 1,
+            time_ms_remaining: 1,
+        };
+        assert!(!tree
+            .record_root_late_usage("root-late-receipt", &over_budget)
+            .expect("late usage is accounted"));
+        assert_eq!(
+            tree.execution_state,
+            RecursiveExecutionState::BudgetExhausted
+        );
+        let child = &tree.nodes[&admission.node.node_id];
+        assert_eq!(child.status, RecursiveNodeStatus::Failed);
+        assert_eq!(
+            child.failure_reason,
+            Some(RecursiveFailureReason::TreeBudgetExhausted)
+        );
+        assert!(tree.active_leases.is_empty());
+        assert!(!tree
+            .record_root_late_usage("root-late-receipt", &over_budget)
+            .expect("identical late-usage replay reports the same outcome"));
+        std::env::remove_var("ACP_RECURSIVE_EXECUTION_ENABLED");
     }
 
     #[test]
