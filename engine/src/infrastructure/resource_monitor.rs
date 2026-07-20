@@ -44,7 +44,24 @@ pub fn disk_usage(mount_path: &str) -> Result<DiskUsage, String> {
     })
 }
 
+/// Read host memory usage.
+///
+/// Linux uses `/proc/meminfo`. Other platforms currently return a typed
+/// unsupported error so health reporting can treat memory as advisory rather
+/// than failing closed as degraded solely because the probe path is Linux-only.
 pub fn memory_usage() -> Result<MemoryUsage, String> {
+    #[cfg(target_os = "linux")]
+    {
+        memory_usage_linux()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("memory_usage_unsupported_platform".to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn memory_usage_linux() -> Result<MemoryUsage, String> {
     let contents = std::fs::read_to_string("/proc/meminfo")
         .map_err(|e| format!("failed to read /proc/meminfo: {e}"))?;
 
@@ -81,9 +98,15 @@ pub fn memory_usage() -> Result<MemoryUsage, String> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn parse_meminfo_value(line: &str) -> Option<u64> {
     // Lines look like "MemTotal:       16384000 kB"
     line.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// True when memory probe failure is expected on this OS and must not degrade health.
+pub fn memory_probe_is_platform_unsupported(error: &str) -> bool {
+    error.contains("memory_usage_unsupported_platform") || error.contains("/proc/meminfo")
 }
 
 pub fn db_file_size(db_path: &Path) -> Result<u64, String> {
@@ -119,14 +142,23 @@ mod tests {
     #[test]
     fn test_memory_usage() {
         let result = memory_usage();
-        assert!(result.is_ok(), "memory_usage() failed: {:?}", result.err());
-        let mem = result.unwrap();
-        assert!(mem.total_bytes > 0);
-        assert!(mem.available_bytes <= mem.total_bytes);
-        assert!(mem.usage_pct >= 0.0 && mem.usage_pct <= 100.0);
+        #[cfg(target_os = "linux")]
+        {
+            assert!(result.is_ok(), "memory_usage() failed: {:?}", result.err());
+            let mem = result.unwrap();
+            assert!(mem.total_bytes > 0);
+            assert!(mem.available_bytes <= mem.total_bytes);
+            assert!(mem.usage_pct >= 0.0 && mem.usage_pct <= 100.0);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let err = result.expect_err("non-linux memory probe should be unsupported");
+            assert!(memory_probe_is_platform_unsupported(&err));
+        }
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_parse_meminfo_value() {
         assert_eq!(
             parse_meminfo_value("MemTotal:       16384000 kB"),
@@ -137,6 +169,17 @@ mod tests {
             Some(8192000)
         );
         assert_eq!(parse_meminfo_value("garbage"), None);
+    }
+
+    #[test]
+    fn test_memory_probe_platform_unsupported_classifier() {
+        assert!(memory_probe_is_platform_unsupported(
+            "memory_usage_unsupported_platform"
+        ));
+        assert!(memory_probe_is_platform_unsupported(
+            "failed to read /proc/meminfo: No such file or directory"
+        ));
+        assert!(!memory_probe_is_platform_unsupported("disk full"));
     }
 
     #[test]

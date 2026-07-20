@@ -1,0 +1,126 @@
+name: external-validation
+
+# Hosted clean-environment validation for strangers' public path.
+# Self-validation only — not evidence of external repository adoption.
+# Pins follow repository Action pin policy (40-char commit SHAs).
+
+run-name: external-validation-${{ github.run_id }}
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/external_validation.py"
+      - "scripts/external_validation.sh"
+      - "scripts/demo.sh"
+      - "scripts/demo_no_provider.py"
+      - "scripts/acp_local_doctor.py"
+      - "actions/exact-head-check/**"
+      - "tests/test_external_validation.py"
+      - "tests/test_demo_no_provider.py"
+      - "tests/test_exact_head_action.py"
+      - ".github/workflows/external-validation.yml"
+      - "engine/Cargo.toml"
+      - "README.md"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/external_validation.py"
+      - "scripts/external_validation.sh"
+      - "scripts/demo.sh"
+      - "scripts/demo_no_provider.py"
+      - "scripts/acp_local_doctor.py"
+      - "actions/exact-head-check/**"
+      - "tests/test_external_validation.py"
+      - ".github/workflows/external-validation.yml"
+      - "engine/Cargo.toml"
+      - "README.md"
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact commit SHA to validate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
+  GIT_CONFIG_COUNT: 1
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: main
+
+jobs:
+  clean-environment:
+    name: clean-environment (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
+
+      - name: Verify exact requested head
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
+          echo "exact head ok: ${actual}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.11"
+          enable-cache: false
+
+      - name: Run clean-environment validation
+        env:
+          # Hosted clean runners (especially macOS) can need longer first-start time.
+          ACP_EXTVAL_DEMO_TIMEOUT: "180"
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/acp-extval"
+          ./scripts/external_validation.sh \
+            --demo-timeout "${ACP_EXTVAL_DEMO_TIMEOUT}" \
+            --report "${RUNNER_TEMP}/acp-extval/external_validation_report.json"
+          test -f "${RUNNER_TEMP}/acp-extval/external_validation_report.json"
+          python3 - <<'PY'
+          import json, os, sys
+          path = os.path.join(os.environ["RUNNER_TEMP"], "acp-extval", "external_validation_report.json")
+          report = json.load(open(path, encoding="utf-8"))
+          assert report.get("kind") == "external_validation_report.v1", report
+          assert report.get("status") == "pass", report
+          assert report.get("provider_calls") is False
+          assert report.get("target_repo_writes") is False
+          assert report.get("external_adoption_claimed") is False
+          assert report.get("source_revision") == os.environ["EXPECTED_SHA"]
+          print("report contract ok")
+          PY
+
+      - name: Upload validation report (self-validation artifact)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: external-validation-report-${{ matrix.os }}
+          path: ${{ runner.temp }}/acp-extval/external_validation_report.json
+          if-no-files-found: warn
+          retention-days: 14

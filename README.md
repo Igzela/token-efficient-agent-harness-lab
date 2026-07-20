@@ -68,6 +68,17 @@ Use only the fail-closed PR head check without installing the full control plane
 
 Details: [`actions/exact-head-check/README.md`](actions/exact-head-check/README.md) · example: [`examples/github-actions/exact-head-check.yml`](examples/github-actions/exact-head-check.yml).
 
+### Clean-environment validation (strangers / fresh machines)
+
+Reproduce the public path from a clean checkout with disposable build artifacts, the no-provider demo, exact-revision proof, stale-head rejection, and Exact-Head Action offline self-validation. No API key, no provider call, no target-repository write:
+
+```bash
+./scripts/external_validation.sh
+./scripts/external_validation.sh --report /tmp/external_validation_report.json
+```
+
+Hosted matrix (Ubuntu + macOS) is workflow `external-validation` (self-validation artifacts only — not external adoption evidence). Report schema: `external_validation_report.v1`. Feedback: [external validation form](https://github.com/Igzela/token-efficient-agent-harness-lab/issues/new?template=external_validation.yml).
+
 ### Manual loopback start
 
 ```bash

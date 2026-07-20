@@ -6,7 +6,7 @@
 |---|---|
 | Bug report | [Bug form](https://github.com/Igzela/token-efficient-agent-harness-lab/issues/new?template=bug.yml) |
 | Feature idea | [Feature form](https://github.com/Igzela/token-efficient-agent-harness-lab/issues/new?template=feature.yml) |
-| Clean-environment dry-run feedback | [External validation form](https://github.com/Igzela/token-efficient-agent-harness-lab/issues/new?template=external_validation.yml) |
+| Clean-environment dry-run feedback | Run `./scripts/external_validation.sh` (optional `--report path.json`), then [External validation form](https://github.com/Igzela/token-efficient-agent-harness-lab/issues/new?template=external_validation.yml) |
 | Security vulnerability | [SECURITY.md](SECURITY.md) — GitHub Security Advisory (preferred) |
 | Code of conduct / harassment | Private contact in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — **not** a public issue |
 | Setup / contributing | [CONTRIBUTING.md](CONTRIBUTING.md) and [README.md](README.md) |

@@ -97,7 +97,9 @@ pub(crate) async fn api_health(
         }
     };
 
-    // Memory check
+    // Memory check (Linux probe). On platforms without a memory probe, report
+    // unsupported without degrading overall health — DB integrity remains the
+    // hard readiness signal for the public no-provider demo path.
     let memory_check = match resource_monitor::memory_usage() {
         Ok(mem) => {
             let free_pct = 100.0 - mem.usage_pct;
@@ -115,11 +117,18 @@ pub(crate) async fn api_health(
             })
         }
         Err(e) => {
-            has_degraded = true;
-            json!({
-                "status": "unknown",
-                "error": e,
-            })
+            if resource_monitor::memory_probe_is_platform_unsupported(&e) {
+                json!({
+                    "status": "unsupported",
+                    "error": e,
+                })
+            } else {
+                has_degraded = true;
+                json!({
+                    "status": "unknown",
+                    "error": e,
+                })
+            }
         }
     };
 

@@ -244,100 +244,115 @@ def run_demo(
             text=True,
         )
         try:
-            health = wait_for_health(base_url, process, time.monotonic() + timeout)
-            if health.get("status") != "healthy":
-                raise RuntimeError(f"unexpected health payload: {health}")
-            pass_line("local runtime healthy")
-
-            ready = fetch_json(f"{base_url}/api/v1/ready")
-            if ready.get("status") != "ready":
-                raise RuntimeError(f"unexpected ready payload: {ready}")
-
-            dispatch = post_json(
-                f"{base_url}/api/v1/dispatch",
-                {
-                    "raw_request": "Demo: summarize docs without provider calls",
-                    "request_source": "api",
-                },
-            )
-            executor_type = dispatch.get("execution_result", {}).get("executor_type")
-            if executor_type != "noop":
-                raise RuntimeError(
-                    f"expected noop executor (no provider); got {executor_type!r}"
-                )
-            record = dispatch.get("record") or {}
-            dispatch_id = record.get("dispatch_id") or dispatch.get("execution_result", {}).get(
-                "dispatch_id"
-            )
-            if not dispatch_id:
-                raise RuntimeError(f"dispatch missing id: {dispatch}")
-            pass_line("fixture dispatch recorded")
-
-            dispatches = fetch_json(f"{base_url}/api/v1/dispatches?limit=5&search=Demo")
-            if not dispatches.get("dispatches"):
-                raise RuntimeError("dispatch search returned no records")
-
-            dashboard_state = fetch_json(f"{base_url}/api/v1/dashboard")
-            if int(dashboard_state.get("counts", {}).get("dispatches") or 0) < 1:
-                raise RuntimeError("dashboard did not show persisted dispatch evidence")
-
-            audit = fetch_json(f"{base_url}/api/v1/audit?limit=5&search=dispatch")
-            if not audit.get("events"):
-                raise RuntimeError("audit did not return dispatch events")
-
-            proof = build_proof(
-                source_revision=source_revision,
-                base_url=base_url,
-                dispatch_id=str(dispatch_id),
-                executor_type=str(executor_type),
-                health_status=str(health.get("status")),
-            )
-            verify_proof_against_revision(proof, source_revision)
-            pass_line(
-                f"evidence bound to run and source revision ({source_revision[:12]}…)"
-            )
-
-            # Stale-head scenario: same proof must fail against a different revision.
-            fake_head = "0" * 40
             try:
-                verify_proof_against_revision(proof, fake_head)
-            except RuntimeError as exc:
-                if "stale-head rejected" not in str(exc):
-                    raise
-                pass_line("stale-head scenario rejected")
-            else:
-                raise RuntimeError("stale-head scenario unexpectedly accepted")
+                health = wait_for_health(base_url, process, time.monotonic() + timeout)
+                if health.get("status") != "healthy":
+                    raise RuntimeError(f"unexpected health payload: {health}")
+                pass_line("local runtime healthy")
 
-            root_html = fetch_text(f"{base_url}/")
-            if "Agent Control Plane" not in root_html and "Agent" not in root_html:
-                raise RuntimeError("dashboard root did not serve expected content")
-            open_line(base_url)
+                ready = fetch_json(f"{base_url}/api/v1/ready")
+                if ready.get("status") != "ready":
+                    raise RuntimeError(f"unexpected ready payload: {ready}")
 
-            proof_path = data_root / PROOF_FILE
-            proof_path.write_text(json.dumps(proof, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            print(f"PROOF {proof_path}")
-
-            if keep:
-                (data_root / PID_FILE).write_text(str(process.pid), encoding="utf-8")
-                meta = {
-                    "pid": process.pid,
-                    "port": port,
-                    "base_url": base_url,
-                    "source_revision": source_revision,
-                    "dispatch_id": dispatch_id,
-                }
-                (data_root / META_FILE).write_text(
-                    json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                dispatch = post_json(
+                    f"{base_url}/api/v1/dispatch",
+                    {
+                        "raw_request": "Demo: summarize docs without provider calls",
+                        "request_source": "api",
+                    },
                 )
-                print(
-                    "KEEP  engine left running; stop with: ./scripts/demo.sh --cleanup"
-                )
-                process = None  # type: ignore[assignment]
-            else:
-                cleanup_line("temporary data directory removed on exit")
+                executor_type = dispatch.get("execution_result", {}).get("executor_type")
+                if executor_type != "noop":
+                    raise RuntimeError(
+                        f"expected noop executor (no provider); got {executor_type!r}"
+                    )
+                record = dispatch.get("record") or {}
+                dispatch_id = record.get("dispatch_id") or dispatch.get(
+                    "execution_result", {}
+                ).get("dispatch_id")
+                if not dispatch_id:
+                    raise RuntimeError(f"dispatch missing id: {dispatch}")
+                pass_line("fixture dispatch recorded")
 
-            print("Demo complete (no provider, no target-repo write).")
-            return 0
+                dispatches = fetch_json(f"{base_url}/api/v1/dispatches?limit=5&search=Demo")
+                if not dispatches.get("dispatches"):
+                    raise RuntimeError("dispatch search returned no records")
+
+                dashboard_state = fetch_json(f"{base_url}/api/v1/dashboard")
+                if int(dashboard_state.get("counts", {}).get("dispatches") or 0) < 1:
+                    raise RuntimeError("dashboard did not show persisted dispatch evidence")
+
+                audit = fetch_json(f"{base_url}/api/v1/audit?limit=5&search=dispatch")
+                if not audit.get("events"):
+                    raise RuntimeError("audit did not return dispatch events")
+
+                proof = build_proof(
+                    source_revision=source_revision,
+                    base_url=base_url,
+                    dispatch_id=str(dispatch_id),
+                    executor_type=str(executor_type),
+                    health_status=str(health.get("status")),
+                )
+                verify_proof_against_revision(proof, source_revision)
+                pass_line(
+                    f"evidence bound to run and source revision ({source_revision[:12]}…)"
+                )
+
+                # Stale-head scenario: same proof must fail against a different revision.
+                fake_head = "0" * 40
+                try:
+                    verify_proof_against_revision(proof, fake_head)
+                except RuntimeError as exc:
+                    if "stale-head rejected" not in str(exc):
+                        raise
+                    pass_line("stale-head scenario rejected")
+                else:
+                    raise RuntimeError("stale-head scenario unexpectedly accepted")
+
+                root_html = fetch_text(f"{base_url}/")
+                if "Agent Control Plane" not in root_html and "Agent" not in root_html:
+                    raise RuntimeError("dashboard root did not serve expected content")
+                open_line(base_url)
+
+                proof_path = data_root / PROOF_FILE
+                proof_path.write_text(
+                    json.dumps(proof, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                )
+                print(f"PROOF {proof_path}")
+
+                if keep:
+                    (data_root / PID_FILE).write_text(str(process.pid), encoding="utf-8")
+                    meta = {
+                        "pid": process.pid,
+                        "port": port,
+                        "base_url": base_url,
+                        "source_revision": source_revision,
+                        "dispatch_id": dispatch_id,
+                    }
+                    (data_root / META_FILE).write_text(
+                        json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                    )
+                    print(
+                        "KEEP  engine left running; stop with: ./scripts/demo.sh --cleanup"
+                    )
+                    process = None  # type: ignore[assignment]
+                else:
+                    cleanup_line("temporary data directory removed on exit")
+
+                print("Demo complete (no provider, no target-repo write).")
+                return 0
+            except Exception:
+                # Surface the last engine log lines before temp cleanup so CI can diagnose.
+                try:
+                    log_handle.flush()
+                    log_tail = log_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+                    if log_tail.strip():
+                        print("ENGINE_LOG_TAIL_BEGIN", flush=True)
+                        print(log_tail, flush=True)
+                        print("ENGINE_LOG_TAIL_END", flush=True)
+                except OSError:
+                    pass
+                raise
         finally:
             log_handle.close()
             if process is not None:
