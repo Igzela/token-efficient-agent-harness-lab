@@ -1,0 +1,64 @@
+name: Exact-Head CI Check
+description: >-
+  Fail-closed check that a pull request still points at the expected head
+  commit. Produces a Job Summary and machine-readable JSON proof. Does not
+  merge, does not call models, and does not require the full control plane.
+author: Token-Efficient Agent Harness Lab
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  github-token:
+    description: Token with pull-requests read (contents read for same-repo PRs)
+    required: true
+  pull-request:
+    description: Pull request number
+    required: true
+  expected-head:
+    description: 40-character commit SHA that must still be the PR head
+    required: true
+  repository:
+    description: owner/name of the repository that hosts the PR
+    required: false
+    default: ""
+  allow-fork-head:
+    description: If true, allow headRepository to differ from the base repository
+    required: false
+    default: "false"
+  proof-path:
+    description: Workspace-relative path for the JSON proof artifact
+    required: false
+    default: exact-head-proof.json
+
+outputs:
+  live-head:
+    description: Live PR head SHA observed at verification time
+    value: ${{ steps.verify.outputs.live-head }}
+  status:
+    description: pass or fail
+    value: ${{ steps.verify.outputs.status }}
+  proof-path:
+    description: Path to the written JSON proof
+    value: ${{ steps.verify.outputs.proof-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verify exact PR head
+      id: verify
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_PULL_REQUEST: ${{ inputs.pull-request }}
+        INPUT_EXPECTED_HEAD: ${{ inputs.expected-head }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_ALLOW_FORK_HEAD: ${{ inputs.allow-fork-head }}
+        INPUT_PROOF_PATH: ${{ inputs.proof-path }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+        GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        GITHUB_WORKFLOW: ${{ github.workflow }}
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+      run: bash "${{ github.action_path }}/verify.sh"

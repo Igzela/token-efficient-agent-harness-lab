@@ -54,6 +54,20 @@ Leave the UI up, or clean a kept session:
 ./scripts/demo.sh --cleanup   # stop and remove .acp-demo-state/
 ```
 
+### Exact-Head CI proof action (growth wedge)
+
+Use only the fail-closed PR head check without installing the full control plane:
+
+```yaml
+- uses: Igzela/token-efficient-agent-harness-lab/actions/exact-head-check@main
+  with:
+    github-token: ${{ github.token }}
+    pull-request: ${{ github.event.pull_request.number }}
+    expected-head: ${{ github.event.pull_request.head.sha }}
+```
+
+Details: [`actions/exact-head-check/README.md`](actions/exact-head-check/README.md) · example: [`examples/github-actions/exact-head-check.yml`](examples/github-actions/exact-head-check.yml).
+
 ### Manual loopback start
 
 ```bash
