@@ -64,6 +64,10 @@ jobs:
         run: bash scripts/check_github_action_pins.sh
       - name: Run security baseline checker
         run: uv run --no-project python tools/check_security_baseline.py
+      - name: Check public README surface
+        run: uv run --no-project python tools/check_readme_public_surface.py
+      - name: Check site OG metadata
+        run: uv run --no-project python tools/check_site_og_metadata.py
       - name: Run relocated utility tests
         run: uv run --no-project python -m unittest discover -s tools -p "test_*.py"
       - name: Run no-provider demo unit tests

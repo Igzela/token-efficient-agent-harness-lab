@@ -1,0 +1,34 @@
+name: exact-head-check
+
+# In-repo validation of the composite growth wedge on every pull request.
+# Pins follow repository Action pin policy.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  exact-head:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Verify live PR head matches expected SHA
+        uses: ./actions/exact-head-check
+        with:
+          github-token: ${{ github.token }}
+          pull-request: ${{ github.event.pull_request.number }}
+          expected-head: ${{ github.event.pull_request.head.sha }}
+      - name: Upload proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exact-head-proof
+          path: exact-head-proof.json
+          if-no-files-found: warn

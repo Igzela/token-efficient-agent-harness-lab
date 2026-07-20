@@ -132,7 +132,7 @@ The first three gaps continue to block production repository-agent use and provi
 ## Open Work Coordination
 
 - PR #225 remains open and presentation-only; PR #239 (`PE7-BOUNDED-RECURSIVE-EXECUTION-1`) and PR #240 (`SHIP-PR-DELIVERY-1`) are squash-merged.
-- Open-source readiness core merged: Public Trust (#241), Contributor Surface (#250; good-first #242–#249), no-provider Demo (#251, `./scripts/demo.sh`), Exact-Head Action (#252, `actions/exact-head-check/`). Later: external Action validation, smoke-Issue cleanup, user-facing release only when promoting.
+- Open-source growth audit **engineering closeout complete**: Public Trust (#241), Contributor Surface (#250), Demo (#251), Exact-Head Action (#252), superseded smoke Issues closed (P0-7; #208 control retained), README/site public-surface guards, in-repo `exact-head-check` workflow. Formal marketing promotion and a new public release tag remain optional/confirmation-gated.
 - `PE7-OPENCODE-EXTERNAL-ADAPTER-1` remains `READY_FOR_EXECUTION` but is lower priority than public-trust repair for external readiness.
 - `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` (Vader restore + replacement smoke) remains authorized operational work and may proceed independently.
 - `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the OpenCode adapter merges and active state is refreshed.

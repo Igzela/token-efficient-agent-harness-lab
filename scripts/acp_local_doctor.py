@@ -118,6 +118,39 @@ def auth_check() -> Check:
     return Check(name="auth", status="ok", message="protected mode key shape is valid")
 
 
+def gh_check() -> Check:
+    found = shutil.which("gh")
+    if not found:
+        return Check(
+            name="gh",
+            status="warn",
+            message="gh CLI not found",
+            action="install GitHub CLI for attestation and exact-head workflows: https://cli.github.com/",
+        )
+    version = command_version(found, ["--version"])
+    # Attestation support is reported only from local capability, not inventing network success.
+    help_result = subprocess.run(
+        [found, "attestation", "--help"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=5,
+    )
+    if help_result.returncode == 0:
+        attest = "attestation subcommand available (local CLI)"
+        status = "ok"
+    else:
+        attest = "attestation subcommand not available in this gh build"
+        status = "warn"
+    return Check(
+        name="gh",
+        status=status,
+        message=f"{found} ({version}); {attest}",
+        action=None if status == "ok" else "upgrade gh for `gh attestation verify` support",
+    )
+
+
 def collect_checks(repo_root: Path, port: int) -> list[Check]:
     home = Path.home()
     dashboard_out = repo_root / "dashboard" / "out" / "index.html"
@@ -128,6 +161,7 @@ def collect_checks(repo_root: Path, port: int) -> list[Check]:
         command_check("bun", ["--version"], [home / ".bun" / "bin"]),
         command_check("cargo", ["--version"]),
         command_check("uv", ["--version"], [home / ".local" / "bin"]),
+        gh_check(),
         file_check("dashboard_export", dashboard_out, "run: cd dashboard && node scripts/build-static.mjs"),
         file_check("engine_binary", engine_bin, "run: cargo build -p engine"),
         port_check(port),
