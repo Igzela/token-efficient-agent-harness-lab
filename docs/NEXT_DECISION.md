@@ -19,8 +19,8 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. `OSS-DEMO-1` — `IN_PROGRESS` / `READY_FOR_EXECUTION`. Five-minute no-provider demo (`scripts/demo.sh`): temp DB, free port, fixture noop dispatch, source-revision proof, stale-head rejection, cleanup. No provider, no target-repo write, no Vader/Issue #208.
-2. `OSS-EXACT-HEAD-ACTION-1` — next after demo. Monorepo `actions/exact-head-check/` growth wedge; no second orchestrator; no merge; no model calls.
+1. `OSS-EXACT-HEAD-ACTION-1` — `IN_PROGRESS` / `READY_FOR_EXECUTION`. Monorepo `actions/exact-head-check/` growth wedge: re-fetch live PR head, fail closed on mismatch, JSON proof + Job Summary; no merge, no model, no second orchestrator.
+2. `OSS-DEMO-1` — `COMPLETE` via PR #251 (`./scripts/demo.sh` no-provider first success).
 3. `OSS-CONTRIBUTOR-SURFACE-1` — `COMPLETE` via PR #250 (issues #242–#249).
 4. `OSS-PUBLIC-TRUST-1` — `COMPLETE` via PR #241.
 5. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION`. Independent operational lane (Vader restore + replacement smoke).
