@@ -3,56 +3,39 @@
 [![CI](https://github.com/Igzela/token-efficient-agent-harness-lab/actions/workflows/tests.yml/badge.svg)](https://github.com/Igzela/token-efficient-agent-harness-lab/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-1654%20passing-brightgreen.svg)](#how-to-run-tests)
 [![Site](https://img.shields.io/badge/site-landing%20page-0ea5e9)](https://token-efficient-agent-harness-lab.vercel.app)
 
-**Agent workflows you can measure, pause, and prove.**
+**Evidence and safety infrastructure for coding-agent repository workflows.**
 
-Self-hosted control plane for token-efficient, event-sourced agent systems: deterministic budget evidence, regression scorecards, adaptive routing, audited dispatch, and a local operator dashboard that fails closed instead of inventing success.
+Prove that agent-generated patches, reviews, and CI results belong to the exact commit being shipped — with budgets, audit, recovery, and a local operator dashboard that fails closed instead of inventing success.
 
 | | |
 |---|---|
 | **Landing page** | [token-efficient-agent-harness-lab.vercel.app](https://token-efficient-agent-harness-lab.vercel.app) |
-| **Engine** | Rust · axum · SQLite (PostgreSQL optional) |
+| **Engine** | Rust package `engine` · binary `agent-control-plane` · axum · SQLite (PostgreSQL optional) |
 | **Surfaces** | Dashboard · TypeScript SDK · Python SDK |
 | **Posture** | Local-first research lab · MIT · not a cloud SaaS |
+| **Status** | Active development. Verified capabilities and limits: [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) |
 
-### Why this exists
+### The failure this prevents
 
-Most agent demos optimize the first happy path. This lab optimizes the **evidence trail**:
+A green CI check is not enough if it belongs to an older PR head. This lab binds dispatch, CI, review, and merge evidence to an exact commit and rejects stale identity.
 
-- **Token efficiency regression (PE-1)** — hash-bound scorecards you can recompute offline
-- **Budget intelligence (PE-2)** — forecasts, explainable anomalies, policy-gated auto-pause
-- **Operator decision center (PE-3)** — derived decision queues from posted evidence
-- **Adaptive fusion + trusted-local execution** — bounded multi-model routing behind explicit gates
-- **Real repository output (V2)** — audited patch/PR production against real git targets
+### What the full control plane adds
+
+- Deterministic budget evidence and regression scorecards
+- Audited dispatch, pause, recovery, and operator decisions
+- Bounded adaptive routing behind explicit fail-closed gates
+- Supervised repository patch/PR output (never silent target-`main` writes)
+- Local dashboard that refuses invented success
 
 > **Boundary:** local / small-team research tool — not multi-tenant SaaS, not a free provider proxy, no container/VM isolation claim. Provider and adaptive paths use the fail-closed IAE trusted-local profile (legacy explicit gates remain for compatibility).
 
-Architecture, data flows, API surface, and safety boundaries: [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) · product roadmap packets: [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md).
-
-## GPT Web Repository Agent
-
-The intended user interface is ordinary language in GPT Web. The user should not need to remember workflow names or manually provide Issue numbers, dispatch IDs, PR numbers, head SHAs, CI run IDs, or retry counters.
-
-A normal request can be:
-
-> Use the repository agent to implement this task. Keep the scope narrow and auto-merge off; review the resulting PR and merge it manually when exact-head CI, independent review, and the repository merge classifier pass.
-
-The GPT Web assistant owns the internal translation:
-
-1. refresh actual repository, CI, runner, and control state;
-2. create one bounded Agent Task Issue with measurable acceptance criteria and an exact `agent-orchestrator-scope:v1` allowed-path list;
-3. activate only the orchestrator authority required for the task while leaving auto-merge disabled by default;
-4. observe Vader Codex execution, validated artifact finalization, branch/PR binding, exact-head CI, and independent review;
-5. inspect the final diff and evidence and merge when the standing authority and repository classifier permit it;
-6. restore emergency stop on scope drift, credential exposure, contradictory state, duplicate dispatch, stale binding, or unexpected mutation.
-
-**Current state:** PR #237 is merged and accepted, repairing the CI cancellation/capacity-leak and CI-observation race. The existing Vader runner needs operational restoration, then one replacement documentation-only smoke must complete PR creation, exact-head CI, and independent review. Recovery and the bounded smoke are already authorized; automatic merge remains disabled, and Issue #208 is restored to emergency stop after the smoke.
-
-Machine-facing behavior is normative in [`AGENTS.md`](AGENTS.md); current evidence and restrictions are in [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md); the repair sequence is in [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md); operator recovery details remain in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+Architecture: [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) · forward plan: [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) · maintainer ops: [`AGENTS.md`](AGENTS.md) · support: [`SUPPORT.md`](SUPPORT.md).
 
 ## Quick Start
+
+Verified on a source checkout with Rust stable, [Bun](https://bun.sh/), and [uv](https://docs.astral.sh/uv/) (Python 3.11+ for the SDK; 3.10+ scripts where noted). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
 git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
@@ -64,17 +47,21 @@ ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
 # Open http://127.0.0.1:8080
 ```
 
-**Prerequisites:** Rust stable · [Bun](https://bun.sh/) · Python 3.10+ with [uv](https://docs.astral.sh/uv/) (scripts). See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-### Real output pilots (optional proof)
-
-End-to-end verified branches across disposable Python, Rust, and Node repositories:
+Optional readiness check:
 
 ```bash
-scripts/real_output_pilots.py
+uv run --no-project python scripts/acp_local_doctor.py
 ```
 
-Uses an authenticated local Claude CLI, runs each repo’s tests, records approval, and pushes `acp/*` branches to local bare remotes without moving target `main`.
+### Adapter support (read carefully)
+
+| Concept | Status |
+|---|---|
+| **Codex `workspace-write` managed CLI adapter** | Only supported managed workspace-write adapter (default-off; auth, workspace binding, policy, kill switch required) |
+| **Claude CLI pilot harness** | Experimental maintainer acceptance path only (`scripts/real_output_pilots.py`); not a supported production adapter; must satisfy current auth/CLI startup gates |
+| **Claude Code as managed runtime** | **Not supported** — nested Edit/Write/Bash tools cannot be mediated by the app-owned policy boundary |
+
+Do not treat the pilot script as a public Quick Start proof until it is re-verified on clean Ubuntu and macOS under the current auth model. Maintainer details: [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 ## Installation
 
@@ -136,16 +123,25 @@ ACP_DASHBOARD_DIR=dashboard/out ./target/release/agent-control-plane
 
 ### Option 4: cargo install (from git)
 
+The Cargo **package** name is `engine`; the installed **binary** is `agent-control-plane`:
+
 ```bash
-cargo install --git https://github.com/Igzela/token-efficient-agent-harness-lab agent-control-plane
+cargo install --git https://github.com/Igzela/token-efficient-agent-harness-lab \
+  --locked engine --bin agent-control-plane
 agent-control-plane
 ```
+
+Static note: re-verify this install form on a clean machine before treating it as the primary public path; prefer Option 1 (attested release) or Option 3 (source build) when supply-chain evidence matters.
+
+There is **no** verified public `docker run …:latest` image path. For containers, use the source-built compose path in Option 2 only.
 
 ## What This Project Is Not
 
 This repository is not a cloud production SaaS, hosted multi-tenant service, or direct-deploy tool. V2 provides auditable real-repository patch/PR production. IAE authorizes bounded trusted-local provider and autonomous task execution through the phase plan in `docs/NEXT_DECISION.md`.
 
-Provider API execution requires explicit endpoint/auth/budget configuration; CI uses stub/mock paths and does not call real provider APIs. A ready trusted-local profile activates bounded provider execution, adaptive routing, experiments, promotion, default routing, and acknowledged task advancement for internal local operation. Managed CLI execution is default-off and can register only the Codex `workspace-write` adapter after explicit enablement, authentication, exact app-owned workspace binding, policy authorization, and an inactive kill switch. Claude Code remains unavailable because its nested tools cannot be mediated by that boundary. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
+Provider API execution requires explicit endpoint/auth/budget configuration; CI uses stub/mock paths and does not call real provider APIs. A ready trusted-local profile activates bounded provider execution, adaptive routing, experiments, promotion, default routing, and acknowledged task advancement for internal local operation. Managed CLI execution is default-off and can register only the Codex `workspace-write` adapter after explicit enablement, authentication, exact app-owned workspace binding, policy authorization, and an inactive kill switch. Claude Code remains unavailable as a managed runtime because its nested tools cannot be mediated by that boundary. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
+
+Internal maintainer paths (repository-agent / Issue orchestrator, emergency stop, runner recovery) live in [`AGENTS.md`](AGENTS.md) and [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md). They are not the public product entry.
 
 ## Toolchain
 
@@ -172,7 +168,7 @@ cargo test -p engine
 cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
-Current result: 1654 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
+Current test counts are reported by CI and release evidence, not by hard-coded badges in this README. Python SDK tests run separately under `sdk/python/` (Python 3.11+).
 
 ## How To Run Without Docker
 

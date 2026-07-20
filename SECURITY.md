@@ -28,14 +28,17 @@ When reporting, please provide:
 - Your assessment of severity (critical / high / medium / low)
 - Suggested fix, if any
 
-## Response Timeline
+## Response Goals
 
-- **Acknowledgment**: Within 48 hours of receiving your report
-- **Triage and assessment**: Within 5 business days
-- **Fix for critical/high severity**: Within 7 days
-- **Fix for medium/low severity**: Next scheduled release
+These are **targets for a small-maintainer project**, not contractual SLAs:
 
-You will be notified when a fix is released and credited in the changelog (unless you prefer otherwise).
+- **Acknowledgment**: target within 5 business days of a private report
+- **Triage**: severity and impact assessed when capacity allows
+- **Remediation**: timeline depends on severity, complexity, and maintainer availability
+- **Credit**: fix releases may credit reporters in release notes unless you prefer otherwise
+
+Do **not** open a public issue for vulnerabilities. Prefer GitHub Security Advisories.
+If `security@igzela.dev` cannot be delivered, use the Security Advisory path only.
 
 ## Scope
 

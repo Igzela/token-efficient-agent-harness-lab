@@ -1,93 +1,146 @@
 # Contributing to Token-Efficient Agent Harness Lab
 
-Thanks for your interest in contributing. This document covers how to set up your environment, run tests, and submit changes.
+Thanks for your interest. This guide covers setup, focused verification, and pull requests.
 
 ## Prerequisites
 
-- **Rust** stable toolchain (rustup recommended)
-- **Bun** (for dashboard and TypeScript builds)
-- **Python 3.10+** with **uv** (for SDK and scripts)
+- **Rust** stable toolchain ([rustup](https://rustup.rs/) recommended)
+- **Bun** for dashboard and TypeScript SDK verification
+- **Python 3.11+** for the Python SDK; repository scripts generally run via [uv](https://docs.astral.sh/uv/)
 - **Git**
 
-## Getting Started
+## Getting started
 
 ```bash
-git clone https://github.com/<org>/token-efficient-agent-harness-lab.git
+git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
 cd token-efficient-agent-harness-lab
 
-# Build the Rust engine
 cargo build -p engine
 
-# Install dashboard dependencies and build
 cd dashboard
-bun install
-bun run build
+bun install --frozen-lockfile
+bun run build:static
 cd ..
 ```
 
-## Running Tests
+Optional readiness:
 
-Run the full test suite before submitting any change.
-
-**Rust engine** (primary, 1379+ tests):
 ```bash
-cargo test -p engine
+uv run --no-project python scripts/acp_local_doctor.py
 ```
 
-**Dashboard TypeScript** (strict mode, static export):
-```bash
-cd dashboard
-bun run build
-cd ..
-```
+## Verification model
 
-**Python SDK**:
-```bash
-cd sdk/python
-uv run python -m pytest
-cd ../..
-```
+Do **not** hand-maintain “N tests pass” claims in docs. CI and release evidence report current counts.
 
-**Full verification** (recommended before commit):
+Contributors run **focused** checks for the surfaces they change. Full matrix verification is CI’s job (seven required jobs on the exact PR head).
+
+### Docs only
+
 ```bash
-cargo test -p engine
-cargo fmt --check
-cargo clippy -p engine --all-targets -- -D warnings
-cd dashboard && bun run build && cd ..
+git diff --check
 uv run --no-project python scripts/check_agent_handoff.py
 ```
 
-## Code Style
+### Python SDK (`sdk/python/`)
 
-- **Rust**: `cargo fmt` for formatting, `cargo clippy` with zero warnings. No comments unless the WHY is non-obvious.
-- **TypeScript**: strict mode, readonly where possible, no `any` types.
-- **Python**: dataclass schemas only, no pydantic. Python 3.10+ features welcome.
-- **Commit messages**: English, concise, focus on *why* the change is made.
+```bash
+cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
+```
 
-## Pull Request Process
+(Uses `unittest`, not pytest.)
 
-1. Fork the repo and create a branch from `main`.
-2. Make your changes. Keep PRs focused -- one logical change per PR.
-3. Run the full verification suite (see above).
-4. Open a PR targeting `main`. CI must pass (7 GitHub Actions jobs) before merge.
-5. Describe what changed and why in the PR body.
+### TypeScript SDK (`sdk/typescript/`)
 
-## Safety Boundaries
+```bash
+cd sdk/typescript && bun install --frozen-lockfile && bun run test && bun run build
+```
 
-This project studies deterministic agent infrastructure. The following are **not allowed** by default:
+### Dashboard (`dashboard/`)
 
-- Real model-provider API calls in the dispatch kernel
-- Cloud SaaS deployment paths
-- Autonomous worker processes that act without supervision
-- Container/VM/sandbox isolation layers
-- Writing to target repositories from the harness
+```bash
+cd dashboard && bun install --frozen-lockfile && bun run lint && bun run typecheck && bun run build
+```
 
-These constraints keep the harness deterministic, auditable, and safe for local experimentation. If you believe a boundary should be discussed, open an issue first.
+### Rust engine (`engine/`)
 
-## Reporting Issues
+```bash
+cargo fmt --all -- --check
+cargo clippy -p engine --all-targets --all-features -- -D warnings
+cargo test -p engine
+```
 
-Use the [GitHub issue templates](../../issues/new/choose) to report bugs or request features. Include reproduction steps, expected behavior, and your environment (OS, Rust version, Bun version).
+PostgreSQL integration (when you touch storage parity):
+
+```bash
+cargo test -p engine --features pg-tests -- --test-threads=1
+```
+
+### Workflows / orchestrator scripts
+
+```bash
+uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
+PYTHONPATH=scripts/agent-control uv run --no-project python -m unittest \
+  tests/test_agent_control_ci.py \
+  tests/test_agent_control_dry_run.py \
+  tests/test_agent_control_state.py \
+  tests/test_agent_control_worktree.py \
+  tests/test_agent_orchestrator_repairs.py \
+  tests/test_agent_orchestrator_artifacts.py \
+  tests/test_agent_review_finalization.py
+uv run --no-project python tools/check_security_baseline.py
+```
+
+### Full local baseline (maintainers / large changes)
+
+See `AGENTS.md` Verification Baseline. Prefer CI for the complete matrix unless you are changing cross-stack contracts.
+
+Always before commit:
+
+```bash
+uv run --no-project python scripts/check_agent_handoff.py
+git diff --check
+```
+
+## Code style
+
+- **Rust:** `cargo fmt`, `cargo clippy` with zero warnings. Comments only when the reason is non-obvious.
+- **TypeScript:** strict mode; avoid `any`.
+- **Python:** dataclasses for schemas in the deterministic kernel; no pydantic there. Prefer `unittest` as in the tree today.
+- **Commit messages:** English, concise, focus on *why*.
+
+## Pull request process
+
+1. Branch from latest `main` (or continue an owned PR).
+2. Keep the PR one coherent change.
+3. Run focused checks for the surfaces you touched.
+4. Open a PR targeting `main`. Required CI must be green on the **exact** reviewed head (unless a strict documentation-only exception applies; see `docs/REAL_WORLD_TESTING_PLAYBOOK.md`).
+5. Describe goal, scope, tests, compatibility, and rollback.
+6. Auto-merge stays off by default; maintainers merge when classifier, CI, and review allow.
+
+Default daily path for maintainers and agents: local Agent → focused branch → PR → exact-head CI → independent review → manual squash merge.
+
+## Safety boundaries
+
+Keep changes testable, observable, and rollbackable. By default do not:
+
+- add real provider POSTs without identity, pricing, budget, and receipt contracts;
+- weaken fail-closed auth, audit, budget, or exact-head evidence;
+- write registered target `main`, merge, deploy, or release without explicit authority;
+- invent CI or implementation evidence.
+
+Target-repository output exists only behind explicit gates (`ACP_ENABLE_TARGET_REPO_OUTPUT`, approvals, allowlists, kill switch). It may produce controlled branch/patch/PR paths; it does not authorize silent target-`main` writes.
+
+## Reporting issues
+
+Use [issue templates](https://github.com/Igzela/token-efficient-agent-harness-lab/issues/new/choose) for bugs and features. Include OS, toolchain versions, reproduction steps, and expected vs actual behavior.
+
+Security vulnerabilities: see [SECURITY.md](SECURITY.md) (private advisory path — not public issues).
+
+Conduct / harassment: see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) (private contact — not the public issue tracker).
+
+General help: [SUPPORT.md](SUPPORT.md).
 
 ## License
 
-This project is licensed under the **MIT License**. By contributing, you agree that your contributions will be licensed under the same terms.
+MIT. By contributing, you agree your contributions are licensed under the same terms.
