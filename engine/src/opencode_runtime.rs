@@ -10,9 +10,14 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+fn env_kill_switch_active() -> bool {
+    std::env::var(KILL_SWITCH_ENV).as_deref() == Ok("1")
+}
 
 use crate::event_schema::canonical_event_json;
 use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
@@ -106,7 +111,7 @@ impl OpenCodeRuntimeConfig {
         if std::env::var(ENABLE_ENV).as_deref() != Ok("1") {
             return Ok(None);
         }
-        if std::env::var(KILL_SWITCH_ENV).as_deref() == Ok("1") {
+        if env_kill_switch_active() {
             return Err("OpenCode runtime kill switch is active".to_string());
         }
         let mode = match required_env(MODE_ENV)?.as_str() {
@@ -187,6 +192,8 @@ pub trait OpenCodeInvoker: Send + Sync {
 pub struct OpenCodeProcessInvoker {
     python_program: PathBuf,
     adapter_path: PathBuf,
+    /// Optional cooperative kill latch (tests / future scheduler binding).
+    kill_flag: Option<Arc<AtomicBool>>,
 }
 
 impl OpenCodeProcessInvoker {
@@ -194,7 +201,21 @@ impl OpenCodeProcessInvoker {
         Self {
             python_program: config.python_program.clone(),
             adapter_path: config.adapter_path.clone(),
+            kill_flag: None,
         }
+    }
+
+    #[cfg(test)]
+    fn with_kill_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.kill_flag = Some(flag);
+        self
+    }
+
+    fn should_kill(&self) -> bool {
+        self.kill_flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(AtomicOrdering::SeqCst))
+            || env_kill_switch_active()
     }
 }
 
@@ -260,7 +281,7 @@ impl OpenCodeInvoker for OpenCodeProcessInvoker {
         let stderr_reader = thread::spawn(move || read_bounded(stderr, MAX_PROCESS_ERROR_BYTES));
         let started = Instant::now();
         let status = loop {
-            if std::env::var(KILL_SWITCH_ENV).as_deref() == Ok("1") {
+            if self.should_kill() {
                 let evidence = terminate_process_tree(
                     &mut child,
                     process_group_id,
@@ -485,11 +506,23 @@ fn resolve_pythonpath(adapter_path: &Path) -> PathBuf {
 pub struct OpenCodeNodeExecutor {
     config: OpenCodeRuntimeConfig,
     invoker: Arc<dyn OpenCodeInvoker>,
+    /// When true, fail closed as if the kill switch is active (test injection only).
+    force_kill_switch: bool,
 }
 
 impl OpenCodeNodeExecutor {
     pub fn new(config: OpenCodeRuntimeConfig, invoker: Arc<dyn OpenCodeInvoker>) -> Self {
-        Self { config, invoker }
+        Self {
+            config,
+            invoker,
+            force_kill_switch: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_force_kill_switch(mut self, active: bool) -> Self {
+        self.force_kill_switch = active;
+        self
     }
 
     fn failure(&self, started: &Instant, code: &str, message: &str) -> NodeExecutionOutput {
@@ -523,7 +556,7 @@ impl OpenCodeNodeExecutor {
                 "OpenCode executor requires task_type opencode_external",
             ));
         }
-        if std::env::var(KILL_SWITCH_ENV).as_deref() == Ok("1") {
+        if self.force_kill_switch || env_kill_switch_active() {
             return Err(self.failure(
                 started,
                 "opencode_killed",
@@ -1684,12 +1717,66 @@ mod tests {
 
     #[test]
     fn kill_switch_fails_closed() {
-        std::env::set_var(KILL_SWITCH_ENV, "1");
-        let (executor, _) = executor_with(json!({}));
+        let invoker = Arc::new(RecordingInvoker {
+            last: Mutex::new(None),
+            response: json!({}),
+            fail: None,
+            bind_identity: true,
+        });
+        let executor = OpenCodeNodeExecutor::new(
+            OpenCodeRuntimeConfig::fixture(PathBuf::from("python3"), PathBuf::from("adapter.py")),
+            invoker,
+        )
+        .with_force_kill_switch(true);
         let output = executor.execute_node(&sample_input("analysis", &["docs/a.md"]));
-        std::env::remove_var(KILL_SWITCH_ENV);
         assert_eq!(output.status, "failed");
         assert_eq!(output.error_domain.as_deref(), Some("opencode_killed"));
+    }
+
+    #[test]
+    fn process_adapter_kill_switch_terminates_during_execution() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let adapter = repo.join("adapters/opencode/src/acp_opencode_adapter/__main__.py");
+        if !adapter.exists() {
+            return;
+        }
+        let python = which_python();
+        let config = OpenCodeRuntimeConfig {
+            timeout_ms: 15_000,
+            ..OpenCodeRuntimeConfig::fixture(python, adapter)
+        };
+        let request = json!({
+            "schema_version": OPENCODE_REQUEST_SCHEMA,
+            "invocation_id": "inv-kill",
+            "run_id": "run-kill",
+            "node_id": "node-kill",
+            "lease_id": "lease-kill",
+            "runtime_kind": "opencode",
+            "mode": "fixture",
+            "task_kind": "descendant_spawn",
+            "task_input_hash": "e".repeat(64),
+            "base_commit": "f".repeat(40),
+            "worktree_id": "wt-kill",
+            "allowed_paths": ["docs/x.md"],
+            "environment_allowlist": ADAPTER_ENV_ALLOWLIST,
+            "permission_profile": deny_by_default_permission_profile(),
+            "permission_profile_hash": sha256(
+                &canonical_event_json(&deny_by_default_permission_profile()).unwrap()
+            ),
+            "requested_capabilities": [],
+            "adapter_version": OPENCODE_ADAPTER_VERSION,
+            "adapter_contract_version": OPENCODE_ADAPTER_CONTRACT,
+            "expected_opencode_version": PINNED_OPENCODE_VERSION,
+            "expected_adapter_version": OPENCODE_ADAPTER_VERSION,
+        });
+        // Cooperative latch: no process-global env mutation (parallel-test safe).
+        let kill_flag = Arc::new(AtomicBool::new(false));
+        let invoker = OpenCodeProcessInvoker::new(&config).with_kill_flag(kill_flag.clone());
+        let handle = thread::spawn(move || invoker.invoke(&request, 15_000));
+        thread::sleep(Duration::from_millis(200));
+        kill_flag.store(true, AtomicOrdering::SeqCst);
+        let err = handle.join().expect("join").expect_err("must kill");
+        assert_eq!(err.code, "adapter_killed");
     }
 
     #[test]
