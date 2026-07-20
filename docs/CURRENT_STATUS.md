@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-07-18.
+Last updated: 2026-07-20.
 
 ## Summary
 
@@ -12,7 +12,7 @@ A one-time bounded temporary lift of the Issue #208 emergency stop then ran a fr
 
 PR #237 (squash-merged into `main` at `1947d4b555bd14b7f104c1fc9aba31747099cb88` after all seven CI jobs passed on the exact head `068b2e9ac4bde16daea25bcb4846f7e26ba6cca9`, run `29628449688`) repaired the repository-agent CI cancellation and capacity-leak blocker that the Issue #235 smoke exposed. The prior chain shared one `agent-orchestrator-state` concurrency group across all seven workflows and set `cancel-in-progress: ${{ inputs.command == 'emergency-stop' }}` on `agent-controller`; because GitHub Actions does not run `if: always()` failure-handlers for jobs cancelled by a concurrency group, an emergency-stop cancelled unrelated in-flight workflows and leaked their claimed capacity. PR #237 reverted every workflow to per-resource concurrency groups with `cancel-in-progress: false`, so emergency-stop now only sets the control-state flag and each workflow reconciles its own claim through its own `if: always()` finalizer. The PR also split `ci_verifier` into `acquire_exact_run` (bind the run without waiting) plus `wait_for_run_completion` (bounded poll with per-cycle binding revalidation), made production CI identity fail-closed on every missing field in `_validate_run_identity`, added durable `claimed` → `dispatched` claim lifecycle records written before label mutation, and added `reconcile_claimed_dispatch` plus idempotent `release_and_record_ci_terminal` terminal compensation that preserves `dispatched` claims for their own child-workflow compensation. Two independent complete-diff reviews passed. Issue #208 remained `agent-control` + `agent-emergency-stop` throughout; no provider POST, no unrelated dispatch, and auto-merge stayed off. A fresh documentation-only replacement smoke remains to be run after the existing Vader runner is restored; runner and egress restoration are authorized operational repair, not a governance hard stop. Issue #208 remains stopped until the bounded smoke begins.
 
-A new research direction is documented: bounded recursive execution, then a controlled OpenCode external adapter, then an evidence-gated Harness evolution laboratory. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is currently being implemented on branch `pe7-bounded-recursive-execution-1` and is not merged or accepted. The later PE7 packets remain blocked; no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
+A new research direction is documented: bounded recursive execution, then a controlled OpenCode external adapter, then an evidence-gated Harness evolution laboratory. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is merged and accepted: PR #239 squash-merged into `main` at `d554c5630c0347e99840067a216c772d5a2377ca` on exact reviewed head `1c78413a866f81b3bb3340f84a673886f9c1b228` with seven-job exact-head CI green (explicitly dispatched run `29717160879`, nonce `pr239-final-1c78413a-20260720T043250Z`, exact-head verification executed in all seven jobs) and two independent complete-diff reviews whose material findings were repaired before merge. Recursive execution is implemented as a default-off AR7 runtime extension with an independent kill switch; no provider call, Issue #208 enablement, or Vader runner use occurred. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` is now `READY_FOR_EXECUTION`. Harness evolution remains unavailable; no evolution gate exists, no candidate Harness has been generated or promoted, and the repository does not claim recursive self-improvement.
 
 ## Verified Repository State
 
@@ -82,7 +82,7 @@ The intended interface remains ordinary language in GPT Web. The assistant, not 
 | GitHub/Vader repository orchestrator | Implemented/default-off; PR #237 is merged and accepted; replacement smoke remains the final live-acceptance task after authorized Vader runner recovery |
 | Dashboard | Functional; PR #225 is an independent presentation-only redesign |
 | Post-R7 wire/type governance | Implemented through `scripts/check_wire_codegen_drift.sh` |
-| PE7 bounded recursive execution | Implementation in progress on `pe7-bounded-recursive-execution-1`; default-off recursive admission, persistence, and bounded evidence are locally tested but not merged or accepted |
+| PE7 bounded recursive execution | Implemented and merged via PR #239; default-off recursive admission, persistence, bounded evidence, and kill switch under existing scheduler/storage owners; Harness evolution still unavailable |
 | PE7 Harness evolution laboratory | Approved as a future default-off fixture/local lane; blocked on recursive execution; no candidate archive, evaluator vault, or promotion path exists yet |
 | PE7 meta-improver experiment | Deferred/blocked; no Level-2 or `Improvement@K` evidence exists |
 
@@ -118,22 +118,20 @@ A `langgraph_external` node performs one adapter invocation under a Rust lease. 
 
 ### Recursive/evolution boundary
 
-`PE7-BOUNDED-RECURSIVE-EXECUTION-1` may proceed independently only in deterministic local/fixture mode. It may not enable Issue #208, depend on the repository-agent smoke path, call a provider, mutate a real target repository, or alter evaluator, permission, budget, audit, target-output, merge, release, or rollback boundaries. OpenCode adapter and Harness-evolution packets remain blocked until recursive execution is implemented and verified.
+`PE7-BOUNDED-RECURSIVE-EXECUTION-1` is implemented and merged; it proceeded only in deterministic local/fixture mode and never enabled Issue #208, used the repository-agent smoke path, called a provider, mutated a real target repository, or altered evaluator, permission, budget, audit, target-output, merge, release, or rollback boundaries. The OpenCode adapter packet is now eligible; the Harness-evolution packet remains blocked until the OpenCode adapter is implemented and verified, and any evolution work remains fixture/local-only behind the same boundaries.
 
 ## Confirmed Integration Gaps
 
 1. Complete one documentation-only replacement smoke through PR creation, exact-head CI, and independent review while keeping auto-merge off; keep Issue #208 emergency-stopped until that succeeds.
 2. Obtain current provider catalog evidence that satisfies exact model identity and every modeled applicable charge dimension before any provider POST.
 3. Confirm disposable repository deletion remains limited to the already-absent `Igzela/acp-target-accept-20260716-1145` identity only.
-4. Merge and independently verify the in-progress `PE7-BOUNDED-RECURSIVE-EXECUTION-1` branch before OpenCode adapter or Harness evolution.
-
-The first three gaps continue to block production repository-agent use and provider-backed acceptance. They do not prevent fixture/local recursive-execution implementation.
+The first three gaps continue to block production repository-agent use and provider-backed acceptance. They do not prevent fixture/local PE7 work: bounded recursive execution is merged (PR #239), and the controlled OpenCode adapter may proceed behind its own default-off gates.
 
 ## Open Work Coordination
 
-- PR #225 remains open and presentation-only; PR #239 is the active PE7-1 repair PR on the recursive execution branch and is not merged.
-- `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is in progress on `pe7-bounded-recursive-execution-1`; it remains the first eligible independent implementation packet.
-- `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the recursive packet merges and active state is refreshed.
+- PR #225 remains open and presentation-only; PR #239 (`PE7-BOUNDED-RECURSIVE-EXECUTION-1`) is squash-merged into `main` at `d554c5630c0347e99840067a216c772d5a2377ca` with exact-head seven-job CI green and two independent complete-diff reviews.
+- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` is now the first eligible PE7 implementation packet (`READY_FOR_EXECUTION`).
+- `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the OpenCode adapter merges and active state is refreshed.
 - provider-backed evolution, model-weight updates, evaluator/task-generator co-evolution, automatic multi-lineage recombination, and production continuous self-update remain deferred.
 - no new public tag, release, deployment, production installation, destructive production fault, provider call, protected-branch write, or persistent signing secret is authorized by this direction.
 

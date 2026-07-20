@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-07-18.
+Last updated: 2026-07-20.
 
 ## Current Direction
 
@@ -20,11 +20,10 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 ## Active Routing
 
 1. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION`. Restore the existing runner, pass readiness, run the replacement smoke, record acceptance, and continue. Runner/egress recovery is operational work, not a permission blocker.
-2. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — `IN_PROGRESS` on branch `pe7-bounded-recursive-execution-1`. This is the AR7 runtime-extension slice. It is an independent fixture/local lane and must not enable Issue #208, call a provider, or depend on the Vader runner.
-3. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `BLOCKED_PREREQUISITE` on bounded recursive execution. It introduces a pinned OpenCode release or commit only as a controlled, local/fixture external executor with networked tools disabled.
-4. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on both bounded recursive execution and the controlled OpenCode adapter. It establishes candidate lineage, equal-budget evaluation, sealed holdout discipline, and PR-only promotion.
-5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result. It may test whether an evolved improver improves `Improvement@K`; it may not modify the authoritative evaluator, permissions, sealed set, or release owner.
-6. PR #225 remains an independent presentation-only Dashboard PR and does not own runtime, recursive execution, OpenCode integration, evolution, provider, or live-acceptance behavior.
+2. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION`. Its prerequisite (bounded recursive execution merged and accepted via PR #239) is now satisfied. It introduces a pinned OpenCode release or commit only as a controlled, local/fixture external executor with networked tools disabled.
+3. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on both bounded recursive execution and the controlled OpenCode adapter. It establishes candidate lineage, equal-budget evaluation, sealed holdout discipline, and PR-only promotion.
+4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result. It may test whether an evolved improver improves `Improvement@K`; it may not modify the authoritative evaluator, permissions, sealed set, or release owner.
+5. PR #225 remains an independent presentation-only Dashboard PR and does not own runtime, recursive execution, OpenCode integration, evolution, provider, or live-acceptance behavior.
 
 The recursive/evolution lane is independent of the external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. PR3 acceptance work and PE7 local/fixture work may proceed without repeated permission, using separate branches/sessions when they run concurrently. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
 
@@ -109,9 +108,9 @@ The prior smoke history remains as recorded in `CURRENT_STATUS.md`; the current 
 
 ## Packet PE7-BOUNDED-RECURSIVE-EXECUTION-1 — Recursive task-tree contract
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-**Current owner:** branch `pe7-bounded-recursive-execution-1`; the implementation is not merged or accepted yet.
+**Completion evidence:** PR #239 squash-merged into `main` at `d554c5630c0347e99840067a216c772d5a2377ca` on the exact reviewed head `1c78413a866f81b3bb3340f84a673886f9c1b228`. Exact-head seven-job CI passed on explicitly dispatched run `29717160879` (nonce `pr239-final-1c78413a-20260720T043250Z`) with the exact-head verification step executed in all seven jobs; the parallel `pull_request` run `29717141726` on the same head also passed. Two independent complete-diff reviews (standards and spec axes) ran on the full `main...head` diff; their material findings were repaired before merge (non-heritable capability honesty at both derivation points and admission, root late-usage terminalization parity with terminal workflow-node sync on both backends, single-sourced failure reason codes, `MAX_RECURSIVE_RETRIES` reuse instead of a restated literal, unreachable v26 migration arms removed on both backends, AGENTS.md/NEXT_DECISION duplicate-refusal wording reconciled with the implemented versioned deterministic lexical-equivalence contract). Recursive execution is implemented but remains default-off; Harness evolution, OpenCode integration, and any evolution gate remain unavailable.
 
 **Goal:** Extend the existing Agent Runtime child-task proposal mechanism into a persistent, bounded task tree without adding a second runtime, scheduler, queue, mailbox, or storage authority. This packet is the AR7 runtime-extension slice.
 

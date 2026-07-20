@@ -34,7 +34,7 @@ Full Agent Autonomy Mode remains active for repository-scoped work that is testa
 | Capability | Primary owners | Current boundary |
 |---|---|---|
 | Agent Runtime execution | typed plan/run HTTP handlers; `AgentStepExecutor`; scheduler/executor pool; `agent_action_receipts`; provider `agent_action.v1` source | connected; one leased node produces at most one typed action; default-off provider/runtime gates; restart/concurrency idempotency |
-| Child tasks, handoff, review, debate | `ChildTaskProposal`, `agent_proposals`, `AgentAction` variants, workflow graph, scheduler, action receipts, `recursive_execution`, recursive store tables | flat actions remain compatible; bounded recursive admission/persistence is in progress on `pe7-bounded-recursive-execution-1`; no autonomous root-goal authority |
+| Child tasks, handoff, review, debate | `ChildTaskProposal`, `agent_proposals`, `AgentAction` variants, workflow graph, scheduler, action receipts, `recursive_execution`, recursive store tables | flat actions remain compatible; bounded recursive admission/persistence is implemented (PR #239, default-off with independent kill switch); no autonomous root-goal authority |
 | Command/CLI tool policy | capability/allowlist/hook stores; `ToolPolicyNodeExecutor`; workflow approvals/operator actions | connected; configured allowlists authoritative; exact-action authorization consumed once; post-effect failures remain non-retryable outcome-unknown |
 | Durable memory and retrieval | durable-memory store, provider embedding adapter, provider audit, scheduler context injection, HTTP/SDK/Dashboard | connected; exact scope/version/source/provenance; guarded provider mode remains fail-closed without admissible current catalog evidence |
 | PE-1 regression lab | scorecard scripts/store/read APIs/Dashboard | connected, report-only, and non-mutating |
@@ -48,7 +48,7 @@ Full Agent Autonomy Mode remains active for repository-scoped work that is testa
 
 ## Approved Recursive-Execution Ownership
 
-`PE7-BOUNDED-RECURSIVE-EXECUTION-1` is the approved AR7 runtime-extension packet and is in progress on `pe7-bounded-recursive-execution-1`; it must extend existing owners rather than create parallel infrastructure.
+`PE7-BOUNDED-RECURSIVE-EXECUTION-1` is the approved AR7 runtime-extension packet and is merged via PR #239 (default-off); it extends existing owners rather than creating parallel infrastructure.
 
 | Required capability | Existing owner to extend | Boundary |
 |---|---|---|

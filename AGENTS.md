@@ -11,13 +11,13 @@ The production-integration program and provider/target-output safety repairs are
 - the GitHub Issues/Actions -> Vader repository-maintenance orchestrator still needs the named runner restored and one replacement smoke through PR creation, exact-head CI, and independent review;
 - provider-backed embedding and benchmarking remain fail-closed until current catalog evidence establishes the exact admitted model identity and every modeled applicable price dimension.
 
-A new forward lane is documented but not implemented:
+A new forward lane is open:
 
-- `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — the AR7 runtime-extension slice for bounded persistent recursive task trees using the existing Agent Runtime and scheduler;
-- `PE7-HARNESS-EVOLUTION-LAB-1` — default-off, fixture/local, evidence-gated candidate Harness evolution;
+- `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — merged via PR #239: the AR7 runtime-extension slice for bounded persistent recursive task trees using the existing Agent Runtime and scheduler, default-off behind its feature gate and independent kill switch;
+- `PE7-HARNESS-EVOLUTION-LAB-1` — documented but not implemented: default-off, fixture/local, evidence-gated candidate Harness evolution;
 - `PE7-META-IMPROVER-EXPERIMENT-1` — later second-order `Improvement@K` experiment, blocked until a stable Level-1 result exists.
 
-Do not claim that recursive execution, Harness evolution, recursive self-improvement, or an evolution gate is implemented until the corresponding packet is merged with verified evidence. Later work is governed by `docs/NEXT_DECISION.md`.
+Do not claim that Harness evolution, recursive self-improvement, or an evolution gate is implemented until the corresponding packet is merged with verified evidence. Later work is governed by `docs/NEXT_DECISION.md`.
 
 Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`.
 
