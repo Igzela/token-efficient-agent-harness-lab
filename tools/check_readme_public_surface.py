@@ -33,6 +33,10 @@ FORBIDDEN = [
 
 REQUIRED = [
     (re.compile(r"\./scripts/demo\.sh"), "README must point at ./scripts/demo.sh"),
+    (
+        re.compile(r"\./scripts/external_validation\.sh"),
+        "README must point at ./scripts/external_validation.sh",
+    ),
     (re.compile(r"engine --bin agent-control-plane"), "cargo install form must select package engine"),
     (re.compile(r"docs/CURRENT_STATUS\.md"), "README must link current status for operational limits"),
 ]

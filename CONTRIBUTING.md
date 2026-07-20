@@ -29,6 +29,12 @@ Optional readiness:
 uv run --no-project python scripts/acp_local_doctor.py
 ```
 
+Clean-environment stranger path (disposable build + no-provider demo + exact-head self-check):
+
+```bash
+./scripts/external_validation.sh
+```
+
 ## Verification model
 
 Do **not** hand-maintain “N tests pass” claims in docs. CI and release evidence report current counts.

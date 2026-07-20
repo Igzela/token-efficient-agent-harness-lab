@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-07-17.
+Last updated: 2026-07-20.
 
 This file maps current ownership and approved future connection points. It is not a phase history. Detailed implementation evidence remains in merged commits and PRs; forward execution is governed by `docs/NEXT_DECISION.md`.
 
@@ -27,6 +27,8 @@ Full Agent Autonomy Mode remains active for repository-scoped work that is testa
 | `sdk/typescript/`, `sdk/python/` | active | typed API clients | SDK tests |
 | `wire_contract/v1/`, `codegen/` | active | cross-language contracts and generated types | `scripts/check_wire_codegen_drift.sh` |
 | `scripts/`, `tools/`, `.github/workflows/` | active | CI, pilots, packaging, release provenance, install/upgrade, backup/restore, and bounded drills | focused script tests, workflow checks, security baseline, and CI |
+| `scripts/external_validation.{sh,py}`, `.github/workflows/external-validation.yml`, `tests/test_external_validation.py` | active | clean-environment stranger validation (demo + doctor + exact-head self-check); `external_validation_report.v1` | unit/self-test; hosted Ubuntu/macOS matrix; not external adoption evidence |
+| `scripts/demo.sh`, `scripts/demo_no_provider.py`, `actions/exact-head-check/`, `tools/check_readme_public_surface.py` | active | no-provider public demo and exact-head growth wedge (OSS #241–#253) | demo unit tests, action contract tests, public-surface drift checks |
 | `scripts/agent-control/`, `.github/workflows/agent-*.yml`, `tests/test_agent_control_*.py`, `tests/test_agent_orchestrator_*.py` | active/default-off | GitHub Issue-controlled maintenance orchestration, Vader artifact workers, GitHub-hosted finalization, exact-head CI/review/merge gates | orchestrator suite, YAML/action-pin/security/handoff checks, replacement live smoke pending |
 
 ## Current Capability Ownership
