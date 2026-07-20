@@ -5,6 +5,7 @@ __pycache__/
 htmlcov/
 target/
 .agent-control-plane/
+.acp-demo-state/
 
 # Frontend and SDK build outputs
 dashboard/.next/

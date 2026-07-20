@@ -10,6 +10,7 @@ Format is inspired by [Keep a Changelog](https://keepachangelog.com/). Versions 
 
 ### Added
 
+- Five-minute no-provider demo: `./scripts/demo.sh` (fixture dispatch, source-revision proof, stale-head rejection, cleanup).
 - Public contributor surface: issue forms (bug, feature, external validation), layered PR template, `SUPPORT.md`, private conduct path, and citation metadata.
 - Ship PR default path documentation and fail-closed exact-head CI verification (see PR #240).
 

@@ -37,11 +37,27 @@ Architecture: [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) · forwar
 
 Verified on a source checkout with Rust stable, [Bun](https://bun.sh/), and [uv](https://docs.astral.sh/uv/) (Python 3.11+ for the SDK; 3.10+ scripts where noted). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+### Five-minute no-provider demo (recommended first success)
+
+No API key, no real provider, no target-repository writes. Builds the engine/dashboard if needed, runs a fixture dispatch, binds proof to the current git revision, and rejects a stale-head scenario:
+
 ```bash
 git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
 cd token-efficient-agent-harness-lab
-cargo build -p engine
+./scripts/demo.sh
+```
 
+Leave the UI up, or clean a kept session:
+
+```bash
+./scripts/demo.sh --keep      # engine under .acp-demo-state/
+./scripts/demo.sh --cleanup   # stop and remove .acp-demo-state/
+```
+
+### Manual loopback start
+
+```bash
+cargo build -p engine
 cd dashboard && bun install --frozen-lockfile && bun run build:static && cd ..
 ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
 # Open http://127.0.0.1:8080

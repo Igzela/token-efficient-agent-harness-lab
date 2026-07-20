@@ -19,14 +19,15 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. `OSS-CONTRIBUTOR-SURFACE-1` — `IN_PROGRESS` / `READY_FOR_EXECUTION` (bounded maintenance). Contributor and community surface from the open-source growth audit: issue forms, layered PR template, SUPPORT response policy, CHANGELOG, CITATION, CODEOWNERS, and eight `good first issue` seeds. No Dependabot enablement without a separate cost review. No second roadmap file. Prerequisite: `OSS-PUBLIC-TRUST-1` merged (PR #241).
-2. `OSS-PUBLIC-TRUST-1` — `COMPLETE` via PR #241.
-3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION`. Restore the existing runner, pass readiness, run the replacement smoke. Independent operational lane.
-4. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION`. Lower priority than public/contributor readiness for external adoption.
-5. Later open-source slices: no-provider five-minute demo; monorepo `actions/exact-head-check/` wedge.
-6. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on both bounded recursive execution and the controlled OpenCode adapter.
-7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result.
-8. PR #225 remains an independent presentation-only Dashboard PR.
+1. `OSS-DEMO-1` — `IN_PROGRESS` / `READY_FOR_EXECUTION`. Five-minute no-provider demo (`scripts/demo.sh`): temp DB, free port, fixture noop dispatch, source-revision proof, stale-head rejection, cleanup. No provider, no target-repo write, no Vader/Issue #208.
+2. `OSS-EXACT-HEAD-ACTION-1` — next after demo. Monorepo `actions/exact-head-check/` growth wedge; no second orchestrator; no merge; no model calls.
+3. `OSS-CONTRIBUTOR-SURFACE-1` — `COMPLETE` via PR #250 (issues #242–#249).
+4. `OSS-PUBLIC-TRUST-1` — `COMPLETE` via PR #241.
+5. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION`. Independent operational lane (Vader restore + replacement smoke).
+6. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION`. Lower priority than public readiness.
+7. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on OpenCode adapter (and recursive baseline already merged).
+8. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result.
+9. PR #225 remains an independent presentation-only Dashboard PR.
 
 The recursive/evolution lane is independent of the external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. PR3 acceptance work and PE7 local/fixture work may proceed without repeated permission, using separate branches/sessions when they run concurrently. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
 

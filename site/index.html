@@ -95,11 +95,9 @@
                 <span class="metric-hint">IAE fail-closed gates</span>
               </div>
             </div>
-            <pre class="snippet"><code># One process: API + dashboard
-cargo build -p engine
-cd dashboard && bun install && bun run build:static
-ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
-# → http://127.0.0.1:8080</code></pre>
+            <pre class="snippet"><code># Five-minute no-provider demo
+./scripts/demo.sh
+# PASS health · fixture dispatch · revision proof · stale-head reject</code></pre>
           </div>
         </div>
       </div>
