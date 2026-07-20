@@ -106,6 +106,7 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
     "scripts/acp_ops_check.py": {"urllib.error", "urllib.request"},
     "scripts/acp_restore_smoke.py": {"urllib.error", "urllib.request"},
     "scripts/smoke_native_runtime.py": {"socket", "urllib.error", "urllib.request"},
+    "scripts/demo_no_provider.py": {"socket", "urllib.error", "urllib.request"},
     "scripts/soak_ops_drill.py": {
         "urllib.request",
         "urllib.error",
