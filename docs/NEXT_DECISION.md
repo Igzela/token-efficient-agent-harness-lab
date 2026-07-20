@@ -19,16 +19,13 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. `OSS-EXACT-HEAD-ACTION-1` — `COMPLETE` via PR #252 (`actions/exact-head-check/` composite Action; exact-head CI run `29736904819` on head `ba558a27`).
-2. `OSS-DEMO-1` — `COMPLETE` via PR #251 (`./scripts/demo.sh` no-provider first success).
-3. `OSS-CONTRIBUTOR-SURFACE-1` — `COMPLETE` via PR #250 (issues #242–#249).
-4. `OSS-PUBLIC-TRUST-1` — `COMPLETE` via PR #241.
-5. Open-source growth remaining (later): external disposable-repo Action validation; optional smoke-Issue cleanup; user-facing release notes / social preview only when ready to promote.
-6. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION`. Independent operational lane (Vader restore + replacement smoke).
-7. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION`. Lower priority than public readiness unless product research is chosen.
-8. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on OpenCode adapter (recursive baseline already merged).
-9. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result.
-10. PR #225 remains an independent presentation-only Dashboard PR.
+1. **Open-source growth audit core — `COMPLETE`.** Public Trust (#241), Contributor Surface (#250), Demo (#251), Exact-Head Action (#252), tracker smoke cleanup, README/site drift guards, in-repo Action self-validation workflow. Formal public promotion and a user-facing tagged release remain optional and confirmation-gated (not required for this track’s engineering closeout).
+2. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — `READY_FOR_EXECUTION`. Independent operational lane (Vader restore + replacement smoke). Not part of the public growth closeout.
+3. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION`. Research lane; lower priority for external adoption.
+4. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on OpenCode adapter (recursive baseline already merged).
+5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result.
+6. PR #225 remains an independent presentation-only Dashboard PR.
+7. Remaining good-first issues (SDK examples, dashboard empty states) are community backlog, not blockers for growth-audit closeout.
 
 The recursive/evolution lane is independent of the external-acceptance lane only while it remains deterministic, local/fixture-only, and free of external mutations. PR3 acceptance work and PE7 local/fixture work may proceed without repeated permission, using separate branches/sessions when they run concurrently. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
 

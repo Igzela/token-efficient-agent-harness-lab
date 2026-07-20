@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="Token-Efficient Agent Harness Lab">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect x="64" y="64" width="1152" height="512" rx="24" fill="#020617" stroke="#334155" stroke-width="2"/>
+  <text x="96" y="180" fill="#e2e8f0" font-family="ui-sans-serif, system-ui, sans-serif" font-size="48" font-weight="700">Token-Efficient Agent Harness Lab</text>
+  <text x="96" y="250" fill="url(#accent)" font-family="ui-sans-serif, system-ui, sans-serif" font-size="36" font-weight="600">Evidence and safety for coding-agent workflows</text>
+  <text x="96" y="340" fill="#94a3b8" font-family="ui-monospace, monospace" font-size="28">exact-head CI · budgets · audit · fail-closed</text>
+  <text x="96" y="420" fill="#64748b" font-family="ui-sans-serif, system-ui, sans-serif" font-size="24">Local-first · MIT · no invented success</text>
+</svg>
