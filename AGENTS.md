@@ -6,16 +6,17 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 
 Rust `engine/` is the sole runtime, API, scheduler, policy, and application-owned storage implementation. The dispatch kernel, V2 real output, Adaptive Fusion through AF-7, Agent Runtime through AR-6, Trusted Local Autonomous Execution through IAE-3, durable memory, the managed external-runtime path, and PE-1 through PE-6 implementation are present.
 
-The production-integration program and provider/target-output safety repairs are merged. Controlled staging drills and disposable target-repository acceptance passed. Two external acceptance paths remain incomplete:
+The production-integration program and provider/target-output safety repairs are merged. Controlled staging drills and disposable target-repository acceptance passed. Default daily development is the Ship PR path (PR #240). Two external acceptance paths remain incomplete:
 
-- the GitHub Issues/Actions -> Vader repository-maintenance orchestrator still needs the named runner restored and one replacement smoke through PR creation, exact-head CI, and independent review;
+- the GitHub Issues/Actions -> Vader repository-maintenance orchestrator: **named runner restored to online/idle** (Mihomo left broken `台湾家宽-IEPL 02` for `香港-IEPL 01`); one replacement documentation-only smoke still needs PR creation, exact-head CI, and independent review. Latest smoke Issue #254 failed at Vader Codex execution with ChatGPT HTTP 403 (not runner offline). Issue #208 remains emergency-stopped between smokes;
 - provider-backed embedding and benchmarking remain fail-closed until current catalog evidence establishes the exact admitted model identity and every modeled applicable price dimension.
 
-A new forward lane is open:
+Forward research lane:
 
-- `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — merged via PR #239: the AR7 runtime-extension slice for bounded persistent recursive task trees using the existing Agent Runtime and scheduler, default-off behind its feature gate and independent kill switch;
-- `PE7-HARNESS-EVOLUTION-LAB-1` — documented but not implemented: default-off, fixture/local, evidence-gated candidate Harness evolution;
-- `PE7-META-IMPROVER-EXPERIMENT-1` — later second-order `Improvement@K` experiment, blocked until a stable Level-1 result exists.
+- `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — merged via PR #239 (default-off AR7 recursive trees);
+- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION` (fixture/local external executor; independent of Vader Codex host access);
+- `PE7-HARNESS-EVOLUTION-LAB-1` — blocked on OpenCode adapter;
+- `PE7-META-IMPROVER-EXPERIMENT-1` — blocked until a stable Level-1 result exists.
 
 Do not claim that Harness evolution, recursive self-improvement, or an evolution gate is implemented until the corresponding packet is merged with verified evidence. Later work is governed by `docs/NEXT_DECISION.md`.
 
@@ -71,7 +72,7 @@ The GPT Web assistant then owns the internal translation:
 7. merge only when the standing authority, repository classifier, exact-head CI, independent review, and rollback requirements permit it;
 8. restore emergency stop immediately on scope drift, secret exposure, contradictory state, duplicate dispatch, stale binding, unexpected mutation, or a worker that fails to reach a bounded terminal state.
 
-Current state: PR #237 repaired the CI cancellation/capacity-leak and CI-observation race. The uniquely named Vader runner is currently offline on its GitHub token-exchange TLS path; restoring the existing runner service and egress is operational repair work, not a permission blocker (see Standing Operational Authorization). Issue #208 remains emergency-stopped until a bounded replacement smoke begins; the agent may temporarily replace the emergency stop with the normal enabled control for one bounded smoke or approved repository task and restore it immediately after. A replacement documentation-only smoke is the remaining acceptance step before normal use resumes.
+Current state: PR #237 repaired the CI cancellation/capacity-leak and CI-observation race. The uniquely named Vader runner is **online/idle** after Mihomo node repair (2026-07-20); remaining acceptance is one documentation-only smoke through PR, exact-head CI, and independent review. The latest attempt (Issue #254) failed because ChatGPT Codex returned HTTP 403 from the Vader host, not because the runner was offline. Issue #208 remains emergency-stopped between smokes; the agent may temporarily enable it for one bounded smoke and must restore the stop immediately after.
 
 ## Standing Operational Authorization
 
