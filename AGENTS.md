@@ -16,7 +16,7 @@ External paths:
 Active forward implementation (local/fixture, no Issue→CLI):
 
 - `PE7-BOUNDED-RECURSIVE-EXECUTION-1` — merged via PR #239;
-- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — `READY_FOR_EXECUTION` (default active packet);
+- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — merged via PR #255 (fixture-first default-off OpenCode adapter);
 - `PE7-HARNESS-EVOLUTION-LAB-1` — blocked on OpenCode adapter;
 - `PE7-META-IMPROVER-EXPERIMENT-1` — blocked until a stable Level-1 result exists.
 

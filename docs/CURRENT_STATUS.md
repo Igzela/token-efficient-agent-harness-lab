@@ -135,7 +135,7 @@ Gaps (1)–(2) still block production repository-agent use and provider-backed a
 
 - PR #225 remains open and presentation-only; PE7 recursive execution (#239), Ship PR (#240), and public-surface PRs #241–#253 are squash-merged.
 - `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is **parked** on Issue #254 (runner restored; Codex 403 blocks smoke). Historical smoke PRs #232/#236 remain closed. Issue #208 emergency-stopped. No active Issue→CLI work.
-- Active READY implementation lane: `PE7-OPENCODE-EXTERNAL-ADAPTER-1` (fixture/local only).
+- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` COMPLETE via PR #255 (fixture-first default-off). Next PE7: Harness evolution lab remains blocked until later packets; evolution still unavailable.
 - `PE7-HARNESS-EVOLUTION-LAB-1` follows only after the OpenCode adapter merges and active state is refreshed.
 - provider-backed evolution, model-weight updates, evaluator/task-generator co-evolution, automatic multi-lineage recombination, and production continuous self-update remain deferred.
 - no new public tag, release, deployment, production installation, destructive production fault, provider call, protected-branch write, or persistent signing secret is authorized by this direction.
