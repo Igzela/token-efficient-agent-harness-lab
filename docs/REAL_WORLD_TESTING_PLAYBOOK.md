@@ -6,6 +6,10 @@ Operational execution guide for real branches, commits, PRs, CI, review, rollbac
 
 The project validates changes through real repository work. Full Agent Autonomy Mode permits repo-scoped planning and execution when changes are testable, observable, reviewed, verification-gated, and rollbackable. Code, runtime, configuration, schema, workflow, release, authority, and external-action changes remain full-CI-gated. Strictly documentation-only changes may use the targeted exception defined below.
 
+### Default Ship PR path
+
+The default daily development path is local Agent → focused branch → PR → exact-head CI → independent complete-diff review → manual squash merge. Auto-merge stays off. The GitHub Issue / Vader orchestrator is an optional unattended entry and is currently emergency-stopped until its replacement smoke is accepted; both paths meet at the same PR / exact-head CI / review / manual-merge boundary. Do not add a second Ship PR workflow or parallel merge owner.
+
 Execution-ready packets are the default work units:
 
 ```text
@@ -176,6 +180,18 @@ Agents may autonomously create and merge scoped PRs when the classifier or docum
 The historical PE-5/PE-6 implementation and closeout boundaries remain in repository history. `PE56-POST-SEAL-REPAIR-1` is one coherent post-seal implementation, independent standards/spec review, documentation, and acceptance PR; it must not be split into PE-5, PE-6, prerequisite, or closeout PRs. Its independent reviews are separate review passes over the same final diff, not separate branches or PRs. Full repository validation and exact-head GitHub CI run only on the complete reviewed head. If a CI repair changes that head, the complete diff is reviewed again and the exact new head receives the full matrix. The final acceptance state is recorded only after those results and post-merge `main` verification exist.
 
 A bounded objective may span multiple PRs in one session. After each merge, refresh `main`, reconcile active docs and open work, and continue only from the new repository state.
+
+### Selective rebase
+
+Do not rebase a focused PR only because `main` advanced with unrelated documentation-only commits. Rebase when the branch conflicts with `main`, when relevant path/schema/authority/workflow surfaces overlap recent `main` changes, when freshness is explicitly required, or when evidence shows a real integration risk. Any head change invalidates prior CI and complete-diff review for that head; re-verify the new head before merge.
+
+### Exact-head CI evidence
+
+Canonical CI evidence must prove which commit was checked out and tested. The `tests` workflow resolves `EXPECTED_SHA` from `inputs.expected_sha` (required on `workflow_dispatch`), the pull-request head SHA, or `github.sha` on push to `main`; checkout uses that commit; every required job must execute the exact-head verification step successfully. A pull-request run that skips that step is not acceptable exact-head evidence. The orchestrator fallback `workflow_dispatch` path continues to pass `expected_sha` and `dispatch_nonce` and must not be weakened.
+
+### Direct-main documentation coordination
+
+While an implementation PR is in final exact-head CI or independent review, defer non-urgent direct-to-`main` documentation changes that would force unnecessary rebases or base drift. Urgent factual corrections on `main` remain allowed under explicit user authorization and the documentation-only direct-main rule, but must be reported as potentially invalidating related base evidence for open PRs.
 
 Documentation-only corrections should use a branch/PR by default. Direct-to-main documentation changes are reserved for explicit user authorization and must pass handoff/diff validation.
 

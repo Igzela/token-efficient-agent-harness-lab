@@ -31,6 +31,24 @@ import runner_readiness
 import state_manager
 
 
+def _successful_required_jobs():
+    """Jobs that satisfy exact-head checkout evidence for all required jobs."""
+    step = {
+        "name": ci_verifier.EXACT_HEAD_VERIFY_STEP,
+        "status": "completed",
+        "conclusion": "success",
+    }
+    return [
+        {
+            "name": name,
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [step],
+        }
+        for name in ci_verifier.load_requirements()["required_jobs"]
+    ]
+
+
 class TestWorkflowContracts(unittest.TestCase):
     def read(self, name: str) -> str:
         return (WORKFLOWS / name).read_text()
@@ -76,7 +94,29 @@ class TestWorkflowContracts(unittest.TestCase):
     def test_canonical_workflow_has_one_top_level_environment_mapping(self):
         source = self.read("tests.yml")
         self.assertEqual(source.count("\nenv:\n"), 1)
-        self.assertIn("  EXPECTED_SHA: ${{ inputs.expected_sha }}", source)
+        self.assertIn(
+            "  EXPECTED_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}",
+            source,
+        )
+
+    def test_canonical_workflow_binds_checkout_and_fail_closed_exact_head(self):
+        source = self.read("tests.yml")
+        # workflow_dispatch must require expected_sha (orchestrator fallback).
+        self.assertIn("      expected_sha:\n", source)
+        self.assertRegex(
+            source,
+            r"expected_sha:\n(?:.*\n){0,4}\s+required:\s*true",
+        )
+        # Every checkout must pin the resolved expected commit.
+        self.assertEqual(source.count("ref: ${{ env.EXPECTED_SHA }}"), 7)
+        # Exact-head verification must not be skippable via inputs.expected_sha.
+        self.assertNotIn("if: inputs.expected_sha", source)
+        self.assertEqual(source.count("name: Verify exact requested head"), 7)
+        # Shell verification uses env (not raw input interpolation) and fails closed.
+        scripts = self.shell_scripts("tests.yml")
+        self.assertIn('if [ -z "${EXPECTED_SHA}" ]', scripts)
+        self.assertIn('if [ "${actual}" != "${EXPECTED_SHA}" ]', scripts)
+        self.assertIn("exit 1", scripts)
 
     def test_repair_dispatch_carries_run_id_not_unbounded_logs(self):
         controller = self.read("agent-controller.yml")
@@ -1796,11 +1836,13 @@ class TestExactHeadCI(unittest.TestCase):
         run = {
             "databaseId": 1, "workflowName": "tests", "headSha": "a" * 40,
             "status": "completed", "conclusion": "success",
-            "jobs": [{"name": name, "status": "completed", "conclusion": "success"} for name in required],
+            "jobs": _successful_required_jobs(),
         }
         with mock.patch.object(ci_verifier, "run_info", return_value=run):
             result = ci_verifier.verify_exact_head_ci(2, "a" * 40, 1, {"headRefOid": "a" * 40})
         self.assertEqual(result["successful_jobs"], required)
+        self.assertEqual(result["checked_out_sha"], "a" * 40)
+        self.assertEqual(result["exact_head_verify_step"], ci_verifier.EXACT_HEAD_VERIFY_STEP)
 
     def test_moved_head_or_missing_job_is_rejected(self):
         required = ci_verifier.load_requirements()["required_jobs"]
@@ -1812,6 +1854,51 @@ class TestExactHeadCI(unittest.TestCase):
         with mock.patch.object(ci_verifier, "run_info", return_value=run):
             with self.assertRaises(ci_verifier.CIVerificationError):
                 ci_verifier.verify_exact_head_ci(2, "a" * 40, 1, {"headRefOid": "b" * 40})
+
+    def test_exact_head_evidence_rejects_skipped_or_absent_verify_step(self):
+        required = ci_verifier.load_requirements()["required_jobs"]
+        sha = "s" * 40
+
+        # Missing step payloads are not exact-head proof.
+        missing_steps = {
+            "databaseId": 801, "workflowName": "tests", "headSha": sha,
+            "status": "completed", "conclusion": "success",
+            "jobs": [
+                {"name": name, "status": "completed", "conclusion": "success"}
+                for name in required
+            ],
+        }
+        with mock.patch.object(ci_verifier, "run_info", return_value=missing_steps):
+            with self.assertRaisesRegex(
+                ci_verifier.CIVerificationError,
+                "exact-head verification step evidence is absent",
+            ):
+                ci_verifier.verify_exact_head_ci(2, sha, 801, {"headRefOid": sha})
+
+        # A natural pull_request run that skipped the step is rejected.
+        skipped_jobs = []
+        for name in required:
+            skipped_jobs.append({
+                "name": name,
+                "status": "completed",
+                "conclusion": "success",
+                "steps": [{
+                    "name": ci_verifier.EXACT_HEAD_VERIFY_STEP,
+                    "status": "completed",
+                    "conclusion": "skipped",
+                }],
+            })
+        skipped_run = {
+            "databaseId": 802, "workflowName": "tests", "headSha": sha,
+            "status": "completed", "conclusion": "success", "event": "pull_request",
+            "jobs": skipped_jobs,
+        }
+        with mock.patch.object(ci_verifier, "run_info", return_value=skipped_run):
+            with self.assertRaisesRegex(
+                ci_verifier.CIVerificationError,
+                "exact-head verification step was skipped",
+            ):
+                ci_verifier.verify_exact_head_ci(2, sha, 802, {"headRefOid": sha})
 
     def test_existing_natural_exact_head_run_is_reused_without_dispatch(self):
         run = {"databaseId": 11, "event": "pull_request", "status": "completed", "conclusion": "success", "headSha": "c" * 40, "headBranch": "agent/issue-7", "workflowName": "tests"}
@@ -2265,14 +2352,13 @@ class TestExactHeadCI(unittest.TestCase):
 
     def test_natural_pending_completes_through_combined_function(self):
         sha = "d" * 40
-        required = ci_verifier.load_requirements()["required_jobs"]
         natural = {"databaseId": 930, "event": "pull_request", "status": "queued", "conclusion": "",
                    "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
                    "updatedAt": "2026-07-14T00:00:00Z"}
         completed = {"databaseId": 930, "event": "pull_request", "status": "completed", "conclusion": "success",
                      "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
                      "updatedAt": "2026-07-14T00:01:00Z",
-                     "jobs": [{"name": name, "status": "completed", "conclusion": "success"} for name in required]}
+                     "jobs": _successful_required_jobs()}
         with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[natural], [completed]]), \
              mock.patch.object(ci_verifier, "run_info", return_value=completed), \
              mock.patch.object(ci_verifier, "control_is_live", return_value=True), \
