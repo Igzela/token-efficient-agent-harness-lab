@@ -29,9 +29,36 @@ Execution-ready packets in `docs/NEXT_DECISION.md` are the default work units. T
 
 Material architecture, authority, schema, migration, security, evaluator-integrity, release, or recovery decisions must be recorded in an existing authoritative document before or with implementation. Do not silently create parallel runtimes, schedulers, queues, stores, policy owners, evaluator authorities, target-output owners, or rollback systems.
 
+## Default Development Path (Ship PR)
+
+The default daily repository development path is:
+
+```text
+local Agent → focused branch → PR → exact-head CI → independent complete-diff review → manual squash merge
+```
+
+Use one focused branch and PR per coherent packet or bounded-maintenance slice. Auto-merge remains disabled. Merge only when exact-head required CI is green, independent review of the final head passes, the merge classifier permits it, and no unresolved objection exists.
+
+The GitHub Issue / Vader repository-maintenance orchestrator is an **optional unattended entry**. It is currently emergency-stopped (Issue #208) until a replacement documentation-only smoke is accepted. After acceptance it remains a convenience path for unattended work, not the default interactive development path. Both paths converge at the same normal PR, exact-head CI, independent review, and manual-merge boundary; do not create a second Ship PR workflow, second state machine, or parallel merge authority.
+
+### Selective rebase
+
+Do not rebase a focused PR solely because `main` advanced with unrelated documentation-only commits. Rebase only when:
+
+- the branch conflicts with `main`;
+- relevant path, schema, authority, workflow, or ownership surfaces overlap with recent `main` changes;
+- an explicit freshness requirement demands it; or
+- an integration risk is proven by evidence (failing CI against current base, broken assumptions, etc.).
+
+Any head change invalidates prior CI and complete-diff review for that head. Re-run exact-head CI and independent review on the new head before merge.
+
+### Direct-main documentation coordination
+
+While an implementation PR is in final exact-head CI or independent review, defer non-urgent direct-to-`main` documentation changes that would force unnecessary rebases or base drift. Urgent factual corrections on `main` remain allowed under the documentation-only direct-main rule, but must be reported as potentially invalidating related base evidence for open PRs.
+
 ## GPT Web Repository-Agent Entry
 
-A user working in GPT Web should not need to remember workflow names, Issue numbers, dispatch IDs, PR numbers, head SHAs, CI run IDs, or retry parameters. When the repository-agent path is operational, a normal-language request is sufficient.
+A user working in GPT Web should not need to remember workflow names, Issue numbers, dispatch IDs, PR numbers, head SHAs, CI run IDs, or retry parameters. When the repository-agent path is operational, a normal-language request is sufficient. This path is the optional unattended entry described above; it is not the default daily Ship PR path.
 
 The GPT Web assistant then owns the internal translation:
 

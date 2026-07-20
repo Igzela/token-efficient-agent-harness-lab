@@ -11,8 +11,7 @@ on:
     inputs:
       expected_sha:
         description: Exact commit SHA expected by an agent-triggered run
-        required: false
-        default: ""
+        required: true
         type: string
       dispatch_nonce:
         description: Unique fallback-dispatch identity
@@ -24,7 +23,11 @@ permissions:
   contents: read
 
 env:
-  EXPECTED_SHA: ${{ inputs.expected_sha }}
+  # Resolve the commit under test for every event:
+  # - workflow_dispatch: required inputs.expected_sha (orchestrator fallback path)
+  # - pull_request: PR head SHA (not the ephemeral merge ref)
+  # - push to main: github.sha
+  EXPECTED_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
   GIT_CONFIG_COUNT: 1
   GIT_CONFIG_KEY_0: init.defaultBranch
   GIT_CONFIG_VALUE_0: main
@@ -36,10 +39,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: inputs.expected_sha != ''
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Set up uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -76,10 +89,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: inputs.expected_sha != ''
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Run cargo test
@@ -113,10 +136,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: inputs.expected_sha != ''
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Run PostgreSQL integration tests
@@ -133,10 +166,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: inputs.expected_sha != ''
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Install SDK dependencies
@@ -160,10 +203,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: inputs.expected_sha != ''
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Set up Bun
@@ -209,10 +262,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: inputs.expected_sha != ''
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Set up Bun
@@ -231,10 +294,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: inputs.expected_sha != ''
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Build local Docker services
         run: |
           success=0

@@ -34,6 +34,11 @@ ACTIVE_RUN_STATUSES = {"queued", "in_progress", "requested", "waiting", "pending
 SUPPORTED_COMPLETED_CONCLUSIONS = {"success", "failure"}
 FALLBACK_RUN_LOOKUP_SECONDS = 20
 FALLBACK_STOP_RECONCILIATION_SECONDS = 30
+# Must match the step name in .github/workflows/tests.yml.  Exact-head
+# evidence requires this step to have executed successfully in every
+# required job; a skipped or absent step is not acceptable proof that the
+# job checked out and tested the claimed commit.
+EXACT_HEAD_VERIFY_STEP = "Verify exact requested head"
 TERMINAL_UNSUPPORTED_CONCLUSIONS = {
     "action_required",
     "cancelled",
@@ -1108,6 +1113,11 @@ def verify_exact_head_ci(
     ]
     if invalid:
         raise CIVerificationError(f"required CI jobs are not successful: {invalid}")
+    # Prove each required job actually checked out and verified the claimed
+    # commit.  A pull_request run that skips the exact-head step (or omits
+    # step evidence) is not acceptable exact-head proof; the orchestrator
+    # must fall back to a workflow_dispatch that requires expected_sha.
+    _require_exact_head_checkout_evidence(by_name, required)
     if pr_snapshot is not None and pr_snapshot.get("headRefOid") != expected_sha:
         raise CIVerificationError("PR head moved while verifying CI")
 
@@ -1115,14 +1125,66 @@ def verify_exact_head_ci(
         "kind": "agent-orchestrator-ci-state",
         "pr_number": pr_number,
         "head_sha": expected_sha,
+        "checked_out_sha": expected_sha,
         "workflow_run_id": run.get("databaseId") or workflow_run_id,
         "workflow_name": requirements["workflow_name"],
         "required_jobs": required,
         "successful_jobs": required,
+        "exact_head_verify_step": EXACT_HEAD_VERIFY_STEP,
         "status": "success",
         "created_at": run.get("createdAt"),
         "updated_at": run.get("updatedAt"),
     }
+
+
+def _require_exact_head_checkout_evidence(
+    by_name: dict[str, Any],
+    required: list[str],
+) -> None:
+    """Fail closed unless every required job executed exact-head verification.
+
+    Canonical evidence must show that the job checked out and tested the
+    claimed commit.  Missing step payloads, an absent verification step, a
+    skipped step, or a non-success conclusion are all rejections.
+    """
+
+    absent_steps: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+    for name in required:
+        job = by_name[name]
+        steps = job.get("steps")
+        if not isinstance(steps, list) or not steps:
+            absent_steps.append(name)
+            continue
+        matches = [
+            step
+            for step in steps
+            if isinstance(step, dict) and step.get("name") == EXACT_HEAD_VERIFY_STEP
+        ]
+        if not matches:
+            absent_steps.append(name)
+            continue
+        step = matches[0]
+        conclusion = step.get("conclusion")
+        status = step.get("status")
+        if conclusion == "skipped" or status == "skipped":
+            skipped.append(name)
+            continue
+        if status != "completed" or conclusion != "success":
+            failed.append(name)
+    if absent_steps:
+        raise CIVerificationError(
+            f"exact-head verification step evidence is absent: {absent_steps}"
+        )
+    if skipped:
+        raise CIVerificationError(
+            f"exact-head verification step was skipped: {skipped}"
+        )
+    if failed:
+        raise CIVerificationError(
+            f"exact-head verification step did not succeed: {failed}"
+        )
 
 
 def dispatch_exact_ci(branch: str, head_sha: str, timeout_seconds: int = 60) -> dict[str, Any]:
