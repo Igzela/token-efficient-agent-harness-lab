@@ -13,6 +13,9 @@ use engine::infrastructure::auth::{
 use engine::infrastructure::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
 use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::node_executor::{AgentStepExecutor, NodeExecutor};
+use engine::opencode_runtime::{
+    OpenCodeNodeExecutor, OpenCodeProcessInvoker, OpenCodeRuntimeConfig,
+};
 #[cfg(test)]
 use engine::provider::adaptive_execution::parse_adaptive_provider_endpoints_json;
 use engine::provider::adaptive_execution::{
@@ -323,6 +326,17 @@ fn main() {
         );
     }
 
+    let mut opencode_runtime_executor_for_runtime: Option<(Arc<dyn NodeExecutor>, u64)> = None;
+    let opencode_runtime_config = OpenCodeRuntimeConfig::from_env()
+        .unwrap_or_else(|error| panic!("OpenCode runtime configuration failed: {error}"));
+    if let Some(config) = opencode_runtime_config {
+        let timeout_ms = config.timeout_ms;
+        let invoker = Arc::new(OpenCodeProcessInvoker::new(&config));
+        let executor: Arc<dyn NodeExecutor> = Arc::new(OpenCodeNodeExecutor::new(config, invoker));
+        opencode_runtime_executor_for_runtime = Some((executor, timeout_ms));
+        println!("[acp-startup] external_runtime=opencode mode=fixture timeout_ms={timeout_ms}");
+    }
+
     let may_use_provider = provider_execution_requires_auth(
         state.executor_type(),
         adaptive_execution_enabled,
@@ -428,6 +442,10 @@ fn main() {
                 .unwrap_or(300_000);
             scheduler =
                 scheduler.with_external_runtime_executor(external_runtime_executor, timeout_ms);
+        }
+        if let Some((opencode_executor, timeout_ms)) = opencode_runtime_executor_for_runtime.clone()
+        {
+            scheduler = scheduler.with_opencode_runtime_executor(opencode_executor, timeout_ms);
         }
         if let Some(adaptive_executor) = adaptive_executor_for_workers.clone() {
             let worker_executor = build_trusted_adaptive_worker_executor(
