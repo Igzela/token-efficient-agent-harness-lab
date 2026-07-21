@@ -32,12 +32,20 @@ pub mod pg_backend;
 mod plans;
 mod policy_proposals;
 mod policy_replay_producer;
+mod product_tasks;
 mod provider_audit;
 mod recursive_execution;
 mod regression_report_artifacts;
 mod schema;
 mod supervised_patch;
 pub use supervised_patch::TargetOutputClaim;
+
+/// Shared workspace content hashing for product golden-path worktree binding.
+pub(crate) fn supervised_patch_compute_manifest(
+    dir: &std::path::Path,
+) -> Result<serde_json::Value, String> {
+    supervised_patch::fs_utils::compute_manifest(dir)
+}
 mod team;
 mod tool_execution_policy;
 mod tool_policy_management;

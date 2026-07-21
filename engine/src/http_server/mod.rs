@@ -143,6 +143,57 @@ pub struct SupervisedPatchWorkspaceCreateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductTaskVerificationCommandApi {
+    pub command: String,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductTaskExecutorPolicyApi {
+    pub allowed_executors: Vec<String>,
+    pub prefer: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductTaskBudgetApi {
+    pub total_tokens: Option<u64>,
+    pub total_calls: Option<u64>,
+    pub total_elapsed_ms: Option<u64>,
+    pub max_retries: Option<u64>,
+    pub max_repairs: Option<u64>,
+    pub max_concurrency: Option<u64>,
+    pub stage_budgets: Option<Value>,
+}
+
+/// Canonical product golden-path intake contract (G1).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductTaskIntakeApiRequest {
+    pub objective: String,
+    pub target_id: String,
+    pub target_repo_path: String,
+    pub source_revision: String,
+    pub source_tree_hash: Option<String>,
+    pub allowed_paths: Vec<String>,
+    pub verification_commands: Vec<ProductTaskVerificationCommandApi>,
+    pub output_intent: String,
+    pub executor_policy: ProductTaskExecutorPolicyApi,
+    pub budget: Option<ProductTaskBudgetApi>,
+    pub risk_class: String,
+    pub approval_required: Option<bool>,
+    pub confirm_execution: Option<bool>,
+    pub confirm_output: Option<bool>,
+    pub idempotency_key: String,
+    pub expected_version: Option<u64>,
+    pub tenant_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub workspace_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SupervisedPatchWorkspaceVerifyRequest {
     pub command: String,
     pub confirm_verification: Option<bool>,

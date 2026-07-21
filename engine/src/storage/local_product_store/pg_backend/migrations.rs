@@ -427,6 +427,70 @@ fn apply_pg_v29_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|error| format!("failed to commit migration 29: {error}"))
 }
 
+fn apply_pg_v30_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V30_SCHEMA_VERSION;
+    let mut tx = client
+        .transaction()
+        .map_err(|error| format!("failed to start migration 30 transaction: {error}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(
+             hashtext(current_database()), hashtext(current_schema())
+         )",
+        &[],
+    )
+    .map_err(|error| format!("failed to lock migration 30: {error}"))?;
+    let current_version = tx
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map(|row| row.get::<_, i64>(0))
+        .map_err(|error| format!("failed to re-read version for migration 30: {error}"))?;
+    if current_version >= version {
+        tx.commit()
+            .map_err(|error| format!("failed to finish migration 30 no-op: {error}"))?;
+        return Ok(());
+    }
+    tx.batch_execute(schema::V30_DDL)
+        .map_err(|error| format!("migration 30 failed: {error}"))?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|error| format!("failed to record migration {version}: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("failed to commit migration 30: {error}"))
+}
+
+fn validate_pg_v30_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    let version = client
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get::<_, i64>(0);
+    if version != super::super::migrations::V30_SCHEMA_VERSION {
+        return Err(format!("PostgreSQL v30 schema version mismatch: {version}"));
+    }
+    for table in super::super::migrations::V30_TABLES {
+        if !pg_table_present(client, table)? {
+            return Err(format!("PostgreSQL v30 schema missing table {table}"));
+        }
+    }
+    validate_pg_v29_tables(client)
+}
+
+fn validate_pg_v29_tables(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    for table in super::super::migrations::V29_TABLES {
+        if !pg_table_present(client, table)? {
+            return Err(format!("PostgreSQL v29 schema missing table {table}"));
+        }
+    }
+    validate_pg_v28_tables(client)
+}
+
+#[allow(dead_code)]
 fn validate_pg_v29_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     let version = client
         .query_one(
@@ -438,12 +502,7 @@ fn validate_pg_v29_schema(client: &mut impl postgres::GenericClient) -> Result<(
     if version != super::super::migrations::V29_SCHEMA_VERSION {
         return Err(format!("PostgreSQL v29 schema version mismatch: {version}"));
     }
-    for table in super::super::migrations::V29_TABLES {
-        if !pg_table_present(client, table)? {
-            return Err(format!("PostgreSQL v29 schema missing table {table}"));
-        }
-    }
-    validate_pg_v28_tables(client)
+    validate_pg_v29_tables(client)
 }
 
 fn validate_pg_v28_tables(client: &mut impl postgres::GenericClient) -> Result<(), String> {
@@ -890,6 +949,63 @@ fn pg_v25_operation_schema_valid(
 }
 
 impl LocalProductStore {
+    pub(in crate::storage::local_product_store) fn rollback_pg_v30_to_v29_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.with_pg_conn(|client: &mut postgres::Client| {
+            let mut tx = client.transaction().map_err(|error| error.to_string())?;
+            let current_version = tx
+                .query_one(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                    &[],
+                )
+                .map(|row| row.get::<_, i64>(0))
+                .map_err(|error| error.to_string())?;
+            super::super::migrations::require_v30_rollback_source(current_version)?;
+            tx.batch_execute("LOCK TABLE product_tasks IN ACCESS EXCLUSIVE MODE")
+                .map_err(|error| error.to_string())?;
+            for table in super::super::migrations::V30_TABLES {
+                let occupied = tx
+                    .query_one(
+                        &format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)"),
+                        &[],
+                    )
+                    .map(|row| row.get::<_, bool>(0))
+                    .map_err(|error| error.to_string())?;
+                if occupied {
+                    return Err(format!(
+                        "v30 rollback blocked: authoritative product task data exists in {table}"
+                    ));
+                }
+            }
+            tx.batch_execute("DROP TABLE product_tasks;")
+                .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1,$2,'schema.rollback.v30_to_v29','local_product_store',$3)",
+                &[
+                    &now,
+                    &actor,
+                    &serde_json::json!({
+                        "from_version": super::super::migrations::V30_SCHEMA_VERSION,
+                        "to_version": super::super::migrations::V29_SCHEMA_VERSION,
+                        "tables": super::super::migrations::V30_TABLES,
+                    })
+                    .to_string(),
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version=$1",
+                &[&super::super::migrations::V30_SCHEMA_VERSION],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
+
     pub(in crate::storage::local_product_store) fn rollback_pg_v29_to_v28_internal(
         &self,
         actor: &str,
@@ -1153,6 +1269,10 @@ impl LocalProductStore {
                     apply_pg_v29_migration(client)?;
                     continue;
                 }
+                if migration.version == 30 {
+                    apply_pg_v30_migration(client)?;
+                    continue;
+                }
                 if migration.version <= current {
                     continue;
                 }
@@ -1261,7 +1381,7 @@ impl LocalProductStore {
                 }
             }
 
-            validate_pg_v29_schema(client)?;
+            validate_pg_v30_schema(client)?;
 
             // Seed the scheduler_heartbeat singleton row.
             client
@@ -1702,6 +1822,10 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
+        assert_eq!(store.schema_version().unwrap(), 30);
+        store
+            .rollback_v30_to_v29("migration-test-setup", true)
+            .unwrap();
         assert_eq!(store.schema_version().unwrap(), 29);
         store
             .rollback_v29_to_v28("migration-test-setup", true)
@@ -1755,7 +1879,7 @@ mod tests {
             error.contains("missing primary key for recursive_execution_nodes"),
             "unexpected error: {error}"
         );
-        assert_eq!(fixture.store.schema_version().expect("version"), 29);
+        assert_eq!(fixture.store.schema_version().expect("version"), 30);
     }
 
     #[test]
@@ -1785,7 +1909,7 @@ mod tests {
             ),
             "unexpected error: {error}"
         );
-        assert_eq!(fixture.store.schema_version().expect("version"), 29);
+        assert_eq!(fixture.store.schema_version().expect("version"), 30);
     }
 
     #[test]
@@ -1835,7 +1959,7 @@ mod tests {
                 .run_pg_migrations_internal()
                 .expect_err("weakened v26 schema must fail closed");
             assert!(error.contains(expected), "unexpected error: {error}");
-            assert_eq!(fixture.store.schema_version().expect("version"), 29);
+            assert_eq!(fixture.store.schema_version().expect("version"), 30);
         }
     }
 
@@ -1934,7 +2058,7 @@ mod tests {
         left.unwrap();
         right.unwrap();
 
-        assert_eq!(store.schema_version().unwrap(), 29);
+        assert_eq!(store.schema_version().unwrap(), 30);
         store
             .with_pg_conn(|client| {
                 assert!(pg_column_exists(
@@ -1960,7 +2084,7 @@ mod tests {
             .unwrap();
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 29);
+        assert_eq!(store.schema_version().unwrap(), 30);
 
         store
             .with_pg_conn(|client| {
@@ -1985,7 +2109,7 @@ mod tests {
         );
         // The refusal is atomic: deleting only the v25 marker does not move or
         // silently rewrite the existing v26 marker.
-        assert_eq!(store.schema_version().unwrap(), 29);
+        assert_eq!(store.schema_version().unwrap(), 30);
     }
 
     #[test]
@@ -2082,7 +2206,7 @@ mod tests {
             })
         );
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 29);
+        assert_eq!(store.schema_version().unwrap(), 30);
         for table in super::super::super::migrations::V24_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -2132,7 +2256,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 29);
+        assert_eq!(store.schema_version().unwrap(), 30);
         for table in super::super::super::migrations::V23_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -2241,7 +2365,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 29);
+        assert_eq!(store.schema_version().unwrap(), 30);
         for table in super::super::super::migrations::V22_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }

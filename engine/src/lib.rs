@@ -35,6 +35,7 @@ pub mod node_executor;
 pub mod opencode_runtime;
 pub mod operator_decision;
 pub mod orchestration;
+pub mod product_golden_path;
 pub mod provider;
 pub mod quality;
 pub mod read_only_planner;

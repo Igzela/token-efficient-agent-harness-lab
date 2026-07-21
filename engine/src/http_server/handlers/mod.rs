@@ -15,6 +15,7 @@ pub(crate) mod operator_decision_actions;
 pub(crate) mod operator_decisions;
 pub(crate) mod operator_evidence;
 pub(crate) mod plans;
+pub(crate) mod product_tasks;
 pub(crate) mod provider;
 pub(crate) mod queue;
 pub(crate) mod scheduler;

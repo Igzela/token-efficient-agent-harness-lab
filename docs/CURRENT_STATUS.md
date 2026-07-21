@@ -5,10 +5,9 @@ Last updated: 2026-07-21.
 ## Verified Repository State
 
 - Canonical repository: `Igzela/token-efficient-agent-harness-lab`.
-- Audited remote `main`: `6b4091e876b2fca0da03485540e5ce4f579ac13c`.
-- That commit is the squash merge of PR #265, whose exact reviewed head was `3a01abfef455cf703569e365f450f9831d28fc06`.
-- PR #265 exact-head workflows `29813548306` (`tests`) and `29813548423` (`exact-head-check`) completed successfully. Two independent complete-diff review comments were bound to the same exact head. GitHub has no formal submitted review object for those comments.
-- Open PR coordination before this audit branch: PR #225 was the only open PR and is presentation-only Dashboard work; it does not own the active governance documents. This audit is tracked separately in PR #267.
+- Audited remote `main`: `641679c1d2fb9865e5b39d63bb8d0e8720588156`.
+- That commit is the squash merge of PR #267 (`docs: converge product architecture around canonical golden path`), which followed the Level-1 acceptance merge of PR #265 at `6b4091e876b2fca0da03485540e5ce4f579ac13c`.
+- Open PR coordination: PR #225 remains presentation-only Dashboard work (`claude-theme` files only). Golden Path G1 implementation is on branch `codex/pe7-product-golden-path-g1-canonical-task`.
 - Open research coordination: Issue #266 contains only the initial Level-2 multi-generation proposal. No matching branch, commit, PR, or issue comment was found during this audit.
 - Parked external acceptance: Issue #254 remains the repository-agent replacement smoke parking issue. Issue #208 remains the emergency-stop authority.
 
@@ -87,7 +86,7 @@ This is an integration gap, not proof that the individual owners are fake.
 
 ## Active Tracks
 
-- `PE7-PRODUCT-GOLDEN-PATH-1`: recommended next active implementation packet.
+- `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` — G1 canonical task schema/intake/worktree-first binding under default-off gate `ACP_PRODUCT_GOLDEN_PATH`.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: blocked until the Golden Path emits trustworthy end-to-end evidence.
 - `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: Issue #266 remains open but blocked on real-workload evidence and an explicit activation review.
 - `PE7-META-IMPROVER-EXPERIMENT-1`: blocked on a stable, independently reviewed Level-2 result and separate authority decision.
@@ -97,7 +96,7 @@ This is an integration gap, not proof that the individual owners are fake.
 
 ## Open Work Coordination
 
-PR #267 from `docs/repo-usability-architecture-audit-1` carries this audit's updates to `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/MODULE_MAP.md`. No other open PR or discovered branch overlaps those documents. Do not continue this work on an old PE7 branch.
+PR #267 is merged on `main`. Golden Path slice G1 is owned by `codex/pe7-product-golden-path-g1-canonical-task`. PR #225 remains independent presentation-only work; do not modify its theme files. Issue #266 remains Level-2 proposal only.
 
 ## Safety Boundary
 
