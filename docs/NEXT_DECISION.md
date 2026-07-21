@@ -19,15 +19,14 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` — `READY_FOR_EXECUTION` / active Ship PR lane. Honest repair of the merged fixture adapter (PR #255): canonical `completed` status, reserved routing, full result identity, tool-evidence counters, independent patch grammar, required base/worktree identity, process-tree kill, fixture-adapter manifest (not a fake binary pin). Fixture-only default-off; no real OpenCode binary.
+1. `PE7-HARNESS-EVOLUTION-LAB-1` — `READY_FOR_EXECUTION` / active Ship PR lane. Fixture/local only; default-off; no active-Harness mutation; no Issue→CLI. Execute as three sequential focused packets: **B1** evidence foundation → **B2** evaluation/archive → **B3** PR_READY output. Do not combine into one oversized PR. First slice: `PE7-HARNESS-EVOLUTION-B1`.
 2. `PE7-OPENCODE-BINARY-ADMISSION-1` — `BLOCKED_PREREQUISITE` / deferred until an exact upstream artifact or source identity and real checksum are independently admitted. Do not treat `PIN.json` placeholder fields as binary admission.
-3. `PE7-HARNESS-EVOLUTION-LAB-1` — `BLOCKED_PREREQUISITE` on merged fixture-adapter repair. Fixture/local only; default-off; no active-Harness mutation; no Issue→CLI. Split into focused packets (evidence foundation → evaluation/archive → PR_READY) after the repair merges.
-4. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — **`PARKED` / `BLOCKED_PREREQUISITE`** on Vader-host Codex/ChatGPT execution (HTTP 403). **Not actively driven.** Parking Issue: **#254**. Runner is online/idle; Issue #208 emergency-stopped. Do not hard-force Codex 403 or Issue→CLI smokes until unparked.
-5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result from the evolution laboratory.
-6. PR #225 remains an independent presentation-only Dashboard PR.
-7. Remaining good-first issues (#245–#247) are community backlog.
+3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — **`PARKED` / `BLOCKED_PREREQUISITE`** on Vader-host Codex/ChatGPT execution (HTTP 403). **Not actively driven.** Parking Issue: **#254**. Runner is online/idle; Issue #208 emergency-stopped. Do not hard-force Codex 403 or Issue→CLI smokes until unparked.
+4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result from the evolution laboratory.
+5. PR #225 remains an independent presentation-only Dashboard PR.
+6. Remaining good-first issues (#245–#247) are community backlog.
 
-Default daily development is the Ship PR path. The repository-agent Issue→Vader→Codex CLI path is parked. OpenCode fixture adapter is merged (PR #255) and under honesty repair; real binary admission is not implemented. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
+Default daily development is the Ship PR path. The repository-agent Issue→Vader→Codex CLI path is parked. OpenCode fixture adapter (PR #255) and honesty repair (PR #257) are merged; real binary admission is not implemented. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
 
 ## Verified Baseline
 
@@ -46,7 +45,8 @@ The following merged work is the implementation baseline:
 - PR #237 repaired the repository-agent CI cancellation/capacity-leak and CI-observation race (reverted all seven orchestrator workflows to per-resource concurrency groups with `cancel-in-progress: false` so emergency-stop no longer cancels unrelated workflows; split `ci_verifier` into `acquire_exact_run` + `wait_for_run_completion` with per-cycle binding revalidation; made production CI identity fail-closed on every missing field; added durable `claimed` → `dispatched` claim lifecycle records written before label mutation; added `reconcile_claimed_dispatch` plus idempotent `release_and_record_ci_terminal` terminal compensation preserving `dispatched` claims for their own child-workflow compensation; squash-merged into `main` at `1947d4b555bd14b7f104c1fc9aba31747099cb88` after all seven CI jobs passed on exact head `068b2e9ac4bde16daea25bcb4846f7e26ba6cca9`, run `29628449688`; two independent complete-diff reviews passed);
 - staging recovery drills and disposable target-repository acceptance passed without moving target `main`;
 - the current repository-maintenance orchestrator remains emergency-stopped and no provider-backed benchmark is verified;
-- PR #256 merged clean-environment external validation (`./scripts/external_validation.sh`, hosted Ubuntu/macOS self-validation, `external_validation_report.v1`) on exact head `a3f6744616a75b36d185534993f21c2839b1ea76` (engineering usability only; not external adoption).
+- PR #256 merged clean-environment external validation (`./scripts/external_validation.sh`, hosted Ubuntu/macOS self-validation, `external_validation_report.v1`) on exact head `a3f6744616a75b36d185534993f21c2839b1ea76` (engineering usability only; not external adoption);
+- PR #257 merged the OpenCode fixture-adapter honesty repair on reviewed head `a5556e2475949f9364c86f47a65d802bc322ae87` into `main` at `4731e39934a53ba375d34add9aeda0b5be596f04` (exact-head CI runs `29798135924` / `29798135919`).
 
 Every implementation session must refresh actual `main`, open PRs, CI, Issue #208, runner readiness, provider catalog evidence, and overlapping file ownership before relying on these facts.
 
@@ -190,15 +190,15 @@ These defaults may be changed only through a later evidence-backed packet and ve
 
 ## Packet PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1 — Honest fixture-adapter repair
 
-**State:** `IN_PROGRESS`
-
-**Branch:** `codex/pe7-opencode-fixture-adapter-repair-1`
+**State:** `COMPLETE`
 
 **Prerequisite:** `PE7-OPENCODE-EXTERNAL-ADAPTER-1` merged via PR #255.
 
 **Goal:** Repair the merged OpenCode fixture adapter so status, reserved routing, result identity, tool evidence, patch grammar, base/worktree binding, process-tree termination, and fixture-manifest identity are honest and fail-closed. Fixture-only and default-off. Do not admit a real OpenCode binary.
 
 **Non-goals:** real binary download/execution; provider/network/MCP tools; Issue→CLI; target-repo mutation; merge/release/deploy; Harness evolution product claims.
+
+**Completion evidence:** PR #257 squash-merged into `main` at `4731e39934a53ba375d34add9aeda0b5be596f04` from reviewed head `a5556e2475949f9364c86f47a65d802bc322ae87`. Exact-head CI green (tests run `29798135924`, exact-head run `29798135919`; all seven canonical jobs). Python `-S` startup isolation, post-spawn process-group cleanup, scheduler Drop/stop/kill cancellation with generation-safe reset, exact analysis/patch result schemas including `workflow_id`, durable restart with fresh owners, and unrelated `.qoder` gitignore scope removed. Two complete-diff reviews posted on final head. Real binary admission remains deferred.
 
 **Rollback:** Revert the repair PR; disable `ACP_ENABLE_OPENCODE_RUNTIME`; terminate adapter process groups; preserve receipts.
 
@@ -278,9 +278,23 @@ Each invocation must bind at least the root run/node/lease, adapter and OpenCode
 
 ## Packet PE7-HARNESS-EVOLUTION-LAB-1 — Evidence-gated candidate evolution
 
-**State:** `BLOCKED_PREREQUISITE` on merged `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1`
+**State:** `READY_FOR_EXECUTION` (execute as sequential B1 → B2 → B3 packets)
 
-**Prerequisites:** `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (complete), `PE7-OPENCODE-EXTERNAL-ADAPTER-1` (complete via PR #255), and `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` (merged honesty repair). Implement as focused sequential packets (evidence foundation → evaluation/archive → PR_READY), not one oversized PR.
+**Prerequisites:** `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (complete), `PE7-OPENCODE-EXTERNAL-ADAPTER-1` (complete via PR #255), and `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` (complete via PR #257). Implement as focused sequential packets (B1 evidence foundation → B2 evaluation/archive → B3 PR_READY), not one oversized PR.
+
+### Packet PE7-HARNESS-EVOLUTION-B1 — Evolution evidence foundation
+
+**State:** `READY_FOR_EXECUTION`
+
+**Goal:** Default-off fixture/local evidence and persistence foundation under existing owners: versioned candidate/parent/lineage/proposal/mutable-surface/active-version/workspace/receipt/terminal-reason schemas; deterministic identities; SQLite/PostgreSQL parity; additive migration, malformed-schema refusal, rollback, restart, replay, concurrent-write tests; exactly-once candidate/proposal receipts; immutable active-Harness and evaluator identities; app-owned isolated candidate workspaces; bounded content/evidence hashes; no raw prompts/outputs/transcripts/repo contents/secrets/credentials/private paths; stale parent, changed active version, duplicate candidate, tamper, workspace escape, kill/pause/restart/late-write refusal; only documented component-level mutable surfaces; no Harness source mutation yet; no provider, real OpenCode binary, network, Issue→CLI, target-repo write, merge, release, or deployment.
+
+### Packet PE7-HARNESS-EVOLUTION-B2 — Evaluation and Pareto archive
+
+**State:** `BLOCKED_PREREQUISITE` on merged B1
+
+### Packet PE7-HARNESS-EVOLUTION-B3 — PR_READY output
+
+**State:** `BLOCKED_PREREQUISITE` on merged B2
 
 **Goal:** Add a default-off laboratory path that proposes, evaluates, archives, and optionally promotes isolated Harness candidates while the active Harness and the complete control plane remain immutable.
 
