@@ -490,6 +490,8 @@ fn apply_pg_v28_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|error| format!("failed to commit migration 28: {error}"))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn validate_pg_v28_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     let version = client
         .query_one(
