@@ -6,15 +6,16 @@ Last updated: 2026-07-22.
 
 - Canonical repository: `Igzela/token-efficient-agent-harness-lab`.
 - Audited remote `main` at the start of Residual Seal 2: `364a2ad24fb494653ccbe3ff2e8b038e9e40d095`.
-- Refreshed `main` for the terminal-evidence slice: `c6806841285cdb483bdd542e6d35a8ba7a009d7d` (PR #272 output-authority repair).
-- That commit is the documentation synchronization after PR #271. Commits `f7293548`, `fe742052`, and `364a2ad2` are all present in order.
+- Refreshed `main` after the terminal-evidence slice: `1d1252525014c0f6e979953f916c81aab20a9ee9` (PR #273 terminal-evidence/process-outcome repair).
+- Commits `f7293548`, `fe742052`, `364a2ad2`, `c6806841`, and `1d125252` are all present in order.
 - Prior golden-path merges on this line:
   - PR #268 G1 → `178d020e`
   - PR #269 G2–G4 → `8fa85c15`
   - PR #270 authority repair (real verification, scheduler-only advance, live executor pool, fixture honesty, recovery matrix) → `f7293548`
   - PR #271 evidence/output → `fe742052`
   - PR #272 Residual Seal 2 output authority → `c6806841`
-- Exact-head CI: PR #270 head `70f883a4` run `29837940355` green; PR #271 head `73f025bc` run `29839301704` green; PR #272 head `e0184b0d` run `29856825945` and exact-head check `29856826057` green (required jobs).
+  - PR #273 Residual Seal 2 terminal evidence/process outcome → `1d125252`
+- Exact-head CI: PR #270 head `70f883a4` run `29837940355` green; PR #271 head `73f025bc` run `29839301704` green; PR #272 head `e0184b0d` run `29856825945` and exact-head check `29856826057` green; PR #273 head `326b6a61` run `29864261336` and exact-head check `29864261056` green (required jobs).
 - Open PR coordination: PR #225 remains presentation-only Dashboard work (theme files only).
 - Open research coordination: Issue #266 remains Level-2 proposal only (not the active lane).
 - Parked external acceptance: Issue #254 remains repository-agent smoke parking. Issue #208 remains emergency-stopped.
@@ -89,7 +90,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Active Tracks
 
-- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (output authority merged; canonical terminal evidence/process outcome implemented; verification-time authority and final recovery/E2E follow).
+- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (output authority and canonical terminal evidence/process outcome merged through PR #273; verification-time authority and final recovery/E2E follow).
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until Residual Seal 2 satisfies the full acceptance contract.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE`.
 - `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: blocked; Issue #266 proposal only.
@@ -100,7 +101,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Open Work Coordination
 
-PRs #268–#272 are merged. Residual Seal 2 owns current Golden Path implementation; PR #225 remains an independent presentation-only lane. Do not activate Real Workload Evidence, Level-2, Meta Improver, Vader, or Issue #208 yet.
+PRs #268–#273 are merged. Residual Seal 2 owns current Golden Path implementation; PR #225 remains an independent presentation-only lane. Do not activate Real Workload Evidence, Level-2, Meta Improver, Vader, or Issue #208 yet.
 
 ## Safety Boundary
 

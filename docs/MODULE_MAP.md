@@ -69,7 +69,7 @@ Remaining seal
 | replay/scorecard | owner-specific artifact/run/dispatch IDs | terminal evidence links only exact owner-backed records; absence is explicit unavailable |
 | Harness candidate | proposal/candidate/lineage/evaluation/PR_READY IDs | Level-1 laboratory identity, not user task identity |
 
-`PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` must finish exact terminal linkage without replacing these owners.
+`PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` must finish verification-time authority and final acceptance without replacing these owners.
 
 ## Top-Level Directory Classification
 

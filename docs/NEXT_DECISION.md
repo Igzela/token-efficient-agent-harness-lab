@@ -99,7 +99,7 @@ The result is neutral/no-improvement fixture evidence. The active Harness remain
 **Required slices, in order:**
 
 1. **Merged via PR #272.** Separate product approval from output authority; require exact current evidence and explicit output confirmation; persist non-network receipts and phased branch-push/Draft-PR operations; create or idempotently reconcile a real GitHub Draft PR under exact HTTPS host/repository admission.
-2. **Implemented by the current terminal-evidence slice.** Persist one canonical terminal-evidence record per terminal task version; make reads pure; use exact artifact/approval/output references and owner-backed replay, scorecard, executor, usage, cost, and actual process-outcome evidence.
+2. **Merged via PR #273.** Persist one canonical terminal-evidence record per terminal task version; make reads pure; use exact artifact/approval/output references and owner-backed replay, scorecard, executor, usage, cost, and actual process-outcome evidence.
 3. **Next.** Enforce verification-time pause, kill, scheduler-kill, lease, version, workspace, timeout, supersession, and late-write authority; close SQLite/PostgreSQL recovery/concurrency tests; require runnable scheduler admission; update SDK/Dashboard; pass deterministic and admitted managed coding-executor E2E plus disposable Draft PR acceptance.
 
 Approval uses the existing workflow-approval owner but is a distinct `product_output_approval.v1` record requiring `team:admin`. Output requires `dispatch:execute`, the exact persisted approval, expected-current task version, and `confirm_output=true`. The legacy combined route is compatibility-only and must satisfy both scopes while invoking the same separate owners. Missing confirmation creates no approval, transition, claim, branch, PR, or success audit.
@@ -119,6 +119,7 @@ Draft PR output uses one progressive `product_output_operation.v1` under the sup
 - Authority repair PR #270 → `main` `f7293548` (real verification receipts, no finalize tick loop, live executor pool, fixture honesty, recovery matrix).
 - Evidence/output PR #271 → `main` `fe742052` (dynamic task-rooted terminal summary, export_patch, gated `acp/*` push; canonical persisted terminal evidence is owned by the current residual slice).
 - Residual output-authority PR #272 → `main` `c6806841` (separate approval/output permissions, terminal output semantics, progressive branch/PR receipt, real GitHub Draft PR adapter/reconciliation).
+- Residual terminal-evidence PR #273 → `main` `1d125252` (schema v31 canonical evidence, pure reads, exact owner bindings, authoritative process outcomes, SQLite/PostgreSQL atomicity).
 
 **Residual before `COMPLETE`:** governed by `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` above.
 
