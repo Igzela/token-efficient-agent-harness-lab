@@ -880,9 +880,13 @@ pub fn compile_product_executable_graph(
         }
     };
 
-    // G2 uses allowlisted `true` so lease/execution proves worktree cwd binding without
-    // shell metacharacters. Real disposable-file mutation is completed in G3/G4 owners.
-    let command = if task_type == "command" { "true" } else { "" };
+    // Deterministic bounded mutation helper is written into the worktree at compile time
+    // (see store). Command stays free of shell metacharacters and uses allowlisted python3.
+    let command = if task_type == "command" {
+        "python3 .product_golden_path_apply.py"
+    } else {
+        ""
+    };
 
     let apply_node_id = format!("{}-apply", plan_ids.workflow_id);
     let binding_sha256 = hex::encode(Sha256::digest(
