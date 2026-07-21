@@ -1,12 +1,12 @@
 # Current Status
 
-Last updated: 2026-07-21.
+Last updated: 2026-07-22.
 
 ## Verified Repository State
 
 - Canonical repository: `Igzela/token-efficient-agent-harness-lab`.
-- Audited remote `main`: `fe742052152d3189651570b44b2a1c67a4b112d5`.
-- That commit is the squash merge of PR #271 (terminal evidence + `acp/*` output path).
+- Audited remote `main` at the start of Residual Seal 2: `364a2ad24fb494653ccbe3ff2e8b038e9e40d095`.
+- That commit is the documentation synchronization after PR #271. Commits `f7293548`, `fe742052`, and `364a2ad2` are all present in order.
 - Prior golden-path merges on this line:
   - PR #268 G1 → `178d020e`
   - PR #269 G2–G4 → `8fa85c15`
@@ -21,9 +21,9 @@ Repository evidence, CI, and current source remain authoritative.
 
 ## Current Product Verdict
 
-**Product Golden Path (default-off)** is implemented for the canonical user-task transaction:
+**Product Golden Path (default-off)** remains `IN_PROGRESS`. The implemented path is:
 
-`intake → worktree bind → executable graph → existing scheduler advance → real verification receipts → artifact capture → current approval → export_patch or gated acp/* push → terminal evidence`
+`intake → worktree bind → executable graph → existing scheduler advance → verification → artifact capture → awaiting_approval → separately authorized approval → explicit output confirmation → durable non-network receipt or phased branch/PR operation`
 
 Gate: `ACP_PRODUCT_GOLDEN_PATH=1` (and existing `ACP_ENABLE_TARGET_REPO_OUTPUT` for git worktrees). Network draft/push also requires `ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT=1` plus existing target-output remote allowlists.
 
@@ -35,25 +35,30 @@ Authority repairs from PR #270:
 - Executor availability comes from the live pool / registration snapshot.
 - Fixture apply helper is labeled `fixture_deterministic` and is not managed-agent evidence.
 
-Evidence/output from PR #271:
+The Residual Seal 2 audit found that PR #271's terminal/output summary was overstated:
 
-- Task-rooted terminal evidence links plan/run/workspace/verification/artifact/approval with explicit unavailable usage/cost (no fabrication).
-- `export_patch` writes approved patches under app-owned `exports/`.
-- `draft_pr` default is explicit `network_output_unavailable`; with network gate + local remote allow, tests prove `acp/*` branch push without target `main` mutation.
+- its combined endpoint could manufacture approval with ordinary execution permission;
+- missing output confirmation could still create approval state;
+- any JSON output, including network-unavailable or branch-only output, could complete the task;
+- the `draft_pr` path pushed a branch but did not create a GitHub Draft PR;
+- terminal evidence was dynamically assembled, selected broad-scan records, mislabeled replay/executor facts, and mutated audit state during reads.
+
+The output-authority slice corrects the first four defects through separate `team:admin` approval and `dispatch:execute` output endpoints, exact approval/evidence binding, zero-side-effect confirmation rejection, durable artifact/export receipts, and a progressive branch-push/Draft-PR operation. A branch receipt is not PR evidence; known failure remains non-terminal and outcome-unknown is reconciled through the same operation. The legacy combined endpoint is compatibility-only and invokes both authorities.
 
 The fragmented manual plan/run/workspace/tick/verify/capture path remains available for compatibility. Legacy `/dispatch` default remains `noop`.
 
 ### Residual (packet not fully COMPLETE)
 
-1. **GitHub Draft PR HTTP create** is not CI-proven; local bare-origin proves `acp/*` branch push only. Real Draft PR still needs configured GitHub credentials/host allowlists outside CI.
-2. **Managed coding-executor E2E** (CLI/OpenCode/provider) remains blocked on admitted live capability without gate weakening; fixture `command` path is the accepted disposable-repo proof.
-3. **Provider-grade scorecard quality / usage / cost** remain explicitly unavailable for the fixture path (correct fail-closed behavior).
+1. Canonical persisted terminal evidence, pure reads, exact owner references, and owner-backed replay/scorecard/usage/cost remain for the next slice.
+2. Actual process outcome and verification-time pause/kill/lease/version/late-write authority remain for the next slice.
+3. Real GitHub Draft PR acceptance remains to be proved in a disposable repository after the output-authority slice merges.
+4. Managed coding-executor E2E is mandatory under the current acceptance contract. Fixture evidence cannot substitute for it; an audited unavailable managed executor is an explicit blocker, not an acceptance exception.
 
 ## Capability Status
 
 | Capability | State | Current truth |
 |---|---|---|
-| Product Golden Path | implemented / default-off / residual seal | Schema v30 `product_tasks`; real verification; scheduler-owned advance; terminal evidence; export_patch; gated `acp/*` push. |
+| Product Golden Path | in progress / default-off / Residual Seal 2 | Schema v30 root tasks, scheduler path, separate approval/output authority, and phased Draft PR operation; canonical terminal evidence and final E2E are not yet sealed. |
 | Rust API, scheduler, workflow store | implemented / active | `engine/` sole runtime/store authority. |
 | Plain `/dispatch` | implemented / default-noop | Unchanged compatibility path. |
 | Plans / workflow runs | implemented | Unchanged; golden path reuses them with product bindings. |
@@ -67,10 +72,11 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Confirmed Integration Gaps
 
-1. Real GitHub Draft PR HTTP create is residual under existing credential/host gates.
-2. Managed non-command coding executors are not CI-proven for golden path.
-3. Real-workload evidence corpus (`PE7-REAL-WORKLOAD-EVIDENCE-1`) remains blocked until golden path residual is closed or explicitly accepted with recorded exception.
-4. Level-2 and Meta remain blocked.
+1. Canonical terminal evidence and authoritative process/verification outcomes remain open.
+2. Real GitHub Draft PR acceptance remains under existing credential/host/repository gates.
+3. Managed coding-executor E2E remains mandatory and not yet proved.
+4. Real-workload evidence remains blocked until the full Golden Path contract passes; there is no implicit fixture-only exception.
+5. Level-2 and Meta remain blocked.
 
 ## Supporting Programs
 
@@ -80,7 +86,8 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Active Tracks
 
-- `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` (authority + evidence/output merged via PRs #268–#271; residual GitHub Draft PR HTTP + managed-executor E2E).
+- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (output authority first; terminal evidence/process outcome and final recovery/E2E slices follow).
+- `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until Residual Seal 2 satisfies the full acceptance contract.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE`.
 - `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: blocked; Issue #266 proposal only.
 - `PE7-META-IMPROVER-EXPERIMENT-1`: blocked.
@@ -90,7 +97,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Open Work Coordination
 
-PRs #268–#271 are merged. No open golden-path implementation PR. Do not activate Level-2, Meta Improver, Vader, or Issue #208 for this packet.
+PRs #268–#271 are merged. Residual Seal 2 owns current Golden Path implementation; PR #225 remains an independent presentation-only lane. Do not activate Real Workload Evidence, Level-2, Meta Improver, Vader, or Issue #208 yet.
 
 ## Safety Boundary
 

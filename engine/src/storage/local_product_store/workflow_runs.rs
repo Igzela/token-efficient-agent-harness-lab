@@ -708,6 +708,156 @@ impl LocalProductStore {
         }
     }
 
+    /// Persist an independently-authorized product-output approval under the
+    /// existing workflow approval owner. This grants output authority only;
+    /// it never grants workflow execution authority.
+    pub fn record_product_output_approval(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        actor: &str,
+        binding: &Value,
+    ) -> Result<Value, String> {
+        if binding.get("schema_version").and_then(Value::as_str)
+            != Some("product_output_approval.v1")
+        {
+            return Err("invalid product output approval binding schema".to_string());
+        }
+        let created_at = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
+                ensure_run_exists_locked(&tx, run_id)?;
+                validate_product_output_approval_binding_locked(&tx, run_id, node_id, binding)?;
+                let sequence = next_sequence(&tx, "workflow_run_approvals", "approval_sequence")?;
+                let approval_id = format!("workflow-approval-{sequence:04}");
+                let mut approval = binding.clone();
+                let object = approval.as_object_mut().ok_or_else(|| {
+                    "product output approval binding must be an object".to_string()
+                })?;
+                object.insert("approval_sequence".to_string(), json!(sequence));
+                object.insert("approval_id".to_string(), json!(approval_id));
+                object.insert("run_id".to_string(), json!(run_id));
+                object.insert("node_id".to_string(), json!(node_id));
+                object.insert("decision".to_string(), json!("approved"));
+                object.insert("actor".to_string(), json!(actor));
+                object.insert("approved_by".to_string(), json!(actor));
+                object.insert("created_at".to_string(), json!(created_at));
+                object.insert("approval_kind".to_string(), json!("product_output"));
+                object.insert("metadata_only".to_string(), json!(false));
+                object.insert("output_authority".to_string(), json!("product_output"));
+                object.insert("execution_authority".to_string(), json!("disabled"));
+                tx.execute(
+                    "INSERT INTO workflow_run_approvals
+                     (approval_sequence, approval_id, run_id, node_id, decision, actor, reason,
+                      created_at, approval_json)
+                     VALUES (?1, ?2, ?3, ?4, 'approved', ?5, ?6, ?7, ?8)",
+                    params![
+                        sequence,
+                        approval_id,
+                        run_id,
+                        node_id,
+                        actor,
+                        "independent product output approval",
+                        created_at,
+                        approval.to_string(),
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                append_audit_locked(
+                    &tx,
+                    &created_at,
+                    actor,
+                    "product_task.output_approval_recorded",
+                    binding
+                        .get("product_task_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or(run_id),
+                    &json!({
+                        "approval_id": approval_id,
+                        "run_id": run_id,
+                        "node_id": node_id,
+                        "artifact_id": binding.get("artifact_id"),
+                        "verification_sha256": binding.get("verification_sha256"),
+                        "output_intent": binding.get("output_intent"),
+                        "output_authority": "product_output",
+                        "execution_authority": "disabled",
+                    }),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(approval)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                pg_ensure_run_exists(&mut tx, run_id)?;
+                pg_validate_product_output_approval_binding(&mut tx, run_id, node_id, binding)?;
+                let sequence =
+                    pg_next_sequence(&mut tx, "workflow_run_approvals", "approval_sequence")?;
+                let approval_id = format!("workflow-approval-{sequence:04}");
+                let mut approval = binding.clone();
+                let object = approval.as_object_mut().ok_or_else(|| {
+                    "product output approval binding must be an object".to_string()
+                })?;
+                object.insert("approval_sequence".to_string(), json!(sequence));
+                object.insert("approval_id".to_string(), json!(approval_id));
+                object.insert("run_id".to_string(), json!(run_id));
+                object.insert("node_id".to_string(), json!(node_id));
+                object.insert("decision".to_string(), json!("approved"));
+                object.insert("actor".to_string(), json!(actor));
+                object.insert("approved_by".to_string(), json!(actor));
+                object.insert("created_at".to_string(), json!(created_at));
+                object.insert("approval_kind".to_string(), json!("product_output"));
+                object.insert("metadata_only".to_string(), json!(false));
+                object.insert("output_authority".to_string(), json!("product_output"));
+                object.insert("execution_authority".to_string(), json!("disabled"));
+                tx.execute(
+                    "INSERT INTO workflow_run_approvals
+                     (approval_sequence, approval_id, run_id, node_id, decision, actor, reason,
+                      created_at, approval_json)
+                     VALUES ($1, $2, $3, $4, 'approved', $5, $6, $7, $8)",
+                    &[
+                        &sequence,
+                        &approval_id,
+                        &run_id,
+                        &node_id,
+                        &actor,
+                        &Some("independent product output approval"),
+                        &created_at,
+                        &approval.to_string(),
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                pg_append_audit(
+                    &mut tx,
+                    &created_at,
+                    actor,
+                    "product_task.output_approval_recorded",
+                    binding
+                        .get("product_task_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or(run_id),
+                    &json!({
+                        "approval_id": approval_id,
+                        "run_id": run_id,
+                        "node_id": node_id,
+                        "artifact_id": binding.get("artifact_id"),
+                        "verification_sha256": binding.get("verification_sha256"),
+                        "output_intent": binding.get("output_intent"),
+                        "output_authority": "product_output",
+                        "execution_authority": "disabled",
+                    }),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(approval)
+            }),
+        }
+    }
+
     pub fn workflow_run_approvals(&self, run_id: &str, limit: i64) -> Result<Vec<Value>, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -5092,6 +5242,157 @@ fn ensure_run_exists_locked(conn: &rusqlite::Connection, run_id: &str) -> Result
     }
 }
 
+fn product_approval_binding_string<'a>(binding: &'a Value, field: &str) -> Result<&'a str, String> {
+    binding
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("product output approval binding missing {field}"))
+}
+
+fn product_approval_verification_sha256(workspace_json: &str) -> Result<String, String> {
+    let workspace: Value =
+        serde_json::from_str(workspace_json).map_err(|error| error.to_string())?;
+    let verification = workspace
+        .get("verification")
+        .ok_or_else(|| "approval blocked: current verification missing".to_string())?;
+    let bytes = serde_json::to_vec(verification).map_err(|error| error.to_string())?;
+    Ok(hex::encode(sha2::Sha256::digest(bytes)))
+}
+
+fn validate_product_output_approval_binding_locked(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    node_id: &str,
+    binding: &Value,
+) -> Result<(), String> {
+    let task_id = product_approval_binding_string(binding, "product_task_id")?;
+    let expected_version = binding
+        .get("expected_task_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "product output approval binding missing expected_task_version".to_string()
+        })?;
+    let task = conn
+        .query_row(
+            "SELECT status, version, run_id, workspace_record_id, source_revision, output_intent,
+                    target_id, target_repo_path
+             FROM product_tasks WHERE task_id = ?1",
+            params![task_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("product task not found: {task_id}"))?;
+    if task.0 != "awaiting_approval" || task.1 != expected_version as i64 {
+        return Err("stale product task version or state at approval commit".to_string());
+    }
+    let workspace_id = product_approval_binding_string(binding, "workspace_record_id")?;
+    let source_revision = product_approval_binding_string(binding, "source_revision")?;
+    let output_intent = product_approval_binding_string(binding, "output_intent")?;
+    if task.2.as_deref() != Some(run_id)
+        || task.3.as_deref() != Some(workspace_id)
+        || task.4 != source_revision
+        || task.5 != output_intent
+    {
+        return Err("product output approval task binding changed".to_string());
+    }
+    let output_target = binding
+        .get("output_target")
+        .ok_or_else(|| "product output approval target missing".to_string())?;
+    if output_target.get("target_id").and_then(Value::as_str) != Some(task.6.as_str())
+        || output_target
+            .get("target_repo_path")
+            .and_then(Value::as_str)
+            != Some(task.7.as_str())
+    {
+        return Err("product output approval target binding changed".to_string());
+    }
+    let node_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+            params![run_id, node_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if node_count != 1 {
+        return Err("product output approval workflow node binding missing".to_string());
+    }
+    let workspace = conn
+        .query_row(
+            "SELECT status, run_id, source_revision, workspace_path, workspace_json
+             FROM supervised_patch_workspaces WHERE workspace_id = ?1",
+            params![workspace_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "approval blocked: workspace missing".to_string())?;
+    if matches!(workspace.0.as_str(), "quarantined" | "cleaned" | "rejected")
+        || workspace.1 != run_id
+        || workspace.2 != source_revision
+        || binding.get("workspace_path").and_then(Value::as_str) != Some(workspace.3.as_str())
+    {
+        return Err("product output approval workspace binding changed".to_string());
+    }
+    if product_approval_verification_sha256(&workspace.4)?
+        != product_approval_binding_string(binding, "verification_sha256")?
+    {
+        return Err("product output approval verification binding changed".to_string());
+    }
+    let artifact_id = product_approval_binding_string(binding, "artifact_id")?;
+    let artifact = conn
+        .query_row(
+            "SELECT workspace_id, run_id, source_revision, patch_hash, changed_files_json, target_id
+             FROM supervised_patch_artifacts WHERE artifact_id = ?1",
+            params![artifact_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "approval blocked: artifact missing".to_string())?;
+    let changed_files: Value =
+        serde_json::from_str(&artifact.4).map_err(|error| error.to_string())?;
+    if artifact.0 != workspace_id
+        || artifact.1 != run_id
+        || artifact.2 != source_revision
+        || artifact.3 != product_approval_binding_string(binding, "patch_hash")?
+        || binding.get("changed_files") != Some(&changed_files)
+        || artifact.5 != task.6
+    {
+        return Err("product output approval artifact binding changed".to_string());
+    }
+    Ok(())
+}
+
 fn next_sequence(conn: &rusqlite::Connection, table: &str, column: &str) -> Result<i64, String> {
     let sql = format!("SELECT COALESCE(MAX({column}), 0) + 1 FROM {table}");
     conn.query_row(&sql, [], |row| row.get(0))
@@ -6165,6 +6466,127 @@ fn pg_ensure_run_exists(
     } else {
         Ok(())
     }
+}
+
+#[cfg(feature = "pg")]
+fn pg_validate_product_output_approval_binding(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+    node_id: &str,
+    binding: &Value,
+) -> Result<(), String> {
+    let task_id = product_approval_binding_string(binding, "product_task_id")?;
+    let expected_version = binding
+        .get("expected_task_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "product output approval binding missing expected_task_version".to_string()
+        })?;
+    let task = client
+        .query_opt(
+            "SELECT status, version, run_id, workspace_record_id, source_revision, output_intent,
+                    target_id, target_repo_path
+             FROM product_tasks WHERE task_id = $1 FOR UPDATE",
+            &[&task_id],
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("product task not found: {task_id}"))?;
+    let status: String = task.get(0);
+    let version: i64 = task.get(1);
+    let task_run_id: Option<String> = task.get(2);
+    let task_workspace_id: Option<String> = task.get(3);
+    let task_source_revision: String = task.get(4);
+    let task_output_intent: String = task.get(5);
+    let task_target_id: String = task.get(6);
+    let task_target_repo_path: String = task.get(7);
+    if status != "awaiting_approval" || version != expected_version as i64 {
+        return Err("stale product task version or state at approval commit".to_string());
+    }
+    let workspace_id = product_approval_binding_string(binding, "workspace_record_id")?;
+    let source_revision = product_approval_binding_string(binding, "source_revision")?;
+    let output_intent = product_approval_binding_string(binding, "output_intent")?;
+    if task_run_id.as_deref() != Some(run_id)
+        || task_workspace_id.as_deref() != Some(workspace_id)
+        || task_source_revision != source_revision
+        || task_output_intent != output_intent
+    {
+        return Err("product output approval task binding changed".to_string());
+    }
+    let output_target = binding
+        .get("output_target")
+        .ok_or_else(|| "product output approval target missing".to_string())?;
+    if output_target.get("target_id").and_then(Value::as_str) != Some(task_target_id.as_str())
+        || output_target
+            .get("target_repo_path")
+            .and_then(Value::as_str)
+            != Some(task_target_repo_path.as_str())
+    {
+        return Err("product output approval target binding changed".to_string());
+    }
+    let node_count: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
+            &[&run_id, &node_id],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    if node_count != 1 {
+        return Err("product output approval workflow node binding missing".to_string());
+    }
+    let workspace = client
+        .query_opt(
+            "SELECT status, run_id, source_revision, workspace_path, workspace_json
+             FROM supervised_patch_workspaces WHERE workspace_id = $1 FOR UPDATE",
+            &[&workspace_id],
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "approval blocked: workspace missing".to_string())?;
+    let workspace_status: String = workspace.get(0);
+    let workspace_run_id: String = workspace.get(1);
+    let workspace_source_revision: String = workspace.get(2);
+    let workspace_path: String = workspace.get(3);
+    let workspace_json: String = workspace.get(4);
+    if matches!(
+        workspace_status.as_str(),
+        "quarantined" | "cleaned" | "rejected"
+    ) || workspace_run_id != run_id
+        || workspace_source_revision != source_revision
+        || binding.get("workspace_path").and_then(Value::as_str) != Some(workspace_path.as_str())
+    {
+        return Err("product output approval workspace binding changed".to_string());
+    }
+    if product_approval_verification_sha256(&workspace_json)?
+        != product_approval_binding_string(binding, "verification_sha256")?
+    {
+        return Err("product output approval verification binding changed".to_string());
+    }
+    let artifact_id = product_approval_binding_string(binding, "artifact_id")?;
+    let artifact = client
+        .query_opt(
+            "SELECT workspace_id, run_id, source_revision, patch_hash, changed_files_json, target_id
+             FROM supervised_patch_artifacts WHERE artifact_id = $1 FOR UPDATE",
+            &[&artifact_id],
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "approval blocked: artifact missing".to_string())?;
+    let artifact_workspace_id: String = artifact.get(0);
+    let artifact_run_id: String = artifact.get(1);
+    let artifact_source_revision: String = artifact.get(2);
+    let artifact_patch_hash: String = artifact.get(3);
+    let changed_files_json: String = artifact.get(4);
+    let artifact_target_id: String = artifact.get(5);
+    let changed_files: Value =
+        serde_json::from_str(&changed_files_json).map_err(|error| error.to_string())?;
+    if artifact_workspace_id != workspace_id
+        || artifact_run_id != run_id
+        || artifact_source_revision != source_revision
+        || artifact_patch_hash != product_approval_binding_string(binding, "patch_hash")?
+        || binding.get("changed_files") != Some(&changed_files)
+        || artifact_target_id != task_target_id
+    {
+        return Err("product output approval artifact binding changed".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(feature = "pg")]

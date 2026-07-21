@@ -145,6 +145,66 @@ fn approved_branch_push_preserves_main_and_exports_same_patch() {
 }
 
 #[test]
+fn branch_retry_after_local_commit_pushes_only_existing_commit() {
+    let (target, remote, workspace_root) = fixture();
+    let workspace = workspace_root.path().join("workspace");
+    let config = TargetRepoOutputConfig::for_test(true, false);
+    let main_before = git(target.path(), &["rev-parse", "main"]);
+    let prepared = prepare_git_worktree(&config, target.path(), &workspace, "main").unwrap();
+    std::fs::write(workspace.join("README.md"), "base\nrecovered change\n").unwrap();
+    let patch = stage_and_build_patch(&config, &workspace).unwrap();
+    let expected_patch_hash = prepared_hash(&patch);
+    git(&workspace, &["switch", "-c", "acp/recovered-output"]);
+    git(&workspace, &["config", "user.name", "ACP Test"]);
+    git(
+        &workspace,
+        &["config", "user.email", "acp-test@example.invalid"],
+    );
+    git(
+        &workspace,
+        &["commit", "--no-verify", "-m", "recovered output"],
+    );
+    let local_commit = git(&workspace, &["rev-parse", "HEAD"]);
+    let upstream = Command::new("git")
+        .arg("-C")
+        .arg(&workspace)
+        .args(["rev-parse", "@{upstream}"])
+        .output()
+        .unwrap();
+    assert!(!upstream.status.success());
+
+    let output = push_approved_branch(
+        &config,
+        BranchPublishRequest {
+            target_repo_path: target.path().to_path_buf(),
+            workspace_path: workspace,
+            source_revision: prepared.source_revision,
+            expected_patch_hash,
+            branch_name: "acp/recovered-output".to_string(),
+            remote: "origin".to_string(),
+            commit_message: "recovered output".to_string(),
+            pr_title: "Recovered output".to_string(),
+            pr_body: "Approved recovery".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(output.commit_sha, local_commit);
+    assert_eq!(
+        git(
+            remote.path(),
+            &["rev-parse", "refs/heads/acp/recovered-output"]
+        ),
+        local_commit
+    );
+    assert_eq!(git(target.path(), &["rev-parse", "main"]), main_before);
+    assert_eq!(
+        git(remote.path(), &["rev-parse", "refs/heads/main"]),
+        main_before
+    );
+}
+
+#[test]
 fn branch_push_rejects_protected_branch_and_secret_text() {
     let (target, _, workspace_root) = fixture();
     let workspace = workspace_root.path().join("workspace");

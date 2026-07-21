@@ -28,6 +28,11 @@ use engine::orchestration::schemas::{
     DebatePosition, DebateRequest, DebateResolution, HandoffRequest, ReviewRequest, ReviewVerdict,
 };
 #[cfg(feature = "pg-tests")]
+use engine::product_golden_path::{
+    validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest, ProductVerificationCommand,
+    PRODUCT_TASK_GATE,
+};
+#[cfg(feature = "pg-tests")]
 use engine::provider::embedding::{
     OPENROUTER_EMBEDDING_CANONICAL_SLUG, OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
     OPENROUTER_EMBEDDING_DIMENSIONS, OPENROUTER_EMBEDDING_MODEL_ID,
@@ -49,6 +54,8 @@ use engine::tool_policy_executor::ToolPolicyNodeExecutor;
 use serde_json::{json, Value};
 #[cfg(feature = "pg-tests")]
 use sha2::{Digest, Sha256};
+#[cfg(feature = "pg-tests")]
+use std::process::Command;
 #[cfg(feature = "pg-tests")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "pg-tests")]
@@ -161,6 +168,479 @@ fn test_store() -> Option<LocalProductStore> {
 #[cfg(feature = "pg-tests")]
 fn uuid_tag() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+#[cfg(feature = "pg-tests")]
+fn pg_product_task_to_approval(
+    store: &LocalProductStore,
+    repo: &std::path::Path,
+    revision: &str,
+    tag: &str,
+    output_intent: &str,
+) -> (Value, Value, Value) {
+    let request = ProductTaskIntakeRequest {
+        objective: format!("postgres {output_intent} authority fixture"),
+        target_id: format!("pg-product-{tag}"),
+        target_repo_path: repo.to_string_lossy().into_owned(),
+        source_revision: revision.to_string(),
+        source_tree_hash: None,
+        allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f docs/product_golden_path_fixture.md".to_string(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: output_intent.to_string(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["command".to_string()],
+            prefer: Some("command".to_string()),
+        },
+        budget: None,
+        risk_class: "low".to_string(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: Some(true),
+        idempotency_key: format!("pg-product-{output_intent}-{tag}"),
+        expected_version: None,
+        tenant_id: Some("local".to_string()),
+        workspace_id: Some("default".to_string()),
+        workspace_mode: Some("git_worktree".to_string()),
+    };
+    let validated = validate_intake(&request, "local", "default").unwrap();
+    let task = store
+        .admit_product_task(&validated, "pg-product-test")
+        .unwrap();
+    let task_id = task["task_id"].as_str().unwrap();
+    let compiled = store
+        .compile_and_schedule_product_task(task_id, "pg-product-test", &["command".to_string()])
+        .unwrap();
+    let run_id = compiled["task"]["run_id"].as_str().unwrap();
+    let executor = engine::node_executor::CommandNodeExecutor::default();
+    for _ in 0..8 {
+        let tick = store
+            .tick_with_executor(run_id, "pg-product-test", 1, &executor)
+            .unwrap();
+        if matches!(
+            tick.pointer("/run/status").and_then(Value::as_str),
+            Some("completed" | "failed")
+        ) {
+            break;
+        }
+    }
+    store
+        .finalize_product_task_after_execution(task_id, "pg-product-test")
+        .unwrap();
+    let task = store.get_product_task(task_id).unwrap().unwrap();
+    let approval = store
+        .approve_product_task(
+            task_id,
+            "pg-independent-operator",
+            task["version"].as_u64().unwrap(),
+        )
+        .unwrap();
+    let artifact = store
+        .get_supervised_patch_artifact(approval["artifact_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    (task, approval, artifact)
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_product_output_approval_revalidates_current_bindings_atomically() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("README.md"), "pg product approval\n").unwrap();
+    for args in [
+        &["init", "-b", "main"][..],
+        &["config", "user.email", "pg-product@example.invalid"][..],
+        &["config", "user.name", "PG Product Test"][..],
+        &["add", "README.md"][..],
+        &["commit", "-m", "init"][..],
+    ] {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {:?}", output);
+    }
+    let revision = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    let revision = String::from_utf8_lossy(&revision.stdout).trim().to_string();
+    let tag = uuid_tag();
+    let request = ProductTaskIntakeRequest {
+        objective: "postgres approval authority fixture".to_string(),
+        target_id: format!("pg-product-{tag}"),
+        target_repo_path: repo.path().to_string_lossy().into_owned(),
+        source_revision: revision.clone(),
+        source_tree_hash: None,
+        allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f docs/product_golden_path_fixture.md".to_string(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: "draft_pr".to_string(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["command".to_string()],
+            prefer: Some("command".to_string()),
+        },
+        budget: None,
+        risk_class: "low".to_string(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: Some(true),
+        idempotency_key: format!("pg-product-approval-{tag}"),
+        expected_version: None,
+        tenant_id: Some("local".to_string()),
+        workspace_id: Some("default".to_string()),
+        workspace_mode: Some("git_worktree".to_string()),
+    };
+    let validated = validate_intake(&request, "local", "default").unwrap();
+    let task = store
+        .admit_product_task(&validated, "pg-product-test")
+        .unwrap();
+    let task_id = task["task_id"].as_str().unwrap();
+    let compiled = store
+        .compile_and_schedule_product_task(task_id, "pg-product-test", &["command".to_string()])
+        .unwrap();
+    let run_id = compiled["task"]["run_id"].as_str().unwrap();
+    let executor = engine::node_executor::CommandNodeExecutor::default();
+    for _ in 0..8 {
+        let tick = store
+            .tick_with_executor(run_id, "pg-product-test", 1, &executor)
+            .unwrap();
+        if matches!(
+            tick.pointer("/run/status").and_then(Value::as_str),
+            Some("completed" | "failed")
+        ) {
+            break;
+        }
+    }
+    store
+        .finalize_product_task_after_execution(task_id, "pg-product-test")
+        .unwrap();
+    let task = store.get_product_task(task_id).unwrap().unwrap();
+    let version = task["version"].as_u64().unwrap();
+    let approval = store
+        .approve_product_task(task_id, "pg-independent-operator", version)
+        .unwrap();
+    assert_eq!(approval["approval_kind"], "product_output");
+
+    let audit_before = store.audit_events(10_000).unwrap();
+    let mut tampered = approval.clone();
+    tampered["verification_sha256"] = json!("0".repeat(64));
+    let error = store
+        .record_product_output_approval(
+            approval["run_id"].as_str().unwrap(),
+            approval["node_id"].as_str().unwrap(),
+            "pg-tampered-operator",
+            &tampered,
+        )
+        .unwrap_err();
+    assert!(error.contains("verification binding changed"), "{error}");
+    assert_eq!(store.audit_events(10_000).unwrap(), audit_before);
+
+    let pending = store
+        .output_product_task(
+            task_id,
+            "pg-output-operator",
+            version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(pending["task"]["status"], "output_pending");
+    assert_eq!(pending["output"]["status"], "network_output_unavailable");
+    let pending_version = pending["task"]["version"].as_u64().unwrap();
+
+    let artifact = store
+        .get_supervised_patch_artifact(approval["artifact_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    let output_request = json!({
+        "schema_version": "product_draft_pr_output_request.v1",
+        "product_task_id": task_id,
+        "artifact_id": artifact["artifact_id"],
+        "approval_id": approval["approval_id"],
+        "output_intent": "draft_pr",
+        "workspace_id": artifact["workspace_id"],
+        "run_id": artifact["run_id"],
+        "target_id": artifact["target_id"],
+        "patch_hash": artifact["patch_hash"],
+        "source_revision": artifact["source_revision"],
+        "target_repository": "disposable/pg-acceptance",
+        "repository_host": "github.com",
+        "base_branch": "main",
+        "head_branch": format!("acp/product-{task_id}"),
+        "remote": "origin",
+        "commit_message": "bounded PG test",
+        "pr_title": "Draft: bounded PG test",
+        "pr_body": "Do not merge automatically.",
+    });
+    let output_request_sha =
+        hex::encode(Sha256::digest(serde_json::to_vec(&output_request).unwrap()));
+    let artifact_id = artifact["artifact_id"].as_str().unwrap();
+    let stale_error = store
+        .claim_product_output_operation(
+            artifact_id,
+            &output_request,
+            &output_request_sha,
+            pending_version.saturating_sub(1),
+            "pg-stale-output-operator",
+        )
+        .unwrap_err();
+    assert!(
+        stale_error.contains("stale product task version"),
+        "{stale_error}"
+    );
+    assert!(
+        store
+            .get_supervised_patch_artifact(artifact_id)
+            .unwrap()
+            .unwrap()
+            .get("product_output_operation")
+            .is_none(),
+        "stale PG output caller must have zero durable operation effect"
+    );
+    let claimed = store
+        .claim_product_output_operation(
+            artifact_id,
+            &output_request,
+            &output_request_sha,
+            pending_version,
+            "pg-output-operator",
+        )
+        .unwrap();
+    let operation_id = claimed["operation_id"].as_str().unwrap().to_string();
+    let commit_sha = "a".repeat(40);
+    store
+        .record_product_output_branch_pushed(
+            artifact_id,
+            &operation_id,
+            claimed["current_version"].as_u64().unwrap(),
+            &commit_sha,
+            "pg-output-operator",
+        )
+        .unwrap();
+
+    let url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let store_a = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+    let store_b = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let spawn_claim = |claim_store: LocalProductStore,
+                       claim_barrier: Arc<std::sync::Barrier>,
+                       actor: &'static str| {
+        let artifact_id = artifact_id.to_string();
+        let request = output_request.clone();
+        let request_sha = output_request_sha.clone();
+        std::thread::spawn(move || {
+            claim_barrier.wait();
+            claim_store
+                .claim_product_output_operation(
+                    &artifact_id,
+                    &request,
+                    &request_sha,
+                    pending_version,
+                    actor,
+                )
+                .unwrap()
+        })
+    };
+    let first = spawn_claim(store_a, Arc::clone(&barrier), "pg-output-a");
+    let second = spawn_claim(store_b, Arc::clone(&barrier), "pg-output-b");
+    let claims = [first.join().unwrap(), second.join().unwrap()];
+    let pr_claim = claims
+        .iter()
+        .find(|claim| claim["claim_action"] == "create_or_reconcile_pr")
+        .unwrap();
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| claim["claim_action"] == "operation_in_progress")
+            .count(),
+        1
+    );
+    let pull_request = json!({
+        "number": 23,
+        "url": "https://github.com/disposable/pg-acceptance/pull/23",
+        "state": "open",
+        "draft": true,
+        "reused": false,
+        "repository": "disposable/pg-acceptance",
+        "base_branch": "main",
+        "head_branch": format!("acp/product-{task_id}"),
+        "head_sha": commit_sha,
+    });
+    let completed_operation = store
+        .complete_product_output_draft_pr(
+            artifact_id,
+            &operation_id,
+            pr_claim["current_version"].as_u64().unwrap(),
+            &pull_request,
+            "pg-output-operator",
+        )
+        .unwrap();
+    assert_eq!(completed_operation["state"], "completed");
+    let workspace_id = artifact["workspace_id"].as_str().unwrap();
+    let workspace = store
+        .get_supervised_patch_workspace(workspace_id)
+        .unwrap()
+        .unwrap();
+    let original_verification = workspace["verification"].clone();
+    let mut replaced_verification = original_verification.clone();
+    replaced_verification["authority_race"] = json!(true);
+    store
+        .record_workspace_verification(
+            workspace_id,
+            &replaced_verification,
+            "pg-concurrent-verifier",
+        )
+        .unwrap();
+    let stale_terminal = store
+        .complete_product_task_draft_pr_output(
+            task_id,
+            artifact_id,
+            &operation_id,
+            pr_claim["current_version"].as_u64().unwrap(),
+            pending_version,
+            &pull_request,
+            "pg-output-operator",
+        )
+        .unwrap_err();
+    assert!(
+        stale_terminal.contains("verification authority changed"),
+        "{stale_terminal}"
+    );
+    assert_eq!(
+        store.get_product_task(task_id).unwrap().unwrap()["status"],
+        "output_pending"
+    );
+    store
+        .record_workspace_verification(
+            workspace_id,
+            &original_verification,
+            "pg-concurrent-verifier-rollback",
+        )
+        .unwrap();
+    let completed_task = store
+        .complete_product_task_draft_pr_output(
+            task_id,
+            artifact_id,
+            &operation_id,
+            pr_claim["current_version"].as_u64().unwrap(),
+            pending_version,
+            &pull_request,
+            "pg-output-operator",
+        )
+        .unwrap();
+    assert_eq!(completed_task["task"]["status"], "completed");
+    assert_eq!(completed_task["operation"]["state"], "completed");
+    assert_eq!(
+        completed_task["operation"]["branch_push"]["status"],
+        "completed"
+    );
+    assert_eq!(
+        completed_task["operation"]["pr_create"]["status"],
+        "completed"
+    );
+    assert_eq!(completed_task["operation"]["pr_create"]["number"], 23);
+    assert!(completed_task["terminal_evidence"].is_object());
+    assert!(store
+        .mark_product_output_pr_failed_known(
+            artifact_id,
+            &operation_id,
+            pr_claim["current_version"].as_u64().unwrap(),
+            "pg-late-output",
+            "late failure",
+        )
+        .is_err());
+
+    let export_tag = uuid_tag();
+    let (export_task, export_approval, export_artifact) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &export_tag, "export_patch");
+    let export_task_id = export_task["task_id"].as_str().unwrap();
+    let export_artifact_id = export_artifact["artifact_id"].as_str().unwrap();
+    let mismatched_request = json!({
+        "schema_version": "product_draft_pr_output_request.v1",
+        "product_task_id": export_task_id,
+        "artifact_id": export_artifact_id,
+        "approval_id": export_approval["approval_id"],
+        "output_intent": "draft_pr",
+        "workspace_id": export_artifact["workspace_id"],
+        "run_id": export_artifact["run_id"],
+        "target_id": export_artifact["target_id"],
+        "patch_hash": export_artifact["patch_hash"],
+        "source_revision": export_artifact["source_revision"],
+        "target_repository": "disposable/pg-acceptance",
+        "repository_host": "github.com",
+        "base_branch": "main",
+        "head_branch": format!("acp/product-{export_task_id}"),
+        "remote": "origin",
+        "commit_message": "bounded mismatched PG test",
+        "pr_title": "Draft: mismatched PG test",
+        "pr_body": "Do not merge automatically.",
+    });
+    let mismatched_sha = hex::encode(Sha256::digest(
+        serde_json::to_vec(&mismatched_request).unwrap(),
+    ));
+    let error = store
+        .claim_product_output_operation(
+            export_artifact_id,
+            &mismatched_request,
+            &mismatched_sha,
+            export_task["version"].as_u64().unwrap(),
+            "pg-output-operator",
+        )
+        .unwrap_err();
+    assert!(
+        error.contains("task state or intent authority changed"),
+        "{error}"
+    );
+    assert!(
+        store
+            .get_supervised_patch_artifact(export_artifact_id)
+            .unwrap()
+            .unwrap()
+            .get("product_output_operation")
+            .is_none(),
+        "mismatched approval must not create an output operation"
+    );
+
+    let completed_export = store
+        .output_product_task(
+            export_task_id,
+            "pg-output-operator",
+            export_task["version"].as_u64().unwrap(),
+            export_approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(completed_export["task"]["status"], "completed");
+    let completed_version = completed_export["task"]["version"].as_u64().unwrap();
+    let reused = store
+        .output_product_task(
+            export_task_id,
+            "pg-output-operator",
+            completed_version,
+            export_approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(reused["reused"], true);
+    assert_eq!(
+        reused["output_receipt"]["receipt_id"],
+        completed_export["output_receipt"]["receipt_id"]
+    );
+    std::env::remove_var(PRODUCT_TASK_GATE);
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
 }
 
 #[cfg(feature = "pg-tests")]

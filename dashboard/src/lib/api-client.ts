@@ -751,6 +751,41 @@ export async function finalizeProductTask(taskId: string): Promise<Record<string
   );
 }
 
+export async function approveProductTask(
+  taskId: string,
+  expectedTaskVersion: number,
+): Promise<Record<string, unknown>> {
+  return fetchJson<Record<string, unknown>>(
+    `${BASE}/api/v1/product/tasks/${encodeURIComponent(taskId)}/approve`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expected_task_version: expectedTaskVersion }),
+    },
+  );
+}
+
+export async function outputProductTask(
+  taskId: string,
+  expectedTaskVersion: number,
+  approvalId: string,
+  confirmOutput: boolean,
+): Promise<Record<string, unknown>> {
+  return fetchJson<Record<string, unknown>>(
+    `${BASE}/api/v1/product/tasks/${encodeURIComponent(taskId)}/output`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        expected_task_version: expectedTaskVersion,
+        approval_id: approvalId,
+        confirm_output: confirmOutput,
+      }),
+    },
+  );
+}
+
+/** @deprecated Use approveProductTask and outputProductTask separately. */
 export async function approveAndOutputProductTask(
   taskId: string,
   confirmOutput = false,

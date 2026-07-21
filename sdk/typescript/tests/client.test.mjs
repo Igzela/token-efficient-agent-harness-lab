@@ -1193,3 +1193,26 @@ test("tool policy methods preserve confirmation and current hash", async () => {
     confirm_tool_policy: true,
   });
 });
+
+test("product approval and output use separate authority endpoints", async () => {
+  const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1" });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://localhost:8080", fetchImpl });
+
+  await client.approveProductTask("task/one", 7);
+  await client.outputProductTask("task/one", 7, "approval/one", true);
+
+  assert.equal(
+    calls[0].url,
+    "http://localhost:8080/api/v1/product/tasks/task%2Fone/approve",
+  );
+  assert.deepEqual(JSON.parse(calls[0].init.body), { expected_task_version: 7 });
+  assert.equal(
+    calls[1].url,
+    "http://localhost:8080/api/v1/product/tasks/task%2Fone/output",
+  );
+  assert.deepEqual(JSON.parse(calls[1].init.body), {
+    expected_task_version: 7,
+    approval_id: "approval/one",
+    confirm_output: true,
+  });
+});

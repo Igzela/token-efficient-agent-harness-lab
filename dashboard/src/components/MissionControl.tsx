@@ -3,13 +3,14 @@ import {
   ApiError,
   captureSupervisedPatch,
   controlScheduler,
-  approveAndOutputProductTask,
+  approveProductTask,
   compileAndScheduleProductTask,
   createProductTask,
   createSupervisedPatchWorkspace,
   createWorkflowPlan,
   createWorkflowRun,
   finalizeProductTask,
+  outputProductTask,
   exportSupervisedPatchArtifact,
   fetchDecisions,
   fetchExecutorPool,
@@ -57,6 +58,20 @@ type WorkflowStep = {
   detail: string;
   label: string;
   state: "done" | "now" | "blocked" | "todo";
+};
+
+type ProductTaskControlState = {
+  task_id: string;
+  status: string;
+  version: number;
+  run_id?: string;
+};
+
+type ProductOutputApprovalState = {
+  approval_id: string;
+  approved_by: string;
+  artifact_id: string;
+  verification_sha256: string;
 };
 
 function missionError(error: unknown): MissionError {
@@ -219,6 +234,8 @@ function OutputActionRail({
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [productTask, setProductTask] = useState<ProductTaskControlState | null>(null);
+  const [productApproval, setProductApproval] = useState<ProductOutputApprovalState | null>(null);
 
   const workspace = workspaces[0] ?? null;
   const artifact = artifacts[0] ?? null;
@@ -296,9 +313,8 @@ function OutputActionRail({
         if (!taskId) {
           throw new Error("product task intake returned no task_id");
         }
-        await compileAndScheduleProductTask(taskId);
-        await finalizeProductTask(taskId);
-        return approveAndOutputProductTask(taskId, false);
+        const compiled = await compileAndScheduleProductTask(taskId);
+        return compiled;
       },
       (result) => {
         const task = (result as { result?: { task?: { task_id?: string; status?: string; run_id?: string } } })
@@ -306,8 +322,65 @@ function OutputActionRail({
         return `Product golden path ${short(task?.task_id)} status=${task?.status ?? "unknown"} run=${short(task?.run_id)}.`;
       },
       (result) => {
-        const runId = (result as { result?: { task?: { run_id?: string } } }).result?.task?.run_id;
+        const task = (result as {
+          result?: { task?: ProductTaskControlState };
+        }).result?.task;
+        if (task?.task_id && typeof task.version === "number") {
+          setProductTask(task);
+          setProductApproval(null);
+        }
+        const runId = task?.run_id;
         if (runId) onCreatedRun(runId);
+      },
+    );
+  }
+
+  function finalizeGoldenPathTask() {
+    if (!productTask) return;
+    runMutation(
+      () => finalizeProductTask(productTask.task_id),
+      (result) => {
+        const task = (result as { result?: { task?: ProductTaskControlState } }).result?.task;
+        return `Product task ${short(productTask.task_id)} status=${task?.status ?? "unknown"}; approval is still required.`;
+      },
+      (result) => {
+        const task = (result as { result?: { task?: ProductTaskControlState } }).result?.task;
+        if (task?.task_id && typeof task.version === "number") setProductTask(task);
+      },
+    );
+  }
+
+  function approveGoldenPathTask() {
+    if (!productTask) return;
+    runMutation(
+      () => approveProductTask(productTask.task_id, productTask.version),
+      (result) => {
+        const approval = (result as { approval?: ProductOutputApprovalState }).approval;
+        return `Approved ${short(approval?.artifact_id)} as ${short(approval?.approval_id)} by ${approval?.approved_by ?? "unknown"}.`;
+      },
+      (result) => {
+        const approval = (result as { approval?: ProductOutputApprovalState }).approval;
+        if (approval?.approval_id) setProductApproval(approval);
+      },
+    );
+  }
+
+  function confirmGoldenPathOutput() {
+    if (!productTask || !productApproval) return;
+    runMutation(
+      () => outputProductTask(
+        productTask.task_id,
+        productTask.version,
+        productApproval.approval_id,
+        true,
+      ),
+      (result) => {
+        const task = (result as { result?: { task?: ProductTaskControlState } }).result?.task;
+        return `Output result for ${short(productTask.task_id)}: ${task?.status ?? "unknown"}.`;
+      },
+      (result) => {
+        const task = (result as { result?: { task?: ProductTaskControlState } }).result?.task;
+        if (task?.task_id && typeof task.version === "number") setProductTask(task);
       },
     );
   }
@@ -445,6 +518,37 @@ function OutputActionRail({
         >
           {mutating ? "Working..." : "Product golden path"}
         </button>
+        <button
+          type="button"
+          onClick={finalizeGoldenPathTask}
+          disabled={mutating || !productTask || !["graph_ready", "running", "verifying"].includes(productTask.status)}
+        >
+          Finalize verification
+        </button>
+        <button
+          type="button"
+          onClick={approveGoldenPathTask}
+          disabled={mutating || productTask?.status !== "awaiting_approval" || Boolean(productApproval)}
+        >
+          Approve exact evidence
+        </button>
+        <button
+          type="button"
+          onClick={confirmGoldenPathOutput}
+          disabled={mutating || !productTask || !productApproval || !["awaiting_approval", "output_pending", "outcome_unknown"].includes(productTask.status)}
+        >
+          Confirm output
+        </button>
+        {productTask && (
+          <span className={`pill ${statusPill(productTask.status)}`}>
+            task {short(productTask.task_id)} v{productTask.version} {productTask.status}
+          </span>
+        )}
+        {productApproval && (
+          <span className="muted" title={`verification ${productApproval.verification_sha256}`}>
+            approved by {productApproval.approved_by}: {short(productApproval.artifact_id)} / {short(productApproval.approval_id)}
+          </span>
+        )}
         <label className="inline-control">
           <span className="muted">Executor</span>
           <select value={executor} onChange={(event) => setExecutor(event.target.value)}>

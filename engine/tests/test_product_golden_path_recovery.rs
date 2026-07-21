@@ -238,7 +238,7 @@ fn stale_approval_blocked_without_trustworthy_verification() {
         // Graph ready without verification evidence.
         compile(&store, &task_id);
         let err = store
-            .approve_and_output_product_task(&task_id, "tester", false)
+            .approve_and_output_product_task(&task_id, "tester", true)
             .unwrap_err();
         assert!(
             err.contains("awaiting_approval")
@@ -262,10 +262,10 @@ fn finalize_idempotent_after_completion() {
             .finalize_product_task_after_execution(&task_id, "tester")
             .unwrap();
         store
-            .approve_and_output_product_task(&task_id, "tester", false)
+            .approve_and_output_product_task(&task_id, "tester", true)
             .unwrap();
         let again = store
-            .approve_and_output_product_task(&task_id, "tester", false)
+            .approve_and_output_product_task(&task_id, "tester", true)
             .unwrap();
         assert_eq!(again["reused"], true);
         assert_eq!(

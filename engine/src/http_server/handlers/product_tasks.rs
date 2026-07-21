@@ -13,6 +13,10 @@ use crate::product_golden_path::{
     product_gate_enabled, validate_intake, ProductExecutorPolicy, ProductTaskBudget,
     ProductTaskIntakeRequest, ProductVerificationCommand, PRODUCT_TASK_GATE,
 };
+use crate::target_repo_output::{
+    create_or_reuse_github_pull_request, GitHubPullRequestConfig, GitHubPullRequestRequest,
+    GitHubRepository,
+};
 
 pub(crate) async fn api_create_product_task(
     State(state): State<AxumApiState>,
@@ -260,7 +264,8 @@ pub(crate) async fn api_approve_and_output_product_task(
     AxumPath(task_id): AxumPath<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(
+    let approval_context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    authorize(
         &state,
         &headers,
         "dispatch:execute",
@@ -279,7 +284,11 @@ pub(crate) async fn api_approve_and_output_product_task(
         .get("confirm_output")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    match store.approve_and_output_product_task(&task_id, &context.api_key_id, confirm_output) {
+    match store.approve_and_output_product_task(
+        &task_id,
+        &approval_context.api_key_id,
+        confirm_output,
+    ) {
         Ok(result) => Ok((
             cors_headers(),
             Json(json!({
@@ -292,6 +301,288 @@ pub(crate) async fn api_approve_and_output_product_task(
             "product_task_output_failed",
             error,
         )),
+    }
+}
+
+pub(crate) async fn api_approve_product_task(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(task_id): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    if !product_gate_enabled() {
+        return Err(ApiError::with_code(
+            StatusCode::FORBIDDEN,
+            "product_golden_path_disabled",
+            format!("set {PRODUCT_TASK_GATE}=1 to enable product golden path intake"),
+        ));
+    }
+    let expected_task_version = body
+        .get("expected_task_version")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| {
+            ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "product_task_version_required",
+                "expected_task_version is required",
+            )
+        })?;
+    let store = require_store(&state)?;
+    match store.approve_product_task(&task_id, &context.api_key_id, expected_task_version) {
+        Ok(approval) => Ok((
+            cors_headers(),
+            Json(json!({
+                "schema_version": AXUM_API_SCHEMA_VERSION,
+                "approval": approval,
+            })),
+        )),
+        Err(error) => {
+            let (status, code) = product_output_error(&error, "product_task_approval_failed");
+            Err(ApiError::with_code(status, code, error))
+        }
+    }
+}
+
+pub(crate) async fn api_output_product_task(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(task_id): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    if !product_gate_enabled() {
+        return Err(ApiError::with_code(
+            StatusCode::FORBIDDEN,
+            "product_golden_path_disabled",
+            format!("set {PRODUCT_TASK_GATE}=1 to enable product golden path intake"),
+        ));
+    }
+    let expected_task_version = body
+        .get("expected_task_version")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| {
+            ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "product_task_version_required",
+                "expected_task_version is required",
+            )
+        })?;
+    let approval_id = body
+        .get("approval_id")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "product_task_approval_required",
+                "approval_id is required",
+            )
+        })?;
+    let confirm_output = body
+        .get("confirm_output")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !confirm_output {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "product_task_output_confirmation_required",
+            "confirm_output=true is required",
+        ));
+    }
+    let store = require_store(&state)?;
+    match store.output_product_task(
+        &task_id,
+        &context.api_key_id,
+        expected_task_version,
+        Some(approval_id),
+        true,
+    ) {
+        Ok(result) => {
+            if result
+                .pointer("/output/status")
+                .and_then(|value| value.as_str())
+                == Some("pr_create_pending")
+            {
+                let operation = result.pointer("/output/operation").ok_or_else(|| {
+                    internal_error("product output operation missing".to_string())
+                })?;
+                let request = operation
+                    .get("request")
+                    .ok_or_else(|| internal_error("product output request missing".to_string()))?;
+                let target_repository = request
+                    .get("target_repository")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        internal_error("target repository identity missing".to_string())
+                    })?;
+                let (owner, repository) = target_repository.split_once('/').ok_or_else(|| {
+                    internal_error("target repository identity invalid".to_string())
+                })?;
+                let operation_id = operation
+                    .get("operation_id")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        internal_error("product output operation identity missing".to_string())
+                    })?;
+                let artifact_id = operation
+                    .get("artifact_id")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        internal_error("product output artifact identity missing".to_string())
+                    })?;
+                let operation_version = operation
+                    .get("current_version")
+                    .and_then(|value| value.as_u64())
+                    .ok_or_else(|| {
+                        internal_error("product output operation version missing".to_string())
+                    })?;
+                let completion_task_version = result
+                    .pointer("/task/version")
+                    .and_then(|value| value.as_u64())
+                    .ok_or_else(|| {
+                        internal_error("product output task version missing".to_string())
+                    })?;
+                let pull_request_request = GitHubPullRequestRequest {
+                    repository: GitHubRepository {
+                        host: request
+                            .get("repository_host")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("github.com")
+                            .to_string(),
+                        owner: owner.to_string(),
+                        repository: repository.to_string(),
+                    },
+                    head_branch: required_output_request_string(request, "head_branch")?,
+                    base_branch: required_output_request_string(request, "base_branch")?,
+                    title: required_output_request_string(request, "pr_title")?,
+                    body: required_output_request_string(request, "pr_body")?,
+                    expected_head_sha: operation
+                        .pointer("/branch_push/commit_sha")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                };
+                match create_or_reuse_github_pull_request(
+                    &GitHubPullRequestConfig::from_env(),
+                    &pull_request_request,
+                )
+                .await
+                {
+                    Ok(pull_request) => {
+                        let pull_request = serde_json::to_value(pull_request)
+                            .map_err(|error| internal_error(error.to_string()))?;
+                        let completed = store
+                            .complete_product_task_draft_pr_output(
+                                &task_id,
+                                artifact_id,
+                                operation_id,
+                                operation_version,
+                                completion_task_version,
+                                &pull_request,
+                                &context.api_key_id,
+                            )
+                            .map_err(internal_error)?;
+                        return Ok((
+                            cors_headers(),
+                            Json(json!({
+                                "schema_version": AXUM_API_SCHEMA_VERSION,
+                                "result": completed,
+                            })),
+                        ));
+                    }
+                    Err(error) if error.starts_with("github_pr_create_outcome_unknown:") => {
+                        store
+                            .mark_product_output_pr_outcome_unknown(
+                                artifact_id,
+                                operation_id,
+                                operation_version,
+                                &context.api_key_id,
+                                &error,
+                            )
+                            .map_err(internal_error)?;
+                        store
+                            .mark_product_task_output_outcome_unknown(
+                                &task_id,
+                                &context.api_key_id,
+                                "Draft PR creation outcome is unknown; reconciliation required",
+                            )
+                            .map_err(internal_error)?;
+                        return Err(ApiError::with_code(
+                            StatusCode::BAD_GATEWAY,
+                            "product_task_output_outcome_unknown",
+                            "Draft PR creation outcome is unknown; retry will reconcile the existing branch",
+                        ));
+                    }
+                    Err(error) => {
+                        store
+                            .mark_product_output_pr_failed_known(
+                                artifact_id,
+                                operation_id,
+                                operation_version,
+                                &context.api_key_id,
+                                &error,
+                            )
+                            .map_err(internal_error)?;
+                        return Err(ApiError::with_code(
+                            StatusCode::BAD_GATEWAY,
+                            "product_task_draft_pr_failed_known",
+                            error,
+                        ));
+                    }
+                }
+            }
+            Ok((
+                cors_headers(),
+                Json(json!({
+                    "schema_version": AXUM_API_SCHEMA_VERSION,
+                    "result": result,
+                })),
+            ))
+        }
+        Err(error) => {
+            let (status, code) = product_output_error(&error, "product_task_output_failed");
+            Err(ApiError::with_code(status, code, error))
+        }
+    }
+}
+
+fn required_output_request_string(
+    request: &serde_json::Value,
+    field: &str,
+) -> Result<String, ApiError> {
+    request
+        .get(field)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| internal_error(format!("product output request missing {field}")))
+}
+
+fn product_output_error(error: &str, fallback: &'static str) -> (StatusCode, &'static str) {
+    if error.contains("not found") || error.contains("missing") {
+        (
+            StatusCode::NOT_FOUND,
+            "product_task_output_binding_not_found",
+        )
+    } else if error.contains("stale") || error.contains("version") || error.contains("mismatch") {
+        (StatusCode::CONFLICT, "product_task_output_binding_conflict")
+    } else if error.contains("authority") {
+        (
+            StatusCode::FORBIDDEN,
+            "product_task_output_authority_invalid",
+        )
+    } else {
+        (StatusCode::BAD_REQUEST, fallback)
     }
 }
 

@@ -2,7 +2,8 @@
 
 use rusqlite::{params, OptionalExtension, Row};
 use serde_json::{json, Value};
-use std::path::Path;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 
 use crate::node_executor::{CommandNodeExecutor, NodeExecutionInput, NodeExecutor};
 use crate::product_golden_path::{
@@ -584,7 +585,7 @@ impl LocalProductStore {
                 })
                 .collect::<String>()
         );
-        let workspace_path = planned_workspace_path(self.db_path(), &workspace_fs_id)?;
+        let workspace_path = product_workspace_path(self, &workspace_fs_id)?;
 
         // Concurrent admit may already have prepared this path for the same task.
         // Prefer reusing a valid existing worktree over destructive recreate.
@@ -635,11 +636,10 @@ impl LocalProductStore {
             .map_err(|e| format!("prepare_git_worktree failed: {e}"))?
         };
 
-        let workspaces_root = self
-            .db_path()
+        let workspaces_root = workspace_path
             .parent()
-            .ok_or_else(|| "store has no parent".to_string())?
-            .join("workspaces");
+            .ok_or_else(|| "workspace has no app-owned root".to_string())?
+            .to_path_buf();
         let workspaces_root = std::fs::canonicalize(&workspaces_root).unwrap_or(workspaces_root);
         let ws = std::fs::canonicalize(Path::new(&prepared.workspace_path))
             .map_err(|e| e.to_string())?;
@@ -815,7 +815,7 @@ impl LocalProductStore {
                 })
                 .collect::<String>()
         );
-        if let Ok(path) = planned_workspace_path(self.db_path(), &workspace_fs_id) {
+        if let Ok(path) = product_workspace_path(self, &workspace_fs_id) {
             if path.exists() {
                 let _ = std::fs::remove_dir_all(&path);
             }
@@ -1615,12 +1615,13 @@ impl LocalProductStore {
         Ok(verification)
     }
 
-    /// G3: bind current approval and perform output intent through existing owners.
-    pub fn approve_and_output_product_task(
+    /// Record an independent, output-only approval bound to the exact evidence
+    /// that will be consumed by a later output operation.
+    pub fn approve_product_task(
         &self,
         task_id: &str,
         actor: &str,
-        confirm_output: bool,
+        expected_task_version: u64,
     ) -> Result<Value, String> {
         if !product_gate_enabled() {
             return Err("product golden path intake is disabled".to_string());
@@ -1628,191 +1629,422 @@ impl LocalProductStore {
         let task = self
             .get_product_task(task_id)?
             .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        if task.get("version").and_then(Value::as_u64) != Some(expected_task_version) {
+            return Err("stale product task version at approval".to_string());
+        }
         let status =
             ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
-        if status == ProductTaskStatus::Completed {
-            return Ok(json!({"task": task, "reused": true}));
-        }
-        if status != ProductTaskStatus::AwaitingApproval
-            && status != ProductTaskStatus::OutputPending
-        {
+        if status != ProductTaskStatus::AwaitingApproval {
             return Err(format!(
-                "approve/output requires awaiting_approval; status={}",
+                "product approval requires awaiting_approval; status={}",
                 status.as_str()
             ));
         }
-        let run_id = task
-            .get("run_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "missing run_id".to_string())?
-            .to_string();
-        let workspace_record_id = task
-            .get("workspace_record_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "missing workspace_record_id".to_string())?
-            .to_string();
-        let source_revision = task
-            .pointer("/workspace_binding/source_revision")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let output_intent = task
-            .get("output_intent")
-            .and_then(Value::as_str)
-            .unwrap_or("artifact_only");
-
-        // Fail closed without trustworthy verification evidence.
+        let run_id = required_product_task_string(&task, "run_id")?;
+        let workspace_record_id = required_product_task_string(&task, "workspace_record_id")?;
         let workspace = self
             .get_supervised_patch_workspace(&workspace_record_id)?
             .ok_or_else(|| "workspace missing at approval".to_string())?;
         let verification = workspace
             .get("verification")
             .cloned()
-            .unwrap_or(Value::Null);
-        let verification_status = verification
-            .get("status")
+            .ok_or_else(|| "approval blocked: verification missing".to_string())?;
+        validate_product_verification_binding(
+            &verification,
+            task_id,
+            &run_id,
+            &workspace_record_id,
+            expected_task_version,
+        )?;
+        let verification_sha256 = product_json_sha256(&verification)?;
+        let source_revision = task
+            .pointer("/workspace_binding/source_revision")
             .and_then(Value::as_str)
-            .unwrap_or("");
-        let trustworthy = verification
-            .get("trustworthy")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if verification_status != "evidence_recorded" || !trustworthy {
-            return Err(format!(
-                "approval blocked: verification not trustworthy (status={verification_status})"
-            ));
-        }
-        // Bind verification product_task_id to this task.
-        if let Some(v_task) = verification.get("product_task_id").and_then(Value::as_str) {
-            if v_task != task_id {
-                return Err("approval blocked: verification product_task_id mismatch".to_string());
-            }
-        }
-
-        let artifacts = self.supervised_patch_artifacts(20)?;
-        let artifact = artifacts
-            .into_iter()
-            .find(|a| {
-                a.get("workspace_id").and_then(Value::as_str) == Some(workspace_record_id.as_str())
-                    || a.get("run_id").and_then(Value::as_str) == Some(run_id.as_str())
-            })
-            .ok_or_else(|| "no artifact found for product task".to_string())?;
-        let artifact_id = artifact
-            .get("artifact_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "artifact missing id".to_string())?
-            .to_string();
-        let patch_hash = artifact
-            .get("patch_hash")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+            .ok_or_else(|| "product task source revision missing".to_string())?;
+        let artifact = self.current_product_task_artifact(
+            task_id,
+            &run_id,
+            &workspace_record_id,
+            source_revision,
+        )?;
+        let artifact_id = required_product_task_string(&artifact, "artifact_id")?;
+        let patch_hash = required_product_task_string(&artifact, "patch_hash")?;
         let changed_files = artifact
             .get("changed_files")
             .cloned()
             .or_else(|| artifact.get("changed_files_json").cloned())
-            .unwrap_or(json!([]));
-
-        // Current approval binding to exact artifact/source.
-        let node_id = self
+            .unwrap_or_else(|| json!([]));
+        let run = self
             .get_workflow_run(&run_id)?
-            .and_then(|run| {
-                run.get("nodes")
-                    .and_then(Value::as_array)
-                    .and_then(|nodes| nodes.first())
-                    .and_then(|n| n.get("node_id").and_then(Value::as_str).map(str::to_string))
-            })
-            .unwrap_or_else(|| "product-approve".to_string());
-        let changed_file_list: Vec<String> = changed_files
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let approval = self.record_workflow_run_approval(
-            &run_id,
-            &node_id,
-            "approved",
-            actor,
-            Some("product golden path current approval"),
-            Some(&patch_hash),
-            Some(&source_revision),
-            if changed_file_list.is_empty() {
-                None
-            } else {
-                Some(changed_file_list.as_slice())
+            .ok_or_else(|| "workflow run missing at approval".to_string())?;
+        let node = run
+            .get("nodes")
+            .and_then(Value::as_array)
+            .and_then(|nodes| nodes.first())
+            .ok_or_else(|| "workflow node missing at approval".to_string())?;
+        let node_id = required_product_task_string(node, "node_id")?;
+        let output_intent = required_product_task_string(&task, "output_intent")?;
+        let binding = json!({
+            "schema_version": "product_output_approval.v1",
+            "product_task_id": task_id,
+            "expected_task_version": expected_task_version,
+            "run_id": run_id,
+            "node_id": node_id,
+            "workspace_record_id": workspace_record_id,
+            "workspace_path": task.pointer("/workspace_binding/workspace_path"),
+            "source_revision": source_revision,
+            "artifact_id": artifact_id,
+            "patch_hash": patch_hash,
+            "changed_files": changed_files,
+            "verification_sha256": verification_sha256,
+            "verification_status": verification.get("status"),
+            "output_intent": output_intent,
+            "output_target": {
+                "target_id": task.get("target_id"),
+                "target_repo_path": task.get("target_repo_path"),
             },
-            None,
-        )?;
+        });
+        self.record_product_output_approval(&run_id, &node_id, actor, &binding)
+    }
 
-        let version = task.get("version").and_then(Value::as_u64);
-        self.transition_product_task(
+    /// Consume one exact persisted product-output approval after an explicit
+    /// output confirmation. Validation completes before any state or audit
+    /// mutation, so a missing confirmation has zero side effects.
+    #[allow(clippy::too_many_arguments)]
+    pub fn output_product_task(
+        &self,
+        task_id: &str,
+        actor: &str,
+        expected_task_version: u64,
+        approval_id: Option<&str>,
+        confirm_output: bool,
+    ) -> Result<Value, String> {
+        if !confirm_output {
+            return Err("confirm_output=true required for product output".to_string());
+        }
+        if !product_gate_enabled() {
+            return Err("product golden path intake is disabled".to_string());
+        }
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        if task.get("version").and_then(Value::as_u64) != Some(expected_task_version) {
+            return Err("stale product task version at output".to_string());
+        }
+        let status =
+            ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        if !matches!(
+            status,
+            ProductTaskStatus::AwaitingApproval
+                | ProductTaskStatus::OutputPending
+                | ProductTaskStatus::OutcomeUnknown
+                | ProductTaskStatus::Completed
+        ) {
+            return Err(format!(
+                "product output requires awaiting_approval or output_pending; status={}",
+                status.as_str()
+            ));
+        }
+        let approval_id = approval_id
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "product output approval_id is required".to_string())?;
+        let run_id = required_product_task_string(&task, "run_id")?;
+        let workspace_record_id = required_product_task_string(&task, "workspace_record_id")?;
+        let approvals = self.workflow_run_approvals(&run_id, 1_000)?;
+        let approval = approvals
+            .into_iter()
+            .find(|candidate| {
+                candidate.get("approval_id").and_then(Value::as_str) == Some(approval_id)
+            })
+            .ok_or_else(|| "product output approval not found".to_string())?;
+        validate_current_product_output_approval(
+            &approval,
+            &task,
             task_id,
-            ProductTaskStatus::OutputPending,
-            version,
-            actor,
-            None,
-            None,
-            None,
-            None,
-            None,
+            &run_id,
+            &workspace_record_id,
+            expected_task_version,
         )?;
+        let artifact_id = required_product_task_string(&approval, "artifact_id")?;
+        let artifact = self
+            .get_supervised_patch_artifact(&artifact_id)?
+            .ok_or_else(|| "approved artifact is missing".to_string())?;
+        let source_revision = required_product_task_string(&approval, "source_revision")?;
+        let patch_hash = required_product_task_string(&approval, "patch_hash")?;
+        validate_product_artifact_against_approval(&artifact, &approval)?;
+        let workspace = self
+            .get_supervised_patch_workspace(&workspace_record_id)?
+            .ok_or_else(|| "workspace missing at output".to_string())?;
+        let verification = workspace
+            .get("verification")
+            .cloned()
+            .ok_or_else(|| "verification missing at output".to_string())?;
+        if product_json_sha256(&verification)?
+            != required_product_task_string(&approval, "verification_sha256")?
+        {
+            return Err("stale approval: verification binding changed".to_string());
+        }
 
-        let mut output_result = json!({"mode": output_intent, "status": "artifact_only"});
-        if output_intent == "artifact_only" {
-            // No target mutation.
+        if status == ProductTaskStatus::Completed {
+            let terminal_output =
+                validate_completed_product_output_binding(&task, &artifact, &approval)?;
+            return Ok(json!({
+                "task": task,
+                "approval": approval,
+                "artifact": artifact,
+                "output": terminal_output.get("output"),
+                "output_receipt": terminal_output.get("receipt"),
+                "operation": terminal_output.get("operation"),
+                "reused": true,
+            }));
+        }
+
+        let output_intent = required_product_task_string(&task, "output_intent")?;
+        let output_result = if output_intent == "artifact_only" {
+            json!({
+                "mode": "artifact_only",
+                "status": "artifact_only",
+                "product_task_id": task_id,
+                "artifact_id": artifact_id,
+                "approval_id": approval_id,
+                "target_mutation": false,
+            })
         } else {
-            if !confirm_output {
-                return Err("confirm_output=true required for export_patch/draft_pr".to_string());
-            }
-            let binding = self.validate_approval_binding(&run_id, &artifact_id)?;
-            if !binding
-                .get("export_eligible")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                return Err("export not eligible under current approval binding".to_string());
-            }
-            output_result = self.execute_product_task_output(
+            let approval_binding = json!({
+                "schema_version": "product_output_approval_binding.v1",
+                "approval_id": approval_id,
+                "artifact_id": artifact_id,
+                "patch_hash": patch_hash,
+                "source_revision": source_revision,
+                "verification_sha256": approval.get("verification_sha256"),
+                "changed_files": approval.get("changed_files"),
+                "output_intent": output_intent,
+                "export_eligible": true,
+            });
+            self.execute_product_task_output(
                 task_id,
-                output_intent,
+                &output_intent,
                 &run_id,
                 &artifact_id,
                 &workspace_record_id,
                 &source_revision,
                 &patch_hash,
-                &binding,
+                &approval_binding,
+                expected_task_version,
                 actor,
-            )?;
-        }
+            )?
+        };
 
-        let current = self.get_product_task(task_id)?.unwrap();
-        let version = current.get("version").and_then(Value::as_u64);
-        let task = self.transition_product_task(
-            task_id,
-            ProductTaskStatus::Completed,
-            version,
-            actor,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )?;
-
-        let terminal_evidence =
-            self.emit_product_task_terminal_evidence(task_id, actor, Some(&output_result))?;
-
+        let output_status = output_result
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("failed");
+        let output_receipt = if matches!(output_intent.as_str(), "artifact_only" | "export_patch") {
+            Some(self.record_product_nonnetwork_output_receipt(
+                &artifact_id,
+                task_id,
+                approval_id,
+                &output_intent,
+                expected_task_version,
+                &output_result,
+                actor,
+            )?)
+        } else {
+            None
+        };
+        let terminal_success =
+            matches!(
+                (output_intent.as_str(), output_status),
+                ("artifact_only", "artifact_only")
+                    | ("export_patch", "exported")
+                    | ("draft_pr", "draft_pr_created")
+            ) && (!matches!(output_intent.as_str(), "artifact_only" | "export_patch")
+                || output_receipt.is_some());
+        let next_status = if terminal_success {
+            ProductTaskStatus::Completed
+        } else if output_status == "outcome_unknown" {
+            ProductTaskStatus::OutcomeUnknown
+        } else if output_status == "failed" {
+            ProductTaskStatus::Failed
+        } else {
+            ProductTaskStatus::OutputPending
+        };
+        let current = self.get_product_task(task_id)?.unwrap_or(task);
+        let current_status =
+            ProductTaskStatus::parse(current.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        let state_changed = current_status != next_status;
+        let transitioned = if terminal_success {
+            self.complete_product_task_output_authorized(
+                task_id,
+                &artifact_id,
+                approval_id,
+                &output_intent,
+                expected_task_version,
+                actor,
+            )?
+        } else if state_changed {
+            self.transition_product_task(
+                task_id,
+                next_status,
+                current.get("version").and_then(Value::as_u64),
+                actor,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )?
+        } else {
+            current
+        };
+        let terminal_evidence = if terminal_success && state_changed {
+            Some(self.emit_product_task_terminal_evidence(task_id, actor, Some(&output_result))?)
+        } else {
+            None
+        };
         Ok(json!({
-            "task": task,
+            "task": transitioned,
             "approval": approval,
             "artifact": artifact,
             "output": output_result,
+            "output_receipt": output_receipt,
+            "terminal_evidence": terminal_evidence,
+            "reused": !state_changed,
+        }))
+    }
+
+    pub fn complete_product_task_draft_pr_output(
+        &self,
+        task_id: &str,
+        artifact_id: &str,
+        operation_id: &str,
+        expected_operation_version: u64,
+        expected_task_version: u64,
+        pull_request: &Value,
+        actor: &str,
+    ) -> Result<Value, String> {
+        let operation = self.complete_product_output_draft_pr(
+            artifact_id,
+            operation_id,
+            expected_operation_version,
+            pull_request,
+            actor,
+        )?;
+        if operation.get("product_task_id").and_then(Value::as_str) != Some(task_id)
+            || operation.get("artifact_id").and_then(Value::as_str) != Some(artifact_id)
+            || operation.get("state").and_then(Value::as_str) != Some("completed")
+            || operation
+                .pointer("/branch_push/status")
+                .and_then(Value::as_str)
+                != Some("completed")
+            || operation
+                .pointer("/pr_create/status")
+                .and_then(Value::as_str)
+                != Some("completed")
+        {
+            return Err("completed Draft PR operation does not match product task".to_string());
+        }
+        let output = product_draft_pr_output_from_operation(task_id, &operation);
+        let approval_id = required_product_task_string(&operation, "approval_id")?;
+        let transitioned = self.complete_product_task_output_authorized(
+            task_id,
+            artifact_id,
+            &approval_id,
+            "draft_pr",
+            expected_task_version,
+            actor,
+        )?;
+        let terminal_evidence =
+            self.emit_product_task_terminal_evidence(task_id, actor, Some(&output))?;
+        Ok(json!({
+            "task": transitioned,
+            "operation": operation,
+            "output": output,
             "terminal_evidence": terminal_evidence,
             "reused": false,
         }))
+    }
+
+    pub fn mark_product_task_output_outcome_unknown(
+        &self,
+        task_id: &str,
+        actor: &str,
+        reason: &str,
+    ) -> Result<Value, String> {
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        let status =
+            ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        if status == ProductTaskStatus::OutcomeUnknown {
+            return Ok(task);
+        }
+        if status != ProductTaskStatus::OutputPending {
+            return Err(format!(
+                "output outcome_unknown requires output_pending; status={}",
+                status.as_str()
+            ));
+        }
+        self.transition_product_task(
+            task_id,
+            ProductTaskStatus::OutcomeUnknown,
+            task.get("version").and_then(Value::as_u64),
+            actor,
+            None,
+            None,
+            Some("product_output_outcome_unknown"),
+            Some(reason),
+            None,
+        )
+    }
+
+    /// G3 compatibility wrapper. HTTP exposure requires both approval and
+    /// execution scopes; all effects flow through the separated owners.
+    pub fn approve_and_output_product_task(
+        &self,
+        task_id: &str,
+        actor: &str,
+        confirm_output: bool,
+    ) -> Result<Value, String> {
+        if !confirm_output {
+            return Err("confirm_output=true required for product output".to_string());
+        }
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        if task.get("status").and_then(Value::as_str) == Some(ProductTaskStatus::Completed.as_str())
+        {
+            let run_id = required_product_task_string(&task, "run_id")?;
+            let workspace_record_id = required_product_task_string(&task, "workspace_record_id")?;
+            let source_revision = task
+                .pointer("/workspace_binding/source_revision")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "product task source revision missing".to_string())?;
+            let artifact = self.current_product_task_artifact(
+                task_id,
+                &run_id,
+                &workspace_record_id,
+                source_revision,
+            )?;
+            let approval_id = completed_product_output_approval_id(&task, &artifact)?;
+            let version = task
+                .get("version")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "product task version missing".to_string())?;
+            return self.output_product_task(task_id, actor, version, Some(approval_id), true);
+        }
+        let version = task
+            .get("version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "product task version missing".to_string())?;
+        let approval = self.approve_product_task(task_id, actor, version)?;
+        self.output_product_task(
+            task_id,
+            actor,
+            version,
+            approval.get("approval_id").and_then(Value::as_str),
+            true,
+        )
     }
 
     /// Assemble and idempotently emit task-rooted terminal evidence using existing owners.
@@ -2001,6 +2233,7 @@ impl LocalProductStore {
         source_revision: &str,
         patch_hash: &str,
         approval_binding: &Value,
+        expected_task_version: u64,
         actor: &str,
     ) -> Result<Value, String> {
         let workspace = self
@@ -2029,31 +2262,17 @@ impl LocalProductStore {
                 ));
             }
             // Persist patch under app-owned store path (not target main).
-            let export_dir = self
-                .db_path()
-                .parent()
-                .ok_or_else(|| "store path has no parent".to_string())?
-                .join("exports")
-                .join(task_id);
+            let export_dir = product_export_root(self)?.join(task_id);
             std::fs::create_dir_all(&export_dir).map_err(|e| e.to_string())?;
             let export_path = export_dir.join(format!("{artifact_id}.patch"));
             std::fs::write(&export_path, &exported.patch).map_err(|e| e.to_string())?;
-            let _ = self.append_audit(
-                actor,
-                "product_task.export_patch",
-                task_id,
-                &json!({
-                    "artifact_id": artifact_id,
-                    "patch_hash": exported.patch_hash,
-                    "export_path": export_path.to_string_lossy(),
-                    "bytes": exported.patch.len(),
-                }),
-            );
             return Ok(json!({
                 "mode": "export_patch",
                 "status": "exported",
+                "artifact_id": artifact_id,
                 "patch_hash": exported.patch_hash,
                 "export_path": export_path.to_string_lossy(),
+                "approval_id": approval_binding.get("approval_id"),
                 "approval_binding": approval_binding,
                 "product_task_id": task_id,
             }));
@@ -2074,65 +2293,144 @@ impl LocalProductStore {
             }));
         }
 
+        self.prepare_product_draft_pr_output(
+            task_id,
+            artifact_id,
+            workspace_path,
+            target_repo_path,
+            source_revision,
+            patch_hash,
+            approval_binding,
+            expected_task_version,
+            actor,
+            &config,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_product_draft_pr_output(
+        &self,
+        task_id: &str,
+        artifact_id: &str,
+        workspace_path: &str,
+        target_repo_path: &str,
+        source_revision: &str,
+        patch_hash: &str,
+        approval_binding: &Value,
+        expected_task_version: u64,
+        actor: &str,
+        config: &TargetRepoOutputConfig,
+    ) -> Result<Value, String> {
         let branch_name = format!("acp/product-{task_id}");
-        if !branch_name.starts_with("acp/") {
-            return Err("branch must be under acp/*".to_string());
-        }
         let artifact = self
             .get_supervised_patch_artifact(artifact_id)?
             .ok_or_else(|| "artifact missing for draft_pr".to_string())?;
-        // Request binding must match artifact owner fields exactly (existing target-output contract).
-        let request_binding = json!({
-            "schema_version": "target_repo_output_request.v1",
+        let repository = match crate::target_repo_output::github_repository_for_remote(
+            config,
+            Path::new(workspace_path),
+            "origin",
+        ) {
+            Ok(repository) => repository,
+            Err(error) => {
+                return Ok(json!({
+                    "mode": "draft_pr",
+                    "status": "blocked",
+                    "reason": error,
+                    "product_task_id": task_id,
+                    "artifact_id": artifact_id,
+                }));
+            }
+        };
+        if let Err(error) = crate::target_repo_output::GitHubPullRequestConfig::from_env()
+            .require_repository(&repository)
+        {
+            return Ok(json!({
+                "mode": "draft_pr",
+                "status": "blocked",
+                "reason": error,
+                "product_task_id": task_id,
+                "artifact_id": artifact_id,
+            }));
+        }
+        let target_repository = format!("{}/{}", repository.owner, repository.repository);
+        let base_branch = self
+            .get_supervised_patch_workspace(
+                artifact
+                    .get("workspace_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "artifact workspace binding missing".to_string())?,
+            )?
+            .and_then(|workspace| {
+                workspace
+                    .pointer("/git/default_branch")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_string)
+            })
+            .ok_or_else(|| "workspace is missing the bound target default branch".to_string())?;
+        let request = json!({
+            "schema_version": "product_draft_pr_output_request.v1",
+            "product_task_id": task_id,
             "artifact_id": artifact_id,
+            "approval_id": approval_binding.get("approval_id"),
+            "output_intent": "draft_pr",
             "workspace_id": artifact.get("workspace_id"),
             "run_id": artifact.get("run_id"),
             "target_id": artifact.get("target_id"),
-            "mode": "push_branch",
             "patch_hash": artifact.get("patch_hash"),
             "source_revision": artifact.get("source_revision"),
-            "branch_name": branch_name,
+            "target_repository": target_repository,
+            "repository_host": repository.host,
+            "base_branch": base_branch,
+            "head_branch": branch_name,
             "remote": "origin",
             "commit_message": format!("feat: product golden path {task_id}"),
             "pr_title": format!("Draft: product task {task_id}"),
-            "create_pull_request": true,
+            "pr_body": format!(
+                "Product golden path Draft PR for task `{task_id}`.\n\nDo not merge automatically."
+            ),
         });
-        let request_sha256 = {
-            use sha2::{Digest, Sha256};
-            hex::encode(Sha256::digest(
-                serde_json::to_vec(&request_binding).map_err(|e| e.to_string())?,
-            ))
-        };
-        use crate::storage::local_product_store::TargetOutputClaim;
-        let claim =
-            self.claim_target_output(artifact_id, &request_binding, &request_sha256, actor)?;
-        match claim {
-            TargetOutputClaim::Reused(existing) => {
-                return Ok(json!({
-                    "mode": "draft_pr",
-                    "status": "reused",
-                    "output": existing,
-                    "product_task_id": task_id,
-                }));
-            }
-            TargetOutputClaim::ReconciliationRequired(state) => {
-                return Ok(json!({
-                    "mode": "draft_pr",
-                    "status": "outcome_unknown",
-                    "reconciliation_required": true,
-                    "receipt_state": state,
-                    "product_task_id": task_id,
-                }));
-            }
-            TargetOutputClaim::Claimed => {}
+        let request_sha256 = product_json_sha256(&request)?;
+        let operation = self.claim_product_output_operation(
+            artifact_id,
+            &request,
+            &request_sha256,
+            expected_task_version,
+            actor,
+        )?;
+        let action = operation
+            .get("claim_action")
+            .and_then(Value::as_str)
+            .unwrap_or("reconciliation_required");
+        if action == "reused" {
+            return Ok(product_draft_pr_output_from_operation(task_id, &operation));
         }
-
+        if action == "create_or_reconcile_pr" {
+            return Ok(product_draft_pr_pending_output(task_id, &operation));
+        }
+        if action == "operation_in_progress" {
+            return Ok(json!({
+                "mode": "draft_pr",
+                "status": "operation_in_progress",
+                "operation": operation,
+                "product_task_id": task_id,
+            }));
+        }
+        if !matches!(action, "push_branch" | "push_or_reconcile_branch") {
+            return Ok(json!({
+                "mode": "draft_pr",
+                "status": "outcome_unknown",
+                "reconciliation_required": true,
+                "operation": operation,
+                "product_task_id": task_id,
+            }));
+        }
         let publish = crate::target_repo_output::BranchPublishRequest {
             target_repo_path: Path::new(target_repo_path).to_path_buf(),
             workspace_path: Path::new(workspace_path).to_path_buf(),
             source_revision: source_revision.to_string(),
             expected_patch_hash: patch_hash.to_string(),
-            branch_name: branch_name.clone(),
+            branch_name,
             remote: "origin".to_string(),
             commit_message: format!("feat: product golden path {task_id}"),
             pr_title: format!("Draft: product task {task_id}"),
@@ -2140,39 +2438,74 @@ impl LocalProductStore {
                 "Product golden path Draft PR for task `{task_id}`.\n\nDo not merge automatically."
             ),
         };
-        match crate::target_repo_output::push_approved_branch(&config, publish) {
+        match crate::target_repo_output::push_approved_branch(config, publish) {
             Ok(published) => {
-                let output = json!({
-                    "mode": "draft_pr",
-                    "status": "branch_pushed",
-                    "branch_name": published.branch_name,
-                    "commit_sha": published.commit_sha,
-                    "patch_hash": published.patch_hash,
-                    "remote": published.remote,
-                    "product_task_id": task_id,
-                    "pull_request": {
-                        "status": "pending_or_operator_create",
-                        "note": "Draft PR creation continues through existing GitHub PR helper when configured; branch acp/* is pushed"
-                    },
-                });
-                let _ = self.record_target_output_receipt(
+                self.record_product_output_branch_pushed(
                     artifact_id,
-                    &request_binding,
-                    &request_sha256,
-                    &output,
+                    operation
+                        .get("operation_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "product output operation identity missing".to_string())?,
+                    operation
+                        .get("current_version")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| "product output operation version missing".to_string())?,
+                    &published.commit_sha,
                     actor,
-                );
-                Ok(output)
+                )?;
+                let pr_operation = self.claim_product_output_operation(
+                    artifact_id,
+                    &request,
+                    &request_sha256,
+                    expected_task_version,
+                    actor,
+                )?;
+                if pr_operation.get("claim_action").and_then(Value::as_str)
+                    != Some("create_or_reconcile_pr")
+                {
+                    return Ok(json!({
+                        "mode": "draft_pr",
+                        "status": "operation_in_progress",
+                        "operation": pr_operation,
+                        "product_task_id": task_id,
+                    }));
+                }
+                Ok(product_draft_pr_pending_output(task_id, &pr_operation))
             }
-            Err(e) => {
-                let _ = self.mark_target_output_outcome_unknown(
-                    artifact_id,
-                    &request_binding,
-                    &request_sha256,
-                    actor,
-                    &e,
-                );
-                Err(format!("draft_pr push failed (outcome recorded): {e}"))
+            Err(error) => {
+                let operation_id = operation
+                    .get("operation_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "product output operation identity missing".to_string())?;
+                let operation_version = operation
+                    .get("current_version")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "product output operation version missing".to_string())?;
+                let outcome_unknown = error.starts_with("branch_push_outcome_unknown:");
+                let operation = if outcome_unknown {
+                    self.mark_product_output_branch_outcome_unknown(
+                        artifact_id,
+                        operation_id,
+                        operation_version,
+                        actor,
+                        &error,
+                    )?
+                } else {
+                    self.mark_product_output_branch_failed_known(
+                        artifact_id,
+                        operation_id,
+                        operation_version,
+                        actor,
+                        &error,
+                    )?
+                };
+                Ok(json!({
+                    "mode": "draft_pr",
+                    "status": if outcome_unknown { "outcome_unknown" } else { "failed" },
+                    "reason": error,
+                    "operation": operation,
+                    "product_task_id": task_id,
+                }))
             }
         }
     }
@@ -2281,6 +2614,31 @@ impl LocalProductStore {
         }
     }
 
+    fn current_product_task_artifact(
+        &self,
+        _task_id: &str,
+        run_id: &str,
+        workspace_record_id: &str,
+        source_revision: &str,
+    ) -> Result<Value, String> {
+        let matches = self
+            .supervised_patch_artifacts(1_000)?
+            .into_iter()
+            .filter(|artifact| {
+                artifact.get("run_id").and_then(Value::as_str) == Some(run_id)
+                    && artifact.get("workspace_id").and_then(Value::as_str)
+                        == Some(workspace_record_id)
+                    && artifact.get("source_revision").and_then(Value::as_str)
+                        == Some(source_revision)
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [artifact] => Ok(artifact.clone()),
+            [] => Err("no exact artifact found for product task".to_string()),
+            _ => Err("multiple artifacts match current product task binding".to_string()),
+        }
+    }
+
     /// Restart recovery: re-enter prepare for tasks left in workspace_preparing/admitted.
     pub fn recover_product_task_workspace(
         &self,
@@ -2333,6 +2691,302 @@ impl LocalProductStore {
             }
         }
     }
+}
+
+fn product_workspace_path(
+    store: &LocalProductStore,
+    workspace_fs_id: &str,
+) -> Result<PathBuf, String> {
+    if let Ok(configured) = std::env::var("ACP_PRODUCT_WORKSPACE_ROOT") {
+        let root = PathBuf::from(configured);
+        if !root.is_absolute() {
+            return Err("ACP_PRODUCT_WORKSPACE_ROOT must be absolute".to_string());
+        }
+        return Ok(root.join(workspace_fs_id));
+    }
+    if store.is_postgres() {
+        return Err(
+            "PostgreSQL product workspaces require absolute ACP_PRODUCT_WORKSPACE_ROOT".to_string(),
+        );
+    }
+    planned_workspace_path(store.db_path(), workspace_fs_id)
+}
+
+fn product_export_root(store: &LocalProductStore) -> Result<PathBuf, String> {
+    if let Ok(configured) = std::env::var("ACP_PRODUCT_WORKSPACE_ROOT") {
+        let root = PathBuf::from(configured);
+        if !root.is_absolute() {
+            return Err("ACP_PRODUCT_WORKSPACE_ROOT must be absolute".to_string());
+        }
+        return Ok(root.join("exports"));
+    }
+    if store.is_postgres() {
+        return Err(
+            "PostgreSQL product exports require absolute ACP_PRODUCT_WORKSPACE_ROOT".to_string(),
+        );
+    }
+    store
+        .db_path()
+        .parent()
+        .map(|parent| parent.join("exports"))
+        .ok_or_else(|| "store path has no parent".to_string())
+}
+
+fn required_product_task_string(value: &Value, field: &str) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|candidate| !candidate.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("missing {field}"))
+}
+
+fn product_draft_pr_pending_output(task_id: &str, operation: &Value) -> Value {
+    json!({
+        "mode": "draft_pr",
+        "status": "pr_create_pending",
+        "product_task_id": task_id,
+        "operation_id": operation.get("operation_id"),
+        "artifact_id": operation.get("artifact_id"),
+        "target_repository": operation.get("target_repository"),
+        "base_branch": operation.get("base_branch"),
+        "head_branch": operation.get("head_branch"),
+        "commit_sha": operation.pointer("/branch_push/commit_sha"),
+        "branch_push_status": operation.pointer("/branch_push/status"),
+        "pr_create_status": operation.pointer("/pr_create/status"),
+        "operation": operation,
+    })
+}
+
+fn product_draft_pr_output_from_operation(task_id: &str, operation: &Value) -> Value {
+    json!({
+        "mode": "draft_pr",
+        "status": "draft_pr_created",
+        "product_task_id": task_id,
+        "operation_id": operation.get("operation_id"),
+        "artifact_id": operation.get("artifact_id"),
+        "target_repository": operation.get("target_repository"),
+        "base_branch": operation.get("base_branch"),
+        "head_branch": operation.get("head_branch"),
+        "commit_sha": operation.pointer("/branch_push/commit_sha"),
+        "branch_push_status": operation.pointer("/branch_push/status"),
+        "pr_create_status": operation.pointer("/pr_create/status"),
+        "pull_request": operation.get("pr_create"),
+        "operation": operation,
+    })
+}
+
+fn product_json_sha256(value: &Value) -> Result<String, String> {
+    let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn validate_product_verification_binding(
+    verification: &Value,
+    task_id: &str,
+    run_id: &str,
+    workspace_record_id: &str,
+    expected_task_version: u64,
+) -> Result<(), String> {
+    if verification.get("status").and_then(Value::as_str) != Some("evidence_recorded")
+        || verification.get("trustworthy").and_then(Value::as_bool) != Some(true)
+    {
+        return Err("approval blocked: verification is not trustworthy".to_string());
+    }
+    for (field, expected) in [
+        ("product_task_id", task_id),
+        ("run_id", run_id),
+        ("workspace_record_id", workspace_record_id),
+    ] {
+        if verification.get(field).and_then(Value::as_str) != Some(expected) {
+            return Err(format!("approval blocked: verification {field} mismatch"));
+        }
+    }
+    if verification
+        .get("expected_task_version")
+        .and_then(Value::as_u64)
+        != expected_task_version.checked_sub(1)
+    {
+        return Err(
+            "approval blocked: verification does not bind the immediately preceding task version"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_current_product_output_approval(
+    approval: &Value,
+    task: &Value,
+    task_id: &str,
+    run_id: &str,
+    workspace_record_id: &str,
+    expected_task_version: u64,
+) -> Result<(), String> {
+    if approval.get("schema_version").and_then(Value::as_str) != Some("product_output_approval.v1")
+        || approval.get("approval_kind").and_then(Value::as_str) != Some("product_output")
+        || approval.get("decision").and_then(Value::as_str) != Some("approved")
+        || approval.get("output_authority").and_then(Value::as_str) != Some("product_output")
+        || approval.get("execution_authority").and_then(Value::as_str) != Some("disabled")
+    {
+        return Err("approval does not grant product output authority".to_string());
+    }
+    for (field, expected) in [
+        ("product_task_id", task_id),
+        ("run_id", run_id),
+        ("workspace_record_id", workspace_record_id),
+    ] {
+        if approval.get(field).and_then(Value::as_str) != Some(expected) {
+            return Err(format!("stale approval: {field} mismatch"));
+        }
+    }
+    if approval
+        .get("expected_task_version")
+        .and_then(Value::as_u64)
+        .is_none_or(|approved_version| approved_version > expected_task_version)
+    {
+        return Err("stale approval: task version mismatch".to_string());
+    }
+    if approval.get("source_revision").and_then(Value::as_str)
+        != task
+            .pointer("/workspace_binding/source_revision")
+            .and_then(Value::as_str)
+    {
+        return Err("stale approval: source revision mismatch".to_string());
+    }
+    if approval.get("output_intent").and_then(Value::as_str)
+        != task.get("output_intent").and_then(Value::as_str)
+    {
+        return Err("stale approval: output intent mismatch".to_string());
+    }
+    let target = approval
+        .get("output_target")
+        .ok_or_else(|| "approval output target missing".to_string())?;
+    if target.get("target_id") != task.get("target_id")
+        || target.get("target_repo_path") != task.get("target_repo_path")
+    {
+        return Err("stale approval: output target mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn validate_product_artifact_against_approval(
+    artifact: &Value,
+    approval: &Value,
+) -> Result<(), String> {
+    for field in ["artifact_id", "run_id", "source_revision", "patch_hash"] {
+        if artifact.get(field) != approval.get(field) {
+            return Err(format!("stale approval: artifact {field} mismatch"));
+        }
+    }
+    if artifact.get("workspace_id") != approval.get("workspace_record_id") {
+        return Err("stale approval: artifact workspace mismatch".to_string());
+    }
+    let artifact_files = artifact
+        .get("changed_files")
+        .or_else(|| artifact.get("changed_files_json"));
+    if artifact_files != approval.get("changed_files") {
+        return Err("stale approval: artifact changed files mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn completed_product_output_approval_id<'a>(
+    task: &Value,
+    artifact: &'a Value,
+) -> Result<&'a str, String> {
+    let intent = required_product_task_string(task, "output_intent")?;
+    let record = if intent == "draft_pr" {
+        artifact
+            .get("product_output_operation")
+            .ok_or_else(|| "completed task is missing its Draft PR operation".to_string())?
+    } else {
+        artifact
+            .get("product_output_receipt")
+            .ok_or_else(|| "completed task is missing its output receipt".to_string())?
+    };
+    record
+        .get("approval_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "completed output is missing its approval binding".to_string())
+}
+
+fn validate_completed_product_output_binding(
+    task: &Value,
+    artifact: &Value,
+    approval: &Value,
+) -> Result<Value, String> {
+    let task_id = required_product_task_string(task, "task_id")?;
+    let artifact_id = required_product_task_string(artifact, "artifact_id")?;
+    let approval_id = required_product_task_string(approval, "approval_id")?;
+    let output_intent = required_product_task_string(task, "output_intent")?;
+    let source_revision = required_product_task_string(artifact, "source_revision")?;
+    let patch_hash = required_product_task_string(artifact, "patch_hash")?;
+    if output_intent == "draft_pr" {
+        let operation = artifact
+            .get("product_output_operation")
+            .ok_or_else(|| "completed task is missing its Draft PR operation".to_string())?;
+        if operation.get("state").and_then(Value::as_str) != Some("completed")
+            || operation.get("product_task_id").and_then(Value::as_str) != Some(task_id.as_str())
+            || operation.get("artifact_id").and_then(Value::as_str) != Some(artifact_id.as_str())
+            || operation.get("approval_id").and_then(Value::as_str) != Some(approval_id.as_str())
+            || operation.get("source_revision").and_then(Value::as_str)
+                != Some(source_revision.as_str())
+            || operation
+                .pointer("/branch_push/status")
+                .and_then(Value::as_str)
+                != Some("completed")
+            || operation
+                .pointer("/pr_create/status")
+                .and_then(Value::as_str)
+                != Some("completed")
+            || operation
+                .pointer("/pr_create/draft")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err("completed Draft PR operation binding is stale".to_string());
+        }
+        let request = operation
+            .get("request")
+            .ok_or_else(|| "completed Draft PR request missing".to_string())?;
+        if product_json_sha256(request)?
+            != required_product_task_string(operation, "request_sha256")?
+        {
+            return Err("completed Draft PR request hash changed".to_string());
+        }
+        return Ok(json!({
+            "operation": operation,
+            "output": product_draft_pr_output_from_operation(&task_id, operation),
+        }));
+    }
+    let receipt = artifact
+        .get("product_output_receipt")
+        .ok_or_else(|| "completed task is missing its output receipt".to_string())?;
+    if receipt.get("schema_version").and_then(Value::as_str) != Some("product_output_receipt.v1")
+        || receipt.get("state").and_then(Value::as_str) != Some("completed")
+        || receipt.get("product_task_id").and_then(Value::as_str) != Some(task_id.as_str())
+        || receipt.get("artifact_id").and_then(Value::as_str) != Some(artifact_id.as_str())
+        || receipt.get("approval_id").and_then(Value::as_str) != Some(approval_id.as_str())
+        || receipt.get("output_intent").and_then(Value::as_str) != Some(output_intent.as_str())
+        || receipt.get("source_revision").and_then(Value::as_str) != Some(source_revision.as_str())
+        || receipt.get("patch_hash").and_then(Value::as_str) != Some(patch_hash.as_str())
+    {
+        return Err("completed nonnetwork output receipt binding is stale".to_string());
+    }
+    let request = receipt
+        .get("request")
+        .ok_or_else(|| "completed output receipt request missing".to_string())?;
+    let output = receipt
+        .get("output")
+        .ok_or_else(|| "completed output receipt result missing".to_string())?;
+    if product_json_sha256(request)? != required_product_task_string(receipt, "request_sha256")?
+        || product_json_sha256(output)? != required_product_task_string(receipt, "output_sha256")?
+    {
+        return Err("completed output receipt content hash changed".to_string());
+    }
+    Ok(json!({"receipt": receipt, "output": output}))
 }
 
 fn map_product_task_row(row: &Row<'_>) -> rusqlite::Result<Value> {
