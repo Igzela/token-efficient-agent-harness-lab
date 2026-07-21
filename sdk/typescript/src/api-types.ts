@@ -228,6 +228,48 @@ export interface PlanCreateRequest {
   confirm_agent_runtime_plan?: boolean;
 }
 
+/** Canonical product golden-path intake (G1+). Requires ACP_PRODUCT_GOLDEN_PATH=1. */
+export interface ProductTaskIntakeRequest {
+  objective: string;
+  target_id: string;
+  target_repo_path: string;
+  source_revision: string;
+  source_tree_hash?: string;
+  allowed_paths: string[];
+  verification_commands: Array<{ command: string; timeout_ms: number }>;
+  output_intent: "artifact_only" | "export_patch" | "draft_pr";
+  executor_policy: {
+    allowed_executors: string[];
+    prefer?: string;
+  };
+  budget?: {
+    total_tokens?: number;
+    total_calls?: number;
+    total_elapsed_ms?: number;
+    max_retries?: number;
+    max_repairs?: number;
+    max_concurrency?: number;
+    stage_budgets?: Record<string, unknown>;
+  };
+  risk_class: string;
+  approval_required?: boolean;
+  confirm_execution?: boolean;
+  confirm_output?: boolean;
+  idempotency_key: string;
+  expected_version?: number;
+  tenant_id?: string;
+  workspace_id?: string;
+  workspace_mode?: "git_worktree";
+}
+
+export interface ProductTaskResponse {
+  schema_version: "axum_api.v1";
+  task_id?: string;
+  task: Record<string, unknown>;
+  execution_admitted?: boolean;
+  result?: Record<string, unknown>;
+}
+
 export interface ToolCapabilityPolicyValue {
   tool_name: string;
   description: string;
