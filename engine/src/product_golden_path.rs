@@ -38,6 +38,12 @@ pub const MAX_TARGET_ID_BYTES: usize = 128;
 pub const MAX_EXECUTOR_SET: usize = 16;
 pub const MAX_RISK_CLASS_BYTES: usize = 64;
 
+/// Schema identity for the fixture-only deterministic apply helper.
+/// This is not a managed coding-executor path and must never be counted as agent evidence.
+pub const FIXTURE_DETERMINISTIC_APPLY_SCHEMA: &str = "product_fixture_deterministic_apply.v1";
+pub const FIXTURE_DETERMINISTIC_APPLY_FILENAME: &str = ".product_golden_path_apply.py";
+pub const FIXTURE_DETERMINISTIC_NOTE_CONTENT: &str = "product golden path fixture note\n";
+
 /// Canonical product-task lifecycle for G1+.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,9 +55,15 @@ pub enum ProductTaskStatus {
     /// Workspace verified and bound; no executable run admitted yet (G1 terminal success).
     WorkspaceBound,
     /// G2+: executable graph compiled and run eligible for existing scheduler.
+    /// A run exists, but nodes are not yet leased — not "running".
     GraphReady,
-    /// G2+: scheduler advancing nodes.
+    /// G2+: scheduler has leased/advanced at least one node.
     Running,
+    /// Post-execution: declared verification commands are executing through the
+    /// supervised-patch verification owner.
+    Verifying,
+    /// Bounded repair is pending or in progress after verification failure.
+    RepairPending,
     /// G3+: waiting for current approval binding.
     AwaitingApproval,
     /// G3+: approved output pending or in progress.
@@ -62,6 +74,8 @@ pub enum ProductTaskStatus {
     Paused,
     BudgetExhausted,
     Blocked,
+    /// External effect (push/PR) outcome could not be determined; must reconcile.
+    OutcomeUnknown,
 }
 
 impl ProductTaskStatus {
@@ -72,6 +86,8 @@ impl ProductTaskStatus {
             Self::WorkspaceBound => "workspace_bound",
             Self::GraphReady => "graph_ready",
             Self::Running => "running",
+            Self::Verifying => "verifying",
+            Self::RepairPending => "repair_pending",
             Self::AwaitingApproval => "awaiting_approval",
             Self::OutputPending => "output_pending",
             Self::Completed => "completed",
@@ -80,6 +96,7 @@ impl ProductTaskStatus {
             Self::Paused => "paused",
             Self::BudgetExhausted => "budget_exhausted",
             Self::Blocked => "blocked",
+            Self::OutcomeUnknown => "outcome_unknown",
         }
     }
 
@@ -90,6 +107,8 @@ impl ProductTaskStatus {
             "workspace_bound" => Ok(Self::WorkspaceBound),
             "graph_ready" => Ok(Self::GraphReady),
             "running" => Ok(Self::Running),
+            "verifying" => Ok(Self::Verifying),
+            "repair_pending" => Ok(Self::RepairPending),
             "awaiting_approval" => Ok(Self::AwaitingApproval),
             "output_pending" => Ok(Self::OutputPending),
             "completed" => Ok(Self::Completed),
@@ -98,6 +117,7 @@ impl ProductTaskStatus {
             "paused" => Ok(Self::Paused),
             "budget_exhausted" => Ok(Self::BudgetExhausted),
             "blocked" => Ok(Self::Blocked),
+            "outcome_unknown" => Ok(Self::OutcomeUnknown),
             other => Err(format!("invalid product task status: {other}")),
         }
     }
@@ -105,13 +125,21 @@ impl ProductTaskStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Completed | Self::Failed | Self::Killed | Self::BudgetExhausted | Self::Blocked
+            Self::Completed
+                | Self::Failed
+                | Self::Killed
+                | Self::BudgetExhausted
+                | Self::Blocked
+                | Self::OutcomeUnknown
         )
     }
 
-    /// G1 never marks a task scheduler-eligible.
+    /// Scheduler-eligible states. GraphReady means a run exists but may not yet be leased.
     pub fn admits_execution(self) -> bool {
-        matches!(self, Self::GraphReady | Self::Running | Self::OutputPending)
+        matches!(
+            self,
+            Self::GraphReady | Self::Running | Self::Verifying | Self::OutputPending
+        )
     }
 }
 
@@ -128,10 +156,15 @@ pub fn is_valid_product_task_transition(from: ProductTaskStatus, to: ProductTask
                 WorkspaceBound,
                 GraphReady | Failed | Killed | Blocked | Paused
             )
-            | (GraphReady, Running | Failed | Killed | Blocked | Paused)
+            | (
+                GraphReady,
+                Running | Verifying | Failed | Killed | Blocked | Paused | BudgetExhausted
+            )
             | (
                 Running,
-                AwaitingApproval
+                Verifying
+                    | RepairPending
+                    | AwaitingApproval
                     | OutputPending
                     | Completed
                     | Failed
@@ -139,18 +172,38 @@ pub fn is_valid_product_task_transition(from: ProductTaskStatus, to: ProductTask
                     | Paused
                     | BudgetExhausted
                     | Blocked
+                    | OutcomeUnknown
+            )
+            | (
+                Verifying,
+                AwaitingApproval
+                    | RepairPending
+                    | Failed
+                    | Killed
+                    | Paused
+                    | Blocked
+                    | BudgetExhausted
+                    | OutcomeUnknown
+            )
+            | (
+                RepairPending,
+                Verifying | Failed | Killed | Paused | Blocked | BudgetExhausted
             )
             | (
                 AwaitingApproval,
-                OutputPending | Completed | Failed | Killed | Paused | Blocked
+                OutputPending | Completed | Failed | Killed | Paused | Blocked | OutcomeUnknown
             )
             | (
                 OutputPending,
-                Completed | Failed | Killed | Paused | Blocked | AwaitingApproval
+                Completed | Failed | Killed | Paused | Blocked | AwaitingApproval | OutcomeUnknown
+            )
+            | (
+                OutcomeUnknown,
+                OutputPending | Completed | Failed | Killed | Blocked
             )
             | (
                 Paused,
-                Running | GraphReady | WorkspaceBound | Killed | Failed | Blocked
+                Running | GraphReady | WorkspaceBound | Verifying | Killed | Failed | Blocked
             )
     )
 }
@@ -869,10 +922,12 @@ pub fn compile_product_executable_graph(
         .unwrap_or(json!([]));
 
     let task_type = match resolved_executor {
-        "command" => "command",
+        "command" | "deterministic" => "command",
         "agent_step" => "agent_step",
         "local_runner_validation" => "local_runner_validation",
-        "claude_code_cli" | "codex_cli" | "opencode" => "command",
+        "claude_code_cli" => "claude_code_cli",
+        "codex_cli" => "codex_cli",
+        "opencode" => crate::opencode_runtime::OPENCODE_TASK_TYPE,
         other => {
             return Err(format!(
                 "unsupported product executor for graph compile: {other}"
@@ -880,12 +935,19 @@ pub fn compile_product_executable_graph(
         }
     };
 
-    // Deterministic bounded mutation helper is written into the worktree at compile time
-    // (see store). Command stays free of shell metacharacters and uses allowlisted python3.
-    let command = if task_type == "command" {
-        "python3 .product_golden_path_apply.py"
+    // Fixture-only deterministic apply: not a managed coding-executor path.
+    // Managed coding executors (CLI/agent_step) receive objective context and must not
+    // use this helper. The helper is staged only when executor class is fixture_deterministic.
+    let is_fixture_deterministic = matches!(resolved_executor, "command" | "deterministic");
+    let command = if is_fixture_deterministic {
+        format!("python3 {FIXTURE_DETERMINISTIC_APPLY_FILENAME}")
     } else {
-        ""
+        String::new()
+    };
+    let executor_class = if is_fixture_deterministic {
+        "fixture_deterministic"
+    } else {
+        "managed_coding"
     };
 
     let apply_node_id = format!("{}-apply", plan_ids.workflow_id);
@@ -916,7 +978,13 @@ pub fn compile_product_executable_graph(
         "source_revision": source_revision,
         "allowed_paths": allowed_paths,
         "suggested_executor": resolved_executor,
-        "executor": resolved_executor,
+        "executor": if is_fixture_deterministic { "command" } else { resolved_executor },
+        "executor_class": executor_class,
+        "fixture_apply_schema": if is_fixture_deterministic {
+            Value::String(FIXTURE_DETERMINISTIC_APPLY_SCHEMA.to_string())
+        } else {
+            Value::Null
+        },
         "objective_fingerprint": task.get("objective_fingerprint"),
         "intake_contract_sha256": task.get("intake_contract_sha256"),
         "verification_commands": verification_commands,
@@ -930,9 +998,10 @@ pub fn compile_product_executable_graph(
             "binding_sha256": binding_sha256,
             "content_excluded": true,
             "product_task_id": task_id,
+            "executor_class": executor_class,
         },
     });
-    if task_type == "command" {
+    if is_fixture_deterministic {
         apply_node
             .as_object_mut()
             .unwrap()

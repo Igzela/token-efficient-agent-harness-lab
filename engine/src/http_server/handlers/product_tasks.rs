@@ -187,16 +187,10 @@ pub(crate) async fn api_compile_and_schedule_product_task(
         ));
     }
     let store = require_store(&state)?;
-    // Live pool availability is derived from default registered types when no pool
-    // snapshot is attached to API state. Fail closed only for identifiers that cannot
-    // exist in the default registration set.
-    let available = vec![
-        "command".to_string(),
-        "noop".to_string(),
-        "stub".to_string(),
-        "local_runner_validation".to_string(),
-        "agent_step".to_string(),
-    ];
+    // Resolve availability from the live executor pool (registration + enable/cooldown
+    // state). Fall back to a freshly registered default pool snapshot when the scheduler
+    // is not attached — never a hard-coded admission list that claims availability.
+    let available = live_available_executor_types(&state, &store);
     match store.compile_and_schedule_product_task(&task_id, &context.api_key_id, &available) {
         Ok(result) => Ok((
             cors_headers(),
@@ -346,4 +340,37 @@ pub(crate) async fn api_recover_product_task_workspace(
             ))
         }
     }
+}
+
+/// Available executor types from the live scheduler pool when present; otherwise a
+/// ephemeral default registration snapshot for this request. Never invents availability.
+fn live_available_executor_types(
+    state: &AxumApiState,
+    store: &std::sync::Arc<crate::storage::local_product_store::LocalProductStore>,
+) -> Vec<String> {
+    if let Some(scheduler) = state.scheduler.as_ref() {
+        if let Ok(guard) = scheduler.lock() {
+            let snapshot = guard.executor_pool().snapshot();
+            let available: Vec<String> = snapshot
+                .into_iter()
+                .filter(|entry| entry.status.available)
+                .map(|entry| entry.executor_type)
+                .collect();
+            // If the scheduler pool has been started and registered entries, use it.
+            // An empty started pool still fails closed (no hard-coded fallback).
+            if guard.is_running() || !available.is_empty() {
+                return available;
+            }
+        }
+    }
+    // No attached scheduler: register defaults into a request-scoped pool and report
+    // currently available types (enable state, CLI admission).
+    let pool = crate::executor_pool::ExecutorPool::new();
+    let cli_enabled = crate::cli::CliConfig::from_env().enabled;
+    crate::executor_pool::register_default_executors(&pool, cli_enabled, store.clone());
+    pool.snapshot()
+        .into_iter()
+        .filter(|entry| entry.status.available)
+        .map(|entry| entry.executor_type)
+        .collect()
 }

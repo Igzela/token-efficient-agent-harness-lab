@@ -4,13 +4,15 @@ use rusqlite::{params, OptionalExtension, Row};
 use serde_json::{json, Value};
 use std::path::Path;
 
+use crate::node_executor::{CommandNodeExecutor, NodeExecutionInput, NodeExecutor};
 use crate::product_golden_path::{
     compile_product_executable_graph, is_valid_product_task_transition, planned_workspace_path,
     product_gate_enabled, provisional_run_id_for_task, redacted_intake_json,
     resolve_admitted_executor, validate_source_revision_format, workspace_content_hash,
     ProductExecutorPolicy, ProductTaskStatus, ProductWorkspaceBinding, ValidatedProductTaskIntake,
-    PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION, PRODUCT_TASK_SCHEMA_VERSION,
-    PRODUCT_TASK_WORKSPACE_BINDING_SCHEMA_VERSION,
+    FIXTURE_DETERMINISTIC_APPLY_FILENAME, FIXTURE_DETERMINISTIC_APPLY_SCHEMA,
+    FIXTURE_DETERMINISTIC_NOTE_CONTENT, PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
+    PRODUCT_TASK_SCHEMA_VERSION, PRODUCT_TASK_WORKSPACE_BINDING_SCHEMA_VERSION,
 };
 use crate::read_only_planner::{ReadOnlyPlanner, READ_ONLY_PLAN_SCHEMA_VERSION};
 use crate::target_repo_output::{
@@ -30,6 +32,9 @@ const PRODUCT_TASK_SELECT: &str = "SELECT schema_version, task_id, tenant_id, wo
 impl LocalProductStore {
     /// Authenticated intake: reserve canonical task under idempotency, prepare controlled
     /// worktree, verify bindings, and finalize to `workspace_bound` without admitting execution.
+    ///
+    /// Concurrent duplicate intake under the same idempotency key collapses to one task and
+    /// one worktree effect (restart-safe, expected-current protected).
     pub fn admit_product_task(
         &self,
         intake: &ValidatedProductTaskIntake,
@@ -40,59 +45,115 @@ impl LocalProductStore {
         }
         validate_source_revision_format(&intake.source_revision)?;
 
-        let reserved = self.reserve_product_task(intake, actor)?;
-        let status = reserved
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("admitted");
-        if matches!(
-            status,
-            "workspace_bound"
-                | "graph_ready"
-                | "running"
-                | "awaiting_approval"
-                | "output_pending"
-                | "completed"
-        ) {
-            return Ok(reserved);
-        }
-        if matches!(status, "failed" | "blocked" | "killed" | "budget_exhausted") {
-            return Ok(reserved);
-        }
+        // Bounded CAS loop for concurrent duplicate intake.
+        for _ in 0..8 {
+            let reserved = self.reserve_product_task(intake, actor)?;
+            let status = reserved
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("admitted");
+            if matches!(
+                status,
+                "workspace_bound"
+                    | "graph_ready"
+                    | "running"
+                    | "verifying"
+                    | "repair_pending"
+                    | "awaiting_approval"
+                    | "output_pending"
+                    | "completed"
+            ) {
+                return Ok(reserved);
+            }
+            if matches!(
+                status,
+                "failed" | "blocked" | "killed" | "budget_exhausted" | "outcome_unknown"
+            ) {
+                return Ok(reserved);
+            }
 
-        let task_id = reserved
-            .get("task_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "reserved product task missing task_id".to_string())?
-            .to_string();
-        let version = reserved.get("version").and_then(Value::as_u64).unwrap_or(1);
+            let task_id = reserved
+                .get("task_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "reserved product task missing task_id".to_string())?
+                .to_string();
+            let version = reserved.get("version").and_then(Value::as_u64).unwrap_or(1);
 
-        if status == ProductTaskStatus::Admitted.as_str() {
-            self.transition_product_task(
-                &task_id,
-                ProductTaskStatus::WorkspacePreparing,
-                Some(version),
-                actor,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )?;
-        }
-
-        match self.prepare_product_task_worktree(&task_id, intake, actor) {
-            Ok(task) => Ok(task),
-            Err(error) => {
-                let _ = self.fail_product_task_and_compensate(
+            if status == ProductTaskStatus::Admitted.as_str() {
+                match self.transition_product_task(
                     &task_id,
-                    "worktree_prepare_failed",
-                    &error,
+                    ProductTaskStatus::WorkspacePreparing,
+                    Some(version),
                     actor,
-                );
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ) {
+                    Ok(_) => {}
+                    Err(e) if e.contains("expected-current") || e.contains("conflict") => {
+                        // Another concurrent admit won the CAS; re-read.
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                }
+            } else if status == ProductTaskStatus::WorkspacePreparing.as_str() {
+                // Another worker is preparing; re-read until bound or failed.
+                // If preparation was interrupted, this worker may continue prepare below
+                // only when the binding is still missing.
+                if reserved.get("workspace_binding").is_some()
+                    && !reserved.get("workspace_binding").unwrap().is_null()
+                {
+                    // Binding present but status stale — rare; re-fetch after short yield.
+                    std::thread::yield_now();
+                    continue;
+                }
+            }
+
+            match self.prepare_product_task_worktree(&task_id, intake, actor) {
+                Ok(task) => return Ok(task),
                 Err(error)
+                    if error.contains("expected-current")
+                        || error.contains("conflict")
+                        || error.contains("already exists") =>
+                {
+                    // Concurrent prepare: re-read and return if winner bound the task.
+                    if let Some(current) = self.get_product_task(&task_id)? {
+                        let st = current.get("status").and_then(Value::as_str).unwrap_or("");
+                        if matches!(
+                            st,
+                            "workspace_bound"
+                                | "graph_ready"
+                                | "running"
+                                | "verifying"
+                                | "awaiting_approval"
+                                | "completed"
+                        ) {
+                            return Ok(current);
+                        }
+                    }
+                    std::thread::yield_now();
+                    continue;
+                }
+                Err(error) => {
+                    let _ = self.fail_product_task_and_compensate(
+                        &task_id,
+                        "worktree_prepare_failed",
+                        &error,
+                        actor,
+                    );
+                    return Err(error);
+                }
             }
         }
+        // Final re-read after CAS retries.
+        self.get_product_task_by_idempotency(
+            &intake.tenant_id,
+            &intake.workspace_id,
+            &intake.idempotency_key,
+        )?
+        .ok_or_else(|| "product task admit concurrent retry exhausted".to_string())
     }
 
     pub fn get_product_task(&self, task_id: &str) -> Result<Option<Value>, String> {
@@ -477,6 +538,22 @@ impl LocalProductStore {
         intake: &ValidatedProductTaskIntake,
         actor: &str,
     ) -> Result<Value, String> {
+        if let Some(existing) = self.get_product_task(task_id)? {
+            let st = existing.get("status").and_then(Value::as_str).unwrap_or("");
+            if matches!(
+                st,
+                "workspace_bound"
+                    | "graph_ready"
+                    | "running"
+                    | "verifying"
+                    | "awaiting_approval"
+                    | "output_pending"
+                    | "completed"
+            ) {
+                return Ok(existing);
+            }
+        }
+
         let config = TargetRepoOutputConfig::from_env();
         config.require_enabled()?;
 
@@ -504,20 +581,54 @@ impl LocalProductStore {
         );
         let workspace_path = planned_workspace_path(self.db_path(), &workspace_fs_id)?;
 
-        if workspace_path.exists() {
-            let _ = remove_git_worktree(&config, &target_canonical, &workspace_path);
-            if workspace_path.exists() {
-                let _ = std::fs::remove_dir_all(&workspace_path);
+        // Concurrent admit may already have prepared this path for the same task.
+        // Prefer reusing a valid existing worktree over destructive recreate.
+        let prepared = if workspace_path.is_dir() {
+            let head = std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&workspace_path)
+                .output();
+            let head_ok = head
+                .as_ref()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|h| {
+                    h == &intake.source_revision
+                        || intake.source_revision.starts_with(h.as_str())
+                        || h.starts_with(&intake.source_revision)
+                });
+            if let Some(source_revision) = head_ok {
+                crate::target_repo_output::GitWorkspaceInfo {
+                    schema_version: crate::target_repo_output::TARGET_REPO_OUTPUT_SCHEMA_VERSION
+                        .to_string(),
+                    workspace_path: workspace_path.to_string_lossy().into_owned(),
+                    source_revision,
+                    default_branch: "main".to_string(),
+                    workspace_mode: "git_worktree".to_string(),
+                }
+            } else {
+                let _ = remove_git_worktree(&config, &target_canonical, &workspace_path);
+                if workspace_path.exists() {
+                    let _ = std::fs::remove_dir_all(&workspace_path);
+                }
+                prepare_git_worktree(
+                    &config,
+                    &target_canonical,
+                    &workspace_path,
+                    &intake.source_revision,
+                )
+                .map_err(|e| format!("prepare_git_worktree failed: {e}"))?
             }
-        }
-
-        let prepared = prepare_git_worktree(
-            &config,
-            &target_canonical,
-            &workspace_path,
-            &intake.source_revision,
-        )
-        .map_err(|e| format!("prepare_git_worktree failed: {e}"))?;
+        } else {
+            prepare_git_worktree(
+                &config,
+                &target_canonical,
+                &workspace_path,
+                &intake.source_revision,
+            )
+            .map_err(|e| format!("prepare_git_worktree failed: {e}"))?
+        };
 
         let workspaces_root = self
             .db_path()
@@ -858,7 +969,9 @@ impl LocalProductStore {
         self.bind_product_task_plan_run(task_id, &plan_id, &run_id, actor)?;
 
         let version = task.get("version").and_then(Value::as_u64).unwrap_or(0);
-        self.transition_product_task(
+        // Stay at GraphReady: a run is scheduler-eligible, but nodes are not yet leased.
+        // Do not mark Running merely because a run was created.
+        let task = self.transition_product_task(
             task_id,
             ProductTaskStatus::GraphReady,
             Some(version),
@@ -869,43 +982,28 @@ impl LocalProductStore {
             None,
             Some(&run_id),
         )?;
-        let after_graph = self
-            .get_product_task(task_id)?
-            .ok_or_else(|| "task missing after graph_ready".to_string())?;
-        let graph_version = after_graph
-            .get("version")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let task = self.transition_product_task(
-            task_id,
-            ProductTaskStatus::Running,
-            Some(graph_version),
-            actor,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )?;
 
         Ok(json!({
             "task": task,
             "plan": plan,
             "run": run,
             "resolved_executor": resolved,
+            "executor_class": if resolved == "command" || resolved == "deterministic" {
+                "fixture_deterministic"
+            } else {
+                "managed_coding"
+            },
             "reused": false,
             "execution_admitted": true,
             "scheduler_eligible": true,
         }))
     }
 
-    /// G3: after the executable apply node completes, run verification evidence recording,
-    /// artifact capture through existing supervised-patch owners, and enter approval-waiting.
-    pub fn finalize_product_task_after_execution(
-        &self,
-        task_id: &str,
-        actor: &str,
-    ) -> Result<Value, String> {
+    /// Observe persisted run state and advance product-task lifecycle without executing nodes.
+    ///
+    /// This is not a second scheduler. Callers that need node advancement must use the
+    /// existing scheduler workers or an explicit operational tick path.
+    pub fn sync_product_task_from_run(&self, task_id: &str, actor: &str) -> Result<Value, String> {
         if !product_gate_enabled() {
             return Err("product golden path intake is disabled".to_string());
         }
@@ -914,17 +1012,160 @@ impl LocalProductStore {
             .ok_or_else(|| format!("product task not found: {task_id}"))?;
         let status =
             ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        if status.is_terminal()
+            || matches!(
+                status,
+                ProductTaskStatus::AwaitingApproval
+                    | ProductTaskStatus::OutputPending
+                    | ProductTaskStatus::Verifying
+                    | ProductTaskStatus::RepairPending
+            )
+        {
+            return Ok(task);
+        }
+        let run_id = match task.get("run_id").and_then(Value::as_str) {
+            Some(id) => id.to_string(),
+            None => return Ok(task),
+        };
+        let run = match self.get_workflow_run(&run_id)? {
+            Some(run) => run,
+            None => return Ok(task),
+        };
+        let run_status = run.get("status").and_then(Value::as_str).unwrap_or("");
+        let nodes = run
+            .get("nodes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let any_leased_or_started = nodes.iter().any(|n| {
+            matches!(
+                n.get("status").and_then(Value::as_str).unwrap_or(""),
+                "leased" | "running" | "completed" | "failed" | "blocked"
+            )
+        });
+        let version = task.get("version").and_then(Value::as_u64);
+        match run_status {
+            "failed" | "cancelled" | "killed" => {
+                let code = if run_status == "killed" {
+                    "execution_killed"
+                } else {
+                    "execution_failed"
+                };
+                self.transition_product_task(
+                    task_id,
+                    if run_status == "killed" {
+                        ProductTaskStatus::Killed
+                    } else {
+                        ProductTaskStatus::Failed
+                    },
+                    version,
+                    actor,
+                    None,
+                    None,
+                    Some(code),
+                    Some(run_status),
+                    None,
+                )
+            }
+            "completed" => {
+                // Execution finished; remain GraphReady/Running until finalize starts verifying.
+                if status == ProductTaskStatus::GraphReady && any_leased_or_started {
+                    self.transition_product_task(
+                        task_id,
+                        ProductTaskStatus::Running,
+                        version,
+                        actor,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                } else {
+                    Ok(task)
+                }
+            }
+            "running" | "active" | "leased" => {
+                if status == ProductTaskStatus::GraphReady {
+                    self.transition_product_task(
+                        task_id,
+                        ProductTaskStatus::Running,
+                        version,
+                        actor,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                } else {
+                    Ok(task)
+                }
+            }
+            _ if any_leased_or_started && status == ProductTaskStatus::GraphReady => self
+                .transition_product_task(
+                    task_id,
+                    ProductTaskStatus::Running,
+                    version,
+                    actor,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            _ => Ok(task),
+        }
+    }
+
+    /// Post-terminal processor: observe scheduler-owned run state, execute declared
+    /// verification commands through the command verification owner, record evidence via
+    /// supervised-patch verification, capture artifacts only on trustworthy pass, then
+    /// enter awaiting_approval.
+    ///
+    /// Does **not** create or drive an executor tick loop. Node execution belongs solely
+    /// to the existing scheduler / operational tick path.
+    pub fn finalize_product_task_after_execution(
+        &self,
+        task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if !product_gate_enabled() {
+            return Err("product golden path intake is disabled".to_string());
+        }
+        let task = self.sync_product_task_from_run(task_id, actor)?;
+        let status =
+            ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
         if matches!(
             status,
             ProductTaskStatus::AwaitingApproval
                 | ProductTaskStatus::OutputPending
                 | ProductTaskStatus::Completed
         ) {
-            return Ok(json!({"task": task, "reused": true}));
+            return Ok(json!({"task": task, "reused": true, "phase": status.as_str()}));
         }
-        if status != ProductTaskStatus::Running {
+        if matches!(
+            status,
+            ProductTaskStatus::Failed
+                | ProductTaskStatus::Killed
+                | ProductTaskStatus::Blocked
+                | ProductTaskStatus::BudgetExhausted
+                | ProductTaskStatus::OutcomeUnknown
+        ) {
+            return Ok(json!({
+                "task": task,
+                "reused": true,
+                "phase": "terminal_failure",
+            }));
+        }
+        if !matches!(
+            status,
+            ProductTaskStatus::GraphReady
+                | ProductTaskStatus::Running
+                | ProductTaskStatus::Verifying
+        ) {
             return Err(format!(
-                "finalize requires running task; status={}",
+                "finalize requires graph_ready/running/verifying task; status={}",
                 status.as_str()
             ));
         }
@@ -947,44 +1188,31 @@ impl LocalProductStore {
             return Err("worktree missing during finalize; zero output effect".to_string());
         }
 
-        // Drive the existing scheduler tick with command executor until terminal or stalled.
-        let executor = crate::node_executor::CommandNodeExecutor::default();
-        let mut last_tick = json!({});
-        for _ in 0..8 {
-            match self.tick_with_executor(&run_id, actor, 1, &executor) {
-                Ok(tick) => {
-                    last_tick = tick.clone();
-                    let action = tick.get("action").and_then(Value::as_str).unwrap_or("");
-                    if matches!(
-                        action,
-                        "completed" | "failed" | "no_ready_node" | "budget_exhausted" | "killed"
-                    ) {
-                        break;
-                    }
-                    let run_status = tick
-                        .pointer("/run/status")
-                        .and_then(Value::as_str)
-                        .or_else(|| tick.get("status").and_then(Value::as_str))
-                        .unwrap_or("");
-                    if matches!(run_status, "completed" | "failed" | "cancelled" | "killed") {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    return Err(format!("product task tick failed: {e}"));
-                }
-            }
-        }
-
         let run = self
             .get_workflow_run(&run_id)?
-            .ok_or_else(|| "workflow run missing after tick".to_string())?;
+            .ok_or_else(|| "workflow run missing".to_string())?;
         let run_status = run.get("status").and_then(Value::as_str).unwrap_or("");
-        if run_status == "failed" || run_status == "cancelled" {
+
+        // Scheduler has not finished execution — observe only; do not tick.
+        if !matches!(run_status, "completed" | "failed" | "cancelled" | "killed") {
+            return Ok(json!({
+                "task": task,
+                "run": run,
+                "phase": "waiting_for_scheduler",
+                "reused": false,
+                "execution_admitted": true,
+                "note": "existing scheduler workers (or operational tick) must advance the run; finalize does not execute nodes",
+            }));
+        }
+        if matches!(run_status, "failed" | "cancelled" | "killed") {
             let version = task.get("version").and_then(Value::as_u64);
             let failed = self.transition_product_task(
                 task_id,
-                ProductTaskStatus::Failed,
+                if run_status == "killed" {
+                    ProductTaskStatus::Killed
+                } else {
+                    ProductTaskStatus::Failed
+                },
                 version,
                 actor,
                 None,
@@ -996,31 +1224,113 @@ impl LocalProductStore {
             return Ok(json!({
                 "task": failed,
                 "run": run,
-                "last_tick": last_tick,
                 "phase": "execution_failed",
+                "reused": false,
             }));
         }
 
-        // Verification evidence via existing workspace verification owner (no second verifier).
-        let verify_cmd = task
-            .pointer("/intake/verification_commands/0/command")
-            .and_then(Value::as_str)
-            .unwrap_or("test -f README.md");
-        // Prefer a safe allowlisted check that does not require shell metacharacters for
-        // subprocess verification evidence recording (metadata only path).
-        let verification = json!({
-            "status": "evidence_recorded",
-            "command": verify_cmd,
-            "attempt": 1,
-            "product_task_id": task_id,
-            "run_id": run_id,
-            "workspace_path": workspace_path,
-            "result": "pass",
-            "method": "product_golden_path_declared_command_bound",
-        });
-        self.record_workspace_verification(&workspace_record_id, &verification, actor)?;
+        // Enter verifying only after authoritative run completion.
+        let version = self
+            .get_product_task(task_id)?
+            .and_then(|t| t.get("version").and_then(Value::as_u64));
+        if status != ProductTaskStatus::Verifying {
+            // GraphReady → Running (if needed) → Verifying
+            let mut current_status = status;
+            if current_status == ProductTaskStatus::GraphReady {
+                self.transition_product_task(
+                    task_id,
+                    ProductTaskStatus::Running,
+                    version,
+                    actor,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
+                current_status = ProductTaskStatus::Running;
+            }
+            if current_status == ProductTaskStatus::Running {
+                let v = self
+                    .get_product_task(task_id)?
+                    .and_then(|t| t.get("version").and_then(Value::as_u64));
+                self.transition_product_task(
+                    task_id,
+                    ProductTaskStatus::Verifying,
+                    v,
+                    actor,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
+            }
+        }
 
-        // Artifact capture only after verification evidence exists.
+        let source_revision = task
+            .pointer("/workspace_binding/source_revision")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let tenant_id = task
+            .get("tenant_id")
+            .and_then(Value::as_str)
+            .unwrap_or("local")
+            .to_string();
+        let workspace_scope = task
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            .to_string();
+        let task_version = self
+            .get_product_task(task_id)?
+            .and_then(|t| t.get("version").and_then(Value::as_u64))
+            .unwrap_or(0);
+
+        let verification = self.execute_and_record_product_verifications(
+            task_id,
+            &tenant_id,
+            &workspace_scope,
+            &run_id,
+            &workspace_record_id,
+            &workspace_path,
+            &source_revision,
+            task_version,
+            &task,
+            actor,
+        )?;
+
+        let verification_status = verification
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("verification_failed");
+        if verification_status != "evidence_recorded" {
+            let version = self
+                .get_product_task(task_id)?
+                .and_then(|t| t.get("version").and_then(Value::as_u64));
+            let failed = self.transition_product_task(
+                task_id,
+                ProductTaskStatus::Failed,
+                version,
+                actor,
+                None,
+                None,
+                Some("verification_failed"),
+                Some(verification_status),
+                None,
+            )?;
+            return Ok(json!({
+                "task": failed,
+                "run": run,
+                "verification": verification,
+                "phase": "verification_failed",
+                "reused": false,
+                "artifact_id": Value::Null,
+            }));
+        }
+
+        // Artifact capture only after trustworthy verification evidence exists.
         let artifact = self.capture_patch(&workspace_record_id, actor)?;
         let artifact_id = artifact
             .get("artifact_id")
@@ -1049,10 +1359,218 @@ impl LocalProductStore {
             "verification": verification,
             "artifact": artifact,
             "artifact_id": artifact_id,
-            "last_tick": last_tick,
             "phase": "awaiting_approval",
             "reused": false,
         }))
+    }
+
+    /// Execute every declared verification command via CommandNodeExecutor (same allowlisted
+    /// owner used by supervised-patch verification) and persist authoritative receipts.
+    /// Never writes `result: pass` before execution. Fail-closed on any non-pass outcome.
+    pub fn execute_and_record_product_verifications(
+        &self,
+        task_id: &str,
+        tenant_id: &str,
+        workspace_scope: &str,
+        run_id: &str,
+        workspace_record_id: &str,
+        workspace_path: &str,
+        source_revision: &str,
+        expected_task_version: u64,
+        task: &Value,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if !Path::new(workspace_path).is_dir() {
+            return Err(
+                "workspace missing before verification; zero capture/output effect".to_string(),
+            );
+        }
+        // Expected-current: reject if task version drifted.
+        let current = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "product task missing during verification".to_string())?;
+        let current_version = current.get("version").and_then(Value::as_u64).unwrap_or(0);
+        if current_version != expected_task_version {
+            return Err(format!(
+                "stale product task version during verification: expected {expected_task_version}, found {current_version}"
+            ));
+        }
+        let ws = self
+            .get_supervised_patch_workspace(workspace_record_id)?
+            .ok_or_else(|| "workspace record missing during verification".to_string())?;
+        let ws_status = ws.get("status").and_then(Value::as_str).unwrap_or("");
+        if matches!(ws_status, "quarantined" | "cleaned" | "rejected") {
+            return Err(format!(
+                "workspace status {ws_status} blocks verification; zero capture/output effect"
+            ));
+        }
+        let bound_path = ws
+            .get("workspace_path")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if bound_path != workspace_path {
+            return Err(
+                "workspace path mismatch during verification; zero capture/output effect"
+                    .to_string(),
+            );
+        }
+
+        let commands = task
+            .pointer("/intake/verification_commands")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if commands.is_empty() {
+            return Err("no verification_commands declared on product task".to_string());
+        }
+
+        let node_id = self
+            .get_workflow_run(run_id)?
+            .and_then(|run| {
+                run.get("nodes")
+                    .and_then(Value::as_array)
+                    .and_then(|nodes| nodes.first())
+                    .and_then(|n| n.get("node_id").and_then(Value::as_str).map(str::to_string))
+            })
+            .unwrap_or_else(|| format!("{task_id}-verify"));
+
+        let mut attempts: Vec<Value> = Vec::new();
+        let mut all_passed = true;
+        let mut final_status = "evidence_recorded";
+
+        for (idx, cmd_val) in commands.iter().enumerate() {
+            let command = cmd_val
+                .get("command")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("verification command {idx} missing command"))?
+                .to_string();
+            let timeout_ms = cmd_val
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(30_000)
+                .clamp(1, 3_600_000);
+            let attempt_number = (idx as u64) + 1;
+            let started_at = self.now();
+
+            // Re-check workspace existence immediately before each command.
+            if !Path::new(workspace_path).is_dir() {
+                all_passed = false;
+                final_status = "verification_failed";
+                attempts.push(json!({
+                    "attempt": attempt_number,
+                    "command": command,
+                    "timeout_ms": timeout_ms,
+                    "started_at": started_at,
+                    "completed_at": self.now(),
+                    "exit_status": null,
+                    "result_status": "failed",
+                    "error_domain": "workspace_missing",
+                    "error_message": "workspace disappeared before verification command",
+                    "product_task_id": task_id,
+                    "run_id": run_id,
+                    "workspace_path": workspace_path,
+                    "source_revision": source_revision,
+                    "expected_task_version": expected_task_version,
+                }));
+                break;
+            }
+
+            let executor = CommandNodeExecutor::default().with_timeout(timeout_ms);
+            let input = NodeExecutionInput {
+                node_id: format!("{node_id}-v{attempt_number}"),
+                task_type: "command".to_string(),
+                run_id: run_id.to_string(),
+                workflow_id: task_id.to_string(),
+                node_metadata: json!({
+                    "profile_id": "supervised_patch_verification",
+                    "command": command,
+                    "workspace_path": workspace_path,
+                    "workspace_root": workspace_path,
+                    "executor_timeout_ms": timeout_ms,
+                    "product_task_id": task_id,
+                    "tenant_id": tenant_id,
+                    "workspace_scope_id": workspace_scope,
+                    "source_revision": source_revision,
+                    "attempt": attempt_number,
+                }),
+            };
+            let output = executor.execute_node(&input);
+            let completed_at = self.now();
+            let passed = output.status == "completed";
+            if !passed {
+                all_passed = false;
+                final_status = "verification_failed";
+            }
+
+            // Digest stdout/stderr for bounded evidence (no raw corpus).
+            let output_digest = output.output.as_ref().map(|s| {
+                use sha2::{Digest, Sha256};
+                let digest = hex::encode(Sha256::digest(s.as_bytes()));
+                let preview: String = s.chars().take(256).collect();
+                json!({
+                    "sha256": digest,
+                    "bytes": s.len(),
+                    "preview_redacted": crate::provider::redaction::redact_sensitive_patterns(&preview),
+                })
+            });
+
+            attempts.push(json!({
+                "schema_version": "product_verification_attempt.v1",
+                "attempt": attempt_number,
+                "command": command,
+                "command_argv": command.split_whitespace().collect::<Vec<_>>(),
+                "timeout_ms": timeout_ms,
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "result_status": output.status,
+                "executor_type": output.executor_type,
+                "exit_status": if passed { 0 } else { 1 },
+                "error_domain": output.error_domain,
+                "error_message": output.error_message.as_deref().map(|m| {
+                    crate::provider::redaction::redact_sensitive_patterns(m)
+                }),
+                "latency_ms": output.latency_ms,
+                "output_digest": output_digest,
+                "product_task_id": task_id,
+                "tenant_id": tenant_id,
+                "workspace_scope_id": workspace_scope,
+                "run_id": run_id,
+                "node_id": node_id,
+                "workspace_record_id": workspace_record_id,
+                "workspace_path": workspace_path,
+                "source_revision": source_revision,
+                "expected_task_version": expected_task_version,
+            }));
+
+            if !passed {
+                // Fail closed: do not continue remaining commands after a failure? Spec says
+                // run all declared commands. Continue collecting attempts but mark overall fail.
+            }
+        }
+
+        let verification = json!({
+            "schema_version": "workspace_verification.v1",
+            "status": if all_passed { "evidence_recorded" } else { final_status },
+            "result_status": if all_passed { "completed" } else { "failed" },
+            "product_task_id": task_id,
+            "tenant_id": tenant_id,
+            "workspace_scope_id": workspace_scope,
+            "run_id": run_id,
+            "workspace_record_id": workspace_record_id,
+            "workspace_path": workspace_path,
+            "source_revision": source_revision,
+            "expected_task_version": expected_task_version,
+            "attempt": attempts.len() as u64,
+            "verification_attempts": attempts,
+            "repair_attempts": [],
+            "method": "product_golden_path_command_executor",
+            "trustworthy": all_passed,
+            "recorded_at": self.now(),
+            "recorded_by": actor,
+        });
+
+        self.record_workspace_verification(workspace_record_id, &verification, actor)?;
+        Ok(verification)
     }
 
     /// G3: bind current approval and perform output intent through existing owners.
@@ -1100,6 +1618,34 @@ impl LocalProductStore {
             .get("output_intent")
             .and_then(Value::as_str)
             .unwrap_or("artifact_only");
+
+        // Fail closed without trustworthy verification evidence.
+        let workspace = self
+            .get_supervised_patch_workspace(&workspace_record_id)?
+            .ok_or_else(|| "workspace missing at approval".to_string())?;
+        let verification = workspace
+            .get("verification")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let verification_status = verification
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let trustworthy = verification
+            .get("trustworthy")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if verification_status != "evidence_recorded" || !trustworthy {
+            return Err(format!(
+                "approval blocked: verification not trustworthy (status={verification_status})"
+            ));
+        }
+        // Bind verification product_task_id to this task.
+        if let Some(v_task) = verification.get("product_task_id").and_then(Value::as_str) {
+            if v_task != task_id {
+                return Err("approval blocked: verification product_task_id mismatch".to_string());
+            }
+        }
 
         let artifacts = self.supervised_patch_artifacts(20)?;
         let artifact = artifacts
@@ -1431,22 +1977,43 @@ fn stage_product_apply_helper(workspace_path: &Path, task: &Value) -> Result<(),
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    // Prefer a path that does not already exist in a typical disposable repo (not README.md).
     let target_rel = allowed
         .iter()
         .filter_map(|v| v.as_str())
-        .find(|p| p.ends_with(".md") || p.contains('/'))
+        .find(|p| {
+            *p != "README.md" && !p.starts_with('.') && (p.ends_with(".md") || p.contains('/'))
+        })
+        .or_else(|| {
+            allowed
+                .iter()
+                .filter_map(|v| v.as_str())
+                .find(|p| *p != "README.md")
+        })
         .or_else(|| allowed.iter().filter_map(|v| v.as_str()).next())
-        .unwrap_or("PRODUCT_GOLDEN_PATH.md");
-    // Keep helper at worktree root; it only writes relative target_rel under the workspace.
-    let helper = workspace_path.join(".product_golden_path_apply.py");
+        .unwrap_or("docs/product_golden_path_fixture.md");
+    // Fixture-only deterministic helper. Not a managed coding-executor path.
+    let helper = workspace_path.join(FIXTURE_DETERMINISTIC_APPLY_FILENAME);
+    let content = FIXTURE_DETERMINISTIC_NOTE_CONTENT;
     let script = format!(
-        r#"from pathlib import Path
+        r#"# {schema}
+# Fixture-only deterministic apply for product golden path acceptance.
+# Not a managed coding agent. Mutates only the declared relative path.
+from pathlib import Path
 target = Path({target_rel:?})
+if ".." in target.parts:
+    raise SystemExit("path escape rejected")
 if str(target.parent) not in ("", "."):
     target.parent.mkdir(parents=True, exist_ok=True)
-target.write_text("product golden path note\n", encoding="utf-8")
-print("applied", target)
-"#
+expected = {content:?}
+target.write_text(expected, encoding="utf-8")
+if target.read_text(encoding="utf-8") != expected:
+    raise SystemExit("fixture write verification failed")
+print("fixture_applied", target)
+"#,
+        schema = FIXTURE_DETERMINISTIC_APPLY_SCHEMA,
+        target_rel = target_rel,
+        content = content,
     );
     std::fs::write(&helper, script).map_err(|e| e.to_string())?;
     Ok(())
