@@ -14,8 +14,8 @@ Do not create another roadmap, status, architecture, scheduler, runtime, queue, 
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS` (G1–G4 surfaces merged via PRs #268/#269; residual live Draft PR + task-rooted replay/scorecard seal).
-2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS` (PRs #268–#271 merged: G1–G4, authority repair, terminal evidence, export_patch, gated `acp/*` push; residual GitHub Draft PR HTTP + managed coding-executor E2E).
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` until golden path residual is closed or explicitly accepted with recorded evidence exception.
 3. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`; Issue #266 remains open as a proposal, not the active lane.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 5. `PE7-OPENCODE-BINARY-ADMISSION-1` remains deferred. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remains parked on Issue #254.
@@ -98,6 +98,8 @@ The result is neutral/no-improvement fixture evidence. The active Harness remain
 
 - G1 PR #268 → `main` `178d020e` (schema v30 `product_tasks`, intake, worktree-first bind).
 - G2–G4 PR #269 → `main` `8fa85c15` (executable graph, finalize, artifact_only approve, SDK, Dashboard button).
+- Authority repair PR #270 → `main` `f7293548` (real verification receipts, no finalize tick loop, live executor pool, fixture honesty, recovery matrix).
+- Evidence/output PR #271 → `main` `fe742052` (task-rooted terminal evidence, export_patch, gated `acp/*` push).
 
 **Residual before `COMPLETE`:**
 
