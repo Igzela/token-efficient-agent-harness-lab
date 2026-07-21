@@ -1696,6 +1696,11 @@ impl LocalProductStore {
                 }
                 if let Some(obj) = node_metadata.as_object_mut() {
                     obj.insert("execution_attempt".to_string(), json!(attempt));
+                    // Owner-derived claim identity for reserved executors (OpenCode, etc.).
+                    obj.insert(
+                        "scheduler_claim_id".to_string(),
+                        json!(format!("workflow:{run_id}:{node_id}:{attempt}")),
+                    );
                 }
                 if command_override.is_none()
                     && task_type != crate::external_runtime::LANGGRAPH_TASK_TYPE
@@ -1772,9 +1777,15 @@ impl LocalProductStore {
                         executor.executor_type_name()
                             != crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE
                     }
+                    crate::opencode_runtime::OPENCODE_TASK_TYPE => {
+                        executor.executor_type_name()
+                            != crate::opencode_runtime::OPENCODE_EXECUTOR_TYPE
+                    }
                     _ => matches!(
                         executor.executor_type_name(),
-                        "agent_step" | crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE
+                        "agent_step"
+                            | crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE
+                            | crate::opencode_runtime::OPENCODE_EXECUTOR_TYPE
                     ),
                 };
                 let output = if reserved_executor_mismatch

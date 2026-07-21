@@ -319,6 +319,8 @@ pub struct WorkflowScheduler {
     agent_step_executor: Option<Arc<dyn NodeExecutor>>,
     external_runtime_executor: Option<(Arc<dyn NodeExecutor>, u64)>,
     opencode_runtime_executor: Option<(Arc<dyn NodeExecutor>, u64)>,
+    /// Shared with the OpenCode process invoker so kill/stop terminates process trees.
+    opencode_cancel: Option<crate::opencode_runtime::OpenCodeCancellationHandle>,
 }
 
 impl WorkflowScheduler {
@@ -352,6 +354,7 @@ impl WorkflowScheduler {
             agent_step_executor: None,
             external_runtime_executor: None,
             opencode_runtime_executor: None,
+            opencode_cancel: None,
         }
     }
 
@@ -402,6 +405,14 @@ impl WorkflowScheduler {
         timeout_ms: u64,
     ) -> Self {
         self.opencode_runtime_executor = Some((executor, timeout_ms));
+        self
+    }
+
+    pub fn with_opencode_cancellation(
+        mut self,
+        handle: crate::opencode_runtime::OpenCodeCancellationHandle,
+    ) -> Self {
+        self.opencode_cancel = Some(handle);
         self
     }
 
@@ -474,6 +485,9 @@ impl WorkflowScheduler {
         }
 
         self.kill_requested.store(false, Ordering::SeqCst);
+        if let Some(ref handle) = self.opencode_cancel {
+            handle.reset();
+        }
         self.running.store(true, Ordering::SeqCst);
 
         let cli_enabled = crate::cli::CliConfig::from_env().enabled;
@@ -568,6 +582,9 @@ impl WorkflowScheduler {
             return Err("scheduler not running".to_string());
         }
         self.running.store(false, Ordering::SeqCst);
+        if let Some(ref handle) = self.opencode_cancel {
+            handle.cancel();
+        }
         for handle in self.handles.drain(..) {
             handle
                 .join()
@@ -597,6 +614,9 @@ impl WorkflowScheduler {
             .set_recursive_execution_paused(true, Some("recursive_kill_switch_active"))?;
         self.kill_requested.store(true, Ordering::SeqCst);
         self.running.store(false, Ordering::SeqCst);
+        if let Some(ref handle) = self.opencode_cancel {
+            handle.cancel();
+        }
         Ok(())
     }
 
@@ -669,7 +689,12 @@ impl WorkflowScheduler {
 
 impl Drop for WorkflowScheduler {
     fn drop(&mut self) {
+        // Cancel OpenCode process trees before joining workers so graceful
+        // application shutdown cannot leave a detached adapter until timeout.
         self.running.store(false, Ordering::SeqCst);
+        if let Some(ref handle) = self.opencode_cancel {
+            handle.cancel();
+        }
         for handle in self.handles.drain(..) {
             let _ = handle.join();
         }
@@ -1544,6 +1569,300 @@ mod tests {
             .find(|entry| entry.executor_type == "noop")
             .unwrap();
         assert_eq!(noop.metrics.successful_executions, 1);
+    }
+
+    #[test]
+    fn scheduler_opencode_external_routes_through_pool_completes_and_is_idempotent() {
+        use crate::opencode_runtime::{
+            OpenCodeInvokeError, OpenCodeInvoker, OpenCodeNodeExecutor, OpenCodeRuntimeConfig,
+            OPENCODE_ADAPTER_CONTRACT, OPENCODE_ADAPTER_VERSION, OPENCODE_EXECUTOR_TYPE,
+            OPENCODE_NODE_SCHEMA, OPENCODE_RESULT_SCHEMA, OPENCODE_TASK_TYPE,
+            PINNED_OPENCODE_VERSION,
+        };
+        use std::path::PathBuf;
+        use std::sync::Mutex;
+
+        struct BindingInvoker {
+            last: Mutex<Option<Value>>,
+        }
+
+        impl OpenCodeInvoker for BindingInvoker {
+            fn invoke(
+                &self,
+                request: &Value,
+                _timeout_ms: u64,
+                _cancel: &dyn crate::opencode_runtime::OpenCodeCancelProbe,
+            ) -> Result<Value, OpenCodeInvokeError> {
+                *self.last.lock().unwrap() = Some(request.clone());
+                let task_input_hash = request["task_input_hash"].as_str().unwrap_or_default();
+                let summary_digest = {
+                    use sha2::{Digest, Sha256};
+                    let mut hasher = Sha256::new();
+                    hasher.update(task_input_hash.as_bytes());
+                    format!("{:x}", hasher.finalize())
+                };
+                Ok(json!({
+                    "schema_version": OPENCODE_RESULT_SCHEMA,
+                    "invocation_id": request["invocation_id"],
+                    "run_id": request["run_id"],
+                    "node_id": request["node_id"],
+                    "workflow_id": request["workflow_id"],
+                    "scheduler_claim_id": request["scheduler_claim_id"],
+                    "execution_attempt": request["execution_attempt"],
+                    "task_kind": request["task_kind"],
+                    "task_input_hash": request["task_input_hash"],
+                    "base_commit": request["base_commit"],
+                    "worktree_id": request["worktree_id"],
+                    "status": "ok",
+                    "changed_paths": [],
+                    "patch": null,
+                    "patch_sha256": null,
+                    "analysis": {
+                        "summary_digest": summary_digest,
+                        "findings_count": 1,
+                        "scope_paths": request["allowed_paths"],
+                    },
+                    "tool_summary": {
+                        "tool_call_count": 0,
+                        "network_attempts": 0,
+                        "provider_attempts": 0,
+                        "mcp_attempts": 0,
+                        "web_attempts": 0,
+                        "remote_agent_attempts": 0,
+                        "background_agent_attempts": 0,
+                        "process_attempts": 0,
+                    },
+                    "reason_code": "fixture_analysis_ok",
+                    "runtime": {
+                        "runtime_kind": "opencode",
+                        "runtime_version": PINNED_OPENCODE_VERSION,
+                        "adapter_version": OPENCODE_ADAPTER_VERSION,
+                        "adapter_contract_version": OPENCODE_ADAPTER_CONTRACT,
+                        "mode": "fixture",
+                    }
+                }))
+            }
+        }
+
+        let store = test_store();
+        let invoker = Arc::new(BindingInvoker {
+            last: Mutex::new(None),
+        });
+        let cancel = crate::opencode_runtime::OpenCodeCancellationHandle::new();
+        let executor = Arc::new(OpenCodeNodeExecutor::new(
+            OpenCodeRuntimeConfig::fixture(PathBuf::from("python3"), PathBuf::from("adapter.py")),
+            invoker.clone(),
+            cancel,
+        ));
+
+        let plan = store
+            .create_workflow_plan("oc-sched-plan", "oc-sched-wf", "test-actor", |ids, _| {
+                Ok(json!({
+                    "schema_version": "read_only_plan.v1",
+                    "plan_id": ids.plan_id,
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "analysis": {"analysis_id": "a-oc", "task_domain": "code"},
+                    "graph": {
+                        "schema_version": "workflow_graph.v1",
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "status": "decomposed",
+                        "created_at": "2026-07-08T00:00:00Z",
+                        "updated_at": "2026-07-08T00:00:00Z",
+                        "nodes": [{
+                            "node_id": "oc-node-1",
+                            "task_type": OPENCODE_TASK_TYPE,
+                            "status": "pending",
+                            // Entire node object becomes node_metadata; keep authority at top level.
+                            "opencode_external": {
+                                "schema_version": OPENCODE_NODE_SCHEMA,
+                                "task_kind": "analysis",
+                                "task_input_hash": "a".repeat(64),
+                                "base_commit": "b".repeat(40),
+                                "worktree_id": "wt-sched-1",
+                                "allowed_paths": ["docs/a.md"]
+                            }
+                        }],
+                        "edges": []
+                    },
+                    "boundaries": {
+                        "execution_authority": "disabled",
+                        "target_repository_writes": "disabled",
+                        "runtime_workers": "disabled",
+                    },
+                }))
+            })
+            .expect("plan");
+        let run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "test-actor")
+            .expect("run");
+        let run_id = run["run_id"].as_str().unwrap().to_string();
+
+        let pool = Arc::new(ExecutorPool::new());
+        executor_pool::register_default_executors(&pool, false, store.clone());
+        executor_pool::register_opencode_runtime_executor(&pool, executor.clone(), 1, 30_000);
+
+        let config = SchedulerConfig {
+            executor_type: "pool".to_string(),
+            max_concurrent: 1,
+            queue_enabled: false,
+            backpressure_enabled: false,
+            ..Default::default()
+        };
+
+        let tick = scheduler_tick(&store, &config, executor.clone(), &pool).expect("tick");
+        assert!(
+            tick.ticks >= 1,
+            "expected scheduler to execute the opencode node"
+        );
+
+        let run_after = store.get_workflow_run(&run_id).unwrap().unwrap();
+        let node = run_after["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["node_id"] == "oc-node-1")
+            .expect("node present");
+        assert_eq!(
+            node.get("db_status")
+                .or_else(|| node.get("status"))
+                .and_then(|s| s.as_str()),
+            Some("completed"),
+            "node must persist as completed, not success: node={node} run_status={}",
+            run_after["status"]
+        );
+        assert_eq!(run_after["status"], "completed");
+        assert_eq!(
+            node.pointer("/result/executor_type")
+                .and_then(|v| v.as_str())
+                .or_else(|| node
+                    .get("result")
+                    .and_then(|r| r.get("executor_type"))
+                    .and_then(|v| v.as_str())),
+            Some(OPENCODE_EXECUTOR_TYPE)
+        );
+
+        let oc = pool
+            .snapshot()
+            .into_iter()
+            .find(|e| e.executor_type == OPENCODE_EXECUTOR_TYPE)
+            .expect("opencode pool entry");
+        assert_eq!(oc.metrics.successful_executions, 1);
+        assert_eq!(oc.metrics.failed_executions, 0);
+
+        // Restart/replay: completed workflow must not re-execute (exactly-once pool outcome).
+        let tick2 = scheduler_tick(&store, &config, executor, &pool).expect("replay tick");
+        let oc2 = pool
+            .snapshot()
+            .into_iter()
+            .find(|e| e.executor_type == OPENCODE_EXECUTOR_TYPE)
+            .unwrap();
+        assert_eq!(
+            oc2.metrics.successful_executions, 1,
+            "idempotent after restart/replay; ticks2={}",
+            tick2.ticks
+        );
+        if let Some(noop) = pool.snapshot().iter().find(|e| e.executor_type == "noop") {
+            assert_eq!(
+                noop.metrics.total_executions, 0,
+                "generic noop must not execute reserved opencode_external"
+            );
+        }
+        assert!(
+            invoker.last.lock().unwrap().is_some(),
+            "fixture adapter must have been invoked through the pool"
+        );
+    }
+
+    #[test]
+    fn scheduler_opencode_external_unavailable_when_executor_absent() {
+        use crate::opencode_runtime::OPENCODE_TASK_TYPE;
+
+        let store = test_store();
+        let plan = store
+            .create_workflow_plan("oc-absent-plan", "oc-absent-wf", "test-actor", |ids, _| {
+                Ok(json!({
+                    "schema_version": "read_only_plan.v1",
+                    "plan_id": ids.plan_id,
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "analysis": {"analysis_id": "a-oc-abs", "task_domain": "code"},
+                    "graph": {
+                        "schema_version": "workflow_graph.v1",
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "status": "decomposed",
+                        "created_at": "2026-07-08T00:00:00Z",
+                        "updated_at": "2026-07-08T00:00:00Z",
+                        "nodes": [{
+                            "node_id": "oc-absent-1",
+                            "task_type": OPENCODE_TASK_TYPE,
+                            "status": "pending",
+                            "opencode_external": {
+                                "schema_version": "opencode_external_node.v1",
+                                "task_kind": "analysis",
+                                "task_input_hash": "a".repeat(64),
+                                "base_commit": "b".repeat(40),
+                                "worktree_id": "wt-abs",
+                                "allowed_paths": ["docs/a.md"]
+                            }
+                        }],
+                        "edges": []
+                    },
+                    "boundaries": {
+                        "execution_authority": "disabled",
+                        "target_repository_writes": "disabled",
+                        "runtime_workers": "disabled",
+                    },
+                }))
+            })
+            .expect("plan");
+        let run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "test-actor")
+            .expect("run");
+        let run_id = run["run_id"].as_str().unwrap().to_string();
+
+        // Default pool has noop/stub/command but no opencode executor.
+        let pool = test_pool();
+        assert_eq!(
+            pool.best_for_task(OPENCODE_TASK_TYPE, "code"),
+            None,
+            "reserved opencode_external must not select generic executors"
+        );
+
+        let config = SchedulerConfig {
+            executor_type: "pool".to_string(),
+            max_concurrent: 1,
+            queue_enabled: false,
+            backpressure_enabled: false,
+            ..Default::default()
+        };
+        let tick =
+            scheduler_tick(&store, &config, Arc::new(NoopNodeExecutor), &pool).expect("tick");
+        let run_after = store.get_workflow_run(&run_id).unwrap().unwrap();
+        // Node must not complete via noop fallback.
+        let node = run_after["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["node_id"] == "oc-absent-1")
+            .unwrap();
+        let status = node
+            .get("db_status")
+            .or_else(|| node.get("status"))
+            .and_then(|s| s.as_str());
+        assert_ne!(
+            status,
+            Some("completed"),
+            "must not complete without opencode executor; ticks={} node={node}",
+            tick.ticks
+        );
+        if let Some(noop) = pool.snapshot().iter().find(|e| e.executor_type == "noop") {
+            assert_eq!(noop.metrics.successful_executions, 0);
+        }
     }
 
     #[test]

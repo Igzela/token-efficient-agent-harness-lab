@@ -750,7 +750,13 @@ fn select_scheduler_executor(
         && matches!(route.task_domain.as_str(), "code" | "architecture")
         && !matches!(
             route.task_type.as_str(),
-            "agent_step" | "adaptive_provider" | "command" | "claude_code_cli" | "codex_cli"
+            "agent_step"
+                | "adaptive_provider"
+                | "command"
+                | "claude_code_cli"
+                | "codex_cli"
+                | crate::external_runtime::LANGGRAPH_TASK_TYPE
+                | crate::opencode_runtime::OPENCODE_TASK_TYPE
         );
     if let Some(executor_type) = route.suggested_executor.as_deref() {
         let fixture_executor_mismatch =
@@ -874,6 +880,10 @@ fn scheduler_route_for_run(
     } else if task_type == crate::external_runtime::LANGGRAPH_TASK_TYPE {
         required = true;
         Some(crate::external_runtime::LANGGRAPH_EXECUTOR_TYPE.to_string())
+    } else if task_type == crate::opencode_runtime::OPENCODE_TASK_TYPE {
+        // Reserved exact-capability: never fall back to noop/stub/CLI when absent.
+        required = true;
+        Some(crate::opencode_runtime::OPENCODE_EXECUTOR_TYPE.to_string())
     } else if matches!(
         task_type.as_str(),
         "adaptive_provider" | "claude_code_cli" | "codex_cli"
