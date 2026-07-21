@@ -165,6 +165,61 @@ pub(crate) async fn api_product_task_detail(
     }
 }
 
+pub(crate) async fn api_compile_and_schedule_product_task(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(task_id): AxumPath<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    if !product_gate_enabled() {
+        return Err(ApiError::with_code(
+            StatusCode::FORBIDDEN,
+            "product_golden_path_disabled",
+            format!("set {PRODUCT_TASK_GATE}=1 to enable product golden path intake"),
+        ));
+    }
+    let store = require_store(&state)?;
+    // Live pool availability is derived from default registered types when no pool
+    // snapshot is attached to API state. Fail closed only for identifiers that cannot
+    // exist in the default registration set.
+    let available = vec![
+        "command".to_string(),
+        "noop".to_string(),
+        "stub".to_string(),
+        "local_runner_validation".to_string(),
+        "agent_step".to_string(),
+    ];
+    match store.compile_and_schedule_product_task(&task_id, &context.api_key_id, &available) {
+        Ok(result) => Ok((
+            cors_headers(),
+            Json(json!({
+                "schema_version": AXUM_API_SCHEMA_VERSION,
+                "result": result,
+            })),
+        )),
+        Err(error) => {
+            let (status, code) = if error.contains("not found") {
+                (StatusCode::NOT_FOUND, "product_task_not_found")
+            } else if error.contains("unavailable") {
+                (StatusCode::CONFLICT, "product_task_executor_unavailable")
+            } else if error.contains("workspace_bound") || error.contains("worktree") {
+                (StatusCode::CONFLICT, "product_task_not_ready")
+            } else {
+                (StatusCode::BAD_REQUEST, "product_task_compile_failed")
+            };
+            Err(ApiError::with_code(status, code, error))
+        }
+    }
+}
+
 pub(crate) async fn api_recover_product_task_workspace(
     State(state): State<AxumApiState>,
     headers: HeaderMap,

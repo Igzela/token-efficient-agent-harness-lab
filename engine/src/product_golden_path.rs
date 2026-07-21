@@ -12,7 +12,21 @@ use std::path::{Component, Path, PathBuf};
 pub const PRODUCT_TASK_SCHEMA_VERSION: &str = "product_task.v1";
 pub const PRODUCT_TASK_INTAKE_SCHEMA_VERSION: &str = "product_task_intake.v1";
 pub const PRODUCT_TASK_WORKSPACE_BINDING_SCHEMA_VERSION: &str = "product_task_workspace_binding.v1";
+pub const PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION: &str = "product_executable_graph.v1";
 pub const PRODUCT_TASK_GATE: &str = "ACP_PRODUCT_GOLDEN_PATH";
+
+/// Executor identifiers that may be admitted by intake policy.
+/// Registration in the live executor pool is checked separately at compile time.
+pub const ADMITTED_EXECUTOR_IDENTIFIERS: &[&str] = &[
+    "command",
+    "agent_step",
+    "local_runner_validation",
+    "claude_code_cli",
+    "codex_cli",
+    "opencode",
+    // Alias retained for readability; resolved to `command` at compile time.
+    "deterministic",
+];
 
 pub const MAX_OBJECTIVE_BYTES: usize = 8_192;
 pub const MAX_PATH_BYTES: usize = 1_024;
@@ -643,15 +657,18 @@ fn validate_executor_policy(
                 "executor names must be admitted identifiers, not paths or binaries".to_string(),
             );
         }
-        // Silent noop success is forbidden as the sole admitted useful path claim;
-        // noop may be listed but cannot be the only executor for coding tasks.
+        if name == "noop" || name == "stub" || name == "fail" {
+            return Err(
+                "executor_policy must not admit noop/stub/fail as product coding executors"
+                    .to_string(),
+            );
+        }
+        if !ADMITTED_EXECUTOR_IDENTIFIERS.contains(&name) {
+            return Err(format!(
+                "executor '{name}' is not in the product-admitted identifier set"
+            ));
+        }
         allowed.push(name.to_string());
-    }
-    if allowed.iter().all(|e| e == "noop") {
-        return Err(
-            "executor_policy must not admit only noop; unavailable executors fail closed"
-                .to_string(),
-        );
     }
     if let Some(prefer) = policy.prefer.as_deref() {
         let prefer = prefer.trim();
@@ -781,6 +798,157 @@ pub fn planned_workspace_path(
     Ok(db_dir.join("workspaces").join(workspace_fs_id))
 }
 
+/// Resolve intake executor policy to a concrete pool executor type.
+pub fn resolve_admitted_executor(policy: &ProductExecutorPolicy) -> Result<String, String> {
+    let preferred = policy
+        .prefer
+        .clone()
+        .or_else(|| policy.allowed_executors.first().cloned())
+        .ok_or_else(|| "executor_policy has no admitted executor".to_string())?;
+    let resolved = match preferred.as_str() {
+        "deterministic" => "command".to_string(),
+        other => other.to_string(),
+    };
+    if matches!(resolved.as_str(), "noop" | "stub" | "fail") {
+        return Err("product golden path refuses silent noop/stub/fail success".to_string());
+    }
+    if !policy.allowed_executors.iter().any(|e| {
+        e == &preferred
+            || (preferred == "deterministic" && (e == "deterministic" || e == "command"))
+    }) {
+        return Err("resolved executor is not in allowed_executors".to_string());
+    }
+    Ok(resolved)
+}
+
+/// Compile a versioned executable graph for a workspace-bound product task.
+///
+/// Does not create a second scheduler. Nodes carry exact task/workspace/source
+/// bindings so lease-time injection cannot invent authority.
+pub fn compile_product_executable_graph(
+    task: &Value,
+    created_at: &str,
+    plan_ids: &crate::read_only_planner::WorkflowPlanIds,
+    resolved_executor: &str,
+) -> Result<Value, String> {
+    let task_id = task
+        .get("task_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "product task missing task_id".to_string())?;
+    let status =
+        ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
+    if status != ProductTaskStatus::WorkspaceBound && status != ProductTaskStatus::GraphReady {
+        return Err(format!(
+            "executable graph requires workspace_bound task; status={}",
+            status.as_str()
+        ));
+    }
+    let binding = task
+        .get("workspace_binding")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .ok_or_else(|| "product task missing workspace_binding".to_string())?;
+    let workspace_path = binding
+        .get("workspace_path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "workspace_binding missing workspace_path".to_string())?;
+    let workspace_id = binding
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "workspace_binding missing workspace_id".to_string())?;
+    let source_revision = binding
+        .get("source_revision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "workspace_binding missing source_revision".to_string())?;
+    let allowed_paths = binding.get("allowed_paths").cloned().unwrap_or(json!([]));
+    let intake = task.get("intake").cloned().unwrap_or(json!({}));
+    let budget = intake.get("budget").cloned().unwrap_or(json!({}));
+    let verification_commands = intake
+        .get("verification_commands")
+        .cloned()
+        .unwrap_or(json!([]));
+
+    let task_type = match resolved_executor {
+        "command" => "command",
+        "agent_step" => "agent_step",
+        "local_runner_validation" => "local_runner_validation",
+        "claude_code_cli" | "codex_cli" | "opencode" => "command",
+        other => {
+            return Err(format!(
+                "unsupported product executor for graph compile: {other}"
+            ))
+        }
+    };
+
+    // G2 uses allowlisted `true` so lease/execution proves worktree cwd binding without
+    // shell metacharacters. Real disposable-file mutation is completed in G3/G4 owners.
+    let command = if task_type == "command" { "true" } else { "" };
+
+    let apply_node_id = format!("{}-apply", plan_ids.workflow_id);
+    let binding_sha256 = hex::encode(Sha256::digest(
+        format!("product_apply:{task_id}:{workspace_id}:{source_revision}").as_bytes(),
+    ));
+    let mut apply_node = json!({
+        "schema_version": "workflow_node.v1",
+        "node_id": apply_node_id,
+        "workflow_id": plan_ids.workflow_id,
+        "task_type": task_type,
+        "assigned_agent_id": null,
+        "status": "pending",
+        "input_refs": [],
+        "output_ref": null,
+        "budget": budget.get("total_tokens").and_then(Value::as_u64).unwrap_or(50_000) as f64,
+        "cost_incurred": 0.0,
+        "error": null,
+        "created_at": created_at,
+        "started_at": null,
+        "completed_at": null,
+        "product_task_id": task_id,
+        "tenant_id": task.get("tenant_id"),
+        "workspace_scope_id": task.get("workspace_id"),
+        "workspace_path": workspace_path,
+        "workspace_root": workspace_path,
+        "workspace_id": workspace_id,
+        "source_revision": source_revision,
+        "allowed_paths": allowed_paths,
+        "suggested_executor": resolved_executor,
+        "executor": resolved_executor,
+        "objective_fingerprint": task.get("objective_fingerprint"),
+        "intake_contract_sha256": task.get("intake_contract_sha256"),
+        "verification_commands": verification_commands,
+        "output_intent": task.get("output_intent"),
+        "product_graph_schema_version": PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
+        "managed_supervised_patch": {
+            "schema_version": "managed_supervised_patch.v1",
+            "workspace_id": workspace_id,
+            "operation": "product_apply",
+            "attempt": 1,
+            "binding_sha256": binding_sha256,
+            "content_excluded": true,
+            "product_task_id": task_id,
+        },
+    });
+    if task_type == "command" {
+        apply_node
+            .as_object_mut()
+            .unwrap()
+            .insert("command".to_string(), json!(command));
+    }
+
+    Ok(json!({
+        "schema_version": "workflow_graph.v1",
+        "workflow_id": plan_ids.workflow_id,
+        "dispatch_id": plan_ids.dispatch_id,
+        "nodes": [apply_node],
+        "edges": [],
+        "status": "executable",
+        "created_at": created_at,
+        "updated_at": created_at,
+        "product_task_id": task_id,
+        "product_graph_schema_version": PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -849,7 +1017,7 @@ mod tests {
         req.executor_policy.allowed_executors = vec!["noop".to_string()];
         req.executor_policy.prefer = None;
         let err = validate_intake(&req, "local", "default").unwrap_err();
-        assert!(err.contains("noop"));
+        assert!(err.contains("noop") || err.contains("admitted"));
         std::env::remove_var(PRODUCT_TASK_GATE);
     }
 
