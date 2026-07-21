@@ -1,113 +1,123 @@
 # Module Map
 
-Last updated: 2026-07-20.
+Last updated: 2026-07-21.
 
-This file maps current ownership and approved future connection points. It is not a phase history. Detailed implementation evidence remains in merged commits and PRs; forward execution is governed by `docs/NEXT_DECISION.md`.
+This map records current code ownership and actual connection state. It is not a phase history. Forward routing is governed by `docs/NEXT_DECISION.md`; current facts are in `docs/CURRENT_STATUS.md`.
 
-Full Agent Autonomy Mode remains active for repository-scoped work that is testable, observable, reviewable, verification-gated, compatible, and rollbackable. External mutations, release, deployment, evaluator changes, and other authority-critical actions retain their separate gates.
+Full Agent Autonomy Mode permits repository-scoped work that is testable, observable, reviewable, verification-gated, compatible, and rollbackable. Provider calls, external mutation, target output, release, deployment, and authority-critical actions retain their separate gates.
 
 ## Core Ownership
 
-| Module | State | Purpose | Verification |
+| Area | Canonical owner | Connection truth |
+|---|---|---|
+| API/startup | `engine/src/main.rs`, `engine/src/http_server/` | sole process/API composition root; execution modes and scheduler are default-off unless explicit gates pass |
+| Dispatch | `engine/src/dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | connected for `/dispatch`; default executor is `noop`; not the workflow/worktree orchestrator |
+| Planning | `engine/src/read_only_planner.rs`, `orchestration/task_decomposer.rs`, DAG/dependency/context-budget owners | read-only advisory graph by default; executable Agent/adaptive graphs require caller-supplied explicit contracts |
+| Workflow runtime | `engine/src/workflow/`, `engine/src/scheduler.rs`, `engine/src/scheduler/runtime.rs`, `executor_pool.rs`, `node_executor.rs` | sole persisted run/lease/retry/concurrency path; supervised workers and scheduler are default-off |
+| Agent Runtime | `AgentStepExecutor`, provider typed-action contracts, agent state/proposals/receipts | explicit `agent_steps`; one leased node/one typed action; default-off |
+| Recursive execution | `recursive_execution`, workflow/scheduler/Agent Runtime/store owners | bounded child-task tree via PR #239; no autonomous root goal or self-improvement |
+| Durable memory | `agent_memory.rs`, `durable_memory.rs`, store/retrieval/context injection | scoped and connected for compatible Agent Runtime nodes; not automatic for ordinary plans |
+| Adaptive efficiency | adaptive completion/executor, contextual policy, experiment/promotion, replay, scorecard, budget producers | connected behind gates; ordinary plans do not automatically select or compile it |
+| Dynamic workflow | `workflow/dynamic_controller.rs`, scheduler runtime | explicit/scheduler mode; not automatic product composition |
+| Supervised workspace | supervised-patch handlers/store and `target_repo_output` worktree owner | real copy/git-worktree lifecycle; created separately from ordinary plan/run |
+| Verification/repair | supervised-patch verification, canonical operation/attempt receipts, CLI repair executor | real and bounded; API-owned run path remains separate from ordinary workflow transaction |
+| Artifact/approval | supervised-patch capture/store, redaction/secret scan/integrity, workflow/operator approval owners | real, hash/current-state bound |
+| Target output | `target_repo_output.rs`, authority/store receipts, GitHub PR adapter | patch or `acp/*` branch/Draft PR only; default-off; no target `main` or merge authority |
+| Persistence | `engine/src/storage/local_product_store/` | sole application-owned SQLite/PostgreSQL store, migrations, audit, evidence, backup/integrity |
+| Harness Evolution Level-1 | `harness_evolution.rs`, `harness_evolution_eval.rs`, `harness_evolution_pr_ready.rs`, v27-v29 store owners | accepted fixture laboratory through PR #265; default-off; active Harness immutable |
+| Dashboard | `dashboard/` | Mission Control manually sequences fragmented APIs; PR #225 is presentation-only |
+| SDKs | `sdk/typescript/`, `sdk/python/` | typed clients for existing endpoints; no canonical task intake yet |
+| Contracts | `wire_contract/v1/`, `codegen/` | cross-language schemas; checked by `scripts/check_wire_codegen_drift.sh` |
+| Repository agent | `scripts/agent-control/`, `.github/workflows/agent-*.yml` | implemented, production-disabled, parked on Issue #254 |
+| CI/release/recovery | `.github/`, `scripts/`, `tools/`, release/fault assets | verification and bounded operator support; no implicit release/deploy authority |
+
+## Actual Product Data Flow
+
+```text
+Current ordinary path
+  prompt
+    -> POST /dispatch
+       -> analysis -> routing/budget -> noop/provider executor -> evaluation -> ledger
+       -> persisted dispatch/routing + replay-production attempt
+    OR
+    -> POST /plans
+       -> read-only advisory graph
+       -> POST /workflow-runs
+       -> manual tick or explicitly enabled scheduler
+       -> generic nodes often lack prompt/worktree/executable contract
+
+Separate repository-output path
+  run_id + target repo + source revision
+    -> create supervised git worktree
+    -> separately execute/repair in that exact workspace
+    -> verify
+    -> capture artifact
+    -> approval binding
+    -> patch or acp/* branch / optional Draft PR
+
+Missing connection
+  no canonical task identity/intake/orchestrator binds the two paths before execution
+```
+
+## Canonical Identity Map
+
+| Record | Existing identity | Current parent binding |
+|---|---|---|
+| dispatch | `dispatch_id` | request/tenant; independent direct-dispatch lifecycle |
+| plan | `plan_id`, `workflow_id`, plan `dispatch_id` | raw request and advisory graph |
+| run | `run_id`, `plan_id`, workflow scope | derived from plan; optional `workspace_id` scope string |
+| node | `node_id`, run/workflow | task type/dependencies; generic plan lacks repository task contract |
+| supervised workspace | `workspace_id`, `run_id`, optional `plan_id`, target/source | separate post-run creation |
+| verification | operation/attempt/run identities | supervised workspace owner |
+| artifact | `artifact_id`, workspace/patch/source | captured from supervised workspace |
+| approval | `approval_id`, run/node and artifact bindings | separate workflow/operator owner |
+| target output | durable output receipt | artifact/run/request binding |
+| replay/scorecard | owner-specific artifact/run/dispatch IDs | no single canonical product task root |
+| Harness candidate | proposal/candidate/lineage/evaluation/PR_READY IDs | Level-1 laboratory identity, not user task identity |
+
+`PE7-PRODUCT-GOLDEN-PATH-1` must add or compatibly extend one root `task_id` and link these existing identities. It must not replace them.
+
+## Top-Level Directory Classification
+
+| Path | Role | State | Ordinary runtime participation |
 |---|---|---|---|
-| `AGENTS.md`, `CLAUDE.md`, `docs/NEXT_DECISION.md`, `docs/REAL_WORLD_TESTING_PLAYBOOK.md`, `scripts/check_agent_handoff.py` | active | autonomous authority, packet routing, evidence discipline, and governance-drift prevention | handoff guard, focused documentation checks, CI where required |
-| `engine/src/main.rs`, `engine/src/http_server/` | active | sole Rust runtime and API | HTTP and engine tests |
-| `engine/src/trusted_local.rs` | active | trusted-local readiness and execution gates | trusted-local tests |
-| `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | active | deterministic dispatch, routing, and bounded budget authority | dispatch and budget tests |
-| `engine/src/provider/`, `engine/src/provider/fake.rs` | active | provider adapters, strict Agent Runtime decisions, redaction, audit, identity/pricing/cost evidence, and deterministic fake-provider testing | provider, audit, embedding, dependency, and full-stack tests |
-| `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active/manual-live | bounded Stub/Fake/explicit local live runner | local runner/provider tests and binaries |
-| `engine/src/agent_memory.rs`, `engine/src/durable_memory.rs` | active | run-scoped memory policy and versioned durable memory/retrieval | memory, context, retrieval, integrity, and PostgreSQL tests |
-| `engine/src/orchestration/schemas.rs`, `engine/src/workflow/`, `engine/src/scheduler.rs`, `engine/src/scheduler/`, `engine/src/node_executor.rs`, `engine/src/executor_pool.rs` | active | workflow graph, sole scheduler, bounded Agent Runtime, child proposals, concurrency, leases, retries, and executor accounting | workflow, scheduler, executor, restart, and concurrency tests |
-| `engine/src/tool_policy_executor.rs`, tool-policy HTTP/store owners | active | configured allowlists, hooks, exact-action approval, and one-use effect authorization | tool-policy, approval, idempotency, and outcome-unknown tests |
-| `engine/src/storage/local_product_store/` | active | sole application-owned SQLite/PostgreSQL-compatible store, audit, integrity, migrations, backups, artifacts, and evidence | local-store, migration, integrity, backup/restore, and PostgreSQL tests |
-| `engine/src/target_repo_output.rs`, `engine/src/target_repo_output/authority.rs` | active | isolated target-workspace and approved patch/branch output authority | target-output, duplicate/restart, compensation, and acceptance tests |
-| `engine/src/feedback/`, `engine/src/storage/local_product_store/policy_replay_producer.rs`, adaptive-policy store owners | active | offline replay, shadow/canary evidence, explicit promotion, snapshots, compensation, and rollback | replay, promotion, stale/tamper, and concurrency tests |
-| `scripts/token_efficiency_scorecard.py`, benchmark/import scripts, scorecard store/API | active | token/cost/quality evidence, regression reports, batches, trends, and runtime comparisons | deterministic fixture, importer, store, API, SDK, and Dashboard tests |
-| `dashboard/` | active/read-mostly | local operator UI; mutation remains in explicit backend owners | lint, typecheck, build, static export, and browser checks where applicable |
-| `sdk/typescript/`, `sdk/python/` | active | typed API clients | SDK tests |
-| `wire_contract/v1/`, `codegen/` | active | cross-language contracts and generated types | `scripts/check_wire_codegen_drift.sh` |
-| `scripts/`, `tools/`, `.github/workflows/` | active | CI, pilots, packaging, release provenance, install/upgrade, backup/restore, and bounded drills | focused script tests, workflow checks, security baseline, and CI |
-| `scripts/external_validation.{sh,py}`, `.github/workflows/external-validation.yml`, `tests/test_external_validation.py` | active | clean-environment stranger validation (demo + doctor + exact-head self-check); `external_validation_report.v1` | unit/self-test; hosted Ubuntu/macOS matrix; not external adoption evidence |
-| `scripts/demo.sh`, `scripts/demo_no_provider.py`, `actions/exact-head-check/`, `tools/check_readme_public_surface.py` | active | no-provider public demo and exact-head growth wedge (OSS #241–#253) | demo unit tests, action contract tests, public-surface drift checks |
-| `scripts/agent-control/`, `.github/workflows/agent-*.yml`, `tests/test_agent_control_*.py`, `tests/test_agent_orchestrator_*.py` | active/default-off | GitHub Issue-controlled maintenance orchestration, Vader artifact workers, GitHub-hosted finalization, exact-head CI/review/merge gates | orchestrator suite, YAML/action-pin/security/handoff checks, replacement live smoke pending |
+| `engine/` | runtime, API, policy, scheduler, store, evidence, output | active | partial and fragmented |
+| `dashboard/` | operator UI and guarded controls | active | manual composition |
+| `sdk/` | typed clients | active | mirrors APIs |
+| `scripts/` | demos, validation, evidence import, ops, release, repository agent | active | mostly outside runtime |
+| `tools/` | security, provenance, fault and maintenance tooling | active | support/verification |
+| `adapters/` | external runtime adapters | guarded | explicit fixture/external nodes |
+| `wire_contract/`, `codegen/` | schema/type governance | active | contract support |
+| `.github/` | CI, exact-head, release and parked repository-agent workflows | active/default-off by lane | delivery/verification |
+| `docs/` | authority, state, architecture, runbook | active | governance only |
+| `tests/`, fixtures, benchmarks | deterministic evidence | active | validation only |
+| `deploy/` | local packaging/deployment support | bounded | not production authority |
+| `site/` | public presentation | bounded | none |
 
-## Current Capability Ownership
+## Capability Boundaries
 
-| Capability | Primary owners | Current boundary |
-|---|---|---|
-| Agent Runtime execution | typed plan/run HTTP handlers; `AgentStepExecutor`; scheduler/executor pool; `agent_action_receipts`; provider `agent_action.v1` source | connected; one leased node produces at most one typed action; default-off provider/runtime gates; restart/concurrency idempotency |
-| Child tasks, handoff, review, debate | `ChildTaskProposal`, `agent_proposals`, `AgentAction` variants, workflow graph, scheduler, action receipts, `recursive_execution`, recursive store tables | flat actions remain compatible; bounded recursive admission/persistence is implemented (PR #239, default-off with independent kill switch); no autonomous root-goal authority |
-| Command/CLI tool policy | capability/allowlist/hook stores; `ToolPolicyNodeExecutor`; workflow approvals/operator actions | connected; configured allowlists authoritative; exact-action authorization consumed once; post-effect failures remain non-retryable outcome-unknown |
-| Durable memory and retrieval | durable-memory store, provider embedding adapter, provider audit, scheduler context injection, HTTP/SDK/Dashboard | connected; exact scope/version/source/provenance; guarded provider mode remains fail-closed without admissible current catalog evidence |
-| PE-1 regression lab | scorecard scripts/store/read APIs/Dashboard | connected, report-only, and non-mutating |
-| PE-2 budget intelligence | usage normalization, forecast/anomaly owners, fenced production jobs, operator pause/recovery | connected; only supported fresh evidence can reach typed pause/recovery owners |
-| PE-3 operator decision center | derived queue, typed HTTP handlers, SDKs, Dashboard, existing mutation owners | connected; no generic executor and no new source of truth |
-| PE-4 replay and promotion | dispatch-history provenance, offline replay, shadow/canary, evidence-chain promotion, snapshots/rollback | connected; replay remains non-authorizing until explicit current-state-bound promotion |
-| Managed external runtime | Rust-leased `langgraph_external` node, v24 receipts/checkpoints, locked adapter package | connected in fixture/guarded-live modes; Python owns no queue, authority, or product store |
-| OpenCode external coding adapter | default-off `opencode_external` node (`engine/src/opencode_runtime.rs`), fixture adapter `adapters/opencode/` | PE7 fixture-first; deny-by-default; reserved exact-capability routing; fixture identity in `FIXTURE_ADAPTER_MANIFEST.json`; `PIN.json` does not admit a real binary (`PE7-OPENCODE-BINARY-ADMISSION-1` deferred) |
-| Efficiency/tool-discovery benchmark | native/LangGraph runtime binaries, benchmark script, scorecard matrix API/Dashboard | deterministic fixture evidence connected; provider-backed result not verified |
-| Target repository output | app-owned workspaces/worktrees, approvals, receipts, branch/patch output, compensation | connected and externally accepted on a disposable target after PR #226; no direct target `main` or merge authority |
-| GitHub/Vader repository maintenance | control Issue, Actions workflows, Vader artifact worker, GitHub-hosted finalizer | implemented but production-disabled; replacement smoke blocked by offline runner/TLS token-exchange path |
-
-## Approved Recursive-Execution Ownership
-
-`PE7-BOUNDED-RECURSIVE-EXECUTION-1` is the approved AR7 runtime-extension packet and is merged via PR #239 (default-off); it extends existing owners rather than creating parallel infrastructure.
-
-| Required capability | Existing owner to extend | Boundary |
-|---|---|---|
-| Recursive identity and ancestry | `ChildTaskProposal`, workflow node/edge identities, `agent_proposals`, `AgentState` | control plane derives root, parent, depth, task fingerprint, and ancestry; model cannot assert authority |
-| Tree admission | scheduler admission, workflow graph mutation, Agent Runtime capability checks | default-off; depth, children, total nodes, budget, concurrency, retry, scope, and cycle limits fail closed |
-| Exactly-once child acceptance | `agent_action_receipts`, backend transactions, audit | one accepted proposal creates ordinary workflow state atomically; changed hashes or stale parents conflict |
-| Capability inheritance | Agent Runtime capability profiles and tool-policy owner | children receive only an equal or reduced scope; escalation is rejected |
-| Recursive execution | existing scheduler, executor pool, `AgentStepExecutor`, leases and retries | no recursive function/runtime loop; each child remains one ordinary bounded leased node |
-| Recursive evidence | operator evidence read model, audit, scorecards, storage integrity | metadata-only ancestry/budget/result evidence; no raw prompt/output/transcript persistence |
-| Pause, kill, rollback | existing scheduler pause, Agent Runtime kill switch plus a new narrower recursive gate/kill switch | disable admission, drain/block leases, preserve evidence, revert code; no destructive cleanup by default |
-
-No source file or schema addition is considered implemented until its packet PR is merged with exact-head CI. The implementation PR must audit actual current file boundaries before choosing new filenames.
-
-## Approved Harness-Evolution Ownership
-
-`PE7-HARNESS-EVOLUTION-LAB-1` is a default-off laboratory. B1–B3 scaffolding (PRs #258–#260) is merged but not Level-1 complete (merged-repair-required residual defects). Active repair sequence: R1 authority/workspace → R2 evaluator/sealed-set → R3 finalizer integration → Level-1 acceptance. Extend existing owners below; do not treat synthetic fixtures or caller-supplied identity as authority.
-
-| Laboratory function | Existing owner to reuse | Boundary |
-|---|---|---|
-| Failure/trace input | dispatch history, workflow/audit evidence, scorecards, PE-2 usage artifacts, PE-4 replay bindings | only owner-backed redacted evidence; no caller-invented failures or raw trace persistence |
-| Mutation proposal | bounded Agent Runtime decision/proposal contracts | proposal only; no direct code, evaluator, active-policy, or authority mutation |
-| Candidate workspace | `ACP_HARNESS_EVOLUTION_WORKSPACE_ROOT` + `materialize_candidate_workspace` / `revalidate_workspace_content` / `discard_candidate_workspace` under `harness_evolution.rs`; supervised-patch/app-owned workspace and target-output worktree owners for later finalizer path | isolated candidate state; registered target tree and active `main` remain protected; content hash from actual bounded surface |
-| Active identity epoch | `LocalProductStore::register_harness_evolution_active_identity` (insert-only, actor-audited) | caller cannot supply authoritative active identity; optimistic expected-id only |
-| Static and task evaluation | existing verification commands, benchmark registry, scorecards, replay/shadow/canary | equal-budget, versioned, hash-bound, sealed-task-aware evaluation; no provider call in initial fixture stage |
-| Candidate lineage/archive | `LocalProductStore` + `engine/src/harness_evolution.rs` + `engine/src/harness_evolution_eval.rs` + `engine/src/harness_evolution_pr_ready.rs` + v27–v29 tables (`harness_evolution_*`), migrations, integrity, backup/restore, audit | app-owned versioned evidence through PR_READY bundles; laboratory never creates/merges PRs |
-| Cost and budget comparison | scorecard and PE-2 usage/cost owners | missing or untrustworthy cost remains unavailable, never fabricated as zero |
-| Promotion | operator decision center, evidence-chain promotion patterns, target-output finalizer, PR/CI/review gates | candidate may become `PR_READY`; no direct active-version change, auto-merge, deployment, or release |
-| Rollback | ordinary Git/PR/release rollback plus lab gate/kill switch | lab never invents a second rollback authority |
-
-The authoritative evaluator, sealed set, permissions, credentials, budget owner, audit, promotion thresholds, target-output authority, merge/release owner, and active-version binding are part of the immutable control plane. The initial mutable surface is limited to prompts/rules, context selection, tool descriptions/selection policy, bounded retry/stop policy, admitted model routing, and recursive decomposition policy. Source-code mutation follows only after component-level evaluation is stable.
-
-## Integration and External-Acceptance Ownership
-
-### Repository-maintenance orchestrator
-
-The orchestrator remains disabled and emergency-stopped. `control_state.py` owns setup and control transitions; GitHub-hosted finalizers own branch/PR/label/comment mutations; Vader remains artifact-only. No recursive or evolution packet may enable Issue #208, consume the offline runner, or use this path until the replacement smoke is accepted.
-
-### Provider/live benchmark
-
-Provider adapters, catalog validation, pricing/cost gates, receipts, audit, circuit breakers, kill switches, and symbolic credentials remain the only live-call owners. Recursive/evolution fixture work may not infer live evidence from fixture output or from a `free` label.
+- Bounded recursive task execution: persisted child-task admission inside existing workflow/scheduler owners.
+- Adaptive/dynamic efficiency: routing, fusion, observations, experiments, promotion/rollback, scheduler feedback, replay, and scorecards.
+- Harness Evolution Level-1: one default-off fixture candidate/evaluation/archive/PR_READY owner path with immutable active Harness.
+- Harness Evolution Level-2: proposed multi-generation controller only; Issue #266 has no implementation.
+- Meta Improver: separate blocked experiment; not implied by Level-1/Level-2.
+- Recursive self-improvement: not implemented or claimed. It would require repeated accepted improvement of the active system under separate authority and real evidence.
 
 ## PE-5 Release Provenance Ownership
 
-PR #214 merged the active `release_provenance.v2` repair. Existing release workflow, package/container builders, lockfiles, signed SLSA/SPDX/custom-manifest bundles, installer/upgrader verification, and transactional rollback remain authoritative. Recursive/evolution work adds no signing, publication, install, or release authority.
+Existing release workflow, package/container builders, lockfiles, signed provenance/SBOM/custom-manifest verification, installer/upgrader, and rollback owners remain authoritative. No Golden Path or evolution packet gains tag, publication, release, deployment, installation, or signing authority.
 
 ## PE-6 Fault Injection and Recovery Ownership
 
-PR #214 merged the active v2 owner-evidence repair. Existing fixed scenario registry, disposable fault harness, SQLite/PostgreSQL recovery tests, provider/fake fault owners, release rollback drills, and cleanup evidence remain authoritative. Recursive/evolution work may use only separately allowlisted disposable fixtures and cannot target production resources.
+Existing fixed scenario registry, disposable fault harness, SQLite/PostgreSQL recovery tests, fake/stub provider owners, release rollback drills, and cleanup evidence remain authoritative. Product/evolution work may reuse their failure models but may not target production resources or create a second recovery authority.
 
-## Active Routing
+## Active Connection Decision
 
-1. PE7 Level-1 laboratory path COMPLETE (default-off). Keep binary admission deferred, PR3 parked, Meta Improver blocked. Default work is Ship PR maintenance.
-2. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is parked on Issue #254 (runner online/idle; Codex HTTP 403).
-3. `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` is complete via PR #257; binary admission remains deferred.
-4. `PE7-META-IMPROVER-EXPERIMENT-1` remains blocked until a stable, independently reviewed Level-1 lab result exists.
-5. Extend existing owners; do not create another runtime, scheduler, queue, storage layer, evaluator authority, release pipeline, signing authority, recovery authority, artifact truth source, tool registry, or Dashboard mutation model without an explicit replacement decision, compatibility evidence, and rollback.
+1. Connect existing owners through `PE7-PRODUCT-GOLDEN-PATH-1`.
+2. Collect trusted product evidence through `PE7-REAL-WORKLOAD-EVIDENCE-1`.
+3. Reassess and, only if justified, activate `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`.
+4. Keep `PE7-META-IMPROVER-EXPERIMENT-1` blocked behind Level-2 and a separate authority review.
+5. Keep OpenCode binary admission deferred, repository-agent smoke parked, provider/live gates unchanged, and PR #225 independent.
 
 ## Active Documents
 
@@ -121,4 +131,4 @@ PR #214 merged the active v2 owner-evidence repair. Existing fixed scenario regi
 - `docs/REAL_WORLD_TESTING_PLAYBOOK.md`
 - `docs/RUNBOOK.md`
 
-Prefer editing, shortening, and reconciling these surfaces over adding another policy, roadmap, status, packet, or closeout document.
+Prefer reconciling these files over adding another roadmap, status, architecture, policy, or closeout document.

@@ -2,159 +2,103 @@
 
 Last updated: 2026-07-21.
 
-## Summary
-
-Default daily path remains local Agent → focused branch → PR → exact-head CI → independent review → manual squash merge (`SHIP-PR-DELIVERY-1`, PR #240). Open-source public surfaces through PR #253 are merged. Clean-environment external validation (`OSS-EXTERNAL-VALIDATION-1`, PR #256) is merged: `./scripts/external_validation.sh`, hosted Ubuntu/macOS self-validation, and `external_validation_report.v1` (engineering usability only — not external adoption evidence).
-
-**Repository-agent (Issue → Vader → Codex CLI) path is parked.** Vader runner is `online`/`idle` after Mihomo left broken `台湾家宽-IEPL 02` for `香港-IEPL 01`. Replacement live-seal is **not** actively driven: parking Issue **#254** (same smoke *class* as #231→PR #232 and #235→PR #236; those PRs stay closed). Last smoke failed at ChatGPT Codex HTTP 403 (worker `29739968760`), not runner offline. Issue #208 remains `agent-control` + `agent-emergency-stop`. Active implementation continues on **PE7 local/fixture** and Ship PR work without Issue→CLI.
-
-This repository is a local/small-team self-hosted Agent workflow control plane and research lab. Rust `engine/` remains the sole runtime, API, scheduler, policy, and application-owned storage implementation. The production-integration program through Agent Runtime AR-6 and product evolution PE-1 through PE-6 is merged. Durable memory, budget evidence, replay/promotion, managed external-runtime adapters, target-output authority, release provenance, and fault/recovery evidence are connected through existing bounded owners.
-
-Controlled staging drills and the repaired disposable target-repository path passed. PR #237 is merged and accepted on exact reviewed head `068b2e9ac4bde16daea25bcb4846f7e26ba6cca9` with seven-job CI run `29628449688` and two independent complete-diff reviews. The remaining repository-agent acceptance work is operational: restore the existing Vader runner and complete one replacement documentation-only smoke through PR creation, exact-head CI, and independent review. Issue #208 remains stopped only until that bounded smoke begins; its temporary enable/restore is already authorized. Auto-merge remains off. The current authenticated OpenRouter embedding catalog still omits the potentially chargeable `request` price; merged PR #227 keeps that path pre-send-blocked. No provider POST, provider-backed benchmark, public release, or production installation has been completed.
-
-A one-time bounded temporary lift of the Issue #208 emergency stop then ran a fresh documentation-only end-to-end smoke (Issue #235 → PR #236) and reached a bounded terminal state with a bounded smoke failure: the worker pushed branch `agent/issue-235` (head `042d2560cb626a96b0e8b4f477bbbc087902f1a1`) and opened PR #236 with exactly one allowed file, but the worker's finalize step failed with `CI_VERIFICATION_ERROR: exact-head CI run did not become observable` before the worker-dispatched CI run (`29573762624`) became observable to its read-acquisition check. All seven CI jobs on `29573762624` later completed `success` on the exact head `042d2560`. `agent-ci-monitor` was then dispatched via the PR #233 `workflow_dispatch` trigger (run `29574631602`) and produced `action: trigger_review`. The follow-up `agent-controller` `dispatch-review` (run `29574651817`) was rejected with `issue_not_active` because the worker's failure-handler had already moved Issue #235 to `agent-blocked` during the CI-observation race. The independent review could not bind to the exact head, but the full chain Vader → artifact → branch → PR → exact-head seven-job CI → trusted monitor `workflow_dispatch` was proven end-to-end. PR #236 was not merged. Auto-merge remained disabled. Issue #208 was restored to `agent-control` + `agent-emergency-stop` immediately after the bounded terminal result. Vader released capacity (`busy: false`).
-
-PR #237 (squash-merged into `main` at `1947d4b555bd14b7f104c1fc9aba31747099cb88` after all seven CI jobs passed on the exact head `068b2e9ac4bde16daea25bcb4846f7e26ba6cca9`, run `29628449688`) repaired the repository-agent CI cancellation and capacity-leak blocker that the Issue #235 smoke exposed. The prior chain shared one `agent-orchestrator-state` concurrency group across all seven workflows and set `cancel-in-progress: ${{ inputs.command == 'emergency-stop' }}` on `agent-controller`; because GitHub Actions does not run `if: always()` failure-handlers for jobs cancelled by a concurrency group, an emergency-stop cancelled unrelated in-flight workflows and leaked their claimed capacity. PR #237 reverted every workflow to per-resource concurrency groups with `cancel-in-progress: false`, so emergency-stop now only sets the control-state flag and each workflow reconciles its own claim through its own `if: always()` finalizer. The PR also split `ci_verifier` into `acquire_exact_run` (bind the run without waiting) plus `wait_for_run_completion` (bounded poll with per-cycle binding revalidation), made production CI identity fail-closed on every missing field in `_validate_run_identity`, added durable `claimed` → `dispatched` claim lifecycle records written before label mutation, and added `reconcile_claimed_dispatch` plus idempotent `release_and_record_ci_terminal` terminal compensation that preserves `dispatched` claims for their own child-workflow compensation. Two independent complete-diff reviews passed. Issue #208 remained `agent-control` + `agent-emergency-stop` throughout; no provider POST, no unrelated dispatch, and auto-merge stayed off. A fresh documentation-only replacement smoke remains to be run after the existing Vader runner is restored; runner and egress restoration are authorized operational repair, not a governance hard stop. Issue #208 remains stopped until the bounded smoke begins.
-
-A new research direction is documented: bounded recursive execution, then a controlled OpenCode external adapter, then an evidence-gated Harness evolution laboratory. `PE7-BOUNDED-RECURSIVE-EXECUTION-1` is merged and accepted via PR #239. `PE7-OPENCODE-EXTERNAL-ADAPTER-1` is merged via PR #255 (fixture-first default-off). `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` is complete via PR #257 (squash-merged into `main` at `4731e39934a53ba375d34add9aeda0b5be596f04` from reviewed head `a5556e2475949f9364c86f47a65d802bc322ae87`; exact-head CI `29798135924` / `29798135919`). Harness Evolution B1–B3 scaffolding is merged (PRs #258–#260, schemas v27–v29) but is **not Level-1 complete** (merged-repair-required): admission still accepts caller-supplied active identity, evaluation can rank synthetic fixture metrics, and PR_READY accepts non-owner evidence/operator strings. Harness Evolution R1–R3 repairs COMPLETE via PRs #262–#264 (`main` heads `bc0bb9f7` / `58b6e76e` / `a6054922`). Level-1 acceptance test path present (default-off; store-owned identity → proposal → workspace → evaluation → operator ack → PR_READY). Laboratory remains default-off; active Harness immutable; no recursive self-improvement or production improvement claim. Meta Improver remains blocked until a stable independently reviewed Level-1 result is accepted for that experiment. Real OpenCode binary admission remains deferred (`PE7-OPENCODE-BINARY-ADMISSION-1`). Meta Improver remains blocked. PR3 remains parked on Issue #254. No evolution gate product claim; no candidate Harness has been promoted; the repository does not claim recursive self-improvement.
-
 ## Verified Repository State
 
-- current documentation work started from `main` commit `0ff756acb213ca68944d1317a77f85c7b0b1c2a1`;
-- PR #214 merged the active PE-5/PE-6 post-seal repair;
-- PR #207 merged the disabled-by-default event-driven repository-maintenance orchestrator;
-- PR #216 repaired Codex last-message handling and runner-readiness validation;
-- PR #220 merged production Agent Runtime and tool-policy integration;
-- PR #221 merged durable memory plus the PE-2/PE-4 production loop;
-- PR #222 merged the managed external runtime, benchmark, orchestrator evidence repair, and local acceptance seal;
-- PR #223 and PR #224 merged provider embedding receipt, transport, authorization, identity, and pricing safety repairs;
-- PR #226 repaired target-output duplicate delivery and restart idempotency;
-- exact-head CI evidence recorded by the merged PRs remains the implementation evidence; documentation changes do not create new implementation evidence;
-- PR #225 remains open and presentation-only, touching the Dashboard visual system rather than runtime or authority;
-- repository Actions may create/approve pull requests and the required secret names exist, but Issue #208 remains emergency-stopped with orchestration and auto-merge disabled;
-- the unique Vader runner unit is `actions.runner.Igzela-token-efficient-agent-harness-lab.Vader.service` under user `igzela`; after Mihomo `节点选择` left `台湾家宽-IEPL 02` for `香港-IEPL 01` and the service was restarted (2026-07-20), GitHub runner readiness reports `online`/`idle`/`ready:true`. The parked Issue→CLI blocker is Codex/ChatGPT HTTP 403 from this host (not runner offline). Egress can regress on Clash Verge reload or node congestion;
-- PR #230 repaired the repository-agent empty-workspace-output defect (Codex returned prose without editing due to an 80KB prompt with conflicting governance constraints) and split terminal attribution so successful-exit/no-changes now records `reason_code: no_workspace_changes` instead of generic `model_execution_failure`. The repair merged;
-- bounded replacement smoke Issue #231 created PR #232 (`docs/agent-smoke-replacement-20260717-c.md` only) and exact-head canonical seven-job CI passed (run `29565496618`), but the GitHub-hosted `agent-ci-monitor` workflow that dispatches independent review did not fire because `workflow_run` is not dispatched for `workflow_dispatch`-triggered bot CI. PR #233 repaired the dispatch-trigger path (squashed into `main` at `282cfc6246cdd0bdd607f70a951e5709e73f9ffa`); a fail-closed smoke (Issue #234) reached the expected terminal state on run `29572989439`. A one-time bounded temporary lift of the emergency stop then ran a fresh end-to-end smoke (Issue #235 → PR #236) that proved Vader → artifact → branch → PR → exact-head seven-job CI green (run `29573762624`) → `agent-ci-monitor` `workflow_dispatch` (run `29574631602`, `action: trigger_review`), but the follow-up `dispatch-review` controller run `29574651817` was rejected with `issue_not_active` because the worker's failure-handler had already moved Issue #235 to `agent-blocked` during a CI-observation race. The smoke PR remains unmerged and Issue #208 is emergency-stopped;
-- PR #237 (squash-merged into `main` at `1947d4b555bd14b7f104c1fc9aba31747099cb88` after all seven CI jobs passed on exact head `068b2e9ac4bde16daea25bcb4846f7e26ba6cca9`, run `29628449688`) repaired the CI cancellation/capacity-leak and CI-observation-race blockers exposed by the Issue #235 smoke. Two independent complete-diff reviews passed. Issue #208 remained `agent-control` + `agent-emergency-stop` throughout; no provider POST and no unrelated dispatch occurred; auto-merge stayed off. A fresh documentation-only replacement smoke remains parked on Issue #254 until Codex/ChatGPT HTTP 403 is resolved; the runner itself is online/idle. Issue #208 remains stopped until that smoke is deliberately unparked.
-- the current authenticated OpenRouter embedding catalog proves the fixed model identity and explicit zero `prompt`/`completion` prices, but omits the potentially chargeable `request` price; merged PR #227 records Applicable/NotApplicable/Unknown receipt evidence without treating omitted fields as zero, and the live request remains blocked before POST;
-- disposable repository `Igzela/acp-target-accept-20260716-1145` no longer resolves via GitHub API/GraphQL (already absent or previously deleted); do not delete any other repository.
+- Canonical repository: `Igzela/token-efficient-agent-harness-lab`.
+- Audited remote `main`: `6b4091e876b2fca0da03485540e5ce4f579ac13c`.
+- That commit is the squash merge of PR #265, whose exact reviewed head was `3a01abfef455cf703569e365f450f9831d28fc06`.
+- PR #265 exact-head workflows `29813548306` (`tests`) and `29813548423` (`exact-head-check`) completed successfully. Two independent complete-diff review comments were bound to the same exact head. GitHub has no formal submitted review object for those comments.
+- Open PR coordination before this audit branch: PR #225 was the only open PR and is presentation-only Dashboard work; it does not own the active governance documents. This audit is tracked separately in PR #267.
+- Open research coordination: Issue #266 contains only the initial Level-2 multi-generation proposal. No matching branch, commit, PR, or issue comment was found during this audit.
+- Parked external acceptance: Issue #254 remains the repository-agent replacement smoke parking issue. Issue #208 remains the emergency-stop authority.
 
-## Repository-Agent Smoke Status
+Repository evidence, CI, and current source remain authoritative. Prior chat summaries and stale document text are not implementation evidence.
 
-The first GPT Web smoke, Issue #217, proved this partial chain:
+## Current Product Verdict
 
-```text
-GPT Web request
--> bounded Agent Task Issue
--> intake and unique claim
--> controller dispatch
--> Vader worker
--> validated artifact
--> branch push
-```
+The repository contains a substantial set of implemented and tested control-plane owners, but it does not yet expose one canonical user-task transaction that binds natural-language intent, target repository, source revision, executable graph, worktree, verification, artifact, approval, and output.
 
-PR creation then failed because Actions PR creation was disabled at that time. PR #222 added setting preflight, bounded worker timeout, terminal phase/reason evidence, and capacity-safe cleanup. The repository setting, runner online/idle readiness, empty-workspace repair, and `agent-ci-monitor` `workflow_dispatch` trigger (PR #233) are merged. The replacement smoke (Issue #235 → PR #236) reached a bounded terminal state with a bounded smoke failure: the worker did not wait long enough for its own dispatched CI to become observable, so the failure-handler moved Issue #235 to `agent-blocked` before the `agent-controller` `dispatch-review` could run. The chain Vader → artifact → branch → PR → exact-head seven-job CI green → trusted monitor `workflow_dispatch` is proven end-to-end; the independent review did not bind to the exact head because of the CI-observation race.
+The ordinary product-facing path is therefore not yet a usable end-to-end coding-agent workflow:
 
-Operational consequence:
+1. `/dispatch` is a deterministic dispatch/evaluation ledger path whose default executor is `noop`.
+2. `/plans` produces a read-only advisory graph unless the caller explicitly supplies `agent_steps` or `adaptive_execution`.
+3. `/workflow-runs` creates and advances persisted runs, but normal plan nodes do not carry the task prompt, target repository, verification contract, or worktree binding needed by a coding executor.
+4. supervised-patch workspaces, verification, patch capture, approval, and target output are real owners, but they are created through separate calls after the run exists.
+5. Mission Control places these controls on one screen, but its “Create plan + run” action does not bind the repository fields shown beside it and requires manual workspace creation, tick, verification, capture, approval, and output.
 
-- runner is restored (`online`/`idle`); do not treat offline-runner recovery as the active blocker;
-- the parked blocker is Codex/ChatGPT HTTP 403 on the Vader host (Issue #254). Do not hard-fix Issue→CLI smokes until deliberately unparked;
-- keep Issue #208 stopped until a replacement smoke is unparked; temporarily enable only for that bounded smoke and restore emergency stop immediately afterward;
-- keep Mihomo egress on a node that completes both `tokenghub` TLS and ChatGPT Codex API access; re-verify after any Clash reload;
-- when unparked, complete one documentation-only replacement smoke through PR creation, exact-head CI, independent review, and manual merge decision before accepting the repository-agent path for normal bounded work.
-
-The intended interface remains ordinary language in GPT Web. The assistant, not the user, owns internal Issue/workflow parameters. Existing runner and egress recovery, bounded smoke execution, eligible manual merge, and continuation across `READY_FOR_EXECUTION` packets require no repeated permission.
+This is an integration gap, not proof that the individual owners are fake.
 
 ## Capability Status
 
-| Capability | Current status |
-|---|---|
-| Dispatch kernel and V2 output authority | Complete |
-| Adaptive Fusion through AF-7 | Implemented; single/fallback/Fusion paths exist, while final authority convergence and complexity/risk-driven automatic selection remain deferred |
-| Agent Runtime through AR-6 | Production-managed through typed `agent_step` plans, one-action decisions, scheduler leases, atomic receipts, bounded concurrency, proposals, handoff, review/debate, and operator evidence |
-| Trusted Local Autonomous Execution through IAE-3 | Complete within its documented local/default-off gates |
-| PE-1 Token Efficiency Regression Lab | Connected through scorecard persistence, reports, batches, trends, APIs, SDKs, and Dashboard |
-| Durable cross-run memory | Connected with versioned scope, conflict/tombstone/expiry semantics, bounded retrieval, runtime context injection, audit, backup, and SQLite/PostgreSQL parity; provider embedding remains fail-closed |
-| PE-2 Budget Intelligence | Connected to normalized owner-backed usage, immutable forecast/anomaly evidence, typed pause, and recovery |
-| PE-3 Operator Decision Center | Connected to typed inspect, acknowledge, approval, retry, pause/recovery, and exact-snapshot rollback owners; no generic executor |
-| PE-4 Trace-backed Policy Replay | Connected to recorder-owned traces, immutable replay, shadow/canary evidence, explicit evidence-chain promotion, and rollback |
-| PE-5 Release Provenance | Repaired v2 boundary merged; no new public release or production installation was exercised by the repair |
-| PE-6 Fault Injection and Recovery Drills | Repaired owner-evidence boundary merged; controlled disposable staging drills passed; no production resource was targeted |
-| Managed LangGraph external runtime | One bounded adapter invocation per Rust-leased node; fixture/guarded-live modes; Python owns no queue or product authority |
-| Native/LangGraph efficiency benchmark | Deterministic fixture evidence connected; no provider-backed result verified |
-| Target-repository output | Disposable acceptance passed after PR #226 with unchanged target `main`, one external delivery, and duplicate/restart reuse |
-| GitHub/Vader repository orchestrator | Implemented/default-off; PR #237 is merged and accepted; replacement smoke remains the final live-acceptance task after authorized Vader runner recovery |
-| Dashboard | Functional; PR #225 is an independent presentation-only redesign |
-| Post-R7 wire/type governance | Implemented through `scripts/check_wire_codegen_drift.sh` |
-| PE7 bounded recursive execution | Implemented and merged via PR #239; default-off recursive admission, persistence, bounded evidence, and kill switch under existing scheduler/storage owners |
-| PE7 OpenCode fixture adapter | Merged via PR #255; honesty repair complete via PR #257 (`main` `4731e399`, reviewed head `a5556e24`). Fixture-only default-off. Real binary admission deferred (`PE7-OPENCODE-BINARY-ADMISSION-1`) |
-| PE7 Harness evolution laboratory | B1–B3 complete via PRs #258–#260 (`main` B3 `add6d9cb`, reviewed head `9e66d371`); default-off; produces auditable fixture candidates, evaluation/archive evidence, and PR_READY bundles only; active Harness immutable; no recursive self-improvement claim |
-| PE7 meta-improver experiment | Deferred/blocked until a stable Level-1 lab result exists; no Level-2 or `Improvement@K` evidence exists |
+| Capability | State | Current truth |
+|---|---|---|
+| Rust API, scheduler, workflow store | implemented / active | `engine/` is the sole runtime, scheduler, policy, audit, and application-owned storage authority. |
+| Plain `/dispatch` | implemented / default-noop | TaskAnalyzer, ModelSelector, BudgetManager, executor, evaluator, ledger, persisted routing decision, and registered offline-replay producer participate. A real provider is not called by default. |
+| Read-only planner and DAG | implemented / advisory by default | Task decomposition, dependency validation, DAG metadata, context budget, and routing advice exist. Generic nodes contain task types and dependencies, not an executable coding-task contract. |
+| Scheduler and executor pool | implemented / default-off | When explicitly enabled, supervised workers enumerate active runs, lease nodes, select an executor route, and continue ticking. Default scheduler/worker gates are off and default executor is `noop`. |
+| Agent Runtime | implemented / explicit / default-off | Caller must construct `agent_steps`; provider/runtime/auth/pricing/cost gates must pass. One leased node produces one typed action. |
+| Bounded recursive task execution | implemented / default-off | PR #239 adds bounded persisted child-task admission through existing run/scheduler owners. It does not create autonomous root-goal authority or recursive self-improvement. |
+| Durable memory | implemented / scoped | Versioned store and scheduler context injection exist for compatible Agent Runtime paths; ordinary read-only plans do not opt into memory automatically. Provider embeddings remain guarded and are not live acceptance evidence. |
+| Adaptive Fusion | implemented / explicit or trusted-local default-routing | Guarded completion, candidate selection, observation, experiment, promotion, replay, and rollback owners exist. Ordinary plan creation does not automatically compile these into an executable graph. |
+| Dynamic workflow control | implemented / explicit | Scheduler/controller logic can mutate and recover bounded runs, but ordinary plans are not automatically converted into an adaptive coding workflow. |
+| Supervised patch workspaces | implemented / separate API | Copy and controlled git-worktree creation, verification/repair, capture, scan/redaction, integrity, approval binding, patch export, `acp/*` branch push, and optional Draft PR creation exist. |
+| Target repository output | implemented / default-off | Requires controlled git worktree, verification evidence, passed secret scan, redaction, current approval binding, integrity, output gate, and confirmation. Target `main` and merge authority remain protected. |
+| OpenCode adapter | fixture-only / default-off | The fixture adapter and honesty repair are merged. No real OpenCode binary is admitted by the current `PIN.json`. |
+| Harness Evolution Level-1 | implemented laboratory / default-off / fixture | Store-owned active identity, real app-owned candidate workspace, evaluator-owned sealed fixture tasks, Pareto archive, operator acknowledgement, and PR_READY receipt path are accepted through PR #265. It makes no production improvement claim and does not mutate active Harness. |
+| Harness Evolution Level-2 | planning only | Issue #266 only. No implementation branch, commit, PR, or accepted active-lane status. |
+| Meta Improver | blocked experiment | No production recursive self-improvement, provider evolution, evaluator co-evolution, active-policy mutation, or continuous self-update is authorized. |
+| Repository-agent orchestration | implemented / production-disabled / parked | GitHub/Vader maintenance owners exist, but the replacement live smoke is parked on Issue #254 and must not be enabled by product work. |
+| Dashboard | active / manual composition | Read-mostly operations plus guarded controls. PR #225 remains an independent presentation-only lane. |
+| SDKs and wire contracts | active | Typed API clients and codegen/drift checks mirror existing endpoints; they do not yet provide a one-call canonical task intake. |
+| PE-5 Release Provenance | implemented / no release authority | Provenance and verification owners exist; no release, tag, publication, deployment, or installation is authorized by this audit. |
+| PE-6 Fault Injection and Recovery Drills | implemented / disposable only | Fixed, bounded recovery drills cover existing owners; they do not authorize production faults or destructive operations. |
+| Post-R7 wire/type governance | implemented | `scripts/check_wire_codegen_drift.sh` remains the required cross-language drift guard. |
 
-## Existing Architecture Relevant to PE7
+## Top-Level Directory Truth
 
-The repository already has most of the control-plane prerequisites:
-
-- `AgentAction::ProposeChildTask`, `ChildTaskProposal`, `agent_proposals`, and workflow graph mutation;
-- one-step `AgentStepExecutor` decisions and AR-4 scheduler concurrency bounds;
-- exactly-once `agent_action_receipts` across retry, restart, and concurrent claims;
-- bounded durable memory and metadata-only retrieval evidence;
-- owner-backed dispatch, workflow, provider, tool, budget, replay, and scorecard evidence;
-- isolated app-owned workspaces/worktrees, verification, approval, patch/branch output, and compensation;
-- explicit operator decisions, snapshots, promotion, rollback, kill switches, and audit.
-
-The missing recursive-execution capabilities are persistent root/parent/depth identity, whole-tree budgets, ancestor-cycle and duplicate-objective detection, strict child capability reduction, recursive-specific gates/reason codes, and bounded tree evidence.
-
-The missing Harness-evolution capabilities are structured mutation proposals, isolated candidate version identity, lineage/archive storage, equal-budget baselines, sealed holdout discipline, evaluator-integrity enforcement, candidate Pareto selection, and PR-only promotion binding. These gaps are planned in `docs/NEXT_DECISION.md`; they must not be described as implemented.
-
-## Connected Production Boundaries
-
-### Agent Runtime and tools
-
-An authenticated confirmed `agent_step` plan creates ordinary workflow state. The Rust scheduler is the sole owner of admission, lease, retry, cooldown, pause/resume, restart, and concurrency. A provider decision performs one admitted call and returns one strict bounded `agent_action.v1`; it cannot create an internal loop. Command/CLI nodes use the same app-owned tool-policy wrapper. Configured allowlists are authoritative, approval-required tools consume one exact authorization, and post-effect uncertainty remains explicit and non-retryable.
-
-### Durable memory, budget, and replay
-
-The scheduler builds bounded context from run state, recent history, run-scoped digest, and immutable retrieved references. Provider embeddings reuse the existing symbolic-credential, catalog, pricing, reservation, receipt, audit, timeout, circuit-breaker, and kill-switch owners and remain blocked without complete current evidence. Budget and replay producers use persisted cursors and rotating retry sets inside the existing scheduler, not a second queue. Replay remains read-only until explicit current-state-bound promotion.
-
-### External runtime and target output
-
-A `langgraph_external` node performs one adapter invocation under a Rust lease. Fixture mode is deterministic and network-free. Target output remains isolated and approval-bound; it may create a controlled branch/patch/PR path but cannot write registered target `main`, merge, deploy, or release.
-
-### Recursive/evolution boundary
-
-`PE7-BOUNDED-RECURSIVE-EXECUTION-1` is implemented and merged; it proceeded only in deterministic local/fixture mode and never enabled Issue #208, used the repository-agent smoke path, called a provider, mutated a real target repository, or altered evaluator, permission, budget, audit, target-output, merge, release, or rollback boundaries. The OpenCode fixture adapter (PR #255), honesty repair (PR #257), and Harness Evolution B1–B3 scaffolding (PRs #258–#260) are merged under default-off gates. The laboratory scaffolding is **not** authority-complete: caller-supplied identity, synthetic evaluation metrics, and non-owner PR_READY evidence remain residual defects under sequential repair packets R1–R3. The laboratory must not write main, create/merge PRs, or claim recursive self-improvement.
+| Path | Role | Active? | In the ordinary user task path? |
+|---|---|---:|---:|
+| `engine/` | Canonical Rust API, dispatch, planning, workflow, scheduler, execution, store, evidence, and output owners | yes | partially; owners exist but are not composed into one transaction |
+| `dashboard/` | Mission Control, evidence views, and guarded operator actions | yes | manual composition only |
+| `sdk/` | TypeScript and Python clients | yes | mirrors fragmented APIs; no canonical intake |
+| `scripts/` | validation, pilots, scorecards, importers, release/ops, repository-agent control | yes | mostly operator/test paths, not the core runtime |
+| `tools/` | security, fault, packaging, provenance, and maintenance checks | yes | verification/support only |
+| `adapters/` | bounded external-runtime adapters, including OpenCode fixture | yes, guarded | only explicit fixture/external nodes |
+| `wire_contract/`, `codegen/` | cross-language schemas and generated types | yes | contract support |
+| `.github/` | CI, exact-head checks, release workflows, and default-off repository-agent workflows | yes | delivery/verification, not product runtime |
+| `docs/` | operating policy, architecture, runbook, and active packet state | yes | governance, not execution |
+| `tests/`, `engine/tests/`, fixtures, benchmarks | deterministic and integration evidence | yes | validation only; fixture success is not live usability |
+| `deploy/` | local/deployment packaging support | bounded | not a production deployment authority |
+| `site/` | public presentation | bounded | no runtime participation |
+| release/provenance assets | build and trust evidence | bounded | release-time only; no active release authority |
 
 ## Confirmed Integration Gaps
 
-1. **Parked:** repository-agent replacement smoke (Issue **#254** / `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`) until Codex/ChatGPT works on the Vader host without hard-fix or TLS weakening. Runner is online/idle; Issue #208 emergency-stopped. Do not treat this as the default development path.
-2. Obtain current provider catalog evidence that satisfies exact model identity and every modeled applicable charge dimension before any provider POST.
-3. Confirm disposable repository deletion remains limited to the already-absent `Igzela/acp-target-accept-20260716-1145` identity only.
-Gaps (1)–(2) still block production repository-agent use and provider-backed acceptance. They do **not** block Ship PR work or fixture/local PE7 repair packets (authority/workspace, evaluator, finalizer, Level-1 acceptance).
+1. No canonical root task identity spans dispatch, plan, run, supervised workspace, artifact, approval, output receipt, replay, and scorecard.
+2. No single intake binds `raw_request`, target repository, source revision, objective, allowed paths, verification commands, output intent, budget, and execution confirmation.
+3. Generic TaskDecomposer graphs are advisory/task-type graphs, not executable coding graphs. The prompt is stored at plan level but not carried into generic node execution metadata.
+4. A git worktree is created after the workflow run and is not automatically bound to each executable node before lease.
+5. Manual tick selects an executor from the request; scheduler selection works only after explicit startup gates and suitable node metadata. The default path remains `noop`.
+6. Adaptive Fusion, durable memory, recursive execution, dynamic workflow, Agent Runtime, and external runtimes are composable owners, not automatically selected product capabilities.
+7. supervised-patch verification/repair uses an API-owned run boundary and is not one atomic transaction with the ordinary plan/run.
+8. Dispatch replay and adaptive observations can feed routing owners, and Level-1 can consume owner-backed fixture evidence, but there is no proven real-workload loop from a successful natural-language repository task into later Harness candidate generation.
+9. Mission Control's “Task, run, workspace, patch, approval, and output controls in one path” is a UI sequence, not a backend orchestrator.
+10. The first usability blocker is orchestration and identity binding. Real provider/OpenCode admission affects live execution quality, but enabling it before the task transaction is connected would expose the same fragmented path with more external risk.
+
+## Active Tracks
+
+- `PE7-PRODUCT-GOLDEN-PATH-1`: recommended next active implementation packet.
+- `PE7-REAL-WORKLOAD-EVIDENCE-1`: blocked until the Golden Path emits trustworthy end-to-end evidence.
+- `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: Issue #266 remains open but blocked on real-workload evidence and an explicit activation review.
+- `PE7-META-IMPROVER-EXPERIMENT-1`: blocked on a stable, independently reviewed Level-2 result and separate authority decision.
+- `PE7-OPENCODE-BINARY-ADMISSION-1`: deferred and not a Golden Path prerequisite; fixture or an already-supported managed executor is sufficient for initial acceptance.
+- `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`: parked on Issue #254.
+- PR #225: independent presentation-only Dashboard work.
 
 ## Open Work Coordination
 
-- PR #225 remains open and presentation-only; PE7 recursive execution (#239), Ship PR (#240), public-surface PRs #241–#253, clean-environment external validation (#256), OpenCode fixture-adapter repair (#257), and Harness Evolution B1–B3 scaffolding (#258–#260) are squash-merged.
-- `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is **parked** on Issue #254 (runner online/idle; Codex HTTP 403 blocks smoke). Historical smoke PRs #232/#236 remain closed. Issue #208 emergency-stopped. No active Issue→CLI work.
-- `PE7-OPENCODE-EXTERNAL-ADAPTER-1` COMPLETE via PR #255. `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` COMPLETE via PR #257. Binary admission deferred: `PE7-OPENCODE-BINARY-ADMISSION-1`.
-- `OSS-EXTERNAL-VALIDATION-1` COMPLETE via PR #256 (exact reviewed head `a3f6744616a75b36d185534993f21c2839b1ea76`; seven-job exact-head CI runs `29749430115` / `29749437488`; Ubuntu+macOS external-validation run `29749430155`; independent complete-diff review on PR comments). Not external adoption evidence.
-- Harness Evolution: B1–B3 scaffolding (#258–#260) plus R1–R3 repairs (#262–#264) and Level-1 acceptance path COMPLETE under default-off gates. Laboratory can produce auditable fixture candidates, evaluation/archive evidence, and bounded PR_READY receipts through store-owned owners. Active Harness remains immutable. No recursive self-improvement, ignition, or superior OpenCode executor claim.
-- `PE7-META-IMPROVER-EXPERIMENT-1` remains blocked until a stable independently reviewed Level-1 result is accepted for meta-improver use (fixture Level-1 path alone is not sufficient).
-- provider-backed evolution, model-weight updates, evaluator/task-generator co-evolution, automatic multi-lineage recombination, and production continuous self-update remain deferred.
-- no new public tag, release, deployment, production installation, destructive production fault, provider call, protected-branch write, or persistent signing secret is authorized by this direction.
+PR #267 from `docs/repo-usability-architecture-audit-1` carries this audit's updates to `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/MODULE_MAP.md`. No other open PR or discovered branch overlaps those documents. Do not continue this work on an old PE7 branch.
 
-The normative packet definitions and acceptance gates are in `docs/NEXT_DECISION.md`.
+## Safety Boundary
 
-## Active Documentation
-
-- `README.md`
-- `AGENTS.md`
-- `CLAUDE.md`
-- `docs/ARCHITECTURE_BOOK.md`
-- `docs/CURRENT_STATUS.md`
-- `docs/NEXT_DECISION.md`
-- `docs/MODULE_MAP.md`
-- `docs/REAL_WORLD_TESTING_PLAYBOOK.md`
-- `docs/RUNBOOK.md`
-
-Do not create another roadmap, status, policy, packet, or closeout document by default. Current direction belongs in `docs/NEXT_DECISION.md`; current facts belong here; durable implemented architecture belongs in `docs/ARCHITECTURE_BOOK.md`; only proven operator procedures belong in `docs/RUNBOOK.md`.
+No provider, Vader, Issue #208, real OpenCode binary, target-repository write, release, auto-merge, or deployment was enabled or exercised by this audit. The repository does not currently claim to be autonomous, production-recursive, recursively self-improving, or generally usable for an unassisted natural-language coding task.
