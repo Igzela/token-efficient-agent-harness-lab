@@ -26,7 +26,7 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Persistence | `engine/src/storage/local_product_store/` | sole application-owned SQLite/PostgreSQL store, migrations, audit, evidence, backup/integrity |
 | Harness Evolution Level-1 | `harness_evolution.rs`, `harness_evolution_eval.rs`, `harness_evolution_pr_ready.rs`, v27-v29 store owners | accepted fixture laboratory through PR #265; default-off; active Harness immutable |
 | Dashboard | `dashboard/` | Mission Control exposes separate finalize, approve, and confirmed output controls; PR #225 theme files remain independent |
-| Product Golden Path | `product_golden_path.rs`, `storage/local_product_store/product_tasks.rs`, workflow/supervised-patch owners, product handlers, schema v30 `product_tasks` | default-off root task through scheduler/verification/artifact; Residual Seal 2 is repairing terminal evidence and final acceptance |
+| Product Golden Path | `product_golden_path.rs`, `storage/local_product_store/product_tasks.rs`, workflow/supervised-patch owners, product handlers, schema v30 `product_tasks`, schema v31 `product_task_terminal_evidence` | default-off root task through scheduler/verification/artifact/output and canonical terminal evidence; Residual Seal 2 still owns verification-time authority and final acceptance |
 | SDKs | `sdk/typescript/`, `sdk/python/` | typed intake/compile/finalize plus separate approve/output clients; legacy combined method remains compatibility-only |
 | Contracts | `wire_contract/v1/`, `codegen/` | cross-language schemas; checked by `scripts/check_wire_codegen_drift.sh` |
 | Repository agent | `scripts/agent-control/`, `.github/workflows/agent-*.yml` | implemented, production-disabled, parked on Issue #254 |
@@ -47,8 +47,10 @@ Product Golden Path (default-off)
     -> durable artifact/export receipt
        OR phased acp/* push -> open Draft PR receipt
 
+  -> atomic canonical terminal evidence + pure reads
+
 Remaining seal
-  canonical persisted terminal evidence + process/late-write authority + recovery/E2E
+  verification-time pause/kill/lease/version/late-write authority + recovery/E2E
 ```
 
 ## Canonical Identity Map
@@ -64,7 +66,7 @@ Remaining seal
 | artifact | `artifact_id`, workspace/patch/source | captured from supervised workspace |
 | approval | `approval_id`, task/run/node/workspace/source/artifact/verification/output bindings | separate workflow approval owner; no execution authority |
 | target output | receipt or progressive `operation_id` | exact task/artifact/approval/request; branch and Draft PR phases distinct |
-| replay/scorecard | owner-specific artifact/run/dispatch IDs | canonical persisted terminal binding remains Residual Seal 2 work |
+| replay/scorecard | owner-specific artifact/run/dispatch IDs | terminal evidence links only exact owner-backed records; absence is explicit unavailable |
 | Harness candidate | proposal/candidate/lineage/evaluation/PR_READY IDs | Level-1 laboratory identity, not user task identity |
 
 `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` must finish exact terminal linkage without replacing these owners.

@@ -1597,6 +1597,7 @@ mod tests {
                 output_tokens: Some(2),
                 estimated_cost: Some(0.01),
                 latency_ms: Some(5),
+                process_outcome: None,
             }
         }
     }
@@ -1622,6 +1623,7 @@ mod tests {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(0),
+                process_outcome: None,
             }
         }
     }

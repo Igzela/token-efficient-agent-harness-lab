@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet};
@@ -649,6 +649,89 @@ pub struct NodeExecutionInput {
 }
 
 /// Output from node-level execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessOutcome {
+    pub schema_version: String,
+    pub state: String,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub unavailable_reason: Option<String>,
+}
+
+impl ProcessOutcome {
+    pub fn exited(exit_code: i32) -> Self {
+        Self {
+            schema_version: "process_outcome.v1".to_string(),
+            state: "exited".to_string(),
+            exit_code: Some(exit_code),
+            signal: None,
+            unavailable_reason: None,
+        }
+    }
+
+    pub fn signaled(signal: Option<i32>) -> Self {
+        Self {
+            schema_version: "process_outcome.v1".to_string(),
+            state: "signaled".to_string(),
+            exit_code: None,
+            signal,
+            unavailable_reason: signal
+                .is_none()
+                .then(|| "termination signal unavailable on this platform".to_string()),
+        }
+    }
+
+    pub fn failure(state: &str, signal: Option<i32>, reason: impl Into<String>) -> Self {
+        Self {
+            schema_version: "process_outcome.v1".to_string(),
+            state: state.to_string(),
+            exit_code: None,
+            signal,
+            unavailable_reason: Some(reason.into()),
+        }
+    }
+
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self::failure("unavailable", None, reason)
+    }
+
+    pub fn successful_exit(&self) -> bool {
+        self.state == "exited" && self.exit_code == Some(0)
+    }
+}
+
+pub(crate) fn exit_status_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        None
+    }
+}
+
+pub(crate) fn process_outcome_from_exit_status(
+    status: &std::process::ExitStatus,
+) -> ProcessOutcome {
+    match status.code() {
+        Some(code) => ProcessOutcome::exited(code),
+        None => ProcessOutcome::signaled(exit_status_signal(status)),
+    }
+}
+
+fn command_output_read_failure(
+    status: &std::process::ExitStatus,
+    reason: impl Into<String>,
+) -> ProcessOutcome {
+    let mut outcome = process_outcome_from_exit_status(status);
+    outcome.state = "output_read_failed".to_string();
+    outcome.unavailable_reason = Some(reason.into());
+    outcome
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeExecutionOutput {
     pub status: String,
@@ -660,6 +743,7 @@ pub struct NodeExecutionOutput {
     pub output_tokens: Option<i64>,
     pub estimated_cost: Option<f64>,
     pub latency_ms: Option<i64>,
+    pub process_outcome: Option<ProcessOutcome>,
 }
 
 impl NodeExecutionOutput {
@@ -674,6 +758,11 @@ impl NodeExecutionOutput {
             "output_tokens": self.output_tokens,
             "estimated_cost": self.estimated_cost,
             "latency_ms": self.latency_ms,
+            "process_outcome": self.process_outcome.clone().unwrap_or_else(|| {
+                ProcessOutcome::unavailable(
+                    "executor does not own an OS process outcome for this node result",
+                )
+            }),
         });
         if matches!(
             self.executor_type.as_str(),
@@ -766,6 +855,7 @@ impl NodeExecutor for NoopNodeExecutor {
             output_tokens: None,
             estimated_cost: None,
             latency_ms: None,
+            process_outcome: None,
         }
     }
 }
@@ -803,6 +893,7 @@ impl NodeExecutor for StubNodeExecutor {
             output_tokens: Some(0),
             estimated_cost: Some(0.0),
             latency_ms: Some(0),
+            process_outcome: None,
         }
     }
 }
@@ -838,6 +929,7 @@ impl NodeExecutor for FailNodeExecutor {
             output_tokens: None,
             estimated_cost: None,
             latency_ms: None,
+            process_outcome: None,
         }
     }
 }
@@ -896,6 +988,7 @@ impl LocalRunnerValidationExecutor {
                         output_tokens: None,
                         estimated_cost: None,
                         latency_ms: Some(started.elapsed().as_millis() as i64),
+                        process_outcome: None,
                     },
                     None,
                 );
@@ -916,6 +1009,7 @@ impl LocalRunnerValidationExecutor {
                         output_tokens: None,
                         estimated_cost: None,
                         latency_ms: Some(started.elapsed().as_millis() as i64),
+                        process_outcome: None,
                     },
                     None,
                 );
@@ -937,6 +1031,7 @@ impl LocalRunnerValidationExecutor {
                         output_tokens: None,
                         estimated_cost: None,
                         latency_ms: Some(started.elapsed().as_millis() as i64),
+                        process_outcome: None,
                     },
                     None,
                 );
@@ -959,6 +1054,7 @@ impl LocalRunnerValidationExecutor {
                     output_tokens: None,
                     estimated_cost: None,
                     latency_ms: Some(started.elapsed().as_millis() as i64),
+                    process_outcome: None,
                 },
                 None,
             );
@@ -991,6 +1087,7 @@ impl LocalRunnerValidationExecutor {
             output_tokens: Some(0),
             estimated_cost: Some(0.0),
             latency_ms: Some(started.elapsed().as_millis() as i64),
+            process_outcome: None,
         };
 
         (output, Some(summary))
@@ -1198,6 +1295,9 @@ impl NodeExecutor for CommandNodeExecutor {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(start.elapsed().as_millis() as i64),
+                process_outcome: Some(ProcessOutcome::unavailable(
+                    "command rejected before process spawn",
+                )),
             };
         }
 
@@ -1215,6 +1315,9 @@ impl NodeExecutor for CommandNodeExecutor {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(start.elapsed().as_millis() as i64),
+                process_outcome: Some(ProcessOutcome::unavailable(
+                    "command rejected before process spawn",
+                )),
             };
         }
 
@@ -1230,6 +1333,9 @@ impl NodeExecutor for CommandNodeExecutor {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(start.elapsed().as_millis() as i64),
+                process_outcome: Some(ProcessOutcome::unavailable(
+                    "empty command rejected before process spawn",
+                )),
             };
         }
 
@@ -1246,6 +1352,9 @@ impl NodeExecutor for CommandNodeExecutor {
                     output_tokens: None,
                     estimated_cost: None,
                     latency_ms: Some(start.elapsed().as_millis() as i64),
+                    process_outcome: Some(ProcessOutcome::unavailable(
+                        "workspace rejected before process spawn",
+                    )),
                 };
             }
         };
@@ -1281,6 +1390,11 @@ impl NodeExecutor for CommandNodeExecutor {
                     output_tokens: None,
                     estimated_cost: None,
                     latency_ms: Some(start.elapsed().as_millis() as i64),
+                    process_outcome: Some(ProcessOutcome::failure(
+                        "spawn_failed",
+                        None,
+                        "OS process did not start",
+                    )),
                 };
             }
         };
@@ -1297,7 +1411,7 @@ impl NodeExecutor for CommandNodeExecutor {
                 Ok(None) => {
                     if wait_start.elapsed() >= deadline {
                         let _ = child.kill();
-                        let _ = child.wait();
+                        let terminated = child.wait().ok();
                         let _ = stdout_reader.join();
                         let _ = stderr_reader.join();
                         return NodeExecutionOutput {
@@ -1310,11 +1424,18 @@ impl NodeExecutor for CommandNodeExecutor {
                             output_tokens: None,
                             estimated_cost: None,
                             latency_ms: Some(start.elapsed().as_millis() as i64),
+                            process_outcome: Some(ProcessOutcome::failure(
+                                "timed_out",
+                                terminated.as_ref().and_then(exit_status_signal),
+                                "timeout has no successful OS exit code",
+                            )),
                         };
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
                 Err(e) => {
+                    let _ = child.kill();
+                    let terminated = child.wait().ok();
                     return NodeExecutionOutput {
                         status: "failed".to_string(),
                         executor_type: "command".to_string(),
@@ -1325,6 +1446,11 @@ impl NodeExecutor for CommandNodeExecutor {
                         output_tokens: None,
                         estimated_cost: None,
                         latency_ms: Some(start.elapsed().as_millis() as i64),
+                        process_outcome: Some(ProcessOutcome::failure(
+                            "wait_failed",
+                            terminated.as_ref().and_then(exit_status_signal),
+                            "OS wait failed before an exit code was available",
+                        )),
                     };
                 }
             }
@@ -1332,22 +1458,47 @@ impl NodeExecutor for CommandNodeExecutor {
         let (stdout_bytes, stdout_len) = match stdout_reader.join() {
             Ok(Ok(output)) => output,
             Ok(Err(error)) => {
-                return command_output_error(start, error.to_string());
+                return command_output_error(
+                    start,
+                    error.to_string(),
+                    command_output_read_failure(&status, error.to_string()),
+                );
             }
-            Err(_) => return command_output_error(start, "stdout reader failed".to_string()),
+            Err(_) => {
+                return command_output_error(
+                    start,
+                    "stdout reader failed".to_string(),
+                    command_output_read_failure(&status, "stdout reader failed"),
+                )
+            }
         };
         let (stderr_bytes, stderr_len) = match stderr_reader.join() {
             Ok(Ok(output)) => output,
             Ok(Err(error)) => {
-                return command_output_error(start, error.to_string());
+                return command_output_error(
+                    start,
+                    error.to_string(),
+                    command_output_read_failure(&status, error.to_string()),
+                );
             }
-            Err(_) => return command_output_error(start, "stderr reader failed".to_string()),
+            Err(_) => {
+                return command_output_error(
+                    start,
+                    "stderr reader failed".to_string(),
+                    command_output_read_failure(&status, "stderr reader failed"),
+                )
+            }
         };
 
         let elapsed_ms = start.elapsed().as_millis() as i64;
         let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
         let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
-        let exit_code = status.code().unwrap_or(-1);
+        let process_outcome = process_outcome_from_exit_status(&status);
+        let exit_description = status
+            .code()
+            .map(|code| format!("exit code {code}"))
+            .or_else(|| exit_status_signal(&status).map(|signal| format!("signal {signal}")))
+            .unwrap_or_else(|| "process termination without exit code".to_string());
         let combined = if stderr.is_empty() {
             stdout.clone()
         } else {
@@ -1376,6 +1527,7 @@ impl NodeExecutor for CommandNodeExecutor {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(elapsed_ms),
+                process_outcome: Some(process_outcome),
             }
         } else {
             NodeExecutionOutput {
@@ -1383,17 +1535,22 @@ impl NodeExecutor for CommandNodeExecutor {
                 executor_type: "command".to_string(),
                 output: Some(combined),
                 error_domain: Some("command_exit_nonzero".to_string()),
-                error_message: Some(format!("exit code {exit_code}: {}", stderr.trim())),
+                error_message: Some(format!("{exit_description}: {}", stderr.trim())),
                 input_tokens: None,
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(elapsed_ms),
+                process_outcome: Some(process_outcome),
             }
         }
     }
 }
 
-fn command_output_error(start: std::time::Instant, message: String) -> NodeExecutionOutput {
+fn command_output_error(
+    start: std::time::Instant,
+    message: String,
+    process_outcome: ProcessOutcome,
+) -> NodeExecutionOutput {
     NodeExecutionOutput {
         status: "failed".to_string(),
         executor_type: "command".to_string(),
@@ -1404,6 +1561,7 @@ fn command_output_error(start: std::time::Instant, message: String) -> NodeExecu
         output_tokens: None,
         estimated_cost: None,
         latency_ms: Some(start.elapsed().as_millis() as i64),
+        process_outcome: Some(process_outcome),
     }
 }
 
@@ -1486,6 +1644,7 @@ fn agent_step_fail(message: &str, start: &std::time::Instant) -> NodeExecutionOu
         output_tokens: None,
         estimated_cost: None,
         latency_ms: Some(start.elapsed().as_millis() as i64),
+        process_outcome: None,
     }
 }
 
@@ -1596,6 +1755,7 @@ fn completed_agent_step_output(
         output_tokens,
         estimated_cost,
         latency_ms: Some(latency_ms),
+        process_outcome: None,
     })
 }
 
@@ -3382,6 +3542,7 @@ mod tests {
             output_tokens: Some(5),
             estimated_cost: Some(0.001),
             latency_ms: Some(100),
+            process_outcome: None,
         };
         let value = output.to_value();
         assert_eq!(value["status"], "completed");
@@ -3401,6 +3562,9 @@ mod tests {
         let output = executor.execute_node(&input);
         assert_eq!(output.status, "completed");
         assert_eq!(output.executor_type, "command");
+        assert_eq!(output.process_outcome.as_ref().unwrap().state, "exited");
+        assert_eq!(output.process_outcome.as_ref().unwrap().exit_code, Some(0));
+        assert!(output.process_outcome.as_ref().unwrap().successful_exit());
         assert!(output.output.unwrap().contains("ok"));
     }
 
@@ -3436,22 +3600,33 @@ mod tests {
         };
         let output = executor.execute_node(&input);
         assert_eq!(output.status, "failed");
-        assert_eq!(output.error_domain.unwrap(), "command_timeout");
+        assert_eq!(output.error_domain.as_deref(), Some("command_timeout"));
+        let outcome = output.process_outcome.expect("timeout outcome");
+        assert_eq!(outcome.state, "timed_out");
+        assert_eq!(outcome.exit_code, None);
+        assert!(!outcome.successful_exit());
     }
 
     #[test]
     fn test_command_nonzero_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("exit-seven.py");
+        std::fs::write(&script, "raise SystemExit(7)\n").unwrap();
         let executor = CommandNodeExecutor::default();
         let input = NodeExecutionInput {
             node_id: "node-cmd-004".to_string(),
             task_type: "command".to_string(),
             run_id: "run-004".to_string(),
             workflow_id: "wf-004".to_string(),
-            node_metadata: json!({"command": "false"}),
+            node_metadata: json!({"command": format!("python3 {}", script.display())}),
         };
         let output = executor.execute_node(&input);
         assert_eq!(output.status, "failed");
-        assert_eq!(output.error_domain.unwrap(), "command_exit_nonzero");
+        assert_eq!(output.error_domain.as_deref(), Some("command_exit_nonzero"));
+        let outcome = output.process_outcome.expect("nonzero outcome");
+        assert_eq!(outcome.state, "exited");
+        assert_eq!(outcome.exit_code, Some(7));
+        assert!(!outcome.successful_exit());
     }
 
     #[test]
@@ -3674,6 +3849,7 @@ mod tests {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
     }

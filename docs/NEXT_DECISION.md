@@ -8,7 +8,7 @@ The next product objective is to connect the already-implemented control-plane o
 
 The verified reason is architectural: the repository already owns dispatch, plans, workflow runs, scheduler leases, executor selection, git worktrees, verification/repair, artifacts, approvals, target output, replay, scorecards, and Harness Evolution Level-1, but normal users must manually create and bind these records across separate endpoints. Level-2 evolution would otherwise optimize fixture generations before the product can reliably execute and measure one ordinary repository task.
 
-This ordering does not assert that every Golden Path task needs a paid provider or a real OpenCode binary. Initial acceptance must use a disposable repository and an already-supported deterministic or managed executor, while preserving all live-provider and binary-admission gates.
+This ordering does not assert that every Golden Path task needs a paid provider or a real OpenCode binary. Final Golden Path acceptance requires both the deterministic fixture path and one already-admitted managed coding executor in disposable repositories, while preserving all live-provider and binary-admission gates. If no managed executor is safely available, the packet remains incomplete unless a separately reviewed authority decision changes that contract.
 
 Do not create another roadmap, status, architecture, scheduler, runtime, queue, store, workspace owner, evaluator, output authority, or evidence source. Current facts belong in `docs/CURRENT_STATUS.md`; durable owner boundaries remain in `docs/ARCHITECTURE_BOOK.md`; ownership belongs in `docs/MODULE_MAP.md`; proven procedures belong in `docs/RUNBOOK.md`.
 
@@ -98,9 +98,9 @@ The result is neutral/no-improvement fixture evidence. The active Harness remain
 
 **Required slices, in order:**
 
-1. Separate product approval from output authority; require exact current evidence and explicit output confirmation; persist non-network receipts and phased branch-push/Draft-PR operations; create or idempotently reconcile a real GitHub Draft PR under exact HTTPS host/repository admission.
-2. Persist one canonical terminal-evidence record per terminal task version; make reads pure; use exact artifact/approval/output references and owner-backed replay, scorecard, executor, usage, cost, and actual process-outcome evidence.
-3. Enforce verification-time pause, kill, scheduler-kill, lease, version, workspace, timeout, supersession, and late-write authority; close SQLite/PostgreSQL recovery/concurrency tests; require runnable scheduler admission; update SDK/Dashboard; pass deterministic and admitted managed coding-executor E2E plus disposable Draft PR acceptance.
+1. **Merged via PR #272.** Separate product approval from output authority; require exact current evidence and explicit output confirmation; persist non-network receipts and phased branch-push/Draft-PR operations; create or idempotently reconcile a real GitHub Draft PR under exact HTTPS host/repository admission.
+2. **Implemented by the current terminal-evidence slice.** Persist one canonical terminal-evidence record per terminal task version; make reads pure; use exact artifact/approval/output references and owner-backed replay, scorecard, executor, usage, cost, and actual process-outcome evidence.
+3. **Next.** Enforce verification-time pause, kill, scheduler-kill, lease, version, workspace, timeout, supersession, and late-write authority; close SQLite/PostgreSQL recovery/concurrency tests; require runnable scheduler admission; update SDK/Dashboard; pass deterministic and admitted managed coding-executor E2E plus disposable Draft PR acceptance.
 
 Approval uses the existing workflow-approval owner but is a distinct `product_output_approval.v1` record requiring `team:admin`. Output requires `dispatch:execute`, the exact persisted approval, expected-current task version, and `confirm_output=true`. The legacy combined route is compatibility-only and must satisfy both scopes while invoking the same separate owners. Missing confirmation creates no approval, transition, claim, branch, PR, or success audit.
 
@@ -117,12 +117,13 @@ Draft PR output uses one progressive `product_output_operation.v1` under the sup
 - G1 PR #268 → `main` `178d020e` (schema v30 `product_tasks`, intake, worktree-first bind).
 - G2–G4 PR #269 → `main` `8fa85c15` (executable graph, finalize, artifact_only approve, SDK, Dashboard button).
 - Authority repair PR #270 → `main` `f7293548` (real verification receipts, no finalize tick loop, live executor pool, fixture honesty, recovery matrix).
-- Evidence/output PR #271 → `main` `fe742052` (task-rooted terminal evidence, export_patch, gated `acp/*` push).
+- Evidence/output PR #271 → `main` `fe742052` (dynamic task-rooted terminal summary, export_patch, gated `acp/*` push; canonical persisted terminal evidence is owned by the current residual slice).
+- Residual output-authority PR #272 → `main` `c6806841` (separate approval/output permissions, terminal output semantics, progressive branch/PR receipt, real GitHub Draft PR adapter/reconciliation).
 
 **Residual before `COMPLETE`:** governed by `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` above.
 
 1. Live `draft_pr` / `acp/*` push under existing target-output gates with disposable-repo proof.
-2. Canonical task-rooted terminal linkage with owner-backed replay, scorecard, executor, usage, and cost status.
+2. Verification-time pause/kill/lease/version/workspace/late-write authority and recovery matrix closure.
 3. Managed coding-executor E2E using an already-admitted executor without gate weakening, or an explicit separately reviewed acceptance-contract change.
 
 Do not start `PE7-REAL-WORKLOAD-EVIDENCE-1` until residual is closed or explicitly accepted.

@@ -539,6 +539,7 @@ mod tests {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
     }

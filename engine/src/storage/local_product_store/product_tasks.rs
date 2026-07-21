@@ -1538,7 +1538,11 @@ impl LocalProductStore {
             };
             let output = executor.execute_node(&input);
             let completed_at = self.now();
-            let passed = output.status == "completed";
+            let passed = output.status == "completed"
+                && output
+                    .process_outcome
+                    .as_ref()
+                    .is_some_and(crate::node_executor::ProcessOutcome::successful_exit);
             if !passed {
                 all_passed = false;
                 final_status = "verification_failed";
@@ -1557,7 +1561,7 @@ impl LocalProductStore {
             });
 
             attempts.push(json!({
-                "schema_version": "product_verification_attempt.v1",
+                "schema_version": "product_verification_attempt.v2",
                 "attempt": attempt_number,
                 "command": command,
                 "command_argv": command.split_whitespace().collect::<Vec<_>>(),
@@ -1566,7 +1570,8 @@ impl LocalProductStore {
                 "completed_at": completed_at,
                 "result_status": output.status,
                 "executor_type": output.executor_type,
-                "exit_status": if passed { 0 } else { 1 },
+                "exit_status": output.process_outcome.as_ref().and_then(|outcome| outcome.exit_code),
+                "process_outcome": output.process_outcome,
                 "error_domain": output.error_domain,
                 "error_message": output.error_message.as_deref().map(|m| {
                     crate::provider::redaction::redact_sensitive_patterns(m)
@@ -1728,11 +1733,18 @@ impl LocalProductStore {
         let task = self
             .get_product_task(task_id)?
             .ok_or_else(|| format!("product task not found: {task_id}"))?;
-        if task.get("version").and_then(Value::as_u64) != Some(expected_task_version) {
-            return Err("stale product task version at output".to_string());
-        }
+        let persisted_task_version = task
+            .get("version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "product task version missing at output".to_string())?;
         let status =
             ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        let completed_idempotent_version = status == ProductTaskStatus::Completed
+            && (persisted_task_version == expected_task_version
+                || persisted_task_version == expected_task_version.saturating_add(1));
+        if persisted_task_version != expected_task_version && !completed_idempotent_version {
+            return Err("stale product task version at output".to_string());
+        }
         if !matches!(
             status,
             ProductTaskStatus::AwaitingApproval
@@ -1788,6 +1800,7 @@ impl LocalProductStore {
         if status == ProductTaskStatus::Completed {
             let terminal_output =
                 validate_completed_product_output_binding(&task, &artifact, &approval)?;
+            let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
             return Ok(json!({
                 "task": task,
                 "approval": approval,
@@ -1795,6 +1808,7 @@ impl LocalProductStore {
                 "output": terminal_output.get("output"),
                 "output_receipt": terminal_output.get("receipt"),
                 "operation": terminal_output.get("operation"),
+                "terminal_evidence": terminal_evidence,
                 "reused": true,
             }));
         }
@@ -1872,16 +1886,89 @@ impl LocalProductStore {
         let current = self.get_product_task(task_id)?.unwrap_or(task);
         let current_status =
             ProductTaskStatus::parse(current.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        if current_status == ProductTaskStatus::Completed {
+            let durable_artifact = self
+                .get_supervised_patch_artifact(&artifact_id)?
+                .ok_or_else(|| "completed output artifact disappeared".to_string())?;
+            let terminal_output =
+                validate_completed_product_output_binding(&current, &durable_artifact, &approval)?;
+            let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
+            return Ok(json!({
+                "task": current,
+                "approval": approval,
+                "artifact": durable_artifact,
+                "output": terminal_output.get("output"),
+                "output_receipt": terminal_output.get("receipt"),
+                "operation": terminal_output.get("operation"),
+                "terminal_evidence": terminal_evidence,
+                "reused": true,
+            }));
+        }
         let state_changed = current_status != next_status;
+        let mut terminal_evidence = None;
         let transitioned = if terminal_success {
-            self.complete_product_task_output_authorized(
+            let durable_artifact = self
+                .get_supervised_patch_artifact(&artifact_id)?
+                .ok_or_else(|| "terminal output artifact disappeared".to_string())?;
+            let candidate = self.build_product_task_terminal_evidence(
+                &current,
+                &durable_artifact,
+                &approval,
+                &output_result,
+                expected_task_version.saturating_add(1),
+                actor,
+            )?;
+            match self.complete_product_task_output_authorized(
                 task_id,
                 &artifact_id,
                 approval_id,
                 &output_intent,
                 expected_task_version,
+                &candidate,
                 actor,
-            )?
+            ) {
+                Ok((task, evidence)) => {
+                    terminal_evidence = Some(evidence);
+                    task
+                }
+                Err(error)
+                    if error.contains("expected-current")
+                        || error.contains("stale product task version") =>
+                {
+                    let completed = self
+                        .get_product_task(task_id)?
+                        .ok_or_else(|| "product task disappeared after output race".to_string())?;
+                    if completed.get("status").and_then(Value::as_str)
+                        != Some(ProductTaskStatus::Completed.as_str())
+                        || completed.get("version").and_then(Value::as_u64)
+                            != Some(expected_task_version.saturating_add(1))
+                    {
+                        return Err(error);
+                    }
+                    let completed_artifact = self
+                        .get_supervised_patch_artifact(&artifact_id)?
+                        .ok_or_else(|| {
+                            "completed output artifact disappeared after race".to_string()
+                        })?;
+                    let terminal_output = validate_completed_product_output_binding(
+                        &completed,
+                        &completed_artifact,
+                        &approval,
+                    )?;
+                    let evidence = self.get_product_task_terminal_evidence(task_id)?;
+                    return Ok(json!({
+                        "task": completed,
+                        "approval": approval,
+                        "artifact": completed_artifact,
+                        "output": terminal_output.get("output"),
+                        "output_receipt": terminal_output.get("receipt"),
+                        "operation": terminal_output.get("operation"),
+                        "terminal_evidence": evidence,
+                        "reused": true,
+                    }));
+                }
+                Err(error) => return Err(error),
+            }
         } else if state_changed {
             self.transition_product_task(
                 task_id,
@@ -1896,11 +1983,6 @@ impl LocalProductStore {
             )?
         } else {
             current
-        };
-        let terminal_evidence = if terminal_success && state_changed {
-            Some(self.emit_product_task_terminal_evidence(task_id, actor, Some(&output_result))?)
-        } else {
-            None
         };
         Ok(json!({
             "task": transitioned,
@@ -1946,16 +2028,94 @@ impl LocalProductStore {
         }
         let output = product_draft_pr_output_from_operation(task_id, &operation);
         let approval_id = required_product_task_string(&operation, "approval_id")?;
-        let transitioned = self.complete_product_task_output_authorized(
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "product task missing before Draft PR completion".to_string())?;
+        let run_id = required_product_task_string(&task, "run_id")?;
+        let approval = self
+            .workflow_run_approvals(&run_id, 1_000)?
+            .into_iter()
+            .find(|candidate| {
+                candidate.get("approval_id").and_then(Value::as_str) == Some(&approval_id)
+            })
+            .ok_or_else(|| "Draft PR completion approval missing".to_string())?;
+        let artifact = self
+            .get_supervised_patch_artifact(artifact_id)?
+            .ok_or_else(|| "Draft PR completion artifact missing".to_string())?;
+        if task.get("status").and_then(Value::as_str) == Some(ProductTaskStatus::Completed.as_str())
+        {
+            let task_version = task
+                .get("version")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "completed Draft PR task version missing".to_string())?;
+            if task_version != expected_task_version
+                && task_version != expected_task_version.saturating_add(1)
+            {
+                return Err("stale product task version at Draft PR replay".to_string());
+            }
+            validate_completed_product_output_binding(&task, &artifact, &approval)?;
+            let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
+            return Ok(json!({
+                "task": task,
+                "operation": operation,
+                "output": output,
+                "terminal_evidence": terminal_evidence,
+                "reused": true,
+            }));
+        }
+        let candidate = self.build_product_task_terminal_evidence(
+            &task,
+            &artifact,
+            &approval,
+            &output,
+            expected_task_version.saturating_add(1),
+            actor,
+        )?;
+        let (transitioned, terminal_evidence) = match self.complete_product_task_output_authorized(
             task_id,
             artifact_id,
             &approval_id,
             "draft_pr",
             expected_task_version,
+            &candidate,
             actor,
-        )?;
-        let terminal_evidence =
-            self.emit_product_task_terminal_evidence(task_id, actor, Some(&output))?;
+        ) {
+            Ok(completed) => completed,
+            Err(error)
+                if error.contains("expected-current")
+                    || error.contains("stale product task version") =>
+            {
+                let completed = self
+                    .get_product_task(task_id)?
+                    .ok_or_else(|| "product task disappeared after Draft PR race".to_string())?;
+                if completed.get("status").and_then(Value::as_str)
+                    != Some(ProductTaskStatus::Completed.as_str())
+                    || completed.get("version").and_then(Value::as_u64)
+                        != Some(expected_task_version.saturating_add(1))
+                {
+                    return Err(error);
+                }
+                let completed_artifact = self
+                    .get_supervised_patch_artifact(artifact_id)?
+                    .ok_or_else(|| {
+                        "completed Draft PR artifact disappeared after race".to_string()
+                    })?;
+                validate_completed_product_output_binding(
+                    &completed,
+                    &completed_artifact,
+                    &approval,
+                )?;
+                let evidence = self.get_product_task_terminal_evidence(task_id)?;
+                return Ok(json!({
+                    "task": completed,
+                    "operation": operation,
+                    "output": output,
+                    "terminal_evidence": evidence,
+                    "reused": true,
+                }));
+            }
+            Err(error) => return Err(error),
+        };
         Ok(json!({
             "task": transitioned,
             "operation": operation,
@@ -2047,179 +2207,342 @@ impl LocalProductStore {
         )
     }
 
-    /// Assemble and idempotently emit task-rooted terminal evidence using existing owners.
-    /// Does not create a second replay/scorecard system.
-    pub fn emit_product_task_terminal_evidence(
+    #[allow(clippy::too_many_arguments)]
+    fn build_product_task_terminal_evidence(
         &self,
-        task_id: &str,
+        task: &Value,
+        artifact: &Value,
+        approval: &Value,
+        output: &Value,
+        terminal_task_version: u64,
         actor: &str,
-        output: Option<&Value>,
     ) -> Result<Value, String> {
-        let task = self
-            .get_product_task(task_id)?
-            .ok_or_else(|| format!("product task not found: {task_id}"))?;
-        let run_id = task
-            .get("run_id")
+        let task_id = required_product_task_string(task, "task_id")?;
+        let plan_id = required_product_task_string(task, "plan_id")?;
+        let run_id = required_product_task_string(task, "run_id")?;
+        let workspace_record_id = required_product_task_string(task, "workspace_record_id")?;
+        let artifact_id = required_product_task_string(artifact, "artifact_id")?;
+        let approval_id = required_product_task_string(approval, "approval_id")?;
+        let output_intent = required_product_task_string(task, "output_intent")?;
+        let source_revision = task
+            .pointer("/workspace_binding/source_revision")
             .and_then(Value::as_str)
-            .map(str::to_string);
-        let plan_id = task
-            .get("plan_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let workspace_record_id = task
-            .get("workspace_record_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+            .ok_or_else(|| "terminal evidence source revision missing".to_string())?;
+        let plan = self
+            .get_workflow_plan(&plan_id)?
+            .ok_or_else(|| "terminal evidence plan missing".to_string())?;
+        let run = self
+            .get_workflow_run(&run_id)?
+            .ok_or_else(|| "terminal evidence run missing".to_string())?;
+        if run.get("status").and_then(Value::as_str) != Some("completed") {
+            return Err("terminal evidence requires a completed workflow run".to_string());
+        }
+        let node_id = required_product_task_string(approval, "node_id")?;
+        let node = run
+            .get("nodes")
+            .and_then(Value::as_array)
+            .and_then(|nodes| {
+                nodes
+                    .iter()
+                    .find(|node| node.get("node_id").and_then(Value::as_str) == Some(&node_id))
+            })
+            .ok_or_else(|| "terminal evidence approved workflow node missing".to_string())?;
+        let execution = node
+            .get("result")
+            .filter(|result| result.is_object())
+            .ok_or_else(|| "terminal evidence execution result missing".to_string())?;
+        let executor_type = required_product_task_string(execution, "executor_type")?;
+        let executor_class = required_product_task_string(node, "executor_class")?;
+        let execution_attempt = node
+            .get("attempt_count")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "terminal evidence execution attempt missing".to_string())?;
 
-        let run = run_id
-            .as_deref()
-            .and_then(|id| self.get_workflow_run(id).ok().flatten());
-        let workspace = workspace_record_id
-            .as_deref()
-            .and_then(|id| self.get_supervised_patch_workspace(id).ok().flatten());
+        let workspace = self
+            .get_supervised_patch_workspace(&workspace_record_id)?
+            .ok_or_else(|| "terminal evidence workspace missing".to_string())?;
         let verification = workspace
-            .as_ref()
-            .and_then(|w| w.get("verification").cloned());
-        let artifacts = self.supervised_patch_artifacts(50).unwrap_or_default();
-        let artifact = artifacts.into_iter().find(|a| {
-            a.get("workspace_id").and_then(Value::as_str) == workspace_record_id.as_deref()
-                || a.get("run_id").and_then(Value::as_str) == run_id.as_deref()
-        });
-        let artifact_id = artifact
-            .as_ref()
-            .and_then(|a| a.get("artifact_id").and_then(Value::as_str))
-            .map(str::to_string);
+            .get("verification")
+            .filter(|verification| verification.is_object())
+            .ok_or_else(|| "terminal evidence verification missing".to_string())?;
+        if verification.get("status").and_then(Value::as_str) != Some("evidence_recorded")
+            || verification.get("trustworthy").and_then(Value::as_bool) != Some(true)
+        {
+            return Err("terminal evidence requires trustworthy verification".to_string());
+        }
+        let verification_sha256 = product_json_sha256(verification)?;
+        if approval.get("verification_sha256").and_then(Value::as_str)
+            != Some(verification_sha256.as_str())
+        {
+            return Err("terminal evidence verification approval binding changed".to_string());
+        }
+        let verification_receipts = verification
+            .get("verification_attempts")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "terminal evidence verification receipt set missing".to_string())?
+            .iter()
+            .map(|attempt| {
+                let process_outcome = attempt
+                    .get("process_outcome")
+                    .filter(|value| value.is_object())
+                    .ok_or_else(|| "verification process outcome missing".to_string())?;
+                if attempt.get("result_status").and_then(Value::as_str) != Some("completed")
+                    || process_outcome.get("state").and_then(Value::as_str) != Some("exited")
+                    || process_outcome.get("exit_code").and_then(Value::as_i64) != Some(0)
+                {
+                    return Err(
+                        "verification receipt lacks a successful OS process outcome".to_string()
+                    );
+                }
+                Ok(json!({
+                    "attempt": attempt.get("attempt"),
+                    "node_id": attempt.get("node_id"),
+                    "executor_type": attempt.get("executor_type"),
+                    "result_status": attempt.get("result_status"),
+                    "process_outcome": process_outcome,
+                    "output_sha256": attempt.pointer("/output_digest/sha256"),
+                    "started_at": attempt.get("started_at"),
+                    "completed_at": attempt.get("completed_at"),
+                }))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if verification_receipts.is_empty() {
+            return Err("terminal evidence verification receipt set is empty".to_string());
+        }
 
-        let approvals = if let Some(rid) = run_id.as_deref() {
-            self.workflow_run_approvals(rid, 20).unwrap_or_default()
-        } else {
-            Vec::new()
+        let receipt = artifact.get("product_output_receipt");
+        let operation = artifact.get("product_output_operation");
+        let (output_receipt_id, output_operation_id) = match output_intent.as_str() {
+            "artifact_only" | "export_patch" => (
+                Some(required_product_task_string(
+                    receipt.ok_or_else(|| "terminal output receipt missing".to_string())?,
+                    "receipt_id",
+                )?),
+                None,
+            ),
+            "draft_pr" => (
+                None,
+                Some(required_product_task_string(
+                    operation.ok_or_else(|| "terminal output operation missing".to_string())?,
+                    "operation_id",
+                )?),
+            ),
+            _ => return Err("terminal evidence output intent is invalid".to_string()),
         };
-        let approval_id = approvals
-            .first()
-            .and_then(|a| a.get("approval_id").and_then(Value::as_str))
-            .map(str::to_string);
 
-        let target_output_receipt = artifact
-            .as_ref()
-            .and_then(|a| a.get("target_output_receipt").cloned());
-
-        // Replay / scorecard via existing native scorecard owner (explicit unavailable when none).
-        let scorecard = if let Some(rid) = run_id.as_deref() {
-            let cards = self
-                .native_scorecard_artifacts_by_run(rid, 5)
-                .unwrap_or_default();
-            if cards.is_empty() {
-                json!({
-                    "status": "unavailable",
-                    "reason": "no native scorecard artifact for run; product golden path does not fabricate scorecards",
-                    "product_task_id": task_id,
-                    "run_id": rid,
-                })
-            } else {
-                json!({
-                    "status": "linked",
-                    "product_task_id": task_id,
-                    "run_id": rid,
-                    "artifact_ids": cards.iter().filter_map(|c| c.get("artifact_id").cloned()).collect::<Vec<_>>(),
-                })
-            }
-        } else {
+        let scorecards = self.native_scorecard_artifacts_by_run(&run_id, 100)?;
+        let scorecard = if scorecards.is_empty() {
             json!({
                 "status": "unavailable",
-                "reason": "no run_id bound to product task",
-                "product_task_id": task_id,
+                "reason": "native scorecard owner has no artifact for the exact run",
+                "run_id": run_id,
+            })
+        } else {
+            json!({
+                "status": "linked",
+                "run_id": run_id,
+                "artifact_ids": scorecards.iter().filter_map(|card| card.get("artifact_id").cloned()).collect::<Vec<_>>(),
             })
         };
 
-        let replay = json!({
-            "status": if run.is_some() { "eligible_via_run" } else { "unavailable" },
-            "reason": if run.is_some() {
-                "workflow run and verification receipts are durable under existing owners; full policy replay producer is not re-implemented"
-            } else {
-                "no run bound"
-            },
-            "product_task_id": task_id,
-            "run_id": run_id,
-        });
+        let dispatch_id = run.get("dispatch_id").and_then(Value::as_str);
+        let (replay_artifact_ids, replay_references_truncated) = match dispatch_id {
+            Some(dispatch_id) => self.replay_artifacts_for_dispatch(dispatch_id)?,
+            None => (Vec::new(), false),
+        };
+        let replay = if replay_artifact_ids.is_empty() {
+            json!({
+                "status": "unavailable",
+                "reason": if dispatch_id.is_some() {
+                    "replay owner has no exact artifact/binding for the run dispatch"
+                } else {
+                    "workflow run has no recorder-owned dispatch identity"
+                },
+                "run_id": run_id,
+                "dispatch_id": dispatch_id,
+            })
+        } else {
+            json!({
+                "status": "linked",
+                "run_id": run_id,
+                "dispatch_id": dispatch_id,
+                "artifact_ids": replay_artifact_ids,
+                "references_complete": !replay_references_truncated,
+                "references_truncated_at": replay_references_truncated.then_some(100),
+            })
+        };
 
-        let usage = json!({
-            "status": "unavailable",
-            "reason": "fixture_deterministic path does not produce provider usage; cost/usage left explicit-unavailable",
-            "product_task_id": task_id,
-            "executor_class": "fixture_deterministic",
-        });
+        let fixture = executor_class == "fixture_deterministic";
+        let usage = if !fixture
+            && (execution
+                .get("input_tokens")
+                .and_then(Value::as_i64)
+                .is_some()
+                || execution
+                    .get("output_tokens")
+                    .and_then(Value::as_i64)
+                    .is_some())
+        {
+            json!({
+                "status": "linked",
+                "reference": {"run_id": run_id, "node_id": node_id, "attempt": execution_attempt},
+                "input_tokens": execution.get("input_tokens"),
+                "output_tokens": execution.get("output_tokens"),
+                "provenance": "node_executor_owner_reported",
+            })
+        } else {
+            json!({
+                "status": "unavailable",
+                "reason": if fixture {
+                    "fixture execution is not managed coding-agent usage evidence"
+                } else {
+                    "executor owner did not report measured token usage"
+                },
+                "executor_class": executor_class,
+            })
+        };
         let cost = json!({
             "status": "unavailable",
-            "reason": "no authoritative provider/model/pricing evidence for fixture path",
-            "product_task_id": task_id,
+            "reason": if fixture {
+                "fixture execution has no provider pricing or measured usage"
+            } else {
+                "no exact provider/model/pricing receipt is bound to the node result"
+            },
         });
+        let declared_budget = task
+            .pointer("/intake/budget")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let declared_budget_sha256 = product_json_sha256(&declared_budget)?;
+        let route_reference = json!({
+            "status": "linked",
+            "plan_id": plan_id,
+            "dispatch_id": plan.get("dispatch_id"),
+            "analysis_id": plan.pointer("/analysis/analysis_id"),
+        });
+        let budget_reference = json!({
+            "status": "unavailable",
+            "reason": "product task has a declared budget contract but no distinct budget-decision receipt",
+            "declared_budget_sha256": declared_budget_sha256,
+        });
+        let output_result_sha256 = product_json_sha256(output)?;
+        let evidence_id = format!(
+            "product-terminal-{task_id}-{terminal_task_version}-{}",
+            &output_result_sha256[..12]
+        );
 
-        let evidence = json!({
-            "schema_version": "product_task_terminal_evidence.v1",
+        Ok(json!({
+            "schema_version": "product_task_terminal_evidence.v2",
+            "evidence_id": evidence_id,
             "product_task_id": task_id,
             "tenant_id": task.get("tenant_id"),
             "workspace_scope_id": task.get("workspace_id"),
-            "task_status": task.get("status"),
-            "task_version": task.get("version"),
+            "task_status": "completed",
+            "task_version": terminal_task_version,
             "intake_contract_sha256": task.get("intake_contract_sha256"),
-            "objective_fingerprint": task.get("objective_fingerprint"),
-            "output_intent": task.get("output_intent"),
-            "source_revision": task.pointer("/workspace_binding/source_revision"),
+            "route_decision_reference": route_reference,
+            "budget_decision_reference": budget_reference,
             "plan_id": plan_id,
             "run_id": run_id,
+            "run_status": run.get("status"),
+            "node": {
+                "node_id": node_id,
+                "execution_attempt": execution_attempt,
+                "executor_type": executor_type,
+                "executor_class": executor_class,
+                "process_outcome": execution.get("process_outcome").cloned().unwrap_or_else(|| json!({
+                    "schema_version": "process_outcome.v1",
+                    "state": "unavailable",
+                    "exit_code": null,
+                    "signal": null,
+                    "unavailable_reason": "node executor does not own an OS process outcome",
+                })),
+            },
             "workspace_record_id": workspace_record_id,
-            "workspace_path": task.pointer("/workspace_binding/workspace_path"),
-            "node_ids": run.as_ref().and_then(|r| r.get("nodes")).and_then(Value::as_array).map(|nodes| {
-                nodes.iter().filter_map(|n| n.get("node_id").cloned()).collect::<Vec<_>>()
-            }).unwrap_or_default(),
-            "run_status": run.as_ref().and_then(|r| r.get("status").cloned()),
-            "verification_status": verification.as_ref().and_then(|v| v.get("status").cloned()),
-            "verification_trustworthy": verification.as_ref().and_then(|v| v.get("trustworthy").cloned()),
-            "artifact_id": artifact_id,
-            "approval_id": approval_id,
-            "output": output.cloned().unwrap_or(Value::Null),
-            "target_output_receipt": target_output_receipt,
-            "branch": output.and_then(|o| o.get("branch_name").cloned()),
-            "draft_pr": output.and_then(|o| o.get("pull_request").cloned()),
+            "source_revision": source_revision,
+            "verification": {
+                "verification_sha256": verification_sha256,
+                "status": verification.get("status"),
+                "trustworthy": verification.get("trustworthy"),
+                "receipts": verification_receipts,
+            },
+            "artifact": {
+                "artifact_id": artifact_id,
+                "patch_hash": artifact.get("patch_hash"),
+            },
+            "approval": {
+                "approval_id": approval_id,
+                "approved_by": approval.get("approved_by"),
+                "approval_sha256": product_json_sha256(approval)?,
+            },
+            "output": {
+                "intent": output_intent,
+                "result_sha256": output_result_sha256,
+                "operation_id": output_operation_id,
+                "receipt_id": output_receipt_id,
+                "branch": operation.and_then(|value| value.get("head_branch")),
+                "pushed_commit": operation.and_then(|value| value.pointer("/branch_push/commit_sha")),
+                "draft_pr": operation.and_then(|value| value.get("pr_create")).map(|pr| json!({
+                    "number": pr.get("number"),
+                    "url": pr.get("url"),
+                    "repository": pr.get("repository"),
+                    "base_branch": pr.get("base_branch"),
+                    "head_branch": pr.get("head_branch"),
+                    "head_sha": pr.get("head_sha"),
+                    "draft": pr.get("draft"),
+                })),
+            },
             "replay": replay,
             "scorecard": scorecard,
             "usage": usage,
             "cost": cost,
-            "emitted_at": self.now(),
-            "emitted_by": actor,
-        });
-
-        // Persist linkable evidence through existing audit owner (no second evidence store).
-        let _ = self.append_audit(
-            actor,
-            "product_task.terminal_evidence",
-            task_id,
-            &json!({
-                "schema_version": "product_task_terminal_evidence.v1",
-                "product_task_id": task_id,
-                "run_id": evidence.get("run_id"),
-                "plan_id": evidence.get("plan_id"),
-                "workspace_record_id": evidence.get("workspace_record_id"),
-                "artifact_id": evidence.get("artifact_id"),
-                "approval_id": evidence.get("approval_id"),
-                "verification_status": evidence.get("verification_status"),
-                "verification_trustworthy": evidence.get("verification_trustworthy"),
-                "scorecard_status": evidence.pointer("/scorecard/status"),
-                "replay_status": evidence.pointer("/replay/status"),
-                "usage_status": evidence.pointer("/usage/status"),
-                "cost_status": evidence.pointer("/cost/status"),
-                "output_mode": evidence.pointer("/output/mode"),
-                "branch": evidence.get("branch"),
-            }),
-        );
-
-        Ok(evidence)
+            "audit_reference": Value::Null,
+            "content_sha256": Value::Null,
+            "creation_version": terminal_task_version,
+            "created_at": self.now(),
+            "created_by": actor,
+        }))
     }
 
-    /// Query terminal evidence links for a product task (idempotent read assembly).
+    /// Compatibility emission is idempotent and can only return the already-committed record.
+    pub fn emit_product_task_terminal_evidence(
+        &self,
+        task_id: &str,
+        _actor: &str,
+        _output: Option<&Value>,
+    ) -> Result<Value, String> {
+        self.get_product_task_terminal_evidence(task_id)
+    }
+
+    /// Pure read of the canonical record. It never writes audit or evidence rows.
     pub fn get_product_task_terminal_evidence(&self, task_id: &str) -> Result<Value, String> {
-        self.emit_product_task_terminal_evidence(task_id, "system:read", None)
+        let raw = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT evidence_json FROM product_task_terminal_evidence
+                     WHERE product_task_id = ?1 ORDER BY task_version DESC LIMIT 1",
+                    params![task_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT evidence_json FROM product_task_terminal_evidence
+                         WHERE product_task_id = $1 ORDER BY task_version DESC LIMIT 1",
+                        &[&task_id],
+                    )
+                    .map(|row| row.map(|row| row.get::<_, String>(0)))
+                    .map_err(|error| error.to_string())
+            })?,
+        }
+        .ok_or_else(|| "product task terminal evidence is not committed".to_string())?;
+        let evidence: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+        validate_product_terminal_evidence_content_hash(&evidence)?;
+        Ok(evidence)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2758,7 +3081,7 @@ fn product_draft_pr_pending_output(task_id: &str, operation: &Value) -> Value {
     })
 }
 
-fn product_draft_pr_output_from_operation(task_id: &str, operation: &Value) -> Value {
+pub(super) fn product_draft_pr_output_from_operation(task_id: &str, operation: &Value) -> Value {
     json!({
         "mode": "draft_pr",
         "status": "draft_pr_created",
@@ -2779,6 +3102,25 @@ fn product_draft_pr_output_from_operation(task_id: &str, operation: &Value) -> V
 fn product_json_sha256(value: &Value) -> Result<String, String> {
     let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
     Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn validate_product_terminal_evidence_content_hash(evidence: &Value) -> Result<(), String> {
+    if evidence.get("schema_version").and_then(Value::as_str)
+        != Some("product_task_terminal_evidence.v2")
+    {
+        return Err("product terminal evidence schema version is invalid".to_string());
+    }
+    let expected = required_product_task_string(evidence, "content_sha256")?;
+    let mut hash_input = evidence.clone();
+    hash_input
+        .as_object_mut()
+        .ok_or_else(|| "product terminal evidence must be an object".to_string())?
+        .insert("content_sha256".to_string(), Value::Null);
+    let actual = product_json_sha256(&hash_input)?;
+    if actual != expected {
+        return Err("product terminal evidence content hash mismatch".to_string());
+    }
+    Ok(())
 }
 
 fn validate_product_verification_binding(

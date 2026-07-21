@@ -1219,6 +1219,7 @@ impl OpenCodeNodeExecutor {
             output_tokens: None,
             estimated_cost: None,
             latency_ms: Some(started.elapsed().as_millis() as i64),
+            process_outcome: None,
         }
     }
 
@@ -1631,6 +1632,7 @@ impl OpenCodeNodeExecutor {
             output_tokens: None,
             estimated_cost: Some(0.0),
             latency_ms: Some(started.elapsed().as_millis() as i64),
+            process_outcome: None,
         })
     }
 }

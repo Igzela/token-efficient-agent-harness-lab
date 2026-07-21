@@ -3,8 +3,11 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
-use crate::cli::spawn_with_timeout;
-use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
+use crate::cli::{spawn_with_timeout, SpawnWithTimeoutError};
+use crate::node_executor::{
+    exit_status_signal, process_outcome_from_exit_status, NodeExecutionInput, NodeExecutionOutput,
+    NodeExecutor, ProcessOutcome,
+};
 use crate::provider::redaction::redact_sensitive_patterns;
 
 /// CLI-backed NodeExecutor for the managed Codex CLI process.
@@ -134,6 +137,7 @@ impl NodeExecutor for CliNodeExecutor {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(start.elapsed().as_millis() as i64),
+            process_outcome: None,
             };
         }
         let prompt = self.resolve_prompt(input);
@@ -150,6 +154,7 @@ impl NodeExecutor for CliNodeExecutor {
                     output_tokens: None,
                     estimated_cost: None,
                     latency_ms: Some(start.elapsed().as_millis() as i64),
+                    process_outcome: None,
                 };
             }
         };
@@ -168,6 +173,7 @@ impl NodeExecutor for CliNodeExecutor {
                         output_tokens: None,
                         estimated_cost: None,
                         latency_ms: Some(start.elapsed().as_millis() as i64),
+                        process_outcome: None,
                     };
                 }
             },
@@ -182,6 +188,7 @@ impl NodeExecutor for CliNodeExecutor {
                     output_tokens: None,
                     estimated_cost: None,
                     latency_ms: Some(start.elapsed().as_millis() as i64),
+                    process_outcome: None,
                 };
             }
         };
@@ -218,6 +225,7 @@ impl NodeExecutor for CliNodeExecutor {
 
         match output {
             Ok(output) => {
+                let process_outcome = process_outcome_from_exit_status(&output.status);
                 if !output.status.success() {
                     let stderr =
                         redact_sensitive_patterns(&String::from_utf8_lossy(&output.stderr));
@@ -242,23 +250,66 @@ impl NodeExecutor for CliNodeExecutor {
                         output_tokens: None,
                         estimated_cost: None,
                         latency_ms: Some(elapsed_ms),
+                        process_outcome: Some(process_outcome),
                     };
                 }
 
                 let stdout = redact_sensitive_patterns(&String::from_utf8_lossy(&output.stdout));
-                parse_cli_output(&stdout, effective_type, elapsed_ms)
+                parse_cli_output(&stdout, effective_type, elapsed_ms, process_outcome)
             }
-            Err(timeout_elapsed) => {
-                let (domain, msg) = if timeout_elapsed == 0 {
-                    ("cli_not_found", format!("failed to spawn {effective_type}"))
-                } else {
-                    (
+            Err(error) => {
+                let (domain, msg, process_outcome) = match error {
+                    SpawnWithTimeoutError::SpawnFailed => (
+                        "cli_not_found",
+                        format!("failed to spawn {effective_type}"),
+                        ProcessOutcome::failure(
+                            "spawn_failed",
+                            None,
+                            "managed CLI OS process did not start",
+                        ),
+                    ),
+                    SpawnWithTimeoutError::TimedOut {
+                        elapsed_ms,
+                        terminated_status,
+                    } => (
                         "cli_timeout",
                         format!(
-                            "{effective_type} timed out after {timeout_elapsed}ms (limit {}ms)",
+                            "{effective_type} timed out after {elapsed_ms}ms (limit {}ms)",
                             self.timeout_ms
                         ),
-                    )
+                        ProcessOutcome::failure(
+                            "timed_out",
+                            terminated_status.as_ref().and_then(exit_status_signal),
+                            "timeout has no successful OS exit code",
+                        ),
+                    ),
+                    SpawnWithTimeoutError::WaitFailed {
+                        elapsed_ms,
+                        observed_status,
+                    } => {
+                        let mut outcome = observed_status
+                            .as_ref()
+                            .map(process_outcome_from_exit_status)
+                            .unwrap_or_else(|| {
+                                ProcessOutcome::failure(
+                                    "wait_failed",
+                                    None,
+                                    "managed CLI wait failed before an exit code was available",
+                                )
+                            });
+                        outcome.state = "wait_failed".to_string();
+                        outcome.unavailable_reason = Some(
+                            "managed CLI wait/output collection failed after process spawn"
+                                .to_string(),
+                        );
+                        (
+                            "cli_wait_error",
+                            format!(
+                                "{effective_type} wait/output collection failed after {elapsed_ms}ms"
+                            ),
+                            outcome,
+                        )
+                    }
                 };
                 NodeExecutionOutput {
                     status: "failed".to_string(),
@@ -270,6 +321,7 @@ impl NodeExecutor for CliNodeExecutor {
                     output_tokens: None,
                     estimated_cost: None,
                     latency_ms: Some(elapsed_ms),
+                    process_outcome: Some(process_outcome),
                 }
             }
         }
@@ -286,10 +338,15 @@ fn cli_env_allowlist() -> Vec<String> {
         .collect()
 }
 
-fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExecutionOutput {
+fn parse_cli_output(
+    raw: &str,
+    executor_type: &str,
+    latency_ms: i64,
+    process_outcome: ProcessOutcome,
+) -> NodeExecutionOutput {
     let raw = redact_sensitive_patterns(raw);
     if executor_type == "codex_cli" {
-        return parse_codex_jsonl(&raw, latency_ms);
+        return parse_codex_jsonl(&raw, latency_ms, process_outcome);
     }
     let parsed: Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
@@ -304,6 +361,7 @@ fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExec
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(latency_ms),
+                process_outcome: Some(process_outcome),
             };
         }
     };
@@ -343,10 +401,15 @@ fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExec
         // fabricating zero or a hard-coded harness estimate.
         estimated_cost: None,
         latency_ms: Some(latency_ms),
+        process_outcome: Some(process_outcome),
     }
 }
 
-fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
+fn parse_codex_jsonl(
+    raw: &str,
+    latency_ms: i64,
+    process_outcome: ProcessOutcome,
+) -> NodeExecutionOutput {
     let mut output = None;
     let mut input_tokens = None;
     let mut output_tokens = None;
@@ -367,6 +430,7 @@ fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
                     output_tokens: None,
                     estimated_cost: None,
                     latency_ms: Some(latency_ms),
+                    process_outcome: Some(process_outcome),
                 };
             }
         };
@@ -424,6 +488,7 @@ fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
             output_tokens,
             estimated_cost: None,
             latency_ms: Some(latency_ms),
+            process_outcome: Some(process_outcome),
         };
     }
     if !completed {
@@ -437,6 +502,7 @@ fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
             output_tokens,
             estimated_cost: None,
             latency_ms: Some(latency_ms),
+            process_outcome: Some(process_outcome),
         };
     }
 
@@ -450,6 +516,7 @@ fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
         output_tokens,
         estimated_cost: None,
         latency_ms: Some(latency_ms),
+        process_outcome: Some(process_outcome),
     }
 }
 
@@ -466,6 +533,22 @@ mod tests {
             workflow_id: "wf-test".to_string(),
             node_metadata: metadata,
         }
+    }
+
+    fn successful_process() -> ProcessOutcome {
+        ProcessOutcome::exited(0)
+    }
+
+    #[cfg(unix)]
+    fn fake_codex(workspace: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let binary = workspace.join("codex-fixture");
+        std::fs::write(&binary, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&binary, permissions).unwrap();
+        binary
     }
 
     #[test]
@@ -496,6 +579,87 @@ mod tests {
         let output = executor.execute_node(&input);
         assert_eq!(output.status, "failed");
         assert_eq!(output.error_domain.as_deref(), Some("unknown_cli_executor"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_cli_preserves_successful_process_exit() {
+        let workspace = tempfile::tempdir().unwrap();
+        let binary = fake_codex(
+            workspace.path(),
+            "printf '%s\\n' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}'",
+        );
+        let executor =
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 5_000);
+        let output = executor.execute_node(&make_input(json!({
+            "executor": "codex_cli",
+            "prompt": "bounded fixture",
+            "workspace_path": workspace.path(),
+        })));
+        assert_eq!(output.status, "completed");
+        assert_eq!(output.process_outcome.as_ref().unwrap().state, "exited");
+        assert_eq!(output.process_outcome.as_ref().unwrap().exit_code, Some(0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_cli_preserves_nonzero_process_exit_other_than_one() {
+        let workspace = tempfile::tempdir().unwrap();
+        let binary = fake_codex(workspace.path(), "printf 'bounded failure' >&2\nexit 7");
+        let executor =
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 5_000);
+        let output = executor.execute_node(&make_input(json!({
+            "executor": "codex_cli",
+            "prompt": "bounded fixture",
+            "workspace_path": workspace.path(),
+        })));
+        assert_eq!(output.status, "failed");
+        assert_eq!(output.process_outcome.as_ref().unwrap().state, "exited");
+        assert_eq!(output.process_outcome.as_ref().unwrap().exit_code, Some(7));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_cli_timeout_has_no_fabricated_exit_code() {
+        let workspace = tempfile::tempdir().unwrap();
+        let binary = fake_codex(workspace.path(), "sleep 5");
+        let executor = CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 50);
+        let output = executor.execute_node(&make_input(json!({
+            "executor": "codex_cli",
+            "prompt": "bounded fixture",
+            "workspace_path": workspace.path(),
+        })));
+        assert_eq!(output.status, "failed");
+        assert_eq!(output.error_domain.as_deref(), Some("cli_timeout"));
+        assert_eq!(output.process_outcome.as_ref().unwrap().state, "timed_out");
+        assert_eq!(output.process_outcome.as_ref().unwrap().exit_code, None);
+    }
+
+    #[test]
+    fn managed_cli_spawn_failure_is_explicit() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = CliNodeExecutor::new(
+            None,
+            Some(
+                workspace
+                    .path()
+                    .join("missing-codex")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            5_000,
+        );
+        let output = executor.execute_node(&make_input(json!({
+            "executor": "codex_cli",
+            "prompt": "bounded fixture",
+            "workspace_path": workspace.path(),
+        })));
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.process_outcome.as_ref().unwrap().state,
+            "spawn_failed"
+        );
+        assert_eq!(output.process_outcome.as_ref().unwrap().exit_code, None);
     }
 
     #[test]
@@ -546,6 +710,7 @@ mod tests {
              {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}\n",
             "codex_cli",
             25,
+            successful_process(),
         );
 
         assert_eq!(output.status, "completed");
@@ -560,6 +725,7 @@ mod tests {
             "{\"type\":\"turn.failed\",\"error\":{\"message\":\"usage limit\"}}\n",
             "codex_cli",
             25,
+            successful_process(),
         );
 
         assert_eq!(output.status, "failed");
@@ -570,7 +736,7 @@ mod tests {
     #[test]
     fn test_parse_cli_output_success() {
         let raw = r#"{"result":"hello world","usage":{"input_tokens":100,"output_tokens":50}}"#;
-        let output = parse_cli_output(raw, "claude_code_cli", 100);
+        let output = parse_cli_output(raw, "claude_code_cli", 100, successful_process());
         assert_eq!(output.status, "completed");
         assert_eq!(output.output.as_deref(), Some("hello world"));
         assert_eq!(output.input_tokens, Some(100));
@@ -580,7 +746,7 @@ mod tests {
 
     #[test]
     fn test_parse_cli_output_malformed_json() {
-        let output = parse_cli_output("not-json", "codex_cli", 50);
+        let output = parse_cli_output("not-json", "codex_cli", 50, successful_process());
         assert_eq!(output.status, "failed");
         assert_eq!(
             output.error_domain.as_deref(),
@@ -591,7 +757,7 @@ mod tests {
     #[test]
     fn test_parse_cli_output_fallback_to_raw() {
         let raw = r#"{"id":"req-123","usage":{}}"#;
-        let output = parse_cli_output(raw, "claude_code_cli", 50);
+        let output = parse_cli_output(raw, "claude_code_cli", 50, successful_process());
         assert_eq!(output.status, "completed");
         assert_eq!(output.output.as_deref(), Some(raw));
     }
@@ -599,7 +765,7 @@ mod tests {
     #[test]
     fn test_parse_cli_output_redacts_secret_like_output() {
         let raw = r#"{"result":"api_key=sk-abcdefghijklmnopqrstuvwxyz","usage":{}}"#;
-        let output = parse_cli_output(raw, "claude_code_cli", 50);
+        let output = parse_cli_output(raw, "claude_code_cli", 50, successful_process());
         assert_eq!(output.status, "completed");
         assert!(!output
             .output
@@ -678,6 +844,7 @@ mod tests {
             "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}\n",
             "codex_cli",
             1,
+            successful_process(),
         );
         assert_eq!(output.input_tokens, Some(100));
         assert_eq!(output.output_tokens, Some(50));

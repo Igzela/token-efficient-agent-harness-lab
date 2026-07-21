@@ -244,6 +244,164 @@ fn pg_product_task_to_approval(
     (task, approval, artifact)
 }
 
+#[cfg(feature = "pg-tests")]
+fn pg_product_repo(label: &str) -> (tempfile::TempDir, String) {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(repo.path().join("README.md"), format!("{label}\n")).unwrap();
+    for args in [
+        &["init", "-b", "main"][..],
+        &["config", "user.email", "pg-product@example.invalid"][..],
+        &["config", "user.name", "PG Product Test"][..],
+        &["add", "README.md"][..],
+        &["commit", "-m", "init"][..],
+    ] {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {:?}", output);
+    }
+    let revision = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    (
+        repo,
+        String::from_utf8_lossy(&revision.stdout).trim().to_string(),
+    )
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_terminal_evidence_audit_failure_rolls_back_completion() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg terminal audit rollback");
+    let tag = uuid_tag();
+    let (task, approval, _) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &tag, "artifact_only");
+    let task_id = task["task_id"].as_str().unwrap();
+    let task_version = task["version"].as_u64().unwrap();
+
+    let suffix = uuid_tag().replace('-', "_");
+    let function_name = format!("reject_terminal_evidence_audit_{suffix}");
+    let trigger_name = format!("reject_terminal_evidence_audit_trigger_{suffix}");
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+    client
+        .batch_execute(&format!(
+            "CREATE FUNCTION {function_name}() RETURNS trigger
+             LANGUAGE plpgsql AS $$
+             BEGIN
+               IF NEW.action = 'product_task.terminal_evidence_committed' THEN
+                 RAISE EXCEPTION 'terminal evidence audit rejected';
+               END IF;
+               RETURN NEW;
+             END;
+             $$;
+             CREATE TRIGGER {trigger_name}
+             BEFORE INSERT ON audit_log
+             FOR EACH ROW EXECUTE FUNCTION {function_name}();"
+        ))
+        .unwrap();
+
+    let error = store
+        .output_product_task(
+            task_id,
+            "pg-output-operator",
+            task_version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap_err();
+    assert!(
+        error == "db error" || error.contains("terminal evidence audit rejected"),
+        "{error}"
+    );
+    let current = store.get_product_task(task_id).unwrap().unwrap();
+    assert_eq!(current["status"], "awaiting_approval");
+    assert_eq!(current["version"], task_version);
+    assert!(store
+        .get_product_task_terminal_evidence(task_id)
+        .unwrap_err()
+        .contains("not committed"));
+
+    client
+        .batch_execute(&format!(
+            "DROP TRIGGER {trigger_name} ON audit_log;
+             DROP FUNCTION {function_name}();"
+        ))
+        .unwrap();
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_duplicate_terminal_output_is_exactly_once_and_blocks_v31_rollback() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg concurrent terminal evidence");
+    let tag = uuid_tag();
+    let (task, approval, _) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &tag, "artifact_only");
+    let task_id = task["task_id"].as_str().unwrap().to_string();
+    let task_version = task["version"].as_u64().unwrap();
+    let approval_id = approval["approval_id"].as_str().unwrap().to_string();
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for actor in ["pg-output-a", "pg-output-b"] {
+        let concurrent_store =
+            LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
+        let barrier = Arc::clone(&barrier);
+        let task_id = task_id.clone();
+        let approval_id = approval_id.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            concurrent_store
+                .output_product_task(&task_id, actor, task_version, Some(&approval_id), true)
+                .unwrap()
+        }));
+    }
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    assert!(results
+        .iter()
+        .all(|result| result["task"]["status"] == "completed"));
+    assert_eq!(
+        results[0]["terminal_evidence"]["evidence_id"],
+        results[1]["terminal_evidence"]["evidence_id"]
+    );
+    let terminal_audits = store
+        .audit_events(10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event["action"] == "product_task.terminal_evidence_committed"
+                && event["resource"] == task_id
+        })
+        .count();
+    assert_eq!(terminal_audits, 1);
+
+    let rollback_error = store
+        .rollback_v31_to_v30("pg-rollback-operator", true)
+        .unwrap_err();
+    assert!(
+        rollback_error.contains("authoritative terminal evidence exists"),
+        "{rollback_error}"
+    );
+    assert_eq!(store.schema_version().unwrap(), 31);
+}
+
 #[test]
 #[cfg(feature = "pg-tests")]
 fn pg_product_output_approval_revalidates_current_bindings_atomically() {
@@ -515,7 +673,8 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         )
         .unwrap_err();
     assert!(
-        stale_terminal.contains("verification authority changed"),
+        stale_terminal.contains("verification authority changed")
+            || stale_terminal.contains("verification approval binding changed"),
         "{stale_terminal}"
     );
     assert_eq!(
@@ -551,7 +710,26 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         "completed"
     );
     assert_eq!(completed_task["operation"]["pr_create"]["number"], 23);
-    assert!(completed_task["terminal_evidence"].is_object());
+    let terminal_evidence = completed_task["terminal_evidence"].clone();
+    assert_eq!(
+        terminal_evidence["schema_version"],
+        "product_task_terminal_evidence.v2"
+    );
+    assert_eq!(terminal_evidence["output"]["operation_id"], operation_id);
+    assert_eq!(terminal_evidence["output"]["draft_pr"]["number"], 23);
+    let audit_before_read = store.audit_events(10_000).unwrap();
+    let restarted = LocalProductStore::new_postgres(
+        &std::env::var("ACP_TEST_DATABASE_URL").unwrap(),
+        utc_now_string,
+    )
+    .unwrap();
+    assert_eq!(
+        restarted
+            .get_product_task_terminal_evidence(task_id)
+            .unwrap(),
+        terminal_evidence
+    );
+    assert_eq!(restarted.audit_events(10_000).unwrap(), audit_before_read);
     assert!(store
         .mark_product_output_pr_failed_known(
             artifact_id,
@@ -662,6 +840,7 @@ impl NodeExecutor for PgCountingExecutor {
             output_tokens: None,
             estimated_cost: None,
             latency_ms: Some(1),
+            process_outcome: None,
         }
     }
 
@@ -1156,6 +1335,7 @@ fn pg_agent_global_cap_is_atomic_across_runs() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 
@@ -1177,6 +1357,7 @@ fn pg_agent_global_cap_is_atomic_across_runs() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 
@@ -1302,6 +1483,7 @@ fn pg_stale_worker_cannot_overwrite_reclaimed_attempt() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 
@@ -1324,6 +1506,7 @@ fn pg_stale_worker_cannot_overwrite_reclaimed_attempt() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 

@@ -7,14 +7,31 @@ pub use config::CliConfig;
 use std::process::{Child, Command, Output};
 use std::time::{Duration, Instant};
 
+#[derive(Debug)]
+pub enum SpawnWithTimeoutError {
+    SpawnFailed,
+    TimedOut {
+        elapsed_ms: i64,
+        terminated_status: Option<std::process::ExitStatus>,
+    },
+    WaitFailed {
+        elapsed_ms: i64,
+        observed_status: Option<std::process::ExitStatus>,
+    },
+}
+
 /// Spawn a child process and wait for it with a timeout.
 /// Returns Ok(output) if the child exits within the deadline,
-/// or Err(elapsed_ms) if the timeout fires (child is killed).
-pub fn spawn_with_timeout(cmd: &mut Command, timeout_ms: u64) -> Result<Output, i64> {
+/// or an exact bounded process failure. Timeout and wait failure retain any
+/// termination status observed while cleaning up the child.
+pub fn spawn_with_timeout(
+    cmd: &mut Command,
+    timeout_ms: u64,
+) -> Result<Output, SpawnWithTimeoutError> {
     let start = Instant::now();
     let mut child: Child = match cmd.spawn() {
         Ok(c) => c,
-        Err(_) => return Err(0),
+        Err(_) => return Err(SpawnWithTimeoutError::SpawnFailed),
     };
 
     let deadline = Duration::from_millis(timeout_ms);
@@ -22,23 +39,32 @@ pub fn spawn_with_timeout(cmd: &mut Command, timeout_ms: u64) -> Result<Output, 
 
     loop {
         match child.try_wait() {
-            Ok(Some(_status)) => {
+            Ok(Some(status)) => {
                 return child
                     .wait_with_output()
-                    .map_err(|_| start.elapsed().as_millis() as i64);
+                    .map_err(|_| SpawnWithTimeoutError::WaitFailed {
+                        elapsed_ms: start.elapsed().as_millis() as i64,
+                        observed_status: Some(status),
+                    });
             }
             Ok(None) => {
                 if start.elapsed() >= deadline {
                     let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(start.elapsed().as_millis() as i64);
+                    let terminated_status = child.wait().ok();
+                    return Err(SpawnWithTimeoutError::TimedOut {
+                        elapsed_ms: start.elapsed().as_millis() as i64,
+                        terminated_status,
+                    });
                 }
                 std::thread::sleep(poll_interval);
             }
             Err(_) => {
                 let _ = child.kill();
-                let _ = child.wait();
-                return Err(start.elapsed().as_millis() as i64);
+                let observed_status = child.wait().ok();
+                return Err(SpawnWithTimeoutError::WaitFailed {
+                    elapsed_ms: start.elapsed().as_millis() as i64,
+                    observed_status,
+                });
             }
         }
     }
@@ -70,11 +96,16 @@ mod tests {
         cmd.arg("60");
         let result = spawn_with_timeout(&mut cmd, 200);
         assert!(result.is_err());
-        let elapsed = result.unwrap_err();
-        assert!(elapsed >= 200, "elapsed {elapsed}ms should be >= 200ms");
+        let SpawnWithTimeoutError::TimedOut { elapsed_ms, .. } = result.unwrap_err() else {
+            panic!("expected timeout");
+        };
         assert!(
-            elapsed < 5000,
-            "elapsed {elapsed}ms should be well under 60s"
+            elapsed_ms >= 200,
+            "elapsed {elapsed_ms}ms should be >= 200ms"
+        );
+        assert!(
+            elapsed_ms < 5000,
+            "elapsed {elapsed_ms}ms should be well under 60s"
         );
     }
 
@@ -83,6 +114,9 @@ mod tests {
         let mut cmd = Command::new("nonexistent_binary_xyz_98765");
         let result = spawn_with_timeout(&mut cmd, 5000);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), 0);
+        assert!(matches!(
+            result.unwrap_err(),
+            SpawnWithTimeoutError::SpawnFailed
+        ));
     }
 }

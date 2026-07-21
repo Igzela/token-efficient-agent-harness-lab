@@ -2312,8 +2312,9 @@ impl LocalProductStore {
         approval_id: &str,
         output_intent: &str,
         expected_task_version: u64,
+        terminal_evidence: &Value,
         actor: &str,
-    ) -> Result<Value, String> {
+    ) -> Result<(Value, Value), String> {
         let authority_request = json!({
             "schema_version": "product_output_authority_request.v1",
             "product_task_id": product_task_id,
@@ -2323,7 +2324,7 @@ impl LocalProductStore {
             "expected_task_version": expected_task_version,
         });
         let now = self.now();
-        match &self.db {
+        let stored_evidence = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = rusqlite::Transaction::new_unchecked(
                     conn,
@@ -2353,6 +2354,13 @@ impl LocalProductStore {
                     output_intent,
                 )?;
                 let next_version = expected_task_version.saturating_add(1);
+                validate_product_terminal_evidence_candidate(
+                    terminal_evidence,
+                    &task,
+                    &artifact,
+                    &approval,
+                    next_version,
+                )?;
                 let updated = tx
                     .execute(
                         "UPDATE product_tasks SET status = 'completed', version = ?1,
@@ -2390,7 +2398,31 @@ impl LocalProductStore {
                         "terminal_authority_revalidated": true,
                     }),
                 )?;
-                tx.commit().map_err(|error| error.to_string())
+                let evidence_id = required_str(terminal_evidence, "evidence_id")?;
+                let evidence_audit_id = append_audit_locked(
+                    &tx,
+                    &now,
+                    actor,
+                    "product_task.terminal_evidence_committed",
+                    product_task_id,
+                    &json!({
+                        "schema_version": "product_task_terminal_evidence_audit.v1",
+                        "evidence_id": evidence_id,
+                        "task_version": next_version,
+                        "artifact_id": artifact_id,
+                        "approval_id": approval_id,
+                        "output_intent": output_intent,
+                    }),
+                )?;
+                let evidence = finalize_product_terminal_evidence(
+                    terminal_evidence,
+                    evidence_audit_id,
+                    &now,
+                    actor,
+                )?;
+                insert_product_terminal_evidence_sqlite(&tx, &evidence)?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(evidence)
             })?,
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
@@ -2419,6 +2451,13 @@ impl LocalProductStore {
                     output_intent,
                 )?;
                 let next_version = expected_task_version.saturating_add(1);
+                validate_product_terminal_evidence_candidate(
+                    terminal_evidence,
+                    &task,
+                    &artifact,
+                    &approval,
+                    next_version,
+                )?;
                 let current_status = required_str(&task, "status")?;
                 let updated = tx
                     .execute(
@@ -2459,11 +2498,40 @@ impl LocalProductStore {
                     product_task_id,
                     &details,
                 )?;
-                tx.commit().map_err(|error| error.to_string())
+                let evidence_id = required_str(terminal_evidence, "evidence_id")?;
+                let evidence_details = json!({
+                    "schema_version": "product_task_terminal_evidence_audit.v1",
+                    "evidence_id": evidence_id,
+                    "task_version": next_version,
+                    "artifact_id": artifact_id,
+                    "approval_id": approval_id,
+                    "output_intent": output_intent,
+                })
+                .to_string();
+                let evidence_audit_id: i64 = tx
+                    .query_one(
+                        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                         VALUES ($1,$2,'product_task.terminal_evidence_committed',$3,$4)
+                         RETURNING audit_id",
+                        &[&now, &actor, &product_task_id, &evidence_details],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .get(0);
+                let evidence = finalize_product_terminal_evidence(
+                    terminal_evidence,
+                    evidence_audit_id,
+                    &now,
+                    actor,
+                )?;
+                insert_product_terminal_evidence_pg(&mut tx, &evidence)?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(evidence)
             })?,
-        }
-        self.get_product_task(product_task_id)?
-            .ok_or_else(|| "product task missing after authorized completion".to_string())
+        };
+        let task = self
+            .get_product_task(product_task_id)?
+            .ok_or_else(|| "product task missing after authorized completion".to_string())?;
+        Ok((task, stored_evidence))
     }
 
     pub fn record_product_output_branch_pushed(
@@ -3816,6 +3884,315 @@ fn target_output_json_sha256(value: &Value) -> Result<String, String> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
+fn validate_product_terminal_evidence_candidate(
+    evidence: &Value,
+    task: &Value,
+    artifact: &Value,
+    approval: &Value,
+    terminal_task_version: u64,
+) -> Result<(), String> {
+    for (valid, field) in [
+        (
+            evidence.get("schema_version").and_then(Value::as_str)
+                == Some("product_task_terminal_evidence.v2"),
+            "schema_version",
+        ),
+        (
+            evidence.get("task_status").and_then(Value::as_str) == Some("completed"),
+            "task_status",
+        ),
+        (
+            evidence.get("task_version").and_then(Value::as_u64) == Some(terminal_task_version),
+            "task_version",
+        ),
+        (
+            evidence.get("creation_version").and_then(Value::as_u64) == Some(terminal_task_version),
+            "creation_version",
+        ),
+        (
+            evidence.get("product_task_id") == task.get("task_id"),
+            "product_task_id",
+        ),
+        (
+            evidence.get("tenant_id") == task.get("tenant_id"),
+            "tenant_id",
+        ),
+        (
+            evidence.get("workspace_scope_id") == task.get("workspace_id"),
+            "workspace_scope_id",
+        ),
+        (
+            evidence.get("intake_contract_sha256") == task.get("intake_contract_sha256"),
+            "intake_contract_sha256",
+        ),
+        (evidence.get("plan_id") == task.get("plan_id"), "plan_id"),
+        (evidence.get("run_id") == task.get("run_id"), "run_id"),
+        (
+            evidence.get("workspace_record_id") == task.get("workspace_record_id"),
+            "workspace_record_id",
+        ),
+        (
+            evidence.get("source_revision") == task.get("source_revision"),
+            "source_revision",
+        ),
+        (
+            evidence.pointer("/node/node_id") == approval.get("node_id"),
+            "node_id",
+        ),
+        (
+            evidence.pointer("/verification/verification_sha256")
+                == approval.get("verification_sha256"),
+            "verification_sha256",
+        ),
+        (
+            evidence.pointer("/artifact/artifact_id") == artifact.get("artifact_id"),
+            "artifact_id",
+        ),
+        (
+            evidence.pointer("/artifact/patch_hash") == artifact.get("patch_hash"),
+            "patch_hash",
+        ),
+        (
+            evidence.pointer("/approval/approval_id") == approval.get("approval_id"),
+            "approval_id",
+        ),
+        (
+            evidence.pointer("/approval/approved_by") == approval.get("approved_by"),
+            "approved_by",
+        ),
+        (
+            evidence.pointer("/output/intent") == task.get("output_intent"),
+            "output_intent",
+        ),
+    ] {
+        if !valid {
+            return Err(format!(
+                "terminal evidence candidate {field} binding mismatch"
+            ));
+        }
+    }
+    let evidence_id = required_str(evidence, "evidence_id")?;
+    let task_id = required_str(task, "task_id")?;
+    if evidence
+        .pointer("/approval/approval_sha256")
+        .and_then(Value::as_str)
+        != Some(target_output_json_sha256(approval)?.as_str())
+    {
+        return Err("terminal evidence approval content hash mismatch".to_string());
+    }
+    let output_result_sha256 = evidence
+        .pointer("/output/result_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "terminal evidence output result hash missing".to_string())?;
+    if output_result_sha256.len() != 64
+        || evidence_id
+            != format!(
+                "product-terminal-{task_id}-{terminal_task_version}-{}",
+                &output_result_sha256[..12]
+            )
+    {
+        return Err("terminal evidence deterministic identity mismatch".to_string());
+    }
+    match required_str(task, "output_intent")? {
+        "artifact_only" | "export_patch" => {
+            let receipt = artifact
+                .get("product_output_receipt")
+                .ok_or_else(|| "terminal evidence output receipt missing".to_string())?;
+            if evidence.pointer("/output/receipt_id") != receipt.get("receipt_id")
+                || evidence
+                    .pointer("/output/operation_id")
+                    .is_some_and(|value| !value.is_null())
+                || receipt.pointer("/output_sha256").and_then(Value::as_str)
+                    != Some(output_result_sha256)
+            {
+                return Err("terminal evidence receipt binding mismatch".to_string());
+            }
+        }
+        "draft_pr" => {
+            let operation = artifact
+                .get("product_output_operation")
+                .ok_or_else(|| "terminal evidence output operation missing".to_string())?;
+            let expected_output =
+                super::product_tasks::product_draft_pr_output_from_operation(task_id, operation);
+            let expected_output_sha256 = target_output_json_sha256(&expected_output)?;
+            if evidence.pointer("/output/operation_id") != operation.get("operation_id")
+                || evidence
+                    .pointer("/output/receipt_id")
+                    .is_some_and(|value| !value.is_null())
+                || output_result_sha256 != expected_output_sha256
+                || operation.get("state").and_then(Value::as_str) != Some("completed")
+                || operation
+                    .pointer("/branch_push/status")
+                    .and_then(Value::as_str)
+                    != Some("completed")
+                || operation
+                    .pointer("/pr_create/status")
+                    .and_then(Value::as_str)
+                    != Some("completed")
+                || evidence.pointer("/output/branch") != operation.get("head_branch")
+                || evidence.pointer("/output/pushed_commit")
+                    != operation.pointer("/branch_push/commit_sha")
+                || evidence.pointer("/output/draft_pr/number")
+                    != operation.pointer("/pr_create/number")
+                || evidence.pointer("/output/draft_pr/url") != operation.pointer("/pr_create/url")
+                || evidence.pointer("/output/draft_pr/repository")
+                    != operation.pointer("/pr_create/repository")
+                || evidence.pointer("/output/draft_pr/base_branch")
+                    != operation.pointer("/pr_create/base_branch")
+                || evidence.pointer("/output/draft_pr/head_branch")
+                    != operation.pointer("/pr_create/head_branch")
+                || evidence.pointer("/output/draft_pr/head_sha")
+                    != operation.pointer("/pr_create/head_sha")
+                || evidence
+                    .pointer("/output/draft_pr/draft")
+                    .and_then(Value::as_bool)
+                    != Some(true)
+            {
+                return Err("terminal evidence Draft PR operation binding mismatch".to_string());
+            }
+        }
+        _ => return Err("terminal evidence output intent is invalid".to_string()),
+    }
+    Ok(())
+}
+
+fn finalize_product_terminal_evidence(
+    candidate: &Value,
+    audit_id: i64,
+    now: &str,
+    actor: &str,
+) -> Result<Value, String> {
+    let mut evidence = candidate.clone();
+    let object = evidence
+        .as_object_mut()
+        .ok_or_else(|| "terminal evidence candidate must be an object".to_string())?;
+    object.insert(
+        "audit_reference".to_string(),
+        json!({
+            "audit_id": audit_id,
+            "action": "product_task.terminal_evidence_committed",
+        }),
+    );
+    object.insert("created_at".to_string(), json!(now));
+    object.insert("created_by".to_string(), json!(actor));
+    object.insert("content_sha256".to_string(), Value::Null);
+    let content_sha256 = target_output_json_sha256(&evidence)?;
+    evidence
+        .as_object_mut()
+        .ok_or_else(|| "terminal evidence candidate stopped being an object".to_string())?
+        .insert("content_sha256".to_string(), json!(content_sha256));
+    Ok(evidence)
+}
+
+fn insert_product_terminal_evidence_sqlite(
+    conn: &rusqlite::Connection,
+    evidence: &Value,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO product_task_terminal_evidence
+         (evidence_id, product_task_id, tenant_id, workspace_id, task_version,
+          output_result_sha256, artifact_id, approval_id, output_operation_id,
+          output_receipt_id, audit_id, content_sha256, evidence_json, created_at, created_by)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+        params![
+            required_str(evidence, "evidence_id")?,
+            required_str(evidence, "product_task_id")?,
+            required_str(evidence, "tenant_id")?,
+            required_str(evidence, "workspace_scope_id")?,
+            evidence
+                .get("task_version")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "terminal evidence task version missing".to_string())?
+                as i64,
+            evidence
+                .pointer("/output/result_sha256")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "terminal evidence output hash missing".to_string())?,
+            evidence
+                .pointer("/artifact/artifact_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "terminal evidence artifact missing".to_string())?,
+            evidence
+                .pointer("/approval/approval_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "terminal evidence approval missing".to_string())?,
+            evidence
+                .pointer("/output/operation_id")
+                .and_then(Value::as_str),
+            evidence
+                .pointer("/output/receipt_id")
+                .and_then(Value::as_str),
+            evidence
+                .pointer("/audit_reference/audit_id")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| "terminal evidence audit reference missing".to_string())?,
+            required_str(evidence, "content_sha256")?,
+            evidence.to_string(),
+            required_str(evidence, "created_at")?,
+            required_str(evidence, "created_by")?,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn insert_product_terminal_evidence_pg(
+    client: &mut impl postgres::GenericClient,
+    evidence: &Value,
+) -> Result<(), String> {
+    let task_version = evidence
+        .get("task_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "terminal evidence task version missing".to_string())?
+        as i64;
+    let audit_id = evidence
+        .pointer("/audit_reference/audit_id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "terminal evidence audit reference missing".to_string())?;
+    let evidence_json = evidence.to_string();
+    client
+        .execute(
+            "INSERT INTO product_task_terminal_evidence
+             (evidence_id, product_task_id, tenant_id, workspace_id, task_version,
+              output_result_sha256, artifact_id, approval_id, output_operation_id,
+              output_receipt_id, audit_id, content_sha256, evidence_json, created_at, created_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+            &[
+                &required_str(evidence, "evidence_id")?,
+                &required_str(evidence, "product_task_id")?,
+                &required_str(evidence, "tenant_id")?,
+                &required_str(evidence, "workspace_scope_id")?,
+                &task_version,
+                &evidence
+                    .pointer("/output/result_sha256")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "terminal evidence output hash missing".to_string())?,
+                &evidence
+                    .pointer("/artifact/artifact_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "terminal evidence artifact missing".to_string())?,
+                &evidence
+                    .pointer("/approval/approval_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "terminal evidence approval missing".to_string())?,
+                &evidence
+                    .pointer("/output/operation_id")
+                    .and_then(Value::as_str),
+                &evidence
+                    .pointer("/output/receipt_id")
+                    .and_then(Value::as_str),
+                &audit_id,
+                &required_str(evidence, "content_sha256")?,
+                &evidence_json,
+                &required_str(evidence, "created_at")?,
+                &required_str(evidence, "created_by")?,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn validate_product_output_request_authority_sqlite(
     conn: &rusqlite::Connection,
     request: &Value,
@@ -3826,11 +4203,13 @@ fn validate_product_output_request_authority_sqlite(
     let task = conn
         .query_row(
             "SELECT status, version, run_id, workspace_record_id, source_revision, output_intent,
-                    target_id, target_repo_path
+                    target_id, target_repo_path, tenant_id, workspace_id, plan_id,
+                    intake_contract_sha256
              FROM product_tasks WHERE task_id = ?1",
             params![task_id],
             |row| {
                 Ok(json!({
+                    "task_id": task_id,
                     "status": row.get::<_, String>(0)?,
                     "version": row.get::<_, i64>(1)?,
                     "run_id": row.get::<_, Option<String>>(2)?,
@@ -3839,6 +4218,10 @@ fn validate_product_output_request_authority_sqlite(
                     "output_intent": row.get::<_, String>(5)?,
                     "target_id": row.get::<_, String>(6)?,
                     "target_repo_path": row.get::<_, String>(7)?,
+                    "tenant_id": row.get::<_, String>(8)?,
+                    "workspace_id": row.get::<_, String>(9)?,
+                    "plan_id": row.get::<_, Option<String>>(10)?,
+                    "intake_contract_sha256": row.get::<_, String>(11)?,
                 }))
             },
         )
@@ -3890,13 +4273,15 @@ fn pg_validate_product_output_request_authority(
     let row = client
         .query_opt(
             "SELECT status, version, run_id, workspace_record_id, source_revision, output_intent,
-                    target_id, target_repo_path
+                    target_id, target_repo_path, tenant_id, workspace_id, plan_id,
+                    intake_contract_sha256
              FROM product_tasks WHERE task_id = $1 FOR UPDATE",
             &[&task_id],
         )
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "product output task authority missing".to_string())?;
     let task = json!({
+        "task_id": task_id,
         "status": row.get::<_, String>(0),
         "version": row.get::<_, i64>(1),
         "run_id": row.get::<_, Option<String>>(2),
@@ -3905,6 +4290,10 @@ fn pg_validate_product_output_request_authority(
         "output_intent": row.get::<_, String>(5),
         "target_id": row.get::<_, String>(6),
         "target_repo_path": row.get::<_, String>(7),
+        "tenant_id": row.get::<_, String>(8),
+        "workspace_id": row.get::<_, String>(9),
+        "plan_id": row.get::<_, Option<String>>(10),
+        "intake_contract_sha256": row.get::<_, String>(11),
     });
     let run_id = required_str(&task, "run_id")?;
     let workspace_id = required_str(&task, "workspace_record_id")?;
@@ -4707,6 +5096,7 @@ mod managed_owner_tests {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 

@@ -11,6 +11,7 @@ pub(super) const V27_SCHEMA_VERSION: i64 = 27;
 pub(super) const V28_SCHEMA_VERSION: i64 = 28;
 pub(super) const V29_SCHEMA_VERSION: i64 = 29;
 pub(super) const V30_SCHEMA_VERSION: i64 = 30;
+pub(super) const V31_SCHEMA_VERSION: i64 = 31;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -47,6 +48,7 @@ pub(super) const V29_TABLES: [&str; 2] = [
     "harness_evolution_pr_ready_receipts",
 ];
 pub(super) const V30_TABLES: [&str; 1] = ["product_tasks"];
+pub(super) const V31_TABLES: [&str; 1] = ["product_task_terminal_evidence"];
 
 #[allow(dead_code)]
 pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
@@ -102,6 +104,7 @@ impl LocalProductStore {
                         Self::migrate_v29_add_harness_evolution_pr_ready_state(conn)?
                     }
                     V30_SCHEMA_VERSION => Self::migrate_v30_add_product_tasks(conn)?,
+                    V31_SCHEMA_VERSION => Self::migrate_v31_add_product_terminal_evidence(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -110,7 +113,9 @@ impl LocalProductStore {
             let final_version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if final_version == V30_SCHEMA_VERSION {
+            if final_version == V31_SCHEMA_VERSION {
+                validate_sqlite_v31_schema(conn)?;
+            } else if final_version == V30_SCHEMA_VERSION {
                 validate_sqlite_v30_schema(conn)?;
             } else if final_version == V29_SCHEMA_VERSION {
                 validate_sqlite_v29_schema(conn)?;
@@ -619,6 +624,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
         }
     }
 
+    /// Roll back canonical terminal evidence only when no evidence rows exist.
+    pub fn rollback_v31_to_v30(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v31 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v31 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v31_to_v30(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v31_to_v30_internal(actor, &now),
+        }
+    }
+
     /// Roll back product golden-path task schema only when no product task rows exist.
     pub fn rollback_v30_to_v29(
         &self,
@@ -640,6 +668,44 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.rollback_pg_v30_to_v29_internal(actor, &now),
         }
+    }
+
+    fn rollback_sqlite_v31_to_v30(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            require_v31_rollback_source(current_version)?;
+            let occupied = occupied_sqlite_tables(&tx, &V31_TABLES)?;
+            if !occupied.is_empty() {
+                return Err(format!(
+                    "v31 rollback blocked: authoritative terminal evidence exists in {}",
+                    occupied.join(", ")
+                ));
+            }
+            tx.execute_batch("DROP TABLE product_task_terminal_evidence;")
+                .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v31_to_v30', 'local_product_store', ?3)",
+                rusqlite::params![
+                    now,
+                    actor,
+                    serde_json::json!({
+                        "from_version": V31_SCHEMA_VERSION,
+                        "to_version": V30_SCHEMA_VERSION,
+                        "tables": V31_TABLES,
+                    })
+                    .to_string()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V30_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
     }
 
     /// Roll back PR_READY schema only when no PR_READY authority rows exist.
@@ -1527,9 +1593,35 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         conn.execute_batch(schema::V30_DDL)
             .map_err(|error| error.to_string())
     }
+
+    fn migrate_v31_add_product_terminal_evidence(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(schema::V31_DDL)
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn validate_sqlite_v31_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v30_tables(conn)?;
+    for table in V31_TABLES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v31 schema missing table {table}"));
+        }
+    }
+    Ok(())
 }
 
 fn validate_sqlite_v30_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v30_tables(conn)
+}
+
+fn validate_sqlite_v30_tables(conn: &Connection) -> Result<(), String> {
     validate_sqlite_v29_schema(conn)?;
     for table in V30_TABLES {
         let exists: i64 = conn
@@ -2042,6 +2134,16 @@ pub(super) fn require_v30_rollback_source(current_version: i64) -> Result<(), St
     }
 }
 
+pub(super) fn require_v31_rollback_source(current_version: i64) -> Result<(), String> {
+    if current_version == V31_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(format!(
+            "v31 rollback requires current schema version 31; found {current_version}"
+        ))
+    }
+}
+
 pub(super) fn require_empty_v26_tables(occupied: &[String]) -> Result<(), String> {
     if occupied.is_empty() {
         Ok(())
@@ -2157,6 +2259,7 @@ mod tests {
 
     fn store_at_v25(path: impl AsRef<std::path::Path>) -> LocalProductStore {
         let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v31_to_v30("migration-test", true).unwrap();
         store.rollback_v30_to_v29("migration-test", true).unwrap();
         store.rollback_v29_to_v28("migration-test", true).unwrap();
         store.rollback_v28_to_v27("migration-test", true).unwrap();

@@ -1741,6 +1741,13 @@ fn node_output_from_value(
             .get("estimated_cost")
             .and_then(serde_json::Value::as_f64),
         latency_ms: value.get("latency_ms").and_then(serde_json::Value::as_i64),
+        process_outcome: value
+            .get("process_outcome")
+            .cloned()
+            .filter(|outcome| !outcome.is_null())
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| internal_error(format!("invalid process_outcome: {error}")))?,
     })
 }
 
@@ -1754,6 +1761,7 @@ fn verification_attempt_value(attempt: u64, execution: &ManagedToolExecution) ->
         "error_domain": output.error_domain,
         "error_message": output.error_message.as_deref().map(redact_sensitive_patterns),
         "latency_ms": output.latency_ms,
+        "process_outcome": output.process_outcome,
         "managed_run_id": execution.run_id,
         "managed_node_id": execution.node_id,
     })
