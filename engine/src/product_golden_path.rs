@@ -36,6 +36,115 @@ pub const MAX_VERIFICATION_COMMAND_BYTES: usize = 512;
 pub const PRODUCT_VERIFICATION_READ_ONLY_COMMANDS: &[&str] = &[
     "echo", "cat", "ls", "head", "tail", "grep", "wc", "true", "false", "test",
 ];
+
+fn grep_short_option_recurses(argument: &str) -> bool {
+    let mut flags = argument.trim_start_matches('-').chars().peekable();
+    while let Some(flag) = flags.next() {
+        if matches!(flag, 'r' | 'R') {
+            return true;
+        }
+        // These GNU grep short options consume the rest of the token as their value.
+        // A letter inside that value is not another option (for example `-eerror`).
+        if matches!(flag, 'A' | 'B' | 'C' | 'D' | 'd' | 'e' | 'f' | 'm') {
+            let value = flags.collect::<String>();
+            return flag == 'd' && value == "recurse";
+        }
+    }
+    false
+}
+
+fn validate_product_verification_command_argv(argv: &[&str]) -> Result<(), String> {
+    let binary = argv.first().copied().unwrap_or_default();
+    match binary {
+        // Recursive traversal composes unsafely with workspace directories deliberately
+        // excluded from patch hashing (`target` and `node_modules`). GNU grep also admits
+        // recursion through `--directories=recurse` without spelling `-r`.
+        "grep" => {
+            let mut expect_directories_value = false;
+            let mut options = true;
+            for argument in argv.iter().skip(1) {
+                if expect_directories_value {
+                    if *argument == "recurse" {
+                        return Err(
+                            "verification grep must not recursively traverse the workspace"
+                                .to_string(),
+                        );
+                    }
+                    expect_directories_value = false;
+                    continue;
+                }
+                if options && *argument == "--" {
+                    options = false;
+                    continue;
+                }
+                if !options {
+                    continue;
+                }
+                if matches!(
+                    *argument,
+                    "-r" | "-R" | "--recursive" | "--dereference-recursive"
+                ) || argument
+                    .strip_prefix("--directories=")
+                    .is_some_and(|value| value == "recurse")
+                    || (argument.starts_with('-')
+                        && !argument.starts_with("--")
+                        && grep_short_option_recurses(argument))
+                {
+                    return Err(
+                        "verification grep must not recursively traverse the workspace".to_string(),
+                    );
+                }
+                if *argument == "-d" || *argument == "--directories" {
+                    expect_directories_value = true;
+                } else if argument
+                    .strip_prefix("-d")
+                    .is_some_and(|value| value == "recurse")
+                {
+                    return Err(
+                        "verification grep must not recursively traverse the workspace".to_string(),
+                    );
+                }
+            }
+        }
+        // `ls -RL .` can follow symlinks inside excluded directories even though no
+        // direct excluded-directory operand appears in argv.
+        "ls" => {
+            for argument in argv
+                .iter()
+                .skip(1)
+                .take_while(|argument| **argument != "--")
+            {
+                if matches!(*argument, "-R" | "--recursive")
+                    || (argument.starts_with('-')
+                        && !argument.starts_with("--")
+                        && argument.chars().skip(1).any(|flag| flag == 'R'))
+                {
+                    return Err(
+                        "verification ls must not recursively traverse the workspace".to_string(),
+                    );
+                }
+            }
+        }
+        // The control file contents are interpreted as path operands by wc, bypassing
+        // intake-time path validation entirely.
+        "wc" => {
+            for argument in argv
+                .iter()
+                .skip(1)
+                .take_while(|argument| **argument != "--")
+            {
+                if *argument == "--files0-from" || argument.starts_with("--files0-from=") {
+                    return Err(
+                        "verification wc must not load path operands from an indirect file"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 pub const MAX_TARGET_ID_BYTES: usize = 128;
 pub const MAX_EXECUTOR_SET: usize = 16;
@@ -527,6 +636,7 @@ pub fn validate_intake(
                 argv[0]
             ));
         }
+        validate_product_verification_command_argv(&argv)?;
         if argv.iter().skip(1).any(|argument| {
             Path::new(argument).is_absolute()
                 || Path::new(argument)
@@ -1241,6 +1351,60 @@ mod tests {
             assert!(
                 validate_intake(&req, "local", "default").is_err(),
                 "unobserved workspace path must be rejected: {command}"
+            );
+        }
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn rejects_recursive_or_indirect_verification_traversal() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        for command in [
+            "grep -R needle .",
+            "grep -rn needle .",
+            "grep --recursive needle .",
+            "grep --dereference-recursive needle .",
+            "grep -d recurse needle .",
+            "grep -drecurse needle .",
+            "grep --directories=recurse needle .",
+            "ls -R .",
+            "ls -LR .",
+            "ls --recursive .",
+            "wc --files0-from list",
+            "wc --files0-from=list",
+        ] {
+            let mut req = sample_request();
+            req.verification_commands = vec![ProductVerificationCommand {
+                command: command.to_string(),
+                timeout_ms: 1000,
+            }];
+            assert!(
+                validate_intake(&req, "local", "default").is_err(),
+                "recursive or indirect traversal must be rejected: {command}"
+            );
+        }
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn accepts_nonrecursive_options_with_recursive_letters_in_values() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        for command in [
+            "grep -eerror README.md",
+            "grep -- -R README.md",
+            "ls -- -R",
+            "wc -- --files0-from",
+        ] {
+            let mut req = sample_request();
+            req.verification_commands = vec![ProductVerificationCommand {
+                command: command.to_string(),
+                timeout_ms: 1000,
+            }];
+            assert!(
+                validate_intake(&req, "local", "default").is_ok(),
+                "nonrecursive option grammar must remain accepted: {command}"
             );
         }
         std::env::remove_var(PRODUCT_TASK_GATE);
