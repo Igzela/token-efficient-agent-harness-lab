@@ -97,12 +97,18 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, sort_keys=True, separators=(",", ":")))
         else:
             for result in report["results"]:
-                print(
+                line = (
                     f"{result['scenario_id']} status={result['status']} "
                     f"observed_duration_ms={result['observed_duration_ms']} "
                     f"configured_timeout_ms={result['configured_timeout_ms']} "
                     f"cleanup={result['harness_cleanup']['outcome']}"
                 )
+                if result["status"] != "passed":
+                    line += (
+                        f" exit={result.get('owner_exit_code')} "
+                        f"reasons={','.join(result.get('reason_codes') or [])}"
+                    )
+                print(line)
             print(f"report_sha256={report['report_sha256']}")
 
         statuses = {result["status"] for result in report["results"]}

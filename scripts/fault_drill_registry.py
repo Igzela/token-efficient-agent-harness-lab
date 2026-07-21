@@ -62,7 +62,9 @@ REGISTRY: tuple[ScenarioSpec, ...] = (
         "linux-sqlite",
         (("temp_dir", "filesystem"), ("sqlite_db", "sqlite")),
         ("core", "storage"),
-        "cargo_test",
+        # Reuse the pg-tests feature graph so CI's post-suite harness re-run does not
+        # rebuild a second engine fingerprint under a sanitized HOME/TMPDIR sandbox.
+        "cargo_pg_test",
         ("pe6_sqlite_atomicity_and_integrity",),
         90_000,
     ),
@@ -77,7 +79,7 @@ REGISTRY: tuple[ScenarioSpec, ...] = (
         "linux-sqlite",
         (("temp_dir", "filesystem"), ("sqlite_db", "sqlite")),
         ("storage",),
-        "cargo_test",
+        "cargo_pg_test",
         ("pe6_sqlite_backup_restore_and_cleanup",),
         90_000,
     ),
