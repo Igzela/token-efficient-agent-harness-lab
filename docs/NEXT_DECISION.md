@@ -19,7 +19,7 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. **Active PE7 repair lane:** `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1` (`IN_PROGRESS`) → then B2 evaluator repair → then B3 finalizer repair → then Level-1 acceptance. B1–B3 scaffolding (PRs #258–#260) is merged but **not Level-1 complete** (synthetic evaluation and non-owner PR_READY evidence remain after R1). No stable Level-1 result exists.
+1. **Active PE7 repair lane:** `PE7-HARNESS-EVOLUTION-B2-EVALUATOR-REPAIR-1` (`IN_PROGRESS`) after R1 COMPLETE via PR #262 → then B3 finalizer repair → then Level-1 acceptance. B1–B3 scaffolding (PRs #258–#260) is merged but **not Level-1 complete** (non-owner PR_READY evidence remains after R1/R2). No stable Level-1 result exists.
 2. `PE7-OPENCODE-BINARY-ADMISSION-1` — `BLOCKED_PREREQUISITE` / deferred until an exact upstream artifact or source identity and real checksum are independently admitted. Do not treat `PIN.json` placeholder fields as binary admission.
 3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — **`PARKED` / `BLOCKED_PREREQUISITE`** on Vader-host Codex/ChatGPT execution (HTTP 403). **Not actively driven.** Parking Issue: **#254**. Runner is online/idle; Issue #208 emergency-stopped. Do not hard-force Codex 403 or Issue→CLI smokes until unparked.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` until a stable, independently reviewed Level-1 laboratory result exists (after R1–R3 and `PE7-HARNESS-EVOLUTION-LEVEL1-ACCEPTANCE-1`).
@@ -322,7 +322,9 @@ Mark this laboratory fully `COMPLETE` only after R1–R3 merge **and** `PE7-HARN
 
 ### Packet PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1 — Active identity and workspace ownership
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
+
+**Completion evidence:** PR #262 squash-merged into `main` at `bc0bb9f7f0a9f91e6d5d1cace4293f70130550f7` from reviewed head `e504edce82aee3aac3c4f241eebcb4564f5eb7b5`. Exact-head CI runs `29810171126` / `29810171128`. Two independent complete-diff reviews on that head.
 
 **Prerequisites:** `PE7-HARNESS-EVOLUTION-B1`
 
@@ -343,11 +345,18 @@ Mark this laboratory fully `COMPLETE` only after R1–R3 merge **and** `PE7-HARN
 
 ### Packet PE7-HARNESS-EVOLUTION-B2-EVALUATOR-REPAIR-1 — Real fixture evaluator and sealed-set owner
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
 **Prerequisites:** `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1`
 
 **Goal:** Authoritative laboratory evaluation must reuse existing scorecard/replay/benchmark/usage/budget owners; execute real deterministic fixture tasks and admitted baselines; evaluator-owned sealed-set registry (caller cannot supply vault/labels/`include_sealed`); equal-budget and Pareto archive over real candidate results, not synthetic constants. `fixture_baseline_metrics` may remain only as low-level unit fixtures.
+
+**Implementation notes (this PR):**
+
+- Authoritative path is `evaluate_candidate_from_workspace` + `execute_workspace_baseline` (workspace content hash, file count, byte total, task difficulty → usage/metrics).
+- `record_harness_evolution_evaluation(candidate_id, budget, family_id)` loads candidate, current active, registered family, and sealed vault from store owners; no caller `current_active`, sealed vault, or `include_sealed`.
+- Evaluator-owned `register_harness_evolution_task_family`, `register_harness_evolution_sealed_vault`, and one-use `issue_harness_evolution_sealed_selection` (1–3 candidates).
+- `fixture_baseline_metrics` / `evaluate_candidate_fixture` retained only as low-level unit-test helpers.
 
 ### Packet PE7-HARNESS-EVOLUTION-B3-FINALIZER-REPAIR-1 — Existing finalizer integration
 

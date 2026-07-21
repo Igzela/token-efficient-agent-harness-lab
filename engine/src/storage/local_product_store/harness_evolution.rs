@@ -11,10 +11,11 @@ use crate::harness_evolution::{
     EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
-    build_eval_receipt, build_pareto_archive, evaluate_candidate_fixture, redacted_eval_evidence,
-    CandidateEvaluationBundle, EqualBudgetContract, EvalReceipt, ParetoArchiveEntry,
-    SealedHoldoutVault, TaskFamilyManifest, ARCHIVE_SCHEMA_VERSION, EVAL_RECEIPT_SCHEMA_VERSION,
-    EVAL_SCHEMA_VERSION, SEALED_SCHEMA_VERSION,
+    build_eval_receipt, build_pareto_archive, build_sealed_vault,
+    evaluate_candidate_from_workspace, redacted_eval_evidence, CandidateEvaluationBundle,
+    EqualBudgetContract, EvalReceipt, ParetoArchiveEntry, SealedHoldoutVault, TaskFamilyManifest,
+    ARCHIVE_SCHEMA_VERSION, EVAL_RECEIPT_SCHEMA_VERSION, EVAL_SCHEMA_VERSION, MAX_SEALED_ENTRANTS,
+    MIN_SEALED_ENTRANTS, SEALED_SCHEMA_VERSION,
 };
 use crate::harness_evolution_pr_ready::{
     finalize_pr_ready_bundle, redacted_pr_ready_evidence, PrReadyCandidateBundle, PrReadyReceipt,
@@ -671,15 +672,284 @@ impl LocalProductStore {
         })
     }
 
-    /// Exactly-once fixture evaluation + Pareto archive under equal budgets.
+    /// Register an evaluator-owned task family (trusted configuration owner).
+    pub fn register_harness_evolution_task_family(
+        &self,
+        family: &TaskFamilyManifest,
+        actor_id: &str,
+    ) -> Result<TaskFamilyManifest, String> {
+        if actor_id.trim().is_empty() {
+            return Err("evolution_eval_actor: authenticated actor_id is required".into());
+        }
+        crate::harness_evolution_eval::validate_task_family(family)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let key = format!("harness_evolution.task_family.{}", family.family_id);
+        let value = serde_json::to_value(family).map_err(|e| e.to_string())?;
+        self.set_config_value(&key, value, actor_id)?;
+        self.with_conn(|conn| {
+            append_audit_locked(
+                conn,
+                &chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                actor_id,
+                "harness_evolution.task_family_registered",
+                &family.family_id,
+                &serde_json::json!({
+                    "schema_version": EVAL_SCHEMA_VERSION,
+                    "family_id": family.family_id,
+                }),
+            )?;
+            Ok(())
+        })?;
+        Ok(family.clone())
+    }
+
+    pub fn get_harness_evolution_task_family(
+        &self,
+        family_id: &str,
+    ) -> Result<Option<TaskFamilyManifest>, String> {
+        let key = format!("harness_evolution.task_family.{family_id}");
+        let snap = self.config_snapshot()?;
+        let Some(map) = snap.as_object() else {
+            return Ok(None);
+        };
+        let Some(value) = map.get(&key) else {
+            return Ok(None);
+        };
+        // config_snapshot may nest under key -> {value: ...} or raw value depending on owner.
+        let body = if let Some(inner) = value.get("value") {
+            inner.clone()
+        } else {
+            value.clone()
+        };
+        let family: TaskFamilyManifest = serde_json::from_value(body).map_err(|e| e.to_string())?;
+        Ok(Some(family))
+    }
+
+    /// Register evaluator-owned sealed vault derived from a registered task family only.
+    pub fn register_harness_evolution_sealed_vault(
+        &self,
+        family_id: &str,
+        actor_id: &str,
+    ) -> Result<SealedHoldoutVault, String> {
+        if actor_id.trim().is_empty() {
+            return Err("evolution_eval_actor: authenticated actor_id is required".into());
+        }
+        let family = self
+            .get_harness_evolution_task_family(family_id)?
+            .ok_or_else(|| format!("evolution_eval_family_missing: {family_id}"))?;
+        let vault = build_sealed_vault(&family)
+            .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_sealed_holdouts WHERE vault_sha256=?1",
+                    params![vault.vault_sha256],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(body) = existing {
+                let stored: SealedHoldoutVault =
+                    serde_json::from_str(&body).map_err(|e| e.to_string())?;
+                if stored == vault {
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(stored);
+                }
+                return Err(
+                    "evolution_eval_sealed_immutable: vault already registered with different body"
+                        .into(),
+                );
+            }
+            tx.execute(
+                "INSERT INTO harness_evolution_sealed_holdouts
+                    (vault_sha256, family_id, preselected_entrant_limit, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    vault.vault_sha256,
+                    vault.family_id,
+                    vault.preselected_entrant_limit as i64,
+                    serde_json::to_string(&vault).map_err(|e| e.to_string())?,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            // Index current vault for family.
+            let idx_key = format!("harness_evolution.sealed_vault_index.{family_id}");
+            tx.execute(
+                "INSERT INTO local_config (key, value_json, updated_at, updated_by)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(key) DO UPDATE SET
+                    value_json=excluded.value_json,
+                    updated_at=excluded.updated_at,
+                    updated_by=excluded.updated_by",
+                params![
+                    idx_key,
+                    serde_json::json!({"vault_sha256": vault.vault_sha256}).to_string(),
+                    now,
+                    actor_id
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.sealed_vault_registered",
+                family_id,
+                &serde_json::json!({
+                    "schema_version": SEALED_SCHEMA_VERSION,
+                    "family_id": family_id,
+                    "vault_sha256": vault.vault_sha256,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(vault)
+        })
+    }
+
+    pub fn get_registered_harness_evolution_sealed_vault(
+        &self,
+        family_id: &str,
+    ) -> Result<Option<SealedHoldoutVault>, String> {
+        let idx_key = format!("harness_evolution.sealed_vault_index.{family_id}");
+        let snap = self.config_snapshot()?;
+        let Some(map) = snap.as_object() else {
+            return Ok(None);
+        };
+        let Some(entry) = map.get(&idx_key) else {
+            return Ok(None);
+        };
+        let body = if let Some(inner) = entry.get("value") {
+            inner.clone()
+        } else {
+            entry.clone()
+        };
+        let vault_sha = body
+            .get("vault_sha256")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "evolution_eval_sealed_index_malformed".to_string())?;
+        self.get_harness_evolution_sealed_holdout(vault_sha)
+    }
+
+    /// Issue a one-use sealed selection for 1–3 preselected candidate IDs (evaluator-owned).
+    pub fn issue_harness_evolution_sealed_selection(
+        &self,
+        family_id: &str,
+        candidate_ids: &[String],
+        actor_id: &str,
+    ) -> Result<String, String> {
+        if actor_id.trim().is_empty() {
+            return Err("evolution_eval_actor: authenticated actor_id is required".into());
+        }
+        if candidate_ids.len() < MIN_SEALED_ENTRANTS || candidate_ids.len() > MAX_SEALED_ENTRANTS {
+            return Err(
+                "evolution_eval_sealed_entrants: sealed selection must name 1–3 candidates".into(),
+            );
+        }
+        let _vault = self
+            .get_registered_harness_evolution_sealed_vault(family_id)?
+            .ok_or_else(|| format!("evolution_eval_sealed_missing: {family_id}"))?;
+        for id in candidate_ids {
+            let c = self
+                .get_harness_evolution_candidate(id)?
+                .ok_or_else(|| format!("evolution_eval_selection_missing_candidate: {id}"))?;
+            if c.status != CandidateStatus::Admitted {
+                return Err(format!("evolution_eval_selection_not_admitted: {id}"));
+            }
+        }
+        let material = format!(
+            "sealed_selection.v1|{family_id}|{}|{}",
+            candidate_ids.join(","),
+            actor_id
+        );
+        let receipt_id = format!(
+            "hess-{}",
+            &crate::harness_evolution::sha256_hex(&material)[..24]
+        );
+        let key = format!("harness_evolution.sealed_selection.{receipt_id}");
+        let value = serde_json::json!({
+            "schema_version": "harness_evolution_sealed_selection.v1",
+            "receipt_id": receipt_id,
+            "family_id": family_id,
+            "candidate_ids": candidate_ids,
+            "used": false,
+        });
+        // Refuse overwrite of existing selection.
+        let snap = self.config_snapshot()?;
+        if snap
+            .as_object()
+            .map(|m| m.contains_key(&key))
+            .unwrap_or(false)
+        {
+            return Err(format!(
+                "evolution_eval_sealed_selection_exists: {receipt_id}"
+            ));
+        }
+        self.set_config_value(&key, value, actor_id)?;
+        Ok(receipt_id)
+    }
+
+    fn consume_sealed_selection_for_candidate(
+        &self,
+        family_id: &str,
+        candidate_id: &str,
+        actor_id: &str,
+    ) -> Result<bool, String> {
+        let snap = self.config_snapshot()?;
+        let Some(map) = snap.as_object() else {
+            return Ok(false);
+        };
+        let prefix = "harness_evolution.sealed_selection.";
+        for (key, value) in map {
+            if !key.starts_with(prefix) {
+                continue;
+            }
+            let body = if let Some(inner) = value.get("value") {
+                inner.clone()
+            } else {
+                value.clone()
+            };
+            let used = body.get("used").and_then(|v| v.as_bool()).unwrap_or(true);
+            if used {
+                continue;
+            }
+            let fid = body.get("family_id").and_then(|v| v.as_str()).unwrap_or("");
+            if fid != family_id {
+                continue;
+            }
+            let ids = body
+                .get("candidate_ids")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let matches = ids.iter().any(|v| v.as_str() == Some(candidate_id));
+            if !matches {
+                continue;
+            }
+            let mut updated = body;
+            updated
+                .as_object_mut()
+                .ok_or_else(|| "evolution_eval_sealed_selection_malformed".to_string())?
+                .insert("used".into(), serde_json::json!(true));
+            self.set_config_value(key, updated, actor_id)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Exactly-once workspace-bound evaluation + Pareto archive under equal budgets.
+    ///
+    /// Loads candidate, current active identity, registered task family, and sealed vault
+    /// from store owners. Caller does **not** supply sealed vault, include_sealed, or
+    /// current_active authority.
     pub fn record_harness_evolution_evaluation(
         &self,
         candidate_id: &str,
         budget: &EqualBudgetContract,
-        family: &TaskFamilyManifest,
-        sealed_vault: &SealedHoldoutVault,
-        include_sealed: bool,
-        current_active: &ActiveHarnessIdentity,
+        family_id: &str,
     ) -> Result<
         (
             CandidateEvaluationBundle,
@@ -694,23 +964,48 @@ impl LocalProductStore {
         if candidate.status != CandidateStatus::Admitted {
             return Err("evolution_eval_candidate_not_admitted".into());
         }
+        let current_active = self
+            .get_current_harness_evolution_active_identity()?
+            .ok_or_else(|| {
+                "evolution_eval_active_missing: no active Harness identity epoch".to_string()
+            })?;
         if candidate.active_version_id != current_active.active_version_id
             || candidate.active_version_hash != current_active.active_version_hash
             || candidate.evaluator_identity_hash != current_active.evaluator_identity_hash
         {
             return Err("evolution_eval_changed_active_version".into());
         }
+        let family = self
+            .get_harness_evolution_task_family(family_id)?
+            .ok_or_else(|| format!("evolution_eval_family_missing: {family_id}"))?;
+        let sealed_vault = self
+            .get_registered_harness_evolution_sealed_vault(family_id)?
+            .ok_or_else(|| format!("evolution_eval_sealed_missing: {family_id}"))?;
+        // Sealed entrance only through one-use evaluator selection receipt.
+        let sealed_selected =
+            self.consume_sealed_selection_for_candidate(family_id, candidate_id, "system")?;
+        let root = configured_workspace_root()
+            .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
+        revalidate_workspace_content(&root, &candidate.workspace)
+            .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
+        let workspace_dir = crate::harness_evolution::resolve_workspace_under_root(
+            &root,
+            &candidate.workspace.relative_path,
+        )
+        .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
         let created_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let bundle = evaluate_candidate_fixture(
+        let bundle = evaluate_candidate_from_workspace(
             &candidate.candidate_id,
             &candidate.lineage_id,
             &candidate.active_version_id,
             &candidate.active_version_hash,
             &candidate.evaluator_identity_hash,
+            &candidate.content_hash,
             budget,
-            family,
-            sealed_vault,
-            include_sealed,
+            &family,
+            &sealed_vault,
+            sealed_selected,
+            &workspace_dir,
             &created_at,
         )
         .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
@@ -745,21 +1040,6 @@ impl LocalProductStore {
                     candidate_id, budget.seed, family.family_id
                 ));
             }
-            // Ensure sealed vault is durable under evaluator ownership.
-            tx.execute(
-                "INSERT INTO harness_evolution_sealed_holdouts
-                    (vault_sha256, family_id, preselected_entrant_limit, body_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(vault_sha256) DO NOTHING",
-                params![
-                    sealed_vault.vault_sha256,
-                    sealed_vault.family_id,
-                    sealed_vault.preselected_entrant_limit as i64,
-                    serde_json::to_string(sealed_vault).map_err(|e| e.to_string())?,
-                    created_at
-                ],
-            )
-            .map_err(|e| e.to_string())?;
             tx.execute(
                 "INSERT INTO harness_evolution_evaluations
                     (evaluation_id, candidate_id, lineage_id, active_version_id, active_version_hash,
@@ -1470,12 +1750,25 @@ mod tests {
         assert_eq!(CANDIDATE_SCHEMA_VERSION, "harness_evolution_candidate.v1");
     }
 
+    fn register_family_and_vault(
+        store: &LocalProductStore,
+        family_id: &str,
+    ) -> crate::harness_evolution_eval::TaskFamilyManifest {
+        use crate::harness_evolution_eval::sample_task_family;
+        let family = sample_task_family(family_id);
+        store
+            .register_harness_evolution_task_family(&family, "evaluator-owner")
+            .unwrap();
+        store
+            .register_harness_evolution_sealed_vault(family_id, "evaluator-owner")
+            .unwrap();
+        family
+    }
+
     #[test]
     fn records_equal_budget_evaluation_and_pareto_exactly_once() {
         let env = LabEnvGuard::enable();
-        use crate::harness_evolution_eval::{
-            build_sealed_vault, sample_budget, sample_task_family,
-        };
+        use crate::harness_evolution_eval::sample_budget;
         let store = LocalProductStore::new(":memory:").unwrap();
         let active = sample_active_identity();
         store
@@ -1494,23 +1787,27 @@ mod tests {
         let ws = materialize_for(&env, &bound, "eval-content");
         let candidate = candidate_from_proposal(&bound, &ws, "2026-07-21T00:00:00Z").unwrap();
         let (admitted, _) = store.admit_harness_evolution_candidate(candidate).unwrap();
-        let family = sample_task_family("fam-store");
-        let vault = build_sealed_vault(&family).unwrap();
+        let family = register_family_and_vault(&store, "fam-store");
+        store
+            .issue_harness_evolution_sealed_selection(
+                &family.family_id,
+                std::slice::from_ref(&admitted.candidate_id),
+                "evaluator-owner",
+            )
+            .unwrap();
         let budget = sample_budget(3);
         let (bundle, archive, receipt) = store
-            .record_harness_evolution_evaluation(
-                &admitted.candidate_id,
-                &budget,
-                &family,
-                &vault,
-                true,
-                &active,
-            )
+            .record_harness_evolution_evaluation(&admitted.candidate_id, &budget, &family.family_id)
             .unwrap();
         assert!(!bundle.claims_improvement);
         assert!(!bundle.sealed_feedback_into_mutation);
+        assert!(bundle.sealed_entrant_count >= 1);
         assert!(!archive.is_empty());
         assert_eq!(receipt.bundle_sha256, bundle.bundle_sha256);
+        assert!(bundle
+            .baselines
+            .iter()
+            .any(|b| b.usage.calls > 0 && !b.usage.incomplete));
         let loaded = store
             .get_harness_evolution_evaluation(&bundle.evaluation_id)
             .unwrap()
@@ -1528,10 +1825,7 @@ mod tests {
         let dup = store.record_harness_evolution_evaluation(
             &admitted.candidate_id,
             &budget,
-            &family,
-            &vault,
-            true,
-            &active,
+            &family.family_id,
         );
         assert!(dup.unwrap_err().contains("duplicate"));
     }
@@ -1539,9 +1833,7 @@ mod tests {
     #[test]
     fn evaluation_survives_durable_restart() {
         let env = LabEnvGuard::enable();
-        use crate::harness_evolution_eval::{
-            build_sealed_vault, sample_budget, sample_task_family,
-        };
+        use crate::harness_evolution_eval::sample_budget;
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("evo-eval.db");
         let db_s = db.to_str().unwrap();
@@ -1564,16 +1856,12 @@ mod tests {
             let ws = materialize_for(&env, &bound, "restart-eval-content");
             let candidate = candidate_from_proposal(&bound, &ws, "2026-07-21T00:00:00Z").unwrap();
             let (admitted, _) = store.admit_harness_evolution_candidate(candidate).unwrap();
-            let family = sample_task_family("fam-restart");
-            let vault = build_sealed_vault(&family).unwrap();
+            let family = register_family_and_vault(&store, "fam-restart");
             let (bundle, _, receipt) = store
                 .record_harness_evolution_evaluation(
                     &admitted.candidate_id,
                     &sample_budget(1),
-                    &family,
-                    &vault,
-                    false,
-                    &active,
+                    &family.family_id,
                 )
                 .unwrap();
             (bundle.evaluation_id, receipt.receipt_id)
