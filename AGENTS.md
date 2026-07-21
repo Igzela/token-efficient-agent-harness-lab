@@ -19,12 +19,12 @@ Active forward implementation (local/fixture, no Issue→CLI):
 - `PE7-OPENCODE-EXTERNAL-ADAPTER-1` — merged via PR #255 (fixture-first default-off OpenCode adapter);
 - `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` — complete via PR #257 (fixture-only honesty repair; no real binary);
 - `PE7-OPENCODE-BINARY-ADMISSION-1` — deferred until an exact upstream artifact/source identity and real checksum are admitted;
-- `PE7-HARNESS-EVOLUTION-B1` — complete via PR #258 (evidence foundation; schema v27);
-- `PE7-HARNESS-EVOLUTION-B2` — complete via PR #259 (evaluation/Pareto archive; schema v28);
-- `PE7-HARNESS-EVOLUTION-B3` — complete via PR #260 (PR_READY bundles; schema v29; default-off; no PR create/merge);
-- `PE7-META-IMPROVER-EXPERIMENT-1` — blocked until a stable Level-1 result exists.
+- `PE7-HARNESS-EVOLUTION-B1` / B2 / B3 — scaffolding COMPLETE via PRs #258–#260 (schemas v27–v29) but **not Level-1 complete** (caller-supplied authority and synthetic evidence remain; residual repairs required);
+- `PE7-HARNESS-EVOLUTION-LAB-1` — `IN_PROGRESS` until R1–R3 and Level-1 acceptance pass;
+- `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1` — **active** `READY_FOR_EXECUTION` (then R2 evaluator, R3 finalizer, Level-1 acceptance);
+- `PE7-META-IMPROVER-EXPERIMENT-1` — blocked until a stable Level-1 result exists after R1–R3 and Level-1 acceptance.
 
-Do not claim that Harness evolution, recursive self-improvement, or an evolution gate is implemented until the corresponding packet is merged with verified evidence. Later work is governed by `docs/NEXT_DECISION.md`.
+Do not claim that Harness evolution, recursive self-improvement, or an evolution gate is implemented until the corresponding packet is merged with verified evidence and Level-1 acceptance passes. Later work is governed by `docs/NEXT_DECISION.md`.
 
 Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`.
 

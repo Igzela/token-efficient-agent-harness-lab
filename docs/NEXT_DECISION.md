@@ -19,14 +19,14 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. No further PE7 Level-1 laboratory packets are ready. Keep `PE7-OPENCODE-BINARY-ADMISSION-1` deferred, `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` parked, and `PE7-META-IMPROVER-EXPERIMENT-1` blocked. Default work is Ship PR maintenance.
+1. **Active PE7 repair lane:** `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1` (`READY_FOR_EXECUTION`) → then B2 evaluator repair → then B3 finalizer repair → then Level-1 acceptance. B1–B3 scaffolding (PRs #258–#260) is merged but **not Level-1 complete** (caller-supplied authority and synthetic evidence remain; residual defects tracked as repair packets). No stable Level-1 result exists.
 2. `PE7-OPENCODE-BINARY-ADMISSION-1` — `BLOCKED_PREREQUISITE` / deferred until an exact upstream artifact or source identity and real checksum are independently admitted. Do not treat `PIN.json` placeholder fields as binary admission.
 3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — **`PARKED` / `BLOCKED_PREREQUISITE`** on Vader-host Codex/ChatGPT execution (HTTP 403). **Not actively driven.** Parking Issue: **#254**. Runner is online/idle; Issue #208 emergency-stopped. Do not hard-force Codex 403 or Issue→CLI smokes until unparked.
-4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result from the evolution laboratory.
+4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` until a stable, independently reviewed Level-1 laboratory result exists (after R1–R3 and `PE7-HARNESS-EVOLUTION-LEVEL1-ACCEPTANCE-1`).
 5. PR #225 remains an independent presentation-only Dashboard PR.
 6. Remaining good-first issues (#245–#247) are community backlog.
 
-Default daily development is the Ship PR path. The repository-agent Issue→Vader→Codex CLI path is parked. OpenCode fixture adapter (PR #255), honesty repair (PR #257), and Harness Evolution B1–B3 (PRs #258–#260) are merged; real binary admission is not implemented. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
+Default daily development is the Ship PR path. The repository-agent Issue→Vader→Codex CLI path is parked. OpenCode fixture adapter (PR #255), honesty repair (PR #257), and Harness Evolution B1–B3 scaffolding (PRs #258–#260) are merged but **still permit caller-supplied authority and synthetic evidence**; real binary admission is not implemented. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
 
 ## Verified Baseline
 
@@ -281,29 +281,80 @@ Each invocation must bind at least the root run/node/lease, adapter and OpenCode
 
 ## Packet PE7-HARNESS-EVOLUTION-LAB-1 — Evidence-gated candidate evolution
 
-**State:** `COMPLETE` (B1+B2+B3 laboratory path merged; default-off; active Harness immutable)
+**State:** `IN_PROGRESS` (B1–B3 scaffolding merged via PRs #258–#260; default-off; active Harness immutable; **not** authority-bound Level-1 complete — sequential R1→R2→R3→Level-1 acceptance required)
 
-**Prerequisites:** `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (complete), `PE7-OPENCODE-EXTERNAL-ADAPTER-1` (complete via PR #255), and `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` (complete via PR #257). Implement as focused sequential packets (B1 evidence foundation → B2 evaluation/archive → B3 PR_READY), not one oversized PR.
+**Prerequisites:** `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (complete), `PE7-OPENCODE-EXTERNAL-ADAPTER-1` (complete via PR #255), and `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` (complete via PR #257). B1–B3 scaffolding is merged; remaining work is sequential repair packets R1→R2→R3 then Level-1 acceptance — not one oversized PR.
+
+**Honest residual defects after B1–B3 scaffolding (merged-repair-required):**
+
+- B1: schema/persistence scaffolding exists, but public admission still accepts caller-supplied `current_active`; active identity uses `ON CONFLICT ... DO UPDATE`; workspaces are metadata-only relative paths without real app-owned workspace materialization/hash revalidation.
+- B2: evaluation/archive tables and synthetic `fixture_baseline_metrics()` scaffolding exist; they must not remain the authority for `evaluated` receipts, Pareto archive, or PR_READY prerequisites.
+- B3: PR_READY schema/storage exists as a competing path; caller-supplied evidence hashes and literal `approve_pr_ready` are not operator/finalizer-owned.
+- No stable Level-1 result; Meta Improver remains blocked; real OpenCode binary admission deferred; PR3 parked.
+
+Mark this laboratory fully `COMPLETE` only after R1–R3 merge **and** `PE7-HARNESS-EVOLUTION-LEVEL1-ACCEPTANCE-1` passes with real owners.
 
 ### Packet PE7-HARNESS-EVOLUTION-B1 — Evolution evidence foundation
 
-**State:** `COMPLETE`
+**State:** `COMPLETE` (scaffolding only via PR #258; residual authority/workspace defects tracked under `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1` — not Level-1 complete)
 
-**Completion evidence:** PR #258 squash-merged into `main` at `dc925671435e411d7df78c1a5a30d1de4302a296` from reviewed head `6fc15c5e501a62051d758c1b9cb399168e97f308`. Exact-head CI runs `29801901598` / `29801901631` (seven jobs + exact-head). Two independent complete-diff reviews on that head. Schema v27 additive evolution tables under `LocalProductStore`; default-off lab; no evaluation archive or PR_READY path yet.
+**Scaffolding evidence:** PR #258 squash-merged into `main` at `dc925671435e411d7df78c1a5a30d1de4302a296` from reviewed head `6fc15c5e501a62051d758c1b9cb399168e97f308`. Exact-head CI runs `29801901598` / `29801901631` (seven jobs + exact-head). Two independent complete-diff reviews on that head. Schema v27 additive evolution tables under `LocalProductStore`; default-off lab.
+
+**Repair packet:** `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1` (below).
 
 **Goal (historical):** Default-off fixture/local evidence and persistence foundation under existing owners: versioned candidate/parent/lineage/proposal/mutable-surface/active-version/workspace/receipt/terminal-reason schemas; deterministic identities; SQLite/PostgreSQL parity; additive migration, malformed-schema refusal, rollback, restart, replay, concurrent-write tests; exactly-once candidate/proposal receipts; immutable active-Harness and evaluator identities; app-owned isolated candidate workspaces; bounded content/evidence hashes; no raw prompts/outputs/transcripts/repo contents/secrets/credentials/private paths; stale parent, changed active version, duplicate candidate, tamper, workspace escape, kill/pause/restart/late-write refusal; only documented component-level mutable surfaces; no Harness source mutation yet; no provider, real OpenCode binary, network, Issue→CLI, target-repo write, merge, release, or deployment.
 
 ### Packet PE7-HARNESS-EVOLUTION-B2 — Evaluation and Pareto archive
 
-**State:** `COMPLETE`
+**State:** `COMPLETE` (scaffolding only via PR #259; residual synthetic-metric defects tracked under `PE7-HARNESS-EVOLUTION-B2-EVALUATOR-REPAIR-1` — not Level-1 complete)
 
-**Completion evidence:** PR #259 squash-merged into `main` at `391c4bfcadeff1643bafe1cb486ab487af684ebd` from reviewed head `0e0dc8312d934d119be602b590ee3eaef29c6a6a`. Exact-head CI runs `29803322510` / `29803322513`. Two independent complete-diff reviews. Schema v28 evaluation/archive; no PR_READY path yet.
+**Scaffolding evidence:** PR #259 squash-merged into `main` at `391c4bfcadeff1643bafe1cb486ab487af684ebd` from reviewed head `0e0dc8312d934d119be602b590ee3eaef29c6a6a`. Exact-head CI runs `29803322510` / `29803322513`. Two independent complete-diff reviews. Schema v28 evaluation/archive; hard-coded `fixture_baseline_metrics` must not create authoritative evaluated/archive/PR_READY evidence.
+
+**Repair packet:** `PE7-HARNESS-EVOLUTION-B2-EVALUATOR-REPAIR-1` (after R1).
 
 ### Packet PE7-HARNESS-EVOLUTION-B3 — PR_READY output
 
-**State:** `COMPLETE`
+**State:** `COMPLETE` (scaffolding only via PR #260; residual finalizer defects tracked under `PE7-HARNESS-EVOLUTION-B3-FINALIZER-REPAIR-1` — not Level-1 complete)
 
-**Completion evidence:** PR #260 squash-merged into `main` at `add6d9cbbe9365c827d663c3d83c082f783824d4` from reviewed head `9e66d371a0eeb02915d5c1438e41e9a65436d390`. Exact-head CI runs `29805288258` / `29805288305`. Two independent complete-diff reviews. Schema v29 PR_READY bundles; laboratory does not create/merge PRs.
+**Scaffolding evidence:** PR #260 squash-merged into `main` at `add6d9cbbe9365c827d663c3d83c082f783824d4` from reviewed head `9e66d371a0eeb02915d5c1438e41e9a65436d390`. Exact-head CI runs `29805288258` / `29805288305`. Two independent complete-diff reviews. Schema v29 PR_READY bundles; laboratory must not create/merge PRs and must not accept caller-supplied verification/operator authority.
+
+**Repair packet:** `PE7-HARNESS-EVOLUTION-B3-FINALIZER-REPAIR-1` (after R2).
+
+### Packet PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1 — Active identity and workspace ownership
+
+**State:** `READY_FOR_EXECUTION`
+
+**Prerequisites:** `PE7-HARNESS-EVOLUTION-B1`
+
+**Goal:** Remove caller-supplied active-identity authority from proposal/candidate admission; load active Harness/evaluator identity from store owners inside the transaction; make epochs insert-only (no `ON CONFLICT ... DO UPDATE` mutation of the same identity); bind identity creation to authenticated owner action + audit; exactly-once proposal/candidate decisions with stable typed reasons on replay; materialize real app-owned candidate workspaces (canonical root, path confinement, content-hash from workspace surface, revalidation, discard without touching active `main`). SQLite/PostgreSQL parity, restart, concurrent admission, and negative tests required.
+
+**Forbidden:** provider, real OpenCode binary, network, Issue→CLI, target-repository mutation, active-Harness source mutation, evaluator authority change, PR create/merge, release, deployment.
+
+**Rollback:** Revert the repair PR; scaffolding tables remain; lab stays default-off.
+
+### Packet PE7-HARNESS-EVOLUTION-B2-EVALUATOR-REPAIR-1 — Real fixture evaluator and sealed-set owner
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisites:** `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1`
+
+**Goal:** Authoritative laboratory evaluation must reuse existing scorecard/replay/benchmark/usage/budget owners; execute real deterministic fixture tasks and admitted baselines; evaluator-owned sealed-set registry (caller cannot supply vault/labels/`include_sealed`); equal-budget and Pareto archive over real candidate results, not synthetic constants. `fixture_baseline_metrics` may remain only as low-level unit fixtures.
+
+### Packet PE7-HARNESS-EVOLUTION-B3-FINALIZER-REPAIR-1 — Existing finalizer integration
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisites:** `PE7-HARNESS-EVOLUTION-B2-EVALUATOR-REPAIR-1`
+
+**Goal:** Connect evolution output to the existing target-output/finalizer path. Evolution submits only candidate/evaluation/workspace references and optional expected-identity stale checks. Finalizer independently loads active identity, content hash, base/head, mutable surface, patch grammar, secret scan, test receipts, equal-budget evaluation, sealed eligibility, rollback evidence, and operator decision-center receipt. No competing finalizer authority; no fake SHA-256 evidence; no literal `approve_pr_ready` as decision.
+
+### Packet PE7-HARNESS-EVOLUTION-LEVEL1-ACCEPTANCE-1 — End-to-end laboratory acceptance
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisites:** `PE7-HARNESS-EVOLUTION-B3-FINALIZER-REPAIR-1`
+
+**Goal:** One default-off fixture path through real owners: active identity → proposal → isolated workspace → candidate admission → deterministic development/validation evaluation → evaluator-owned sealed selection → equal-budget results → candidate-level Pareto archive → authenticated operator decision → existing finalizer → bounded PR_READY receipt. At least three seeds; static, random/equal-count, lineage, and fixture OpenCode baselines; restart/replay; honest negative or neutral result allowed. Only after this passes may LAB-1 / B1–B3 residual path be marked fully authority-complete.
 
 **Goal:** Add a default-off laboratory path that proposes, evaluates, archives, and optionally promotes isolated Harness candidates while the active Harness and the complete control plane remain immutable.
 

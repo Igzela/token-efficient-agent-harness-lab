@@ -67,7 +67,7 @@ No source file or schema addition is considered implemented until its packet PR 
 
 ## Approved Harness-Evolution Ownership
 
-`PE7-HARNESS-EVOLUTION-LAB-1` is approved as a default-off laboratory and is `READY_FOR_EXECUTION` after the OpenCode fixture-adapter honesty repair (PR #257). Recursive execution (PR #239), the fixture adapter (PR #255), and the honesty repair (PR #257) are merged. Implement as sequential B1/B2/B3 packets under existing owners below.
+`PE7-HARNESS-EVOLUTION-LAB-1` is a default-off laboratory. B1–B3 scaffolding (PRs #258–#260) is merged but not Level-1 complete (merged-repair-required residual defects). Active repair sequence: R1 authority/workspace → R2 evaluator/sealed-set → R3 finalizer integration → Level-1 acceptance. Extend existing owners below; do not treat synthetic fixtures or caller-supplied identity as authority.
 
 | Laboratory function | Existing owner to reuse | Boundary |
 |---|---|---|
@@ -102,7 +102,7 @@ PR #214 merged the active v2 owner-evidence repair. Existing fixed scenario regi
 
 ## Active Routing
 
-1. `PE7-HARNESS-EVOLUTION-LAB-1` / B1 is the active PE7 Ship PR lane (fixture/local evidence foundation first).
+1. Active PE7 Ship PR lane: `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1` (then R2, R3, Level-1 acceptance). B1–B3 scaffolding is merged but not Level-1 complete.
 2. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is parked on Issue #254 (runner online/idle; Codex HTTP 403).
 3. `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` is complete via PR #257; binary admission remains deferred.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` remains blocked until a stable, independently reviewed Level-1 lab result exists.
