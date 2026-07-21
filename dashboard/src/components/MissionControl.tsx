@@ -3,9 +3,13 @@ import {
   ApiError,
   captureSupervisedPatch,
   controlScheduler,
+  approveAndOutputProductTask,
+  compileAndScheduleProductTask,
+  createProductTask,
   createSupervisedPatchWorkspace,
   createWorkflowPlan,
   createWorkflowRun,
+  finalizeProductTask,
   exportSupervisedPatchArtifact,
   fetchDecisions,
   fetchExecutorPool,
@@ -259,6 +263,55 @@ function OutputActionRail({
     );
   }
 
+  function submitProductGoldenPath() {
+    if (!rawRequest.trim() || !targetRepoPath.trim() || !sourceRevision.trim()) {
+      setError("Product golden path requires prompt, target repo path, and source revision.");
+      return;
+    }
+    runMutation(
+      async () => {
+        const admit = await createProductTask({
+          objective: rawRequest.trim(),
+          target_id: targetId.trim() || "dashboard-target",
+          target_repo_path: targetRepoPath.trim(),
+          source_revision: sourceRevision.trim(),
+          allowed_paths: ["README.md"],
+          verification_commands: [{ command: "test -f README.md", timeout_ms: 5000 }],
+          output_intent: "artifact_only",
+          executor_policy: {
+            allowed_executors: [executor === "noop" ? "command" : executor],
+            prefer: executor === "noop" ? "command" : executor,
+          },
+          risk_class: "low",
+          approval_required: true,
+          confirm_execution: true,
+          idempotency_key: `dashboard-${Date.now()}`,
+          workspace_mode: "git_worktree",
+        });
+        const taskId = String(
+          (admit as { task_id?: string; task?: { task_id?: string } }).task_id
+            ?? (admit as { task?: { task_id?: string } }).task?.task_id
+            ?? "",
+        );
+        if (!taskId) {
+          throw new Error("product task intake returned no task_id");
+        }
+        await compileAndScheduleProductTask(taskId);
+        await finalizeProductTask(taskId);
+        return approveAndOutputProductTask(taskId, false);
+      },
+      (result) => {
+        const task = (result as { result?: { task?: { task_id?: string; status?: string; run_id?: string } } })
+          .result?.task;
+        return `Product golden path ${short(task?.task_id)} status=${task?.status ?? "unknown"} run=${short(task?.run_id)}.`;
+      },
+      (result) => {
+        const runId = (result as { result?: { task?: { run_id?: string } } }).result?.task?.run_id;
+        if (runId) onCreatedRun(runId);
+      },
+    );
+  }
+
   function handleConfirm() {
     if (!confirmAction) return;
     const action = confirmAction;
@@ -383,6 +436,14 @@ function OutputActionRail({
       <div className="workflow-actions">
         <button type="button" onClick={createPlanAndRun} disabled={mutating || !rawRequest.trim()}>
           {mutating ? "Working..." : "Create plan + run"}
+        </button>
+        <button
+          type="button"
+          onClick={submitProductGoldenPath}
+          disabled={mutating || !rawRequest.trim() || !targetRepoPath.trim() || !sourceRevision.trim()}
+          title="Requires ACP_PRODUCT_GOLDEN_PATH=1 and ACP_ENABLE_TARGET_REPO_OUTPUT=1"
+        >
+          {mutating ? "Working..." : "Product golden path"}
         </button>
         <label className="inline-control">
           <span className="muted">Executor</span>

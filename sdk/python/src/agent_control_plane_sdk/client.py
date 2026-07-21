@@ -555,6 +555,33 @@ class AgentControlPlaneClient:
     def plan(self, plan_id: str) -> dict[str, Any]:
         return self._get(f"/api/v1/plans/{_quote_path_segment(plan_id)}")
 
+    def create_product_task(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Product Golden Path intake (default-off; requires ACP_PRODUCT_GOLDEN_PATH)."""
+        return self._post("/api/v1/product/tasks", request)
+
+    def product_task(self, task_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/product/tasks/{_quote_path_segment(task_id)}")
+
+    def compile_and_schedule_product_task(self, task_id: str) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/product/tasks/{_quote_path_segment(task_id)}/compile-and-schedule",
+            {},
+        )
+
+    def finalize_product_task(self, task_id: str) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/product/tasks/{_quote_path_segment(task_id)}/finalize",
+            {},
+        )
+
+    def approve_and_output_product_task(
+        self, task_id: str, confirm_output: bool = False
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/product/tasks/{_quote_path_segment(task_id)}/approve-and-output",
+            {"confirm_output": confirm_output},
+        )
+
     def workflow_runs(
         self,
         limit: int | None = None,
