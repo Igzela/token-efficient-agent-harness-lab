@@ -687,10 +687,53 @@ mod tests {
         assert!(validate_workspace_relative_path("ok/path").is_ok());
     }
 
+    static UNIT_LAB_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct UnitLabEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prev_enable: Option<String>,
+        prev_kill: Option<String>,
+    }
+
+    impl UnitLabEnvGuard {
+        fn set(enable: bool, kill: bool) -> Self {
+            let lock = UNIT_LAB_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev_enable = std::env::var(ENABLE_ENV).ok();
+            let prev_kill = std::env::var(KILL_SWITCH_ENV).ok();
+            if enable {
+                std::env::set_var(ENABLE_ENV, "1");
+            } else {
+                std::env::remove_var(ENABLE_ENV);
+            }
+            if kill {
+                std::env::set_var(KILL_SWITCH_ENV, "1");
+            } else {
+                std::env::remove_var(KILL_SWITCH_ENV);
+            }
+            Self {
+                _lock: lock,
+                prev_enable,
+                prev_kill,
+            }
+        }
+    }
+
+    impl Drop for UnitLabEnvGuard {
+        fn drop(&mut self) {
+            match &self.prev_enable {
+                Some(v) => std::env::set_var(ENABLE_ENV, v),
+                None => std::env::remove_var(ENABLE_ENV),
+            }
+            match &self.prev_kill {
+                Some(v) => std::env::set_var(KILL_SWITCH_ENV, v),
+                None => std::env::remove_var(KILL_SWITCH_ENV),
+            }
+        }
+    }
+
     #[test]
     fn rejects_changed_active_version() {
-        std::env::set_var(ENABLE_ENV, "1");
-        std::env::remove_var(KILL_SWITCH_ENV);
+        let _env = UnitLabEnvGuard::set(true, false);
         let active = sample_active_identity();
         let proposal = proposal_from_body(
             &active,
@@ -712,12 +755,11 @@ mod tests {
         candidate.active_version_hash = sha256_hex("different");
         let err = validate_candidate_for_admission(&candidate, &active, true).unwrap_err();
         assert_eq!(err.code, "evolution_changed_active_version");
-        std::env::remove_var(ENABLE_ENV);
     }
 
     #[test]
     fn rejects_sensitive_payload_fields() {
-        std::env::set_var(ENABLE_ENV, "1");
+        let _env = UnitLabEnvGuard::set(true, false);
         let active = sample_active_identity();
         let proposal = proposal_from_body(
             &active,
@@ -742,13 +784,11 @@ mod tests {
         let poisoned = json!({"raw_prompt":"secret text","ok":true});
         let err = refuse_sensitive_payload_fields(&poisoned).unwrap_err();
         assert_eq!(err.code, "evolution_sensitive_payload");
-        std::env::remove_var(ENABLE_ENV);
     }
 
     #[test]
     fn kill_switch_fails_closed() {
-        std::env::set_var(ENABLE_ENV, "1");
-        std::env::set_var(KILL_SWITCH_ENV, "1");
+        let _env = UnitLabEnvGuard::set(true, true);
         let active = sample_active_identity();
         let proposal = proposal_from_body(
             &active,
@@ -769,7 +809,5 @@ mod tests {
         .unwrap();
         let err = validate_candidate_for_admission(&candidate, &active, true).unwrap_err();
         assert_eq!(err.code, "evolution_kill_switch");
-        std::env::remove_var(KILL_SWITCH_ENV);
-        std::env::remove_var(ENABLE_ENV);
     }
 }
