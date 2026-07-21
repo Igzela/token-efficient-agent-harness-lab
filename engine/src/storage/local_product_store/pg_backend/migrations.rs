@@ -392,6 +392,26 @@ fn apply_pg_v27_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|error| format!("failed to commit migration 27: {error}"))
 }
 
+fn validate_pg_v27_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    let version = client
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get::<_, i64>(0);
+    if version != super::super::migrations::V27_SCHEMA_VERSION {
+        return Err(format!("PostgreSQL v27 schema version mismatch: {version}"));
+    }
+    for table in super::super::migrations::V27_TABLES {
+        if !pg_table_present(client, table)? {
+            return Err(format!("PostgreSQL v27 schema missing table {table}"));
+        }
+    }
+    // Recursive surface from v26 must remain present.
+    validate_pg_v26_tables(client)
+}
+
 fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     let version = client
         .query_one(
@@ -403,6 +423,11 @@ fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(
     if version != super::super::migrations::V26_SCHEMA_VERSION {
         return Err(format!("PostgreSQL v26 schema version mismatch: {version}"));
     }
+    validate_pg_v26_tables(client)
+}
+
+fn validate_pg_v26_tables(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    // Shared column checks for the v26 recursive surface (also required under v27).
     let required = [
         ("recursive_execution_trees", "root_run_id", "text", true),
         ("recursive_execution_trees", "workflow_id", "text", true),
@@ -1000,7 +1025,7 @@ impl LocalProductStore {
                 }
             }
 
-            validate_pg_v26_schema(client)?;
+            validate_pg_v27_schema(client)?;
 
             // Seed the scheduler_heartbeat singleton row.
             client

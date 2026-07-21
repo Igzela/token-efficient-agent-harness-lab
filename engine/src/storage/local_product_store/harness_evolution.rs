@@ -377,14 +377,45 @@ mod tests {
     };
     use serde_json::json;
 
-    fn enable_lab() {
-        std::env::set_var(ENABLE_ENV, "1");
-        std::env::remove_var(KILL_SWITCH_ENV);
+    static LAB_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct LabEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prev_enable: Option<String>,
+        prev_kill: Option<String>,
+    }
+
+    impl LabEnvGuard {
+        fn enable() -> Self {
+            let lock = LAB_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev_enable = std::env::var(ENABLE_ENV).ok();
+            let prev_kill = std::env::var(KILL_SWITCH_ENV).ok();
+            std::env::set_var(ENABLE_ENV, "1");
+            std::env::remove_var(KILL_SWITCH_ENV);
+            Self {
+                _lock: lock,
+                prev_enable,
+                prev_kill,
+            }
+        }
+    }
+
+    impl Drop for LabEnvGuard {
+        fn drop(&mut self) {
+            match &self.prev_enable {
+                Some(v) => std::env::set_var(ENABLE_ENV, v),
+                None => std::env::remove_var(ENABLE_ENV),
+            }
+            match &self.prev_kill {
+                Some(v) => std::env::set_var(KILL_SWITCH_ENV, v),
+                None => std::env::remove_var(KILL_SWITCH_ENV),
+            }
+        }
     }
 
     #[test]
     fn admits_proposal_and_candidate_exactly_once() {
-        enable_lab();
+        let _env = LabEnvGuard::enable();
         let store = LocalProductStore::new(":memory:").unwrap();
         let active = sample_active_identity();
         store
@@ -428,12 +459,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(r.receipt_id, receipt.receipt_id);
-        std::env::remove_var(ENABLE_ENV);
     }
 
     #[test]
     fn refuses_stale_parent_and_changed_active_version() {
-        enable_lab();
+        let _env = LabEnvGuard::enable();
         let store = LocalProductStore::new(":memory:").unwrap();
         let active = sample_active_identity();
         store
@@ -475,7 +505,10 @@ mod tests {
         let err = store
             .admit_harness_evolution_candidate(child, &active)
             .unwrap_err();
-        assert!(err.contains("stale_parent") || err.contains("evolution_stale_parent"));
+        assert!(
+            err.contains("stale_parent") || err.contains("evolution_stale_parent"),
+            "unexpected error: {err}"
+        );
 
         let mut other_active = active.clone();
         other_active.active_version_hash = sha256_hex("moved");
@@ -500,13 +533,15 @@ mod tests {
         let err = store
             .admit_harness_evolution_candidate(candidate, &other_active)
             .unwrap_err();
-        assert!(err.contains("changed_active_version"));
-        std::env::remove_var(ENABLE_ENV);
+        assert!(
+            err.contains("changed_active_version"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn durable_restart_preserves_candidate_and_receipt() {
-        enable_lab();
+        let _env = LabEnvGuard::enable();
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("evo.db");
         let db_s = db.to_str().unwrap();
@@ -554,12 +589,11 @@ mod tests {
         // Replay must not create a second success receipt.
         let again = store.admit_harness_evolution_candidate(loaded, &sample_active_identity());
         assert!(again.unwrap_err().contains("duplicate"));
-        std::env::remove_var(ENABLE_ENV);
     }
 
     #[test]
     fn refuses_candidate_without_prior_proposal() {
-        enable_lab();
+        let _env = LabEnvGuard::enable();
         let store = LocalProductStore::new(":memory:").unwrap();
         let active = sample_active_identity();
         let proposal = proposal_from_body(
@@ -583,8 +617,10 @@ mod tests {
         let err = store
             .admit_harness_evolution_candidate(candidate, &active)
             .unwrap_err();
-        assert!(err.contains("late_write") || err.contains("missing"));
-        std::env::remove_var(ENABLE_ENV);
+        assert!(
+            err.contains("late_write") || err.contains("missing"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
