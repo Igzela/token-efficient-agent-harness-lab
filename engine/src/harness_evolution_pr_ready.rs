@@ -462,17 +462,25 @@ mod tests {
         build_sealed_vault, evaluate_candidate_fixture, sample_budget, sample_task_family,
     };
 
+    static LAB_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
         prev_e: Option<String>,
         prev_k: Option<String>,
     }
     impl EnvGuard {
         fn enable() -> Self {
+            let lock = LAB_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let prev_e = std::env::var(ENABLE_ENV).ok();
             let prev_k = std::env::var(KILL_SWITCH_ENV).ok();
             std::env::set_var(ENABLE_ENV, "1");
             std::env::remove_var(KILL_SWITCH_ENV);
-            Self { prev_e, prev_k }
+            Self {
+                _lock: lock,
+                prev_e,
+                prev_k,
+            }
         }
     }
     impl Drop for EnvGuard {
