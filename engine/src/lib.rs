@@ -25,6 +25,7 @@ pub mod feedback;
 pub(crate) mod harness;
 pub mod harness_evolution;
 pub mod harness_evolution_eval;
+pub mod harness_evolution_pr_ready;
 pub mod http_server;
 pub mod infrastructure;
 pub mod local_runner_provider;

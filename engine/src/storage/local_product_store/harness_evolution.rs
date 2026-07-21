@@ -15,6 +15,10 @@ use crate::harness_evolution_eval::{
     SealedHoldoutVault, TaskFamilyManifest, ARCHIVE_SCHEMA_VERSION, EVAL_RECEIPT_SCHEMA_VERSION,
     EVAL_SCHEMA_VERSION, SEALED_SCHEMA_VERSION,
 };
+use crate::harness_evolution_pr_ready::{
+    finalize_pr_ready_bundle, redacted_pr_ready_evidence, PrReadyCandidateBundle, PrReadyReceipt,
+    PR_READY_RECEIPT_SCHEMA, PR_READY_SCHEMA_VERSION,
+};
 
 impl LocalProductStore {
     /// Record the immutable active-Harness + evaluator identity for the lab epoch.
@@ -658,6 +662,152 @@ impl LocalProductStore {
             }
         })
     }
+    /// Independently finalize a PR_READY bundle (no PR create/merge).
+    pub fn record_harness_evolution_pr_ready(
+        &self,
+        candidate_id: &str,
+        evaluation_id: &str,
+        current_active: &ActiveHarnessIdentity,
+        patch_text: &str,
+        allowed_paths: &[String],
+        base_commit_sha: &str,
+        head_commit_sha: &str,
+        expected_base_commit_sha: &str,
+        static_check_sha256: &str,
+        test_evidence_sha256: &str,
+        secret_scan_sha256: &str,
+        rollback_evidence_sha256: &str,
+        operator_decision: &str,
+    ) -> Result<(PrReadyCandidateBundle, PrReadyReceipt), String> {
+        let candidate = self
+            .get_harness_evolution_candidate(candidate_id)?
+            .ok_or_else(|| format!("evolution_pr_ready_missing_candidate: {candidate_id}"))?;
+        let evaluation = self
+            .get_harness_evolution_evaluation(evaluation_id)?
+            .ok_or_else(|| format!("evolution_pr_ready_missing_eval: {evaluation_id}"))?;
+        let created_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let (bundle, receipt) = finalize_pr_ready_bundle(
+            &candidate,
+            current_active,
+            &evaluation,
+            patch_text,
+            allowed_paths,
+            base_commit_sha,
+            head_commit_sha,
+            expected_base_commit_sha,
+            static_check_sha256,
+            test_evidence_sha256,
+            secret_scan_sha256,
+            rollback_evidence_sha256,
+            operator_decision,
+            &created_at,
+        )
+        .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        if bundle.schema_version != PR_READY_SCHEMA_VERSION
+            || receipt.schema_version != PR_READY_RECEIPT_SCHEMA
+            || !bundle.terminal.is_ready()
+        {
+            return Err("PR_READY finalizer contract violation".into());
+        }
+        // Persist without raw patch text in durable JSON body for audit safety.
+        let mut durable = bundle.clone();
+        durable.patch.patch_text.clear();
+        let bundle_json = serde_json::to_string(&durable).map_err(|e| e.to_string())?;
+        let receipt_json = serde_json::to_string(&receipt).map_err(|e| e.to_string())?;
+        let redacted = redacted_pr_ready_evidence(&bundle);
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT bundle_id FROM harness_evolution_pr_ready_bundles
+                     WHERE candidate_id=?1 AND evaluation_id=?2 AND patch_sha256=?3",
+                    params![
+                        candidate_id,
+                        evaluation_id,
+                        bundle.patch.patch_sha256
+                    ],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if existing.is_some() {
+                return Err(format!(
+                    "evolution_duplicate_pr_ready: candidate {} evaluation {}",
+                    candidate_id, evaluation_id
+                ));
+            }
+            tx.execute(
+                "INSERT INTO harness_evolution_pr_ready_bundles
+                    (bundle_id, candidate_id, lineage_id, active_version_id, evaluation_id,
+                     patch_sha256, base_commit_sha, head_commit_sha, bundle_sha256, terminal,
+                     body_json, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                params![
+                    bundle.bundle_id,
+                    bundle.candidate_id,
+                    bundle.lineage_id,
+                    bundle.active_version_id,
+                    bundle.evidence.evaluation_id,
+                    bundle.patch.patch_sha256,
+                    bundle.patch.base_commit_sha,
+                    bundle.patch.head_commit_sha,
+                    bundle.bundle_sha256,
+                    bundle.terminal.as_str(),
+                    bundle_json,
+                    created_at
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO harness_evolution_pr_ready_receipts
+                    (receipt_id, bundle_id, candidate_id, terminal, bundle_sha256, body_json, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    receipt.receipt_id,
+                    receipt.bundle_id,
+                    receipt.candidate_id,
+                    receipt.terminal.as_str(),
+                    receipt.bundle_sha256,
+                    receipt_json,
+                    created_at
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &created_at,
+                "system",
+                "harness_evolution.pr_ready_recorded",
+                &bundle.bundle_id,
+                &redacted,
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok((bundle, receipt))
+        })
+    }
+
+    pub fn get_harness_evolution_pr_ready_bundle(
+        &self,
+        bundle_id: &str,
+    ) -> Result<Option<PrReadyCandidateBundle>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_pr_ready_bundles WHERE bundle_id=?1",
+                    params![bundle_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(
+                    serde_json::from_str(&body).map_err(|e| e.to_string())?,
+                )),
+                None => Ok(None),
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -669,8 +819,6 @@ mod tests {
     };
     use serde_json::json;
 
-    static LAB_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     struct LabEnvGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
         prev_enable: Option<String>,
@@ -679,7 +827,9 @@ mod tests {
 
     impl LabEnvGuard {
         fn enable() -> Self {
-            let lock = LAB_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = crate::harness_evolution::EVOLUTION_LAB_TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let prev_enable = std::env::var(ENABLE_ENV).ok();
             let prev_kill = std::env::var(KILL_SWITCH_ENV).ok();
             std::env::set_var(ENABLE_ENV, "1");

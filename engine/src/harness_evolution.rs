@@ -24,6 +24,10 @@ pub const MUTABLE_SURFACE_SCHEMA: &str = "harness_mutable_surface.v1";
 pub const ENABLE_ENV: &str = "ACP_ENABLE_HARNESS_EVOLUTION_LAB";
 pub const KILL_SWITCH_ENV: &str = "ACP_HARNESS_EVOLUTION_KILL_SWITCH";
 
+/// Serializes process-wide evolution lab env mutations across unit tests.
+#[cfg(test)]
+pub(crate) static EVOLUTION_LAB_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub const MAX_PROPOSAL_BYTES: usize = 16 * 1024;
 pub const MAX_EVIDENCE_HASHES: usize = 32;
 pub const MAX_MUTABLE_SURFACES: usize = 8;
@@ -687,8 +691,6 @@ mod tests {
         assert!(validate_workspace_relative_path("ok/path").is_ok());
     }
 
-    static UNIT_LAB_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     struct UnitLabEnvGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
         prev_enable: Option<String>,
@@ -697,7 +699,9 @@ mod tests {
 
     impl UnitLabEnvGuard {
         fn set(enable: bool, kill: bool) -> Self {
-            let lock = UNIT_LAB_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = EVOLUTION_LAB_TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let prev_enable = std::env::var(ENABLE_ENV).ok();
             let prev_kill = std::env::var(KILL_SWITCH_ENV).ok();
             if enable {

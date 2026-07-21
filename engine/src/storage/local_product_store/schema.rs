@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 28;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 28;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 29;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 29;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -130,6 +130,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
         version: 28,
         description:
             "add harness evolution evaluation, sealed holdout, and Pareto archive evidence",
+    },
+    SchemaMigration {
+        version: 29,
+        description: "add harness evolution PR_READY candidate bundles and finalizer receipts",
     },
 ];
 
@@ -472,6 +476,39 @@ CREATE TABLE IF NOT EXISTS harness_evolution_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_receipts_candidate
     ON harness_evolution_receipts(candidate_id, created_at);
+";
+
+pub(super) const V29_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_pr_ready_bundles (
+    bundle_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    evaluation_id TEXT NOT NULL,
+    patch_sha256 TEXT NOT NULL CHECK (length(patch_sha256) = 64),
+    base_commit_sha TEXT NOT NULL CHECK (length(base_commit_sha) = 64),
+    head_commit_sha TEXT NOT NULL CHECK (length(head_commit_sha) = 64),
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    terminal TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(candidate_id, evaluation_id, patch_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_pr_ready_candidate
+    ON harness_evolution_pr_ready_bundles(candidate_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_pr_ready_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    bundle_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    terminal TEXT NOT NULL,
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(bundle_id) REFERENCES harness_evolution_pr_ready_bundles(bundle_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_pr_ready_receipts_bundle
+    ON harness_evolution_pr_ready_receipts(bundle_id, created_at);
 ";
 
 pub(super) const V28_DDL: &str = "
@@ -1356,8 +1393,39 @@ CREATE TABLE IF NOT EXISTS harness_evolution_eval_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_eval_receipts_eval
     ON harness_evolution_eval_receipts(evaluation_id, created_at);
-";
 
+
+CREATE TABLE IF NOT EXISTS harness_evolution_pr_ready_bundles (
+    bundle_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    evaluation_id TEXT NOT NULL,
+    patch_sha256 TEXT NOT NULL CHECK (length(patch_sha256) = 64),
+    base_commit_sha TEXT NOT NULL CHECK (length(base_commit_sha) = 64),
+    head_commit_sha TEXT NOT NULL CHECK (length(head_commit_sha) = 64),
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    terminal TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(candidate_id, evaluation_id, patch_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_pr_ready_candidate
+    ON harness_evolution_pr_ready_bundles(candidate_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_pr_ready_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    bundle_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    terminal TEXT NOT NULL,
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(bundle_id) REFERENCES harness_evolution_pr_ready_bundles(bundle_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_pr_ready_receipts_bundle
+    ON harness_evolution_pr_ready_receipts(bundle_id, created_at);
+";
 pub(crate) const POSTGRES_DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatch_history (
     history_id BIGSERIAL PRIMARY KEY,
@@ -2214,6 +2282,37 @@ CREATE TABLE IF NOT EXISTS harness_evolution_eval_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_eval_receipts_eval
     ON harness_evolution_eval_receipts(evaluation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_pr_ready_bundles (
+    bundle_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    evaluation_id TEXT NOT NULL,
+    patch_sha256 TEXT NOT NULL CHECK (length(patch_sha256) = 64),
+    base_commit_sha TEXT NOT NULL CHECK (length(base_commit_sha) = 64),
+    head_commit_sha TEXT NOT NULL CHECK (length(head_commit_sha) = 64),
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    terminal TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(candidate_id, evaluation_id, patch_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_pr_ready_candidate
+    ON harness_evolution_pr_ready_bundles(candidate_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_pr_ready_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    bundle_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    terminal TEXT NOT NULL,
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(bundle_id) REFERENCES harness_evolution_pr_ready_bundles(bundle_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_pr_ready_receipts_bundle
+    ON harness_evolution_pr_ready_receipts(bundle_id, created_at);
 ";
 
 #[cfg(test)]
@@ -2274,6 +2373,8 @@ mod tests {
             "harness_evolution_evaluations",
             "harness_evolution_pareto_archive",
             "harness_evolution_eval_receipts",
+            "harness_evolution_pr_ready_bundles",
+            "harness_evolution_pr_ready_receipts",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),

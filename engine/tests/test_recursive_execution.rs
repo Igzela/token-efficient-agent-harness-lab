@@ -116,6 +116,9 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     occupied.save_recursive_tree(&tree).expect("save");
     // Roll evaluation (v28) then evolution (v27) so v26 recursive rollback can be attempted.
     occupied
+        .rollback_v29_to_v28("test", true)
+        .expect("empty PR_READY surface rollback");
+    occupied
         .rollback_v28_to_v27("test", true)
         .expect("empty evaluation surface rollback");
     occupied
@@ -130,6 +133,9 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     let empty_path = tempfile::NamedTempFile::new().expect("path");
     let empty = LocalProductStore::new(empty_path.path()).expect("store");
     empty
+        .rollback_v29_to_v28("test", true)
+        .expect("rollback v29");
+    empty
         .rollback_v28_to_v27("test", true)
         .expect("rollback v28");
     empty
@@ -141,5 +147,5 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     assert_eq!(empty.schema_version().expect("version"), 25);
     drop(empty);
     let reapplied = LocalProductStore::new(empty_path.path()).expect("reopen");
-    assert_eq!(reapplied.schema_version().expect("version"), 28);
+    assert_eq!(reapplied.schema_version().expect("version"), 29);
 }
