@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 26;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 26;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 27;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 27;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -120,6 +120,11 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 26,
         description: "add bounded recursive execution tree and node identity state",
+    },
+    SchemaMigration {
+        version: 27,
+        description:
+            "add harness evolution laboratory candidate/proposal/receipt evidence foundation",
     },
 ];
 
@@ -397,6 +402,71 @@ CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_root
     ON recursive_execution_nodes(root_run_id, depth, node_id);
 CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_parent
     ON recursive_execution_nodes(root_run_id, parent_node_id, status, node_id);
+";
+
+pub(super) const V27_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_active_identity (
+    active_version_id TEXT PRIMARY KEY,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    parent_candidate_id TEXT,
+    active_version_id TEXT NOT NULL,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    proposal_body_sha256 TEXT NOT NULL CHECK (length(proposal_body_sha256) = 64),
+    body_json TEXT NOT NULL,
+    seed BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_proposals_active
+    ON harness_evolution_proposals(active_version_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_candidates (
+    candidate_id TEXT PRIMARY KEY,
+    lineage_id TEXT NOT NULL,
+    parent_candidate_id TEXT,
+    proposal_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+    status TEXT NOT NULL,
+    terminal_reason TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    workspace_rel_path TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    seed BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(lineage_id, content_hash),
+    FOREIGN KEY(proposal_id) REFERENCES harness_evolution_proposals(proposal_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_candidates_lineage
+    ON harness_evolution_candidates(lineage_id, created_at, candidate_id);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_candidates_parent
+    ON harness_evolution_candidates(parent_candidate_id, status);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    proposal_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    terminal_reason TEXT NOT NULL,
+    content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(candidate_id) REFERENCES harness_evolution_candidates(candidate_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_receipts_candidate
+    ON harness_evolution_receipts(candidate_id, created_at);
 ";
 
 pub(super) const SQLITE_DDL: &str = "
@@ -1098,6 +1168,69 @@ CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_root
     ON recursive_execution_nodes(root_run_id, depth, node_id);
 CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_parent
     ON recursive_execution_nodes(root_run_id, parent_node_id, status, node_id);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_active_identity (
+    active_version_id TEXT PRIMARY KEY,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    parent_candidate_id TEXT,
+    active_version_id TEXT NOT NULL,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    proposal_body_sha256 TEXT NOT NULL CHECK (length(proposal_body_sha256) = 64),
+    body_json TEXT NOT NULL,
+    seed BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_proposals_active
+    ON harness_evolution_proposals(active_version_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_candidates (
+    candidate_id TEXT PRIMARY KEY,
+    lineage_id TEXT NOT NULL,
+    parent_candidate_id TEXT,
+    proposal_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+    status TEXT NOT NULL,
+    terminal_reason TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    workspace_rel_path TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    seed BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(lineage_id, content_hash),
+    FOREIGN KEY(proposal_id) REFERENCES harness_evolution_proposals(proposal_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_candidates_lineage
+    ON harness_evolution_candidates(lineage_id, created_at, candidate_id);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_candidates_parent
+    ON harness_evolution_candidates(parent_candidate_id, status);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    proposal_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    terminal_reason TEXT NOT NULL,
+    content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(candidate_id) REFERENCES harness_evolution_candidates(candidate_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_receipts_candidate
+    ON harness_evolution_receipts(candidate_id, created_at);
 ";
 
 pub(crate) const POSTGRES_DDL: &str = "
@@ -1834,6 +1967,69 @@ CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_root
     ON recursive_execution_nodes(root_run_id, depth, node_id);
 CREATE INDEX IF NOT EXISTS idx_recursive_execution_nodes_parent
     ON recursive_execution_nodes(root_run_id, parent_node_id, status, node_id);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_active_identity (
+    active_version_id TEXT PRIMARY KEY,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    parent_candidate_id TEXT,
+    active_version_id TEXT NOT NULL,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    proposal_body_sha256 TEXT NOT NULL CHECK (length(proposal_body_sha256) = 64),
+    body_json TEXT NOT NULL,
+    seed BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_proposals_active
+    ON harness_evolution_proposals(active_version_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_candidates (
+    candidate_id TEXT PRIMARY KEY,
+    lineage_id TEXT NOT NULL,
+    parent_candidate_id TEXT,
+    proposal_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+    status TEXT NOT NULL,
+    terminal_reason TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    workspace_rel_path TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    seed BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(lineage_id, content_hash),
+    FOREIGN KEY(proposal_id) REFERENCES harness_evolution_proposals(proposal_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_candidates_lineage
+    ON harness_evolution_candidates(lineage_id, created_at, candidate_id);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_candidates_parent
+    ON harness_evolution_candidates(parent_candidate_id, status);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    proposal_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    terminal_reason TEXT NOT NULL,
+    content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(candidate_id) REFERENCES harness_evolution_candidates(candidate_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_receipts_candidate
+    ON harness_evolution_receipts(candidate_id, created_at);
 ";
 
 #[cfg(test)]
@@ -1885,6 +2081,11 @@ mod tests {
             "recursive_execution_trees",
             "recursive_execution_nodes",
             "idx_recursive_execution_nodes_parent",
+            "harness_evolution_active_identity",
+            "harness_evolution_proposals",
+            "harness_evolution_candidates",
+            "harness_evolution_receipts",
+            "idx_harness_evolution_candidates_lineage",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),

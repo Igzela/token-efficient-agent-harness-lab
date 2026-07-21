@@ -40,6 +40,7 @@ class CommandOutcome:
     returncode: int | None
     timed_out: bool = False
     output_exceeded: bool = False
+    output_tail: str = ""
 
 
 def fixed_command(spec: ScenarioSpec) -> tuple[str, ...]:
@@ -64,6 +65,9 @@ def _sanitized_environment(
 ) -> dict[str, str]:
     result = dict(os.environ)
     toolchain_home = result.get("HOME")
+    # Preserve an already-configured cargo target dir so the harness re-run can
+    # reuse CI's compiled engine fingerprint instead of writing a second tree.
+    cargo_target_dir = result.get("CARGO_TARGET_DIR")
     forbidden = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "PRIVATE_KEY", "CREDENTIAL")
     for key in list(result):
         if any(marker in key.upper() for marker in forbidden):
@@ -80,6 +84,7 @@ def _sanitized_environment(
             "ACP_ENABLE_PROVIDER_EXECUTION": "0",
             "ACP_REAL_RUNNER_KILL_SWITCH": "1",
             "PYTHONPATH": str(ROOT),
+            "RUST_BACKTRACE": "1",
         }
     )
     if toolchain_home:
@@ -89,6 +94,8 @@ def _sanitized_environment(
             result["RUSTUP_HOME"] = str(rustup_home)
         if cargo_home.is_dir():
             result["CARGO_HOME"] = str(cargo_home)
+    if cargo_target_dir:
+        result["CARGO_TARGET_DIR"] = cargo_target_dir
     if not postgres:
         result.pop("ACP_TEST_DATABASE_URL", None)
     return result
@@ -109,6 +116,11 @@ def _execute_fixed_command(
         stderr=subprocess.STDOUT, start_new_session=(os.name == "posix"),
     )
     output_exceeded = threading.Event()
+    # Keep a bounded tail for CI diagnostics without retaining full owner output.
+    tail_chunks: list[bytes] = []
+    tail_bytes = 0
+    tail_limit = 32 * 1024
+    tail_lock = threading.Lock()
 
     def terminate() -> None:
         if process.poll() is not None:
@@ -122,13 +134,27 @@ def _execute_fixed_command(
             process.kill()
 
     def drain_output() -> None:
+        nonlocal tail_bytes
         assert process.stdout is not None
         observed = 0
         for chunk in iter(lambda: process.stdout.read(64 * 1024), b""):
             observed += len(chunk)
+            with tail_lock:
+                tail_chunks.append(chunk)
+                tail_bytes += len(chunk)
+                while tail_bytes > tail_limit and tail_chunks:
+                    dropped = tail_chunks.pop(0)
+                    tail_bytes -= len(dropped)
             if observed > MAX_BYTES:
                 output_exceeded.set()
                 terminate()
+
+    def output_tail_text() -> str:
+        with tail_lock:
+            raw = b"".join(tail_chunks)
+        if not raw:
+            return ""
+        return raw.decode("utf-8", errors="replace")
 
     reader = threading.Thread(target=drain_output, name="pe6-owner-output", daemon=True)
     reader.start()
@@ -140,7 +166,7 @@ def _execute_fixed_command(
         reader.join(timeout=5)
         if process.stdout is not None:
             process.stdout.close()
-        return CommandOutcome(returncode=None, timed_out=True)
+        return CommandOutcome(returncode=None, timed_out=True, output_tail=output_tail_text())
     reader.join(timeout=5)
     if reader.is_alive():
         terminate()
@@ -148,12 +174,18 @@ def _execute_fixed_command(
         reader.join(timeout=5)
         if process.stdout is not None:
             process.stdout.close()
-        return CommandOutcome(returncode=None, output_exceeded=True)
+        return CommandOutcome(
+            returncode=None, output_exceeded=True, output_tail=output_tail_text()
+        )
     if process.stdout is not None:
         process.stdout.close()
     if output_exceeded.is_set():
-        return CommandOutcome(returncode=process.returncode, output_exceeded=True)
-    return CommandOutcome(returncode=process.returncode)
+        return CommandOutcome(
+            returncode=process.returncode,
+            output_exceeded=True,
+            output_tail=output_tail_text(),
+        )
+    return CommandOutcome(returncode=process.returncode, output_tail=output_tail_text())
 
 
 def _cleanup_resource(path: Path, *, fail: bool = False) -> bool:
@@ -231,6 +263,10 @@ def run_scenario(
         _ACTIVE_RESOURCE_IDS.update(resource_ids)
 
     disposable_root = Path(tempfile.mkdtemp(prefix="pe6-drill-"))
+    # Keep scenario/evidence outside the process HOME/TMPDIR sandbox so cargo or
+    # owner temp cleanup cannot unlink harness control files.
+    sandbox_root = disposable_root / "sandbox"
+    sandbox_root.mkdir(parents=True, exist_ok=True)
     scenario_path = disposable_root / "scenario.v2.json"
     evidence_path = disposable_root / "owner-evidence.v2.json"
     write_canonical_json(scenario_path, scenario)
@@ -252,7 +288,7 @@ def run_scenario(
             outcome = executor(
                 fixed_command(spec), cwd=ROOT,
                 env=_sanitized_environment(
-                    root=disposable_root, postgres=postgres,
+                    root=sandbox_root, postgres=postgres,
                     scenario_path=scenario_path, evidence_path=evidence_path,
                 ),
                 timeout_ms=spec.timeout_ms,
@@ -264,6 +300,12 @@ def run_scenario(
                 status, reasons = "aborted", ["OWNER_OUTPUT_BOUNDS_EXCEEDED"]
             elif outcome.returncode != 0:
                 status, reasons = "failed_recovery", ["OWNER_TEST_FAILED"]
+                if outcome.output_tail:
+                    print(
+                        f"pe6 owner command failed scenario={scenario_id} "
+                        f"exit={outcome.returncode}\n{outcome.output_tail}",
+                        file=sys.stderr,
+                    )
             else:
                 try:
                     owner_evidence, owner_hash = _read_owner_evidence(evidence_path, scenario)
@@ -281,6 +323,12 @@ def run_scenario(
                         status, reasons = "passed", ["DRILL_PASSED", "OWNER_EVIDENCE_VERIFIED"]
                 except ContractError:
                     status, reasons = "failed_recovery", ["OWNER_EVIDENCE_INVALID"]
+                    if outcome.output_tail:
+                        print(
+                            f"pe6 owner evidence invalid scenario={scenario_id}\n"
+                            f"{outcome.output_tail}",
+                            file=sys.stderr,
+                        )
     except Exception:
         status, reasons = "aborted", ["DRILL_ABORTED"]
     finally:
