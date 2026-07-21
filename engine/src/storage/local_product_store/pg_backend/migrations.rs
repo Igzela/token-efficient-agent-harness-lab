@@ -1456,7 +1456,7 @@ mod tests {
         store
             .rollback_v27_to_v26("migration-test-setup", true)
             .unwrap();
-        assert_eq!(store.schema_version().unwrap(), 26);
+        assert_eq!(store.schema_version().unwrap(), 27);
         store
             .rollback_v26_to_v25("migration-test-setup", true)
             .unwrap();
@@ -1497,7 +1497,7 @@ mod tests {
             error.contains("missing primary key for recursive_execution_nodes"),
             "unexpected error: {error}"
         );
-        assert_eq!(fixture.store.schema_version().expect("version"), 26);
+        assert_eq!(fixture.store.schema_version().expect("version"), 27);
     }
 
     #[test]
@@ -1527,7 +1527,7 @@ mod tests {
             ),
             "unexpected error: {error}"
         );
-        assert_eq!(fixture.store.schema_version().expect("version"), 26);
+        assert_eq!(fixture.store.schema_version().expect("version"), 27);
     }
 
     #[test]
@@ -1577,7 +1577,7 @@ mod tests {
                 .run_pg_migrations_internal()
                 .expect_err("weakened v26 schema must fail closed");
             assert!(error.contains(expected), "unexpected error: {error}");
-            assert_eq!(fixture.store.schema_version().expect("version"), 26);
+            assert_eq!(fixture.store.schema_version().expect("version"), 27);
         }
     }
 
@@ -1676,7 +1676,7 @@ mod tests {
         left.unwrap();
         right.unwrap();
 
-        assert_eq!(store.schema_version().unwrap(), 26);
+        assert_eq!(store.schema_version().unwrap(), 27);
         store
             .with_pg_conn(|client| {
                 assert!(pg_column_exists(
@@ -1702,7 +1702,7 @@ mod tests {
             .unwrap();
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 26);
+        assert_eq!(store.schema_version().unwrap(), 27);
 
         store
             .with_pg_conn(|client| {
@@ -1727,7 +1727,7 @@ mod tests {
         );
         // The refusal is atomic: deleting only the v25 marker does not move or
         // silently rewrite the existing v26 marker.
-        assert_eq!(store.schema_version().unwrap(), 26);
+        assert_eq!(store.schema_version().unwrap(), 27);
     }
 
     #[test]
@@ -1824,7 +1824,7 @@ mod tests {
             })
         );
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 26);
+        assert_eq!(store.schema_version().unwrap(), 27);
         for table in super::super::super::migrations::V24_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -1874,7 +1874,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 26);
+        assert_eq!(store.schema_version().unwrap(), 27);
         for table in super::super::super::migrations::V23_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -1983,7 +1983,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 26);
+        assert_eq!(store.schema_version().unwrap(), 27);
         for table in super::super::super::migrations::V22_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }

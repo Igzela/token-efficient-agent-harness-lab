@@ -75,6 +75,10 @@ const INTEGRITY_TABLES: &[&str] = &[
     "external_runtime_invocations",
     "recursive_execution_trees",
     "recursive_execution_nodes",
+    "harness_evolution_active_identity",
+    "harness_evolution_proposals",
+    "harness_evolution_candidates",
+    "harness_evolution_receipts",
 ];
 
 #[derive(Debug)]
