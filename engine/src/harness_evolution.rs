@@ -23,6 +23,8 @@ pub const MUTABLE_SURFACE_SCHEMA: &str = "harness_mutable_surface.v1";
 
 pub const ENABLE_ENV: &str = "ACP_ENABLE_HARNESS_EVOLUTION_LAB";
 pub const KILL_SWITCH_ENV: &str = "ACP_HARNESS_EVOLUTION_KILL_SWITCH";
+/// Canonical app-owned root for evolution candidate workspaces (must be set for real workspace ops).
+pub const WORKSPACE_ROOT_ENV: &str = "ACP_HARNESS_EVOLUTION_WORKSPACE_ROOT";
 
 /// Serializes process-wide evolution lab env mutations across unit tests.
 #[cfg(test)]
@@ -33,6 +35,8 @@ pub const MAX_EVIDENCE_HASHES: usize = 32;
 pub const MAX_MUTABLE_SURFACES: usize = 8;
 pub const MAX_SCOPE_PATHS: usize = 32;
 pub const MAX_WORKSPACE_REL_DEPTH: usize = 8;
+pub const MAX_WORKSPACE_FILES: usize = 64;
+pub const MAX_WORKSPACE_FILE_BYTES: usize = 64 * 1024;
 
 /// Documented component-level mutable surfaces for the initial laboratory.
 pub const ADMITTED_MUTABLE_SURFACES: &[&str] = &[
@@ -338,35 +342,252 @@ pub fn validate_workspace_relative_path(path: &str) -> Result<(), EvolutionAdmis
     Ok(())
 }
 
-/// Resolve a candidate workspace under an app-owned root; refuse escape.
+/// Resolve the configured app-owned evolution workspace root (canonicalized).
+pub fn configured_workspace_root() -> Result<PathBuf, EvolutionAdmissionError> {
+    let raw = std::env::var(WORKSPACE_ROOT_ENV).map_err(|_| {
+        EvolutionAdmissionError::new(
+            "evolution_workspace_root_unset",
+            "ACP_HARNESS_EVOLUTION_WORKSPACE_ROOT must be set to an app-owned directory",
+        )
+    })?;
+    if raw.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_workspace_root_unset",
+            "ACP_HARNESS_EVOLUTION_WORKSPACE_ROOT must not be empty",
+        ));
+    }
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_workspace_root",
+            "workspace root must be an absolute path",
+        ));
+    }
+    if !path.exists() || !path.is_dir() {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_workspace_root",
+            "workspace root must be an existing directory",
+        ));
+    }
+    path.canonicalize()
+        .map_err(|e| EvolutionAdmissionError::new("evolution_workspace_root", e.to_string()))
+}
+
+/// Resolve a candidate workspace under an app-owned root; refuse escape and symlink ownership.
 pub fn resolve_workspace_under_root(
     root: &Path,
     relative: &str,
 ) -> Result<PathBuf, EvolutionAdmissionError> {
     validate_workspace_relative_path(relative)?;
-    let root = root
+    let root_canon = root
         .canonicalize()
         .map_err(|e| EvolutionAdmissionError::new("evolution_workspace_root", e.to_string()))?;
-    let joined = root.join(relative);
-    // Parent may not exist yet; validate prefix without requiring leaf existence.
-    let parent = joined.parent().unwrap_or(&joined);
-    if parent.exists() {
-        let canon_parent = parent.canonicalize().map_err(|e| {
-            EvolutionAdmissionError::new("evolution_workspace_escape", e.to_string())
-        })?;
-        if !canon_parent.starts_with(&root) {
-            return Err(EvolutionAdmissionError::new(
-                "evolution_workspace_escape",
-                "workspace escapes app-owned root",
-            ));
+    let mut cursor = root_canon.clone();
+    for component in Path::new(relative).components() {
+        match component {
+            Component::Normal(name) => {
+                cursor = cursor.join(name);
+                if cursor.exists() {
+                    let canon = cursor.canonicalize().map_err(|e| {
+                        EvolutionAdmissionError::new("evolution_workspace_escape", e.to_string())
+                    })?;
+                    if !canon.starts_with(&root_canon) {
+                        return Err(EvolutionAdmissionError::new(
+                            "evolution_workspace_escape",
+                            "workspace escapes app-owned root",
+                        ));
+                    }
+                    cursor = canon;
+                }
+            }
+            _ => {
+                return Err(EvolutionAdmissionError::new(
+                    "evolution_workspace_escape",
+                    "workspace path contains forbidden component",
+                ));
+            }
         }
-    } else if !joined.starts_with(&root) {
+    }
+    Ok(cursor)
+}
+
+/// Deterministic content hash of the bounded workspace surface (sorted relative paths + contents).
+pub fn hash_workspace_directory(workspace_dir: &Path) -> Result<String, EvolutionAdmissionError> {
+    if !workspace_dir.is_dir() {
         return Err(EvolutionAdmissionError::new(
-            "evolution_workspace_escape",
-            "workspace escapes app-owned root",
+            "evolution_workspace_missing",
+            "candidate workspace directory is missing",
         ));
     }
-    Ok(joined)
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    collect_workspace_files(workspace_dir, workspace_dir, &mut entries)?;
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    if entries.len() > MAX_WORKSPACE_FILES {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_workspace_bound",
+            "workspace file count exceeds bound",
+        ));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"harness_evolution_workspace_surface.v1\n");
+    for (rel, bytes) in &entries {
+        hasher.update(rel.as_bytes());
+        hasher.update(b"\0");
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+        hasher.update(b"\n");
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn collect_workspace_files(
+    root: &Path,
+    current: &Path,
+    out: &mut Vec<(String, Vec<u8>)>,
+) -> Result<(), EvolutionAdmissionError> {
+    let read = std::fs::read_dir(current)
+        .map_err(|e| EvolutionAdmissionError::new("evolution_workspace_read", e.to_string()))?;
+    for entry in read {
+        let entry = entry
+            .map_err(|e| EvolutionAdmissionError::new("evolution_workspace_read", e.to_string()))?;
+        let path = entry.path();
+        let meta = entry
+            .metadata()
+            .map_err(|e| EvolutionAdmissionError::new("evolution_workspace_read", e.to_string()))?;
+        if meta.file_type().is_symlink() {
+            return Err(EvolutionAdmissionError::new(
+                "evolution_workspace_escape",
+                "symlinks are forbidden inside candidate workspaces",
+            ));
+        }
+        if meta.is_dir() {
+            collect_workspace_files(root, &path, out)?;
+            continue;
+        }
+        if !meta.is_file() {
+            return Err(EvolutionAdmissionError::new(
+                "evolution_workspace_escape",
+                "non-file workspace entries are forbidden",
+            ));
+        }
+        if meta.len() as usize > MAX_WORKSPACE_FILE_BYTES {
+            return Err(EvolutionAdmissionError::new(
+                "evolution_workspace_bound",
+                "workspace file exceeds size bound",
+            ));
+        }
+        let rel = path
+            .strip_prefix(root)
+            .map_err(|_| {
+                EvolutionAdmissionError::new(
+                    "evolution_workspace_escape",
+                    "workspace file escaped root during collection",
+                )
+            })?
+            .to_string_lossy()
+            .replace('\\', "/");
+        validate_workspace_relative_path(&rel)?;
+        let bytes = std::fs::read(&path)
+            .map_err(|e| EvolutionAdmissionError::new("evolution_workspace_read", e.to_string()))?;
+        out.push((rel, bytes));
+    }
+    Ok(())
+}
+
+/// Materialize bounded fixture files under the app-owned root and return a workspace descriptor.
+pub fn materialize_candidate_workspace(
+    root: &Path,
+    workspace_id: &str,
+    files: &[(String, Vec<u8>)],
+) -> Result<CandidateWorkspace, EvolutionAdmissionError> {
+    if workspace_id.is_empty()
+        || workspace_id.contains('/')
+        || workspace_id.contains('\\')
+        || workspace_id.contains("..")
+    {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_workspace_id",
+            "workspace_id must be a single path segment",
+        ));
+    }
+    if files.is_empty() || files.len() > MAX_WORKSPACE_FILES {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_workspace_bound",
+            "workspace file count out of bound",
+        ));
+    }
+    let relative_path = format!("candidates/{workspace_id}");
+    validate_workspace_relative_path(&relative_path)?;
+    let dir = resolve_workspace_under_root(root, &relative_path)?;
+    if dir.exists() {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_workspace_exists",
+            "workspace directory already exists",
+        ));
+    }
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| EvolutionAdmissionError::new("evolution_workspace_create", e.to_string()))?;
+    for (rel, bytes) in files {
+        validate_workspace_relative_path(rel)?;
+        if bytes.len() > MAX_WORKSPACE_FILE_BYTES {
+            return Err(EvolutionAdmissionError::new(
+                "evolution_workspace_bound",
+                "workspace file exceeds size bound",
+            ));
+        }
+        let target = resolve_workspace_under_root(&dir, rel)?;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                EvolutionAdmissionError::new("evolution_workspace_create", e.to_string())
+            })?;
+        }
+        std::fs::write(&target, bytes).map_err(|e| {
+            EvolutionAdmissionError::new("evolution_workspace_write", e.to_string())
+        })?;
+    }
+    let content_hash = hash_workspace_directory(&dir)?;
+    Ok(CandidateWorkspace {
+        schema_version: WORKSPACE_SCHEMA_VERSION.to_string(),
+        workspace_id: workspace_id.to_string(),
+        relative_path,
+        content_hash,
+    })
+}
+
+/// Recompute the workspace surface hash and refuse if it no longer matches the admitted hash.
+pub fn revalidate_workspace_content(
+    root: &Path,
+    workspace: &CandidateWorkspace,
+) -> Result<String, EvolutionAdmissionError> {
+    let dir = resolve_workspace_under_root(root, &workspace.relative_path)?;
+    let actual = hash_workspace_directory(&dir)?;
+    if actual != workspace.content_hash {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_workspace_tamper",
+            "workspace content hash no longer matches admitted surface",
+        ));
+    }
+    Ok(actual)
+}
+
+/// Discard an unpromoted candidate workspace directory without touching active main.
+pub fn discard_candidate_workspace(
+    root: &Path,
+    workspace: &CandidateWorkspace,
+) -> Result<(), EvolutionAdmissionError> {
+    let dir = resolve_workspace_under_root(root, &workspace.relative_path)?;
+    if !dir.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(&dir)
+        .map_err(|e| EvolutionAdmissionError::new("evolution_workspace_discard", e.to_string()))?;
+    Ok(())
+}
+
+/// Derive a stable workspace_id from proposal and seed material.
+pub fn derive_workspace_id(proposal_id: &str, seed: u64) -> String {
+    let material = format!("workspace.v1|{proposal_id}|{seed}");
+    format!("hews-{}", &sha256_hex(&material)[..16])
 }
 
 pub fn validate_proposal(proposal: &EvolutionProposal) -> Result<(), EvolutionAdmissionError> {
@@ -454,6 +675,12 @@ pub fn validate_candidate_for_admission(
         ));
     }
     validate_sha256_hex(&candidate.workspace.content_hash)?;
+    if candidate.content_hash != candidate.workspace.content_hash {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_content_workspace_mismatch",
+            "candidate content_hash must equal workspace surface hash",
+        ));
+    }
 
     if candidate.active_version_id != current_active.active_version_id
         || candidate.active_version_hash != current_active.active_version_hash
@@ -596,17 +823,24 @@ pub fn proposal_from_body(
     Ok(proposal)
 }
 
+/// Build a candidate bound to an already-materialized app-owned workspace.
+///
+/// `content_hash` must equal the workspace surface hash (no independent caller authority).
 pub fn candidate_from_proposal(
     proposal: &EvolutionProposal,
-    content_hash: &str,
-    workspace_rel: &str,
-    workspace_content_hash: &str,
+    workspace: &CandidateWorkspace,
     created_at: impl Into<String>,
 ) -> Result<EvolutionCandidate, EvolutionAdmissionError> {
-    validate_sha256_hex(content_hash)?;
-    validate_sha256_hex(workspace_content_hash)?;
-    validate_workspace_relative_path(workspace_rel)?;
-    let candidate_id = derive_candidate_id(&proposal.proposal_id, content_hash, proposal.seed);
+    validate_sha256_hex(&workspace.content_hash)?;
+    validate_workspace_relative_path(&workspace.relative_path)?;
+    if workspace.schema_version != WORKSPACE_SCHEMA_VERSION {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_workspace_schema",
+            "workspace schema_version mismatch",
+        ));
+    }
+    let content_hash = workspace.content_hash.clone();
+    let candidate_id = derive_candidate_id(&proposal.proposal_id, &content_hash, proposal.seed);
     let lineage_id = derive_lineage_id(
         proposal.parent_candidate_id.as_deref(),
         &proposal.proposal_id,
@@ -621,13 +855,8 @@ pub fn candidate_from_proposal(
         active_version_hash: proposal.active_version_hash.clone(),
         evaluator_identity_hash: proposal.evaluator_identity_hash.clone(),
         mutable_surface: proposal.mutable_surface.clone(),
-        workspace: CandidateWorkspace {
-            schema_version: WORKSPACE_SCHEMA_VERSION.to_string(),
-            workspace_id: format!("hews-{}", &sha256_hex(workspace_rel)[..16]),
-            relative_path: workspace_rel.to_string(),
-            content_hash: workspace_content_hash.to_string(),
-        },
-        content_hash: content_hash.to_string(),
+        workspace: workspace.clone(),
+        content_hash,
         status: CandidateStatus::Proposed,
         terminal_reason: CandidateTerminalReason::Admitted,
         seed: proposal.seed,
@@ -664,16 +893,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p1.proposal_id, p2.proposal_id);
-        let c = candidate_from_proposal(
-            &p1,
-            &sha256_hex("content"),
-            "candidates/c1",
-            &sha256_hex("ws"),
-            "2026-07-21T00:00:00Z",
-        )
-        .unwrap();
+        let ws = CandidateWorkspace {
+            schema_version: WORKSPACE_SCHEMA_VERSION.to_string(),
+            workspace_id: derive_workspace_id(&p1.proposal_id, p1.seed),
+            relative_path: "candidates/c1".to_string(),
+            content_hash: sha256_hex("content"),
+        };
+        let c = candidate_from_proposal(&p1, &ws, "2026-07-21T00:00:00Z").unwrap();
         assert!(c.candidate_id.starts_with("hevc-"));
         assert!(c.lineage_id.starts_with("heln-"));
+        assert_eq!(c.content_hash, ws.content_hash);
+    }
+
+    #[test]
+    fn materializes_and_revalidates_workspace_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let files = vec![("manifest.json".to_string(), b"{\"k\":1}".to_vec())];
+        let ws = materialize_candidate_workspace(root, "ws-unit-1", &files).unwrap();
+        assert!(ws.relative_path.starts_with("candidates/"));
+        revalidate_workspace_content(root, &ws).unwrap();
+        // Tamper after materialization is detected.
+        let path = resolve_workspace_under_root(root, &ws.relative_path).unwrap();
+        std::fs::write(path.join("extra.txt"), b"tamper").unwrap();
+        let err = revalidate_workspace_content(root, &ws).unwrap_err();
+        assert_eq!(err.code, "evolution_workspace_tamper");
+        discard_candidate_workspace(root, &ws).unwrap();
+        assert!(!resolve_workspace_under_root(root, &ws.relative_path)
+            .unwrap()
+            .exists());
     }
 
     #[test]
@@ -748,14 +996,14 @@ mod tests {
             3,
         )
         .unwrap();
-        let mut candidate = candidate_from_proposal(
-            &proposal,
-            &sha256_hex("content"),
-            "candidates/c2",
-            &sha256_hex("ws"),
-            "2026-07-21T00:00:00Z",
-        )
-        .unwrap();
+        let ws = CandidateWorkspace {
+            schema_version: WORKSPACE_SCHEMA_VERSION.to_string(),
+            workspace_id: "hews-c2".to_string(),
+            relative_path: "candidates/c2".to_string(),
+            content_hash: sha256_hex("content"),
+        };
+        let mut candidate =
+            candidate_from_proposal(&proposal, &ws, "2026-07-21T00:00:00Z").unwrap();
         candidate.active_version_hash = sha256_hex("different");
         let err = validate_candidate_for_admission(&candidate, &active, true).unwrap_err();
         assert_eq!(err.code, "evolution_changed_active_version");
@@ -764,27 +1012,6 @@ mod tests {
     #[test]
     fn rejects_sensitive_payload_fields() {
         let _env = UnitLabEnvGuard::set(true, false);
-        let active = sample_active_identity();
-        let proposal = proposal_from_body(
-            &active,
-            None,
-            &["prompts_and_bounded_rules"],
-            &json!({"k":"v"}),
-            vec![],
-            9,
-        )
-        .unwrap();
-        let _candidate = candidate_from_proposal(
-            &proposal,
-            &sha256_hex("content"),
-            "candidates/c3",
-            &sha256_hex("ws"),
-            "2026-07-21T00:00:00Z",
-        )
-        .unwrap();
-        // Simulate tamper by re-encoding with a forbidden field via JSON map injection path:
-        // validate_candidate_for_admission serializes the struct, so inject via workspace path
-        // that is otherwise valid — use refuse_sensitive_payload_fields directly.
         let poisoned = json!({"raw_prompt":"secret text","ok":true});
         let err = refuse_sensitive_payload_fields(&poisoned).unwrap_err();
         assert_eq!(err.code, "evolution_sensitive_payload");
@@ -803,14 +1030,13 @@ mod tests {
             4,
         )
         .unwrap();
-        let candidate = candidate_from_proposal(
-            &proposal,
-            &sha256_hex("content"),
-            "candidates/c4",
-            &sha256_hex("ws"),
-            "2026-07-21T00:00:00Z",
-        )
-        .unwrap();
+        let ws = CandidateWorkspace {
+            schema_version: WORKSPACE_SCHEMA_VERSION.to_string(),
+            workspace_id: "hews-c4".to_string(),
+            relative_path: "candidates/c4".to_string(),
+            content_hash: sha256_hex("content"),
+        };
+        let candidate = candidate_from_proposal(&proposal, &ws, "2026-07-21T00:00:00Z").unwrap();
         let err = validate_candidate_for_admission(&candidate, &active, true).unwrap_err();
         assert_eq!(err.code, "evolution_kill_switch");
     }
