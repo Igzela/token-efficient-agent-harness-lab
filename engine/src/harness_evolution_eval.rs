@@ -881,21 +881,32 @@ mod tests {
         let family = sample_task_family("fam-b");
         let vault = build_sealed_vault(&family).unwrap();
         let budget = sample_budget(1);
-        std::env::remove_var(ENABLE_ENV);
-        let err = evaluate_candidate_fixture(
-            "c",
-            "l",
-            "a",
-            &"a".repeat(64),
-            &"b".repeat(64),
-            &budget,
-            &family,
-            &vault,
-            false,
-            "2026-07-21T00:00:00Z",
-        )
-        .unwrap_err();
-        assert_eq!(err.code, "evolution_lab_disabled");
+        {
+            // Hold the shared lock for the entire disabled-lab assertion.
+            let _lock = crate::harness_evolution::EVOLUTION_LAB_TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let prev = std::env::var(ENABLE_ENV).ok();
+            std::env::remove_var(ENABLE_ENV);
+            let err = evaluate_candidate_fixture(
+                "c",
+                "l",
+                "a",
+                &"a".repeat(64),
+                &"b".repeat(64),
+                &budget,
+                &family,
+                &vault,
+                false,
+                "2026-07-21T00:00:00Z",
+            )
+            .unwrap_err();
+            assert_eq!(err.code, "evolution_lab_disabled");
+            match prev {
+                Some(v) => std::env::set_var(ENABLE_ENV, v),
+                None => std::env::remove_var(ENABLE_ENV),
+            }
+        }
 
         let _g = EnvGuard::enable_lab();
         std::env::set_var(KILL_SWITCH_ENV, "1");
