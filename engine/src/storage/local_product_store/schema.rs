@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 29;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 29;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 30;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 30;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -134,6 +134,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 29,
         description: "add harness evolution PR_READY candidate bundles and finalizer receipts",
+    },
+    SchemaMigration {
+        version: 30,
+        description: "add product golden path canonical task identity and worktree binding state",
     },
 ];
 
@@ -509,6 +513,48 @@ CREATE TABLE IF NOT EXISTS harness_evolution_pr_ready_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_pr_ready_receipts_bundle
     ON harness_evolution_pr_ready_receipts(bundle_id, created_at);
+";
+
+pub(super) const V30_DDL: &str = "
+CREATE TABLE IF NOT EXISTS product_tasks (
+    task_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    status TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    objective_fingerprint TEXT NOT NULL CHECK (length(objective_fingerprint) = 64),
+    target_id TEXT NOT NULL,
+    target_repo_path TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    source_tree_hash TEXT,
+    output_intent TEXT NOT NULL,
+    risk_class TEXT NOT NULL,
+    approval_required INTEGER NOT NULL,
+    confirm_execution INTEGER NOT NULL,
+    confirm_output INTEGER NOT NULL,
+    intake_contract_sha256 TEXT NOT NULL CHECK (length(intake_contract_sha256) = 64),
+    intake_json TEXT NOT NULL,
+    workspace_binding_json TEXT,
+    plan_id TEXT,
+    run_id TEXT,
+    workspace_record_id TEXT,
+    failure_code TEXT,
+    failure_detail TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    UNIQUE (tenant_id, workspace_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_status
+    ON product_tasks(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_target
+    ON product_tasks(target_id, source_revision);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_run
+    ON product_tasks(run_id);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_workspace_record
+    ON product_tasks(workspace_record_id);
 ";
 
 pub(super) const V28_DDL: &str = "
@@ -1425,6 +1471,46 @@ CREATE TABLE IF NOT EXISTS harness_evolution_pr_ready_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_pr_ready_receipts_bundle
     ON harness_evolution_pr_ready_receipts(bundle_id, created_at);
+
+CREATE TABLE IF NOT EXISTS product_tasks (
+    task_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    status TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    objective_fingerprint TEXT NOT NULL CHECK (length(objective_fingerprint) = 64),
+    target_id TEXT NOT NULL,
+    target_repo_path TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    source_tree_hash TEXT,
+    output_intent TEXT NOT NULL,
+    risk_class TEXT NOT NULL,
+    approval_required INTEGER NOT NULL,
+    confirm_execution INTEGER NOT NULL,
+    confirm_output INTEGER NOT NULL,
+    intake_contract_sha256 TEXT NOT NULL CHECK (length(intake_contract_sha256) = 64),
+    intake_json TEXT NOT NULL,
+    workspace_binding_json TEXT,
+    plan_id TEXT,
+    run_id TEXT,
+    workspace_record_id TEXT,
+    failure_code TEXT,
+    failure_detail TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    UNIQUE (tenant_id, workspace_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_status
+    ON product_tasks(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_target
+    ON product_tasks(target_id, source_revision);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_run
+    ON product_tasks(run_id);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_workspace_record
+    ON product_tasks(workspace_record_id);
 ";
 pub(crate) const POSTGRES_DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatch_history (
@@ -2313,6 +2399,46 @@ CREATE TABLE IF NOT EXISTS harness_evolution_pr_ready_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_pr_ready_receipts_bundle
     ON harness_evolution_pr_ready_receipts(bundle_id, created_at);
+
+CREATE TABLE IF NOT EXISTS product_tasks (
+    task_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    status TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    objective_fingerprint TEXT NOT NULL CHECK (length(objective_fingerprint) = 64),
+    target_id TEXT NOT NULL,
+    target_repo_path TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    source_tree_hash TEXT,
+    output_intent TEXT NOT NULL,
+    risk_class TEXT NOT NULL,
+    approval_required INTEGER NOT NULL,
+    confirm_execution INTEGER NOT NULL,
+    confirm_output INTEGER NOT NULL,
+    intake_contract_sha256 TEXT NOT NULL CHECK (length(intake_contract_sha256) = 64),
+    intake_json TEXT NOT NULL,
+    workspace_binding_json TEXT,
+    plan_id TEXT,
+    run_id TEXT,
+    workspace_record_id TEXT,
+    failure_code TEXT,
+    failure_detail TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    UNIQUE (tenant_id, workspace_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_status
+    ON product_tasks(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_target
+    ON product_tasks(target_id, source_revision);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_run
+    ON product_tasks(run_id);
+CREATE INDEX IF NOT EXISTS idx_product_tasks_workspace_record
+    ON product_tasks(workspace_record_id);
 ";
 
 #[cfg(test)]
@@ -2375,6 +2501,11 @@ mod tests {
             "harness_evolution_eval_receipts",
             "harness_evolution_pr_ready_bundles",
             "harness_evolution_pr_ready_receipts",
+            "product_tasks",
+            "idx_product_tasks_status",
+            "idx_product_tasks_target",
+            "idx_product_tasks_run",
+            "idx_product_tasks_workspace_record",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),

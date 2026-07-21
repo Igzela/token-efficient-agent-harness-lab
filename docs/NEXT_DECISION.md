@@ -14,7 +14,7 @@ Do not create another roadmap, status, architecture, scheduler, runtime, queue, 
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-1` — `READY_FOR_EXECUTION`.
+1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS` (G1 branch owns intake/worktree binding).
 2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
 3. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`; Issue #266 remains open as a proposal, not the active lane.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
@@ -92,7 +92,9 @@ The result is neutral/no-improvement fixture evidence. The active Harness remain
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `IN_PROGRESS`
+
+**Active branch:** `codex/pe7-product-golden-path-g1-canonical-task` (slice G1: schema/intake/worktree-first binding).
 
 **Goal:** Add one canonical task-intake and orchestration path that turns an ordinary-language repository task into a bounded executable workflow using only existing owners, ending in an approval-bound patch or Draft PR against a disposable target while leaving target `main` unchanged.
 

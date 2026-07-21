@@ -26,7 +26,8 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Persistence | `engine/src/storage/local_product_store/` | sole application-owned SQLite/PostgreSQL store, migrations, audit, evidence, backup/integrity |
 | Harness Evolution Level-1 | `harness_evolution.rs`, `harness_evolution_eval.rs`, `harness_evolution_pr_ready.rs`, v27-v29 store owners | accepted fixture laboratory through PR #265; default-off; active Harness immutable |
 | Dashboard | `dashboard/` | Mission Control manually sequences fragmented APIs; PR #225 is presentation-only |
-| SDKs | `sdk/typescript/`, `sdk/python/` | typed clients for existing endpoints; no canonical task intake yet |
+| Product Golden Path (G1) | `product_golden_path.rs`, `storage/local_product_store/product_tasks.rs`, `http_server/handlers/product_tasks.rs`, schema v30 `product_tasks` | default-off canonical root task identity + intake + worktree-first binding; no execution admission until later slices |
+| SDKs | `sdk/typescript/`, `sdk/python/` | typed clients for existing endpoints; G1 API present, full SDK surface deferred to G4 |
 | Contracts | `wire_contract/v1/`, `codegen/` | cross-language schemas; checked by `scripts/check_wire_codegen_drift.sh` |
 | Repository agent | `scripts/agent-control/`, `.github/workflows/agent-*.yml` | implemented, production-disabled, parked on Issue #254 |
 | CI/release/recovery | `.github/`, `scripts/`, `tools/`, release/fault assets | verification and bounded operator support; no implicit release/deploy authority |
