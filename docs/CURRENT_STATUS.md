@@ -46,12 +46,20 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 | SDKs | active | Include product task client methods after PR #269. |
 | Dashboard | active | Mission Control product golden path button; PR #225 theme independent. |
 
-## Confirmed Residual Gaps
+## Confirmed Integration Gaps
+
+Historical fragmentation is largely closed by the golden path, with residual:
 
 1. Full packet acceptance still wants live Draft PR/`acp/*` proof under existing output gates (or an explicit acceptance exception recorded with evidence).
 2. Task-rooted replay/scorecard emission as first-class terminal evidence is incomplete.
 3. Managed non-command coding executors are not CI-proven for golden path.
 4. Real-workload evidence corpus for evolution research is the next packet, not this one.
+
+## Supporting Programs
+
+- **PE-5 Release Provenance**: implemented / no release authority. Provenance and verification owners exist; golden path does not gain tag, publication, deployment, or installation authority.
+- **PE-6 Fault Injection and Recovery Drills**: implemented / disposable only. Fixed, bounded recovery drills cover existing owners; golden path reuses failure models without production faults.
+- **Post-R7 wire/type governance**: implemented. `scripts/check_wire_codegen_drift.sh` remains the required cross-language drift guard.
 
 ## Active Tracks
 
