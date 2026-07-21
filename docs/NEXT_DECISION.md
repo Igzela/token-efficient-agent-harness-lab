@@ -14,7 +14,7 @@ Do not create another roadmap, status, architecture, scheduler, runtime, queue, 
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS` (G1 merged; G2–G4 follow-up PR in flight).
+1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS` (G1–G4 surfaces merged via PRs #268/#269; residual live Draft PR + task-rooted replay/scorecard seal).
 2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
 3. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`; Issue #266 remains open as a proposal, not the active lane.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
@@ -94,9 +94,18 @@ The result is neutral/no-improvement fixture evidence. The active Harness remain
 
 **State:** `IN_PROGRESS`
 
-**Merged:** G1 via PR #268 (`178d020e` on `main`) — canonical `product_tasks` schema v30, worktree-first intake under `ACP_PRODUCT_GOLDEN_PATH`.
+**Merged implementation:**
 
-**Active branch:** `codex/pe7-product-golden-path-g2-g4` — slices G2 (executable graph + scheduler routing), G3 (verify/artifact/approval/artifact_only), G4 surface (SDK + Dashboard Mission Control button). Draft PR / managed-executor full E2E may remain explicitly partial if credentials/gates block.
+- G1 PR #268 → `main` `178d020e` (schema v30 `product_tasks`, intake, worktree-first bind).
+- G2–G4 PR #269 → `main` `8fa85c15` (executable graph, finalize, artifact_only approve, SDK, Dashboard button).
+
+**Residual before `COMPLETE`:**
+
+1. Live `draft_pr` / `acp/*` push under existing target-output gates with disposable-repo proof (or recorded acceptance exception).
+2. Explicit task-rooted terminal linkage for replay eligibility and scorecard (or explicit unavailable reasons).
+3. Optional managed coding-executor E2E only if already admitted without gate weakening.
+
+Do not start `PE7-REAL-WORKLOAD-EVIDENCE-1` until residual is closed or explicitly accepted.
 
 **Goal:** Add one canonical task-intake and orchestration path that turns an ordinary-language repository task into a bounded executable workflow using only existing owners, ending in an approval-bound patch or Draft PR against a disposable target while leaving target `main` unchanged.
 
