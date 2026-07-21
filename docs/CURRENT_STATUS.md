@@ -86,7 +86,7 @@ This is an integration gap, not proof that the individual owners are fake.
 
 ## Active Tracks
 
-- `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` — G1 canonical task schema/intake/worktree-first binding under default-off gate `ACP_PRODUCT_GOLDEN_PATH`.
+- `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` — G1 merged (PR #268). G2 graph/scheduler, G3 verify/artifact/approval, SDK/Dashboard surfaces are on the follow-up branch; full packet acceptance (including Draft PR E2E when gated) is not sealed.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: blocked until the Golden Path emits trustworthy end-to-end evidence.
 - `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: Issue #266 remains open but blocked on real-workload evidence and an explicit activation review.
 - `PE7-META-IMPROVER-EXPERIMENT-1`: blocked on a stable, independently reviewed Level-2 result and separate authority decision.
@@ -96,7 +96,7 @@ This is an integration gap, not proof that the individual owners are fake.
 
 ## Open Work Coordination
 
-PR #267 is merged on `main`. Golden Path slice G1 is owned by `codex/pe7-product-golden-path-g1-canonical-task`. PR #225 remains independent presentation-only work; do not modify its theme files. Issue #266 remains Level-2 proposal only.
+PR #268 (G1) is merged on `main`. Follow-up G2–G4 work is on `codex/pe7-product-golden-path-g2-g4`. PR #225 remains independent presentation-only work; do not modify its theme files. Issue #266 remains Level-2 proposal only.
 
 ## Safety Boundary
 

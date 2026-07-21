@@ -94,7 +94,9 @@ The result is neutral/no-improvement fixture evidence. The active Harness remain
 
 **State:** `IN_PROGRESS`
 
-**Active branch:** `codex/pe7-product-golden-path-g1-canonical-task` (slice G1: schema/intake/worktree-first binding).
+**Merged:** G1 via PR #268 (`178d020e` on `main`) — canonical `product_tasks` schema v30, worktree-first intake under `ACP_PRODUCT_GOLDEN_PATH`.
+
+**Active branch:** `codex/pe7-product-golden-path-g2-g4` — slices G2 (executable graph + scheduler routing), G3 (verify/artifact/approval/artifact_only), G4 surface (SDK + Dashboard Mission Control button). Draft PR / managed-executor full E2E may remain explicitly partial if credentials/gates block.
 
 **Goal:** Add one canonical task-intake and orchestration path that turns an ordinary-language repository task into a bounded executable workflow using only existing owners, ending in an approval-bound patch or Draft PR against a disposable target while leaving target `main` unchanged.
 
