@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 import time
 from typing import Any
 
@@ -35,6 +36,7 @@ _EXACT_ENV_ALLOWLIST = (
     "TMPDIR",
     "PYTHONIOENCODING",
     "PYTHONDONTWRITEBYTECODE",
+    "PYTHONNOUSERSITE",
     "PYTHONPATH",
 )
 
@@ -125,6 +127,7 @@ def _bound_result(request: dict[str, Any], **fields: Any) -> dict[str, Any]:
         "invocation_id": request["invocation_id"],
         "run_id": request["run_id"],
         "node_id": request["node_id"],
+        "workflow_id": request["workflow_id"],
         "scheduler_claim_id": request["scheduler_claim_id"],
         "execution_attempt": request["execution_attempt"],
         "task_kind": request["task_kind"],
@@ -175,6 +178,7 @@ def handle_request(request: dict[str, Any]) -> tuple[dict[str, Any], int]:
         "invocation_id",
         "run_id",
         "node_id",
+        "workflow_id",
         "scheduler_claim_id",
         "task_kind",
         "worktree_id",
@@ -330,5 +334,30 @@ def handle_request(request: dict[str, Any]) -> tuple[dict[str, Any], int]:
                 except OSError:
                     pass
         return _err("descendant_spawn_should_timeout", "descendant fixture should not complete"), 2
+
+    if task_kind == "early_exit_with_descendant":
+        # Parent returns immediately while an un-reaped child remains in the session.
+        # Rust must kill the process group and report containment failure if needed.
+        subprocess.Popen(  # noqa: S603 — fixture-only local sleep
+            ["sleep", "120"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=False,
+        )
+        return (
+            _err(
+                "early_exit_with_descendant",
+                "parent exited while descendant remains for containment test",
+            ),
+            2,
+        )
+
+    if task_kind == "stdin_close_early":
+        # Exit before consuming full stdin so the parent write path can observe EPIPE.
+        try:
+            sys.stdin.close()
+        except Exception:
+            pass
+        return _err("stdin_closed_early", "adapter closed stdin without consuming request"), 2
 
     return _err("task_kind_unsupported", f"unsupported task_kind: {task_kind}"), 2

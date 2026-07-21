@@ -689,7 +689,12 @@ impl WorkflowScheduler {
 
 impl Drop for WorkflowScheduler {
     fn drop(&mut self) {
+        // Cancel OpenCode process trees before joining workers so graceful
+        // application shutdown cannot leave a detached adapter until timeout.
         self.running.store(false, Ordering::SeqCst);
+        if let Some(ref handle) = self.opencode_cancel {
+            handle.cancel();
+        }
         for handle in self.handles.drain(..) {
             let _ = handle.join();
         }
@@ -1589,11 +1594,19 @@ mod tests {
                 _cancel: &dyn crate::opencode_runtime::OpenCodeCancelProbe,
             ) -> Result<Value, OpenCodeInvokeError> {
                 *self.last.lock().unwrap() = Some(request.clone());
+                let task_input_hash = request["task_input_hash"].as_str().unwrap_or_default();
+                let summary_digest = {
+                    use sha2::{Digest, Sha256};
+                    let mut hasher = Sha256::new();
+                    hasher.update(task_input_hash.as_bytes());
+                    format!("{:x}", hasher.finalize())
+                };
                 Ok(json!({
                     "schema_version": OPENCODE_RESULT_SCHEMA,
                     "invocation_id": request["invocation_id"],
                     "run_id": request["run_id"],
                     "node_id": request["node_id"],
+                    "workflow_id": request["workflow_id"],
                     "scheduler_claim_id": request["scheduler_claim_id"],
                     "execution_attempt": request["execution_attempt"],
                     "task_kind": request["task_kind"],
@@ -1604,7 +1617,11 @@ mod tests {
                     "changed_paths": [],
                     "patch": null,
                     "patch_sha256": null,
-                    "analysis": {"findings_count": 1},
+                    "analysis": {
+                        "summary_digest": summary_digest,
+                        "findings_count": 1,
+                        "scope_paths": request["allowed_paths"],
+                    },
                     "tool_summary": {
                         "tool_call_count": 0,
                         "network_attempts": 0,

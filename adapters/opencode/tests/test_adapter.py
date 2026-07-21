@@ -51,6 +51,7 @@ def _base_request(**overrides):
             "TMPDIR",
             "PYTHONIOENCODING",
             "PYTHONDONTWRITEBYTECODE",
+            "PYTHONNOUSERSITE",
             "PYTHONPATH",
         ],
         "permission_profile": profile,
@@ -72,6 +73,13 @@ class TestOpenCodeFixtureAdapter(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["scheduler_claim_id"], "workflow:run-1:node-1:1")
         self.assertEqual(result["execution_attempt"], 1)
+        self.assertEqual(result["workflow_id"], "wf-1")
+        self.assertIsNone(result["patch"])
+        self.assertIsNone(result["patch_sha256"])
+        self.assertEqual(result["changed_paths"], [])
+        self.assertEqual(result["reason_code"], "fixture_analysis_ok")
+        self.assertEqual(result["analysis"]["findings_count"], 1)
+        self.assertEqual(result["analysis"]["scope_paths"], ["docs/fixture.md"])
 
     def test_patch_fixture_ok(self):
         result, code = handle_request(

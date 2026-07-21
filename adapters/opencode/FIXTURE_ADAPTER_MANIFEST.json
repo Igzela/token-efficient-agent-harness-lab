@@ -6,22 +6,26 @@
     {
       "path": "src/acp_opencode_adapter/__init__.py",
       "role": "package_init",
-      "sha256": "e1fa0d9ae0cef4424f651762309325b2a480018c417052336d15394b9b0d0e98"
+      "sha256": "e1fa0d9ae0cef4424f651762309325b2a480018c417052336d15394b9b0d0e98",
+      "size_bytes": 412
     },
     {
       "path": "src/acp_opencode_adapter/__main__.py",
       "role": "entrypoint",
-      "sha256": "6d1b1e222c1250c0014ab3819d3dcc86029f21cf702159aa2d5b2c40aac3509b"
+      "sha256": "6d1b1e222c1250c0014ab3819d3dcc86029f21cf702159aa2d5b2c40aac3509b",
+      "size_bytes": 1183
     },
     {
       "path": "src/acp_opencode_adapter/adapter.py",
       "role": "adapter_source",
-      "sha256": "75fefb4175973ab178b0eaecbb7bad5ac475b923de73c930ce17a71fe877b220"
+      "sha256": "5c2095ec9c9accb62aa3dd917a7cf872cf8708617e09b0e98b253af1119dcf56",
+      "size_bytes": 13071
     },
     {
       "path": "pyproject.toml",
       "role": "package_manifest",
-      "sha256": "b07e575082935c7ae3a053b77ac61aab513bd9241dd61b5dd09c8fb07456248d"
+      "sha256": "b07e575082935c7ae3a053b77ac61aab513bd9241dd61b5dd09c8fb07456248d",
+      "size_bytes": 397
     }
   ],
   "binary_admission_packet": "PE7-OPENCODE-BINARY-ADMISSION-1",
