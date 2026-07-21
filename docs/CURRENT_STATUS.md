@@ -97,7 +97,7 @@ This is an integration gap, not proof that the individual owners are fake.
 
 ## Open Work Coordination
 
-PR #267 on `docs/repo-usability-architecture-audit-1` owns `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/MODULE_MAP.md` for this audit. No other open PR or discovered branch owns those documents. Do not continue this work on an old PE7 branch.
+PR #267 from `docs/repo-usability-architecture-audit-1` carries this audit's updates to `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/MODULE_MAP.md`. No other open PR or discovered branch overlaps those documents. Do not continue this work on an old PE7 branch.
 
 ## Safety Boundary
 
