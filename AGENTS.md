@@ -20,8 +20,8 @@ Active forward implementation (local/fixture, no Issue→CLI):
 - `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` — complete via PR #257 (fixture-only honesty repair; no real binary);
 - `PE7-OPENCODE-BINARY-ADMISSION-1` — deferred until an exact upstream artifact/source identity and real checksum are admitted;
 - `PE7-HARNESS-EVOLUTION-B1` — complete via PR #258 (evidence foundation; schema v27);
-- `PE7-HARNESS-EVOLUTION-B2` — `READY_FOR_EXECUTION` (evaluation and Pareto archive; fixture/local, default-off);
-- `PE7-HARNESS-EVOLUTION-B3` — blocked on merged B2;
+- `PE7-HARNESS-EVOLUTION-B2` — complete via PR #259 (evaluation/Pareto archive; schema v28);
+- `PE7-HARNESS-EVOLUTION-B3` — `READY_FOR_EXECUTION` (PR_READY bundle only; default-off);
 - `PE7-META-IMPROVER-EXPERIMENT-1` — blocked until a stable Level-1 result exists.
 
 Do not claim that Harness evolution, recursive self-improvement, or an evolution gate is implemented until the corresponding packet is merged with verified evidence. Later work is governed by `docs/NEXT_DECISION.md`.
