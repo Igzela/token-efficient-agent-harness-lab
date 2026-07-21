@@ -8,10 +8,9 @@ Last updated: 2026-07-21.
 - Audited remote `main`: `6b4091e876b2fca0da03485540e5ce4f579ac13c`.
 - That commit is the squash merge of PR #265, whose exact reviewed head was `3a01abfef455cf703569e365f450f9831d28fc06`.
 - PR #265 exact-head workflows `29813548306` (`tests`) and `29813548423` (`exact-head-check`) completed successfully. Two independent complete-diff review comments were bound to the same exact head. GitHub has no formal submitted review object for those comments.
-- Open PR coordination: PR #225 is the only open PR and is presentation-only Dashboard work; it does not own the active governance documents.
+- Open PR coordination before this audit branch: PR #225 was the only open PR and is presentation-only Dashboard work; it does not own the active governance documents. This audit is tracked separately in PR #267.
 - Open research coordination: Issue #266 contains only the initial Level-2 multi-generation proposal. No matching branch, commit, PR, or issue comment was found during this audit.
 - Parked external acceptance: Issue #254 remains the repository-agent replacement smoke parking issue. Issue #208 remains the emergency-stop authority.
-- The audit environment could read and write through the GitHub connector but could not obtain a local clone because direct DNS access to `github.com` was unavailable. Therefore the remote branch/commit state is verified; a local working tree and local command execution are not evidence from this session.
 
 Repository evidence, CI, and current source remain authoritative. Prior chat summaries and stale document text are not implementation evidence.
 
@@ -98,7 +97,7 @@ This is an integration gap, not proof that the individual owners are fake.
 
 ## Open Work Coordination
 
-No open PR or discovered branch owns `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, or `docs/MODULE_MAP.md`. The audit documentation should use a focused docs-only branch/PR from the verified `main` baseline. Do not continue on an old PE7 branch.
+PR #267 on `docs/repo-usability-architecture-audit-1` owns `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/MODULE_MAP.md` for this audit. No other open PR or discovered branch owns those documents. Do not continue this work on an old PE7 branch.
 
 ## Safety Boundary
 
