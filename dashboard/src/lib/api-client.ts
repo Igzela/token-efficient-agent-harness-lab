@@ -728,6 +728,43 @@ export async function createWorkflowRun(
   });
 }
 
+/** Product Golden Path — one canonical intake (requires ACP_PRODUCT_GOLDEN_PATH=1). */
+export async function createProductTask(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/product/tasks`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export async function compileAndScheduleProductTask(taskId: string): Promise<Record<string, unknown>> {
+  return fetchJson<Record<string, unknown>>(
+    `${BASE}/api/v1/product/tasks/${encodeURIComponent(taskId)}/compile-and-schedule`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+  );
+}
+
+export async function finalizeProductTask(taskId: string): Promise<Record<string, unknown>> {
+  return fetchJson<Record<string, unknown>>(
+    `${BASE}/api/v1/product/tasks/${encodeURIComponent(taskId)}/finalize`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+  );
+}
+
+export async function approveAndOutputProductTask(
+  taskId: string,
+  confirmOutput = false,
+): Promise<Record<string, unknown>> {
+  return fetchJson<Record<string, unknown>>(
+    `${BASE}/api/v1/product/tasks/${encodeURIComponent(taskId)}/approve-and-output`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm_output: confirmOutput }),
+    },
+  );
+}
+
 export async function fetchSchedulerStatus(): Promise<SchedulerStatusResponse> {
   return fetchJson<SchedulerStatusResponse>(`${BASE}/api/v1/scheduler/status`);
 }
