@@ -12,6 +12,8 @@ import type {
   PlanCreateRequest,
   PlanListResponse,
   PlanResponse,
+  ProductTaskIntakeRequest,
+  ProductTaskResponse,
   WorkflowRunActionRequest,
   WorkflowRunApprovalListResponse,
   WorkflowRunApprovalRequest,
@@ -595,6 +597,41 @@ export class AgentControlPlaneClient {
 
   plan(planId: string): Promise<PlanResponse> {
     return this.getJson<PlanResponse>(`/api/v1/plans/${encodeURIComponent(planId)}`);
+  }
+
+  /** Product Golden Path intake (default-off; requires ACP_PRODUCT_GOLDEN_PATH). */
+  createProductTask(request: ProductTaskIntakeRequest): Promise<ProductTaskResponse> {
+    return this.postJson<ProductTaskResponse>("/api/v1/product/tasks", request);
+  }
+
+  productTask(taskId: string): Promise<ProductTaskResponse> {
+    return this.getJson<ProductTaskResponse>(
+      `/api/v1/product/tasks/${encodeURIComponent(taskId)}`,
+    );
+  }
+
+  compileAndScheduleProductTask(taskId: string): Promise<ProductTaskResponse> {
+    return this.postJson<ProductTaskResponse>(
+      `/api/v1/product/tasks/${encodeURIComponent(taskId)}/compile-and-schedule`,
+      {},
+    );
+  }
+
+  finalizeProductTask(taskId: string): Promise<ProductTaskResponse> {
+    return this.postJson<ProductTaskResponse>(
+      `/api/v1/product/tasks/${encodeURIComponent(taskId)}/finalize`,
+      {},
+    );
+  }
+
+  approveAndOutputProductTask(
+    taskId: string,
+    confirmOutput = false,
+  ): Promise<ProductTaskResponse> {
+    return this.postJson<ProductTaskResponse>(
+      `/api/v1/product/tasks/${encodeURIComponent(taskId)}/approve-and-output`,
+      { confirm_output: confirmOutput },
+    );
   }
 
   toolCapabilityPolicy(
