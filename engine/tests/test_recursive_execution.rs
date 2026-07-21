@@ -126,8 +126,12 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
 
     let empty_path = tempfile::NamedTempFile::new().expect("path");
     let empty = LocalProductStore::new(empty_path.path()).expect("store");
-    empty.rollback_v27_to_v26("test", true).expect("rollback v27");
-    empty.rollback_v26_to_v25("test", true).expect("rollback v26");
+    empty
+        .rollback_v27_to_v26("test", true)
+        .expect("rollback v27");
+    empty
+        .rollback_v26_to_v25("test", true)
+        .expect("rollback v26");
     assert_eq!(empty.schema_version().expect("version"), 25);
     drop(empty);
     let reapplied = LocalProductStore::new(empty_path.path()).expect("reopen");

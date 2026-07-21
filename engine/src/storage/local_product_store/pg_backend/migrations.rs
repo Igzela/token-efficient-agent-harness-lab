@@ -1456,7 +1456,7 @@ mod tests {
         store
             .rollback_v27_to_v26("migration-test-setup", true)
             .unwrap();
-        assert_eq!(store.schema_version().unwrap(), 27);
+        assert_eq!(store.schema_version().unwrap(), 26);
         store
             .rollback_v26_to_v25("migration-test-setup", true)
             .unwrap();
