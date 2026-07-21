@@ -114,7 +114,11 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     );
     bind_test_workflow(&occupied, &mut tree);
     occupied.save_recursive_tree(&tree).expect("save");
-    // Roll evaluation (v28) then evolution (v27) so v26 recursive rollback can be attempted.
+    // Peel product-task (v30) then PR_READY (v29) / evaluation (v28) / evolution (v27)
+    // so v26 recursive rollback can be attempted.
+    occupied
+        .rollback_v30_to_v29("test", true)
+        .expect("empty product_tasks surface rollback");
     occupied
         .rollback_v29_to_v28("test", true)
         .expect("empty PR_READY surface rollback");
@@ -132,6 +136,9 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
 
     let empty_path = tempfile::NamedTempFile::new().expect("path");
     let empty = LocalProductStore::new(empty_path.path()).expect("store");
+    empty
+        .rollback_v30_to_v29("test", true)
+        .expect("rollback v30");
     empty
         .rollback_v29_to_v28("test", true)
         .expect("rollback v29");
