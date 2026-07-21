@@ -412,21 +412,6 @@ fn validate_pg_v27_schema(client: &mut impl postgres::GenericClient) -> Result<(
     validate_pg_v26_tables(client)
 }
 
-#[cfg(test)]
-fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
-    let version = client
-        .query_one(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-            &[],
-        )
-        .map_err(|error| error.to_string())?
-        .get::<_, i64>(0);
-    if version != super::super::migrations::V26_SCHEMA_VERSION {
-        return Err(format!("PostgreSQL v26 schema version mismatch: {version}"));
-    }
-    validate_pg_v26_tables(client)
-}
-
 fn validate_pg_v26_tables(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     // Shared column checks for the v26 recursive surface (also required under v27).
     let required = [
