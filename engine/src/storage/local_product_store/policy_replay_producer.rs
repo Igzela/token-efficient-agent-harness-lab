@@ -572,6 +572,16 @@ impl LocalProductStore {
         };
         match &self.db{DatabaseConnection::Sqlite(_)=>self.with_conn(|conn|conn.query_row("SELECT input_sha256,dispatch_ids_json,maximum_trace_age_seconds,scope_json,current_policy_json,candidate_policies_json,created_at FROM replay_producer_bindings WHERE artifact_id=?1",params![artifact_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))).optional().map_err(|error|error.to_string())?.map(|row|parse(row.0,row.1,row.2,row.3,row.4,row.5,row.6)).transpose()),#[cfg(feature="pg")]DatabaseConnection::Pg(_)=>self.with_pg_conn(|client|client.query_opt("SELECT input_sha256,dispatch_ids_json,maximum_trace_age_seconds,scope_json,current_policy_json,candidate_policies_json,created_at FROM replay_producer_bindings WHERE artifact_id=$1",&[&artifact_id]).map_err(|error|error.to_string())?.map(|row|parse(row.get(0),row.get(1),row.get(2),row.get(3),row.get(4),row.get(5),row.get(6))).transpose())}
     }
+
+    pub(crate) fn replay_binding_includes_dispatch(
+        &self,
+        artifact_id: &str,
+        dispatch_id: &str,
+    ) -> Result<bool, String> {
+        Ok(self
+            .get_replay_binding(artifact_id)?
+            .is_some_and(|binding| binding.dispatch_ids.iter().any(|id| id == dispatch_id)))
+    }
 }
 
 fn validate_replay_production_request(request: &ReplayProductionRequest) -> Result<(), String> {

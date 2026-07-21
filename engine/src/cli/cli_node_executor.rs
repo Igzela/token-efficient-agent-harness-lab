@@ -134,6 +134,7 @@ impl NodeExecutor for CliNodeExecutor {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(start.elapsed().as_millis() as i64),
+            process_outcome: None,
             };
         }
         let prompt = self.resolve_prompt(input);
@@ -150,6 +151,7 @@ impl NodeExecutor for CliNodeExecutor {
                     output_tokens: None,
                     estimated_cost: None,
                     latency_ms: Some(start.elapsed().as_millis() as i64),
+                    process_outcome: None,
                 };
             }
         };
@@ -168,6 +170,7 @@ impl NodeExecutor for CliNodeExecutor {
                         output_tokens: None,
                         estimated_cost: None,
                         latency_ms: Some(start.elapsed().as_millis() as i64),
+                        process_outcome: None,
                     };
                 }
             },
@@ -182,6 +185,7 @@ impl NodeExecutor for CliNodeExecutor {
                     output_tokens: None,
                     estimated_cost: None,
                     latency_ms: Some(start.elapsed().as_millis() as i64),
+                    process_outcome: None,
                 };
             }
         };
@@ -242,6 +246,7 @@ impl NodeExecutor for CliNodeExecutor {
                         output_tokens: None,
                         estimated_cost: None,
                         latency_ms: Some(elapsed_ms),
+                        process_outcome: None,
                     };
                 }
 
@@ -270,6 +275,7 @@ impl NodeExecutor for CliNodeExecutor {
                     output_tokens: None,
                     estimated_cost: None,
                     latency_ms: Some(elapsed_ms),
+                    process_outcome: None,
                 }
             }
         }
@@ -304,6 +310,7 @@ fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExec
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(latency_ms),
+                process_outcome: None,
             };
         }
     };
@@ -343,6 +350,7 @@ fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExec
         // fabricating zero or a hard-coded harness estimate.
         estimated_cost: None,
         latency_ms: Some(latency_ms),
+        process_outcome: None,
     }
 }
 
@@ -367,6 +375,7 @@ fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
                     output_tokens: None,
                     estimated_cost: None,
                     latency_ms: Some(latency_ms),
+                    process_outcome: None,
                 };
             }
         };
@@ -424,6 +433,7 @@ fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
             output_tokens,
             estimated_cost: None,
             latency_ms: Some(latency_ms),
+            process_outcome: None,
         };
     }
     if !completed {
@@ -437,6 +447,7 @@ fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
             output_tokens,
             estimated_cost: None,
             latency_ms: Some(latency_ms),
+            process_outcome: None,
         };
     }
 
@@ -450,6 +461,7 @@ fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
         output_tokens,
         estimated_cost: None,
         latency_ms: Some(latency_ms),
+        process_outcome: None,
     }
 }
 

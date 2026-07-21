@@ -515,7 +515,8 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         )
         .unwrap_err();
     assert!(
-        stale_terminal.contains("verification authority changed"),
+        stale_terminal.contains("verification authority changed")
+            || stale_terminal.contains("verification approval binding changed"),
         "{stale_terminal}"
     );
     assert_eq!(
@@ -551,7 +552,26 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         "completed"
     );
     assert_eq!(completed_task["operation"]["pr_create"]["number"], 23);
-    assert!(completed_task["terminal_evidence"].is_object());
+    let terminal_evidence = completed_task["terminal_evidence"].clone();
+    assert_eq!(
+        terminal_evidence["schema_version"],
+        "product_task_terminal_evidence.v2"
+    );
+    assert_eq!(terminal_evidence["output"]["operation_id"], operation_id);
+    assert_eq!(terminal_evidence["output"]["draft_pr"]["number"], 23);
+    let audit_before_read = store.audit_events(10_000).unwrap();
+    let restarted = LocalProductStore::new_postgres(
+        &std::env::var("ACP_TEST_DATABASE_URL").unwrap(),
+        utc_now_string,
+    )
+    .unwrap();
+    assert_eq!(
+        restarted
+            .get_product_task_terminal_evidence(task_id)
+            .unwrap(),
+        terminal_evidence
+    );
+    assert_eq!(restarted.audit_events(10_000).unwrap(), audit_before_read);
     assert!(store
         .mark_product_output_pr_failed_known(
             artifact_id,
@@ -662,6 +682,7 @@ impl NodeExecutor for PgCountingExecutor {
             output_tokens: None,
             estimated_cost: None,
             latency_ms: Some(1),
+            process_outcome: None,
         }
     }
 
@@ -1156,6 +1177,7 @@ fn pg_agent_global_cap_is_atomic_across_runs() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 
@@ -1177,6 +1199,7 @@ fn pg_agent_global_cap_is_atomic_across_runs() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 
@@ -1302,6 +1325,7 @@ fn pg_stale_worker_cannot_overwrite_reclaimed_attempt() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 
@@ -1324,6 +1348,7 @@ fn pg_stale_worker_cannot_overwrite_reclaimed_attempt() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 

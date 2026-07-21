@@ -1954,6 +1954,7 @@ impl LocalProductStore {
                         output_tokens: None,
                         estimated_cost: None,
                         latency_ms: Some(0),
+                        process_outcome: None,
                     }
                 } else {
                     executor.execute_node(&input)
@@ -7194,6 +7195,7 @@ mod recursive_scheduler_tests {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(0),
+                process_outcome: None,
             }
         }
 
@@ -7242,6 +7244,7 @@ mod recursive_scheduler_tests {
                 output_tokens: Some(3),
                 estimated_cost: Some(0.000004),
                 latency_ms: Some(9),
+                process_outcome: None,
             }
         }
 
@@ -7419,6 +7422,7 @@ mod recursive_scheduler_tests {
             output_tokens: None,
             estimated_cost: None,
             latency_ms: Some(0),
+            process_outcome: None,
         };
         let fixture = recursive_usage_from_output(
             &fixture_output,

@@ -35,6 +35,7 @@ impl NodeExecutor for ContextEchoExecutor {
             output_tokens: Some(0),
             estimated_cost: Some(0.0),
             latency_ms: Some(0),
+            process_outcome: None,
         }
     }
 
@@ -76,6 +77,7 @@ impl NodeExecutor for ContextPreservingExecutor {
             output_tokens: Some(0),
             estimated_cost: Some(0.0),
             latency_ms: Some(0),
+            process_outcome: None,
         }
     }
 
@@ -98,6 +100,7 @@ impl NodeExecutor for LargeOutputExecutor {
             output_tokens: Some(0),
             estimated_cost: Some(0.0),
             latency_ms: Some(0),
+            process_outcome: None,
         }
     }
 
@@ -124,6 +127,7 @@ impl NodeExecutor for PromptEchoExecutor {
             output_tokens: Some(0),
             estimated_cost: Some(0.0),
             latency_ms: Some(0),
+            process_outcome: None,
         }
     }
 
@@ -2145,6 +2149,7 @@ fn sqlite_implicit_tool_receipt_is_atomic_across_connections() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 
@@ -2404,6 +2409,7 @@ fn sqlite_agent_global_cap_is_atomic_across_store_connections() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
     }
@@ -2428,6 +2434,7 @@ fn sqlite_agent_global_cap_is_atomic_across_store_connections() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
     }
@@ -2541,6 +2548,7 @@ fn sqlite_stale_worker_cannot_overwrite_reclaimed_attempt() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 
@@ -2563,6 +2571,7 @@ fn sqlite_stale_worker_cannot_overwrite_reclaimed_attempt() {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(1),
+                process_outcome: None,
             }
         }
 

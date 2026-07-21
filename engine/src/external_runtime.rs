@@ -341,6 +341,7 @@ impl ExternalRuntimeNodeExecutor {
             output_tokens: None,
             estimated_cost: None,
             latency_ms: Some(started.elapsed().as_millis() as i64),
+            process_outcome: None,
         }
     }
 
@@ -978,6 +979,7 @@ fn output_from_summary(
         output_tokens: scorecard.get("output_tokens").and_then(Value::as_i64),
         estimated_cost: scorecard.get("estimated_cost_usd").and_then(Value::as_f64),
         latency_ms: Some(started.elapsed().as_millis() as i64),
+        process_outcome: None,
     }
 }
 
@@ -1014,6 +1016,7 @@ fn cached_output(summary: Value, started: &Instant) -> NodeExecutionOutput {
                     .and_then(Value::as_f64)
             }),
         latency_ms: Some(started.elapsed().as_millis() as i64),
+        process_outcome: None,
     }
 }
 

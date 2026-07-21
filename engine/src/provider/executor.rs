@@ -246,6 +246,7 @@ impl NodeExecutor for ProviderNodeExecutor {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: Some(start.elapsed().as_millis() as i64),
+                process_outcome: None,
             };
         }
 
@@ -273,6 +274,7 @@ impl NodeExecutor for ProviderNodeExecutor {
                 output_tokens: None,
                 estimated_cost: Some(reserved_cost),
                 latency_ms: Some(start.elapsed().as_millis() as i64),
+                process_outcome: None,
             };
         }
 
@@ -321,6 +323,7 @@ impl NodeExecutor for ProviderNodeExecutor {
                         output_tokens: resp.output_tokens,
                         estimated_cost: resp.estimated_cost.or(Some(reserved_cost)),
                         latency_ms: Some(start.elapsed().as_millis() as i64),
+                        process_outcome: None,
                     };
                 }
                 Err(err) if should_retry(&err, &policy, attempt) => {
@@ -347,6 +350,7 @@ impl NodeExecutor for ProviderNodeExecutor {
                             output_tokens: None,
                             estimated_cost: Some(reserved_cost),
                             latency_ms: Some(start.elapsed().as_millis() as i64),
+                            process_outcome: None,
                         };
                     }
                     self.audit(
@@ -376,6 +380,7 @@ impl NodeExecutor for ProviderNodeExecutor {
                         output_tokens: None,
                         estimated_cost: Some(reserved_cost),
                         latency_ms: Some(start.elapsed().as_millis() as i64),
+                        process_outcome: None,
                     };
                 }
             }

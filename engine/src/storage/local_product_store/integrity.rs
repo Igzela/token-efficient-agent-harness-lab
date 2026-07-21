@@ -85,6 +85,7 @@ const INTEGRITY_TABLES: &[&str] = &[
     "harness_evolution_eval_receipts",
     "harness_evolution_pr_ready_bundles",
     "harness_evolution_pr_ready_receipts",
+    "product_task_terminal_evidence",
 ];
 
 #[derive(Debug)]

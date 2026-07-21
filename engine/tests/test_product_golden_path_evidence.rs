@@ -1,5 +1,8 @@
 //! Terminal evidence and export_patch path for product golden path.
 
+use engine::node_executor::{
+    NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessOutcome,
+};
 use engine::product_golden_path::{
     validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest, ProductTaskStatus,
     ProductVerificationCommand, PRODUCT_TASK_GATE,
@@ -132,6 +135,40 @@ fn drive_to_awaiting_approval(
     store.get_product_task(task_id).unwrap().unwrap()
 }
 
+struct ReceiptReportingManagedExecutor;
+
+impl NodeExecutor for ReceiptReportingManagedExecutor {
+    fn executor_type_name(&self) -> &str {
+        "codex_cli"
+    }
+
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        let workspace = input
+            .node_metadata
+            .get("workspace_path")
+            .and_then(serde_json::Value::as_str)
+            .expect("managed node workspace binding");
+        let output_path =
+            std::path::Path::new(workspace).join("docs/product_golden_path_fixture.md");
+        std::fs::create_dir_all(output_path.parent().unwrap()).unwrap();
+        std::fs::write(&output_path, "managed owner receipt fixture\n").unwrap();
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "codex_cli".to_string(),
+            output: Some("bounded test executor completed".to_string()),
+            error_domain: None,
+            error_message: None,
+            input_tokens: Some(111),
+            output_tokens: Some(23),
+            estimated_cost: None,
+            latency_ms: Some(1),
+            process_outcome: Some(ProcessOutcome::unavailable(
+                "in-process test executor has no OS process outcome",
+            )),
+        }
+    }
+}
+
 #[test]
 fn terminal_evidence_links_task_owners_without_fabricated_cost() {
     with_gates(|| {
@@ -155,16 +192,40 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
             Some(ProductTaskStatus::Completed.as_str())
         );
         let evidence = done["terminal_evidence"].as_object().expect("evidence");
+        assert_eq!(
+            evidence["schema_version"],
+            "product_task_terminal_evidence.v2"
+        );
+        assert!(evidence["evidence_id"].as_str().is_some());
         assert_eq!(evidence["product_task_id"], task_id);
         assert!(evidence["run_id"].as_str().is_some());
         assert!(evidence["workspace_record_id"].as_str().is_some());
-        assert!(evidence["artifact_id"].as_str().is_some());
-        assert!(evidence["approval_id"].as_str().is_some());
-        assert_eq!(evidence["verification_trustworthy"], true);
+        assert_eq!(
+            evidence["artifact"]["artifact_id"],
+            done["artifact"]["artifact_id"]
+        );
+        assert_eq!(
+            evidence["approval"]["approval_id"],
+            done["approval"]["approval_id"]
+        );
+        assert_eq!(evidence["verification"]["trustworthy"], true);
+        assert_eq!(
+            evidence["verification"]["receipts"][0]["process_outcome"]["exit_code"],
+            0
+        );
+        assert_eq!(evidence["node"]["executor_type"], "command");
+        assert_eq!(evidence["node"]["executor_class"], "fixture_deterministic");
         assert_eq!(evidence["usage"]["status"], "unavailable");
         assert_eq!(evidence["cost"]["status"], "unavailable");
+        assert_eq!(evidence["replay"]["status"], "unavailable");
+        assert_ne!(evidence["replay"]["status"], "eligible_via_run");
         assert!(evidence["usage"]["reason"].as_str().is_some());
         assert!(evidence["cost"]["reason"].as_str().is_some());
+        assert!(evidence["audit_reference"]["audit_id"].as_i64().is_some());
+        assert!(evidence.get("workspace_path").is_none());
+        let mut hash_input = serde_json::Value::Object(evidence.clone());
+        hash_input["content_sha256"] = serde_json::Value::Null;
+        assert_eq!(evidence["content_sha256"], sha256_json(&hash_input));
         let receipt = done["output_receipt"].as_object().expect("output receipt");
         assert_eq!(receipt["schema_version"], "product_output_receipt.v1");
         assert_eq!(receipt["artifact_id"], done["artifact"]["artifact_id"]);
@@ -195,15 +256,177 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
             reused["output_receipt"]["receipt_id"],
             receipt["receipt_id"]
         );
-        // Idempotent re-read
+        // Idempotent pure reads and duplicate emission do not append audit rows.
+        let audit_before_reads = store.audit_events(10_000).unwrap();
         let again = store.get_product_task_terminal_evidence(task_id).unwrap();
-        assert_eq!(again["product_task_id"], task_id);
-        assert_eq!(again["run_id"], evidence["run_id"]);
+        let emitted_again = store
+            .emit_product_task_terminal_evidence(task_id, "duplicate-emitter", None)
+            .unwrap();
+        assert_eq!(again, serde_json::Value::Object(evidence.clone()));
+        assert_eq!(emitted_again, again);
+        assert_eq!(store.audit_events(10_000).unwrap(), audit_before_reads);
         // Target main unchanged
         assert_eq!(
             std::fs::read_to_string(repo.join("README.md")).unwrap(),
             "hello\n"
         );
+    });
+}
+
+#[test]
+fn terminal_evidence_uses_managed_executor_class_and_owner_reported_usage() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let mut request = intake(&repo, &rev, "ev-managed-classification-1", "artifact_only");
+        request.executor_policy.allowed_executors = vec!["codex_cli".to_string()];
+        request.executor_policy.prefer = Some("codex_cli".to_string());
+        let validated = validate_intake(&request, "local", "default").unwrap();
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        let compiled = store
+            .compile_and_schedule_product_task(task_id, "tester", &["codex_cli".into()])
+            .unwrap();
+        assert_eq!(compiled["executor_class"], "managed_coding");
+        let run_id = compiled["task"]["run_id"].as_str().unwrap();
+        let executor = ReceiptReportingManagedExecutor;
+        for _ in 0..8 {
+            let tick = store
+                .tick_with_executor(run_id, "tester", 1, &executor)
+                .unwrap();
+            if tick
+                .pointer("/run/status")
+                .and_then(serde_json::Value::as_str)
+                == Some("completed")
+            {
+                break;
+            }
+        }
+        store
+            .finalize_product_task_after_execution(task_id, "tester")
+            .unwrap();
+        let done = store
+            .approve_and_output_product_task(task_id, "tester", true)
+            .unwrap();
+        let evidence = &done["terminal_evidence"];
+        assert_eq!(evidence["node"]["executor_type"], "codex_cli");
+        assert_eq!(evidence["node"]["executor_class"], "managed_coding");
+        assert_eq!(evidence["usage"]["status"], "linked");
+        assert_eq!(evidence["usage"]["input_tokens"], 111);
+        assert_eq!(evidence["usage"]["output_tokens"], 23);
+        assert_eq!(
+            evidence["usage"]["provenance"],
+            "node_executor_owner_reported"
+        );
+        assert_eq!(evidence["cost"]["status"], "unavailable");
+    });
+}
+
+#[test]
+fn terminal_evidence_audit_failure_rolls_back_completion_and_evidence() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task = drive_to_awaiting_approval(
+            &store,
+            &repo,
+            &rev,
+            "ev-terminal-audit-rollback-1",
+            "artifact_only",
+        );
+        let task_id = task["task_id"].as_str().unwrap();
+        let version = task["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .unwrap();
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_terminal_evidence_audit
+                 BEFORE INSERT ON audit_log
+                 WHEN NEW.action = 'product_task.terminal_evidence_committed'
+                 BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END;",
+            )
+            .unwrap();
+        let error = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap_err();
+        assert!(error.contains("audit unavailable"), "{error}");
+        let current = store.get_product_task(task_id).unwrap().unwrap();
+        assert_eq!(current["status"], "awaiting_approval");
+        assert_eq!(current["version"], version);
+        assert!(store
+            .get_product_task_terminal_evidence(task_id)
+            .unwrap_err()
+            .contains("not committed"));
+        connection
+            .execute_batch("DROP TRIGGER fail_terminal_evidence_audit")
+            .unwrap();
+    });
+}
+
+#[test]
+fn duplicate_concurrent_output_calls_reuse_one_canonical_terminal_evidence() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task = drive_to_awaiting_approval(
+            &store,
+            &repo,
+            &rev,
+            "ev-concurrent-terminal-1",
+            "artifact_only",
+        );
+        let task_id = task["task_id"].as_str().unwrap().to_string();
+        let version = task["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(&task_id, "independent-operator", version)
+            .unwrap();
+        let approval_id = approval["approval_id"].as_str().unwrap().to_string();
+        drop(store);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for actor in ["output-a", "output-b"] {
+            let store = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+            let barrier = Arc::clone(&barrier);
+            let task_id = task_id.clone();
+            let approval_id = approval_id.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                store
+                    .output_product_task(&task_id, actor, version, Some(&approval_id), true)
+                    .unwrap()
+            }));
+        }
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(results
+            .iter()
+            .all(|result| result["task"]["status"] == "completed"));
+        assert_eq!(
+            results[0]["terminal_evidence"]["evidence_id"],
+            results[1]["terminal_evidence"]["evidence_id"]
+        );
+        let reopened = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+        let terminal_audits = reopened
+            .audit_events(10_000)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event["action"] == "product_task.terminal_evidence_committed")
+            .count();
+        assert_eq!(terminal_audits, 1);
     });
 }
 
@@ -895,7 +1118,11 @@ fn terminal_completion_revalidates_workspace_verification_atomically() {
                 "output-operator",
             )
             .unwrap_err();
-        assert!(stale.contains("verification authority changed"), "{stale}");
+        assert!(
+            stale.contains("verification authority changed")
+                || stale.contains("verification approval binding changed"),
+            "{stale}"
+        );
         assert_eq!(
             store.get_product_task(task_id).unwrap().unwrap()["status"],
             "output_pending"
@@ -921,6 +1148,22 @@ fn terminal_completion_revalidates_workspace_verification_atomically() {
             .unwrap();
         assert_eq!(completed["task"]["status"], "completed");
         assert_eq!(completed["operation"]["pr_create"]["number"], 29);
+        let replayed = store
+            .complete_product_task_draft_pr_output(
+                task_id,
+                artifact_id,
+                operation_id,
+                pr_claim["current_version"].as_u64().unwrap(),
+                pending_version,
+                &pull_request,
+                "duplicate-output-operator",
+            )
+            .unwrap();
+        assert_eq!(replayed["reused"], true);
+        assert_eq!(
+            replayed["terminal_evidence"]["evidence_id"],
+            completed["terminal_evidence"]["evidence_id"]
+        );
         std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
     });
 }

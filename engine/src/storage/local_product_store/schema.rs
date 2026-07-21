@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 30;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 30;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 31;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 31;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -138,6 +138,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 30,
         description: "add product golden path canonical task identity and worktree binding state",
+    },
+    SchemaMigration {
+        version: 31,
+        description: "add canonical product task terminal evidence",
     },
 ];
 
@@ -555,6 +559,31 @@ CREATE INDEX IF NOT EXISTS idx_product_tasks_run
     ON product_tasks(run_id);
 CREATE INDEX IF NOT EXISTS idx_product_tasks_workspace_record
     ON product_tasks(workspace_record_id);
+";
+
+pub(super) const V31_DDL: &str = "
+CREATE TABLE IF NOT EXISTS product_task_terminal_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    product_task_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    task_version BIGINT NOT NULL,
+    output_result_sha256 TEXT NOT NULL CHECK (length(output_result_sha256) = 64),
+    artifact_id TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    output_operation_id TEXT,
+    output_receipt_id TEXT,
+    audit_id BIGINT NOT NULL,
+    content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    UNIQUE (product_task_id, task_version, output_result_sha256),
+    FOREIGN KEY(product_task_id) REFERENCES product_tasks(task_id),
+    FOREIGN KEY(audit_id) REFERENCES audit_log(audit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_product_terminal_evidence_task
+    ON product_task_terminal_evidence(product_task_id, task_version);
 ";
 
 pub(super) const V28_DDL: &str = "
@@ -1511,6 +1540,29 @@ CREATE INDEX IF NOT EXISTS idx_product_tasks_run
     ON product_tasks(run_id);
 CREATE INDEX IF NOT EXISTS idx_product_tasks_workspace_record
     ON product_tasks(workspace_record_id);
+
+CREATE TABLE IF NOT EXISTS product_task_terminal_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    product_task_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    task_version BIGINT NOT NULL,
+    output_result_sha256 TEXT NOT NULL CHECK (length(output_result_sha256) = 64),
+    artifact_id TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    output_operation_id TEXT,
+    output_receipt_id TEXT,
+    audit_id BIGINT NOT NULL,
+    content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    UNIQUE (product_task_id, task_version, output_result_sha256),
+    FOREIGN KEY(product_task_id) REFERENCES product_tasks(task_id),
+    FOREIGN KEY(audit_id) REFERENCES audit_log(audit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_product_terminal_evidence_task
+    ON product_task_terminal_evidence(product_task_id, task_version);
 ";
 pub(crate) const POSTGRES_DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatch_history (
@@ -2439,6 +2491,29 @@ CREATE INDEX IF NOT EXISTS idx_product_tasks_run
     ON product_tasks(run_id);
 CREATE INDEX IF NOT EXISTS idx_product_tasks_workspace_record
     ON product_tasks(workspace_record_id);
+
+CREATE TABLE IF NOT EXISTS product_task_terminal_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    product_task_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    task_version BIGINT NOT NULL,
+    output_result_sha256 TEXT NOT NULL CHECK (length(output_result_sha256) = 64),
+    artifact_id TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    output_operation_id TEXT,
+    output_receipt_id TEXT,
+    audit_id BIGINT NOT NULL,
+    content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    UNIQUE (product_task_id, task_version, output_result_sha256),
+    FOREIGN KEY(product_task_id) REFERENCES product_tasks(task_id),
+    FOREIGN KEY(audit_id) REFERENCES audit_log(audit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_product_terminal_evidence_task
+    ON product_task_terminal_evidence(product_task_id, task_version);
 ";
 
 #[cfg(test)]
@@ -2506,6 +2581,8 @@ mod tests {
             "idx_product_tasks_target",
             "idx_product_tasks_run",
             "idx_product_tasks_workspace_record",
+            "product_task_terminal_evidence",
+            "idx_product_terminal_evidence_task",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),

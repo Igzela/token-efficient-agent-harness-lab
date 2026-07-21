@@ -6,13 +6,15 @@ Last updated: 2026-07-22.
 
 - Canonical repository: `Igzela/token-efficient-agent-harness-lab`.
 - Audited remote `main` at the start of Residual Seal 2: `364a2ad24fb494653ccbe3ff2e8b038e9e40d095`.
+- Refreshed `main` for the terminal-evidence slice: `c6806841285cdb483bdd542e6d35a8ba7a009d7d` (PR #272 output-authority repair).
 - That commit is the documentation synchronization after PR #271. Commits `f7293548`, `fe742052`, and `364a2ad2` are all present in order.
 - Prior golden-path merges on this line:
   - PR #268 G1 → `178d020e`
   - PR #269 G2–G4 → `8fa85c15`
   - PR #270 authority repair (real verification, scheduler-only advance, live executor pool, fixture honesty, recovery matrix) → `f7293548`
   - PR #271 evidence/output → `fe742052`
-- Exact-head CI: PR #270 head `70f883a4` run `29837940355` green; PR #271 head `73f025bc` run `29839301704` green (required jobs).
+  - PR #272 Residual Seal 2 output authority → `c6806841`
+- Exact-head CI: PR #270 head `70f883a4` run `29837940355` green; PR #271 head `73f025bc` run `29839301704` green; PR #272 head `e0184b0d` run `29856825945` and exact-head check `29856826057` green (required jobs).
 - Open PR coordination: PR #225 remains presentation-only Dashboard work (theme files only).
 - Open research coordination: Issue #266 remains Level-2 proposal only (not the active lane).
 - Parked external acceptance: Issue #254 remains repository-agent smoke parking. Issue #208 remains emergency-stopped.
@@ -45,20 +47,21 @@ The Residual Seal 2 audit found that PR #271's terminal/output summary was overs
 
 The output-authority slice corrects the first four defects through separate `team:admin` approval and `dispatch:execute` output endpoints, exact approval/evidence binding, zero-side-effect confirmation rejection, durable artifact/export receipts, and a progressive branch-push/Draft-PR operation. A branch receipt is not PR evidence; known failure remains non-terminal and outcome-unknown is reconciled through the same operation. The legacy combined endpoint is compatibility-only and invokes both authorities.
 
+The terminal-evidence slice corrects the fifth defect. Schema v31 persists one content-hash-bound `product_task_terminal_evidence.v2` record with the exact task version, plan/run/node attempt, workspace/source, verification receipt set, artifact, approval, output receipt/operation, replay, native scorecard, usage/cost availability, and audit reference used by the terminal transition. Task completion, transition audit, evidence audit, and evidence insert commit atomically in SQLite and PostgreSQL. Reads and compatibility emission are pure/idempotent. Replay is linked only through the replay owner's exact dispatch binding; scorecards and measured usage are linked only from their owners, and fixture usage/cost remains explicitly unavailable. `process_outcome.v1` preserves real command exit code, signal when available, timeout, spawn/wait/output-read failure, or an explicit unavailable reason; verification succeeds only on completed execution plus OS exit code zero.
+
 The fragmented manual plan/run/workspace/tick/verify/capture path remains available for compatibility. Legacy `/dispatch` default remains `noop`.
 
 ### Residual (packet not fully COMPLETE)
 
-1. Canonical persisted terminal evidence, pure reads, exact owner references, and owner-backed replay/scorecard/usage/cost remain for the next slice.
-2. Actual process outcome and verification-time pause/kill/lease/version/late-write authority remain for the next slice.
-3. Real GitHub Draft PR acceptance remains to be proved in a disposable repository after the output-authority slice merges.
-4. Managed coding-executor E2E is mandatory under the current acceptance contract. Fixture evidence cannot substitute for it; an audited unavailable managed executor is an explicit blocker, not an acceptance exception.
+1. Verification-time pause/kill/scheduler-kill/lease/version/workspace/supersession/late-write authority remains for the next slice.
+2. Real GitHub Draft PR acceptance remains to be proved in a disposable repository.
+3. Managed coding-executor E2E is mandatory under the current acceptance contract. Fixture evidence cannot substitute for it; an audited unavailable managed executor is an explicit blocker, not an acceptance exception.
 
 ## Capability Status
 
 | Capability | State | Current truth |
 |---|---|---|
-| Product Golden Path | in progress / default-off / Residual Seal 2 | Schema v30 root tasks, scheduler path, separate approval/output authority, and phased Draft PR operation; canonical terminal evidence and final E2E are not yet sealed. |
+| Product Golden Path | in progress / default-off / Residual Seal 2 | Schema v30 root tasks plus schema v31 canonical terminal evidence, authoritative command process outcomes, separate approval/output authority, and phased Draft PR operation; verification-time authority and final E2E are not yet sealed. |
 | Rust API, scheduler, workflow store | implemented / active | `engine/` sole runtime/store authority. |
 | Plain `/dispatch` | implemented / default-noop | Unchanged compatibility path. |
 | Plans / workflow runs | implemented | Unchanged; golden path reuses them with product bindings. |
@@ -72,7 +75,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Confirmed Integration Gaps
 
-1. Canonical terminal evidence and authoritative process/verification outcomes remain open.
+1. Verification-time pause/kill/lease/version/workspace/late-write authority remains open; process exit outcome is now authoritative.
 2. Real GitHub Draft PR acceptance remains under existing credential/host/repository gates.
 3. Managed coding-executor E2E remains mandatory and not yet proved.
 4. Real-workload evidence remains blocked until the full Golden Path contract passes; there is no implicit fixture-only exception.
@@ -86,7 +89,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Active Tracks
 
-- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (output authority first; terminal evidence/process outcome and final recovery/E2E slices follow).
+- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (output authority merged; canonical terminal evidence/process outcome implemented; verification-time authority and final recovery/E2E follow).
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until Residual Seal 2 satisfies the full acceptance contract.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE`.
 - `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: blocked; Issue #266 proposal only.
@@ -97,7 +100,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Open Work Coordination
 
-PRs #268–#271 are merged. Residual Seal 2 owns current Golden Path implementation; PR #225 remains an independent presentation-only lane. Do not activate Real Workload Evidence, Level-2, Meta Improver, Vader, or Issue #208 yet.
+PRs #268–#272 are merged. Residual Seal 2 owns current Golden Path implementation; PR #225 remains an independent presentation-only lane. Do not activate Real Workload Evidence, Level-2, Meta Improver, Vader, or Issue #208 yet.
 
 ## Safety Boundary
 
