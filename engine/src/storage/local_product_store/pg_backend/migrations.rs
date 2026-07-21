@@ -357,6 +357,41 @@ fn apply_pg_v26_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|error| format!("failed to commit migration 26: {error}"))
 }
 
+fn apply_pg_v27_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V27_SCHEMA_VERSION;
+    let mut tx = client
+        .transaction()
+        .map_err(|error| format!("failed to start migration 27 transaction: {error}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(
+             hashtext(current_database()), hashtext(current_schema())
+         )",
+        &[],
+    )
+    .map_err(|error| format!("failed to lock migration 27: {error}"))?;
+    let current_version = tx
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map(|row| row.get::<_, i64>(0))
+        .map_err(|error| format!("failed to re-read version for migration 27: {error}"))?;
+    if current_version >= version {
+        tx.commit()
+            .map_err(|error| format!("failed to finish migration 27 no-op: {error}"))?;
+        return Ok(());
+    }
+    tx.batch_execute(schema::V27_DDL)
+        .map_err(|error| format!("migration 27 failed: {error}"))?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|error| format!("failed to record migration {version}: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("failed to commit migration 27: {error}"))
+}
+
 fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     let version = client
         .query_one(
@@ -725,6 +760,69 @@ fn pg_v25_operation_schema_valid(
 }
 
 impl LocalProductStore {
+    pub(in crate::storage::local_product_store) fn rollback_pg_v27_to_v26_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.with_pg_conn(|client: &mut postgres::Client| {
+            let mut tx = client.transaction().map_err(|error| error.to_string())?;
+            let current_version = tx
+                .query_one(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                    &[],
+                )
+                .map(|row| row.get::<_, i64>(0))
+                .map_err(|error| error.to_string())?;
+            super::super::migrations::require_v27_rollback_source(current_version)?;
+            tx.batch_execute(
+                "LOCK TABLE harness_evolution_receipts, harness_evolution_candidates,
+                 harness_evolution_proposals, harness_evolution_active_identity
+                 IN ACCESS EXCLUSIVE MODE",
+            )
+            .map_err(|error| error.to_string())?;
+            for table in super::super::migrations::V27_TABLES {
+                let occupied = tx
+                    .query_one(&format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)"), &[])
+                    .map(|row| row.get::<_, bool>(0))
+                    .map_err(|error| error.to_string())?;
+                if occupied {
+                    return Err(format!(
+                        "v27 rollback blocked: authoritative harness evolution data exists in {table}"
+                    ));
+                }
+            }
+            tx.batch_execute(
+                "DROP TABLE harness_evolution_receipts;
+                 DROP TABLE harness_evolution_candidates;
+                 DROP TABLE harness_evolution_proposals;
+                 DROP TABLE harness_evolution_active_identity;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1,$2,'schema.rollback.v27_to_v26','local_product_store',$3)",
+                &[
+                    &now,
+                    &actor,
+                    &serde_json::json!({
+                        "from_version": super::super::migrations::V27_SCHEMA_VERSION,
+                        "to_version": super::super::migrations::V26_SCHEMA_VERSION,
+                        "tables": super::super::migrations::V27_TABLES,
+                    })
+                    .to_string(),
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version=$1",
+                &[&super::super::migrations::V27_SCHEMA_VERSION],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
+
     pub(in crate::storage::local_product_store) fn rollback_pg_v26_to_v25_internal(
         &self,
         actor: &str,
@@ -788,6 +886,10 @@ impl LocalProductStore {
                 }
                 if migration.version == 26 {
                     apply_pg_v26_migration(client)?;
+                    continue;
+                }
+                if migration.version == 27 {
+                    apply_pg_v27_migration(client)?;
                     continue;
                 }
                 if migration.version <= current {
@@ -1339,6 +1441,10 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
+        assert_eq!(store.schema_version().unwrap(), 27);
+        store
+            .rollback_v27_to_v26("migration-test-setup", true)
+            .unwrap();
         assert_eq!(store.schema_version().unwrap(), 26);
         store
             .rollback_v26_to_v25("migration-test-setup", true)

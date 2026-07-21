@@ -18,6 +18,7 @@ mod executor_pool_store;
 mod export_import;
 mod external_runtime;
 pub mod feedback;
+mod harness_evolution;
 mod heartbeat;
 mod integrity;
 mod keys;
