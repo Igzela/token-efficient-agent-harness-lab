@@ -19,7 +19,7 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. **Active PE7 repair lane:** `PE7-HARNESS-EVOLUTION-B2-EVALUATOR-REPAIR-1` (`IN_PROGRESS`) after R1 COMPLETE via PR #262 → then B3 finalizer repair → then Level-1 acceptance. B1–B3 scaffolding (PRs #258–#260) is merged but **not Level-1 complete** (non-owner PR_READY evidence remains after R1/R2). No stable Level-1 result exists.
+1. **Active PE7 repair lane:** `PE7-HARNESS-EVOLUTION-B3-FINALIZER-REPAIR-1` (`IN_PROGRESS`) after R1 COMPLETE (#262) and R2 COMPLETE (#263) → then Level-1 acceptance. B1–B3 scaffolding (PRs #258–#260) plus R1/R2 repairs are merged; lab is **not** Level-1 complete until R3 and Level-1 acceptance. No stable Level-1 result exists.
 2. `PE7-OPENCODE-BINARY-ADMISSION-1` — `BLOCKED_PREREQUISITE` / deferred until an exact upstream artifact or source identity and real checksum are independently admitted. Do not treat `PIN.json` placeholder fields as binary admission.
 3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — **`PARKED` / `BLOCKED_PREREQUISITE`** on Vader-host Codex/ChatGPT execution (HTTP 403). **Not actively driven.** Parking Issue: **#254**. Runner is online/idle; Issue #208 emergency-stopped. Do not hard-force Codex 403 or Issue→CLI smokes until unparked.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` until a stable, independently reviewed Level-1 laboratory result exists (after R1–R3 and `PE7-HARNESS-EVOLUTION-LEVEL1-ACCEPTANCE-1`).
@@ -345,7 +345,9 @@ Mark this laboratory fully `COMPLETE` only after R1–R3 merge **and** `PE7-HARN
 
 ### Packet PE7-HARNESS-EVOLUTION-B2-EVALUATOR-REPAIR-1 — Real fixture evaluator and sealed-set owner
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
+
+**Completion evidence:** PR #263 squash-merged into `main` at `58b6e76e144f2645140679a3be23690021e16e33` from reviewed head `23f9ddb27adcb4a5db0d7b48996489a0fd1ac6e0`. Exact-head CI runs `29811372333` / `29811372456`.
 
 **Prerequisites:** `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1`
 
@@ -360,11 +362,19 @@ Mark this laboratory fully `COMPLETE` only after R1–R3 merge **and** `PE7-HARN
 
 ### Packet PE7-HARNESS-EVOLUTION-B3-FINALIZER-REPAIR-1 — Existing finalizer integration
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
 **Prerequisites:** `PE7-HARNESS-EVOLUTION-B2-EVALUATOR-REPAIR-1`
 
 **Goal:** Connect evolution output to the existing target-output/finalizer path. Evolution submits only candidate/evaluation/workspace references and optional expected-identity stale checks. Finalizer independently loads active identity, content hash, base/head, mutable surface, patch grammar, secret scan, test receipts, equal-budget evaluation, sealed eligibility, rollback evidence, and operator decision-center receipt. No competing finalizer authority; no fake SHA-256 evidence; no literal `approve_pr_ready` as decision.
+
+**Implementation notes (this PR):**
+
+- `submit_harness_evolution_pr_ready(candidate_id, evaluation_id, expected_active?, expected_base?, operator_decision_id)` loads all authority from store owners.
+- Patch is read only from admitted workspace `PR_READY.patch`; allowed paths derived from mutable surface; base/head from active hash + content hash.
+- Evidence hashes derived from evaluation hard gates, secret scan outcome, and rollback binding — not caller-supplied random SHA-256 strings.
+- Operator path requires `operator_acknowledgements` for source type `harness_evolution_pr_ready`; literal `approve_pr_ready` is refused.
+- Durable PR_READY record clears raw patch text; output remains PR_READY only (no PR create/merge).
 
 ### Packet PE7-HARNESS-EVOLUTION-LEVEL1-ACCEPTANCE-1 — End-to-end laboratory acceptance
 
