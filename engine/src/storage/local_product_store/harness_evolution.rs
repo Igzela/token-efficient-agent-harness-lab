@@ -2102,4 +2102,109 @@ mod tests {
         );
         assert!(dup.unwrap_err().contains("duplicate"));
     }
+
+    #[test]
+    fn level1_end_to_end_fixture_path_three_seeds() {
+        // PE7-HARNESS-EVOLUTION-LEVEL1-ACCEPTANCE-1 — default-off fixture path through real owners.
+        let env = LabEnvGuard::enable();
+        use crate::harness_evolution_eval::sample_budget;
+        let store = LocalProductStore::new(":memory:").unwrap();
+        let active = sample_active_identity();
+        store
+            .register_harness_evolution_active_identity(&active, "operator-level1")
+            .unwrap();
+        let family = register_family_and_vault(&store, "fam-level1");
+        let mut any_pr_ready = false;
+        let mut results = Vec::new();
+        for seed in [1u64, 2, 3] {
+            let proposal = proposal_from_body(
+                &active,
+                None,
+                &["prompts_and_bounded_rules"],
+                &json!({"kind": "level1", "seed": seed}),
+                vec![],
+                seed,
+            )
+            .unwrap();
+            let bound = store.admit_harness_evolution_proposal(&proposal).unwrap();
+            let ws = materialize_for(&env, &bound, &format!("level1-{seed}"));
+            let dir = env.workspace_root().join(&ws.relative_path);
+            let patch = "diff --git a/prompts/rules.md b/prompts/rules.md\n--- a/prompts/rules.md\n+++ b/prompts/rules.md\n@@ -1 +1 @@\n-old\n+new\n";
+            std::fs::write(dir.join("PR_READY.patch"), patch).unwrap();
+            let content_hash = crate::harness_evolution::hash_workspace_directory(&dir).unwrap();
+            let mut ws2 = ws;
+            ws2.content_hash = content_hash;
+            let candidate = candidate_from_proposal(&bound, &ws2, "2026-07-21T00:00:00Z").unwrap();
+            let (admitted, _) = store.admit_harness_evolution_candidate(candidate).unwrap();
+            if seed == 1 {
+                store
+                    .issue_harness_evolution_sealed_selection(
+                        &family.family_id,
+                        std::slice::from_ref(&admitted.candidate_id),
+                        "evaluator-owner",
+                    )
+                    .unwrap();
+            }
+            let (eval, archive, _) = store
+                .record_harness_evolution_evaluation(
+                    &admitted.candidate_id,
+                    &sample_budget(seed),
+                    &family.family_id,
+                )
+                .unwrap();
+            assert!(!eval.claims_improvement);
+            assert!(!eval.sealed_feedback_into_mutation);
+            assert!(!archive.is_empty());
+            // Static, random, lineage, and fixture OpenCode baselines must appear.
+            let kinds: std::collections::BTreeSet<_> =
+                eval.baselines.iter().map(|b| b.baseline.as_str()).collect();
+            assert!(kinds.contains("static_single_pass"));
+            assert!(kinds.contains("random_equal_count"));
+            assert!(kinds.contains("lineage_experiment"));
+            assert!(kinds.contains("fixture_opencode"));
+            store
+                .acknowledge_operator_source(
+                    &format!("decision-level1-{seed}"),
+                    "harness_evolution_pr_ready",
+                    &admitted.candidate_id,
+                    &eval.bundle_sha256,
+                    Some("level1 acceptance"),
+                    "operator-level1",
+                )
+                .unwrap();
+            let (bundle, receipt) = store
+                .submit_harness_evolution_pr_ready(
+                    &admitted.candidate_id,
+                    &eval.evaluation_id,
+                    Some(&active.active_version_id),
+                    Some(&active.active_version_hash),
+                    &format!("decision-level1-{seed}"),
+                )
+                .unwrap();
+            assert!(bundle.terminal.is_ready());
+            assert!(receipt.terminal.is_ready());
+            any_pr_ready = true;
+            results.push((seed, eval.evaluation_id, bundle.bundle_id));
+            // Replay evaluation is exactly-once.
+            let again = store.record_harness_evolution_evaluation(
+                &admitted.candidate_id,
+                &sample_budget(seed),
+                &family.family_id,
+            );
+            assert!(again.unwrap_err().contains("duplicate"));
+        }
+        assert!(any_pr_ready);
+        assert_eq!(results.len(), 3);
+        // No active Harness mutation: original active identity still current.
+        let current = store
+            .get_current_harness_evolution_active_identity()
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.active_version_id, active.active_version_id);
+        // Honest result: laboratory correctness only — no improvement claim.
+        eprintln!(
+            "level1 acceptance: neutral/no-improvement fixture path ok for seeds {:?}",
+            results.iter().map(|(s, _, _)| *s).collect::<Vec<_>>()
+        );
+    }
 }

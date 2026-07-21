@@ -103,7 +103,7 @@ PR #214 merged the active v2 owner-evidence repair. Existing fixed scenario regi
 
 ## Active Routing
 
-1. Active PE7 Ship PR lane: `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1` (then R2, R3, Level-1 acceptance). B1–B3 scaffolding is merged but not Level-1 complete.
+1. PE7 Level-1 laboratory path COMPLETE (default-off). Keep binary admission deferred, PR3 parked, Meta Improver blocked. Default work is Ship PR maintenance.
 2. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` is parked on Issue #254 (runner online/idle; Codex HTTP 403).
 3. `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` is complete via PR #257; binary admission remains deferred.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` remains blocked until a stable, independently reviewed Level-1 lab result exists.
