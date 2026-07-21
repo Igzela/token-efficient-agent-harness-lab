@@ -8,6 +8,7 @@ pub(super) const V24_SCHEMA_VERSION: i64 = 24;
 pub(super) const V25_SCHEMA_VERSION: i64 = 25;
 pub(super) const V26_SCHEMA_VERSION: i64 = 26;
 pub(super) const V27_SCHEMA_VERSION: i64 = 27;
+pub(super) const V28_SCHEMA_VERSION: i64 = 28;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -32,6 +33,12 @@ pub(super) const V27_TABLES: [&str; 4] = [
     "harness_evolution_proposals",
     "harness_evolution_candidates",
     "harness_evolution_receipts",
+];
+pub(super) const V28_TABLES: [&str; 4] = [
+    "harness_evolution_sealed_holdouts",
+    "harness_evolution_evaluations",
+    "harness_evolution_pareto_archive",
+    "harness_evolution_eval_receipts",
 ];
 
 #[allow(dead_code)]
@@ -83,6 +90,7 @@ impl LocalProductStore {
                     }
                     V26_SCHEMA_VERSION => Self::migrate_v26_add_recursive_execution_state(conn)?,
                     V27_SCHEMA_VERSION => Self::migrate_v27_add_harness_evolution_state(conn)?,
+                    V28_SCHEMA_VERSION => Self::migrate_v28_add_harness_evolution_eval_state(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -91,7 +99,9 @@ impl LocalProductStore {
             let final_version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if final_version == V27_SCHEMA_VERSION {
+            if final_version == V28_SCHEMA_VERSION {
+                validate_sqlite_v28_schema(conn)?;
+            } else if final_version == V27_SCHEMA_VERSION {
                 validate_sqlite_v27_schema(conn)?;
             } else if final_version == V26_SCHEMA_VERSION {
                 validate_sqlite_v26_schema(conn)?;
@@ -594,8 +604,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
         }
     }
 
-    /// Roll back the additive recursive-execution schema only when no tree or node identity
-    /// has been persisted. This keeps recursive recovery data from being discarded silently.
+    /// Roll back evaluation/archive schema only when no evaluation authority rows exist.
+    pub fn rollback_v28_to_v27(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v28 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v28 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v28_to_v27(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v28_to_v27_internal(actor, &now),
+        }
+    }
+
+    /// Roll back the additive harness-evolution evidence schema only when empty.
     pub fn rollback_v27_to_v26(
         &self,
         actor: &str,
@@ -638,6 +670,49 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.rollback_pg_v26_to_v25_internal(actor, &now),
         }
+    }
+
+    fn rollback_sqlite_v28_to_v27(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            require_v28_rollback_source(current_version)?;
+            let occupied = occupied_sqlite_tables(&tx, &V28_TABLES)?;
+            if !occupied.is_empty() {
+                return Err(format!(
+                    "v28 rollback blocked: authoritative harness evolution evaluation data exists in {}",
+                    occupied.join(", ")
+                ));
+            }
+            tx.execute_batch(
+                "DROP TABLE harness_evolution_eval_receipts;
+                 DROP TABLE harness_evolution_pareto_archive;
+                 DROP TABLE harness_evolution_evaluations;
+                 DROP TABLE harness_evolution_sealed_holdouts;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v28_to_v27', 'local_product_store', ?3)",
+                rusqlite::params![
+                    now,
+                    actor,
+                    serde_json::json!({
+                        "from_version": V28_SCHEMA_VERSION,
+                        "to_version": V27_SCHEMA_VERSION,
+                        "tables": V28_TABLES,
+                    })
+                    .to_string()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V27_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
     }
 
     fn rollback_sqlite_v27_to_v26(&self, actor: &str, now: &str) -> Result<(), String> {
@@ -1297,6 +1372,54 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         conn.execute_batch(schema::V27_DDL)
             .map_err(|error| error.to_string())
     }
+
+    fn migrate_v28_add_harness_evolution_eval_state(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(schema::V28_DDL)
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn validate_sqlite_v28_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v27_schema(conn)?;
+    for table in V28_TABLES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v28 schema missing table {table}"));
+        }
+    }
+    for (table, fragment) in [
+        (
+            "harness_evolution_evaluations",
+            "unique(candidate_id, budget_seed, family_id)",
+        ),
+        (
+            "harness_evolution_pareto_archive",
+            "archive_id text primary key",
+        ),
+        (
+            "harness_evolution_eval_receipts",
+            "receipt_id text primary key",
+        ),
+    ] {
+        let ddl: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let normalized = ddl.to_ascii_lowercase().replace(['\n', '\t'], " ");
+        if !normalized.contains(fragment) {
+            return Err(format!("SQLite v28 schema missing constraint on {table}"));
+        }
+    }
+    Ok(())
 }
 
 fn validate_sqlite_v27_schema(conn: &Connection) -> Result<(), String> {
@@ -1701,6 +1824,16 @@ pub(super) fn require_v27_rollback_source(current_version: i64) -> Result<(), St
     } else {
         Err(format!(
             "v27 rollback requires current schema version 27; found {current_version}"
+        ))
+    }
+}
+
+pub(super) fn require_v28_rollback_source(current_version: i64) -> Result<(), String> {
+    if current_version == V28_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(format!(
+            "v28 rollback requires current schema version 28; found {current_version}"
         ))
     }
 }
