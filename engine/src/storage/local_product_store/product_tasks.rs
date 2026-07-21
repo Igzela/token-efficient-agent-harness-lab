@@ -92,7 +92,11 @@ impl LocalProductStore {
                     None,
                 ) {
                     Ok(_) => {}
-                    Err(e) if e.contains("expected-current") || e.contains("conflict") => {
+                    Err(e)
+                        if e.contains("expected-current")
+                            || e.contains("conflict")
+                            || e.contains("stale product task version") =>
+                    {
                         // Another concurrent admit won the CAS; re-read.
                         continue;
                     }
@@ -116,6 +120,7 @@ impl LocalProductStore {
                 Err(error)
                     if error.contains("expected-current")
                         || error.contains("conflict")
+                        || error.contains("stale product task version")
                         || error.contains("already exists") =>
                 {
                     // Concurrent prepare: re-read and return if winner bound the task.
@@ -728,8 +733,20 @@ impl LocalProductStore {
         let current = self
             .get_product_task(task_id)?
             .ok_or_else(|| "task missing before finalize".to_string())?;
+        let current_status = current.get("status").and_then(Value::as_str).unwrap_or("");
+        if matches!(
+            current_status,
+            "workspace_bound"
+                | "graph_ready"
+                | "running"
+                | "verifying"
+                | "awaiting_approval"
+                | "completed"
+        ) {
+            return Ok(current);
+        }
         let version = current.get("version").and_then(Value::as_u64).unwrap_or(0);
-        self.transition_product_task(
+        match self.transition_product_task(
             task_id,
             ProductTaskStatus::WorkspaceBound,
             Some(version),
@@ -739,7 +756,32 @@ impl LocalProductStore {
             None,
             None,
             Some(&provisional_run_id),
-        )
+        ) {
+            Ok(task) => Ok(task),
+            Err(e)
+                if e.contains("stale product task version")
+                    || e.contains("expected-current")
+                    || e.contains("conflict") =>
+            {
+                // Concurrent finisher won; return the bound task if present.
+                if let Some(task) = self.get_product_task(task_id)? {
+                    let st = task.get("status").and_then(Value::as_str).unwrap_or("");
+                    if matches!(
+                        st,
+                        "workspace_bound"
+                            | "graph_ready"
+                            | "running"
+                            | "verifying"
+                            | "awaiting_approval"
+                            | "completed"
+                    ) {
+                        return Ok(task);
+                    }
+                }
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn fail_product_task_and_compensate(

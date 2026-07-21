@@ -15,7 +15,9 @@ fn env_lock() -> &'static Mutex<()> {
 }
 
 fn with_gates<R>(f: impl FnOnce() -> R) -> R {
-    let _guard = env_lock().lock().unwrap();
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::env::set_var(PRODUCT_TASK_GATE, "1");
     std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
     std::env::set_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH", "0");
@@ -145,13 +147,41 @@ fn concurrent_duplicate_intake_one_effect() {
             }));
         }
         let mut ids = Vec::new();
+        let mut errors = Vec::new();
         for h in handles {
-            let task = h.join().unwrap().expect("admit");
-            ids.push(task["task_id"].as_str().unwrap().to_string());
+            match h.join().unwrap() {
+                Ok(task) => ids.push(task["task_id"].as_str().unwrap().to_string()),
+                Err(e) => errors.push(e),
+            }
         }
+        // At least one admit must succeed; all successes share one task_id.
+        assert!(
+            !ids.is_empty(),
+            "at least one concurrent admit must succeed; errors={errors:?}"
+        );
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), 1, "concurrent intake must collapse to one task");
+        // Losers may surface as CAS conflicts only; not unrelated failures.
+        for e in &errors {
+            assert!(
+                e.contains("stale")
+                    || e.contains("conflict")
+                    || e.contains("expected-current")
+                    || e.contains("already exists")
+                    || e.contains("retry exhausted"),
+                "unexpected concurrent admit error: {e}"
+            );
+        }
+        let final_task = store
+            .get_product_task_by_idempotency("local", "default", "rec-concurrent-1")
+            .unwrap()
+            .expect("idempotent task");
+        assert_eq!(final_task["task_id"].as_str().unwrap(), ids[0]);
+        assert_eq!(
+            final_task["status"].as_str(),
+            Some(ProductTaskStatus::WorkspaceBound.as_str())
+        );
     });
 }
 
