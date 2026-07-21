@@ -1,12 +1,14 @@
 //! G2 tests: executable graph compile + scheduler-eligible product task runs.
+//! Finalize must not drive executor ticks; the existing tick/scheduler path does.
 
 use engine::product_golden_path::{
     validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest, ProductTaskStatus,
-    ProductVerificationCommand, PRODUCT_TASK_GATE,
+    ProductVerificationCommand, FIXTURE_DETERMINISTIC_NOTE_CONTENT, PRODUCT_TASK_GATE,
 };
 use engine::storage::local_product_store::LocalProductStore;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -32,6 +34,7 @@ fn temp_store() -> (tempfile::TempDir, LocalProductStore) {
 
 fn init_git_repo(root: &std::path::Path) -> String {
     std::fs::create_dir_all(root).unwrap();
+    // Base tree has only README — expected mutation path must not pre-exist.
     std::fs::write(root.join("README.md"), "hello\n").unwrap();
     run_git(root, &["init", "-b", "main"]);
     run_git(root, &["config", "user.email", "g2@example.com"]);
@@ -47,20 +50,24 @@ fn run_git(cwd: &std::path::Path, args: &[&str]) -> String {
         .current_dir(cwd)
         .output()
         .expect("git");
-    assert!(output.status.success(), "{:?}", output);
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 fn sample_intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskIntakeRequest {
     ProductTaskIntakeRequest {
-        objective: "Prove executable graph scheduling for golden path.".to_string(),
+        objective: "Create docs/product_golden_path_fixture.md via fixture executor.".to_string(),
         target_id: "disposable-target".to_string(),
         target_repo_path: target.to_string_lossy().into_owned(),
         source_revision: rev.to_string(),
         source_tree_hash: None,
-        allowed_paths: vec!["README.md".to_string()],
+        allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
         verification_commands: vec![ProductVerificationCommand {
-            command: "test -f README.md".to_string(),
+            command: "test -f docs/product_golden_path_fixture.md".to_string(),
             timeout_ms: 5_000,
         }],
         output_intent: "artifact_only".to_string(),
@@ -106,10 +113,12 @@ fn compile_creates_executable_run_bound_to_task() {
             .expect("compile");
         assert_eq!(result["execution_admitted"], true);
         assert_eq!(result["scheduler_eligible"], true);
+        assert_eq!(result["executor_class"], "fixture_deterministic");
         let task = &result["task"];
+        // Must stay graph_ready — not running merely because a run was created.
         assert_eq!(
             task["status"].as_str(),
-            Some(ProductTaskStatus::Running.as_str())
+            Some(ProductTaskStatus::GraphReady.as_str())
         );
         assert!(task["plan_id"].as_str().is_some());
         assert!(task["run_id"].as_str().is_some());
@@ -119,9 +128,9 @@ fn compile_creates_executable_run_bound_to_task() {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0]["product_task_id"], task_id);
         assert_eq!(nodes[0]["task_type"], "command");
+        assert_eq!(nodes[0]["executor_class"], "fixture_deterministic");
         assert!(nodes[0]["workspace_path"].as_str().is_some());
         assert!(nodes[0].get("managed_supervised_patch").is_some());
-        // Workspace rebound to real run for lease injection.
         let ws_id = task["workspace_record_id"].as_str().unwrap();
         let ws = store
             .get_supervised_patch_workspace(ws_id)
@@ -173,7 +182,7 @@ fn missing_worktree_blocks_compile() {
 }
 
 #[test]
-fn compile_is_idempotent_when_already_running() {
+fn compile_is_idempotent_when_already_graph_ready() {
     with_gates(|| {
         let (dir, store) = temp_store();
         let repo = dir.path().join("repo");
@@ -188,11 +197,15 @@ fn compile_is_idempotent_when_already_running() {
             .unwrap();
         assert_eq!(second["reused"], true);
         assert_eq!(first["task"]["run_id"], second["task"]["run_id"]);
+        assert_eq!(
+            first["task"]["status"].as_str(),
+            Some(ProductTaskStatus::GraphReady.as_str())
+        );
     });
 }
 
 #[test]
-fn tick_executes_command_in_bound_worktree() {
+fn scheduler_tick_executes_command_in_bound_worktree() {
     with_gates(|| {
         let (dir, store) = temp_store();
         let repo = dir.path().join("repo");
@@ -203,17 +216,144 @@ fn tick_executes_command_in_bound_worktree() {
             .compile_and_schedule_product_task(task_id, "tester", &["command".into()])
             .unwrap();
         let run_id = result["task"]["run_id"].as_str().unwrap();
-        let executor = engine::node_executor::CommandNodeExecutor::default();
-        let tick = store
-            .tick_with_executor(run_id, "tester", 1, &executor)
-            .expect("tick");
-        // Either leased/completed or terminal depending on graph advancement.
+        let ws = result["task"]["workspace_binding"]["workspace_path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let expected = std::path::Path::new(&ws).join("docs/product_golden_path_fixture.md");
         assert!(
-            tick.get("action").is_some()
-                || tick.get("run").is_some()
-                || tick.get("status").is_some()
-                || tick.as_object().map(|o| !o.is_empty()).unwrap_or(true),
-            "tick result: {tick}"
+            !expected.exists(),
+            "mutation target must not exist before tick"
         );
+
+        // Existing scheduler tick path — not finalize.
+        let executor = engine::node_executor::CommandNodeExecutor::default();
+        let mut completed = false;
+        for _ in 0..8 {
+            let tick = store
+                .tick_with_executor(run_id, "tester", 1, &executor)
+                .expect("tick");
+            let action = tick.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let run_status = tick
+                .pointer("/run/status")
+                .and_then(|v| v.as_str())
+                .or_else(|| tick.get("status").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            if matches!(action, "completed") || matches!(run_status, "completed") {
+                completed = true;
+                break;
+            }
+            if matches!(action, "failed") || matches!(run_status, "failed") {
+                panic!("tick failed: {tick}");
+            }
+        }
+        assert!(completed, "scheduler tick must reach completed run");
+        let run = store.get_workflow_run(run_id).unwrap().unwrap();
+        assert_eq!(run["status"].as_str(), Some("completed"));
+        assert!(
+            expected.exists(),
+            "fixture file must be created by command node"
+        );
+        let content = std::fs::read_to_string(&expected).unwrap();
+        assert_eq!(content, FIXTURE_DETERMINISTIC_NOTE_CONTENT);
+        // Target default branch unchanged.
+        assert_eq!(
+            std::fs::read_to_string(repo.join("README.md")).unwrap(),
+            "hello\n"
+        );
+        assert!(!repo.join("docs/product_golden_path_fixture.md").exists());
+    });
+}
+
+#[test]
+fn finalize_does_not_execute_nodes_before_scheduler() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task = admit_bound(&store, &repo, &rev, "g2-no-finalize-tick");
+        let task_id = task["task_id"].as_str().unwrap();
+        store
+            .compile_and_schedule_product_task(task_id, "tester", &["command".into()])
+            .unwrap();
+        let finalized = store
+            .finalize_product_task_after_execution(task_id, "tester")
+            .expect("finalize observe");
+        assert_eq!(finalized["phase"], "waiting_for_scheduler");
+        let run_id = finalized["run"]["run_id"]
+            .as_str()
+            .or_else(|| finalized["task"]["run_id"].as_str())
+            .unwrap();
+        let run = store.get_workflow_run(run_id).unwrap().unwrap();
+        assert_ne!(run["status"].as_str(), Some("completed"));
+        let ws = finalized["task"]["workspace_binding"]["workspace_path"]
+            .as_str()
+            .unwrap();
+        assert!(!std::path::Path::new(ws)
+            .join("docs/product_golden_path_fixture.md")
+            .exists());
+    });
+}
+
+#[test]
+fn workflow_scheduler_advances_product_run_without_finalize_ticks() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = std::sync::Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task = admit_bound(&store, &repo, &rev, "g2-sched-auto");
+        let task_id = task["task_id"].as_str().unwrap().to_string();
+        let compiled = store
+            .compile_and_schedule_product_task(&task_id, "tester", &["command".into()])
+            .unwrap();
+        let run_id = compiled["task"]["run_id"].as_str().unwrap().to_string();
+        let ws = compiled["task"]["workspace_binding"]["workspace_path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let config = engine::scheduler::SchedulerConfig {
+            interval_ms: 50,
+            executor_type: "command".to_string(),
+            supervised_workers_enabled: true,
+            worker_count: 1,
+            lease_timeout_ms: 120_000,
+            ..Default::default()
+        };
+        let mut scheduler = engine::scheduler::WorkflowScheduler::new(store.clone(), config);
+        scheduler.start().expect("scheduler start");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut completed = false;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(run)) = store.get_workflow_run(&run_id) {
+                if run.get("status").and_then(|v| v.as_str()) == Some("completed") {
+                    completed = true;
+                    break;
+                }
+                if matches!(
+                    run.get("status").and_then(|v| v.as_str()),
+                    Some("failed") | Some("cancelled") | Some("killed")
+                ) {
+                    let _ = scheduler.stop();
+                    panic!("scheduler run failed: {run}");
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = scheduler.stop();
+        assert!(
+            completed,
+            "existing scheduler must complete product run without finalize ticks"
+        );
+        assert!(std::path::Path::new(&ws)
+            .join("docs/product_golden_path_fixture.md")
+            .exists());
+        let content = std::fs::read_to_string(
+            std::path::Path::new(&ws).join("docs/product_golden_path_fixture.md"),
+        )
+        .unwrap();
+        assert_eq!(content, FIXTURE_DETERMINISTIC_NOTE_CONTENT);
     });
 }
