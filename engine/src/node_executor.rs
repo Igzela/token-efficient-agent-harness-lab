@@ -700,7 +700,7 @@ impl ProcessOutcome {
     }
 }
 
-fn exit_status_signal(status: &std::process::ExitStatus) -> Option<i32> {
+pub(crate) fn exit_status_signal(status: &std::process::ExitStatus) -> Option<i32> {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
@@ -713,7 +713,9 @@ fn exit_status_signal(status: &std::process::ExitStatus) -> Option<i32> {
     }
 }
 
-fn process_outcome_from_exit_status(status: &std::process::ExitStatus) -> ProcessOutcome {
+pub(crate) fn process_outcome_from_exit_status(
+    status: &std::process::ExitStatus,
+) -> ProcessOutcome {
     match status.code() {
         Some(code) => ProcessOutcome::exited(code),
         None => ProcessOutcome::signaled(exit_status_signal(status)),

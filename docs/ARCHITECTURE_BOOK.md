@@ -201,7 +201,7 @@ Schema v31 adds `product_task_terminal_evidence` under `LocalProductStore`; it i
 
 Replay is `linked` only when the replay owner binds an artifact to the run's recorder-owned dispatch; a run alone never implies eligibility. Native scorecards are linked only by exact run owner records. Executor type/class and measured usage come from the exact node result; fixture execution is labeled `fixture_deterministic` with usage/cost unavailable, while managed execution links token usage only when the executor owner reports it. Cost remains unavailable without exact usage plus provider/model/pricing authority.
 
-`NodeExecutionOutput` carries `process_outcome.v1`. `CommandNodeExecutor` records the real OS exit code, termination signal when available, timeout, spawn failure, wait failure, or output-read failure without synthesizing exit code 1. Verification receipts use `product_verification_attempt.v2` and succeed only when execution is completed and the process outcome is `exited` with code zero. Executors without an OS-process owner report an explicit unavailable reason.
+`NodeExecutionOutput` carries `process_outcome.v1`. `CommandNodeExecutor` and the admitted managed Codex CLI executor record the real OS exit code, termination signal when available, timeout, spawn failure, wait failure, or output-read failure without synthesizing exit code 1. Verification receipts use `product_verification_attempt.v2` and succeed only when execution is completed and the process outcome is `exited` with code zero. Executors without an OS-process owner report an explicit unavailable reason.
 
 ## Storage
 

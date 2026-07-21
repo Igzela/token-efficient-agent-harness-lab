@@ -8,7 +8,7 @@ The next product objective is to connect the already-implemented control-plane o
 
 The verified reason is architectural: the repository already owns dispatch, plans, workflow runs, scheduler leases, executor selection, git worktrees, verification/repair, artifacts, approvals, target output, replay, scorecards, and Harness Evolution Level-1, but normal users must manually create and bind these records across separate endpoints. Level-2 evolution would otherwise optimize fixture generations before the product can reliably execute and measure one ordinary repository task.
 
-This ordering does not assert that every Golden Path task needs a paid provider or a real OpenCode binary. Initial acceptance must use a disposable repository and an already-supported deterministic or managed executor, while preserving all live-provider and binary-admission gates.
+This ordering does not assert that every Golden Path task needs a paid provider or a real OpenCode binary. Final Golden Path acceptance requires both the deterministic fixture path and one already-admitted managed coding executor in disposable repositories, while preserving all live-provider and binary-admission gates. If no managed executor is safely available, the packet remains incomplete unless a separately reviewed authority decision changes that contract.
 
 Do not create another roadmap, status, architecture, scheduler, runtime, queue, store, workspace owner, evaluator, output authority, or evidence source. Current facts belong in `docs/CURRENT_STATUS.md`; durable owner boundaries remain in `docs/ARCHITECTURE_BOOK.md`; ownership belongs in `docs/MODULE_MAP.md`; proven procedures belong in `docs/RUNBOOK.md`.
 

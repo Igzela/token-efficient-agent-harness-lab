@@ -573,14 +573,68 @@ impl LocalProductStore {
         match &self.db{DatabaseConnection::Sqlite(_)=>self.with_conn(|conn|conn.query_row("SELECT input_sha256,dispatch_ids_json,maximum_trace_age_seconds,scope_json,current_policy_json,candidate_policies_json,created_at FROM replay_producer_bindings WHERE artifact_id=?1",params![artifact_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))).optional().map_err(|error|error.to_string())?.map(|row|parse(row.0,row.1,row.2,row.3,row.4,row.5,row.6)).transpose()),#[cfg(feature="pg")]DatabaseConnection::Pg(_)=>self.with_pg_conn(|client|client.query_opt("SELECT input_sha256,dispatch_ids_json,maximum_trace_age_seconds,scope_json,current_policy_json,candidate_policies_json,created_at FROM replay_producer_bindings WHERE artifact_id=$1",&[&artifact_id]).map_err(|error|error.to_string())?.map(|row|parse(row.get(0),row.get(1),row.get(2),row.get(3),row.get(4),row.get(5),row.get(6))).transpose())}
     }
 
-    pub(crate) fn replay_binding_includes_dispatch(
+    /// Query the replay owner by exact dispatch identity. The extra row makes
+    /// bounded truncation observable without turning absence from a broad
+    /// artifact page into a false unavailable result.
+    pub(crate) fn replay_artifacts_for_dispatch(
         &self,
-        artifact_id: &str,
         dispatch_id: &str,
-    ) -> Result<bool, String> {
-        Ok(self
-            .get_replay_binding(artifact_id)?
-            .is_some_and(|binding| binding.dispatch_ids.iter().any(|id| id == dispatch_id)))
+    ) -> Result<(Vec<String>, bool), String> {
+        const RESULT_LIMIT: i64 = 101;
+        let mut artifact_ids = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut statement = conn
+                    .prepare(
+                        "SELECT binding.artifact_id
+                         FROM replay_producer_bindings AS binding
+                         JOIN offline_replay_artifacts AS artifact
+                           ON artifact.artifact_id = binding.artifact_id
+                         WHERE EXISTS (
+                           SELECT 1 FROM json_each(binding.dispatch_ids_json) AS dispatch
+                           WHERE dispatch.value = ?1
+                         )
+                         ORDER BY binding.created_at, binding.artifact_id
+                         LIMIT ?2",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let artifact_ids = statement
+                    .query_map(params![dispatch_id, RESULT_LIMIT], |row| {
+                        row.get::<_, String>(0)
+                    })
+                    .map_err(|error| error.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?;
+                Ok(artifact_ids)
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query(
+                        "SELECT binding.artifact_id
+                         FROM replay_producer_bindings AS binding
+                         JOIN offline_replay_artifacts AS artifact
+                           ON artifact.artifact_id = binding.artifact_id
+                         WHERE EXISTS (
+                           SELECT 1
+                           FROM jsonb_array_elements_text(binding.dispatch_ids_json::jsonb)
+                                AS dispatch(value)
+                           WHERE dispatch.value = $1
+                         )
+                         ORDER BY binding.created_at, binding.artifact_id
+                         LIMIT $2",
+                        &[&dispatch_id, &RESULT_LIMIT],
+                    )
+                    .map(|rows| {
+                        rows.into_iter()
+                            .map(|row| row.get::<_, String>(0))
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|error| error.to_string())
+            })?,
+        };
+        let truncated = artifact_ids.len() > 100;
+        artifact_ids.truncate(100);
+        Ok((artifact_ids, truncated))
     }
 }
 
@@ -703,4 +757,79 @@ fn pg_audit(
 ) -> Result<(), String> {
     tx.execute("INSERT INTO audit_log (created_at,actor,action,resource,details_json) VALUES ($1,$2,$3,$4,$5)",&[&now,&actor,&action,&resource,&details.to_string()]).map_err(|error|error.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_dispatch_query_finds_binding_after_first_hundred_artifacts() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalProductStore::new(directory.path().join("replay.db")).unwrap();
+        store
+            .with_conn(|conn| {
+                for index in 0..101 {
+                    let artifact_id = format!("artifact-{index:03}");
+                    conn.execute(
+                        "INSERT INTO offline_replay_artifacts
+                         (artifact_sequence,artifact_id,report_schema_version,status,
+                          eligibility_content_sha256,content_sha256,created_at,artifact_json)
+                         VALUES (?1,?2,'offline_replay.v1','sufficient',?3,?4,?5,'{}')",
+                        params![
+                            index + 1,
+                            artifact_id,
+                            "2".repeat(64),
+                            "3".repeat(64),
+                            format!("2026-01-01T00:{:02}:00Z", index % 60),
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    conn.execute(
+                        "INSERT INTO replay_producer_bindings
+                         (artifact_id,input_sha256,dispatch_ids_json,maximum_trace_age_seconds,
+                          scope_json,current_policy_json,candidate_policies_json,created_at,created_by)
+                         VALUES (?1,?2,?3,60,'{}','{}','[]',?4,'test')",
+                        params![
+                            artifact_id,
+                            "0".repeat(64),
+                            json!([format!("unrelated-{index:03}")]).to_string(),
+                            format!("2026-01-01T00:{:02}:00Z", index % 60),
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                conn.execute(
+                    "INSERT INTO offline_replay_artifacts
+                     (artifact_sequence,artifact_id,report_schema_version,status,
+                      eligibility_content_sha256,content_sha256,created_at,artifact_json)
+                     VALUES (102,'artifact-target','offline_replay.v1','sufficient',?1,?2,
+                             '2026-12-31T23:59:59Z','{}')",
+                    params!["4".repeat(64), "5".repeat(64)],
+                )
+                .map_err(|error| error.to_string())?;
+                conn.execute(
+                    "INSERT INTO replay_producer_bindings
+                     (artifact_id,input_sha256,dispatch_ids_json,maximum_trace_age_seconds,
+                      scope_json,current_policy_json,candidate_policies_json,created_at,created_by)
+                     VALUES ('artifact-target',?1,?2,60,'{}','{}','[]',
+                             '2026-12-31T23:59:59Z','test')",
+                    params!["1".repeat(64), json!(["dispatch-target"]).to_string()],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+
+        let (artifact_ids, truncated) = store
+            .replay_artifacts_for_dispatch("dispatch-target")
+            .unwrap();
+        assert_eq!(artifact_ids, vec!["artifact-target"]);
+        assert!(!truncated);
+        assert!(store
+            .replay_artifacts_for_dispatch("dispatch-missing")
+            .unwrap()
+            .0
+            .is_empty());
+    }
 }

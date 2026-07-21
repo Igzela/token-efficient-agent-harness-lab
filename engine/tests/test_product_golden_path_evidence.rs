@@ -265,6 +265,14 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
         assert_eq!(again, serde_json::Value::Object(evidence.clone()));
         assert_eq!(emitted_again, again);
         assert_eq!(store.audit_events(10_000).unwrap(), audit_before_reads);
+        let rollback_error = store
+            .rollback_v31_to_v30("rollback-operator", true)
+            .unwrap_err();
+        assert!(
+            rollback_error.contains("authoritative terminal evidence exists"),
+            "{rollback_error}"
+        );
+        assert_eq!(store.schema_version().unwrap(), 31);
         // Target main unchanged
         assert_eq!(
             std::fs::read_to_string(repo.join("README.md")).unwrap(),

@@ -2346,19 +2346,10 @@ impl LocalProductStore {
         };
 
         let dispatch_id = run.get("dispatch_id").and_then(Value::as_str);
-        let mut replay_artifact_ids = Vec::new();
-        if let Some(dispatch_id) = dispatch_id {
-            for replay_artifact in self.offline_replay_artifacts(None, 100, 0)? {
-                let Some(replay_artifact_id) =
-                    replay_artifact.get("artifact_id").and_then(Value::as_str)
-                else {
-                    continue;
-                };
-                if self.replay_binding_includes_dispatch(replay_artifact_id, dispatch_id)? {
-                    replay_artifact_ids.push(json!(replay_artifact_id));
-                }
-            }
-        }
+        let (replay_artifact_ids, replay_references_truncated) = match dispatch_id {
+            Some(dispatch_id) => self.replay_artifacts_for_dispatch(dispatch_id)?,
+            None => (Vec::new(), false),
+        };
         let replay = if replay_artifact_ids.is_empty() {
             json!({
                 "status": "unavailable",
@@ -2376,6 +2367,8 @@ impl LocalProductStore {
                 "run_id": run_id,
                 "dispatch_id": dispatch_id,
                 "artifact_ids": replay_artifact_ids,
+                "references_complete": !replay_references_truncated,
+                "references_truncated_at": replay_references_truncated.then_some(100),
             })
         };
 
