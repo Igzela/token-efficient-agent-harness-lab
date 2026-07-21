@@ -326,14 +326,22 @@ fn main() {
         );
     }
 
-    let mut opencode_runtime_executor_for_runtime: Option<(Arc<dyn NodeExecutor>, u64)> = None;
+    let mut opencode_runtime_executor_for_runtime: Option<(
+        Arc<dyn NodeExecutor>,
+        u64,
+        engine::opencode_runtime::OpenCodeCancellationHandle,
+    )> = None;
     let opencode_runtime_config = OpenCodeRuntimeConfig::from_env()
         .unwrap_or_else(|error| panic!("OpenCode runtime configuration failed: {error}"));
     if let Some(config) = opencode_runtime_config {
         let timeout_ms = config.timeout_ms;
-        let invoker = Arc::new(OpenCodeProcessInvoker::new(&config));
-        let executor: Arc<dyn NodeExecutor> = Arc::new(OpenCodeNodeExecutor::new(config, invoker));
-        opencode_runtime_executor_for_runtime = Some((executor, timeout_ms));
+        let cancel = engine::opencode_runtime::OpenCodeCancellationHandle::new();
+        let invoker = Arc::new(OpenCodeProcessInvoker::new(&config, cancel.clone()));
+        let executor: Arc<dyn NodeExecutor> = Arc::new(
+            OpenCodeNodeExecutor::new(config, invoker, cancel.clone())
+                .with_store(store_arc.clone()),
+        );
+        opencode_runtime_executor_for_runtime = Some((executor, timeout_ms, cancel));
         println!("[acp-startup] external_runtime=opencode mode=fixture timeout_ms={timeout_ms}");
     }
 
@@ -443,9 +451,12 @@ fn main() {
             scheduler =
                 scheduler.with_external_runtime_executor(external_runtime_executor, timeout_ms);
         }
-        if let Some((opencode_executor, timeout_ms)) = opencode_runtime_executor_for_runtime.clone()
+        if let Some((opencode_executor, timeout_ms, cancel)) =
+            opencode_runtime_executor_for_runtime.clone()
         {
-            scheduler = scheduler.with_opencode_runtime_executor(opencode_executor, timeout_ms);
+            scheduler = scheduler
+                .with_opencode_runtime_executor(opencode_executor, timeout_ms)
+                .with_opencode_cancellation(cancel);
         }
         if let Some(adaptive_executor) = adaptive_executor_for_workers.clone() {
             let worker_executor = build_trusted_adaptive_worker_executor(

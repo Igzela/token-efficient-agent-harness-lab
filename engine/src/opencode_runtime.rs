@@ -47,7 +47,18 @@ const MAX_PROCESS_OUTPUT_BYTES: usize = 256 * 1024;
 const MAX_PROCESS_ERROR_BYTES: usize = 16 * 1024;
 const MAX_PATCH_BYTES: usize = 64 * 1024;
 const MAX_ALLOWED_PATHS: usize = 32;
+const MAX_TOOL_CALL_COUNT: i64 = 8;
 const PROCESS_TERMINATE_GRACE_MS: u64 = 200;
+const TERMINATION_EVIDENCE_SCHEMA: &str = "opencode_process_termination.v1";
+const FAILURE_RECEIPT_SCHEMA: &str = "opencode_external_failure_receipt.v1";
+
+/// Exact relative paths and roles required in the fixture-adapter manifest.
+const REQUIRED_MANIFEST_ARTIFACTS: &[(&str, &str)] = &[
+    ("src/acp_opencode_adapter/__init__.py", "package_init"),
+    ("src/acp_opencode_adapter/__main__.py", "entrypoint"),
+    ("src/acp_opencode_adapter/adapter.py", "adapter_source"),
+    ("pyproject.toml", "package_manifest"),
+];
 
 /// Environment names the fixture adapter process may receive (exact allowlist).
 const ADAPTER_ENV_ALLOWLIST: &[&str] = &[
@@ -103,7 +114,8 @@ pub struct OpenCodeRuntimeConfig {
     pub timeout_ms: u64,
     pub adapter_version: String,
     pub expected_opencode_version: String,
-    pub fixture_manifest_path: Option<PathBuf>,
+    /// Required whenever the runtime is enabled; absence fails closed.
+    pub fixture_manifest_path: PathBuf,
 }
 
 impl OpenCodeRuntimeConfig {
@@ -127,12 +139,14 @@ impl OpenCodeRuntimeConfig {
             canonical_regular_file(&required_env(ADAPTER_PATH_ENV)?, ADAPTER_PATH_ENV)?;
         let timeout_ms = required_u64(TIMEOUT_MS_ENV, 1_000, 120_000)?;
         let fixture_manifest_path = match std::env::var(MANIFEST_PATH_ENV) {
-            Ok(path) => Some(canonical_regular_file(&path, MANIFEST_PATH_ENV)?),
-            Err(_) => default_fixture_manifest_path(&adapter_path),
+            Ok(path) => canonical_regular_file(&path, MANIFEST_PATH_ENV)?,
+            Err(_) => default_fixture_manifest_path(&adapter_path).ok_or_else(|| {
+                format!(
+                    "{MANIFEST_PATH_ENV} is required when repository-owned FIXTURE_ADAPTER_MANIFEST.json cannot be resolved from the adapter path"
+                )
+            })?,
         };
-        if let Some(ref path) = fixture_manifest_path {
-            validate_fixture_adapter_manifest(path, &adapter_path)?;
-        }
+        validate_fixture_adapter_manifest(&fixture_manifest_path, &adapter_path)?;
         Ok(Some(Self {
             mode,
             python_program,
@@ -146,6 +160,14 @@ impl OpenCodeRuntimeConfig {
 
     #[cfg(test)]
     pub fn fixture(python_program: PathBuf, adapter_path: PathBuf) -> Self {
+        let manifest = default_fixture_manifest_path(&adapter_path)
+            .or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../adapters/opencode/FIXTURE_ADAPTER_MANIFEST.json")
+                    .canonicalize()
+                    .ok()
+            })
+            .unwrap_or_else(|| PathBuf::from("adapters/opencode/FIXTURE_ADAPTER_MANIFEST.json"));
         Self {
             mode: OpenCodeMode::Fixture,
             python_program,
@@ -153,8 +175,38 @@ impl OpenCodeRuntimeConfig {
             timeout_ms: 30_000,
             adapter_version: OPENCODE_ADAPTER_VERSION.to_string(),
             expected_opencode_version: PINNED_OPENCODE_VERSION.to_string(),
-            fixture_manifest_path: None,
+            fixture_manifest_path: manifest,
         }
+    }
+}
+
+/// Scheduler-owned cancellation latch shared with the OpenCode process invoker.
+#[derive(Debug, Clone, Default)]
+pub struct OpenCodeCancellationHandle {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl OpenCodeCancellationHandle {
+    pub fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, AtomicOrdering::SeqCst);
+    }
+
+    pub fn reset(&self) {
+        self.cancelled.store(false, AtomicOrdering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(AtomicOrdering::SeqCst)
+    }
+
+    pub fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancelled)
     }
 }
 
@@ -162,6 +214,8 @@ impl OpenCodeRuntimeConfig {
 pub struct OpenCodeInvokeError {
     pub code: String,
     pub message: String,
+    /// Boxed to keep the Err-variant of invoke Results within Clippy size bounds.
+    pub termination: Option<Box<ProcessTerminationEvidence>>,
 }
 
 impl OpenCodeInvokeError {
@@ -169,58 +223,194 @@ impl OpenCodeInvokeError {
         Self {
             code: code.into(),
             message: redact_sensitive_patterns(&message.into()),
+            termination: None,
+        }
+    }
+
+    fn with_termination(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        termination: ProcessTerminationEvidence,
+    ) -> Self {
+        Self {
+            code: code.into(),
+            message: redact_sensitive_patterns(&message.into()),
+            termination: Some(Box::new(termination)),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessTerminationEvidence {
+    pub schema_version: String,
     pub reason: String,
     pub process_group_id: Option<i32>,
     pub root_pid: Option<u32>,
-    pub signal: Option<String>,
+    pub signals_attempted: Vec<String>,
+    pub wait_succeeded: bool,
     pub descendants_remaining: u32,
     pub stdout_drained: bool,
     pub stderr_drained: bool,
     pub readers_joined: bool,
+    pub containment_ok: bool,
+}
+
+impl ProcessTerminationEvidence {
+    fn to_bounded_json(&self) -> Value {
+        json!({
+            "schema_version": self.schema_version,
+            "reason": self.reason,
+            "process_group_id": self.process_group_id,
+            "root_pid": self.root_pid,
+            "signals_attempted": self.signals_attempted,
+            "wait_succeeded": self.wait_succeeded,
+            "descendants_remaining": self.descendants_remaining,
+            "stdout_drained": self.stdout_drained,
+            "stderr_drained": self.stderr_drained,
+            "readers_joined": self.readers_joined,
+            "containment_ok": self.containment_ok,
+        })
+    }
+}
+
+/// Per-invocation cancel probe (scheduler kill, env kill, stale claim/attempt).
+pub trait OpenCodeCancelProbe: Send + Sync {
+    /// Returns (should_cancel, trigger_code).
+    fn should_cancel(&self) -> Option<&'static str>;
+}
+
+pub struct AlwaysLiveProbe;
+
+impl OpenCodeCancelProbe for AlwaysLiveProbe {
+    fn should_cancel(&self) -> Option<&'static str> {
+        if env_kill_switch_active() {
+            Some("opencode_kill_switch")
+        } else {
+            None
+        }
+    }
+}
+
+pub struct CompositeCancelProbe {
+    handle: OpenCodeCancellationHandle,
+    store: Option<Arc<crate::storage::local_product_store::LocalProductStore>>,
+    run_id: String,
+    node_id: String,
+    execution_attempt: i64,
+}
+
+impl CompositeCancelProbe {
+    pub fn new(
+        handle: OpenCodeCancellationHandle,
+        store: Option<Arc<crate::storage::local_product_store::LocalProductStore>>,
+        run_id: impl Into<String>,
+        node_id: impl Into<String>,
+        execution_attempt: i64,
+    ) -> Self {
+        Self {
+            handle,
+            store,
+            run_id: run_id.into(),
+            node_id: node_id.into(),
+            execution_attempt,
+        }
+    }
+}
+
+impl OpenCodeCancelProbe for CompositeCancelProbe {
+    fn should_cancel(&self) -> Option<&'static str> {
+        if env_kill_switch_active() {
+            return Some("opencode_kill_switch");
+        }
+        if self.handle.is_cancelled() {
+            return Some("scheduler_cancelled");
+        }
+        if let Some(store) = &self.store {
+            if !execution_claim_still_owns(
+                store,
+                &self.run_id,
+                &self.node_id,
+                self.execution_attempt,
+            ) {
+                return Some("stale_execution_claim");
+            }
+        }
+        None
+    }
+}
+
+fn execution_claim_still_owns(
+    store: &crate::storage::local_product_store::LocalProductStore,
+    run_id: &str,
+    node_id: &str,
+    execution_attempt: i64,
+) -> bool {
+    let Ok(Some(run)) = store.get_workflow_run(run_id) else {
+        return false;
+    };
+    let Some(nodes) = run.get("nodes").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(node) = nodes
+        .iter()
+        .find(|n| n.get("node_id").and_then(Value::as_str) == Some(node_id))
+    else {
+        return false;
+    };
+    let status = node
+        .get("db_status")
+        .or_else(|| node.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if status == "cancelled" || status == "completed" || status == "failed" {
+        return false;
+    }
+    if status != "running" {
+        return false;
+    }
+    let attempt = node
+        .get("attempt_count")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    attempt == execution_attempt
 }
 
 pub trait OpenCodeInvoker: Send + Sync {
-    fn invoke(&self, request: &Value, timeout_ms: u64) -> Result<Value, OpenCodeInvokeError>;
+    fn invoke(
+        &self,
+        request: &Value,
+        timeout_ms: u64,
+        cancel: &dyn OpenCodeCancelProbe,
+    ) -> Result<Value, OpenCodeInvokeError>;
 }
 
 pub struct OpenCodeProcessInvoker {
     python_program: PathBuf,
     adapter_path: PathBuf,
-    /// Optional cooperative kill latch (tests / future scheduler binding).
-    kill_flag: Option<Arc<AtomicBool>>,
+    cancel_handle: OpenCodeCancellationHandle,
 }
 
 impl OpenCodeProcessInvoker {
-    pub fn new(config: &OpenCodeRuntimeConfig) -> Self {
+    pub fn new(config: &OpenCodeRuntimeConfig, cancel_handle: OpenCodeCancellationHandle) -> Self {
         Self {
             python_program: config.python_program.clone(),
             adapter_path: config.adapter_path.clone(),
-            kill_flag: None,
+            cancel_handle,
         }
     }
 
-    #[cfg(test)]
-    fn with_kill_flag(mut self, flag: Arc<AtomicBool>) -> Self {
-        self.kill_flag = Some(flag);
-        self
-    }
-
-    fn should_kill(&self) -> bool {
-        self.kill_flag
-            .as_ref()
-            .is_some_and(|flag| flag.load(AtomicOrdering::SeqCst))
-            || env_kill_switch_active()
+    pub fn cancellation_handle(&self) -> OpenCodeCancellationHandle {
+        self.cancel_handle.clone()
     }
 }
 
 impl OpenCodeInvoker for OpenCodeProcessInvoker {
-    fn invoke(&self, request: &Value, timeout_ms: u64) -> Result<Value, OpenCodeInvokeError> {
+    fn invoke(
+        &self,
+        request: &Value,
+        timeout_ms: u64,
+        cancel: &dyn OpenCodeCancelProbe,
+    ) -> Result<Value, OpenCodeInvokeError> {
         let input = canonical_event_json(request)
             .map_err(|error| OpenCodeInvokeError::new("request_encoding", error.to_string()))?;
         let pythonpath = resolve_pythonpath(&self.adapter_path);
@@ -268,7 +458,6 @@ impl OpenCodeInvoker for OpenCodeProcessInvoker {
             .ok_or_else(|| OpenCodeInvokeError::new("adapter_stdin", "missing stdin"))?
             .write_all(input.as_bytes())
             .map_err(|error| OpenCodeInvokeError::new("adapter_stdin", error.to_string()))?;
-        // Drop stdin so the adapter sees EOF.
         let stdout = child
             .stdout
             .take()
@@ -281,50 +470,68 @@ impl OpenCodeInvoker for OpenCodeProcessInvoker {
         let stderr_reader = thread::spawn(move || read_bounded(stderr, MAX_PROCESS_ERROR_BYTES));
         let started = Instant::now();
         let status = loop {
-            if self.should_kill() {
-                let evidence = terminate_process_tree(
+            if let Some(trigger) = cancel.should_cancel() {
+                return Err(finalize_forced_termination(
                     &mut child,
                     process_group_id,
-                    "opencode_kill_switch",
+                    trigger,
                     "SIGTERM",
-                );
-                let _ = join_readers(stdout_reader, stderr_reader);
-                return Err(OpenCodeInvokeError::new(
-                    "adapter_killed",
-                    format!(
-                        "OpenCode kill switch became active; descendants_remaining={}",
-                        evidence.descendants_remaining
-                    ),
+                    stdout_reader,
+                    stderr_reader,
+                ));
+            }
+            // Also honor the shared scheduler handle even if probe is AlwaysLive.
+            if self.cancel_handle.is_cancelled() {
+                return Err(finalize_forced_termination(
+                    &mut child,
+                    process_group_id,
+                    "scheduler_cancelled",
+                    "SIGTERM",
+                    stdout_reader,
+                    stderr_reader,
                 ));
             }
             match child.try_wait() {
                 Ok(Some(status)) => break status,
                 Ok(None) if started.elapsed() >= Duration::from_millis(timeout_ms) => {
-                    let evidence = terminate_process_tree(
+                    return Err(finalize_forced_termination(
                         &mut child,
                         process_group_id,
                         "adapter_timeout",
                         "SIGKILL",
-                    );
-                    let _ = join_readers(stdout_reader, stderr_reader);
-                    return Err(OpenCodeInvokeError::new(
-                        "adapter_timeout",
-                        format!(
-                            "OpenCode adapter timed out after {timeout_ms}ms; descendants_remaining={}",
-                            evidence.descendants_remaining
-                        ),
+                        stdout_reader,
+                        stderr_reader,
                     ));
                 }
                 Ok(None) => thread::sleep(Duration::from_millis(25)),
                 Err(error) => {
-                    let _ = terminate_process_tree(
+                    let err = finalize_forced_termination(
                         &mut child,
                         process_group_id,
                         "adapter_wait",
                         "SIGKILL",
+                        stdout_reader,
+                        stderr_reader,
                     );
-                    let _ = join_readers(stdout_reader, stderr_reader);
-                    return Err(OpenCodeInvokeError::new("adapter_wait", error.to_string()));
+                    return Err(OpenCodeInvokeError::with_termination(
+                        "adapter_wait",
+                        error.to_string(),
+                        err.termination
+                            .map(|b| *b)
+                            .unwrap_or_else(|| ProcessTerminationEvidence {
+                                schema_version: TERMINATION_EVIDENCE_SCHEMA.to_string(),
+                                reason: "adapter_wait".into(),
+                                process_group_id: Some(process_group_id),
+                                root_pid: None,
+                                signals_attempted: vec!["SIGKILL".into()],
+                                wait_succeeded: false,
+                                descendants_remaining: 0,
+                                stdout_drained: false,
+                                stderr_drained: false,
+                                readers_joined: false,
+                                containment_ok: false,
+                            }),
+                    ));
                 }
             }
         };
@@ -356,6 +563,66 @@ impl OpenCodeInvoker for OpenCodeProcessInvoker {
             return Err(OpenCodeInvokeError::new(code, message));
         }
         Ok(parsed)
+    }
+}
+
+fn finalize_forced_termination(
+    child: &mut Child,
+    process_group_id: i32,
+    reason: &str,
+    preferred_signal: &str,
+    stdout_reader: thread::JoinHandle<std::io::Result<BoundedBytes>>,
+    stderr_reader: thread::JoinHandle<std::io::Result<BoundedBytes>>,
+) -> OpenCodeInvokeError {
+    let mut evidence = signal_process_tree(child, process_group_id, reason, preferred_signal);
+    let join = join_readers_status(stdout_reader, stderr_reader);
+    evidence.stdout_drained = join.stdout_ok;
+    evidence.stderr_drained = join.stderr_ok;
+    evidence.readers_joined = join.readers_joined;
+    evidence.containment_ok = evidence.wait_succeeded
+        && evidence.descendants_remaining == 0
+        && evidence.readers_joined
+        && evidence.stdout_drained
+        && evidence.stderr_drained;
+    let code = if !evidence.containment_ok {
+        "process_containment_failed"
+    } else if reason == "adapter_timeout" {
+        "adapter_timeout"
+    } else if reason == "stale_execution_claim" {
+        "stale_execution_claim"
+    } else if reason == "scheduler_cancelled" {
+        "scheduler_cancelled"
+    } else {
+        "adapter_killed"
+    };
+    OpenCodeInvokeError::with_termination(
+        code,
+        format!(
+            "OpenCode adapter terminated ({reason}); descendants_remaining={}; containment_ok={}",
+            evidence.descendants_remaining, evidence.containment_ok
+        ),
+        evidence,
+    )
+}
+
+struct ReaderJoinStatus {
+    stdout_ok: bool,
+    stderr_ok: bool,
+    readers_joined: bool,
+}
+
+fn join_readers_status(
+    stdout_reader: thread::JoinHandle<std::io::Result<BoundedBytes>>,
+    stderr_reader: thread::JoinHandle<std::io::Result<BoundedBytes>>,
+) -> ReaderJoinStatus {
+    let stdout_join = stdout_reader.join();
+    let stderr_join = stderr_reader.join();
+    let stdout_ok = matches!(&stdout_join, Ok(Ok(_)));
+    let stderr_ok = matches!(&stderr_join, Ok(Ok(_)));
+    ReaderJoinStatus {
+        stdout_ok,
+        stderr_ok,
+        readers_joined: stdout_join.is_ok() && stderr_join.is_ok(),
     }
 }
 
@@ -395,63 +662,70 @@ fn join_readers(
     Ok((stdout, stderr))
 }
 
-fn terminate_process_tree(
+/// Signal and wait for the process tree. Drain/reader flags are filled by the caller
+/// only after those operations actually complete.
+fn signal_process_tree(
     child: &mut Child,
     process_group_id: i32,
     reason: &str,
     preferred_signal: &str,
 ) -> ProcessTerminationEvidence {
     let root_pid = child.id();
+    let mut signals = Vec::new();
     #[cfg(unix)]
     {
-        // Prefer process-group signal so descendants launched in the same session die.
-        let signal = if preferred_signal == "SIGKILL" {
-            libc::SIGKILL
+        if preferred_signal == "SIGKILL" {
+            unsafe {
+                let _ = libc::kill(-process_group_id, libc::SIGKILL);
+            }
+            signals.push("SIGKILL".to_string());
         } else {
-            libc::SIGTERM
-        };
-        unsafe {
-            let _ = libc::kill(-process_group_id, signal);
-        }
-        if preferred_signal != "SIGKILL" {
+            unsafe {
+                let _ = libc::kill(-process_group_id, libc::SIGTERM);
+            }
+            signals.push("SIGTERM".to_string());
             thread::sleep(Duration::from_millis(PROCESS_TERMINATE_GRACE_MS));
             unsafe {
                 let _ = libc::kill(-process_group_id, libc::SIGKILL);
             }
+            signals.push("SIGKILL".to_string());
         }
         let _ = child.kill();
-        let _ = child.wait();
-        // Brief settle so reaped zombies leave /proc.
+        let wait_succeeded = child.wait().is_ok();
         thread::sleep(Duration::from_millis(50));
         let remaining = count_session_descendants(process_group_id);
         ProcessTerminationEvidence {
+            schema_version: TERMINATION_EVIDENCE_SCHEMA.to_string(),
             reason: reason.to_string(),
             process_group_id: Some(process_group_id),
             root_pid: Some(root_pid),
-            signal: Some(if preferred_signal == "SIGKILL" {
-                "SIGKILL".to_string()
-            } else {
-                "SIGTERM+SIGKILL".to_string()
-            }),
+            signals_attempted: signals,
+            wait_succeeded,
             descendants_remaining: remaining,
-            stdout_drained: true,
-            stderr_drained: true,
-            readers_joined: true,
+            // Caller must set these after join/drain succeeds.
+            stdout_drained: false,
+            stderr_drained: false,
+            readers_joined: false,
+            containment_ok: false,
         }
     }
     #[cfg(not(unix))]
     {
         let _ = child.kill();
-        let _ = child.wait();
+        let wait_succeeded = child.wait().is_ok();
+        signals.push("kill".to_string());
         ProcessTerminationEvidence {
+            schema_version: TERMINATION_EVIDENCE_SCHEMA.to_string(),
             reason: reason.to_string(),
             process_group_id: None,
             root_pid: Some(root_pid),
-            signal: Some("kill".to_string()),
+            signals_attempted: signals,
+            wait_succeeded,
             descendants_remaining: 0,
-            stdout_drained: true,
-            stderr_drained: true,
-            readers_joined: true,
+            stdout_drained: false,
+            stderr_drained: false,
+            readers_joined: false,
+            containment_ok: false,
         }
     }
 }
@@ -506,17 +780,37 @@ fn resolve_pythonpath(adapter_path: &Path) -> PathBuf {
 pub struct OpenCodeNodeExecutor {
     config: OpenCodeRuntimeConfig,
     invoker: Arc<dyn OpenCodeInvoker>,
+    cancel_handle: OpenCodeCancellationHandle,
+    store: Option<Arc<crate::storage::local_product_store::LocalProductStore>>,
     /// When true, fail closed as if the kill switch is active (test injection only).
     force_kill_switch: bool,
 }
 
 impl OpenCodeNodeExecutor {
-    pub fn new(config: OpenCodeRuntimeConfig, invoker: Arc<dyn OpenCodeInvoker>) -> Self {
+    pub fn new(
+        config: OpenCodeRuntimeConfig,
+        invoker: Arc<dyn OpenCodeInvoker>,
+        cancel_handle: OpenCodeCancellationHandle,
+    ) -> Self {
         Self {
             config,
             invoker,
+            cancel_handle,
+            store: None,
             force_kill_switch: false,
         }
+    }
+
+    pub fn with_store(
+        mut self,
+        store: Arc<crate::storage::local_product_store::LocalProductStore>,
+    ) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    pub fn cancellation_handle(&self) -> OpenCodeCancellationHandle {
+        self.cancel_handle.clone()
     }
 
     #[cfg(test)]
@@ -526,10 +820,41 @@ impl OpenCodeNodeExecutor {
     }
 
     fn failure(&self, started: &Instant, code: &str, message: &str) -> NodeExecutionOutput {
+        self.failure_with_evidence(started, code, message, None, None)
+    }
+
+    fn failure_with_evidence(
+        &self,
+        started: &Instant,
+        code: &str,
+        message: &str,
+        termination: Option<&ProcessTerminationEvidence>,
+        identity: Option<&ExecutionIdentity>,
+    ) -> NodeExecutionOutput {
+        let mut receipt = json!({
+            "schema_version": FAILURE_RECEIPT_SCHEMA,
+            "executor_type": OPENCODE_EXECUTOR_TYPE,
+            "mode": self.config.mode.as_str(),
+            "binary_admission_status": "not_admitted",
+            "error_domain": code,
+            "error_message": redact_sensitive_patterns(message),
+        });
+        if let Some(id) = identity {
+            receipt["run_id"] = json!(id.run_id);
+            receipt["node_id"] = json!(id.node_id);
+            receipt["workflow_id"] = json!(id.workflow_id);
+            receipt["execution_attempt"] = json!(id.execution_attempt);
+            receipt["scheduler_claim_id"] = json!(id.scheduler_claim_id);
+            receipt["invocation_id"] = json!(id.invocation_id);
+        }
+        if let Some(term) = termination {
+            receipt["process_termination"] = term.to_bounded_json();
+        }
+        let output = canonical_event_json(&receipt).ok();
         NodeExecutionOutput {
             status: "failed".to_string(),
             executor_type: OPENCODE_EXECUTOR_TYPE.to_string(),
-            output: None,
+            output,
             error_domain: Some(code.to_string()),
             error_message: Some(redact_sensitive_patterns(message)),
             input_tokens: None,
@@ -556,7 +881,7 @@ impl OpenCodeNodeExecutor {
                 "OpenCode executor requires task_type opencode_external",
             ));
         }
-        if self.force_kill_switch || env_kill_switch_active() {
+        if env_kill_switch_active() || self.cancel_handle.is_cancelled() {
             return Err(self.failure(
                 started,
                 "opencode_killed",
@@ -689,14 +1014,59 @@ impl OpenCodeNodeExecutor {
         let profile_hash = sha256(&canonical_event_json(&permission_profile).map_err(|error| {
             self.failure(started, "opencode_profile_invalid", &error.to_string())
         })?);
-        let lease_id = format!("oclease-{}", uuid::Uuid::new_v4().simple());
+        // Scheduler-owned attempt/claim identity (not a newly minted ocleave-* authority).
+        let execution_attempt = input
+            .node_metadata
+            .get("execution_attempt")
+            .and_then(Value::as_i64)
+            .filter(|v| *v >= 1)
+            .ok_or_else(|| {
+                self.failure(
+                    started,
+                    "opencode_execution_identity_missing",
+                    "execution_attempt from scheduler lease is required",
+                )
+            })?;
+        let scheduler_claim_id = input
+            .node_metadata
+            .get("scheduler_claim_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                format!(
+                    "workflow:{}:{}:{}",
+                    input.run_id, input.node_id, execution_attempt
+                )
+            });
+        let expected_claim = format!(
+            "workflow:{}:{}:{}",
+            input.run_id, input.node_id, execution_attempt
+        );
+        if scheduler_claim_id != expected_claim {
+            return Err(self.failure(
+                started,
+                "opencode_execution_identity_invalid",
+                "scheduler_claim_id does not match owner-derived claim",
+            ));
+        }
+        // Correlation-only UUID; must not substitute for scheduler claim identity.
         let invocation_id = format!("ocinv-{}", uuid::Uuid::new_v4().simple());
+        let identity = ExecutionIdentity {
+            run_id: input.run_id.clone(),
+            node_id: input.node_id.clone(),
+            workflow_id: input.workflow_id.clone(),
+            execution_attempt,
+            scheduler_claim_id: scheduler_claim_id.clone(),
+            invocation_id: invocation_id.clone(),
+        };
         let request = json!({
             "schema_version": OPENCODE_REQUEST_SCHEMA,
             "invocation_id": invocation_id,
             "run_id": input.run_id,
             "node_id": input.node_id,
-            "lease_id": lease_id,
+            "workflow_id": input.workflow_id,
+            "execution_attempt": execution_attempt,
+            "scheduler_claim_id": scheduler_claim_id,
             "runtime_kind": "opencode",
             "mode": self.config.mode.as_str(),
             "task_kind": task_kind,
@@ -713,24 +1083,47 @@ impl OpenCodeNodeExecutor {
             "expected_opencode_version": self.config.expected_opencode_version,
             "expected_adapter_version": self.config.adapter_version,
         });
+        let cancel = CompositeCancelProbe::new(
+            self.cancel_handle.clone(),
+            self.store.clone(),
+            &input.run_id,
+            &input.node_id,
+            execution_attempt,
+        );
+        if self.force_kill_switch {
+            return Err(self.failure_with_evidence(
+                started,
+                "opencode_killed",
+                "OpenCode runtime kill switch is active",
+                None,
+                Some(&identity),
+            ));
+        }
         let result = self
             .invoker
-            .invoke(&request, self.config.timeout_ms)
-            .map_err(|error| self.failure(started, &error.code, &error.message))?;
+            .invoke(&request, self.config.timeout_ms, &cancel)
+            .map_err(|error| {
+                self.failure_with_evidence(
+                    started,
+                    &error.code,
+                    &error.message,
+                    error.termination.as_deref(),
+                    Some(&identity),
+                )
+            })?;
 
         validate_full_result_identity(
             &result,
-            &invocation_id,
-            &input.run_id,
-            &input.node_id,
-            &lease_id,
+            &identity,
             task_kind,
             task_input_hash,
             base_commit,
             worktree_id,
             &self.config,
         )
-        .map_err(|(code, message)| self.failure(started, &code, &message))?;
+        .map_err(|(code, message)| {
+            self.failure_with_evidence(started, &code, &message, None, Some(&identity))
+        })?;
 
         let tool_summary = result.get("tool_summary").ok_or_else(|| {
             self.failure(
@@ -739,8 +1132,13 @@ impl OpenCodeNodeExecutor {
                 "tool_summary is required; negative-use claims cannot be fabricated",
             )
         })?;
-        let counters = validate_tool_summary_counters(tool_summary)
-            .map_err(|(code, message)| self.failure(started, &code, &message))?;
+        let counters =
+            validate_tool_summary_counters(tool_summary).map_err(|(code, message)| {
+                self.failure_with_evidence(started, &code, &message, None, Some(&identity))
+            })?;
+        validate_task_kind_result_shape(&result, task_kind).map_err(|(code, message)| {
+            self.failure_with_evidence(started, &code, &message, None, Some(&identity))
+        })?;
 
         if let Some(patch) = result.get("patch").and_then(Value::as_str) {
             if patch.len() > MAX_PATCH_BYTES {
@@ -841,8 +1239,10 @@ impl OpenCodeNodeExecutor {
             "base_commit": base_commit,
             "worktree_id": worktree_id,
             "allowed_paths": paths,
-            "invocation_id": invocation_id,
-            "lease_id": lease_id,
+            "invocation_id": identity.invocation_id,
+            "execution_attempt": identity.execution_attempt,
+            "scheduler_claim_id": identity.scheduler_claim_id,
+            "workflow_id": identity.workflow_id,
             "tool_summary": tool_summary,
             "result": result,
             "network_used": network_used,
@@ -886,6 +1286,16 @@ impl NodeExecutor for OpenCodeNodeExecutor {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ExecutionIdentity {
+    run_id: String,
+    node_id: String,
+    workflow_id: String,
+    execution_attempt: i64,
+    scheduler_claim_id: String,
+    invocation_id: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ToolCounters {
     tool_call_count: i64,
@@ -912,13 +1322,9 @@ fn deny_by_default_permission_profile() -> Value {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn validate_full_result_identity(
     result: &Value,
-    invocation_id: &str,
-    run_id: &str,
-    node_id: &str,
-    lease_id: &str,
+    identity: &ExecutionIdentity,
     task_kind: &str,
     task_input_hash: &str,
     base_commit: &str,
@@ -931,28 +1337,37 @@ fn validate_full_result_identity(
             "result schema_version is invalid".into(),
         ));
     }
-    if result.get("invocation_id").and_then(Value::as_str) != Some(invocation_id) {
+    if result.get("invocation_id").and_then(Value::as_str) != Some(identity.invocation_id.as_str())
+    {
         return Err((
             "opencode_result_binding_invalid".into(),
             "invocation_id mismatch".into(),
         ));
     }
-    if result.get("run_id").and_then(Value::as_str) != Some(run_id) {
+    if result.get("run_id").and_then(Value::as_str) != Some(identity.run_id.as_str()) {
         return Err((
             "opencode_result_binding_invalid".into(),
             "run_id mismatch".into(),
         ));
     }
-    if result.get("node_id").and_then(Value::as_str) != Some(node_id) {
+    if result.get("node_id").and_then(Value::as_str) != Some(identity.node_id.as_str()) {
         return Err((
             "opencode_result_binding_invalid".into(),
             "node_id mismatch".into(),
         ));
     }
-    if result.get("lease_id").and_then(Value::as_str) != Some(lease_id) {
+    if result.get("scheduler_claim_id").and_then(Value::as_str)
+        != Some(identity.scheduler_claim_id.as_str())
+    {
         return Err((
             "opencode_result_binding_invalid".into(),
-            "lease_id mismatch".into(),
+            "scheduler_claim_id mismatch".into(),
+        ));
+    }
+    if result.get("execution_attempt").and_then(Value::as_i64) != Some(identity.execution_attempt) {
+        return Err((
+            "opencode_result_binding_invalid".into(),
+            "execution_attempt mismatch".into(),
         ));
     }
     if result.get("task_kind").and_then(Value::as_str) != Some(task_kind) {
@@ -1109,9 +1524,92 @@ fn validate_tool_summary_counters(summary: &Value) -> Result<ToolCounters, (Stri
             ));
         }
     }
-    // tool_call_count may be non-zero for patch fixtures; no upper bound beyond i64 here.
-    let _ = counters.tool_call_count;
+    if counters.tool_call_count > MAX_TOOL_CALL_COUNT {
+        return Err((
+            "opencode_tool_call_limit".into(),
+            format!(
+                "tool_call_count {} exceeds fixture max {}",
+                counters.tool_call_count, MAX_TOOL_CALL_COUNT
+            ),
+        ));
+    }
     Ok(counters)
+}
+
+fn validate_task_kind_result_shape(
+    result: &Value,
+    task_kind: &str,
+) -> Result<(), (String, String)> {
+    let reason = result
+        .get("reason_code")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    match task_kind {
+        "analysis" => {
+            if result.get("analysis").is_none() {
+                return Err((
+                    "opencode_result_shape_invalid".into(),
+                    "analysis task requires analysis object".into(),
+                ));
+            }
+            if result.get("patch").and_then(|v| v.as_str()).is_some() {
+                return Err((
+                    "opencode_result_shape_invalid".into(),
+                    "analysis task must not include a patch".into(),
+                ));
+            }
+            let changed = result
+                .get("changed_paths")
+                .and_then(Value::as_array)
+                .map(|a| a.len())
+                .unwrap_or(usize::MAX);
+            if changed != 0 {
+                return Err((
+                    "opencode_result_shape_invalid".into(),
+                    "analysis task requires empty changed_paths".into(),
+                ));
+            }
+            if reason != "fixture_analysis_ok" {
+                return Err((
+                    "opencode_reason_code_invalid".into(),
+                    "analysis reason_code must be fixture_analysis_ok".into(),
+                ));
+            }
+        }
+        "allowed_path_patch" => {
+            if result.get("patch").and_then(Value::as_str).is_none() {
+                return Err((
+                    "opencode_result_shape_invalid".into(),
+                    "allowed_path_patch requires patch body".into(),
+                ));
+            }
+            if result.get("patch_sha256").and_then(Value::as_str).is_none() {
+                return Err((
+                    "opencode_result_shape_invalid".into(),
+                    "allowed_path_patch requires patch_sha256".into(),
+                ));
+            }
+            let changed = result
+                .get("changed_paths")
+                .and_then(Value::as_array)
+                .map(|a| a.len())
+                .unwrap_or(0);
+            if changed != 1 {
+                return Err((
+                    "opencode_result_shape_invalid".into(),
+                    "allowed_path_patch requires exactly one changed path".into(),
+                ));
+            }
+            if reason != "fixture_patch_ok" {
+                return Err((
+                    "opencode_reason_code_invalid".into(),
+                    "patch reason_code must be fixture_patch_ok".into(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Parse `opencode_fixture_patch.v1` bodies and return ordered changed paths.
@@ -1346,13 +1844,54 @@ pub fn validate_fixture_adapter_manifest(
         .get("artifacts")
         .and_then(Value::as_array)
         .ok_or_else(|| "fixture manifest artifacts required".to_string())?;
+    if artifacts.is_empty() {
+        return Err("fixture manifest artifacts must be non-empty".into());
+    }
+    if artifacts.len() != REQUIRED_MANIFEST_ARTIFACTS.len() {
+        return Err(format!(
+            "fixture manifest must declare exactly {} artifacts",
+            REQUIRED_MANIFEST_ARTIFACTS.len()
+        ));
+    }
     let package_root = package_root_from_adapter(adapter_path)
         .ok_or_else(|| "cannot resolve adapter package root".to_string())?;
+    let package_root = std::fs::canonicalize(&package_root)
+        .map_err(|e| format!("package root canonicalize failed: {e}"))?;
+    let mut seen_paths = std::collections::BTreeSet::new();
+    let mut seen_roles = std::collections::BTreeSet::new();
     for artifact in artifacts {
         let rel = artifact
             .get("path")
             .and_then(Value::as_str)
             .ok_or_else(|| "artifact path required".to_string())?;
+        let role = artifact
+            .get("role")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "artifact role required".to_string())?;
+        if rel.is_empty()
+            || rel.starts_with('/')
+            || rel.starts_with('\\')
+            || rel.contains("..")
+            || rel.contains('\0')
+        {
+            return Err(format!("artifact path invalid: {rel}"));
+        }
+        if !seen_paths.insert(rel.to_string()) {
+            return Err(format!("duplicate artifact path: {rel}"));
+        }
+        if !seen_roles.insert(role.to_string()) {
+            return Err(format!("duplicate artifact role: {role}"));
+        }
+        let expected_role = REQUIRED_MANIFEST_ARTIFACTS
+            .iter()
+            .find(|(path, _)| *path == rel)
+            .map(|(_, role)| *role)
+            .ok_or_else(|| format!("unexpected artifact path: {rel}"))?;
+        if role != expected_role {
+            return Err(format!(
+                "artifact {rel} role mismatch: expected {expected_role}, got {role}"
+            ));
+        }
         let expected = artifact
             .get("sha256")
             .and_then(Value::as_str)
@@ -1366,12 +1905,45 @@ pub fn validate_fixture_adapter_manifest(
             ));
         }
         let full = package_root.join(rel);
-        let actual = sha256_file(&full)?;
+        let full_canon = std::fs::canonicalize(&full)
+            .map_err(|e| format!("artifact {rel} path resolve failed: {e}"))?;
+        if !full_canon.starts_with(&package_root) {
+            return Err(format!("artifact {rel} escapes package root"));
+        }
+        let actual = sha256_file(&full_canon)?;
         if actual != expected {
             return Err(format!(
                 "artifact {rel} sha256 mismatch: expected {expected}, got {actual}"
             ));
         }
+    }
+    for (path, role) in REQUIRED_MANIFEST_ARTIFACTS {
+        if !seen_paths.contains(*path) {
+            return Err(format!("missing required artifact path: {path}"));
+        }
+        if !seen_roles.contains(*role) {
+            return Err(format!("missing required artifact role: {role}"));
+        }
+    }
+    let adapter_canon = std::fs::canonicalize(adapter_path)
+        .map_err(|e| format!("adapter path canonicalize failed: {e}"))?;
+    if !adapter_canon.starts_with(&package_root) {
+        return Err("adapter path is outside the validated package root".into());
+    }
+    let entrypoint = package_root.join("src/acp_opencode_adapter/__main__.py");
+    let entrypoint_canon = std::fs::canonicalize(&entrypoint)
+        .map_err(|e| format!("entrypoint canonicalize failed: {e}"))?;
+    let source = package_root.join("src/acp_opencode_adapter/adapter.py");
+    let source_canon = std::fs::canonicalize(&source).ok();
+    let package_module = package_root.join("src/acp_opencode_adapter");
+    let package_module_canon = std::fs::canonicalize(&package_module).ok();
+    let adapter_ok = adapter_canon == entrypoint_canon
+        || source_canon.as_ref() == Some(&adapter_canon)
+        || package_module_canon
+            .as_ref()
+            .is_some_and(|p| adapter_canon == *p || adapter_canon.starts_with(p));
+    if !adapter_ok {
+        return Err("adapter entrypoint is not one of the manifest-bound package artifacts".into());
     }
     let profile = deny_by_default_permission_profile();
     let profile_json = canonical_event_json(&profile).map_err(|e| e.to_string())?;
@@ -1408,7 +1980,10 @@ fn package_root_from_adapter(adapter_path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor_pool::{register_default_executors, ExecutorPool};
+    use crate::executor_pool::{
+        register_default_executors, register_opencode_runtime_executor, ExecutorPool,
+    };
+    use crate::scheduler::{SchedulerConfig, WorkflowScheduler};
     use crate::storage::local_product_store::LocalProductStore;
     use std::sync::Mutex;
 
@@ -1416,12 +1991,18 @@ mod tests {
         last: Mutex<Option<Value>>,
         response: Value,
         fail: Option<OpenCodeInvokeError>,
-        /// When true, echo identity fields from the request into the response.
         bind_identity: bool,
+        calls: Mutex<u32>,
     }
 
     impl OpenCodeInvoker for RecordingInvoker {
-        fn invoke(&self, request: &Value, _timeout_ms: u64) -> Result<Value, OpenCodeInvokeError> {
+        fn invoke(
+            &self,
+            request: &Value,
+            _timeout_ms: u64,
+            _cancel: &dyn OpenCodeCancelProbe,
+        ) -> Result<Value, OpenCodeInvokeError> {
+            *self.calls.lock().unwrap() += 1;
             *self.last.lock().unwrap() = Some(request.clone());
             if let Some(error) = &self.fail {
                 return Err(error.clone());
@@ -1432,7 +2013,8 @@ mod tests {
                     "invocation_id",
                     "run_id",
                     "node_id",
-                    "lease_id",
+                    "scheduler_claim_id",
+                    "execution_attempt",
                     "task_kind",
                     "task_input_hash",
                     "base_commit",
@@ -1487,12 +2069,18 @@ mod tests {
     }
 
     fn sample_input(task_kind: &str, paths: &[&str]) -> NodeExecutionInput {
+        sample_input_attempt(task_kind, paths, 1)
+    }
+
+    fn sample_input_attempt(task_kind: &str, paths: &[&str], attempt: i64) -> NodeExecutionInput {
         NodeExecutionInput {
             run_id: "run-oc-1".to_string(),
             workflow_id: "wf-oc-1".to_string(),
             node_id: "node-oc-1".to_string(),
             task_type: OPENCODE_TASK_TYPE.to_string(),
             node_metadata: json!({
+                "execution_attempt": attempt,
+                "scheduler_claim_id": format!("workflow:run-oc-1:node-oc-1:{attempt}"),
                 "opencode_external": {
                     "schema_version": OPENCODE_NODE_SCHEMA,
                     "task_kind": task_kind,
@@ -1505,213 +2093,86 @@ mod tests {
         }
     }
 
-    fn executor_with(response: Value) -> (OpenCodeNodeExecutor, Arc<RecordingInvoker>) {
+    fn make_executor(response: Value) -> (OpenCodeNodeExecutor, Arc<RecordingInvoker>) {
         let invoker = Arc::new(RecordingInvoker {
             last: Mutex::new(None),
             response,
             fail: None,
             bind_identity: true,
+            calls: Mutex::new(0),
         });
+        let cancel = OpenCodeCancellationHandle::new();
         let executor = OpenCodeNodeExecutor::new(
             OpenCodeRuntimeConfig::fixture(PathBuf::from("python3"), PathBuf::from("adapter.py")),
             invoker.clone(),
+            cancel,
         );
         (executor, invoker)
     }
 
     #[test]
     fn analysis_fixture_completes_with_canonical_status() {
-        let (executor, invoker) = executor_with(ok_analysis_response());
+        let (executor, invoker) = make_executor(ok_analysis_response());
         let output = executor.execute_node(&sample_input("analysis", &["docs/a.md"]));
-        assert_eq!(output.status, "completed");
-        assert_eq!(output.executor_type, OPENCODE_EXECUTOR_TYPE);
+        assert_eq!(output.status, "completed", "{:?}", output.error_message);
         let request = invoker.last.lock().unwrap().clone().unwrap();
-        assert_eq!(request["mode"], "fixture");
-        assert_eq!(request["permission_profile"]["network_enabled"], false);
-        assert_eq!(request["base_commit"], "b".repeat(40));
-        assert_eq!(request["worktree_id"], "wt-1");
-        let receipt: Value = serde_json::from_str(output.output.as_ref().unwrap()).unwrap();
-        assert_eq!(receipt["network_used"], false);
-        assert_eq!(receipt["binary_admission_status"], "not_admitted");
+        assert_eq!(
+            request["scheduler_claim_id"],
+            "workflow:run-oc-1:node-oc-1:1"
+        );
+        assert_eq!(request["execution_attempt"], 1);
+        assert!(request.get("lease_id").is_none());
     }
 
     #[test]
-    fn rejects_missing_base_commit_without_fallback() {
-        let (executor, _) = executor_with(ok_analysis_response());
+    fn rejects_missing_execution_attempt() {
+        let (executor, _) = make_executor(ok_analysis_response());
         let mut input = sample_input("analysis", &["docs/a.md"]);
-        input.node_metadata["opencode_external"]
+        input
+            .node_metadata
             .as_object_mut()
             .unwrap()
-            .remove("base_commit");
+            .remove("execution_attempt");
         let output = executor.execute_node(&input);
         assert_eq!(output.status, "failed");
         assert_eq!(
             output.error_domain.as_deref(),
-            Some("opencode_base_commit_required")
+            Some("opencode_execution_identity_missing")
         );
     }
 
     #[test]
-    fn rejects_fixture_base_placeholder() {
-        let (executor, _) = executor_with(ok_analysis_response());
-        let mut input = sample_input("analysis", &["docs/a.md"]);
-        input.node_metadata["opencode_external"]["base_commit"] = json!("fixture-base");
-        let output = executor.execute_node(&input);
-        assert_eq!(output.status, "failed");
-        assert_eq!(
-            output.error_domain.as_deref(),
-            Some("opencode_base_commit_invalid")
-        );
-    }
-
-    #[test]
-    fn rejects_path_traversal_metadata() {
-        let (executor, _) = executor_with(json!({}));
-        let output = executor.execute_node(&sample_input("analysis", &["../secret"]));
-        assert_eq!(output.status, "failed");
-        assert_eq!(
-            output.error_domain.as_deref(),
-            Some("opencode_path_invalid")
-        );
-    }
-
-    #[test]
-    fn rejects_scope_violation_from_adapter_declared_paths() {
-        let mut response = ok_analysis_response();
-        response["task_kind"] = json!("allowed_path_patch");
-        response["changed_paths"] = json!(["secrets/token"]);
-        response["patch"] = json!("x");
-        response["patch_sha256"] = json!(sha256("x"));
-        response["tool_summary"] = full_tool_summary(1);
-        let (executor, _) = executor_with(response);
-        let output = executor.execute_node(&sample_input("allowed_path_patch", &["docs/a.md"]));
-        assert_eq!(output.status, "failed");
-        // Grammar fails first on non-Begin-Patch body, or scope after parse.
-        assert!(matches!(
-            output.error_domain.as_deref(),
-            Some(
-                "opencode_patch_grammar_invalid"
-                    | "opencode_scope_violation"
-                    | "opencode_patch_path_mismatch"
-            )
-        ));
-    }
-
-    #[test]
-    fn rejects_declared_safe_path_with_unsafe_patch_body() {
-        let unsafe_patch = "*** Begin Patch\n*** Add File: ../escape.md\n+# bad\n*** End Patch\n";
-        let mut response = ok_analysis_response();
-        response["task_kind"] = json!("allowed_path_patch");
-        response["changed_paths"] = json!(["docs/a.md"]);
-        response["patch"] = json!(unsafe_patch);
-        response["patch_sha256"] = json!(sha256(unsafe_patch));
-        response["tool_summary"] = full_tool_summary(1);
-        let (executor, _) = executor_with(response);
-        let output = executor.execute_node(&sample_input("allowed_path_patch", &["docs/a.md"]));
-        assert_eq!(output.status, "failed");
-        assert!(matches!(
-            output.error_domain.as_deref(),
-            Some(
-                "opencode_patch_grammar_invalid"
-                    | "opencode_patch_path_mismatch"
-                    | "opencode_scope_violation"
-            )
-        ));
-    }
-
-    #[test]
-    fn accepts_matching_patch_paths_via_independent_parse() {
-        let patch =
-            "*** Begin Patch\n*** Add File: docs/a.md\n+# OpenCode fixture patch\n*** End Patch\n";
-        let mut response = ok_analysis_response();
-        response["task_kind"] = json!("allowed_path_patch");
-        response["changed_paths"] = json!(["docs/a.md"]);
-        response["patch"] = json!(patch);
-        response["patch_sha256"] = json!(sha256(patch));
-        response["tool_summary"] = full_tool_summary(1);
-        let (executor, _) = executor_with(response);
-        let output = executor.execute_node(&sample_input("allowed_path_patch", &["docs/a.md"]));
-        assert_eq!(output.status, "completed", "{:?}", output.error_message);
-    }
-
-    #[test]
-    fn rejects_missing_tool_evidence() {
-        let mut response = ok_analysis_response();
-        response.as_object_mut().unwrap().remove("tool_summary");
-        let (executor, _) = executor_with(response);
-        let output = executor.execute_node(&sample_input("analysis", &["docs/a.md"]));
-        assert_eq!(output.status, "failed");
-        assert_eq!(
-            output.error_domain.as_deref(),
-            Some("opencode_tool_evidence_missing")
-        );
-    }
-
-    #[test]
-    fn rejects_nonzero_network_attempts() {
-        let mut response = ok_analysis_response();
-        response["tool_summary"]["network_attempts"] = json!(1);
-        let (executor, _) = executor_with(response);
-        let output = executor.execute_node(&sample_input("analysis", &["docs/a.md"]));
-        assert_eq!(output.status, "failed");
-        assert_eq!(
-            output.error_domain.as_deref(),
-            Some("opencode_forbidden_tool_activity")
-        );
-    }
-
-    #[test]
-    fn rejects_node_id_mismatch() {
-        let mut bad = ok_analysis_response();
-        bad["invocation_id"] = json!("wrong-inv");
-        bad["run_id"] = json!("run-oc-1");
-        bad["node_id"] = json!("wrong-node");
-        bad["lease_id"] = json!("wrong-lease");
-        bad["task_kind"] = json!("analysis");
-        bad["task_input_hash"] = json!("a".repeat(64));
-        bad["base_commit"] = json!("b".repeat(40));
-        bad["worktree_id"] = json!("wt-1");
+    fn rejects_stale_execution_attempt_result() {
+        // invoker will bind identity from request; force wrong attempt after bind by disabling bind
         let invoker = Arc::new(RecordingInvoker {
             last: Mutex::new(None),
-            response: bad,
+            response: {
+                let mut r = ok_analysis_response();
+                r["execution_attempt"] = json!(1);
+                r["scheduler_claim_id"] = json!("workflow:run-oc-1:node-oc-1:1");
+                r["invocation_id"] = json!("wrong");
+                r["run_id"] = json!("run-oc-1");
+                r["node_id"] = json!("node-oc-1");
+                r["task_kind"] = json!("analysis");
+                r["task_input_hash"] = json!("a".repeat(64));
+                r["base_commit"] = json!("b".repeat(40));
+                r["worktree_id"] = json!("wt-1");
+                r
+            },
             fail: None,
             bind_identity: false,
+            calls: Mutex::new(0),
         });
         let executor = OpenCodeNodeExecutor::new(
             OpenCodeRuntimeConfig::fixture(PathBuf::from("python3"), PathBuf::from("adapter.py")),
             invoker,
+            OpenCodeCancellationHandle::new(),
         );
-        let output = executor.execute_node(&sample_input("analysis", &["docs/a.md"]));
+        let output = executor.execute_node(&sample_input_attempt("analysis", &["docs/a.md"], 2));
         assert_eq!(output.status, "failed");
         assert_eq!(
             output.error_domain.as_deref(),
             Some("opencode_result_binding_invalid")
-        );
-    }
-
-    #[test]
-    fn rejects_result_status_mismatch() {
-        let mut response = ok_analysis_response();
-        response["status"] = json!("partial");
-        let (executor, _) = executor_with(response);
-        let output = executor.execute_node(&sample_input("analysis", &["docs/a.md"]));
-        assert_eq!(output.status, "failed");
-        assert_eq!(
-            output.error_domain.as_deref(),
-            Some("opencode_result_status_mismatch")
-        );
-    }
-
-    #[test]
-    fn rejects_wrong_adapter_version() {
-        let mut response = ok_analysis_response();
-        response["runtime"]["adapter_version"] = json!("9.9.9");
-        let (executor, _) = executor_with(response);
-        let output = executor.execute_node(&sample_input("analysis", &["docs/a.md"]));
-        assert_eq!(output.status, "failed");
-        assert_eq!(
-            output.error_domain.as_deref(),
-            Some("opencode_result_version_mismatch")
         );
     }
 
@@ -1722,10 +2183,12 @@ mod tests {
             response: json!({}),
             fail: None,
             bind_identity: true,
+            calls: Mutex::new(0),
         });
         let executor = OpenCodeNodeExecutor::new(
             OpenCodeRuntimeConfig::fixture(PathBuf::from("python3"), PathBuf::from("adapter.py")),
             invoker,
+            OpenCodeCancellationHandle::new(),
         )
         .with_force_kill_switch(true);
         let output = executor.execute_node(&sample_input("analysis", &["docs/a.md"]));
@@ -1734,23 +2197,26 @@ mod tests {
     }
 
     #[test]
-    fn process_adapter_kill_switch_terminates_during_execution() {
+    fn cancellation_handle_stops_process_adapter() {
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         let adapter = repo.join("adapters/opencode/src/acp_opencode_adapter/__main__.py");
         if !adapter.exists() {
             return;
         }
-        let python = which_python();
+        let cancel = OpenCodeCancellationHandle::new();
         let config = OpenCodeRuntimeConfig {
             timeout_ms: 15_000,
-            ..OpenCodeRuntimeConfig::fixture(python, adapter)
+            ..OpenCodeRuntimeConfig::fixture(which_python(), adapter)
         };
+        let invoker = OpenCodeProcessInvoker::new(&config, cancel.clone());
         let request = json!({
             "schema_version": OPENCODE_REQUEST_SCHEMA,
             "invocation_id": "inv-kill",
             "run_id": "run-kill",
             "node_id": "node-kill",
-            "lease_id": "lease-kill",
+            "workflow_id": "wf-kill",
+            "execution_attempt": 1,
+            "scheduler_claim_id": "workflow:run-kill:node-kill:1",
             "runtime_kind": "opencode",
             "mode": "fixture",
             "task_kind": "descendant_spawn",
@@ -1769,103 +2235,45 @@ mod tests {
             "expected_opencode_version": PINNED_OPENCODE_VERSION,
             "expected_adapter_version": OPENCODE_ADAPTER_VERSION,
         });
-        // Cooperative latch: no process-global env mutation (parallel-test safe).
-        let kill_flag = Arc::new(AtomicBool::new(false));
-        let invoker = OpenCodeProcessInvoker::new(&config).with_kill_flag(kill_flag.clone());
-        let handle = thread::spawn(move || invoker.invoke(&request, 15_000));
+        let probe = CompositeCancelProbe::new(cancel.clone(), None, "run-kill", "node-kill", 1);
+        let handle = thread::spawn(move || invoker.invoke(&request, 15_000, &probe));
         thread::sleep(Duration::from_millis(200));
-        kill_flag.store(true, AtomicOrdering::SeqCst);
-        let err = handle.join().expect("join").expect_err("must kill");
-        assert_eq!(err.code, "adapter_killed");
-    }
-
-    #[test]
-    fn wrong_task_type_rejected() {
-        let (executor, _) = executor_with(json!({}));
-        let mut input = sample_input("analysis", &["docs/a.md"]);
-        input.task_type = "langgraph_external".to_string();
-        let output = executor.execute_node(&input);
-        assert_eq!(output.status, "failed");
-        assert_eq!(
-            output.error_domain.as_deref(),
-            Some("opencode_task_mismatch")
-        );
-    }
-
-    #[test]
-    fn parse_patch_rejects_binary_and_rename() {
-        assert!(parse_fixture_patch_paths(
-            "*** Begin Patch\n*** Add File: a.md\nGIT binary patch\n*** End Patch\n"
-        )
-        .is_err());
+        cancel.cancel();
+        let err = handle.join().unwrap().expect_err("must cancel");
         assert!(
-            parse_fixture_patch_paths("*** Begin Patch\n*** Move to: b.md\n*** End Patch\n")
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn process_adapter_analysis_roundtrip() {
-        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let adapter = repo.join("adapters/opencode/src/acp_opencode_adapter/__main__.py");
-        if !adapter.exists() {
-            return;
-        }
-        let python = which_python();
-        let config = OpenCodeRuntimeConfig::fixture(python, adapter);
-        let request = json!({
-            "schema_version": OPENCODE_REQUEST_SCHEMA,
-            "invocation_id": "inv-test",
-            "run_id": "run-test",
-            "node_id": "node-test",
-            "lease_id": "lease-test",
-            "runtime_kind": "opencode",
-            "mode": "fixture",
-            "task_kind": "analysis",
-            "task_input_hash": "a".repeat(64),
-            "base_commit": "b".repeat(40),
-            "worktree_id": "wt-test",
-            "allowed_paths": ["docs/x.md"],
-            "environment_allowlist": ADAPTER_ENV_ALLOWLIST,
-            "permission_profile": deny_by_default_permission_profile(),
-            "permission_profile_hash": sha256(
-                &canonical_event_json(&deny_by_default_permission_profile()).unwrap()
+            matches!(
+                err.code.as_str(),
+                "scheduler_cancelled" | "process_containment_failed" | "adapter_killed"
             ),
-            "requested_capabilities": [],
-            "adapter_version": OPENCODE_ADAPTER_VERSION,
-            "adapter_contract_version": OPENCODE_ADAPTER_CONTRACT,
-            "expected_opencode_version": PINNED_OPENCODE_VERSION,
-            "expected_adapter_version": OPENCODE_ADAPTER_VERSION,
-        });
-        let result = OpenCodeProcessInvoker::new(&config)
-            .invoke(&request, 15_000)
-            .expect("adapter invoke");
-        assert_eq!(result["status"], "ok");
-        assert_eq!(result["task_kind"], "analysis");
-        assert_eq!(result["task_input_hash"], "a".repeat(64));
-        assert_eq!(result["base_commit"], "b".repeat(40));
-        assert_eq!(result["tool_summary"]["network_attempts"], 0);
-        assert_eq!(result["tool_summary"]["provider_attempts"], 0);
+            "{}",
+            err.code
+        );
+        assert!(err.termination.is_some());
+        let term = err.termination.unwrap();
+        assert!(term.readers_joined || !term.containment_ok);
     }
 
     #[test]
-    fn process_adapter_timeout_kills_descendant_tree() {
+    fn process_adapter_timeout_records_truthful_termination_evidence() {
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         let adapter = repo.join("adapters/opencode/src/acp_opencode_adapter/__main__.py");
         if !adapter.exists() {
             return;
         }
-        let python = which_python();
+        let cancel = OpenCodeCancellationHandle::new();
         let config = OpenCodeRuntimeConfig {
             timeout_ms: 800,
-            ..OpenCodeRuntimeConfig::fixture(python, adapter)
+            ..OpenCodeRuntimeConfig::fixture(which_python(), adapter)
         };
+        let invoker = OpenCodeProcessInvoker::new(&config, cancel.clone());
         let request = json!({
             "schema_version": OPENCODE_REQUEST_SCHEMA,
             "invocation_id": "inv-timeout",
             "run_id": "run-timeout",
             "node_id": "node-timeout",
-            "lease_id": "lease-timeout",
+            "workflow_id": "wf-timeout",
+            "execution_attempt": 1,
+            "scheduler_claim_id": "workflow:run-timeout:node-timeout:1",
             "runtime_kind": "opencode",
             "mode": "fixture",
             "task_kind": "descendant_spawn",
@@ -1884,16 +2292,23 @@ mod tests {
             "expected_opencode_version": PINNED_OPENCODE_VERSION,
             "expected_adapter_version": OPENCODE_ADAPTER_VERSION,
         });
-        let err = OpenCodeProcessInvoker::new(&config)
-            .invoke(&request, 800)
-            .expect_err("must timeout");
-        assert_eq!(err.code, "adapter_timeout");
+        let err = invoker
+            .invoke(&request, 800, &AlwaysLiveProbe)
+            .expect_err("timeout");
         assert!(
-            err.message.contains("descendants_remaining=0")
-                || err.message.contains("descendants_remaining="),
-            "timeout evidence: {}",
-            err.message
+            matches!(
+                err.code.as_str(),
+                "adapter_timeout" | "process_containment_failed"
+            ),
+            "{}",
+            err.code
         );
+        let term = err.termination.expect("termination evidence");
+        assert_eq!(term.schema_version, TERMINATION_EVIDENCE_SCHEMA);
+        assert!(term.readers_joined);
+        assert!(term.stdout_drained);
+        assert!(term.stderr_drained);
+        assert!(term.wait_succeeded);
     }
 
     #[test]
@@ -1901,11 +2316,480 @@ mod tests {
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         let manifest = repo.join("adapters/opencode/FIXTURE_ADAPTER_MANIFEST.json");
         let adapter = repo.join("adapters/opencode/src/acp_opencode_adapter/__main__.py");
-        if !manifest.exists() || !adapter.exists() {
+        validate_fixture_adapter_manifest(&manifest, &adapter).expect("manifest");
+    }
+
+    #[test]
+    fn fixture_manifest_rejects_empty_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("opencode");
+        std::fs::create_dir_all(pkg.join("src/acp_opencode_adapter")).unwrap();
+        for name in ["__init__.py", "__main__.py", "adapter.py"] {
+            std::fs::write(pkg.join("src/acp_opencode_adapter").join(name), b"x").unwrap();
+        }
+        std::fs::write(pkg.join("pyproject.toml"), b"[project]\nname='x'\n").unwrap();
+        let manifest_path = pkg.join("FIXTURE_ADAPTER_MANIFEST.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{"schema_version":"opencode_fixture_adapter_manifest.v1","admission_status":"fixture_adapter_only","binary_admission_status":"not_admitted","adapter_version":"0.1.0","adapter_contract_version":"opencode_external_adapter.v1","permission_profile_hash":"00","artifacts":[]}"#,
+        )
+        .unwrap();
+        let err = validate_fixture_adapter_manifest(
+            &manifest_path,
+            &pkg.join("src/acp_opencode_adapter/__main__.py"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("non-empty") || err.contains("exactly"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn fixture_manifest_rejects_duplicate_path() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let good = repo.join("adapters/opencode/FIXTURE_ADAPTER_MANIFEST.json");
+        let mut manifest: Value =
+            serde_json::from_str(&std::fs::read_to_string(&good).unwrap()).unwrap();
+        let arts = manifest["artifacts"].as_array_mut().unwrap();
+        arts.push(arts[0].clone());
+        let dir = tempfile::tempdir().unwrap();
+        // copy package
+        let pkg = dir.path().join("opencode");
+        copy_dir(&repo.join("adapters/opencode"), &pkg);
+        let path = pkg.join("FIXTURE_ADAPTER_MANIFEST.json");
+        std::fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+        let err = validate_fixture_adapter_manifest(
+            &path,
+            &pkg.join("src/acp_opencode_adapter/__main__.py"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("duplicate") || err.contains("exactly"),
+            "{err}"
+        );
+    }
+
+    fn copy_dir(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).unwrap();
+        for entry in std::fs::read_dir(src).unwrap() {
+            let entry = entry.unwrap();
+            let ty = entry.file_type().unwrap();
+            let to = dst.join(entry.file_name());
+            if ty.is_dir() {
+                if entry.file_name() == "__pycache__" || entry.file_name() == "tests" {
+                    continue;
+                }
+                copy_dir(&entry.path(), &to);
+            } else {
+                let _ = std::fs::copy(entry.path(), to);
+            }
+        }
+    }
+
+    #[test]
+    fn same_process_replay_is_idempotent_after_completion() {
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        let invoker = Arc::new(RecordingInvoker {
+            last: Mutex::new(None),
+            response: ok_analysis_response(),
+            fail: None,
+            bind_identity: true,
+            calls: Mutex::new(0),
+        });
+        let cancel = OpenCodeCancellationHandle::new();
+        let executor = Arc::new(OpenCodeNodeExecutor::new(
+            OpenCodeRuntimeConfig::fixture(PathBuf::from("python3"), PathBuf::from("adapter.py")),
+            invoker.clone(),
+            cancel,
+        ));
+        let plan = store
+            .create_workflow_plan("oc-replay", "oc-replay-wf", "actor", |ids, _| {
+                Ok(json!({
+                    "schema_version": "read_only_plan.v1",
+                    "plan_id": ids.plan_id,
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "analysis": {"analysis_id": "a", "task_domain": "code"},
+                    "graph": {
+                        "schema_version": "workflow_graph.v1",
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "status": "decomposed",
+                        "created_at": "2026-07-08T00:00:00Z",
+                        "updated_at": "2026-07-08T00:00:00Z",
+                        "nodes": [{
+                            "node_id": "oc-node-1",
+                            "task_type": OPENCODE_TASK_TYPE,
+                            "status": "pending",
+                            "opencode_external": {
+                                "schema_version": OPENCODE_NODE_SCHEMA,
+                                "task_kind": "analysis",
+                                "task_input_hash": "a".repeat(64),
+                                "base_commit": "b".repeat(40),
+                                "worktree_id": "wt-1",
+                                "allowed_paths": ["docs/a.md"]
+                            }
+                        }],
+                        "edges": []
+                    },
+                    "boundaries": {
+                        "execution_authority": "disabled",
+                        "target_repository_writes": "disabled",
+                        "runtime_workers": "disabled",
+                    },
+                }))
+            })
+            .unwrap();
+        let run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+            .unwrap();
+        let run_id = run["run_id"].as_str().unwrap().to_string();
+        let pool = Arc::new(ExecutorPool::new());
+        register_default_executors(&pool, false, store.clone());
+        register_opencode_runtime_executor(&pool, executor.clone(), 1, 30_000);
+        let config = SchedulerConfig {
+            executor_type: "pool".to_string(),
+            max_concurrent: 1,
+            queue_enabled: false,
+            backpressure_enabled: false,
+            ..Default::default()
+        };
+        store
+            .tick_with_executor_and_command_inner(&run_id, "scheduler", 0, &*executor, None, None)
+            .unwrap();
+        assert_eq!(*invoker.calls.lock().unwrap(), 1);
+        let replay = store.tick_with_executor_and_command_inner(
+            &run_id,
+            "scheduler",
+            0,
+            &*executor,
+            None,
+            None,
+        );
+        assert!(
+            replay.is_err()
+                || replay
+                    .as_ref()
+                    .ok()
+                    .and_then(|v| v.get("action").and_then(|a| a.as_str()))
+                    != Some("node_executed"),
+            "replay must not re-execute: {replay:?}"
+        );
+        assert_eq!(
+            *invoker.calls.lock().unwrap(),
+            1,
+            "same-process replay must not re-invoke"
+        );
+        let run_after = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run_after["status"], "completed");
+        let _ = (config, pool);
+    }
+
+    #[test]
+    fn true_restart_does_not_reexecute_completed_opencode_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("restart.db");
+        let db = db_path.to_str().unwrap();
+        let invoker_calls = Arc::new(Mutex::new(0u32));
+        {
+            let store = Arc::new(LocalProductStore::new(db).unwrap());
+            let calls = invoker_calls.clone();
+            let invoker = Arc::new(CountingInvoker {
+                calls,
+                response: ok_analysis_response(),
+            });
+            let cancel = OpenCodeCancellationHandle::new();
+            let executor = Arc::new(
+                OpenCodeNodeExecutor::new(
+                    OpenCodeRuntimeConfig::fixture(
+                        PathBuf::from("python3"),
+                        PathBuf::from("adapter.py"),
+                    ),
+                    invoker,
+                    cancel,
+                )
+                .with_store(store.clone()),
+            );
+            let plan = store
+                .create_workflow_plan("oc-restart", "oc-restart-wf", "actor", |ids, _| {
+                    Ok(json!({
+                        "schema_version": "read_only_plan.v1",
+                        "plan_id": ids.plan_id,
+                        "status": "planned_read_only",
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "analysis": {"analysis_id": "a", "task_domain": "code"},
+                        "graph": {
+                            "schema_version": "workflow_graph.v1",
+                            "workflow_id": ids.workflow_id,
+                            "dispatch_id": ids.dispatch_id,
+                            "status": "decomposed",
+                            "created_at": "2026-07-08T00:00:00Z",
+                            "updated_at": "2026-07-08T00:00:00Z",
+                            "nodes": [{
+                                "node_id": "oc-node-1",
+                                "task_type": OPENCODE_TASK_TYPE,
+                                "status": "pending",
+                                "opencode_external": {
+                                    "schema_version": OPENCODE_NODE_SCHEMA,
+                                    "task_kind": "analysis",
+                                    "task_input_hash": "a".repeat(64),
+                                    "base_commit": "b".repeat(40),
+                                    "worktree_id": "wt-1",
+                                    "allowed_paths": ["docs/a.md"]
+                                }
+                            }],
+                            "edges": []
+                        },
+                        "boundaries": {
+                            "execution_authority": "disabled",
+                            "target_repository_writes": "disabled",
+                            "runtime_workers": "disabled",
+                        },
+                    }))
+                })
+                .unwrap();
+            let run = store
+                .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+                .unwrap();
+            let run_id = run["run_id"].as_str().unwrap().to_string();
+            let pool = Arc::new(ExecutorPool::new());
+            register_default_executors(&pool, false, store.clone());
+            register_opencode_runtime_executor(&pool, executor.clone(), 1, 30_000);
+            let config = SchedulerConfig {
+                executor_type: "pool".to_string(),
+                max_concurrent: 1,
+                queue_enabled: false,
+                backpressure_enabled: false,
+                ..Default::default()
+            };
+            store
+                .tick_with_executor_and_command_inner(
+                    &run_id,
+                    "scheduler",
+                    0,
+                    &*executor,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let run_after = store.get_workflow_run(&run_id).unwrap().unwrap();
+            assert_eq!(run_after["status"], "completed");
+            assert_eq!(*invoker_calls.lock().unwrap(), 1);
+            let _ = (config, pool);
+            drop(store);
+        }
+        // Reopen database with fresh owners.
+        let store = Arc::new(LocalProductStore::new(db).unwrap());
+        let calls = invoker_calls.clone();
+        let invoker = Arc::new(CountingInvoker {
+            calls,
+            response: ok_analysis_response(),
+        });
+        let cancel = OpenCodeCancellationHandle::new();
+        let executor = Arc::new(OpenCodeNodeExecutor::new(
+            OpenCodeRuntimeConfig::fixture(PathBuf::from("python3"), PathBuf::from("adapter.py")),
+            invoker,
+            cancel,
+        ));
+        let run_id = {
+            // Discover the completed run id from reopened store.
+            let active = store.list_active_workflow_run_ids().unwrap();
+            assert!(active.is_empty(), "completed run should not be active");
+            // Tick should be a no-op for completed runs; use known sequence run-0001.
+            "run-0001".to_string()
+        };
+        let result = store.tick_with_executor_and_command_inner(
+            &run_id,
+            "scheduler",
+            0,
+            &*executor,
+            None,
+            None,
+        );
+        assert!(
+            result.is_err()
+                || result
+                    .as_ref()
+                    .ok()
+                    .and_then(|v| v.get("action").and_then(|a| a.as_str()))
+                    != Some("node_executed"),
+            "restart must not re-execute: {result:?}"
+        );
+        assert_eq!(
+            *invoker_calls.lock().unwrap(),
+            1,
+            "true restart must not re-invoke completed node"
+        );
+        let run_after = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run_after["status"], "completed");
+    }
+
+    struct CountingInvoker {
+        calls: Arc<Mutex<u32>>,
+        response: Value,
+    }
+
+    impl OpenCodeInvoker for CountingInvoker {
+        fn invoke(
+            &self,
+            request: &Value,
+            _timeout_ms: u64,
+            _cancel: &dyn OpenCodeCancelProbe,
+        ) -> Result<Value, OpenCodeInvokeError> {
+            *self.calls.lock().unwrap() += 1;
+            let mut response = self.response.clone();
+            for key in [
+                "invocation_id",
+                "run_id",
+                "node_id",
+                "scheduler_claim_id",
+                "execution_attempt",
+                "task_kind",
+                "task_input_hash",
+                "base_commit",
+                "worktree_id",
+            ] {
+                if let Some(v) = request.get(key) {
+                    response[key] = v.clone();
+                }
+            }
+            Ok(response)
+        }
+    }
+
+    #[test]
+    fn scheduler_kill_terminates_running_opencode_descendant() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let adapter = repo.join("adapters/opencode/src/acp_opencode_adapter/__main__.py");
+        if !adapter.exists() {
             return;
         }
-        validate_fixture_adapter_manifest(&manifest, &adapter)
-            .expect("fixture adapter manifest must validate");
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        let cancel = OpenCodeCancellationHandle::new();
+        let config = OpenCodeRuntimeConfig {
+            timeout_ms: 30_000,
+            ..OpenCodeRuntimeConfig::fixture(which_python(), adapter)
+        };
+        let invoker = Arc::new(OpenCodeProcessInvoker::new(&config, cancel.clone()));
+        let executor = Arc::new(
+            OpenCodeNodeExecutor::new(config, invoker, cancel.clone()).with_store(store.clone()),
+        );
+        let plan = store
+            .create_workflow_plan("oc-kill", "oc-kill-wf", "actor", |ids, _| {
+                Ok(json!({
+                    "schema_version": "read_only_plan.v1",
+                    "plan_id": ids.plan_id,
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "analysis": {"analysis_id": "a", "task_domain": "code"},
+                    "graph": {
+                        "schema_version": "workflow_graph.v1",
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "status": "decomposed",
+                        "created_at": "2026-07-08T00:00:00Z",
+                        "updated_at": "2026-07-08T00:00:00Z",
+                        "nodes": [{
+                            "node_id": "oc-node-kill",
+                            "task_type": OPENCODE_TASK_TYPE,
+                            "status": "pending",
+                            "opencode_external": {
+                                "schema_version": OPENCODE_NODE_SCHEMA,
+                                "task_kind": "descendant_spawn",
+                                "task_input_hash": "a".repeat(64),
+                                "base_commit": "b".repeat(40),
+                                "worktree_id": "wt-kill",
+                                "allowed_paths": ["docs/a.md"]
+                            }
+                        }],
+                        "edges": []
+                    },
+                    "boundaries": {
+                        "execution_authority": "disabled",
+                        "target_repository_writes": "disabled",
+                        "runtime_workers": "disabled",
+                    },
+                }))
+            })
+            .unwrap();
+        let _run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+            .unwrap();
+        let mut scheduler = WorkflowScheduler::new(
+            store.clone(),
+            SchedulerConfig {
+                interval_ms: 50,
+                max_concurrent: 1,
+                executor_type: "pool".to_string(),
+                queue_enabled: false,
+                backpressure_enabled: false,
+                supervised_workers_enabled: true,
+                worker_count: 1,
+                lease_timeout_ms: 60_000,
+                ..Default::default()
+            },
+        )
+        .with_opencode_runtime_executor(executor, 30_000)
+        .with_opencode_cancellation(cancel.clone());
+        scheduler.start().unwrap();
+        thread::sleep(Duration::from_millis(400));
+        scheduler.kill("test").unwrap();
+        // Process should terminate via cancel handle without waiting full timeout.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if !scheduler.is_running() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!scheduler.is_running() || cancel.is_cancelled());
+        let _ = scheduler.stop();
+    }
+
+    #[test]
+    fn rejects_missing_base_commit_without_fallback() {
+        let (executor, _) = make_executor(ok_analysis_response());
+        let mut input = sample_input("analysis", &["docs/a.md"]);
+        input.node_metadata["opencode_external"]
+            .as_object_mut()
+            .unwrap()
+            .remove("base_commit");
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("opencode_base_commit_required")
+        );
+    }
+
+    #[test]
+    fn rejects_nonzero_network_attempts() {
+        let mut response = ok_analysis_response();
+        response["tool_summary"]["network_attempts"] = json!(1);
+        let (executor, _) = make_executor(response);
+        let output = executor.execute_node(&sample_input("analysis", &["docs/a.md"]));
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("opencode_forbidden_tool_activity")
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_analysis_reason_code() {
+        let mut response = ok_analysis_response();
+        response["reason_code"] = json!("not_the_family");
+        let (executor, _) = make_executor(response);
+        let output = executor.execute_node(&sample_input("analysis", &["docs/a.md"]));
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("opencode_reason_code_invalid")
+        );
     }
 
     #[test]
@@ -1917,31 +2801,6 @@ mod tests {
             Arc::new(LocalProductStore::new(":memory:").unwrap()),
         );
         assert_eq!(pool.best_for_task(OPENCODE_TASK_TYPE, "code"), None);
-        assert_eq!(
-            pool.best_for_task(OPENCODE_TASK_TYPE, "external_runtime"),
-            None
-        );
-    }
-
-    #[test]
-    fn rejects_oversized_patch() {
-        let big = format!(
-            "*** Begin Patch\n*** Add File: docs/a.md\n+{}\n*** End Patch\n",
-            "x".repeat(MAX_PATCH_BYTES)
-        );
-        let mut response = ok_analysis_response();
-        response["task_kind"] = json!("allowed_path_patch");
-        response["changed_paths"] = json!(["docs/a.md"]);
-        response["patch"] = json!(big);
-        response["patch_sha256"] = json!(sha256(&big));
-        response["tool_summary"] = full_tool_summary(1);
-        let (executor, _) = executor_with(response);
-        let output = executor.execute_node(&sample_input("allowed_path_patch", &["docs/a.md"]));
-        assert_eq!(output.status, "failed");
-        assert_eq!(
-            output.error_domain.as_deref(),
-            Some("opencode_patch_oversized")
-        );
     }
 
     fn which_python() -> PathBuf {

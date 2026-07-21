@@ -319,6 +319,8 @@ pub struct WorkflowScheduler {
     agent_step_executor: Option<Arc<dyn NodeExecutor>>,
     external_runtime_executor: Option<(Arc<dyn NodeExecutor>, u64)>,
     opencode_runtime_executor: Option<(Arc<dyn NodeExecutor>, u64)>,
+    /// Shared with the OpenCode process invoker so kill/stop terminates process trees.
+    opencode_cancel: Option<crate::opencode_runtime::OpenCodeCancellationHandle>,
 }
 
 impl WorkflowScheduler {
@@ -352,6 +354,7 @@ impl WorkflowScheduler {
             agent_step_executor: None,
             external_runtime_executor: None,
             opencode_runtime_executor: None,
+            opencode_cancel: None,
         }
     }
 
@@ -402,6 +405,14 @@ impl WorkflowScheduler {
         timeout_ms: u64,
     ) -> Self {
         self.opencode_runtime_executor = Some((executor, timeout_ms));
+        self
+    }
+
+    pub fn with_opencode_cancellation(
+        mut self,
+        handle: crate::opencode_runtime::OpenCodeCancellationHandle,
+    ) -> Self {
+        self.opencode_cancel = Some(handle);
         self
     }
 
@@ -474,6 +485,9 @@ impl WorkflowScheduler {
         }
 
         self.kill_requested.store(false, Ordering::SeqCst);
+        if let Some(ref handle) = self.opencode_cancel {
+            handle.reset();
+        }
         self.running.store(true, Ordering::SeqCst);
 
         let cli_enabled = crate::cli::CliConfig::from_env().enabled;
@@ -568,6 +582,9 @@ impl WorkflowScheduler {
             return Err("scheduler not running".to_string());
         }
         self.running.store(false, Ordering::SeqCst);
+        if let Some(ref handle) = self.opencode_cancel {
+            handle.cancel();
+        }
         for handle in self.handles.drain(..) {
             handle
                 .join()
@@ -597,6 +614,9 @@ impl WorkflowScheduler {
             .set_recursive_execution_paused(true, Some("recursive_kill_switch_active"))?;
         self.kill_requested.store(true, Ordering::SeqCst);
         self.running.store(false, Ordering::SeqCst);
+        if let Some(ref handle) = self.opencode_cancel {
+            handle.cancel();
+        }
         Ok(())
     }
 
@@ -1566,6 +1586,7 @@ mod tests {
                 &self,
                 request: &Value,
                 _timeout_ms: u64,
+                _cancel: &dyn crate::opencode_runtime::OpenCodeCancelProbe,
             ) -> Result<Value, OpenCodeInvokeError> {
                 *self.last.lock().unwrap() = Some(request.clone());
                 Ok(json!({
@@ -1573,7 +1594,8 @@ mod tests {
                     "invocation_id": request["invocation_id"],
                     "run_id": request["run_id"],
                     "node_id": request["node_id"],
-                    "lease_id": request["lease_id"],
+                    "scheduler_claim_id": request["scheduler_claim_id"],
+                    "execution_attempt": request["execution_attempt"],
                     "task_kind": request["task_kind"],
                     "task_input_hash": request["task_input_hash"],
                     "base_commit": request["base_commit"],
@@ -1609,9 +1631,11 @@ mod tests {
         let invoker = Arc::new(BindingInvoker {
             last: Mutex::new(None),
         });
+        let cancel = crate::opencode_runtime::OpenCodeCancellationHandle::new();
         let executor = Arc::new(OpenCodeNodeExecutor::new(
             OpenCodeRuntimeConfig::fixture(PathBuf::from("python3"), PathBuf::from("adapter.py")),
             invoker.clone(),
+            cancel,
         ));
 
         let plan = store

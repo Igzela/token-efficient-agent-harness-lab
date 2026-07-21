@@ -1696,6 +1696,11 @@ impl LocalProductStore {
                 }
                 if let Some(obj) = node_metadata.as_object_mut() {
                     obj.insert("execution_attempt".to_string(), json!(attempt));
+                    // Owner-derived claim identity for reserved executors (OpenCode, etc.).
+                    obj.insert(
+                        "scheduler_claim_id".to_string(),
+                        json!(format!("workflow:{run_id}:{node_id}:{attempt}")),
+                    );
                 }
                 if command_override.is_none()
                     && task_type != crate::external_runtime::LANGGRAPH_TASK_TYPE

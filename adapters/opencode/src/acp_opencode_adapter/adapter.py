@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import subprocess
 import time
@@ -26,51 +25,57 @@ RUNTIME_KIND = "opencode"
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _BASE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")
-_FORBIDDEN_MODES = frozenset(
+
+# Exact declared fixture environment allowlist (order-insensitive equality).
+_EXACT_ENV_ALLOWLIST = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "PYTHONIOENCODING",
+    "PYTHONDONTWRITEBYTECODE",
+    "PYTHONPATH",
+)
+
+_EXACT_PERMISSION_KEYS = frozenset(
     {
-        "live",
-        "network",
-        "auto",
-        "mcp",
+        "approval_mode",
+        "network_enabled",
+        "mcp_enabled",
         "websearch",
         "webfetch",
-        "remote_agent",
-        "background_agent",
+        "remote_agents",
+        "background_agents",
+        "provider_fallback",
     }
 )
-# Exact environment names the Rust invoker is allowed to declare.
-_ALLOWED_ENV_NAMES = frozenset(
+
+# Exact allowed request-envelope keys (unknown keys fail closed).
+_ALLOWED_REQUEST_KEYS = frozenset(
     {
-        "PATH",
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "TMPDIR",
-        "PYTHONIOENCODING",
-        "PYTHONDONTWRITEBYTECODE",
-        "PYTHONPATH",
-    }
-)
-_FORBIDDEN_ENV = frozenset(
-    {
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "OPENCODE_API_KEY",
-    }
-)
-_AUTHORITY_FIELDS = frozenset(
-    {
-        "permissions",
-        "budget_authority",
-        "merge_authority",
-        "release_authority",
-        "evaluator_authority",
-        "provider_credentials",
-        "auto_merge",
-        "kill_switch_override",
+        "schema_version",
+        "invocation_id",
+        "run_id",
+        "node_id",
+        "workflow_id",
+        "execution_attempt",
+        "scheduler_claim_id",
+        "runtime_kind",
+        "mode",
+        "task_kind",
+        "task_input_hash",
+        "base_commit",
+        "worktree_id",
+        "allowed_paths",
+        "environment_allowlist",
+        "permission_profile",
+        "permission_profile_hash",
+        "requested_capabilities",
+        "adapter_version",
+        "adapter_contract_version",
+        "expected_opencode_version",
+        "expected_adapter_version",
     }
 )
 
@@ -120,7 +125,8 @@ def _bound_result(request: dict[str, Any], **fields: Any) -> dict[str, Any]:
         "invocation_id": request["invocation_id"],
         "run_id": request["run_id"],
         "node_id": request["node_id"],
-        "lease_id": request["lease_id"],
+        "scheduler_claim_id": request["scheduler_claim_id"],
+        "execution_attempt": request["execution_attempt"],
         "task_kind": request["task_kind"],
         "task_input_hash": request["task_input_hash"],
         "base_commit": request["base_commit"],
@@ -135,39 +141,41 @@ def _bound_result(request: dict[str, Any], **fields: Any) -> dict[str, Any]:
 def handle_request(request: dict[str, Any]) -> tuple[dict[str, Any], int]:
     if not isinstance(request, dict):
         return _err("request_invalid", "request must be an object"), 2
-    for field in _AUTHORITY_FIELDS:
-        if field in request:
-            return _err("request_extra_authority", f"unexpected authority field: {field}"), 2
+
+    unknown = set(request.keys()) - _ALLOWED_REQUEST_KEYS
+    if unknown:
+        return _err(
+            "request_unknown_field",
+            f"unknown request fields: {','.join(sorted(unknown))}",
+        ), 2
+
     if request.get("schema_version") != REQUEST_SCHEMA:
         return _err("request_schema_invalid", "unsupported request schema"), 2
-    mode = request.get("mode")
-    if mode != "fixture":
+    if request.get("mode") != "fixture":
         return _err("mode_forbidden", "only fixture mode is accepted"), 2
     if request.get("runtime_kind") != RUNTIME_KIND:
         return _err("runtime_kind_invalid", "runtime_kind must be opencode"), 2
 
-    expected_adapter = request.get("expected_adapter_version") or request.get("adapter_version")
-    if expected_adapter != ADAPTER_VERSION:
-        return _err(
-            "adapter_version_mismatch",
-            f"expected adapter version {ADAPTER_VERSION}",
-        ), 2
-    if request.get("adapter_contract_version") not in (None, ADAPTER_CONTRACT):
-        # Prefer explicit contract when present.
-        if request.get("adapter_contract_version") != ADAPTER_CONTRACT:
-            return _err("adapter_contract_mismatch", "adapter contract version mismatch"), 2
-    if request.get("expected_opencode_version") not in (None, PINNED_OPENCODE_VERSION):
-        if request.get("expected_opencode_version") != PINNED_OPENCODE_VERSION:
+    for field, expected in (
+        ("adapter_version", ADAPTER_VERSION),
+        ("expected_adapter_version", ADAPTER_VERSION),
+        ("adapter_contract_version", ADAPTER_CONTRACT),
+        ("expected_opencode_version", PINNED_OPENCODE_VERSION),
+    ):
+        value = request.get(field)
+        if value is None:
+            return _err("request_field_missing", f"{field} is required"), 2
+        if value != expected:
             return _err(
-                "opencode_version_mismatch",
-                f"expected fixture version declaration {PINNED_OPENCODE_VERSION}",
+                "adapter_version_mismatch" if "adapter" in field else "opencode_version_mismatch",
+                f"{field} mismatch",
             ), 2
 
     for field in (
         "invocation_id",
         "run_id",
         "node_id",
-        "lease_id",
+        "scheduler_claim_id",
         "task_kind",
         "worktree_id",
     ):
@@ -176,6 +184,10 @@ def handle_request(request: dict[str, Any]) -> tuple[dict[str, Any], int]:
             return _err("request_field_invalid", f"{field} is invalid"), 2
     if request.get("worktree_id") == "fixture-worktree":
         return _err("worktree_invalid", "placeholder fixture-worktree is forbidden"), 2
+
+    attempt = request.get("execution_attempt")
+    if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+        return _err("execution_attempt_invalid", "execution_attempt must be a positive integer"), 2
 
     base_commit = request.get("base_commit")
     if not isinstance(base_commit, str) or not _BASE_COMMIT_RE.match(base_commit):
@@ -201,22 +213,35 @@ def handle_request(request: dict[str, Any]) -> tuple[dict[str, Any], int]:
     env_allowlist = request.get("environment_allowlist")
     if not isinstance(env_allowlist, list):
         return _err("environment_allowlist_invalid", "environment_allowlist required"), 2
-    for name in env_allowlist:
-        if not isinstance(name, str):
-            return _err("environment_allowlist_invalid", "env names must be strings"), 2
-        if name in _FORBIDDEN_ENV or name not in _ALLOWED_ENV_NAMES:
-            return _err("environment_forbidden", f"undeclared or forbidden env: {name}"), 2
+    if any(not isinstance(name, str) for name in env_allowlist):
+        return _err("environment_allowlist_invalid", "env names must be strings"), 2
+    if len(env_allowlist) != len(set(env_allowlist)):
+        return _err("environment_allowlist_invalid", "duplicate env names forbidden"), 2
+    if set(env_allowlist) != set(_EXACT_ENV_ALLOWLIST):
+        return _err(
+            "environment_allowlist_mismatch",
+            "environment_allowlist must equal the declared fixture allowlist exactly",
+        ), 2
 
     profile = request.get("permission_profile")
     if not isinstance(profile, dict):
         return _err("permission_profile_invalid", "permission_profile required"), 2
+    if set(profile.keys()) != _EXACT_PERMISSION_KEYS:
+        return _err(
+            "permission_profile_keys_invalid",
+            "permission_profile must contain exactly the deny-by-default key set",
+        ), 2
     if profile.get("approval_mode") != "deny_by_default":
         return _err("permission_escalation", "approval_mode must be deny_by_default"), 2
-    if profile.get("network_enabled") is not False:
-        return _err("network_forbidden", "network must be disabled"), 2
-    if profile.get("mcp_enabled") is not False:
-        return _err("mcp_forbidden", "mcp must be disabled"), 2
-    for flag in ("websearch", "webfetch", "remote_agents", "background_agents", "provider_fallback"):
+    for flag in (
+        "network_enabled",
+        "mcp_enabled",
+        "websearch",
+        "webfetch",
+        "remote_agents",
+        "background_agents",
+        "provider_fallback",
+    ):
         if profile.get(flag) is not False:
             return _err("capability_forbidden", f"{flag} must be false"), 2
 
@@ -235,10 +260,6 @@ def handle_request(request: dict[str, Any]) -> tuple[dict[str, Any], int]:
         return _err("requested_capabilities_missing", "requested_capabilities required"), 2
     if not isinstance(requested, list):
         return _err("requested_capabilities_invalid", "requested_capabilities must be a list"), 2
-    if any(not isinstance(item, str) for item in requested):
-        return _err("requested_capabilities_invalid", "capabilities must be strings"), 2
-    if any(mode in _FORBIDDEN_MODES for mode in requested):
-        return _err("capability_forbidden", "requested capability is forbidden"), 2
     if requested:
         return _err("capability_forbidden", "fixture mode rejects non-empty capability requests"), 2
 
@@ -294,8 +315,6 @@ def handle_request(request: dict[str, Any]) -> tuple[dict[str, Any], int]:
         return _err("network_forbidden", "network attempt rejected"), 2
 
     if task_kind == "descendant_spawn":
-        # Intentionally create a long-lived descendant so the Rust process-group
-        # timeout path can prove full tree termination. Never returns successfully.
         child = subprocess.Popen(  # noqa: S603 — fixture-only local sleep
             ["sleep", "120"],
             stdout=subprocess.DEVNULL,
@@ -303,7 +322,6 @@ def handle_request(request: dict[str, Any]) -> tuple[dict[str, Any], int]:
             start_new_session=False,
         )
         try:
-            # Stay alive longer than typical test timeouts so the parent is killed.
             time.sleep(60)
         finally:
             if child.poll() is None:

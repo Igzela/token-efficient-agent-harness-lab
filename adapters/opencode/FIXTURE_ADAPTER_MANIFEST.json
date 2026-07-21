@@ -16,7 +16,7 @@
     {
       "path": "src/acp_opencode_adapter/adapter.py",
       "role": "adapter_source",
-      "sha256": "d6ef91d2648bfcdee8510f3ca4503445f8f69b657a7e1c0acfadcfd67a7207c3"
+      "sha256": "75fefb4175973ab178b0eaecbb7bad5ac475b923de73c930ce17a71fe877b220"
     },
     {
       "path": "pyproject.toml",
