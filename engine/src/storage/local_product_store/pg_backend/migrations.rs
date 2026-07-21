@@ -412,6 +412,7 @@ fn validate_pg_v27_schema(client: &mut impl postgres::GenericClient) -> Result<(
     validate_pg_v26_tables(client)
 }
 
+#[cfg(test)]
 fn validate_pg_v26_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     let version = client
         .query_one(
