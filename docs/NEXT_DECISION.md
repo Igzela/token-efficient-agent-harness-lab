@@ -19,12 +19,11 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. **Active PE7 repair lane:** `PE7-HARNESS-EVOLUTION-B3-FINALIZER-REPAIR-1` (`IN_PROGRESS`) after R1 COMPLETE (#262) and R2 COMPLETE (#263) → then Level-1 acceptance. B1–B3 scaffolding (PRs #258–#260) plus R1/R2 repairs are merged; lab is **not** Level-1 complete until R3 and Level-1 acceptance. No stable Level-1 result exists.
+1. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` (forward PE7 lane). PE7 Level-1 laboratory R1–R3 and Level-1 acceptance are complete under default-off gates; Meta Improver remains blocked until a stable independently reviewed Level-1 result is accepted for meta-improver use. Default daily work is Ship PR maintenance.
 2. `PE7-OPENCODE-BINARY-ADMISSION-1` — `BLOCKED_PREREQUISITE` / deferred until an exact upstream artifact or source identity and real checksum are independently admitted. Do not treat `PIN.json` placeholder fields as binary admission.
 3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — **`PARKED` / `BLOCKED_PREREQUISITE`** on Vader-host Codex/ChatGPT execution (HTTP 403). **Not actively driven.** Parking Issue: **#254**. Runner is online/idle; Issue #208 emergency-stopped. Do not hard-force Codex 403 or Issue→CLI smokes until unparked.
-4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` until a stable, independently reviewed Level-1 laboratory result exists (after R1–R3 and `PE7-HARNESS-EVOLUTION-LEVEL1-ACCEPTANCE-1`).
-5. PR #225 remains an independent presentation-only Dashboard PR.
-6. Remaining good-first issues (#245–#247) are community backlog.
+4. PR #225 remains an independent presentation-only Dashboard PR.
+5. Remaining good-first issues (#245–#247) are community backlog.
 
 Default daily development is the Ship PR path. The repository-agent Issue→Vader→Codex CLI path is parked. OpenCode fixture adapter (PR #255), honesty repair (PR #257), and Harness Evolution B1–B3 scaffolding (PRs #258–#260) are merged but **still permit caller-supplied authority and synthetic evidence**; real binary admission is not implemented. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
 
@@ -281,7 +280,7 @@ Each invocation must bind at least the root run/node/lease, adapter and OpenCode
 
 ## Packet PE7-HARNESS-EVOLUTION-LAB-1 — Evidence-gated candidate evolution
 
-**State:** `IN_PROGRESS` (B1–B3 scaffolding merged via PRs #258–#260; default-off; active Harness immutable; **not** authority-bound Level-1 complete — sequential R1→R2→R3→Level-1 acceptance required)
+**State:** `COMPLETE` (default-off Level-1 laboratory path after R1–R3 and Level-1 acceptance; active Harness immutable; no recursive self-improvement claim)
 
 **Prerequisites:** `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (complete), `PE7-OPENCODE-EXTERNAL-ADAPTER-1` (complete via PR #255), and `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` (complete via PR #257). B1–B3 scaffolding is merged; remaining work is sequential repair packets R1→R2→R3 then Level-1 acceptance — not one oversized PR.
 
@@ -362,7 +361,9 @@ Mark this laboratory fully `COMPLETE` only after R1–R3 merge **and** `PE7-HARN
 
 ### Packet PE7-HARNESS-EVOLUTION-B3-FINALIZER-REPAIR-1 — Existing finalizer integration
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
+
+**Completion evidence:** PR #264 squash-merged into `main` at `a60549221a387d36b912bb7ed88629740e1ad7f0` from reviewed head `dc8a3009f3e6ffdadbba3f430fca5fa71ac083b8`. Exact-head CI runs `29812566185` / `29812566297`.
 
 **Prerequisites:** `PE7-HARNESS-EVOLUTION-B2-EVALUATOR-REPAIR-1`
 
@@ -378,11 +379,13 @@ Mark this laboratory fully `COMPLETE` only after R1–R3 merge **and** `PE7-HARN
 
 ### Packet PE7-HARNESS-EVOLUTION-LEVEL1-ACCEPTANCE-1 — End-to-end laboratory acceptance
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisites:** `PE7-HARNESS-EVOLUTION-B3-FINALIZER-REPAIR-1`
 
-**Goal:** One default-off fixture path through real owners: active identity → proposal → isolated workspace → candidate admission → deterministic development/validation evaluation → evaluator-owned sealed selection → equal-budget results → candidate-level Pareto archive → authenticated operator decision → existing finalizer → bounded PR_READY receipt. At least three seeds; static, random/equal-count, lineage, and fixture OpenCode baselines; restart/replay; honest negative or neutral result allowed. Only after this passes may LAB-1 / B1–B3 residual path be marked fully authority-complete.
+**Goal:** One default-off fixture path through real owners: active identity → proposal → isolated workspace → candidate admission → deterministic development/validation evaluation → evaluator-owned sealed selection → equal-budget results → candidate-level Pareto archive → authenticated operator decision → existing finalizer → bounded PR_READY receipt. At least three seeds; static, random/equal-count, lineage, and fixture OpenCode baselines; restart/replay; honest negative or neutral result allowed.
+
+**Acceptance evidence:** focused test `level1_end_to_end_fixture_path_three_seeds` exercises seeds 1–3 through store-owned owners; claims no improvement; active identity unchanged; evaluation replay exactly-once. Result is laboratory correctness / neutral — not production improvement or recursive self-improvement.
 
 **Goal:** Add a default-off laboratory path that proposes, evaluates, archives, and optionally promotes isolated Harness candidates while the active Harness and the complete control plane remain immutable.
 
