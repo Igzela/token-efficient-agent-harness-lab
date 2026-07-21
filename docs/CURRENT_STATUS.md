@@ -5,9 +5,9 @@ Last updated: 2026-07-21.
 ## Verified Repository State
 
 - Canonical repository: `Igzela/token-efficient-agent-harness-lab`.
-- Audited remote `main`: `641679c1d2fb9865e5b39d63bb8d0e8720588156`.
-- That commit is the squash merge of PR #267 (`docs: converge product architecture around canonical golden path`), which followed the Level-1 acceptance merge of PR #265 at `6b4091e876b2fca0da03485540e5ce4f579ac13c`.
-- Open PR coordination: PR #225 remains presentation-only Dashboard work (`claude-theme` files only). Golden Path G1 implementation is on branch `codex/pe7-product-golden-path-g1-canonical-task`.
+- Audited remote `main`: `178d020e91d359a71a6bc272a12bfeebdc9dc505` (squash merge of PR #268 G1 golden path).
+- Prior baseline: PR #267 docs audit at `641679c1`; Level-1 acceptance PR #265 at `6b4091e8`.
+- Open PR coordination: PR #225 remains presentation-only Dashboard work. Golden Path G2–G4 follow-up is on `codex/pe7-product-golden-path-g2-g4`.
 - Open research coordination: Issue #266 contains only the initial Level-2 multi-generation proposal. No matching branch, commit, PR, or issue comment was found during this audit.
 - Parked external acceptance: Issue #254 remains the repository-agent replacement smoke parking issue. Issue #208 remains the emergency-stop authority.
 
