@@ -1767,7 +1767,6 @@ impl LocalProductStore {
             if !confirm_output {
                 return Err("confirm_output=true required for export_patch/draft_pr".to_string());
             }
-            // Output through existing approval-bound export eligibility check.
             let binding = self.validate_approval_binding(&run_id, &artifact_id)?;
             if !binding
                 .get("export_eligible")
@@ -1776,12 +1775,17 @@ impl LocalProductStore {
             {
                 return Err("export not eligible under current approval binding".to_string());
             }
-            output_result = json!({
-                "mode": output_intent,
-                "status": "export_eligible",
-                "approval_binding": binding,
-                "note": "branch/PR push remains operator-gated via existing target-output endpoint with confirm_target_output; G3 records eligibility without silent network push",
-            });
+            output_result = self.execute_product_task_output(
+                task_id,
+                output_intent,
+                &run_id,
+                &artifact_id,
+                &workspace_record_id,
+                &source_revision,
+                &patch_hash,
+                &binding,
+                actor,
+            )?;
         }
 
         let current = self.get_product_task(task_id)?.unwrap();
@@ -1798,13 +1802,379 @@ impl LocalProductStore {
             None,
         )?;
 
+        let terminal_evidence =
+            self.emit_product_task_terminal_evidence(task_id, actor, Some(&output_result))?;
+
         Ok(json!({
             "task": task,
             "approval": approval,
             "artifact": artifact,
             "output": output_result,
+            "terminal_evidence": terminal_evidence,
             "reused": false,
         }))
+    }
+
+    /// Assemble and idempotently emit task-rooted terminal evidence using existing owners.
+    /// Does not create a second replay/scorecard system.
+    pub fn emit_product_task_terminal_evidence(
+        &self,
+        task_id: &str,
+        actor: &str,
+        output: Option<&Value>,
+    ) -> Result<Value, String> {
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        let run_id = task
+            .get("run_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let plan_id = task
+            .get("plan_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let workspace_record_id = task
+            .get("workspace_record_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
+        let run = run_id
+            .as_deref()
+            .and_then(|id| self.get_workflow_run(id).ok().flatten());
+        let workspace = workspace_record_id
+            .as_deref()
+            .and_then(|id| self.get_supervised_patch_workspace(id).ok().flatten());
+        let verification = workspace
+            .as_ref()
+            .and_then(|w| w.get("verification").cloned());
+        let artifacts = self.supervised_patch_artifacts(50).unwrap_or_default();
+        let artifact = artifacts.into_iter().find(|a| {
+            a.get("workspace_id").and_then(Value::as_str) == workspace_record_id.as_deref()
+                || a.get("run_id").and_then(Value::as_str) == run_id.as_deref()
+        });
+        let artifact_id = artifact
+            .as_ref()
+            .and_then(|a| a.get("artifact_id").and_then(Value::as_str))
+            .map(str::to_string);
+
+        let approvals = if let Some(rid) = run_id.as_deref() {
+            self.workflow_run_approvals(rid, 20).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let approval_id = approvals
+            .first()
+            .and_then(|a| a.get("approval_id").and_then(Value::as_str))
+            .map(str::to_string);
+
+        let target_output_receipt = artifact
+            .as_ref()
+            .and_then(|a| a.get("target_output_receipt").cloned());
+
+        // Replay / scorecard via existing native scorecard owner (explicit unavailable when none).
+        let scorecard = if let Some(rid) = run_id.as_deref() {
+            let cards = self
+                .native_scorecard_artifacts_by_run(rid, 5)
+                .unwrap_or_default();
+            if cards.is_empty() {
+                json!({
+                    "status": "unavailable",
+                    "reason": "no native scorecard artifact for run; product golden path does not fabricate scorecards",
+                    "product_task_id": task_id,
+                    "run_id": rid,
+                })
+            } else {
+                json!({
+                    "status": "linked",
+                    "product_task_id": task_id,
+                    "run_id": rid,
+                    "artifact_ids": cards.iter().filter_map(|c| c.get("artifact_id").cloned()).collect::<Vec<_>>(),
+                })
+            }
+        } else {
+            json!({
+                "status": "unavailable",
+                "reason": "no run_id bound to product task",
+                "product_task_id": task_id,
+            })
+        };
+
+        let replay = json!({
+            "status": if run.is_some() { "eligible_via_run" } else { "unavailable" },
+            "reason": if run.is_some() {
+                "workflow run and verification receipts are durable under existing owners; full policy replay producer is not re-implemented"
+            } else {
+                "no run bound"
+            },
+            "product_task_id": task_id,
+            "run_id": run_id,
+        });
+
+        let usage = json!({
+            "status": "unavailable",
+            "reason": "fixture_deterministic path does not produce provider usage; cost/usage left explicit-unavailable",
+            "product_task_id": task_id,
+            "executor_class": "fixture_deterministic",
+        });
+        let cost = json!({
+            "status": "unavailable",
+            "reason": "no authoritative provider/model/pricing evidence for fixture path",
+            "product_task_id": task_id,
+        });
+
+        let evidence = json!({
+            "schema_version": "product_task_terminal_evidence.v1",
+            "product_task_id": task_id,
+            "tenant_id": task.get("tenant_id"),
+            "workspace_scope_id": task.get("workspace_id"),
+            "task_status": task.get("status"),
+            "task_version": task.get("version"),
+            "intake_contract_sha256": task.get("intake_contract_sha256"),
+            "objective_fingerprint": task.get("objective_fingerprint"),
+            "output_intent": task.get("output_intent"),
+            "source_revision": task.pointer("/workspace_binding/source_revision"),
+            "plan_id": plan_id,
+            "run_id": run_id,
+            "workspace_record_id": workspace_record_id,
+            "workspace_path": task.pointer("/workspace_binding/workspace_path"),
+            "node_ids": run.as_ref().and_then(|r| r.get("nodes")).and_then(Value::as_array).map(|nodes| {
+                nodes.iter().filter_map(|n| n.get("node_id").cloned()).collect::<Vec<_>>()
+            }).unwrap_or_default(),
+            "run_status": run.as_ref().and_then(|r| r.get("status").cloned()),
+            "verification_status": verification.as_ref().and_then(|v| v.get("status").cloned()),
+            "verification_trustworthy": verification.as_ref().and_then(|v| v.get("trustworthy").cloned()),
+            "artifact_id": artifact_id,
+            "approval_id": approval_id,
+            "output": output.cloned().unwrap_or(Value::Null),
+            "target_output_receipt": target_output_receipt,
+            "branch": output.and_then(|o| o.get("branch_name").cloned()),
+            "draft_pr": output.and_then(|o| o.get("pull_request").cloned()),
+            "replay": replay,
+            "scorecard": scorecard,
+            "usage": usage,
+            "cost": cost,
+            "emitted_at": self.now(),
+            "emitted_by": actor,
+        });
+
+        // Persist linkable evidence through existing audit owner (no second evidence store).
+        let _ = self.append_audit(
+            actor,
+            "product_task.terminal_evidence",
+            task_id,
+            &json!({
+                "schema_version": "product_task_terminal_evidence.v1",
+                "product_task_id": task_id,
+                "run_id": evidence.get("run_id"),
+                "plan_id": evidence.get("plan_id"),
+                "workspace_record_id": evidence.get("workspace_record_id"),
+                "artifact_id": evidence.get("artifact_id"),
+                "approval_id": evidence.get("approval_id"),
+                "verification_status": evidence.get("verification_status"),
+                "verification_trustworthy": evidence.get("verification_trustworthy"),
+                "scorecard_status": evidence.pointer("/scorecard/status"),
+                "replay_status": evidence.pointer("/replay/status"),
+                "usage_status": evidence.pointer("/usage/status"),
+                "cost_status": evidence.pointer("/cost/status"),
+                "output_mode": evidence.pointer("/output/mode"),
+                "branch": evidence.get("branch"),
+            }),
+        );
+
+        Ok(evidence)
+    }
+
+    /// Query terminal evidence links for a product task (idempotent read assembly).
+    pub fn get_product_task_terminal_evidence(&self, task_id: &str) -> Result<Value, String> {
+        self.emit_product_task_terminal_evidence(task_id, "system:read", None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_product_task_output(
+        &self,
+        task_id: &str,
+        output_intent: &str,
+        _run_id: &str,
+        artifact_id: &str,
+        workspace_record_id: &str,
+        source_revision: &str,
+        patch_hash: &str,
+        approval_binding: &Value,
+        actor: &str,
+    ) -> Result<Value, String> {
+        let workspace = self
+            .get_supervised_patch_workspace(workspace_record_id)?
+            .ok_or_else(|| "workspace missing for output".to_string())?;
+        let workspace_path = workspace
+            .get("workspace_path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "workspace_path missing for output".to_string())?;
+        let target_repo_path = workspace
+            .get("target_repo_path")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let config = TargetRepoOutputConfig::from_env();
+
+        if output_intent == "export_patch" {
+            let exported = crate::target_repo_output::export_patch(
+                &config,
+                Path::new(workspace_path),
+                source_revision,
+            )?;
+            if exported.patch_hash != patch_hash {
+                return Err(format!(
+                    "export patch hash mismatch: expected={patch_hash} actual={}",
+                    exported.patch_hash
+                ));
+            }
+            // Persist patch under app-owned store path (not target main).
+            let export_dir = self
+                .db_path()
+                .parent()
+                .ok_or_else(|| "store path has no parent".to_string())?
+                .join("exports")
+                .join(task_id);
+            std::fs::create_dir_all(&export_dir).map_err(|e| e.to_string())?;
+            let export_path = export_dir.join(format!("{artifact_id}.patch"));
+            std::fs::write(&export_path, &exported.patch).map_err(|e| e.to_string())?;
+            let _ = self.append_audit(
+                actor,
+                "product_task.export_patch",
+                task_id,
+                &json!({
+                    "artifact_id": artifact_id,
+                    "patch_hash": exported.patch_hash,
+                    "export_path": export_path.to_string_lossy(),
+                    "bytes": exported.patch.len(),
+                }),
+            );
+            return Ok(json!({
+                "mode": "export_patch",
+                "status": "exported",
+                "patch_hash": exported.patch_hash,
+                "export_path": export_path.to_string_lossy(),
+                "approval_binding": approval_binding,
+                "product_task_id": task_id,
+            }));
+        }
+
+        // draft_pr: require explicit network gate; reuse existing target-output claim/receipt.
+        let allow_network = std::env::var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
+        if !allow_network {
+            return Ok(json!({
+                "mode": "draft_pr",
+                "status": "network_output_unavailable",
+                "reason": "set ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT=1 with existing target-output gates and credentials for acp/* push + Draft PR",
+                "approval_binding": approval_binding,
+                "export_eligible": true,
+                "product_task_id": task_id,
+            }));
+        }
+
+        let branch_name = format!("acp/product-{task_id}");
+        if !branch_name.starts_with("acp/") {
+            return Err("branch must be under acp/*".to_string());
+        }
+        let artifact = self
+            .get_supervised_patch_artifact(artifact_id)?
+            .ok_or_else(|| "artifact missing for draft_pr".to_string())?;
+        // Request binding must match artifact owner fields exactly (existing target-output contract).
+        let request_binding = json!({
+            "schema_version": "target_repo_output_request.v1",
+            "artifact_id": artifact_id,
+            "workspace_id": artifact.get("workspace_id"),
+            "run_id": artifact.get("run_id"),
+            "target_id": artifact.get("target_id"),
+            "mode": "push_branch",
+            "patch_hash": artifact.get("patch_hash"),
+            "source_revision": artifact.get("source_revision"),
+            "branch_name": branch_name,
+            "remote": "origin",
+            "commit_message": format!("feat: product golden path {task_id}"),
+            "pr_title": format!("Draft: product task {task_id}"),
+            "create_pull_request": true,
+        });
+        let request_sha256 = {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(
+                serde_json::to_vec(&request_binding).map_err(|e| e.to_string())?,
+            ))
+        };
+        use crate::storage::local_product_store::TargetOutputClaim;
+        let claim =
+            self.claim_target_output(artifact_id, &request_binding, &request_sha256, actor)?;
+        match claim {
+            TargetOutputClaim::Reused(existing) => {
+                return Ok(json!({
+                    "mode": "draft_pr",
+                    "status": "reused",
+                    "output": existing,
+                    "product_task_id": task_id,
+                }));
+            }
+            TargetOutputClaim::ReconciliationRequired(state) => {
+                return Ok(json!({
+                    "mode": "draft_pr",
+                    "status": "outcome_unknown",
+                    "reconciliation_required": true,
+                    "receipt_state": state,
+                    "product_task_id": task_id,
+                }));
+            }
+            TargetOutputClaim::Claimed => {}
+        }
+
+        let publish = crate::target_repo_output::BranchPublishRequest {
+            target_repo_path: Path::new(target_repo_path).to_path_buf(),
+            workspace_path: Path::new(workspace_path).to_path_buf(),
+            source_revision: source_revision.to_string(),
+            expected_patch_hash: patch_hash.to_string(),
+            branch_name: branch_name.clone(),
+            remote: "origin".to_string(),
+            commit_message: format!("feat: product golden path {task_id}"),
+            pr_title: format!("Draft: product task {task_id}"),
+            pr_body: format!(
+                "Product golden path Draft PR for task `{task_id}`.\n\nDo not merge automatically."
+            ),
+        };
+        match crate::target_repo_output::push_approved_branch(&config, publish) {
+            Ok(published) => {
+                let output = json!({
+                    "mode": "draft_pr",
+                    "status": "branch_pushed",
+                    "branch_name": published.branch_name,
+                    "commit_sha": published.commit_sha,
+                    "patch_hash": published.patch_hash,
+                    "remote": published.remote,
+                    "product_task_id": task_id,
+                    "pull_request": {
+                        "status": "pending_or_operator_create",
+                        "note": "Draft PR creation continues through existing GitHub PR helper when configured; branch acp/* is pushed"
+                    },
+                });
+                let _ = self.record_target_output_receipt(
+                    artifact_id,
+                    &request_binding,
+                    &request_sha256,
+                    &output,
+                    actor,
+                );
+                Ok(output)
+            }
+            Err(e) => {
+                let _ = self.mark_target_output_outcome_unknown(
+                    artifact_id,
+                    &request_binding,
+                    &request_sha256,
+                    actor,
+                    &e,
+                );
+                Err(format!("draft_pr push failed (outcome recorded): {e}"))
+            }
+        }
     }
 
     fn bind_product_task_plan_run(
