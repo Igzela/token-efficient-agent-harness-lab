@@ -19,14 +19,14 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. `PE7-HARNESS-EVOLUTION-B3` — `READY_FOR_EXECUTION` / active Ship PR lane (PR_READY output only). Fixture/local only; default-off; no active-Harness mutation; no Issue→CLI; no direct PR create/merge.
+1. No further PE7 Level-1 laboratory packets are ready. Keep `PE7-OPENCODE-BINARY-ADMISSION-1` deferred, `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` parked, and `PE7-META-IMPROVER-EXPERIMENT-1` blocked. Default work is Ship PR maintenance.
 2. `PE7-OPENCODE-BINARY-ADMISSION-1` — `BLOCKED_PREREQUISITE` / deferred until an exact upstream artifact or source identity and real checksum are independently admitted. Do not treat `PIN.json` placeholder fields as binary admission.
 3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — **`PARKED` / `BLOCKED_PREREQUISITE`** on Vader-host Codex/ChatGPT execution (HTTP 403). **Not actively driven.** Parking Issue: **#254**. Runner is online/idle; Issue #208 emergency-stopped. Do not hard-force Codex 403 or Issue→CLI smokes until unparked.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` on a stable PE7 Level-1 result from the evolution laboratory.
 5. PR #225 remains an independent presentation-only Dashboard PR.
 6. Remaining good-first issues (#245–#247) are community backlog.
 
-Default daily development is the Ship PR path. The repository-agent Issue→Vader→Codex CLI path is parked. OpenCode fixture adapter (PR #255), honesty repair (PR #257), Harness Evolution B1 (PR #258), and B2 evaluation/archive (PR #259) are merged; real binary admission is not implemented. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
+Default daily development is the Ship PR path. The repository-agent Issue→Vader→Codex CLI path is parked. OpenCode fixture adapter (PR #255), honesty repair (PR #257), and Harness Evolution B1–B3 (PRs #258–#260) are merged; real binary admission is not implemented. Any provider call, networked OpenCode tool, repository mutation outside isolated candidate workspaces, protected-branch write, public release, deployment, or destructive operation remains subject to its existing owner and hard-stop contract.
 
 ## Verified Baseline
 
@@ -48,7 +48,8 @@ The following merged work is the implementation baseline:
 - PR #256 merged clean-environment external validation (`./scripts/external_validation.sh`, hosted Ubuntu/macOS self-validation, `external_validation_report.v1`) on exact head `a3f6744616a75b36d185534993f21c2839b1ea76` (engineering usability only; not external adoption);
 - PR #257 merged the OpenCode fixture-adapter honesty repair on reviewed head `a5556e2475949f9364c86f47a65d802bc322ae87` into `main` at `4731e39934a53ba375d34add9aeda0b5be596f04` (exact-head CI runs `29798135924` / `29798135919`);
 - PR #258 merged Harness Evolution B1 evidence foundation on reviewed head `6fc15c5e501a62051d758c1b9cb399168e97f308` into `main` at `dc925671435e411d7df78c1a5a30d1de4302a296` (exact-head CI runs `29801901598` / `29801901631`);
-- PR #259 merged Harness Evolution B2 evaluation/Pareto archive on reviewed head `0e0dc8312d934d119be602b590ee3eaef29c6a6a` into `main` at `391c4bfcadeff1643bafe1cb486ab487af684ebd` (exact-head CI runs `29803322510` / `29803322513`).
+- PR #259 merged Harness Evolution B2 evaluation/Pareto archive on reviewed head `0e0dc8312d934d119be602b590ee3eaef29c6a6a` into `main` at `391c4bfcadeff1643bafe1cb486ab487af684ebd` (exact-head CI runs `29803322510` / `29803322513`);
+- PR #260 merged Harness Evolution B3 PR_READY finalizer on reviewed head `9e66d371a0eeb02915d5c1438e41e9a65436d390` into `main` at `add6d9cbbe9365c827d663c3d83c082f783824d4` (exact-head CI runs `29805288258` / `29805288305`).
 
 Every implementation session must refresh actual `main`, open PRs, CI, Issue #208, runner readiness, provider catalog evidence, and overlapping file ownership before relying on these facts.
 
@@ -280,7 +281,7 @@ Each invocation must bind at least the root run/node/lease, adapter and OpenCode
 
 ## Packet PE7-HARNESS-EVOLUTION-LAB-1 — Evidence-gated candidate evolution
 
-**State:** `IN_PROGRESS` (B1+B2 complete; B3 active)
+**State:** `COMPLETE` (B1+B2+B3 laboratory path merged; default-off; active Harness immutable)
 
 **Prerequisites:** `PE7-BOUNDED-RECURSIVE-EXECUTION-1` (complete), `PE7-OPENCODE-EXTERNAL-ADAPTER-1` (complete via PR #255), and `PE7-OPENCODE-FIXTURE-ADAPTER-REPAIR-1` (complete via PR #257). Implement as focused sequential packets (B1 evidence foundation → B2 evaluation/archive → B3 PR_READY), not one oversized PR.
 
@@ -300,7 +301,9 @@ Each invocation must bind at least the root run/node/lease, adapter and OpenCode
 
 ### Packet PE7-HARNESS-EVOLUTION-B3 — PR_READY output
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
+
+**Completion evidence:** PR #260 squash-merged into `main` at `add6d9cbbe9365c827d663c3d83c082f783824d4` from reviewed head `9e66d371a0eeb02915d5c1438e41e9a65436d390`. Exact-head CI runs `29805288258` / `29805288305`. Two independent complete-diff reviews. Schema v29 PR_READY bundles; laboratory does not create/merge PRs.
 
 **Goal:** Add a default-off laboratory path that proposes, evaluates, archives, and optionally promotes isolated Harness candidates while the active Harness and the complete control plane remain immutable.
 
