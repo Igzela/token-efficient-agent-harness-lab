@@ -456,7 +456,8 @@ pub fn map_finalize_error(err: &EvolutionAdmissionError) -> PrReadyTerminal {
 mod tests {
     use super::*;
     use crate::harness_evolution::{
-        candidate_from_proposal, proposal_from_body, sample_active_identity,
+        candidate_from_proposal, proposal_from_body, sample_active_identity, sha256_hex,
+        CandidateWorkspace, WORKSPACE_SCHEMA_VERSION,
     };
     use crate::harness_evolution_eval::{
         build_sealed_vault, evaluate_candidate_fixture, sample_budget, sample_task_family,
@@ -506,14 +507,14 @@ mod tests {
             3,
         )
         .unwrap();
-        let mut c = candidate_from_proposal(
-            &proposal,
-            &sha256_hex("pr-content"),
-            "candidates/pr",
-            &sha256_hex("ws"),
-            "2026-07-21T00:00:00Z",
-        )
-        .unwrap();
+        let content = sha256_hex("pr-content");
+        let ws = CandidateWorkspace {
+            schema_version: WORKSPACE_SCHEMA_VERSION.to_string(),
+            workspace_id: "hews-pr".to_string(),
+            relative_path: "candidates/pr".to_string(),
+            content_hash: content,
+        };
+        let mut c = candidate_from_proposal(&proposal, &ws, "2026-07-21T00:00:00Z").unwrap();
         c.status = CandidateStatus::Admitted;
         c
     }

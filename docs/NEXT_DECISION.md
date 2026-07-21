@@ -19,7 +19,7 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Active Routing
 
-1. **Active PE7 repair lane:** `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1` (`READY_FOR_EXECUTION`) → then B2 evaluator repair → then B3 finalizer repair → then Level-1 acceptance. B1–B3 scaffolding (PRs #258–#260) is merged but **not Level-1 complete** (caller-supplied authority and synthetic evidence remain; residual defects tracked as repair packets). No stable Level-1 result exists.
+1. **Active PE7 repair lane:** `PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1` (`IN_PROGRESS`) → then B2 evaluator repair → then B3 finalizer repair → then Level-1 acceptance. B1–B3 scaffolding (PRs #258–#260) is merged but **not Level-1 complete** (synthetic evaluation and non-owner PR_READY evidence remain after R1). No stable Level-1 result exists.
 2. `PE7-OPENCODE-BINARY-ADMISSION-1` — `BLOCKED_PREREQUISITE` / deferred until an exact upstream artifact or source identity and real checksum are independently admitted. Do not treat `PIN.json` placeholder fields as binary admission.
 3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — **`PARKED` / `BLOCKED_PREREQUISITE`** on Vader-host Codex/ChatGPT execution (HTTP 403). **Not actively driven.** Parking Issue: **#254**. Runner is online/idle; Issue #208 emergency-stopped. Do not hard-force Codex 403 or Issue→CLI smokes until unparked.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE` until a stable, independently reviewed Level-1 laboratory result exists (after R1–R3 and `PE7-HARNESS-EVOLUTION-LEVEL1-ACCEPTANCE-1`).
@@ -322,11 +322,20 @@ Mark this laboratory fully `COMPLETE` only after R1–R3 merge **and** `PE7-HARN
 
 ### Packet PE7-HARNESS-EVOLUTION-B1-AUTHORITY-REPAIR-1 — Active identity and workspace ownership
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `IN_PROGRESS`
 
 **Prerequisites:** `PE7-HARNESS-EVOLUTION-B1`
 
 **Goal:** Remove caller-supplied active-identity authority from proposal/candidate admission; load active Harness/evaluator identity from store owners inside the transaction; make epochs insert-only (no `ON CONFLICT ... DO UPDATE` mutation of the same identity); bind identity creation to authenticated owner action + audit; exactly-once proposal/candidate decisions with stable typed reasons on replay; materialize real app-owned candidate workspaces (canonical root, path confinement, content-hash from workspace surface, revalidation, discard without touching active `main`). SQLite/PostgreSQL parity, restart, concurrent admission, and negative tests required.
+
+**Implementation notes (this PR):**
+
+- `register_harness_evolution_active_identity(identity, actor_id)` is insert-only; exact replay returns the original epoch; conflicting same-id mutation fails closed; new epochs require a new `active_version_id`.
+- `get_current_harness_evolution_active_identity` loads the latest store-owned epoch.
+- Proposal and candidate admission load active identity inside the transaction; caller-supplied authority fields are overwritten; optional `expected_active_version_id` is optimistic concurrency only.
+- Exact proposal/candidate replay returns the original decision without incrementing state.
+- App-owned workspaces via `ACP_HARNESS_EVOLUTION_WORKSPACE_ROOT`: materialize, surface hash, revalidate before admission, discard without touching active `main`; symlinks and escape fail closed.
+- `admit_harness_evolution_candidate` no longer accepts `current_active` as an authoritative argument.
 
 **Forbidden:** provider, real OpenCode binary, network, Issue→CLI, target-repository mutation, active-Harness source mutation, evaluator authority change, PR create/merge, release, deployment.
 

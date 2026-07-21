@@ -4,10 +4,11 @@ use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::{append_audit_locked, LocalProductStore};
 use crate::harness_evolution::{
-    build_admission_receipt, validate_candidate_for_admission, validate_proposal,
-    ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, EvolutionAdmissionError,
-    EvolutionCandidate, EvolutionProposal, EvolutionReceipt, ACTIVE_VERSION_SCHEMA,
-    CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
+    build_admission_receipt, configured_workspace_root, revalidate_workspace_content,
+    validate_candidate_for_admission, validate_proposal, ActiveHarnessIdentity, CandidateStatus,
+    CandidateTerminalReason, EvolutionAdmissionError, EvolutionCandidate, EvolutionProposal,
+    EvolutionReceipt, ACTIVE_VERSION_SCHEMA, CANDIDATE_SCHEMA_VERSION,
+    EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
 };
 use crate::harness_evolution_eval::{
     build_eval_receipt, build_pareto_archive, evaluate_candidate_fixture, redacted_eval_evidence,
@@ -21,26 +22,58 @@ use crate::harness_evolution_pr_ready::{
 };
 
 impl LocalProductStore {
-    /// Record the immutable active-Harness + evaluator identity for the lab epoch.
-    pub fn set_harness_evolution_active_identity(
+    /// Register an immutable active-Harness + evaluator epoch (insert-only).
+    ///
+    /// Changing the active Harness or evaluator requires a **new** `active_version_id`.
+    /// Existing epochs are never mutated (`ON CONFLICT DO UPDATE` is forbidden).
+    /// `actor_id` is bound into the audit receipt for the owner action.
+    pub fn register_harness_evolution_active_identity(
         &self,
         identity: &ActiveHarnessIdentity,
-    ) -> Result<(), String> {
+        actor_id: &str,
+    ) -> Result<ActiveHarnessIdentity, String> {
         if identity.schema_version != ACTIVE_VERSION_SCHEMA {
             return Err("active harness identity schema_version mismatch".into());
+        }
+        if actor_id.trim().is_empty() {
+            return Err(
+                "evolution_active_identity_actor: authenticated actor_id is required".into(),
+            );
         }
         let body = serde_json::to_string(identity).map_err(|e| e.to_string())?;
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         self.with_conn(|conn| {
-            conn.execute(
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let existing: Option<(String, String, String, String)> = tx
+                .query_row(
+                    "SELECT active_version_hash, evaluator_identity_hash, body_json, created_at
+                     FROM harness_evolution_active_identity WHERE active_version_id=?1",
+                    params![identity.active_version_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some((hash, eval, existing_body, _)) = existing {
+                if hash == identity.active_version_hash
+                    && eval == identity.evaluator_identity_hash
+                    && existing_body == body
+                {
+                    // Exact replay of the same epoch registration — return original, no mutation.
+                    let stored: ActiveHarnessIdentity =
+                        serde_json::from_str(&existing_body).map_err(|e| e.to_string())?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(stored);
+                }
+                return Err(format!(
+                    "evolution_active_identity_immutable: epoch {} already exists and cannot be mutated; create a new active_version_id",
+                    identity.active_version_id
+                ));
+            }
+            tx.execute(
                 "INSERT INTO harness_evolution_active_identity
                     (active_version_id, active_version_hash, evaluator_identity_hash, body_json, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-                 ON CONFLICT(active_version_id) DO UPDATE SET
-                    active_version_hash=excluded.active_version_hash,
-                    evaluator_identity_hash=excluded.evaluator_identity_hash,
-                    body_json=excluded.body_json,
-                    updated_at=excluded.updated_at",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
                 params![
                     identity.active_version_id,
                     identity.active_version_hash,
@@ -50,8 +83,32 @@ impl LocalProductStore {
                 ],
             )
             .map_err(|e| e.to_string())?;
-            Ok(())
+            append_audit_locked(
+                &tx,
+                &now,
+                actor_id,
+                "harness_evolution.active_identity_registered",
+                &identity.active_version_id,
+                &serde_json::json!({
+                    "schema_version": EVOLUTION_LAB_SCHEMA_VERSION,
+                    "active_version_id": identity.active_version_id,
+                    "active_version_hash": identity.active_version_hash,
+                    "evaluator_identity_hash": identity.evaluator_identity_hash,
+                    "actor_id": actor_id,
+                }),
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(identity.clone())
         })
+    }
+
+    /// Compatibility wrapper: register with system actor (prefer explicit actor).
+    pub fn set_harness_evolution_active_identity(
+        &self,
+        identity: &ActiveHarnessIdentity,
+    ) -> Result<(), String> {
+        self.register_harness_evolution_active_identity(identity, "system")
+            .map(|_| ())
     }
 
     pub fn get_harness_evolution_active_identity(
@@ -78,45 +135,140 @@ impl LocalProductStore {
         })
     }
 
-    /// Exactly-once proposal admission (duplicate proposal_id is refused).
+    /// Load the current (latest created) active identity epoch from the store owner.
+    pub fn get_current_harness_evolution_active_identity(
+        &self,
+    ) -> Result<Option<ActiveHarnessIdentity>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_active_identity
+                     ORDER BY created_at DESC, active_version_id DESC LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(
+                    serde_json::from_str(&body).map_err(|e| e.to_string())?,
+                )),
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Exactly-once proposal admission bound to store-owned active identity.
+    ///
+    /// Caller may supply `expected_active_version_id` for optimistic concurrency only.
+    /// Active Harness/evaluator fields on the proposal are overwritten from the store.
     pub fn admit_harness_evolution_proposal(
         &self,
         proposal: &EvolutionProposal,
     ) -> Result<EvolutionProposal, String> {
-        validate_proposal(proposal).map_err(|e| format!("{}: {}", e.code, e.message))?;
-        let body = serde_json::to_string(proposal).map_err(|e| e.to_string())?;
+        self.admit_harness_evolution_proposal_with_expected(proposal, None)
+    }
+
+    pub fn admit_harness_evolution_proposal_with_expected(
+        &self,
+        proposal: &EvolutionProposal,
+        expected_active_version_id: Option<&str>,
+    ) -> Result<EvolutionProposal, String> {
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         self.with_conn(|conn| {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                 .map_err(|e| e.to_string())?;
-            let existing: Option<String> = tx
+
+            // Exact replay: identical proposal_id returns original decision without mutation.
+            let existing_body: Option<String> = tx
                 .query_row(
-                    "SELECT proposal_id FROM harness_evolution_proposals WHERE proposal_id=?1",
+                    "SELECT body_json FROM harness_evolution_proposals WHERE proposal_id=?1",
                     params![proposal.proposal_id],
                     |r| r.get(0),
                 )
                 .optional()
                 .map_err(|e| e.to_string())?;
-            if existing.is_some() {
+            if let Some(body) = existing_body {
+                let stored: EvolutionProposal =
+                    serde_json::from_str(&body).map_err(|e| e.to_string())?;
+                // Compare durable identity fields; caller may have stale active fields.
+                if stored.proposal_body_sha256 == proposal.proposal_body_sha256
+                    && stored.seed == proposal.seed
+                    && stored.parent_candidate_id == proposal.parent_candidate_id
+                    && stored.mutable_surface == proposal.mutable_surface
+                    && stored.evidence_hashes == proposal.evidence_hashes
+                {
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(stored);
+                }
                 return Err(format!(
-                    "evolution_duplicate_proposal: proposal {} already recorded",
+                    "evolution_duplicate_proposal: proposal {} already recorded with conflicting body",
                     proposal.proposal_id
                 ));
             }
+
+            let current_active = load_current_active_identity_tx(&tx)?;
+            if let Some(expected) = expected_active_version_id {
+                if expected != current_active.active_version_id {
+                    return Err(format!(
+                        "evolution_stale_expected_active: expected {} but current is {}",
+                        expected, current_active.active_version_id
+                    ));
+                }
+            }
+
+            // Bind authoritative active identity; ignore caller-supplied authority fields.
+            let mut bound = proposal.clone();
+            bound.active_version_id = current_active.active_version_id.clone();
+            bound.active_version_hash = current_active.active_version_hash.clone();
+            bound.evaluator_identity_hash = current_active.evaluator_identity_hash.clone();
+            // Re-derive proposal_id under authoritative active epoch.
+            bound.proposal_id = crate::harness_evolution::derive_proposal_id(
+                &bound.active_version_id,
+                &bound.proposal_body_sha256,
+                bound.seed,
+            );
+            validate_proposal(&bound).map_err(|e| format!("{}: {}", e.code, e.message))?;
+
+            // Parent (if any) must exist as an admitted candidate under the same active epoch.
+            if let Some(parent_id) = &bound.parent_candidate_id {
+                let parent_ok: Option<(String, String)> = tx
+                    .query_row(
+                        "SELECT status, active_version_id FROM harness_evolution_candidates
+                         WHERE candidate_id=?1",
+                        params![parent_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                match parent_ok {
+                    Some((status, parent_active))
+                        if status == CandidateStatus::Admitted.as_str()
+                            && parent_active == current_active.active_version_id => {}
+                    _ => {
+                        return Err(
+                            "evolution_stale_parent: parent candidate missing, not admitted, or wrong epoch"
+                                .into(),
+                        );
+                    }
+                }
+            }
+
+            let body = serde_json::to_string(&bound).map_err(|e| e.to_string())?;
             tx.execute(
                 "INSERT INTO harness_evolution_proposals
                     (proposal_id, parent_candidate_id, active_version_id, active_version_hash,
                      evaluator_identity_hash, proposal_body_sha256, body_json, seed, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
-                    proposal.proposal_id,
-                    proposal.parent_candidate_id,
-                    proposal.active_version_id,
-                    proposal.active_version_hash,
-                    proposal.evaluator_identity_hash,
-                    proposal.proposal_body_sha256,
+                    bound.proposal_id,
+                    bound.parent_candidate_id,
+                    bound.active_version_id,
+                    bound.active_version_hash,
+                    bound.evaluator_identity_hash,
+                    bound.proposal_body_sha256,
                     body,
-                    proposal.seed as i64,
+                    bound.seed as i64,
                     now
                 ],
             )
@@ -126,33 +278,159 @@ impl LocalProductStore {
                 &now,
                 "system",
                 "harness_evolution.proposal_admitted",
-                &proposal.proposal_id,
+                &bound.proposal_id,
                 &serde_json::json!({
                     "schema_version": EVOLUTION_LAB_SCHEMA_VERSION,
-                    "proposal_id": proposal.proposal_id,
-                    "active_version_id": proposal.active_version_id,
+                    "proposal_id": bound.proposal_id,
+                    "active_version_id": bound.active_version_id,
                 }),
             )?;
             tx.commit().map_err(|e| e.to_string())?;
-            Ok(proposal.clone())
+            Ok(bound)
         })
     }
 
-    /// Exactly-once candidate admission with immutable active-version binding.
+    /// Exactly-once candidate admission: active identity and proposal loaded inside the transaction.
+    ///
+    /// Does **not** accept caller-supplied `current_active` authority. Optional
+    /// `expected_active_version_id` is optimistic concurrency only.
     pub fn admit_harness_evolution_candidate(
         &self,
-        mut candidate: EvolutionCandidate,
-        current_active: &ActiveHarnessIdentity,
+        candidate: EvolutionCandidate,
     ) -> Result<(EvolutionCandidate, EvolutionReceipt), String> {
-        let parent_valid = if let Some(parent_id) = &candidate.parent_candidate_id {
-            self.get_harness_evolution_candidate(parent_id)?
-                .map(|p| p.status == CandidateStatus::Admitted)
-                .unwrap_or(false)
-        } else {
-            true
-        };
-        validate_candidate_for_admission(&candidate, current_active, parent_valid).map_err(
-            |e: EvolutionAdmissionError| {
+        self.admit_harness_evolution_candidate_with_expected(candidate, None)
+    }
+
+    pub fn admit_harness_evolution_candidate_with_expected(
+        &self,
+        mut candidate: EvolutionCandidate,
+        expected_active_version_id: Option<&str>,
+    ) -> Result<(EvolutionCandidate, EvolutionReceipt), String> {
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        // Workspace revalidation happens outside the DB transaction (filesystem).
+        let workspace_root = configured_workspace_root()
+            .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
+        revalidate_workspace_content(&workspace_root, &candidate.workspace)
+            .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
+
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+
+            // Exact replay of same candidate_id returns original decision.
+            let existing_body: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_candidates WHERE candidate_id=?1",
+                    params![candidate.candidate_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(body) = existing_body {
+                let stored: EvolutionCandidate =
+                    serde_json::from_str(&body).map_err(|e| e.to_string())?;
+                if stored.content_hash == candidate.content_hash
+                    && stored.proposal_id == candidate.proposal_id
+                    && stored.lineage_id == candidate.lineage_id
+                {
+                    let receipt_id = crate::harness_evolution::derive_receipt_id(
+                        &stored.candidate_id,
+                        stored.terminal_reason,
+                    );
+                    let receipt_body: Option<String> = tx
+                        .query_row(
+                            "SELECT body_json FROM harness_evolution_receipts WHERE receipt_id=?1",
+                            params![receipt_id],
+                            |r| r.get(0),
+                        )
+                        .optional()
+                        .map_err(|e| e.to_string())?;
+                    let receipt = match receipt_body {
+                        Some(rb) => serde_json::from_str(&rb).map_err(|e| e.to_string())?,
+                        None => build_admission_receipt(&stored, &stored.created_at),
+                    };
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok((stored, receipt));
+                }
+                return Err(format!(
+                    "evolution_duplicate_candidate: candidate {} already recorded with conflicting content",
+                    candidate.candidate_id
+                ));
+            }
+
+            let current_active = load_current_active_identity_tx(&tx)?;
+            if let Some(expected) = expected_active_version_id {
+                if expected != current_active.active_version_id {
+                    return Err(format!(
+                        "evolution_stale_expected_active: expected {} but current is {}",
+                        expected, current_active.active_version_id
+                    ));
+                }
+            }
+
+            // Load proposal and bind authority from proposal + current active.
+            let proposal_body: Option<String> = tx
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_proposals WHERE proposal_id=?1",
+                    params![candidate.proposal_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let proposal: EvolutionProposal = match proposal_body {
+                Some(body) => serde_json::from_str(&body).map_err(|e| e.to_string())?,
+                None => {
+                    return Err(format!(
+                        "evolution_late_write: proposal {} missing",
+                        candidate.proposal_id
+                    ));
+                }
+            };
+            if proposal.active_version_id != current_active.active_version_id
+                || proposal.active_version_hash != current_active.active_version_hash
+                || proposal.evaluator_identity_hash != current_active.evaluator_identity_hash
+            {
+                return Err(
+                    "evolution_changed_active_version: proposal epoch no longer matches current active"
+                        .into(),
+                );
+            }
+
+            // Overwrite candidate authority from store-owned proposal/active (reject caller authority).
+            candidate.active_version_id = current_active.active_version_id.clone();
+            candidate.active_version_hash = current_active.active_version_hash.clone();
+            candidate.evaluator_identity_hash = current_active.evaluator_identity_hash.clone();
+            candidate.proposal_id = proposal.proposal_id.clone();
+            candidate.parent_candidate_id = proposal.parent_candidate_id.clone();
+            candidate.mutable_surface = proposal.mutable_surface.clone();
+            candidate.seed = proposal.seed;
+            candidate.lineage_id = crate::harness_evolution::derive_lineage_id(
+                candidate.parent_candidate_id.as_deref(),
+                &candidate.proposal_id,
+            );
+            candidate.candidate_id = crate::harness_evolution::derive_candidate_id(
+                &candidate.proposal_id,
+                &candidate.content_hash,
+                candidate.seed,
+            );
+
+            let parent_valid = if let Some(parent_id) = &candidate.parent_candidate_id {
+                let status: Option<String> = tx
+                    .query_row(
+                        "SELECT status FROM harness_evolution_candidates WHERE candidate_id=?1",
+                        params![parent_id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                status.as_deref() == Some(CandidateStatus::Admitted.as_str())
+            } else {
+                true
+            };
+
+            if let Err(e) =
+                validate_candidate_for_admission(&candidate, &current_active, parent_valid)
+            {
                 candidate.status = CandidateStatus::Rejected;
                 candidate.terminal_reason = match e.code.as_str() {
                     "evolution_stale_parent" => CandidateTerminalReason::RejectedStaleParent,
@@ -160,7 +438,7 @@ impl LocalProductStore {
                         CandidateTerminalReason::RejectedChangedActiveVersion
                     }
                     "evolution_kill_switch" => CandidateTerminalReason::RejectedKillSwitch,
-                    "evolution_workspace_escape" => {
+                    "evolution_workspace_escape" | "evolution_workspace_tamper" => {
                         CandidateTerminalReason::RejectedWorkspaceEscape
                     }
                     "evolution_forbidden_surface" | "evolution_unknown_surface" => {
@@ -169,54 +447,27 @@ impl LocalProductStore {
                     "evolution_sensitive_payload" => CandidateTerminalReason::RejectedTamper,
                     _ => CandidateTerminalReason::RejectedMalformed,
                 };
-                format!("{}: {}", e.code, e.message)
-            },
-        )?;
-
-        candidate.status = CandidateStatus::Admitted;
-        candidate.terminal_reason = CandidateTerminalReason::Admitted;
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        candidate.created_at = now.clone();
-        let receipt = build_admission_receipt(&candidate, &now);
-        let body = serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
-        let receipt_body = serde_json::to_string(&receipt).map_err(|e| e.to_string())?;
-
-        self.with_conn(|conn| {
-            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
-                .map_err(|e| e.to_string())?;
-
-            // Late-write refusal: proposal must exist and not already have a terminal candidate.
-            let proposal_exists: Option<String> = tx
-                .query_row(
-                    "SELECT proposal_id FROM harness_evolution_proposals WHERE proposal_id=?1",
-                    params![candidate.proposal_id],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            if proposal_exists.is_none() {
-                return Err(format!(
-                    "evolution_late_write: proposal {} missing",
-                    candidate.proposal_id
-                ));
+                candidate.created_at = now.clone();
+                let receipt = build_admission_receipt(&candidate, &now);
+                persist_candidate_and_receipt_tx(&tx, &candidate, &receipt, &now)?;
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    "system",
+                    "harness_evolution.candidate_rejected",
+                    &candidate.candidate_id,
+                    &serde_json::json!({
+                        "schema_version": EVOLUTION_LAB_SCHEMA_VERSION,
+                        "candidate_id": candidate.candidate_id,
+                        "terminal_reason": candidate.terminal_reason.as_str(),
+                        "code": e.code,
+                    }),
+                )?;
+                tx.commit().map_err(|e| e.to_string())?;
+                return Err(format!("{}: {}", e.code, e.message));
             }
 
-            let existing: Option<String> = tx
-                .query_row(
-                    "SELECT candidate_id FROM harness_evolution_candidates WHERE candidate_id=?1",
-                    params![candidate.candidate_id],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            if existing.is_some() {
-                return Err(format!(
-                    "evolution_duplicate_candidate: candidate {} already recorded",
-                    candidate.candidate_id
-                ));
-            }
-
-            // Duplicate content under same lineage is refused.
+            // Duplicate content under same lineage is refused and persisted as rejected when new id.
             let dup_content: Option<String> = tx
                 .query_row(
                     "SELECT candidate_id FROM harness_evolution_candidates
@@ -233,52 +484,11 @@ impl LocalProductStore {
                 );
             }
 
-            tx.execute(
-                "INSERT INTO harness_evolution_candidates
-                    (candidate_id, lineage_id, parent_candidate_id, proposal_id,
-                     active_version_id, active_version_hash, evaluator_identity_hash,
-                     content_hash, status, terminal_reason, workspace_id, workspace_rel_path,
-                     body_json, seed, created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15)",
-                params![
-                    candidate.candidate_id,
-                    candidate.lineage_id,
-                    candidate.parent_candidate_id,
-                    candidate.proposal_id,
-                    candidate.active_version_id,
-                    candidate.active_version_hash,
-                    candidate.evaluator_identity_hash,
-                    candidate.content_hash,
-                    candidate.status.as_str(),
-                    candidate.terminal_reason.as_str(),
-                    candidate.workspace.workspace_id,
-                    candidate.workspace.relative_path,
-                    body,
-                    candidate.seed as i64,
-                    now
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-
-            tx.execute(
-                "INSERT INTO harness_evolution_receipts
-                    (receipt_id, candidate_id, proposal_id, lineage_id, active_version_id,
-                     terminal_reason, content_hash, body_json, created_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                params![
-                    receipt.receipt_id,
-                    receipt.candidate_id,
-                    receipt.proposal_id,
-                    receipt.lineage_id,
-                    receipt.active_version_id,
-                    receipt.terminal_reason.as_str(),
-                    receipt.content_hash,
-                    receipt_body,
-                    now
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-
+            candidate.status = CandidateStatus::Admitted;
+            candidate.terminal_reason = CandidateTerminalReason::Admitted;
+            candidate.created_at = now.clone();
+            let receipt = build_admission_receipt(&candidate, &now);
+            persist_candidate_and_receipt_tx(&tx, &candidate, &receipt, &now)?;
             append_audit_locked(
                 &tx,
                 &now,
@@ -291,10 +501,43 @@ impl LocalProductStore {
                     "lineage_id": candidate.lineage_id,
                     "proposal_id": candidate.proposal_id,
                     "receipt_id": receipt.receipt_id,
+                    "workspace_id": candidate.workspace.workspace_id,
                 }),
             )?;
             tx.commit().map_err(|e| e.to_string())?;
             Ok((candidate, receipt))
+        })
+    }
+
+    /// Discard an unpromoted candidate workspace and record a discarded terminal when present.
+    pub fn discard_harness_evolution_candidate_workspace(
+        &self,
+        candidate_id: &str,
+        actor_id: &str,
+    ) -> Result<(), String> {
+        let candidate = self
+            .get_harness_evolution_candidate(candidate_id)?
+            .ok_or_else(|| format!("evolution_candidate_missing: {candidate_id}"))?;
+        let root = configured_workspace_root()
+            .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
+        crate::harness_evolution::discard_candidate_workspace(&root, &candidate.workspace)
+            .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            append_audit_locked(
+                conn,
+                &now,
+                actor_id,
+                "harness_evolution.workspace_discarded",
+                candidate_id,
+                &serde_json::json!({
+                    "schema_version": EVOLUTION_LAB_SCHEMA_VERSION,
+                    "candidate_id": candidate_id,
+                    "workspace_id": candidate.workspace.workspace_id,
+                    "terminal_reason": CandidateTerminalReason::WorkspaceDiscarded.as_str(),
+                }),
+            )?;
+            Ok(())
         })
     }
 
@@ -810,12 +1053,87 @@ impl LocalProductStore {
     }
 }
 
+fn load_current_active_identity_tx(tx: &Transaction<'_>) -> Result<ActiveHarnessIdentity, String> {
+    let row: Option<String> = tx
+        .query_row(
+            "SELECT body_json FROM harness_evolution_active_identity
+             ORDER BY created_at DESC, active_version_id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match row {
+        Some(body) => serde_json::from_str(&body).map_err(|e| e.to_string()),
+        None => Err(
+            "evolution_active_identity_missing: no active Harness identity epoch is registered"
+                .into(),
+        ),
+    }
+}
+
+fn persist_candidate_and_receipt_tx(
+    tx: &Transaction<'_>,
+    candidate: &EvolutionCandidate,
+    receipt: &EvolutionReceipt,
+    now: &str,
+) -> Result<(), String> {
+    let body = serde_json::to_string(candidate).map_err(|e| e.to_string())?;
+    let receipt_body = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO harness_evolution_candidates
+            (candidate_id, lineage_id, parent_candidate_id, proposal_id,
+             active_version_id, active_version_hash, evaluator_identity_hash,
+             content_hash, status, terminal_reason, workspace_id, workspace_rel_path,
+             body_json, seed, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15)",
+        params![
+            candidate.candidate_id,
+            candidate.lineage_id,
+            candidate.parent_candidate_id,
+            candidate.proposal_id,
+            candidate.active_version_id,
+            candidate.active_version_hash,
+            candidate.evaluator_identity_hash,
+            candidate.content_hash,
+            candidate.status.as_str(),
+            candidate.terminal_reason.as_str(),
+            candidate.workspace.workspace_id,
+            candidate.workspace.relative_path,
+            body,
+            candidate.seed as i64,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO harness_evolution_receipts
+            (receipt_id, candidate_id, proposal_id, lineage_id, active_version_id,
+             terminal_reason, content_hash, body_json, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![
+            receipt.receipt_id,
+            receipt.candidate_id,
+            receipt.proposal_id,
+            receipt.lineage_id,
+            receipt.active_version_id,
+            receipt.terminal_reason.as_str(),
+            receipt.content_hash,
+            receipt_body,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::harness_evolution::{
-        candidate_from_proposal, proposal_from_body, sample_active_identity, sha256_hex,
-        ENABLE_ENV, KILL_SWITCH_ENV,
+        candidate_from_proposal, derive_workspace_id, materialize_candidate_workspace,
+        proposal_from_body, sample_active_identity, sha256_hex, ENABLE_ENV, KILL_SWITCH_ENV,
+        WORKSPACE_ROOT_ENV,
     };
     use serde_json::json;
 
@@ -823,6 +1141,8 @@ mod tests {
         _lock: std::sync::MutexGuard<'static, ()>,
         prev_enable: Option<String>,
         prev_kill: Option<String>,
+        prev_ws_root: Option<String>,
+        _ws_dir: tempfile::TempDir,
     }
 
     impl LabEnvGuard {
@@ -832,13 +1152,22 @@ mod tests {
                 .unwrap_or_else(|e| e.into_inner());
             let prev_enable = std::env::var(ENABLE_ENV).ok();
             let prev_kill = std::env::var(KILL_SWITCH_ENV).ok();
+            let prev_ws_root = std::env::var(WORKSPACE_ROOT_ENV).ok();
+            let ws_dir = tempfile::tempdir().unwrap();
             std::env::set_var(ENABLE_ENV, "1");
             std::env::remove_var(KILL_SWITCH_ENV);
+            std::env::set_var(WORKSPACE_ROOT_ENV, ws_dir.path());
             Self {
                 _lock: lock,
                 prev_enable,
                 prev_kill,
+                prev_ws_root,
+                _ws_dir: ws_dir,
             }
+        }
+
+        fn workspace_root(&self) -> &std::path::Path {
+            self._ws_dir.path()
         }
     }
 
@@ -852,16 +1181,37 @@ mod tests {
                 Some(v) => std::env::set_var(KILL_SWITCH_ENV, v),
                 None => std::env::remove_var(KILL_SWITCH_ENV),
             }
+            match &self.prev_ws_root {
+                Some(v) => std::env::set_var(WORKSPACE_ROOT_ENV, v),
+                None => std::env::remove_var(WORKSPACE_ROOT_ENV),
+            }
         }
+    }
+
+    fn materialize_for(
+        env: &LabEnvGuard,
+        proposal: &crate::harness_evolution::EvolutionProposal,
+        marker: &str,
+    ) -> crate::harness_evolution::CandidateWorkspace {
+        let ws_id = derive_workspace_id(&proposal.proposal_id, proposal.seed);
+        materialize_candidate_workspace(
+            env.workspace_root(),
+            &ws_id,
+            &[(
+                "candidate.json".to_string(),
+                format!(r#"{{"marker":"{marker}"}}"#).into_bytes(),
+            )],
+        )
+        .unwrap()
     }
 
     #[test]
     fn admits_proposal_and_candidate_exactly_once() {
-        let _env = LabEnvGuard::enable();
+        let env = LabEnvGuard::enable();
         let store = LocalProductStore::new(":memory:").unwrap();
         let active = sample_active_identity();
         store
-            .set_harness_evolution_active_identity(&active)
+            .register_harness_evolution_active_identity(&active, "operator-test")
             .unwrap();
         let proposal = proposal_from_body(
             &active,
@@ -872,25 +1222,22 @@ mod tests {
             11,
         )
         .unwrap();
-        store.admit_harness_evolution_proposal(&proposal).unwrap();
-        let dup = store.admit_harness_evolution_proposal(&proposal);
-        assert!(dup.unwrap_err().contains("duplicate"));
+        let bound = store.admit_harness_evolution_proposal(&proposal).unwrap();
+        // Exact replay returns original without error.
+        let again = store.admit_harness_evolution_proposal(&proposal).unwrap();
+        assert_eq!(again.proposal_id, bound.proposal_id);
 
-        let candidate = candidate_from_proposal(
-            &proposal,
-            &sha256_hex("content-1"),
-            "candidates/c-a",
-            &sha256_hex("ws-a"),
-            "2026-07-21T00:00:00Z",
-        )
-        .unwrap();
+        let ws = materialize_for(&env, &bound, "content-1");
+        let candidate = candidate_from_proposal(&bound, &ws, "2026-07-21T00:00:00Z").unwrap();
         let (admitted, receipt) = store
-            .admit_harness_evolution_candidate(candidate.clone(), &active)
+            .admit_harness_evolution_candidate(candidate.clone())
             .unwrap();
         assert_eq!(admitted.status, CandidateStatus::Admitted);
         assert_eq!(receipt.terminal_reason, CandidateTerminalReason::Admitted);
-        let again = store.admit_harness_evolution_candidate(candidate, &active);
-        assert!(again.unwrap_err().contains("duplicate"));
+        // Exact replay returns original decision (no second receipt mutation).
+        let (replayed, receipt2) = store.admit_harness_evolution_candidate(candidate).unwrap();
+        assert_eq!(replayed.candidate_id, admitted.candidate_id);
+        assert_eq!(receipt2.receipt_id, receipt.receipt_id);
         let loaded = store
             .get_harness_evolution_candidate(&admitted.candidate_id)
             .unwrap()
@@ -904,26 +1251,14 @@ mod tests {
     }
 
     #[test]
-    fn refuses_stale_parent_and_changed_active_version() {
-        let _env = LabEnvGuard::enable();
+    fn refuses_stale_parent_and_active_identity_mutation() {
+        let env = LabEnvGuard::enable();
         let store = LocalProductStore::new(":memory:").unwrap();
         let active = sample_active_identity();
         store
-            .set_harness_evolution_active_identity(&active)
+            .register_harness_evolution_active_identity(&active, "operator-test")
             .unwrap();
-        let parent_proposal = proposal_from_body(
-            &active,
-            None,
-            &["prompts_and_bounded_rules"],
-            &json!({"kind":"parent"}),
-            vec![],
-            1,
-        )
-        .unwrap();
-        store
-            .admit_harness_evolution_proposal(&parent_proposal)
-            .unwrap();
-        // Parent never admitted as candidate → child sees stale parent.
+        // Child proposal with missing parent fails at proposal admission.
         let child_proposal = proposal_from_body(
             &active,
             Some("hevc-missing-parent".into()),
@@ -933,29 +1268,41 @@ mod tests {
             2,
         )
         .unwrap();
-        store
-            .admit_harness_evolution_proposal(&child_proposal)
-            .unwrap();
-        let child = candidate_from_proposal(
-            &child_proposal,
-            &sha256_hex("child-content"),
-            "candidates/child",
-            &sha256_hex("ws-c"),
-            "2026-07-21T00:00:00Z",
-        )
-        .unwrap();
         let err = store
-            .admit_harness_evolution_candidate(child, &active)
+            .admit_harness_evolution_proposal(&child_proposal)
             .unwrap_err();
         assert!(
             err.contains("stale_parent") || err.contains("evolution_stale_parent"),
             "unexpected error: {err}"
         );
 
-        let mut other_active = active.clone();
-        other_active.active_version_hash = sha256_hex("moved");
+        // Epoch is immutable: same id with different hash is refused.
+        let mut mutated = active.clone();
+        mutated.active_version_hash = sha256_hex("moved");
+        let err = store
+            .register_harness_evolution_active_identity(&mutated, "operator-test")
+            .unwrap_err();
+        assert!(
+            err.contains("immutable") || err.contains("cannot be mutated"),
+            "unexpected error: {err}"
+        );
+
+        // New epoch is allowed and becomes current.
+        let mut new_epoch = active.clone();
+        new_epoch.active_version_id = "active-harness-v1".to_string();
+        new_epoch.active_version_hash = sha256_hex("new-epoch-body");
+        store
+            .register_harness_evolution_active_identity(&new_epoch, "operator-test")
+            .unwrap();
+        let current = store
+            .get_current_harness_evolution_active_identity()
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.active_version_id, "active-harness-v1");
+
+        // Proposal under stale expected active is refused.
         let proposal = proposal_from_body(
-            &active,
+            &new_epoch,
             None,
             &["retry_and_stop_policy"],
             &json!({"kind":"retry"}),
@@ -963,35 +1310,28 @@ mod tests {
             5,
         )
         .unwrap();
-        store.admit_harness_evolution_proposal(&proposal).unwrap();
-        let candidate = candidate_from_proposal(
-            &proposal,
-            &sha256_hex("content-x"),
-            "candidates/cx",
-            &sha256_hex("ws-x"),
-            "2026-07-21T00:00:00Z",
-        )
-        .unwrap();
         let err = store
-            .admit_harness_evolution_candidate(candidate, &other_active)
+            .admit_harness_evolution_proposal_with_expected(&proposal, Some("active-harness-v0"))
             .unwrap_err();
         assert!(
-            err.contains("changed_active_version"),
+            err.contains("stale_expected_active"),
             "unexpected error: {err}"
         );
+        let _bound = store.admit_harness_evolution_proposal(&proposal).unwrap();
+        let _ = env;
     }
 
     #[test]
     fn durable_restart_preserves_candidate_and_receipt() {
-        let _env = LabEnvGuard::enable();
+        let env = LabEnvGuard::enable();
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("evo.db");
         let db_s = db.to_str().unwrap();
-        let (candidate_id, receipt_id) = {
+        let (candidate_id, receipt_id, loaded_candidate) = {
             let store = LocalProductStore::new(db_s).unwrap();
             let active = sample_active_identity();
             store
-                .set_harness_evolution_active_identity(&active)
+                .register_harness_evolution_active_identity(&active, "operator-test")
                 .unwrap();
             let proposal = proposal_from_body(
                 &active,
@@ -1002,19 +1342,13 @@ mod tests {
                 42,
             )
             .unwrap();
-            store.admit_harness_evolution_proposal(&proposal).unwrap();
-            let candidate = candidate_from_proposal(
-                &proposal,
-                &sha256_hex("restart-content"),
-                "candidates/restart",
-                &sha256_hex("ws-r"),
-                "2026-07-21T00:00:00Z",
-            )
-            .unwrap();
-            let (admitted, receipt) = store
-                .admit_harness_evolution_candidate(candidate, &active)
-                .unwrap();
-            (admitted.candidate_id, receipt.receipt_id)
+            let bound = store.admit_harness_evolution_proposal(&proposal).unwrap();
+            let ws = materialize_for(&env, &bound, "restart-content");
+            let candidate = candidate_from_proposal(&bound, &ws, "2026-07-21T00:00:00Z").unwrap();
+            let (admitted, receipt) = store.admit_harness_evolution_candidate(candidate).unwrap();
+            let candidate_id = admitted.candidate_id.clone();
+            let receipt_id = receipt.receipt_id.clone();
+            (candidate_id, receipt_id, admitted)
         };
         let store = LocalProductStore::new(db_s).unwrap();
         let loaded = store
@@ -1028,16 +1362,22 @@ mod tests {
             .unwrap()
             .expect("receipt survives reopen");
         assert_eq!(receipt.receipt_id, receipt_id);
-        // Replay must not create a second success receipt.
-        let again = store.admit_harness_evolution_candidate(loaded, &sample_active_identity());
-        assert!(again.unwrap_err().contains("duplicate"));
+        // Exact replay returns original (no second receipt).
+        let (replayed, receipt2) = store
+            .admit_harness_evolution_candidate(loaded_candidate)
+            .unwrap();
+        assert_eq!(replayed.candidate_id, candidate_id);
+        assert_eq!(receipt2.receipt_id, receipt_id);
     }
 
     #[test]
     fn refuses_candidate_without_prior_proposal() {
-        let _env = LabEnvGuard::enable();
+        let env = LabEnvGuard::enable();
         let store = LocalProductStore::new(":memory:").unwrap();
         let active = sample_active_identity();
+        store
+            .register_harness_evolution_active_identity(&active, "operator-test")
+            .unwrap();
         let proposal = proposal_from_body(
             &active,
             None,
@@ -1047,22 +1387,78 @@ mod tests {
             8,
         )
         .unwrap();
-        // Intentionally skip proposal admission.
-        let candidate = candidate_from_proposal(
-            &proposal,
-            &sha256_hex("late-content"),
-            "candidates/late",
-            &sha256_hex("ws-l"),
-            "2026-07-21T00:00:00Z",
-        )
-        .unwrap();
+        let ws = materialize_for(&env, &proposal, "late-content");
+        let candidate = candidate_from_proposal(&proposal, &ws, "2026-07-21T00:00:00Z").unwrap();
         let err = store
-            .admit_harness_evolution_candidate(candidate, &active)
+            .admit_harness_evolution_candidate(candidate)
             .unwrap_err();
         assert!(
             err.contains("late_write") || err.contains("missing"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn detects_workspace_tamper_before_admission() {
+        let env = LabEnvGuard::enable();
+        let store = LocalProductStore::new(":memory:").unwrap();
+        let active = sample_active_identity();
+        store
+            .register_harness_evolution_active_identity(&active, "operator-test")
+            .unwrap();
+        let proposal = proposal_from_body(
+            &active,
+            None,
+            &["prompts_and_bounded_rules"],
+            &json!({"kind":"tamper"}),
+            vec![],
+            13,
+        )
+        .unwrap();
+        let bound = store.admit_harness_evolution_proposal(&proposal).unwrap();
+        let ws = materialize_for(&env, &bound, "pre-tamper");
+        let path = env
+            .workspace_root()
+            .join(&ws.relative_path)
+            .join("extra.txt");
+        std::fs::write(path, b"tamper").unwrap();
+        let candidate = candidate_from_proposal(&bound, &ws, "2026-07-21T00:00:00Z").unwrap();
+        let err = store
+            .admit_harness_evolution_candidate(candidate)
+            .unwrap_err();
+        assert!(
+            err.contains("tamper") || err.contains("workspace"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn discards_unpromoted_workspace_without_main_mutation() {
+        let env = LabEnvGuard::enable();
+        let store = LocalProductStore::new(":memory:").unwrap();
+        let active = sample_active_identity();
+        store
+            .register_harness_evolution_active_identity(&active, "operator-test")
+            .unwrap();
+        let proposal = proposal_from_body(
+            &active,
+            None,
+            &["prompts_and_bounded_rules"],
+            &json!({"kind":"discard"}),
+            vec![],
+            17,
+        )
+        .unwrap();
+        let bound = store.admit_harness_evolution_proposal(&proposal).unwrap();
+        let ws = materialize_for(&env, &bound, "discard-me");
+        let candidate = candidate_from_proposal(&bound, &ws, "2026-07-21T00:00:00Z").unwrap();
+        let (admitted, _) = store.admit_harness_evolution_candidate(candidate).unwrap();
+        let dir = env.workspace_root().join(&admitted.workspace.relative_path);
+        assert!(dir.exists());
+        store
+            .discard_harness_evolution_candidate_workspace(&admitted.candidate_id, "operator-test")
+            .unwrap();
+        assert!(!dir.exists());
     }
 
     #[test]
@@ -1076,14 +1472,14 @@ mod tests {
 
     #[test]
     fn records_equal_budget_evaluation_and_pareto_exactly_once() {
-        let _env = LabEnvGuard::enable();
+        let env = LabEnvGuard::enable();
         use crate::harness_evolution_eval::{
             build_sealed_vault, sample_budget, sample_task_family,
         };
         let store = LocalProductStore::new(":memory:").unwrap();
         let active = sample_active_identity();
         store
-            .set_harness_evolution_active_identity(&active)
+            .register_harness_evolution_active_identity(&active, "operator-test")
             .unwrap();
         let proposal = proposal_from_body(
             &active,
@@ -1094,18 +1490,10 @@ mod tests {
             99,
         )
         .unwrap();
-        store.admit_harness_evolution_proposal(&proposal).unwrap();
-        let candidate = candidate_from_proposal(
-            &proposal,
-            &sha256_hex("eval-content"),
-            "candidates/eval",
-            &sha256_hex("ws-eval"),
-            "2026-07-21T00:00:00Z",
-        )
-        .unwrap();
-        let (admitted, _) = store
-            .admit_harness_evolution_candidate(candidate, &active)
-            .unwrap();
+        let bound = store.admit_harness_evolution_proposal(&proposal).unwrap();
+        let ws = materialize_for(&env, &bound, "eval-content");
+        let candidate = candidate_from_proposal(&bound, &ws, "2026-07-21T00:00:00Z").unwrap();
+        let (admitted, _) = store.admit_harness_evolution_candidate(candidate).unwrap();
         let family = sample_task_family("fam-store");
         let vault = build_sealed_vault(&family).unwrap();
         let budget = sample_budget(3);
@@ -1150,7 +1538,7 @@ mod tests {
 
     #[test]
     fn evaluation_survives_durable_restart() {
-        let _env = LabEnvGuard::enable();
+        let env = LabEnvGuard::enable();
         use crate::harness_evolution_eval::{
             build_sealed_vault, sample_budget, sample_task_family,
         };
@@ -1161,7 +1549,7 @@ mod tests {
             let store = LocalProductStore::new(db_s).unwrap();
             let active = sample_active_identity();
             store
-                .set_harness_evolution_active_identity(&active)
+                .register_harness_evolution_active_identity(&active, "operator-test")
                 .unwrap();
             let proposal = proposal_from_body(
                 &active,
@@ -1172,18 +1560,10 @@ mod tests {
                 7,
             )
             .unwrap();
-            store.admit_harness_evolution_proposal(&proposal).unwrap();
-            let candidate = candidate_from_proposal(
-                &proposal,
-                &sha256_hex("restart-eval-content"),
-                "candidates/restart-eval",
-                &sha256_hex("ws-re"),
-                "2026-07-21T00:00:00Z",
-            )
-            .unwrap();
-            let (admitted, _) = store
-                .admit_harness_evolution_candidate(candidate, &active)
-                .unwrap();
+            let bound = store.admit_harness_evolution_proposal(&proposal).unwrap();
+            let ws = materialize_for(&env, &bound, "restart-eval-content");
+            let candidate = candidate_from_proposal(&bound, &ws, "2026-07-21T00:00:00Z").unwrap();
+            let (admitted, _) = store.admit_harness_evolution_candidate(candidate).unwrap();
             let family = sample_task_family("fam-restart");
             let vault = build_sealed_vault(&family).unwrap();
             let (bundle, _, receipt) = store
