@@ -1824,6 +1824,10 @@ mod tests {
     fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
         assert_eq!(store.schema_version().unwrap(), 30);
         store
+            .rollback_v30_to_v29("migration-test-setup", true)
+            .unwrap();
+        assert_eq!(store.schema_version().unwrap(), 29);
+        store
             .rollback_v29_to_v28("migration-test-setup", true)
             .unwrap();
         assert_eq!(store.schema_version().unwrap(), 28);

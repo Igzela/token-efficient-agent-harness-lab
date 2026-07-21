@@ -2157,6 +2157,7 @@ mod tests {
 
     fn store_at_v25(path: impl AsRef<std::path::Path>) -> LocalProductStore {
         let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v30_to_v29("migration-test", true).unwrap();
         store.rollback_v29_to_v28("migration-test", true).unwrap();
         store.rollback_v28_to_v27("migration-test", true).unwrap();
         store.rollback_v27_to_v26("migration-test", true).unwrap();
