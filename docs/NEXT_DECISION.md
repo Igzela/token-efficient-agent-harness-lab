@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-07-21.
+Last updated: 2026-07-22.
 
 ## Current Direction
 
@@ -14,7 +14,7 @@ Do not create another roadmap, status, architecture, scheduler, runtime, queue, 
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS` (PRs #268–#271 merged: G1–G4, authority repair, terminal evidence, export_patch, gated `acp/*` push; residual GitHub Draft PR HTTP + managed coding-executor E2E).
+1. `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS` (PRs #268–#271 are preserved; repair output/approval semantics, canonical evidence, process authority, recovery, Draft PR acceptance, and mandatory managed-executor E2E).
 2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` until golden path residual is closed or explicitly accepted with recorded evidence exception.
 3. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`; Issue #266 remains open as a proposal, not the active lane.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
@@ -90,6 +90,24 @@ PRs #258–#260 created B1–B3 scaffolding; PRs #262–#264 repaired active-ide
 
 The result is neutral/no-improvement fixture evidence. The active Harness remains immutable. This is not Level-2, Meta Improver, production recursion, or recursive self-improvement.
 
+## Packet PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2 — authoritative completion repair
+
+**State:** `IN_PROGRESS`
+
+**Prerequisite and preserved base:** PRs #268–#271 remain the accepted G1–G4, verification/scheduler, export-patch, and bounded `acp/*` foundations. This packet repairs their residual authority and evidence defects; it does not replace their owners or reactivate Vader, Issue #208, Issue #254, or OpenCode binary admission.
+
+**Required slices, in order:**
+
+1. Separate product approval from output authority; require exact current evidence and explicit output confirmation; persist non-network receipts and phased branch-push/Draft-PR operations; create or idempotently reconcile a real GitHub Draft PR under exact HTTPS host/repository admission.
+2. Persist one canonical terminal-evidence record per terminal task version; make reads pure; use exact artifact/approval/output references and owner-backed replay, scorecard, executor, usage, cost, and actual process-outcome evidence.
+3. Enforce verification-time pause, kill, scheduler-kill, lease, version, workspace, timeout, supersession, and late-write authority; close SQLite/PostgreSQL recovery/concurrency tests; require runnable scheduler admission; update SDK/Dashboard; pass deterministic and admitted managed coding-executor E2E plus disposable Draft PR acceptance.
+
+Approval uses the existing workflow-approval owner but is a distinct `product_output_approval.v1` record requiring `team:admin`. Output requires `dispatch:execute`, the exact persisted approval, expected-current task version, and `confirm_output=true`. The legacy combined route is compatibility-only and must satisfy both scopes while invoking the same separate owners. Missing confirmation creates no approval, transition, claim, branch, PR, or success audit.
+
+Draft PR output uses one progressive `product_output_operation.v1` under the supervised artifact owner. Branch and PR phases are independently durable. A completed branch is reused; it never proves PR existence. Only an open Draft PR whose repository/base/head/commit/artifact/approval binding matches can complete `draft_pr`. Network-disabled, admission failure, known HTTP failure, outcome unknown, or retry exhaustion remains non-terminal or explicit outcome-unknown. Attempts are bounded, credentials stay environment-owned, and no merge/default-branch authority exists.
+
+**Completion:** The parent Golden Path packet remains `IN_PROGRESS` until every acceptance item below passes, including the managed coding-executor task. “Managed E2E optional” is not an active exception. If no already-admitted managed executor is safely available after complete environment audit, record the exact blocker and leave this packet incomplete unless a separately reviewed authority decision changes the acceptance contract.
+
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
 **State:** `IN_PROGRESS`
@@ -101,11 +119,11 @@ The result is neutral/no-improvement fixture evidence. The active Harness remain
 - Authority repair PR #270 → `main` `f7293548` (real verification receipts, no finalize tick loop, live executor pool, fixture honesty, recovery matrix).
 - Evidence/output PR #271 → `main` `fe742052` (task-rooted terminal evidence, export_patch, gated `acp/*` push).
 
-**Residual before `COMPLETE`:**
+**Residual before `COMPLETE`:** governed by `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` above.
 
-1. Live `draft_pr` / `acp/*` push under existing target-output gates with disposable-repo proof (or recorded acceptance exception).
-2. Explicit task-rooted terminal linkage for replay eligibility and scorecard (or explicit unavailable reasons).
-3. Optional managed coding-executor E2E only if already admitted without gate weakening.
+1. Live `draft_pr` / `acp/*` push under existing target-output gates with disposable-repo proof.
+2. Canonical task-rooted terminal linkage with owner-backed replay, scorecard, executor, usage, and cost status.
+3. Managed coding-executor E2E using an already-admitted executor without gate weakening, or an explicit separately reviewed acceptance-contract change.
 
 Do not start `PE7-REAL-WORKLOAD-EVIDENCE-1` until residual is closed or explicitly accepted.
 

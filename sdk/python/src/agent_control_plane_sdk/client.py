@@ -574,6 +574,30 @@ class AgentControlPlaneClient:
             {},
         )
 
+    def approve_product_task(
+        self, task_id: str, expected_task_version: int
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/product/tasks/{_quote_path_segment(task_id)}/approve",
+            {"expected_task_version": expected_task_version},
+        )
+
+    def output_product_task(
+        self,
+        task_id: str,
+        expected_task_version: int,
+        approval_id: str,
+        confirm_output: bool,
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/product/tasks/{_quote_path_segment(task_id)}/output",
+            {
+                "expected_task_version": expected_task_version,
+                "approval_id": approval_id,
+                "confirm_output": confirm_output,
+            },
+        )
+
     def approve_and_output_product_task(
         self, task_id: str, confirm_output: bool = False
     ) -> dict[str, Any]:

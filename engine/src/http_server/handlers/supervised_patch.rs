@@ -601,16 +601,6 @@ pub(crate) async fn api_target_repo_output(
             let publish_body = pr_body.clone();
             let pending_pull_request = if request.create_pull_request == Some(true) {
                 let github_config = GitHubPullRequestConfig::from_env();
-                if let Err(error) = github_config.require_enabled() {
-                    audit_target_output_failure(
-                        &store,
-                        &context.api_key_id,
-                        &artifact_id,
-                        &request.mode,
-                        "pull_request_preflight_failed",
-                    );
-                    return Err(target_output_error(error));
-                }
                 let repository =
                     match github_repository_for_remote(&config, workspace_path, &publish_remote) {
                         Ok(repository) => repository,
@@ -625,6 +615,16 @@ pub(crate) async fn api_target_repo_output(
                             return Err(target_output_error(error));
                         }
                     };
+                if let Err(error) = github_config.require_repository(&repository) {
+                    audit_target_output_failure(
+                        &store,
+                        &context.api_key_id,
+                        &artifact_id,
+                        &request.mode,
+                        "pull_request_preflight_failed",
+                    );
+                    return Err(target_output_error(error));
+                }
                 let base_branch = match workspace
                     .get("git")
                     .and_then(|value| value.get("default_branch"))
@@ -654,6 +654,7 @@ pub(crate) async fn api_target_repo_output(
                         base_branch,
                         title: publish_title,
                         body: publish_body,
+                        expected_head_sha: None,
                     },
                 ))
             } else {
@@ -733,9 +734,11 @@ pub(crate) async fn api_target_repo_output(
                     return Err(target_output_error(error));
                 }
             };
+            let published_commit_sha = output.commit_sha.clone();
             let mut output =
                 serde_json::to_value(output).map_err(|error| internal_error(error.to_string()))?;
-            if let Some((github_config, pull_request_request)) = pending_pull_request {
+            if let Some((github_config, mut pull_request_request)) = pending_pull_request {
+                pull_request_request.expected_head_sha = Some(published_commit_sha);
                 let pull_request = match create_or_reuse_github_pull_request(
                     &github_config,
                     &pull_request_request,

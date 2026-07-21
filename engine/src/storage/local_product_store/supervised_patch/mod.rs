@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
+use crate::provider::redaction::redact_sensitive_patterns;
 use crate::target_repo_output::{
     inspect_git_patch, patch_hash as target_patch_hash, remove_git_worktree, stage_and_build_patch,
     staged_changed_files, TargetRepoOutputConfig,
@@ -19,6 +20,9 @@ use self::fs_utils::*;
 
 pub const SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION: &str = "supervised_patch_workspace.v1";
 pub const SUPERVISED_PATCH_ARTIFACT_SCHEMA_VERSION: &str = "supervised_patch_artifact.v1";
+// Covers the complete bounded branch-publish sequence (multiple individually capped git
+// subprocesses) with recovery margin, not merely one subprocess timeout.
+const PRODUCT_OUTPUT_PHASE_LEASE_SECONDS: i64 = 15 * 60;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TargetOutputClaim {
@@ -2054,6 +2058,901 @@ impl LocalProductStore {
         }
     }
 
+    pub fn claim_product_output_operation(
+        &self,
+        artifact_id: &str,
+        request: &Value,
+        request_sha256: &str,
+        expected_task_version: u64,
+        actor: &str,
+    ) -> Result<Value, String> {
+        validate_target_output_request_hash(request, request_sha256)?;
+        let authority_request = json!({
+            "schema_version": "product_output_authority_request.v1",
+            "product_task_id": request.get("product_task_id"),
+            "artifact_id": request.get("artifact_id"),
+            "approval_id": request.get("approval_id"),
+            "output_intent": request.get("output_intent"),
+            "expected_task_version": expected_task_version,
+        });
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.output_operation_claimed",
+            Some(&authority_request),
+            |artifact, now| {
+                validate_product_output_operation_request(
+                    artifact,
+                    artifact_id,
+                    request,
+                    request_sha256,
+                )?;
+                if let Some(existing) = artifact.get("product_output_operation") {
+                    validate_product_output_operation(artifact, existing)?;
+                    if existing.get("request_sha256").and_then(Value::as_str)
+                        != Some(request_sha256)
+                        || existing.get("request") != Some(request)
+                    {
+                        return Err(
+                            "product output request does not match durable operation".to_string()
+                        );
+                    }
+                    let mut operation = existing.clone();
+                    let branch_status = operation
+                        .pointer("/branch_push/status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("pending");
+                    let pr_status = operation
+                        .pointer("/pr_create/status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("pending");
+                    let action = if operation.get("state").and_then(Value::as_str)
+                        == Some("completed")
+                    {
+                        "reused"
+                    } else if branch_status == "completed" && pr_status == "completed" {
+                        "reconciliation_required"
+                    } else if branch_status == "completed" {
+                        let pr = operation
+                            .get("pr_create")
+                            .ok_or_else(|| "product output PR phase missing".to_string())?;
+                        if pr_status == "in_progress"
+                            && product_output_phase_claim_is_current(pr, now)?
+                        {
+                            "operation_in_progress"
+                        } else {
+                            claim_product_output_phase(&mut operation, "pr_create", actor, now)?;
+                            "create_or_reconcile_pr"
+                        }
+                    } else if matches!(
+                        branch_status,
+                        "in_progress" | "outcome_unknown" | "failed_known"
+                    ) {
+                        let branch = operation
+                            .get("branch_push")
+                            .ok_or_else(|| "product output branch phase missing".to_string())?;
+                        if branch_status == "in_progress"
+                            && product_output_phase_claim_is_current(branch, now)?
+                        {
+                            "operation_in_progress"
+                        } else {
+                            claim_product_output_phase(&mut operation, "branch_push", actor, now)?;
+                            "push_or_reconcile_branch"
+                        }
+                    } else {
+                        "reconciliation_required"
+                    };
+                    if matches!(
+                        action,
+                        "create_or_reconcile_pr" | "push_or_reconcile_branch"
+                    ) {
+                        artifact
+                            .as_object_mut()
+                            .ok_or_else(|| {
+                                "supervised patch artifact must be an object".to_string()
+                            })?
+                            .insert("product_output_operation".to_string(), operation.clone());
+                    }
+                    operation
+                        .as_object_mut()
+                        .ok_or_else(|| "product output operation must be an object".to_string())?
+                        .insert("claim_action".to_string(), json!(action));
+                    return Ok(operation);
+                }
+                let operation_id =
+                    format!("product-output-{}-{}", artifact_id, &request_sha256[..12]);
+                let operation = json!({
+                    "schema_version": "product_output_operation.v1",
+                    "operation_id": operation_id,
+                    "product_task_id": request.get("product_task_id"),
+                    "artifact_id": artifact_id,
+                    "approval_id": request.get("approval_id"),
+                    "request_sha256": request_sha256,
+                    "request": request,
+                    "target_repository": request.get("target_repository"),
+                    "source_revision": artifact.get("source_revision"),
+                    "base_branch": request.get("base_branch"),
+                    "head_branch": request.get("head_branch"),
+                    "state": "active",
+                    "attempt": 1,
+                    "current_version": 1,
+                    "branch_push": {
+                        "status": "in_progress",
+                        "claimed_at": now,
+                        "claimed_by": actor,
+                        "commit_sha": Value::Null,
+                        "completed_at": Value::Null,
+                    },
+                    "pr_create": {
+                        "status": "pending",
+                        "draft": true,
+                        "number": Value::Null,
+                        "url": Value::Null,
+                        "completed_at": Value::Null,
+                    },
+                    "created_at": now,
+                    "updated_at": now,
+                    "created_by": actor,
+                    "updated_by": actor,
+                });
+                validate_product_output_operation(artifact, &operation)?;
+                artifact
+                    .as_object_mut()
+                    .ok_or_else(|| "supervised patch artifact must be an object".to_string())?
+                    .insert("product_output_operation".to_string(), operation.clone());
+                let mut response = operation;
+                response
+                    .as_object_mut()
+                    .expect("operation object")
+                    .insert("claim_action".to_string(), json!("push_branch"));
+                Ok(response)
+            },
+        )
+    }
+
+    pub fn record_product_nonnetwork_output_receipt(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        approval_id: &str,
+        output_intent: &str,
+        expected_task_version: u64,
+        output: &Value,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if !matches!(output_intent, "artifact_only" | "export_patch") {
+            return Err("nonnetwork output receipt intent is invalid".to_string());
+        }
+        let authority_request = json!({
+            "schema_version": "product_output_authority_request.v1",
+            "product_task_id": product_task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval_id,
+            "output_intent": output_intent,
+            "expected_task_version": expected_task_version,
+        });
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.nonnetwork_output_completed",
+            Some(&authority_request),
+            |artifact, now| {
+                if output.get("product_task_id").and_then(Value::as_str)
+                    != Some(product_task_id)
+                    || output.get("artifact_id").and_then(Value::as_str) != Some(artifact_id)
+                {
+                    return Err("nonnetwork output result identity changed".to_string());
+                }
+                if output_intent == "artifact_only" {
+                    if output.get("status").and_then(Value::as_str) != Some("artifact_only")
+                        || output.get("target_mutation").and_then(Value::as_bool) != Some(false)
+                    {
+                        return Err("artifact-only output result is not non-mutating".to_string());
+                    }
+                } else if output.get("status").and_then(Value::as_str) != Some("exported")
+                    || output.get("patch_hash") != artifact.get("patch_hash")
+                {
+                    return Err("export output result does not match approved artifact".to_string());
+                }
+                let request = json!({
+                    "schema_version": "product_nonnetwork_output_request.v1",
+                    "product_task_id": product_task_id,
+                    "artifact_id": artifact_id,
+                    "approval_id": approval_id,
+                    "output_intent": output_intent,
+                    "source_revision": artifact.get("source_revision"),
+                    "patch_hash": artifact.get("patch_hash"),
+                });
+                let request_sha256 = target_output_json_sha256(&request)?;
+                let output_sha256 = target_output_json_sha256(output)?;
+                if let Some(existing) = artifact.get("product_output_receipt") {
+                    if existing.get("request") == Some(&request)
+                        && existing.get("request_sha256").and_then(Value::as_str)
+                            == Some(request_sha256.as_str())
+                        && existing.get("output") == Some(output)
+                        && existing.get("output_sha256").and_then(Value::as_str)
+                            == Some(output_sha256.as_str())
+                        && existing.get("state").and_then(Value::as_str) == Some("completed")
+                    {
+                        return Ok(existing.clone());
+                    }
+                    return Err("nonnetwork output receipt already exists with another binding".to_string());
+                }
+                let receipt = json!({
+                    "schema_version": "product_output_receipt.v1",
+                    "receipt_id": format!("product-output-receipt-{artifact_id}-{}", &request_sha256[..12]),
+                    "state": "completed",
+                    "product_task_id": product_task_id,
+                    "artifact_id": artifact_id,
+                    "approval_id": approval_id,
+                    "output_intent": output_intent,
+                    "source_revision": artifact.get("source_revision"),
+                    "patch_hash": artifact.get("patch_hash"),
+                    "request": request,
+                    "request_sha256": request_sha256,
+                    "output": output,
+                    "output_sha256": output_sha256,
+                    "created_at": now,
+                    "created_by": actor,
+                });
+                artifact
+                    .as_object_mut()
+                    .ok_or_else(|| "supervised patch artifact must be an object".to_string())?
+                    .insert("product_output_receipt".to_string(), receipt.clone());
+                Ok(receipt)
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn complete_product_task_output_authorized(
+        &self,
+        product_task_id: &str,
+        artifact_id: &str,
+        approval_id: &str,
+        output_intent: &str,
+        expected_task_version: u64,
+        actor: &str,
+    ) -> Result<Value, String> {
+        let authority_request = json!({
+            "schema_version": "product_output_authority_request.v1",
+            "product_task_id": product_task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval_id,
+            "output_intent": output_intent,
+            "expected_task_version": expected_task_version,
+        });
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
+                let (task, approval) =
+                    validate_product_output_request_authority_sqlite(&tx, &authority_request)?;
+                validate_terminal_product_task_status(&task, output_intent)?;
+                let raw: String = tx
+                    .query_row(
+                        "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = ?1",
+                        params![artifact_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let artifact: Value =
+                    serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+                validate_product_output_approval_artifact(
+                    &artifact,
+                    &authority_request,
+                    &approval,
+                )?;
+                validate_terminal_product_output_record(
+                    &artifact,
+                    &authority_request,
+                    output_intent,
+                )?;
+                let next_version = expected_task_version.saturating_add(1);
+                let updated = tx
+                    .execute(
+                        "UPDATE product_tasks SET status = 'completed', version = ?1,
+                                updated_at = ?2, failure_code = NULL, failure_detail = NULL
+                         WHERE task_id = ?3 AND version = ?4 AND status = ?5",
+                        params![
+                            next_version as i64,
+                            now,
+                            product_task_id,
+                            expected_task_version as i64,
+                            required_str(&task, "status")?,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if updated != 1 {
+                    return Err(
+                        "product output terminal expected-current update conflict".to_string()
+                    );
+                }
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    actor,
+                    "product_task.transition",
+                    product_task_id,
+                    &json!({
+                        "from": task.get("status"),
+                        "to": "completed",
+                        "version": next_version,
+                        "execution_admitted": false,
+                        "failure_code": Value::Null,
+                        "artifact_id": artifact_id,
+                        "approval_id": approval_id,
+                        "output_intent": output_intent,
+                        "terminal_authority_revalidated": true,
+                    }),
+                )?;
+                tx.commit().map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let (task, approval) =
+                    pg_validate_product_output_request_authority(&mut tx, &authority_request)?;
+                validate_terminal_product_task_status(&task, output_intent)?;
+                let row = tx
+                    .query_one(
+                        "SELECT artifact_json FROM supervised_patch_artifacts
+                         WHERE artifact_id = $1 FOR UPDATE",
+                        &[&artifact_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let raw: String = row.get(0);
+                let artifact: Value =
+                    serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+                validate_product_output_approval_artifact(
+                    &artifact,
+                    &authority_request,
+                    &approval,
+                )?;
+                validate_terminal_product_output_record(
+                    &artifact,
+                    &authority_request,
+                    output_intent,
+                )?;
+                let next_version = expected_task_version.saturating_add(1);
+                let current_status = required_str(&task, "status")?;
+                let updated = tx
+                    .execute(
+                        "UPDATE product_tasks SET status = 'completed', version = $1,
+                                updated_at = $2, failure_code = NULL, failure_detail = NULL
+                         WHERE task_id = $3 AND version = $4 AND status = $5",
+                        &[
+                            &(next_version as i64),
+                            &now,
+                            &product_task_id,
+                            &(expected_task_version as i64),
+                            &current_status,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if updated != 1 {
+                    return Err(
+                        "product output terminal expected-current update conflict".to_string()
+                    );
+                }
+                let details = json!({
+                    "from": current_status,
+                    "to": "completed",
+                    "version": next_version,
+                    "execution_admitted": false,
+                    "failure_code": Value::Null,
+                    "artifact_id": artifact_id,
+                    "approval_id": approval_id,
+                    "output_intent": output_intent,
+                    "terminal_authority_revalidated": true,
+                })
+                .to_string();
+                pg_append_audit(
+                    &mut tx,
+                    &now,
+                    actor,
+                    "product_task.transition",
+                    product_task_id,
+                    &details,
+                )?;
+                tx.commit().map_err(|error| error.to_string())
+            })?,
+        }
+        self.get_product_task(product_task_id)?
+            .ok_or_else(|| "product task missing after authorized completion".to_string())
+    }
+
+    pub fn record_product_output_branch_pushed(
+        &self,
+        artifact_id: &str,
+        operation_id: &str,
+        expected_operation_version: u64,
+        commit_sha: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.output_branch_pushed",
+            None,
+            |artifact, now| {
+                let operation = artifact
+                    .get_mut("product_output_operation")
+                    .ok_or_else(|| "product output operation missing".to_string())?;
+                if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
+                    return Err("product output operation identity mismatch".to_string());
+                }
+                require_product_output_operation_version(operation, expected_operation_version)?;
+                let branch = operation
+                    .get_mut("branch_push")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| "product output branch phase missing".to_string())?;
+                match branch.get("status").and_then(Value::as_str) {
+                    Some("completed")
+                        if branch.get("commit_sha").and_then(Value::as_str) == Some(commit_sha) =>
+                    {
+                        return Ok(operation.clone())
+                    }
+                    Some("in_progress") => {}
+                    _ => return Err("product output branch phase is not finalizable".to_string()),
+                }
+                branch.insert("status".to_string(), json!("completed"));
+                branch.insert("commit_sha".to_string(), json!(commit_sha));
+                branch.insert("completed_at".to_string(), json!(now));
+                branch.remove("claimed_at");
+                branch.remove("claimed_by");
+                increment_product_output_operation_version(operation)?;
+                operation["updated_at"] = json!(now);
+                operation["updated_by"] = json!(actor);
+                let snapshot = operation.clone();
+                validate_product_output_operation(artifact, &snapshot)?;
+                Ok(snapshot)
+            },
+        )
+    }
+
+    pub fn complete_product_output_draft_pr(
+        &self,
+        artifact_id: &str,
+        operation_id: &str,
+        expected_operation_version: u64,
+        pull_request: &Value,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if pull_request.get("draft").and_then(Value::as_bool) != Some(true)
+            || pull_request.get("number").and_then(Value::as_u64).is_none()
+            || pull_request.get("url").and_then(Value::as_str).is_none()
+            || pull_request
+                .get("repository")
+                .and_then(Value::as_str)
+                .is_none()
+            || pull_request
+                .get("base_branch")
+                .and_then(Value::as_str)
+                .is_none()
+            || pull_request
+                .get("head_branch")
+                .and_then(Value::as_str)
+                .is_none()
+            || pull_request
+                .get("head_sha")
+                .and_then(Value::as_str)
+                .is_none()
+        {
+            return Err("Draft PR receipt is incomplete".to_string());
+        }
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.output_draft_pr_completed",
+            None,
+            |artifact, now| {
+                let operation = artifact
+                    .get_mut("product_output_operation")
+                    .ok_or_else(|| "product output operation missing".to_string())?;
+                if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
+                    return Err("product output operation identity mismatch".to_string());
+                }
+                if operation.get("state").and_then(Value::as_str) == Some("completed")
+                    && operation.pointer("/pr_create/number") == pull_request.get("number")
+                    && operation.pointer("/pr_create/url") == pull_request.get("url")
+                    && operation.pointer("/pr_create/repository")
+                        == pull_request.get("repository")
+                    && operation.pointer("/pr_create/base_branch")
+                        == pull_request.get("base_branch")
+                    && operation.pointer("/pr_create/head_branch")
+                        == pull_request.get("head_branch")
+                    && operation.pointer("/pr_create/head_sha") == pull_request.get("head_sha")
+                {
+                    return Ok(operation.clone());
+                }
+                require_product_output_operation_version(operation, expected_operation_version)?;
+                if operation
+                    .pointer("/branch_push/status")
+                    .and_then(Value::as_str)
+                    != Some("completed")
+                {
+                    return Err("Draft PR cannot complete before branch push".to_string());
+                }
+                let target_repository = operation
+                    .get("target_repository")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "product output target repository missing".to_string())?;
+                let expected_base = operation
+                    .get("base_branch")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "product output base branch missing".to_string())?;
+                let expected_head = operation
+                    .get("head_branch")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "product output head branch missing".to_string())?;
+                let expected_head_sha = operation
+                    .pointer("/branch_push/commit_sha")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "product output branch commit missing".to_string())?;
+                let expected_url_prefix = format!(
+                    "https://github.com/{}/pull/",
+                    target_repository.trim_end_matches(".git")
+                );
+                if pull_request
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_none_or(|url| !url.starts_with(&expected_url_prefix))
+                {
+                    return Err(
+                        "Draft PR receipt URL does not match the admitted repository".to_string(),
+                    );
+                }
+                if pull_request.get("repository").and_then(Value::as_str)
+                    != Some(target_repository.trim_end_matches(".git"))
+                    || pull_request.get("base_branch").and_then(Value::as_str)
+                        != Some(expected_base)
+                    || pull_request.get("head_branch").and_then(Value::as_str)
+                        != Some(expected_head)
+                    || pull_request.get("head_sha").and_then(Value::as_str)
+                        != Some(expected_head_sha)
+                {
+                    return Err(
+                        "Draft PR receipt does not match the durable repository/base/head/commit binding"
+                            .to_string(),
+                    );
+                }
+                let pr = operation
+                    .get_mut("pr_create")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| "product output PR phase missing".to_string())?;
+                if pr.get("status").and_then(Value::as_str) != Some("in_progress") {
+                    return Err("product output PR phase is not finalizable".to_string());
+                }
+                pr.insert("status".to_string(), json!("completed"));
+                pr.insert("draft".to_string(), json!(true));
+                pr.insert("number".to_string(), pull_request["number"].clone());
+                pr.insert("url".to_string(), pull_request["url"].clone());
+                pr.insert("reused".to_string(), pull_request["reused"].clone());
+                pr.insert(
+                    "repository".to_string(),
+                    pull_request["repository"].clone(),
+                );
+                pr.insert(
+                    "base_branch".to_string(),
+                    pull_request["base_branch"].clone(),
+                );
+                pr.insert(
+                    "head_branch".to_string(),
+                    pull_request["head_branch"].clone(),
+                );
+                pr.insert("head_sha".to_string(), pull_request["head_sha"].clone());
+                pr.insert("completed_at".to_string(), json!(now));
+                pr.remove("claimed_at");
+                pr.remove("claimed_by");
+                increment_product_output_operation_version(operation)?;
+                operation["state"] = json!("completed");
+                operation["updated_at"] = json!(now);
+                operation["updated_by"] = json!(actor);
+                let snapshot = operation.clone();
+                validate_product_output_operation(artifact, &snapshot)?;
+                Ok(snapshot)
+            },
+        )
+    }
+
+    pub fn mark_product_output_pr_outcome_unknown(
+        &self,
+        artifact_id: &str,
+        operation_id: &str,
+        expected_operation_version: u64,
+        actor: &str,
+        reason: &str,
+    ) -> Result<Value, String> {
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.output_draft_pr_outcome_unknown",
+            None,
+            |artifact, now| {
+                let operation = artifact
+                    .get_mut("product_output_operation")
+                    .ok_or_else(|| "product output operation missing".to_string())?;
+                if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
+                    return Err("product output operation identity mismatch".to_string());
+                }
+                require_product_output_operation_version(operation, expected_operation_version)?;
+                let pr = operation
+                    .get_mut("pr_create")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| "product output PR phase missing".to_string())?;
+                if pr.get("status").and_then(Value::as_str) != Some("in_progress") {
+                    return Err("product output PR phase is not current".to_string());
+                }
+                pr.insert("status".to_string(), json!("outcome_unknown"));
+                pr.insert(
+                    "reason".to_string(),
+                    json!(redact_sensitive_patterns(reason)),
+                );
+                pr.insert("updated_at".to_string(), json!(now));
+                pr.remove("claimed_at");
+                pr.remove("claimed_by");
+                increment_product_output_operation_version(operation)?;
+                operation["state"] = json!("outcome_unknown");
+                operation["updated_at"] = json!(now);
+                operation["updated_by"] = json!(actor);
+                let snapshot = operation.clone();
+                validate_product_output_operation(artifact, &snapshot)?;
+                Ok(snapshot)
+            },
+        )
+    }
+
+    pub fn mark_product_output_branch_outcome_unknown(
+        &self,
+        artifact_id: &str,
+        operation_id: &str,
+        expected_operation_version: u64,
+        actor: &str,
+        reason: &str,
+    ) -> Result<Value, String> {
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.output_branch_outcome_unknown",
+            None,
+            |artifact, now| {
+                let operation = artifact
+                    .get_mut("product_output_operation")
+                    .ok_or_else(|| "product output operation missing".to_string())?;
+                if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
+                    return Err("product output operation identity mismatch".to_string());
+                }
+                require_product_output_operation_version(operation, expected_operation_version)?;
+                let branch = operation
+                    .get_mut("branch_push")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| "product output branch phase missing".to_string())?;
+                if branch.get("status").and_then(Value::as_str) != Some("in_progress") {
+                    return Err("product output branch phase is not current".to_string());
+                }
+                branch.insert("status".to_string(), json!("outcome_unknown"));
+                branch.insert(
+                    "reason".to_string(),
+                    json!(redact_sensitive_patterns(reason)),
+                );
+                branch.insert("updated_at".to_string(), json!(now));
+                branch.remove("claimed_at");
+                branch.remove("claimed_by");
+                increment_product_output_operation_version(operation)?;
+                operation["state"] = json!("outcome_unknown");
+                operation["updated_at"] = json!(now);
+                operation["updated_by"] = json!(actor);
+                let snapshot = operation.clone();
+                validate_product_output_operation(artifact, &snapshot)?;
+                Ok(snapshot)
+            },
+        )
+    }
+
+    pub fn mark_product_output_branch_failed_known(
+        &self,
+        artifact_id: &str,
+        operation_id: &str,
+        expected_operation_version: u64,
+        actor: &str,
+        reason: &str,
+    ) -> Result<Value, String> {
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.output_branch_failed_known",
+            None,
+            |artifact, now| {
+                let operation = artifact
+                    .get_mut("product_output_operation")
+                    .ok_or_else(|| "product output operation missing".to_string())?;
+                if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
+                    return Err("product output operation identity mismatch".to_string());
+                }
+                require_product_output_operation_version(operation, expected_operation_version)?;
+                let branch = operation
+                    .get_mut("branch_push")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| "product output branch phase missing".to_string())?;
+                if branch.get("status").and_then(Value::as_str) != Some("in_progress") {
+                    return Err("product output branch phase is not current".to_string());
+                }
+                branch.insert("status".to_string(), json!("failed_known"));
+                branch.insert(
+                    "reason".to_string(),
+                    json!(redact_sensitive_patterns(reason)),
+                );
+                branch.insert("updated_at".to_string(), json!(now));
+                branch.remove("claimed_at");
+                branch.remove("claimed_by");
+                increment_product_output_operation_version(operation)?;
+                operation["state"] = json!("failed");
+                operation["updated_at"] = json!(now);
+                operation["updated_by"] = json!(actor);
+                let snapshot = operation.clone();
+                validate_product_output_operation(artifact, &snapshot)?;
+                Ok(snapshot)
+            },
+        )
+    }
+
+    pub fn mark_product_output_pr_failed_known(
+        &self,
+        artifact_id: &str,
+        operation_id: &str,
+        expected_operation_version: u64,
+        actor: &str,
+        reason: &str,
+    ) -> Result<Value, String> {
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.output_draft_pr_failed_known",
+            None,
+            |artifact, now| {
+                let operation = artifact
+                    .get_mut("product_output_operation")
+                    .ok_or_else(|| "product output operation missing".to_string())?;
+                if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
+                    return Err("product output operation identity mismatch".to_string());
+                }
+                require_product_output_operation_version(operation, expected_operation_version)?;
+                let pr = operation
+                    .get_mut("pr_create")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| "product output PR phase missing".to_string())?;
+                if pr.get("status").and_then(Value::as_str) != Some("in_progress") {
+                    return Err("product output PR phase is not current".to_string());
+                }
+                pr.insert("status".to_string(), json!("failed_known"));
+                pr.insert(
+                    "reason".to_string(),
+                    json!(redact_sensitive_patterns(reason)),
+                );
+                pr.insert("updated_at".to_string(), json!(now));
+                pr.remove("claimed_at");
+                pr.remove("claimed_by");
+                increment_product_output_operation_version(operation)?;
+                operation["state"] = json!("active");
+                operation["updated_at"] = json!(now);
+                operation["updated_by"] = json!(actor);
+                let snapshot = operation.clone();
+                validate_product_output_operation(artifact, &snapshot)?;
+                Ok(snapshot)
+            },
+        )
+    }
+
+    fn mutate_product_output_operation<F>(
+        &self,
+        artifact_id: &str,
+        actor: &str,
+        audit_action: &str,
+        authority_request: Option<&Value>,
+        mutate: F,
+    ) -> Result<Value, String>
+    where
+        F: Fn(&mut Value, &str) -> Result<Value, String>,
+    {
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
+                let approval = authority_request
+                    .map(|request| {
+                        validate_product_output_request_authority_sqlite(&tx, request)
+                    })
+                    .transpose()?;
+                let raw: String = tx
+                    .query_row(
+                        "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = ?1",
+                        params![artifact_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut artifact: Value =
+                    serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+                if let Some((request, (_, approval))) = authority_request.zip(approval.as_ref()) {
+                    validate_product_output_approval_artifact(&artifact, request, approval)?;
+                }
+                let result = mutate(&mut artifact, &now)?;
+                tx.execute(
+                    "UPDATE supervised_patch_artifacts SET artifact_json = ?1 WHERE artifact_id = ?2",
+                    params![artifact.to_string(), artifact_id],
+                )
+                .map_err(|error| error.to_string())?;
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    actor,
+                    audit_action,
+                    artifact_id,
+                    &json!({
+                        "operation_id": result.get("operation_id"),
+                        "product_task_id": result.get("product_task_id"),
+                        "state": result.get("state"),
+                        "branch_push_status": result.pointer("/branch_push/status"),
+                        "pr_create_status": result.pointer("/pr_create/status"),
+                    }),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(result)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let approval = authority_request
+                    .map(|request| pg_validate_product_output_request_authority(&mut tx, request))
+                    .transpose()?;
+                let row = tx
+                    .query_one(
+                        "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = $1 FOR UPDATE",
+                        &[&artifact_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let raw: String = row.get(0);
+                let mut artifact: Value =
+                    serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+                if let Some((request, (_, approval))) = authority_request.zip(approval.as_ref()) {
+                    validate_product_output_approval_artifact(&artifact, request, approval)?;
+                }
+                let result = mutate(&mut artifact, &now)?;
+                tx.execute(
+                    "UPDATE supervised_patch_artifacts SET artifact_json = $1 WHERE artifact_id = $2",
+                    &[&artifact.to_string(), &artifact_id],
+                )
+                .map_err(|error| error.to_string())?;
+                let audit_details = json!({
+                    "operation_id": result.get("operation_id"),
+                    "product_task_id": result.get("product_task_id"),
+                    "state": result.get("state"),
+                    "branch_push_status": result.pointer("/branch_push/status"),
+                    "pr_create_status": result.pointer("/pr_create/status"),
+                })
+                .to_string();
+                pg_append_audit(
+                    &mut tx,
+                    &now,
+                    actor,
+                    audit_action,
+                    artifact_id,
+                    &audit_details,
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(result)
+            }),
+        }
+    }
+
     pub fn supervised_patch_artifacts(&self, limit: i64) -> Result<Vec<Value>, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -2917,6 +3816,594 @@ fn target_output_json_sha256(value: &Value) -> Result<String, String> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
+fn validate_product_output_request_authority_sqlite(
+    conn: &rusqlite::Connection,
+    request: &Value,
+) -> Result<(Value, Value), String> {
+    let task_id = required_str(request, "product_task_id")?;
+    let approval_id = required_str(request, "approval_id")?;
+    let output_intent = required_str(request, "output_intent")?;
+    let task = conn
+        .query_row(
+            "SELECT status, version, run_id, workspace_record_id, source_revision, output_intent,
+                    target_id, target_repo_path
+             FROM product_tasks WHERE task_id = ?1",
+            params![task_id],
+            |row| {
+                Ok(json!({
+                    "status": row.get::<_, String>(0)?,
+                    "version": row.get::<_, i64>(1)?,
+                    "run_id": row.get::<_, Option<String>>(2)?,
+                    "workspace_record_id": row.get::<_, Option<String>>(3)?,
+                    "source_revision": row.get::<_, String>(4)?,
+                    "output_intent": row.get::<_, String>(5)?,
+                    "target_id": row.get::<_, String>(6)?,
+                    "target_repo_path": row.get::<_, String>(7)?,
+                }))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "product output task authority missing".to_string())?;
+    let run_id = required_str(&task, "run_id")?;
+    let workspace_id = required_str(&task, "workspace_record_id")?;
+    validate_product_output_request_task(request, &task, output_intent)?;
+    let approval_raw: String = conn
+        .query_row(
+            "SELECT approval_json FROM workflow_run_approvals
+             WHERE approval_id = ?1 AND run_id = ?2",
+            params![approval_id, run_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "product output approval authority missing".to_string())?;
+    let approval: Value = serde_json::from_str(&approval_raw).map_err(|error| error.to_string())?;
+    validate_product_output_request_approval(request, &task, &approval)?;
+    let workspace_raw: String = conn
+        .query_row(
+            "SELECT workspace_json FROM supervised_patch_workspaces
+             WHERE workspace_id = ?1 AND run_id = ?2 AND source_revision = ?3
+               AND status NOT IN ('quarantined', 'cleaned', 'rejected')",
+            params![
+                workspace_id,
+                run_id,
+                required_str(&task, "source_revision")?
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "product output workspace authority missing or inactive".to_string())?;
+    validate_product_output_request_verification(&workspace_raw, &approval)?;
+    Ok((task, approval))
+}
+
+#[cfg(feature = "pg")]
+fn pg_validate_product_output_request_authority(
+    client: &mut impl postgres::GenericClient,
+    request: &Value,
+) -> Result<(Value, Value), String> {
+    let task_id = required_str(request, "product_task_id")?;
+    let approval_id = required_str(request, "approval_id")?;
+    let output_intent = required_str(request, "output_intent")?;
+    let row = client
+        .query_opt(
+            "SELECT status, version, run_id, workspace_record_id, source_revision, output_intent,
+                    target_id, target_repo_path
+             FROM product_tasks WHERE task_id = $1 FOR UPDATE",
+            &[&task_id],
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "product output task authority missing".to_string())?;
+    let task = json!({
+        "status": row.get::<_, String>(0),
+        "version": row.get::<_, i64>(1),
+        "run_id": row.get::<_, Option<String>>(2),
+        "workspace_record_id": row.get::<_, Option<String>>(3),
+        "source_revision": row.get::<_, String>(4),
+        "output_intent": row.get::<_, String>(5),
+        "target_id": row.get::<_, String>(6),
+        "target_repo_path": row.get::<_, String>(7),
+    });
+    let run_id = required_str(&task, "run_id")?;
+    let workspace_id = required_str(&task, "workspace_record_id")?;
+    validate_product_output_request_task(request, &task, output_intent)?;
+    let approval_row = client
+        .query_opt(
+            "SELECT approval_json FROM workflow_run_approvals
+             WHERE approval_id = $1 AND run_id = $2 FOR UPDATE",
+            &[&approval_id, &run_id],
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "product output approval authority missing".to_string())?;
+    let approval_raw: String = approval_row.get(0);
+    let approval: Value = serde_json::from_str(&approval_raw).map_err(|error| error.to_string())?;
+    validate_product_output_request_approval(request, &task, &approval)?;
+    let source_revision = required_str(&task, "source_revision")?;
+    let workspace_row = client
+        .query_opt(
+            "SELECT workspace_json FROM supervised_patch_workspaces
+             WHERE workspace_id = $1 AND run_id = $2 AND source_revision = $3
+               AND status NOT IN ('quarantined', 'cleaned', 'rejected') FOR UPDATE",
+            &[&workspace_id, &run_id, &source_revision],
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "product output workspace authority missing or inactive".to_string())?;
+    let workspace_raw: String = workspace_row.get(0);
+    validate_product_output_request_verification(&workspace_raw, &approval)?;
+    Ok((task, approval))
+}
+
+fn validate_product_output_request_task(
+    request: &Value,
+    task: &Value,
+    output_intent: &str,
+) -> Result<(), String> {
+    let expected_task_version = request
+        .get("expected_task_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "product output expected task version missing".to_string())?;
+    if !matches!(
+        task.get("status").and_then(Value::as_str),
+        Some("awaiting_approval" | "output_pending" | "outcome_unknown" | "completed")
+    ) || task.get("output_intent").and_then(Value::as_str) != Some(output_intent)
+    {
+        return Err("product output task state or intent authority changed".to_string());
+    }
+    if task.get("version").and_then(Value::as_u64) != Some(expected_task_version) {
+        return Err("stale product task version at output authority boundary".to_string());
+    }
+    for field in [
+        "run_id",
+        "workspace_record_id",
+        "source_revision",
+        "target_id",
+    ] {
+        if request.get(field).is_some() && request.get(field) != task.get(field) {
+            return Err(format!("product output request {field} authority changed"));
+        }
+    }
+    if request.get("workspace_id").is_some()
+        && request.get("workspace_id") != task.get("workspace_record_id")
+    {
+        return Err("product output request workspace authority changed".to_string());
+    }
+    Ok(())
+}
+
+fn validate_product_output_request_approval(
+    request: &Value,
+    task: &Value,
+    approval: &Value,
+) -> Result<(), String> {
+    if approval.get("schema_version").and_then(Value::as_str) != Some("product_output_approval.v1")
+        || approval.get("decision").and_then(Value::as_str) != Some("approved")
+        || approval.get("approval_kind").and_then(Value::as_str) != Some("product_output")
+        || approval.get("output_authority").and_then(Value::as_str) != Some("product_output")
+        || approval.get("execution_authority").and_then(Value::as_str) != Some("disabled")
+        || approval.get("product_task_id") != request.get("product_task_id")
+        || approval.get("approval_id") != request.get("approval_id")
+        || approval.get("artifact_id") != request.get("artifact_id")
+        || approval.get("output_intent") != request.get("output_intent")
+        || approval.get("run_id") != task.get("run_id")
+        || approval.get("workspace_record_id") != task.get("workspace_record_id")
+        || approval.get("source_revision") != task.get("source_revision")
+        || approval
+            .get("expected_task_version")
+            .and_then(Value::as_i64)
+            .is_none_or(|approved| {
+                task.get("version")
+                    .and_then(Value::as_i64)
+                    .is_none_or(|current| approved > current)
+            })
+    {
+        return Err("product output approval authority binding changed".to_string());
+    }
+    let target = approval
+        .get("output_target")
+        .ok_or_else(|| "product output approval target missing".to_string())?;
+    if target.get("target_id") != task.get("target_id")
+        || target.get("target_repo_path") != task.get("target_repo_path")
+    {
+        return Err("product output approval target authority changed".to_string());
+    }
+    Ok(())
+}
+
+fn validate_product_output_request_verification(
+    workspace_raw: &str,
+    approval: &Value,
+) -> Result<(), String> {
+    let workspace: Value =
+        serde_json::from_str(workspace_raw).map_err(|error| error.to_string())?;
+    let verification = workspace
+        .get("verification")
+        .ok_or_else(|| "product output verification authority missing".to_string())?;
+    if target_output_json_sha256(verification)? != required_str(approval, "verification_sha256")? {
+        return Err("product output verification authority changed".to_string());
+    }
+    Ok(())
+}
+
+fn validate_product_output_approval_artifact(
+    artifact: &Value,
+    request: &Value,
+    approval: &Value,
+) -> Result<(), String> {
+    if artifact.get("artifact_id") != request.get("artifact_id")
+        || artifact.get("artifact_id") != approval.get("artifact_id")
+        || artifact.get("run_id") != approval.get("run_id")
+        || artifact.get("workspace_id") != approval.get("workspace_record_id")
+        || artifact.get("source_revision") != approval.get("source_revision")
+        || artifact.get("patch_hash") != approval.get("patch_hash")
+        || artifact.get("changed_files") != approval.get("changed_files")
+    {
+        return Err("product output approval artifact authority changed".to_string());
+    }
+    Ok(())
+}
+
+fn validate_terminal_product_task_status(task: &Value, output_intent: &str) -> Result<(), String> {
+    let status = required_str(task, "status")?;
+    let valid = if output_intent == "draft_pr" {
+        matches!(status, "output_pending" | "outcome_unknown")
+    } else {
+        matches!(
+            status,
+            "awaiting_approval" | "output_pending" | "outcome_unknown"
+        )
+    };
+    if !valid {
+        return Err(format!(
+            "product output terminal authority rejects task status {status}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_terminal_product_output_record(
+    artifact: &Value,
+    authority_request: &Value,
+    output_intent: &str,
+) -> Result<(), String> {
+    if output_intent == "draft_pr" {
+        let operation = artifact
+            .get("product_output_operation")
+            .ok_or_else(|| "completed Draft PR operation missing at terminal CAS".to_string())?;
+        validate_product_output_operation(artifact, operation)?;
+        if operation.get("state").and_then(Value::as_str) != Some("completed")
+            || operation.get("product_task_id") != authority_request.get("product_task_id")
+            || operation.get("artifact_id") != authority_request.get("artifact_id")
+            || operation.get("approval_id") != authority_request.get("approval_id")
+            || operation
+                .pointer("/request/output_intent")
+                .and_then(Value::as_str)
+                != Some("draft_pr")
+            || operation
+                .pointer("/branch_push/status")
+                .and_then(Value::as_str)
+                != Some("completed")
+            || operation
+                .pointer("/pr_create/status")
+                .and_then(Value::as_str)
+                != Some("completed")
+            || operation
+                .pointer("/pr_create/draft")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err("completed Draft PR operation is stale at terminal CAS".to_string());
+        }
+        return Ok(());
+    }
+
+    let receipt = artifact
+        .get("product_output_receipt")
+        .ok_or_else(|| "completed nonnetwork output receipt missing at terminal CAS".to_string())?;
+    if receipt.get("schema_version").and_then(Value::as_str) != Some("product_output_receipt.v1")
+        || receipt.get("state").and_then(Value::as_str) != Some("completed")
+        || receipt.get("product_task_id") != authority_request.get("product_task_id")
+        || receipt.get("artifact_id") != authority_request.get("artifact_id")
+        || receipt.get("approval_id") != authority_request.get("approval_id")
+        || receipt.get("output_intent").and_then(Value::as_str) != Some(output_intent)
+        || receipt.get("source_revision") != artifact.get("source_revision")
+        || receipt.get("patch_hash") != artifact.get("patch_hash")
+    {
+        return Err("completed nonnetwork output receipt is stale at terminal CAS".to_string());
+    }
+    let request = receipt
+        .get("request")
+        .ok_or_else(|| "nonnetwork output request missing at terminal CAS".to_string())?;
+    let output = receipt
+        .get("output")
+        .ok_or_else(|| "nonnetwork output result missing at terminal CAS".to_string())?;
+    if target_output_json_sha256(request)? != required_str(receipt, "request_sha256")?
+        || target_output_json_sha256(output)? != required_str(receipt, "output_sha256")?
+    {
+        return Err("nonnetwork output receipt hash changed at terminal CAS".to_string());
+    }
+    let output_status = output.get("status").and_then(Value::as_str);
+    if (output_intent == "artifact_only" && output_status != Some("artifact_only"))
+        || (output_intent == "export_patch" && output_status != Some("exported"))
+    {
+        return Err("nonnetwork output receipt status changed at terminal CAS".to_string());
+    }
+    Ok(())
+}
+
+fn product_output_phase_claim_is_current(phase: &Value, now: &str) -> Result<bool, String> {
+    let claimed_at = phase
+        .get("claimed_at")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "in-progress product output phase is missing claimed_at".to_string())?;
+    let claimed = chrono::DateTime::parse_from_rfc3339(claimed_at)
+        .map_err(|_| "product output phase claimed_at is invalid".to_string())?;
+    let current = chrono::DateTime::parse_from_rfc3339(now)
+        .map_err(|_| "product output store time is invalid".to_string())?;
+    let age = current.signed_duration_since(claimed).num_seconds();
+    if age < 0 {
+        return Err("product output phase claim is from the future".to_string());
+    }
+    Ok(age < PRODUCT_OUTPUT_PHASE_LEASE_SECONDS)
+}
+
+fn claim_product_output_phase(
+    operation: &mut Value,
+    phase_name: &str,
+    actor: &str,
+    now: &str,
+) -> Result<(), String> {
+    let prior_attempt = operation
+        .get("attempt")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if prior_attempt >= 4 {
+        return Err("product output operation exhausted its four bounded attempts".to_string());
+    }
+    operation["attempt"] = json!(prior_attempt + 1);
+    increment_product_output_operation_version(operation)?;
+    operation["state"] = json!("active");
+    operation["updated_at"] = json!(now);
+    operation["updated_by"] = json!(actor);
+    let phase = operation
+        .get_mut(phase_name)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| format!("product output {phase_name} phase missing"))?;
+    phase.insert("status".to_string(), json!("in_progress"));
+    phase.insert("claimed_at".to_string(), json!(now));
+    phase.insert("claimed_by".to_string(), json!(actor));
+    Ok(())
+}
+
+fn require_product_output_operation_version(
+    operation: &Value,
+    expected: u64,
+) -> Result<(), String> {
+    if operation.get("current_version").and_then(Value::as_u64) != Some(expected) {
+        return Err("stale product output operation version".to_string());
+    }
+    Ok(())
+}
+
+fn increment_product_output_operation_version(operation: &mut Value) -> Result<(), String> {
+    let current = operation
+        .get("current_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "product output operation current_version missing".to_string())?;
+    operation["current_version"] = json!(current.saturating_add(1));
+    Ok(())
+}
+
+fn validate_product_output_operation_request(
+    artifact: &Value,
+    artifact_id: &str,
+    request: &Value,
+    request_sha256: &str,
+) -> Result<(), String> {
+    if request.get("schema_version").and_then(Value::as_str)
+        != Some("product_draft_pr_output_request.v1")
+        || request.get("artifact_id").and_then(Value::as_str) != Some(artifact_id)
+    {
+        return Err("product Draft PR request schema or artifact binding is invalid".to_string());
+    }
+    for field in [
+        "workspace_id",
+        "run_id",
+        "target_id",
+        "source_revision",
+        "patch_hash",
+    ] {
+        if request.get(field) != artifact.get(field) {
+            return Err(format!("product Draft PR request {field} binding changed"));
+        }
+    }
+    for field in [
+        "product_task_id",
+        "approval_id",
+        "output_intent",
+        "target_repository",
+        "base_branch",
+        "head_branch",
+    ] {
+        if request
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .is_none()
+        {
+            return Err(format!("product Draft PR request missing {field}"));
+        }
+    }
+    if request.get("output_intent").and_then(Value::as_str) != Some("draft_pr") {
+        return Err("product Draft PR request requires draft_pr output intent".to_string());
+    }
+    if request
+        .get("head_branch")
+        .and_then(Value::as_str)
+        .is_none_or(|branch| !branch.starts_with("acp/"))
+    {
+        return Err("product Draft PR head branch must use acp/*".to_string());
+    }
+    validate_target_output_request_hash(request, request_sha256)
+}
+
+fn validate_product_output_operation(artifact: &Value, operation: &Value) -> Result<(), String> {
+    if operation.get("schema_version").and_then(Value::as_str)
+        != Some("product_output_operation.v1")
+        || operation
+            .get("operation_id")
+            .and_then(Value::as_str)
+            .filter(|value| value.starts_with("product-output-"))
+            .is_none()
+    {
+        return Err("product output operation identity is invalid".to_string());
+    }
+    for field in ["artifact_id", "source_revision"] {
+        if operation.get(field) != artifact.get(field) {
+            return Err(format!("product output operation {field} binding changed"));
+        }
+    }
+    let request = operation
+        .get("request")
+        .ok_or_else(|| "product output operation request missing".to_string())?;
+    let request_sha256 = operation
+        .get("request_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "product output operation request hash missing".to_string())?;
+    validate_product_output_operation_request(
+        artifact,
+        artifact
+            .get("artifact_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "artifact identity missing".to_string())?,
+        request,
+        request_sha256,
+    )?;
+    if operation.get("product_task_id") != request.get("product_task_id")
+        || operation.get("approval_id") != request.get("approval_id")
+        || operation.get("target_repository") != request.get("target_repository")
+        || operation.get("base_branch") != request.get("base_branch")
+        || operation.get("head_branch") != request.get("head_branch")
+    {
+        return Err("product output operation request identity changed".to_string());
+    }
+    if !(1..=4).contains(
+        &operation
+            .get("attempt")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    ) || operation
+        .get("current_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        == 0
+    {
+        return Err("product output operation attempt/version is invalid".to_string());
+    }
+    let branch_status = operation
+        .pointer("/branch_push/status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "product output branch status missing".to_string())?;
+    let pr_status = operation
+        .pointer("/pr_create/status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "product output PR status missing".to_string())?;
+    if !matches!(
+        branch_status,
+        "in_progress" | "completed" | "failed_known" | "outcome_unknown"
+    ) || !matches!(
+        pr_status,
+        "pending" | "in_progress" | "completed" | "failed_known" | "outcome_unknown"
+    ) {
+        return Err("product output phase status is invalid".to_string());
+    }
+    for (phase_name, phase_status) in [("branch_push", branch_status), ("pr_create", pr_status)] {
+        if phase_status == "in_progress" {
+            let phase = operation
+                .get(phase_name)
+                .ok_or_else(|| format!("product output {phase_name} phase missing"))?;
+            if phase
+                .get("claimed_at")
+                .and_then(Value::as_str)
+                .filter(|value| chrono::DateTime::parse_from_rfc3339(value).is_ok())
+                .is_none()
+                || phase
+                    .get("claimed_by")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .is_none()
+            {
+                return Err(format!(
+                    "in-progress product output {phase_name} phase claim is invalid"
+                ));
+            }
+        }
+    }
+    if pr_status == "completed" {
+        let pr = operation
+            .get("pr_create")
+            .ok_or_else(|| "product output PR phase missing".to_string())?;
+        for field in [
+            "number",
+            "url",
+            "repository",
+            "base_branch",
+            "head_branch",
+            "head_sha",
+            "completed_at",
+        ] {
+            if pr.get(field).is_none_or(Value::is_null) {
+                return Err(format!("completed product output PR missing {field}"));
+            }
+        }
+        if pr.get("draft").and_then(Value::as_bool) != Some(true)
+            || operation.get("state").and_then(Value::as_str) != Some("completed")
+            || branch_status != "completed"
+        {
+            return Err("completed product output PR state is inconsistent".to_string());
+        }
+    }
+    if branch_status == "completed"
+        && operation
+            .pointer("/branch_push/commit_sha")
+            .and_then(Value::as_str)
+            .filter(|value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .is_none()
+    {
+        return Err("completed branch phase is missing commit SHA".to_string());
+    }
+    if operation
+        .pointer("/pr_create/draft")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err("product output operation may create Draft PRs only".to_string());
+    }
+    if pr_status == "completed"
+        && (operation
+            .pointer("/pr_create/number")
+            .and_then(Value::as_u64)
+            .is_none()
+            || operation
+                .pointer("/pr_create/url")
+                .and_then(Value::as_str)
+                .is_none())
+    {
+        return Err("completed Draft PR phase is missing identity".to_string());
+    }
+    let state = operation
+        .get("state")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "product output operation state missing".to_string())?;
+    if !matches!(state, "active" | "completed" | "outcome_unknown" | "failed")
+        || (state == "completed" && (branch_status != "completed" || pr_status != "completed"))
+    {
+        return Err("product output operation terminal state is inconsistent".to_string());
+    }
+    Ok(())
+}
+
 fn validate_target_output_request_hash(
     request_binding: &Value,
     request_sha256: &str,
@@ -3165,6 +4652,38 @@ mod managed_owner_tests {
     struct HoldingExecutor {
         entered: std::sync::mpsc::Sender<()>,
         release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    #[test]
+    fn product_output_phase_claims_stop_at_four_attempts() {
+        let mut operation = json!({
+            "attempt": 4,
+            "current_version": 8,
+            "state": "failed",
+            "branch_push": {"status": "failed_known"},
+            "pr_create": {"status": "pending"},
+        });
+        let error = claim_product_output_phase(
+            &mut operation,
+            "branch_push",
+            "output-operator",
+            "2026-07-22T00:00:00Z",
+        )
+        .unwrap_err();
+        assert!(error.contains("four bounded attempts"));
+        assert_eq!(operation["attempt"], 4);
+        assert_eq!(operation["current_version"], 8);
+        assert_eq!(operation["branch_push"]["status"], "failed_known");
+    }
+
+    #[test]
+    fn product_output_phase_lease_covers_the_bounded_effect_window() {
+        let still_owned = json!({"claimed_at": "2026-07-22T00:00:01Z"});
+        assert!(
+            product_output_phase_claim_is_current(&still_owned, "2026-07-22T00:15:00Z").unwrap()
+        );
+        let expired = json!({"claimed_at": "2026-07-22T00:00:00Z"});
+        assert!(!product_output_phase_claim_is_current(&expired, "2026-07-22T00:15:00Z").unwrap());
     }
 
     impl crate::node_executor::NodeExecutor for HoldingExecutor {

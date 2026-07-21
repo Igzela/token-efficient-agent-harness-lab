@@ -624,6 +624,33 @@ export class AgentControlPlaneClient {
     );
   }
 
+  approveProductTask(
+    taskId: string,
+    expectedTaskVersion: number,
+  ): Promise<ProductTaskResponse> {
+    return this.postJson<ProductTaskResponse>(
+      `/api/v1/product/tasks/${encodeURIComponent(taskId)}/approve`,
+      { expected_task_version: expectedTaskVersion },
+    );
+  }
+
+  outputProductTask(
+    taskId: string,
+    expectedTaskVersion: number,
+    approvalId: string,
+    confirmOutput: boolean,
+  ): Promise<ProductTaskResponse> {
+    return this.postJson<ProductTaskResponse>(
+      `/api/v1/product/tasks/${encodeURIComponent(taskId)}/output`,
+      {
+        expected_task_version: expectedTaskVersion,
+        approval_id: approvalId,
+        confirm_output: confirmOutput,
+      },
+    );
+  }
+
+  /** @deprecated Use approveProductTask and outputProductTask as separate authority steps. */
   approveAndOutputProductTask(
     taskId: string,
     confirmOutput = false,

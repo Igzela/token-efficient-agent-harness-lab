@@ -16,6 +16,7 @@ mod authority;
 
 pub const TARGET_REPO_OUTPUT_SCHEMA_VERSION: &str = "target_repo_output.v1";
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const MAX_TIMEOUT_MS: u64 = 30_000;
 const MAX_GIT_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PATCH_BYTES: usize = 1024 * 1024;
 const MAX_CHANGED_FILE_BYTES: u64 = 1024 * 1024;
@@ -41,6 +42,7 @@ impl TargetRepoOutputConfig {
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
+                .map(|value| value.min(MAX_TIMEOUT_MS))
                 .unwrap_or(DEFAULT_TIMEOUT_MS),
             allowed_remotes: env_list("ACP_TARGET_REPO_REMOTE_ALLOWLIST", &["origin"]),
             allowed_remote_hosts: env_list("ACP_TARGET_REPO_REMOTE_HOST_ALLOWLIST", &[]),
@@ -132,10 +134,11 @@ pub struct GitHubRepository {
     pub repository: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct GitHubPullRequestConfig {
     enabled: bool,
     api_base: String,
+    allowed_repositories: HashSet<String>,
     token: Option<String>,
 }
 
@@ -143,11 +146,11 @@ impl GitHubPullRequestConfig {
     pub fn from_env() -> Self {
         let api_base = std::env::var("ACP_GITHUB_API_BASE")
             .ok()
-            .filter(|value| value.starts_with("https://"))
             .unwrap_or_else(|| "https://api.github.com".to_string());
         Self {
             enabled: env_enabled("ACP_ENABLE_GITHUB_PR_OUTPUT"),
             api_base: api_base.trim_end_matches('/').to_string(),
+            allowed_repositories: env_list("ACP_GITHUB_REPOSITORY_ALLOWLIST", &[]),
             token: secret_from_named_env("ACP_GITHUB_TOKEN_ENV"),
         }
     }
@@ -162,6 +165,25 @@ impl GitHubPullRequestConfig {
                     .to_string(),
             );
         }
+        if self.api_base != "https://api.github.com" {
+            return Err(
+                "GitHub PR output requires the exact https://api.github.com API origin".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn require_repository(&self, repository: &GitHubRepository) -> Result<(), String> {
+        self.require_enabled()?;
+        if repository.host != "github.com" {
+            return Err("GitHub PR output currently supports github.com remotes only".to_string());
+        }
+        let identity = format!("{}/{}", repository.owner, repository.repository);
+        if !self.allowed_repositories.contains(&identity) {
+            return Err(format!(
+                "GitHub repository is not explicitly allowlisted: {identity}"
+            ));
+        }
         Ok(())
     }
 }
@@ -173,6 +195,7 @@ pub struct GitHubPullRequestRequest {
     pub base_branch: String,
     pub title: String,
     pub body: String,
+    pub expected_head_sha: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -180,7 +203,12 @@ pub struct GitHubPullRequestOutput {
     pub number: u64,
     pub url: String,
     pub state: String,
+    pub draft: bool,
     pub reused: bool,
+    pub repository: String,
+    pub base_branch: String,
+    pub head_branch: String,
+    pub head_sha: Option<String>,
 }
 
 pub fn parse_github_repository_url(url: &str) -> Result<GitHubRepository, String> {
@@ -226,7 +254,7 @@ pub async fn create_or_reuse_github_pull_request(
     config: &GitHubPullRequestConfig,
     request: &GitHubPullRequestRequest,
 ) -> Result<GitHubPullRequestOutput, String> {
-    config.require_enabled()?;
+    config.require_repository(&request.repository)?;
     authority::validate_github_pr_request(request)?;
 
     let token = config.token.as_deref().unwrap_or_default();
@@ -243,51 +271,75 @@ pub async fn create_or_reuse_github_pull_request(
     let existing = client
         .get(&endpoint)
         .bearer_auth(token)
-        .query(&[("state", "open"), ("head", head.as_str())])
+        .query(&[
+            ("state", "open"),
+            ("head", head.as_str()),
+            ("base", request.base_branch.as_str()),
+        ])
         .send()
         .await
-        .map_err(|error| format!("GitHub PR lookup failed: {error}"))?;
+        .map_err(|error| format!("github_pr_lookup_failed_known: {error}"))?;
     if !existing.status().is_success() {
+        if matches!(existing.status().as_u16(), 403 | 429) {
+            return Err(format!(
+                "github_pr_rate_limited_or_forbidden_known: status {}",
+                existing.status()
+            ));
+        }
         return Err(format!(
-            "GitHub PR lookup failed with status {}",
+            "github_pr_lookup_failed_known: status {}",
             existing.status()
         ));
     }
     let existing_body: Value = existing
         .json()
         .await
-        .map_err(|error| format!("GitHub PR lookup response invalid: {error}"))?;
+        .map_err(|error| format!("github_pr_lookup_failed_known: invalid response: {error}"))?;
     if let Some(pull_request) = existing_body.as_array().and_then(|items| items.first()) {
-        return github_pull_request_output(pull_request, true);
+        return github_pull_request_output(pull_request, request, true)
+            .map_err(|error| format!("github_pr_lookup_failed_known: {error}"));
     }
 
     let created = client
         .post(&endpoint)
         .bearer_auth(token)
-        .json(&serde_json::json!({
-            "title": request.title,
-            "head": request.head_branch,
-            "base": request.base_branch,
-            "body": request.body,
-        }))
+        .json(&github_draft_pull_request_payload(request))
         .send()
         .await
-        .map_err(|error| format!("GitHub PR creation failed: {error}"))?;
+        .map_err(|error| format!("github_pr_create_outcome_unknown: {error}"))?;
     if !created.status().is_success() {
+        if matches!(created.status().as_u16(), 403 | 429) {
+            return Err(format!(
+                "github_pr_rate_limited_or_forbidden_known: status {}",
+                created.status()
+            ));
+        }
         return Err(format!(
-            "GitHub PR creation failed with status {}",
+            "github_pr_create_failed_known: status {}",
             created.status()
         ));
     }
     let created_body: Value = created
         .json()
         .await
-        .map_err(|error| format!("GitHub PR creation response invalid: {error}"))?;
-    github_pull_request_output(&created_body, false)
+        .map_err(|error| format!("github_pr_create_outcome_unknown: invalid response: {error}"))?;
+    github_pull_request_output(&created_body, request, false)
+        .map_err(|error| format!("github_pr_create_outcome_unknown: {error}"))
+}
+
+fn github_draft_pull_request_payload(request: &GitHubPullRequestRequest) -> Value {
+    serde_json::json!({
+        "title": request.title,
+        "head": request.head_branch,
+        "base": request.base_branch,
+        "body": request.body,
+        "draft": true,
+    })
 }
 
 fn github_pull_request_output(
     value: &Value,
+    request: &GitHubPullRequestRequest,
     reused: bool,
 ) -> Result<GitHubPullRequestOutput, String> {
     let number = value
@@ -299,11 +351,48 @@ fn github_pull_request_output(
         .and_then(Value::as_str)
         .ok_or_else(|| "GitHub PR response missing html_url".to_string())?;
     let state = value.get("state").and_then(Value::as_str).unwrap_or("open");
+    let draft = value.get("draft").and_then(Value::as_bool).unwrap_or(false);
+    if state != "open" || !draft {
+        return Err("GitHub PR response is not an open Draft PR".to_string());
+    }
+    let expected_url_prefix = format!(
+        "https://github.com/{}/{}/pull/",
+        request.repository.owner, request.repository.repository
+    );
+    if !url.starts_with(&expected_url_prefix) {
+        return Err("GitHub PR response URL does not match the admitted repository".to_string());
+    }
+    let expected_full_name = format!(
+        "{}/{}",
+        request.repository.owner, request.repository.repository
+    );
+    if value.pointer("/base/ref").and_then(Value::as_str) != Some(request.base_branch.as_str())
+        || value.pointer("/head/ref").and_then(Value::as_str) != Some(request.head_branch.as_str())
+        || value
+            .pointer("/head/repo/full_name")
+            .and_then(Value::as_str)
+            != Some(expected_full_name.as_str())
+    {
+        return Err("GitHub PR response base/head/repository binding changed".to_string());
+    }
+    if let Some(expected_head_sha) = request.expected_head_sha.as_deref() {
+        if value.pointer("/head/sha").and_then(Value::as_str) != Some(expected_head_sha) {
+            return Err("GitHub PR response head commit changed".to_string());
+        }
+    }
     Ok(GitHubPullRequestOutput {
         number,
         url: redact_sensitive_patterns(url),
         state: state.to_string(),
+        draft,
         reused,
+        repository: expected_full_name,
+        base_branch: request.base_branch.clone(),
+        head_branch: request.head_branch.clone(),
+        head_sha: value
+            .pointer("/head/sha")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -572,7 +661,8 @@ pub fn push_approved_branch(
             &request.remote,
             &refspec,
         ],
-    )?;
+    )
+    .map_err(|error| format!("branch_push_outcome_unknown: {error}"))?;
 
     Ok(BranchPublishOutput {
         schema_version: TARGET_REPO_OUTPUT_SCHEMA_VERSION.to_string(),
@@ -616,6 +706,42 @@ fn reuse_published_branch(
     if parent != request.source_revision {
         return Err("published branch parent does not match source revision".to_string());
     }
+    let range = format!("{}..HEAD", request.source_revision);
+    let patch = run_git(
+        config,
+        workspace,
+        &["diff", "--binary", "--full-index", "--no-ext-diff", &range],
+    )?;
+    if patch.stdout_truncated || patch.stdout.len() > MAX_PATCH_BYTES {
+        return Err("published patch exceeds output limit".to_string());
+    }
+    if contains_sensitive_patterns(&patch.stdout) {
+        return Err("published patch contains sensitive content".to_string());
+    }
+    let actual_patch_hash = patch_hash(&patch.stdout);
+    if actual_patch_hash != request.expected_patch_hash {
+        return Err(format!(
+            "published patch hash changed: expected={} actual={actual_patch_hash}",
+            request.expected_patch_hash
+        ));
+    }
+    let refspec = format!(
+        "refs/heads/{}:refs/heads/{}",
+        request.branch_name, request.branch_name
+    );
+    run_git(
+        config,
+        workspace,
+        &[
+            "push",
+            "--porcelain",
+            "--no-verify",
+            "--set-upstream",
+            &request.remote,
+            &refspec,
+        ],
+    )
+    .map_err(|error| format!("branch_push_outcome_unknown: {error}"))?;
     let upstream_name = run_git(
         config,
         workspace,
@@ -642,26 +768,6 @@ fn reuse_published_branch(
     if upstream != commit_sha {
         return Err("published branch does not match its upstream".to_string());
     }
-    let range = format!("{}..HEAD", request.source_revision);
-    let patch = run_git(
-        config,
-        workspace,
-        &["diff", "--binary", "--full-index", "--no-ext-diff", &range],
-    )?;
-    if patch.stdout_truncated || patch.stdout.len() > MAX_PATCH_BYTES {
-        return Err("published patch exceeds output limit".to_string());
-    }
-    if contains_sensitive_patterns(&patch.stdout) {
-        return Err("published patch contains sensitive content".to_string());
-    }
-    let actual_patch_hash = patch_hash(&patch.stdout);
-    if actual_patch_hash != request.expected_patch_hash {
-        return Err(format!(
-            "published patch hash changed: expected={} actual={actual_patch_hash}",
-            request.expected_patch_hash
-        ));
-    }
-
     Ok(BranchPublishOutput {
         schema_version: TARGET_REPO_OUTPUT_SCHEMA_VERSION.to_string(),
         source_revision: request.source_revision.clone(),
@@ -1099,5 +1205,108 @@ mod tests {
             base64_encode(b"Aladdin:open sesame"),
             "QWxhZGRpbjpvcGVuIHNlc2FtZQ=="
         );
+    }
+
+    fn draft_request() -> GitHubPullRequestRequest {
+        GitHubPullRequestRequest {
+            repository: GitHubRepository {
+                host: "github.com".to_string(),
+                owner: "acme".to_string(),
+                repository: "widgets".to_string(),
+            },
+            head_branch: "acp/product-1".to_string(),
+            base_branch: "main".to_string(),
+            title: "Bounded change".to_string(),
+            body: "Approved artifact".to_string(),
+            expected_head_sha: Some("a".repeat(40)),
+        }
+    }
+
+    #[test]
+    fn github_create_payload_is_always_draft() {
+        let payload = github_draft_pull_request_payload(&draft_request());
+        assert_eq!(payload["draft"], true);
+        assert_eq!(payload["head"], "acp/product-1");
+        assert_eq!(payload["base"], "main");
+    }
+
+    #[test]
+    fn github_pr_config_rejects_noncanonical_api_origin() {
+        let config = GitHubPullRequestConfig {
+            enabled: true,
+            api_base: "https://github.example.invalid/api/v3".to_string(),
+            allowed_repositories: HashSet::from(["acme/widgets".to_string()]),
+            token: Some("test-only-token".to_string()),
+        };
+        assert_eq!(
+            config.require_enabled().unwrap_err(),
+            "GitHub PR output requires the exact https://api.github.com API origin"
+        );
+    }
+
+    #[test]
+    fn github_pr_config_requires_exact_repository_admission() {
+        let config = GitHubPullRequestConfig {
+            enabled: true,
+            api_base: "https://api.github.com".to_string(),
+            allowed_repositories: HashSet::from(["acme/widgets".to_string()]),
+            token: Some("test-only-token".to_string()),
+        };
+        config
+            .require_repository(&draft_request().repository)
+            .unwrap();
+        let mut unadmitted = draft_request().repository;
+        unadmitted.repository = "other".to_string();
+        assert!(config
+            .require_repository(&unadmitted)
+            .unwrap_err()
+            .contains("not explicitly allowlisted"));
+    }
+
+    #[test]
+    fn github_response_must_be_open_draft_in_admitted_repository() {
+        let request = draft_request();
+        let valid = serde_json::json!({
+            "number": 7,
+            "html_url": "https://github.com/acme/widgets/pull/7",
+            "state": "open",
+            "draft": true,
+            "base": {"ref": "main"},
+            "head": {
+                "ref": "acp/product-1",
+                "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "repo": {"full_name": "acme/widgets"}
+            },
+        });
+        let output = github_pull_request_output(&valid, &request, false).unwrap();
+        assert_eq!(output.number, 7);
+        assert!(output.draft);
+        assert_eq!(output.repository, "acme/widgets");
+        assert_eq!(output.base_branch, "main");
+        assert_eq!(output.head_branch, "acp/product-1");
+        assert_eq!(
+            output.head_sha.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+
+        let mut not_draft = valid.clone();
+        not_draft["draft"] = serde_json::json!(false);
+        assert!(github_pull_request_output(&not_draft, &request, true).is_err());
+
+        let mut wrong_repo = valid.clone();
+        wrong_repo["html_url"] = serde_json::json!("https://github.com/acme/other/pull/7");
+        assert!(github_pull_request_output(&wrong_repo, &request, false).is_err());
+
+        let mut wrong_base = valid.clone();
+        wrong_base["base"]["ref"] = serde_json::json!("release");
+        assert!(github_pull_request_output(&wrong_base, &request, false).is_err());
+
+        let mut wrong_head = valid.clone();
+        wrong_head["head"]["ref"] = serde_json::json!("acp/other");
+        assert!(github_pull_request_output(&wrong_head, &request, false).is_err());
+
+        let mut wrong_sha = valid;
+        wrong_sha["head"]["sha"] = serde_json::json!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert!(github_pull_request_output(&wrong_sha, &request, false).is_err());
     }
 }

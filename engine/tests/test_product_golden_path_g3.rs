@@ -15,7 +15,9 @@ fn env_lock() -> &'static Mutex<()> {
 }
 
 fn with_gates<R>(f: impl FnOnce() -> R) -> R {
-    let _guard = env_lock().lock().unwrap();
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::env::set_var(PRODUCT_TASK_GATE, "1");
     std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
     std::env::set_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH", "0");
@@ -188,7 +190,7 @@ fn end_to_end_artifact_only_path_with_real_verification() {
         );
 
         let done = store
-            .approve_and_output_product_task(task_id, "tester", false)
+            .approve_and_output_product_task(task_id, "tester", true)
             .expect("approve");
         assert_eq!(
             done["task"]["status"].as_str(),
@@ -253,7 +255,7 @@ fn verification_failure_blocks_capture_approval_and_output() {
 
         // No approval / output effect.
         let err = store
-            .approve_and_output_product_task(task_id, "tester", false)
+            .approve_and_output_product_task(task_id, "tester", true)
             .unwrap_err();
         assert!(
             err.contains("awaiting_approval") || err.contains("requires"),
@@ -293,7 +295,7 @@ fn capture_without_verification_is_rejected_for_approval() {
         let task_id = task["task_id"].as_str().unwrap();
         // Force awaiting_approval-like attempt without verification by trying approve early.
         let err = store
-            .approve_and_output_product_task(task_id, "tester", false)
+            .approve_and_output_product_task(task_id, "tester", true)
             .unwrap_err();
         assert!(
             err.contains("awaiting_approval") || err.contains("requires"),

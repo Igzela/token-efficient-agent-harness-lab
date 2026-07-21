@@ -2,7 +2,7 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-07-14.
+Last updated: 2026-07-22.
 
 ## Agent Runtime and Tool Policy Operations
 
@@ -88,6 +88,44 @@ Emergency disable and rollback:
 5. If destructive local cleanup is required, perform it before reverting the code: after a verified backup and stopped v22 writers, invoke `LocalProductStore::rollback_v22_to_v21` with explicit destructive-local confirmation, then revert the integration merge. The transaction refuses any non-empty v22 authority table, audits a successful empty-table rollback, drops only the three v22 tables, and moves the backend version marker to v21 atomically. Do not bypass refusal by manually dropping receipt, authorization, or configured-allowlist evidence.
 
 Post-execution hooks run after the external effect. A post block marks the node result failed, preserves inner usage fields, and is non-retryable because the effect may already have occurred; it cannot undo the external effect. Use pre-execution block/approval hooks when execution itself must be prevented.
+
+## Product Golden Path Approval and Draft PR Output
+
+Product approval and output are separate operator actions. After finalization returns `awaiting_approval`, an authenticated `team:admin` reviewer records the exact approval. A later operator with `dispatch:execute` supplies that approval and explicitly confirms output. Do not use the combined compatibility route as an ordinary client flow, and never pre-create approval as part of task submission.
+
+```bash
+curl -sS -X POST "$ACP_API_URL/api/v1/product/tasks/$TASK_ID/approve" \
+  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d "{\"expected_task_version\":$TASK_VERSION}"
+
+# Refresh the task and use its current version plus the returned approval_id.
+curl -sS -X POST "$ACP_API_URL/api/v1/product/tasks/$TASK_ID/output" \
+  -H "authorization: Bearer $ACP_OUTPUT_API_KEY" \
+  -H "content-type: application/json" \
+  -d "{\"expected_task_version\":$CURRENT_TASK_VERSION,\"approval_id\":\"$APPROVAL_ID\",\"confirm_output\":true}"
+```
+
+For `artifact_only` and `export_patch`, completion requires the returned durable receipt. For `draft_pr`, `branch_pushed` or `pr_create_pending` is not success; repeat the output call only with the same task, approval, and current version so the owner reuses the branch and reconciles the missing PR phase. `outcome_unknown` requires reconciliation through that same operation and must not be treated as failed-before-effect.
+
+Live disposable GitHub acceptance is default-off and requires all existing product, target-output, network-output, authentication, and exact allowlist gates. The credential variables below contain environment-variable names, not token values. Never print them or persist their resolved values.
+
+```bash
+export ACP_PRODUCT_GOLDEN_PATH=1
+export ACP_ENABLE_TARGET_REPO_OUTPUT=1
+# Required with PostgreSQL; use an absolute app-owned disposable workspace root.
+export ACP_PRODUCT_WORKSPACE_ROOT=/absolute/path/to/disposable/workspaces
+export ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT=1
+export ACP_TARGET_REPO_REMOTE_ALLOWLIST=origin
+export ACP_TARGET_REPO_REMOTE_HOST_ALLOWLIST=github.com
+export ACP_TARGET_REPO_GIT_TOKEN_ENV=SYMBOLIC_GITHUB_TOKEN_VARIABLE
+export ACP_ENABLE_GITHUB_PR_OUTPUT=1
+export ACP_GITHUB_REPOSITORY_ALLOWLIST=owner/disposable-repository
+export ACP_GITHUB_TOKEN_ENV=SYMBOLIC_GITHUB_TOKEN_VARIABLE
+export ACP_GITHUB_API_BASE=https://api.github.com
+```
+
+Admit only an explicit disposable `https://github.com/owner/repository.git` target. Capture the target default-branch commit before output and compare it afterward. The runtime may push only `acp/*` and create or reuse an open Draft PR. It has no merge, auto-merge, or default-branch write endpoint. Disable the network and GitHub PR gates after the bounded acceptance run; preserve the operation receipt and Draft PR for review, and do not merge it.
 
 ## Durable Memory, Budget Producer, and Replay Operations
 

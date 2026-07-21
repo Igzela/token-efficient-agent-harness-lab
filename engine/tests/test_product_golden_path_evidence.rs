@@ -6,7 +6,12 @@ use engine::product_golden_path::{
 };
 use engine::storage::local_product_store::LocalProductStore;
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Barrier, Mutex, OnceLock};
+
+fn sha256_json(value: &serde_json::Value) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(serde_json::to_vec(value).unwrap()))
+}
 
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -113,6 +118,20 @@ fn complete_to_approval(store: &LocalProductStore, task_id: &str) {
         .unwrap();
 }
 
+fn drive_to_awaiting_approval(
+    store: &LocalProductStore,
+    repo: &std::path::Path,
+    rev: &str,
+    key: &str,
+    intent: &str,
+) -> serde_json::Value {
+    let validated = validate_intake(&intake(repo, rev, key, intent), "local", "default").unwrap();
+    let admitted = store.admit_product_task(&validated, "tester").unwrap();
+    let task_id = admitted["task_id"].as_str().unwrap();
+    complete_to_approval(store, task_id);
+    store.get_product_task(task_id).unwrap().unwrap()
+}
+
 #[test]
 fn terminal_evidence_links_task_owners_without_fabricated_cost() {
     with_gates(|| {
@@ -129,7 +148,7 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
         let task_id = task["task_id"].as_str().unwrap();
         complete_to_approval(&store, task_id);
         let done = store
-            .approve_and_output_product_task(task_id, "tester", false)
+            .approve_and_output_product_task(task_id, "tester", true)
             .unwrap();
         assert_eq!(
             done["task"]["status"].as_str(),
@@ -146,6 +165,36 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
         assert_eq!(evidence["cost"]["status"], "unavailable");
         assert!(evidence["usage"]["reason"].as_str().is_some());
         assert!(evidence["cost"]["reason"].as_str().is_some());
+        let receipt = done["output_receipt"].as_object().expect("output receipt");
+        assert_eq!(receipt["schema_version"], "product_output_receipt.v1");
+        assert_eq!(receipt["artifact_id"], done["artifact"]["artifact_id"]);
+        assert_eq!(receipt["approval_id"], done["approval"]["approval_id"]);
+        let completed_task = store.get_product_task(task_id).unwrap().unwrap();
+        let completed_version = completed_task["version"].as_u64().unwrap();
+        assert!(store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                completed_version,
+                Some("wrong-approval"),
+                true,
+            )
+            .unwrap_err()
+            .contains("approval not found"));
+        let reused = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                completed_version,
+                done["approval"]["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(reused["reused"], true);
+        assert_eq!(
+            reused["output_receipt"]["receipt_id"],
+            receipt["receipt_id"]
+        );
         // Idempotent re-read
         let again = store.get_product_task_terminal_evidence(task_id).unwrap();
         assert_eq!(again["product_task_id"], task_id);
@@ -178,6 +227,17 @@ fn export_patch_writes_approved_patch_without_touching_main() {
             .expect("export");
         assert_eq!(done["output"]["mode"], "export_patch");
         assert_eq!(done["output"]["status"], "exported");
+        let receipt = done["output_receipt"].as_object().expect("output receipt");
+        assert_eq!(receipt["state"], "completed");
+        assert_eq!(receipt["patch_hash"], done["artifact"]["patch_hash"]);
+        let durable_artifact = store
+            .get_supervised_patch_artifact(done["artifact"]["artifact_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            durable_artifact["product_output_receipt"]["receipt_id"],
+            receipt["receipt_id"]
+        );
         let export_path = done["output"]["export_path"].as_str().unwrap();
         let patch = std::fs::read_to_string(export_path).unwrap();
         assert!(
@@ -223,10 +283,10 @@ fn draft_pr_without_network_gate_is_explicitly_unavailable() {
         assert_eq!(done["output"]["status"], "network_output_unavailable");
         assert!(done["output"]["reason"].as_str().is_some());
         assert_eq!(done["output"]["export_eligible"], true);
-        // Still completes task with explicit unavailable network output.
+        // Network unavailability is not successful Draft PR completion.
         assert_eq!(
             done["task"]["status"].as_str(),
-            Some(ProductTaskStatus::Completed.as_str())
+            Some(ProductTaskStatus::OutputPending.as_str())
         );
         assert_eq!(
             std::fs::read_to_string(repo.join("README.md")).unwrap(),
@@ -236,7 +296,124 @@ fn draft_pr_without_network_gate_is_explicitly_unavailable() {
 }
 
 #[test]
-fn draft_pr_pushes_acp_branch_to_local_origin_without_touching_main() {
+fn approval_and_output_are_separate_and_missing_confirmation_has_zero_side_effects() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task = drive_to_awaiting_approval(
+            &store,
+            &repo,
+            &rev,
+            "ev-separate-authority-1",
+            "export_patch",
+        );
+        let task_id = task["task_id"].as_str().unwrap();
+        let version = task["version"].as_u64().unwrap();
+
+        let before_approvals = store
+            .workflow_run_approvals(task["run_id"].as_str().unwrap(), 20)
+            .unwrap();
+        let before_audit = store.audit_events(1_000).unwrap();
+
+        let error = store
+            .output_product_task(task_id, "missing-confirmation", version, None, false)
+            .unwrap_err();
+        assert!(error.contains("confirm_output=true"));
+
+        let unchanged = store.get_product_task(task_id).unwrap().unwrap();
+        assert_eq!(unchanged["status"], "awaiting_approval");
+        assert_eq!(unchanged["version"], version);
+        assert_eq!(
+            store
+                .workflow_run_approvals(task["run_id"].as_str().unwrap(), 20)
+                .unwrap(),
+            before_approvals
+        );
+        assert_eq!(store.audit_events(1_000).unwrap(), before_audit);
+
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .expect("independent approval");
+        assert_eq!(approval["approval_kind"], "product_output");
+        assert_eq!(approval["product_task_id"], task_id);
+        assert!(approval["artifact_id"].as_str().is_some());
+        assert_eq!(approval["run_id"], task["run_id"]);
+        assert_eq!(approval["workspace_record_id"], task["workspace_record_id"]);
+        assert_eq!(approval["output_intent"], "export_patch");
+        assert_eq!(approval["approved_by"], "independent-operator");
+
+        let run_id = approval["run_id"].as_str().unwrap();
+        let node_id = approval["node_id"].as_str().unwrap();
+        let audit_after_valid = store.audit_events(1_000).unwrap();
+        for (field, replacement, expected_error) in [
+            (
+                "expected_task_version",
+                serde_json::json!(version + 1),
+                "stale product task version or state",
+            ),
+            (
+                "artifact_id",
+                serde_json::json!("patch-artifact-mismatch"),
+                "artifact missing",
+            ),
+            (
+                "verification_sha256",
+                serde_json::json!("0".repeat(64)),
+                "verification binding changed",
+            ),
+            (
+                "output_intent",
+                serde_json::json!("draft_pr"),
+                "task binding changed",
+            ),
+        ] {
+            let mut tampered = approval.clone();
+            tampered[field] = replacement;
+            let error = store
+                .record_product_output_approval(run_id, node_id, "unauthorized-binding", &tampered)
+                .unwrap_err();
+            assert!(
+                error.contains(expected_error),
+                "unexpected {field} rejection: {error}"
+            );
+        }
+        assert_eq!(store.audit_events(1_000).unwrap(), audit_after_valid);
+    });
+}
+
+#[test]
+fn draft_pr_network_gate_disabled_remains_output_pending() {
+    with_gates(|| {
+        std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task =
+            drive_to_awaiting_approval(&store, &repo, &rev, "ev-draft-disabled-2", "draft_pr");
+        let task_id = task["task_id"].as_str().unwrap();
+        let version = task["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .expect("approval");
+
+        let result = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .expect("accurate non-terminal result");
+        assert_eq!(result["output"]["status"], "network_output_unavailable");
+        assert_eq!(result["task"]["status"], "output_pending");
+        assert_ne!(result["task"]["status"], "completed");
+    });
+}
+
+#[test]
+fn draft_pr_rejects_non_github_remote_before_branch_push() {
     with_gates(|| {
         std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "1");
         std::env::set_var("ACP_TARGET_REPO_ALLOW_LOCAL_REMOTE", "1");
@@ -277,9 +454,8 @@ fn draft_pr_pushes_acp_branch_to_local_origin_without_touching_main() {
             .approve_and_output_product_task(task_id, "tester", true)
             .expect("acp push");
         assert_eq!(done["output"]["mode"], "draft_pr");
-        assert_eq!(done["output"]["status"], "branch_pushed");
-        let branch = done["output"]["branch_name"].as_str().unwrap();
-        assert!(branch.starts_with("acp/"), "branch must be acp/*: {branch}");
+        assert_eq!(done["output"]["status"], "blocked");
+        assert_eq!(done["task"]["status"], "output_pending");
         let refs = Command::new("git")
             .args(["show-ref"])
             .current_dir(&bare)
@@ -287,8 +463,8 @@ fn draft_pr_pushes_acp_branch_to_local_origin_without_touching_main() {
             .unwrap();
         let refs_txt = String::from_utf8_lossy(&refs.stdout);
         assert!(
-            refs_txt.contains("acp/"),
-            "bare remote missing acp branch: {refs_txt}"
+            !refs_txt.contains("acp/"),
+            "inadmissible remote must not receive acp branch: {refs_txt}"
         );
         assert_eq!(
             std::fs::read_to_string(repo.join("README.md")).unwrap(),
@@ -309,5 +485,442 @@ fn draft_pr_pushes_acp_branch_to_local_origin_without_touching_main() {
 
         std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
         std::env::remove_var("ACP_TARGET_REPO_ALLOW_LOCAL_REMOTE");
+    });
+}
+
+#[test]
+fn progressive_output_operation_survives_restart_and_retries_only_pr_phase() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task = drive_to_awaiting_approval(
+            &store,
+            &repo,
+            &rev,
+            "ev-progressive-operation-1",
+            "draft_pr",
+        );
+        let task_id = task["task_id"].as_str().unwrap();
+        let task_version = task["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(
+                task_id,
+                "independent-operator",
+                task["version"].as_u64().unwrap(),
+            )
+            .unwrap();
+        let artifact = store
+            .supervised_patch_artifacts(100)
+            .unwrap()
+            .into_iter()
+            .find(|artifact| artifact["run_id"] == task["run_id"])
+            .unwrap();
+        let artifact_id = artifact["artifact_id"].as_str().unwrap();
+        let request = serde_json::json!({
+            "schema_version": "product_draft_pr_output_request.v1",
+            "product_task_id": task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval["approval_id"],
+            "output_intent": "draft_pr",
+            "workspace_id": artifact["workspace_id"],
+            "run_id": artifact["run_id"],
+            "target_id": artifact["target_id"],
+            "patch_hash": artifact["patch_hash"],
+            "source_revision": artifact["source_revision"],
+            "target_repository": "disposable/acceptance",
+            "repository_host": "github.com",
+            "base_branch": "main",
+            "head_branch": format!("acp/product-{task_id}"),
+            "remote": "origin",
+            "commit_message": "bounded test",
+            "pr_title": "Draft: bounded test",
+            "pr_body": "Do not merge automatically.",
+        });
+        let request_sha256 = sha256_json(&request);
+        let mut mismatched_request = request.clone();
+        mismatched_request["output_intent"] = serde_json::json!("export_patch");
+        let mismatched_sha256 = sha256_json(&mismatched_request);
+        let mismatch = store
+            .claim_product_output_operation(
+                artifact_id,
+                &mismatched_request,
+                &mismatched_sha256,
+                task_version,
+                "output-operator",
+            )
+            .unwrap_err();
+        assert!(
+            mismatch.contains("task state or intent authority changed"),
+            "unexpected output-intent rejection: {mismatch}"
+        );
+        assert!(
+            store
+                .get_supervised_patch_artifact(artifact_id)
+                .unwrap()
+                .unwrap()
+                .get("product_output_operation")
+                .is_none(),
+            "mismatched output intent must have zero durable operation effect"
+        );
+        let stale = store
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha256,
+                task_version.saturating_add(1),
+                "stale-output-operator",
+            )
+            .unwrap_err();
+        assert!(
+            stale.contains("stale product task version"),
+            "unexpected stale-version rejection: {stale}"
+        );
+        assert!(
+            store
+                .get_supervised_patch_artifact(artifact_id)
+                .unwrap()
+                .unwrap()
+                .get("product_output_operation")
+                .is_none(),
+            "stale output caller must have zero durable operation effect"
+        );
+        let claimed = store
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha256,
+                task_version,
+                "output-operator",
+            )
+            .unwrap();
+        assert_eq!(claimed["claim_action"], "push_branch");
+        let operation_id = claimed["operation_id"].as_str().unwrap().to_string();
+        let commit_sha = "a".repeat(40);
+        let branch = store
+            .record_product_output_branch_pushed(
+                artifact_id,
+                &operation_id,
+                claimed["current_version"].as_u64().unwrap(),
+                &commit_sha,
+                "output-operator",
+            )
+            .unwrap();
+        assert_eq!(branch["branch_push"]["status"], "completed");
+        drop(store);
+
+        let store_a = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+        let store_b = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let artifact_a = artifact_id.to_string();
+        let artifact_b = artifact_id.to_string();
+        let request_a = request.clone();
+        let request_b = request.clone();
+        let request_sha_a = request_sha256.clone();
+        let request_sha_b = request_sha256.clone();
+        let barrier_a = Arc::clone(&barrier);
+        let barrier_b = Arc::clone(&barrier);
+        let handle_a = std::thread::spawn(move || {
+            barrier_a.wait();
+            store_a
+                .claim_product_output_operation(
+                    &artifact_a,
+                    &request_a,
+                    &request_sha_a,
+                    task_version,
+                    "output-operator-a",
+                )
+                .unwrap()
+        });
+        let handle_b = std::thread::spawn(move || {
+            barrier_b.wait();
+            store_b
+                .claim_product_output_operation(
+                    &artifact_b,
+                    &request_b,
+                    &request_sha_b,
+                    task_version,
+                    "output-operator-b",
+                )
+                .unwrap()
+        });
+        let claims = [handle_a.join().unwrap(), handle_b.join().unwrap()];
+        let pr_claim = claims
+            .iter()
+            .find(|claim| claim["claim_action"] == "create_or_reconcile_pr")
+            .unwrap()
+            .clone();
+        let concurrent = claims
+            .iter()
+            .find(|claim| claim["claim_action"] == "operation_in_progress")
+            .unwrap();
+        assert_eq!(pr_claim["claim_action"], "create_or_reconcile_pr");
+        assert_eq!(pr_claim["branch_push"]["commit_sha"], commit_sha);
+        assert_eq!(concurrent["claim_action"], "operation_in_progress");
+        assert_eq!(concurrent["current_version"], pr_claim["current_version"]);
+        let reopened = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+        reopened
+            .mark_product_output_pr_failed_known(
+                artifact_id,
+                &operation_id,
+                pr_claim["current_version"].as_u64().unwrap(),
+                "output-operator",
+                "github_pr_create_failed_known: status 422",
+            )
+            .unwrap();
+        let retry = reopened
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha256,
+                task_version,
+                "output-operator",
+            )
+            .unwrap();
+        assert_eq!(retry["claim_action"], "create_or_reconcile_pr");
+        assert_eq!(retry["branch_push"]["commit_sha"], commit_sha);
+        assert!(retry["attempt"].as_u64().unwrap() > pr_claim["attempt"].as_u64().unwrap());
+
+        let pull_request = serde_json::json!({
+            "number": 17,
+            "url": "https://github.com/disposable/acceptance/pull/17",
+            "state": "open",
+            "draft": true,
+            "reused": false,
+            "repository": "disposable/acceptance",
+            "base_branch": "main",
+            "head_branch": format!("acp/product-{task_id}"),
+            "head_sha": commit_sha,
+        });
+        let mut wrong_repository = pull_request.clone();
+        wrong_repository["url"] = serde_json::json!("https://github.com/disposable/other/pull/17");
+        assert!(reopened
+            .complete_product_output_draft_pr(
+                artifact_id,
+                &operation_id,
+                retry["current_version"].as_u64().unwrap(),
+                &wrong_repository,
+                "output-operator",
+            )
+            .unwrap_err()
+            .contains("admitted repository"));
+        let completed = reopened
+            .complete_product_output_draft_pr(
+                artifact_id,
+                &operation_id,
+                retry["current_version"].as_u64().unwrap(),
+                &pull_request,
+                "output-operator",
+            )
+            .unwrap();
+        assert_eq!(completed["state"], "completed");
+        assert_eq!(completed["pr_create"]["number"], 17);
+        assert_eq!(
+            completed["pr_create"]["repository"],
+            "disposable/acceptance"
+        );
+        assert_eq!(completed["pr_create"]["head_sha"], "a".repeat(40));
+        let late_failure = reopened
+            .mark_product_output_pr_failed_known(
+                artifact_id,
+                &operation_id,
+                retry["current_version"].as_u64().unwrap(),
+                "late-output-operator",
+                "late failure must not replace completion",
+            )
+            .unwrap_err();
+        assert!(
+            late_failure.contains("version mismatch")
+                || late_failure.contains("stale product output operation version")
+                || late_failure.contains("phase is not current"),
+            "unexpected late-write rejection: {late_failure}"
+        );
+        let after_late_failure = reopened
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha256,
+                task_version,
+                "output-operator",
+            )
+            .unwrap();
+        assert_eq!(after_late_failure["claim_action"], "reused");
+        assert_eq!(after_late_failure["state"], "completed");
+        let reused = reopened
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha256,
+                task_version,
+                "output-operator",
+            )
+            .unwrap();
+        assert_eq!(reused["claim_action"], "reused");
+        assert_eq!(reused["operation_id"], operation_id);
+    });
+}
+
+#[test]
+fn terminal_completion_revalidates_workspace_verification_atomically() {
+    with_gates(|| {
+        std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "0");
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task = drive_to_awaiting_approval(
+            &store,
+            &repo,
+            &rev,
+            "ev-terminal-authority-race-1",
+            "draft_pr",
+        );
+        let task_id = task["task_id"].as_str().unwrap();
+        let approval = store
+            .approve_product_task(
+                task_id,
+                "independent-operator",
+                task["version"].as_u64().unwrap(),
+            )
+            .unwrap();
+        let pending = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                task["version"].as_u64().unwrap(),
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        let pending_version = pending["task"]["version"].as_u64().unwrap();
+        assert_eq!(pending["task"]["status"], "output_pending");
+        let artifact = store
+            .get_supervised_patch_artifact(approval["artifact_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let artifact_id = artifact["artifact_id"].as_str().unwrap();
+        let request = serde_json::json!({
+            "schema_version": "product_draft_pr_output_request.v1",
+            "product_task_id": task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval["approval_id"],
+            "output_intent": "draft_pr",
+            "workspace_id": artifact["workspace_id"],
+            "run_id": artifact["run_id"],
+            "target_id": artifact["target_id"],
+            "patch_hash": artifact["patch_hash"],
+            "source_revision": artifact["source_revision"],
+            "target_repository": "disposable/acceptance",
+            "repository_host": "github.com",
+            "base_branch": "main",
+            "head_branch": format!("acp/product-{task_id}"),
+            "remote": "origin",
+            "commit_message": "bounded terminal authority test",
+            "pr_title": "Draft: terminal authority test",
+            "pr_body": "Do not merge automatically.",
+        });
+        let request_sha256 = sha256_json(&request);
+        let branch_claim = store
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha256,
+                pending_version,
+                "output-operator",
+            )
+            .unwrap();
+        let operation_id = branch_claim["operation_id"].as_str().unwrap();
+        let commit_sha = "b".repeat(40);
+        store
+            .record_product_output_branch_pushed(
+                artifact_id,
+                operation_id,
+                branch_claim["current_version"].as_u64().unwrap(),
+                &commit_sha,
+                "output-operator",
+            )
+            .unwrap();
+        let pr_claim = store
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha256,
+                pending_version,
+                "output-operator",
+            )
+            .unwrap();
+        let pull_request = serde_json::json!({
+            "number": 29,
+            "url": "https://github.com/disposable/acceptance/pull/29",
+            "state": "open",
+            "draft": true,
+            "reused": false,
+            "repository": "disposable/acceptance",
+            "base_branch": "main",
+            "head_branch": format!("acp/product-{task_id}"),
+            "head_sha": commit_sha,
+        });
+        store
+            .complete_product_output_draft_pr(
+                artifact_id,
+                operation_id,
+                pr_claim["current_version"].as_u64().unwrap(),
+                &pull_request,
+                "output-operator",
+            )
+            .unwrap();
+
+        let workspace_id = artifact["workspace_id"].as_str().unwrap();
+        let workspace = store
+            .get_supervised_patch_workspace(workspace_id)
+            .unwrap()
+            .unwrap();
+        let original_verification = workspace["verification"].clone();
+        let mut replaced_verification = original_verification.clone();
+        replaced_verification["authority_race"] = serde_json::json!(true);
+        store
+            .record_workspace_verification(
+                workspace_id,
+                &replaced_verification,
+                "concurrent-verifier",
+            )
+            .unwrap();
+        let stale = store
+            .complete_product_task_draft_pr_output(
+                task_id,
+                artifact_id,
+                operation_id,
+                pr_claim["current_version"].as_u64().unwrap(),
+                pending_version,
+                &pull_request,
+                "output-operator",
+            )
+            .unwrap_err();
+        assert!(stale.contains("verification authority changed"), "{stale}");
+        assert_eq!(
+            store.get_product_task(task_id).unwrap().unwrap()["status"],
+            "output_pending"
+        );
+
+        store
+            .record_workspace_verification(
+                workspace_id,
+                &original_verification,
+                "concurrent-verifier-rollback",
+            )
+            .unwrap();
+        let completed = store
+            .complete_product_task_draft_pr_output(
+                task_id,
+                artifact_id,
+                operation_id,
+                pr_claim["current_version"].as_u64().unwrap(),
+                pending_version,
+                &pull_request,
+                "output-operator",
+            )
+            .unwrap();
+        assert_eq!(completed["task"]["status"], "completed");
+        assert_eq!(completed["operation"]["pr_create"]["number"], 29);
+        std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
     });
 }

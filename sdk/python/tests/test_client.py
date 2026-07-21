@@ -1259,5 +1259,34 @@ class ClientToolPolicyTest(unittest.TestCase):
         })
 
 
+class ClientProductGoldenPathAuthorityTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_approval_and_output_use_separate_endpoints(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1"})
+        client = AgentControlPlaneClient("http://localhost:8080")
+
+        client.approve_product_task("task/one", 7)
+        client.output_product_task("task/one", 7, "approval/one", True)
+
+        requests = [call.args[0] for call in mock_urlopen.call_args_list]
+        self.assertEqual(
+            requests[0].full_url,
+            "http://localhost:8080/api/v1/product/tasks/task%2Fone/approve",
+        )
+        self.assertEqual(json.loads(requests[0].data), {"expected_task_version": 7})
+        self.assertEqual(
+            requests[1].full_url,
+            "http://localhost:8080/api/v1/product/tasks/task%2Fone/output",
+        )
+        self.assertEqual(
+            json.loads(requests[1].data),
+            {
+                "expected_task_version": 7,
+                "approval_id": "approval/one",
+                "confirm_output": True,
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

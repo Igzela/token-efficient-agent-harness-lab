@@ -142,6 +142,13 @@ pub(super) fn validate_github_pr_request(request: &GitHubPullRequestRequest) -> 
             return Err(format!("{field} exceeds safety limits"));
         }
     }
+    if request
+        .expected_head_sha
+        .as_deref()
+        .is_some_and(|sha| sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err("expected_head_sha is invalid".to_string());
+    }
     Ok(())
 }
 

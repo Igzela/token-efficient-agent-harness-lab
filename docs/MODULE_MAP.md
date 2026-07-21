@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-07-21.
+Last updated: 2026-07-22.
 
 This map records current code ownership and actual connection state. It is not a phase history. Forward routing is governed by `docs/NEXT_DECISION.md`; current facts are in `docs/CURRENT_STATUS.md`.
 
@@ -21,13 +21,13 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Dynamic workflow | `workflow/dynamic_controller.rs`, scheduler runtime | explicit/scheduler mode; not automatic product composition |
 | Supervised workspace | supervised-patch handlers/store and `target_repo_output` worktree owner | real copy/git-worktree lifecycle; created separately from ordinary plan/run |
 | Verification/repair | supervised-patch verification, canonical operation/attempt receipts, CLI repair executor | real and bounded; API-owned run path remains separate from ordinary workflow transaction |
-| Artifact/approval | supervised-patch capture/store, redaction/secret scan/integrity, workflow/operator approval owners | real, hash/current-state bound |
-| Target output | `target_repo_output.rs`, authority/store receipts, GitHub PR adapter | patch or `acp/*` branch/Draft PR only; default-off; no target `main` or merge authority |
+| Artifact/approval | supervised-patch capture/store, redaction/secret scan/integrity, workflow approval owner | product approval is a separate `team:admin` step bound to exact task/run/node/workspace/source/artifact/verification/output intent and current version |
+| Target output | `target_repo_output.rs`, supervised artifact receipt/operation owner, GitHub Draft PR adapter | `dispatch:execute` plus confirmation; artifact/export receipt or phased `acp/*` push then Draft PR; default-off; no target `main` or merge authority |
 | Persistence | `engine/src/storage/local_product_store/` | sole application-owned SQLite/PostgreSQL store, migrations, audit, evidence, backup/integrity |
 | Harness Evolution Level-1 | `harness_evolution.rs`, `harness_evolution_eval.rs`, `harness_evolution_pr_ready.rs`, v27-v29 store owners | accepted fixture laboratory through PR #265; default-off; active Harness immutable |
-| Dashboard | `dashboard/` | Mission Control manually sequences fragmented APIs; PR #225 is presentation-only |
-| Product Golden Path (G1) | `product_golden_path.rs`, `storage/local_product_store/product_tasks.rs`, `http_server/handlers/product_tasks.rs`, schema v30 `product_tasks` | default-off canonical root task identity + intake + worktree-first binding; no execution admission until later slices |
-| SDKs | `sdk/typescript/`, `sdk/python/` | typed clients for existing endpoints; G1 API present, full SDK surface deferred to G4 |
+| Dashboard | `dashboard/` | Mission Control exposes separate finalize, approve, and confirmed output controls; PR #225 theme files remain independent |
+| Product Golden Path | `product_golden_path.rs`, `storage/local_product_store/product_tasks.rs`, workflow/supervised-patch owners, product handlers, schema v30 `product_tasks` | default-off root task through scheduler/verification/artifact; Residual Seal 2 is repairing terminal evidence and final acceptance |
+| SDKs | `sdk/typescript/`, `sdk/python/` | typed intake/compile/finalize plus separate approve/output clients; legacy combined method remains compatibility-only |
 | Contracts | `wire_contract/v1/`, `codegen/` | cross-language schemas; checked by `scripts/check_wire_codegen_drift.sh` |
 | Repository agent | `scripts/agent-control/`, `.github/workflows/agent-*.yml` | implemented, production-disabled, parked on Issue #254 |
 | CI/release/recovery | `.github/`, `scripts/`, `tools/`, release/fault assets | verification and bounded operator support; no implicit release/deploy authority |
@@ -35,29 +35,20 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 ## Actual Product Data Flow
 
 ```text
-Current ordinary path
-  prompt
-    -> POST /dispatch
-       -> analysis -> routing/budget -> noop/provider executor -> evaluation -> ledger
-       -> persisted dispatch/routing + replay-production attempt
-    OR
-    -> POST /plans
-       -> read-only advisory graph
-       -> POST /workflow-runs
-       -> manual tick or explicitly enabled scheduler
-       -> generic nodes often lack prompt/worktree/executable contract
-
-Separate repository-output path
-  run_id + target repo + source revision
-    -> create supervised git worktree
-    -> separately execute/repair in that exact workspace
+Product Golden Path (default-off)
+  canonical task + target repo + source revision
+    -> create supervised git worktree and executable graph
+    -> existing scheduler leases and advances the run
     -> verify
     -> capture artifact
-    -> approval binding
-    -> patch or acp/* branch / optional Draft PR
+    -> awaiting_approval
+    -> team:admin exact approval
+    -> dispatch:execute + explicit output confirmation
+    -> durable artifact/export receipt
+       OR phased acp/* push -> open Draft PR receipt
 
-Missing connection
-  no canonical task identity/intake/orchestrator binds the two paths before execution
+Remaining seal
+  canonical persisted terminal evidence + process/late-write authority + recovery/E2E
 ```
 
 ## Canonical Identity Map
@@ -71,12 +62,12 @@ Missing connection
 | supervised workspace | `workspace_id`, `run_id`, optional `plan_id`, target/source | separate post-run creation |
 | verification | operation/attempt/run identities | supervised workspace owner |
 | artifact | `artifact_id`, workspace/patch/source | captured from supervised workspace |
-| approval | `approval_id`, run/node and artifact bindings | separate workflow/operator owner |
-| target output | durable output receipt | artifact/run/request binding |
-| replay/scorecard | owner-specific artifact/run/dispatch IDs | no single canonical product task root |
+| approval | `approval_id`, task/run/node/workspace/source/artifact/verification/output bindings | separate workflow approval owner; no execution authority |
+| target output | receipt or progressive `operation_id` | exact task/artifact/approval/request; branch and Draft PR phases distinct |
+| replay/scorecard | owner-specific artifact/run/dispatch IDs | canonical persisted terminal binding remains Residual Seal 2 work |
 | Harness candidate | proposal/candidate/lineage/evaluation/PR_READY IDs | Level-1 laboratory identity, not user task identity |
 
-`PE7-PRODUCT-GOLDEN-PATH-1` must add or compatibly extend one root `task_id` and link these existing identities. It must not replace them.
+`PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` must finish exact terminal linkage without replacing these owners.
 
 ## Top-Level Directory Classification
 

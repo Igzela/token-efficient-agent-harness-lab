@@ -508,18 +508,10 @@ pub fn validate_intake(
     if !confirm_execution {
         return Err("confirm_execution=true is required for product task intake".to_string());
     }
-    let confirm_output = match output_intent {
-        ProductOutputIntent::ArtifactOnly => request.confirm_output.unwrap_or(false),
-        ProductOutputIntent::ExportPatch | ProductOutputIntent::DraftPr => {
-            if request.confirm_output != Some(true) {
-                return Err(
-                    "confirm_output=true is required for export_patch and draft_pr intents"
-                        .to_string(),
-                );
-            }
-            true
-        }
-    };
+    // Kept in the intake wire contract for compatibility only. Intake-time
+    // confirmation never grants output authority; every output intent requires
+    // a fresh explicit confirmation after an independent persisted approval.
+    let confirm_output = request.confirm_output.unwrap_or(false);
 
     let tenant_id = request
         .tenant_id

@@ -284,6 +284,14 @@ fn axum_routes() -> Router<AxumApiState> {
             post(product_tasks::api_approve_and_output_product_task).options(cors_preflight),
         )
         .route(
+            "/api/v1/product/tasks/:task_id/approve",
+            post(product_tasks::api_approve_product_task).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/product/tasks/:task_id/output",
+            post(product_tasks::api_output_product_task).options(cors_preflight),
+        )
+        .route(
             "/api/v1/supervised-patch/workspaces",
             get(supervised_patch::api_supervised_patch_workspaces)
                 .post(supervised_patch::api_create_supervised_patch_workspace)
