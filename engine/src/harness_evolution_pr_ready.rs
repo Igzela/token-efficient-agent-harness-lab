@@ -462,8 +462,6 @@ mod tests {
         build_sealed_vault, evaluate_candidate_fixture, sample_budget, sample_task_family,
     };
 
-    static LAB_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     struct EnvGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
         prev_e: Option<String>,
@@ -471,7 +469,9 @@ mod tests {
     }
     impl EnvGuard {
         fn enable() -> Self {
-            let lock = LAB_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = crate::harness_evolution::EVOLUTION_LAB_TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let prev_e = std::env::var(ENABLE_ENV).ok();
             let prev_k = std::env::var(KILL_SWITCH_ENV).ok();
             std::env::set_var(ENABLE_ENV, "1");
