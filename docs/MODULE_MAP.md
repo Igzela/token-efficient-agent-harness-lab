@@ -20,13 +20,13 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Adaptive efficiency | adaptive completion/executor, contextual policy, experiment/promotion, replay, scorecard, budget producers | connected behind gates; ordinary plans do not automatically select or compile it |
 | Dynamic workflow | `workflow/dynamic_controller.rs`, scheduler runtime | explicit/scheduler mode; not automatic product composition |
 | Supervised workspace | supervised-patch handlers/store and `target_repo_output` worktree owner | real copy/git-worktree lifecycle; created separately from ordinary plan/run |
-| Verification/repair | supervised-patch verification, canonical operation/attempt receipts, CLI repair executor | real and bounded; API-owned run path remains separate from ordinary workflow transaction |
+| Verification/repair | supervised-patch verification, API-owned `product_verify` managed runs, tool-policy receipts, CLI repair executor | product commands are fixed read-only binaries with relative workspace arguments; output/error text is hashed before workflow persistence; each one-use run binds the pre-patch identity, task/run/node/workspace/source/budget and live scheduler authority; API and worker-observed environment pause/kill share one storage-free commit gate; restart/stale results are rejected and workspace late writes are quarantined |
 | Artifact/approval | supervised-patch capture/store, redaction/secret scan/integrity, workflow approval owner | product approval is a separate `team:admin` step bound to exact task/run/node/workspace/source/artifact/verification/output intent and current version |
 | Target output | `target_repo_output.rs`, supervised artifact receipt/operation owner, GitHub Draft PR adapter | `dispatch:execute` plus confirmation; artifact/export receipt or phased `acp/*` push then Draft PR; default-off; no target `main` or merge authority |
 | Persistence | `engine/src/storage/local_product_store/` | sole application-owned SQLite/PostgreSQL store, migrations, audit, evidence, backup/integrity |
 | Harness Evolution Level-1 | `harness_evolution.rs`, `harness_evolution_eval.rs`, `harness_evolution_pr_ready.rs`, v27-v29 store owners | accepted fixture laboratory through PR #265; default-off; active Harness immutable |
 | Dashboard | `dashboard/` | Mission Control exposes separate finalize, approve, and confirmed output controls; PR #225 theme files remain independent |
-| Product Golden Path | `product_golden_path.rs`, `storage/local_product_store/product_tasks.rs`, workflow/supervised-patch owners, product handlers, schema v30 `product_tasks`, schema v31 `product_task_terminal_evidence` | default-off root task through scheduler/verification/artifact/output and canonical terminal evidence; Residual Seal 2 still owns verification-time authority and final acceptance |
+| Product Golden Path | `product_golden_path.rs`, `storage/local_product_store/product_tasks.rs`, workflow/supervised-patch owners, product handlers, schema v30 `product_tasks`, schema v31 `product_task_terminal_evidence` | default-off root task through attached runnable scheduler, authority-revalidated verification, artifact/output and canonical terminal evidence; Residual Seal 2 still owns live Draft PR/managed E2E and final acceptance |
 | SDKs | `sdk/typescript/`, `sdk/python/` | typed intake/compile/finalize plus separate approve/output clients; legacy combined method remains compatibility-only |
 | Contracts | `wire_contract/v1/`, `codegen/` | cross-language schemas; checked by `scripts/check_wire_codegen_drift.sh` |
 | Repository agent | `scripts/agent-control/`, `.github/workflows/agent-*.yml` | implemented, production-disabled, parked on Issue #254 |
@@ -50,7 +50,7 @@ Product Golden Path (default-off)
   -> atomic canonical terminal evidence + pure reads
 
 Remaining seal
-  verification-time pause/kill/lease/version/late-write authority + recovery/E2E
+  exact-head merge + disposable managed-executor/Draft-PR E2E
 ```
 
 ## Canonical Identity Map
@@ -69,7 +69,7 @@ Remaining seal
 | replay/scorecard | owner-specific artifact/run/dispatch IDs | terminal evidence links only exact owner-backed records; absence is explicit unavailable |
 | Harness candidate | proposal/candidate/lineage/evaluation/PR_READY IDs | Level-1 laboratory identity, not user task identity |
 
-`PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` must finish verification-time authority and final acceptance without replacing these owners.
+`PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` must finish exact-head acceptance and disposable managed-executor/Draft-PR E2E without replacing these owners.
 
 ## Top-Level Directory Classification
 

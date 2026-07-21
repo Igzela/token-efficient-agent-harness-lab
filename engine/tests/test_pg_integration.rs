@@ -29,8 +29,8 @@ use engine::orchestration::schemas::{
 };
 #[cfg(feature = "pg-tests")]
 use engine::product_golden_path::{
-    validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest, ProductVerificationCommand,
-    PRODUCT_TASK_GATE,
+    validate_intake, ProductExecutorPolicy, ProductTaskBudget, ProductTaskIntakeRequest,
+    ProductVerificationCommand, ProductVerificationRuntimeAuthority, PRODUCT_TASK_GATE,
 };
 #[cfg(feature = "pg-tests")]
 use engine::provider::embedding::{
@@ -57,9 +57,13 @@ use sha2::{Digest, Sha256};
 #[cfg(feature = "pg-tests")]
 use std::process::Command;
 #[cfg(feature = "pg-tests")]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(feature = "pg-tests")]
 use std::sync::Arc;
+#[cfg(feature = "pg-tests")]
+use std::thread;
+#[cfg(feature = "pg-tests")]
+use std::time::Duration;
 
 #[cfg(feature = "pg-tests")]
 fn utc_now_string() -> String {
@@ -273,6 +277,631 @@ fn pg_product_repo(label: &str) -> (tempfile::TempDir, String) {
     )
 }
 
+#[cfg(feature = "pg-tests")]
+fn pg_ready_for_verification(
+    store: &LocalProductStore,
+    repo: &std::path::Path,
+    revision: &str,
+    tag: &str,
+    verification_command: &str,
+) -> (String, String) {
+    pg_ready_for_verification_with_budget(store, repo, revision, tag, verification_command, None)
+}
+
+#[cfg(feature = "pg-tests")]
+fn pg_ready_for_verification_with_budget(
+    store: &LocalProductStore,
+    repo: &std::path::Path,
+    revision: &str,
+    tag: &str,
+    verification_command: &str,
+    budget: Option<ProductTaskBudget>,
+) -> (String, String) {
+    let request = ProductTaskIntakeRequest {
+        objective: format!("postgres verification authority {tag}"),
+        target_id: format!("pg-verification-{tag}"),
+        target_repo_path: repo.to_string_lossy().into_owned(),
+        source_revision: revision.to_string(),
+        source_tree_hash: None,
+        allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: verification_command.to_string(),
+            timeout_ms: 700,
+        }],
+        output_intent: "artifact_only".to_string(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["command".to_string()],
+            prefer: Some("command".to_string()),
+        },
+        budget,
+        risk_class: "low".to_string(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: Some(true),
+        idempotency_key: format!("pg-verification-{tag}"),
+        expected_version: None,
+        tenant_id: Some("local".to_string()),
+        workspace_id: Some("default".to_string()),
+        workspace_mode: Some("git_worktree".to_string()),
+    };
+    let validated = validate_intake(&request, "local", "default").unwrap();
+    let task = store
+        .admit_product_task(&validated, "pg-verification")
+        .unwrap();
+    let task_id = task["task_id"].as_str().unwrap().to_string();
+    let compiled = store
+        .compile_and_schedule_product_task(&task_id, "pg-verification", &["command".to_string()])
+        .unwrap();
+    let run_id = compiled["task"]["run_id"].as_str().unwrap().to_string();
+    let executor = engine::node_executor::CommandNodeExecutor::default();
+    for _ in 0..8 {
+        let tick = store
+            .tick_with_executor(&run_id, "pg-verification", 1, &executor)
+            .unwrap();
+        if matches!(
+            tick.pointer("/run/status").and_then(Value::as_str),
+            Some("completed" | "failed")
+        ) {
+            break;
+        }
+    }
+    (task_id, run_id)
+}
+
+#[cfg(feature = "pg-tests")]
+fn pg_running_scheduler_authority() -> ProductVerificationRuntimeAuthority {
+    ProductVerificationRuntimeAuthority {
+        scheduler_attached: true,
+        scheduler_running: true,
+        scheduler_paused: false,
+        scheduler_killed: false,
+        global_kill_active: false,
+        manual_operational_tick: false,
+    }
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_scheduler_kill_during_verification_rejects_late_result() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg scheduler kill verification");
+    let tag = uuid_tag();
+    let store = Arc::new(store);
+    let (task_id, _) =
+        pg_ready_for_verification(&store, repo.path(), &revision, &tag, "tail -f README.md");
+    let scheduler_killed = Arc::new(AtomicBool::new(false));
+    let finalizer_store = Arc::clone(&store);
+    let finalizer_task_id = task_id.clone();
+    let finalizer_scheduler_killed = Arc::clone(&scheduler_killed);
+    let handle = thread::spawn(move || {
+        finalizer_store.finalize_product_task_after_execution_with_authority(
+            &finalizer_task_id,
+            "pg-verifier",
+            &|| {
+                let mut authority = pg_running_scheduler_authority();
+                authority.scheduler_killed = finalizer_scheduler_killed.load(Ordering::SeqCst);
+                Ok(authority)
+            },
+        )
+    });
+    thread::sleep(Duration::from_millis(100));
+    scheduler_killed.store(true, Ordering::SeqCst);
+    let finalized = handle.join().unwrap().unwrap();
+
+    assert_eq!(finalized["phase"], "verification_authority_lost");
+    assert_eq!(finalized["task"]["status"], "killed");
+    assert!(finalized["artifact_id"].is_null());
+    assert_eq!(
+        finalized["verification"]["verification_attempts"][0]["result_status"],
+        "stale_rejected"
+    );
+    assert_eq!(
+        finalized["verification"]["verification_attempts"][0]["late_result_rejected"],
+        true
+    );
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_verification_filesystem_write_is_quarantined_and_never_captured() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg verification late write");
+    let tag = uuid_tag();
+    let store = Arc::new(store);
+    let (task_id, _) =
+        pg_ready_for_verification(&store, repo.path(), &revision, &tag, "tail -f README.md");
+    let task = store.get_product_task(&task_id).unwrap().unwrap();
+    let workspace_id = task["workspace_record_id"].as_str().unwrap().to_string();
+    let workspace_path = task["workspace_binding"]["workspace_path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let finalizer_store = Arc::clone(&store);
+    let finalizer_task = task_id.clone();
+    let handle = thread::spawn(move || {
+        finalizer_store.finalize_product_task_after_execution_with_authority(
+            &finalizer_task,
+            "pg-verifier",
+            &|| Ok(pg_running_scheduler_authority()),
+        )
+    });
+    thread::sleep(Duration::from_millis(100));
+    std::fs::write(
+        std::path::Path::new(&workspace_path).join("README.md"),
+        "late write\n",
+    )
+    .unwrap();
+    let finalized = handle.join().unwrap().unwrap();
+
+    assert_eq!(finalized["phase"], "verification_authority_lost");
+    assert_eq!(finalized["task"]["status"], "blocked");
+    assert!(finalized["artifact_id"].is_null());
+    assert_eq!(
+        store
+            .get_supervised_patch_workspace(&workspace_id)
+            .unwrap()
+            .unwrap()["status"],
+        "quarantined"
+    );
+    assert!(finalized["verification"]["authority_loss_reason"]
+        .as_str()
+        .unwrap()
+        .contains("late_filesystem_write"));
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_concurrent_product_finalizers_consume_one_verification_effect() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg concurrent product verification");
+    let tag = uuid_tag();
+    let store = Arc::new(store);
+    let (task_id, _) =
+        pg_ready_for_verification(&store, repo.path(), &revision, &tag, "tail -f README.md");
+    let task = store.get_product_task(&task_id).unwrap().unwrap();
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let store = Arc::clone(&store);
+        let task_id = task_id.clone();
+        handles.push(std::thread::spawn(move || {
+            store.finalize_product_task_after_execution_with_authority(
+                &task_id,
+                "pg-verifier",
+                &|| Ok(pg_running_scheduler_authority()),
+            )
+        }));
+    }
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert!(
+        results.iter().any(Result::is_ok),
+        "at least one concurrent finalizer must return its persisted result: {results:?}"
+    );
+    let managed_run_id = results
+        .iter()
+        .filter_map(|result| result.as_ref().ok())
+        .find_map(|result| {
+            result
+                .pointer("/verification/verification_attempts/0/verification_run_id")
+                .and_then(Value::as_str)
+        })
+        .expect("one finalizer must persist the managed verification run");
+    let allowed_effects = store
+        .audit_events(10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event["action"] == "tool_execution.pre_policy_passed"
+                && event["resource"] == managed_run_id
+        })
+        .count();
+    assert_eq!(allowed_effects, 1);
+    assert!(store
+        .supervised_patch_artifacts(100)
+        .unwrap()
+        .iter()
+        .all(|artifact| { artifact["workspace_id"] != task["workspace_record_id"] }));
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_product_artifact_audit_failure_rolls_back_artifact_workspace_and_task() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg artifact audit rollback");
+    let tag = uuid_tag();
+    let (task_id, _) = pg_ready_for_verification(&store, repo.path(), &revision, &tag, "true");
+    let task = store.get_product_task(&task_id).unwrap().unwrap();
+    let workspace_id = task["workspace_record_id"].as_str().unwrap().to_string();
+
+    let suffix = uuid_tag().replace('-', "_");
+    let function_name = format!("reject_product_artifact_audit_{suffix}");
+    let trigger_name = format!("reject_product_artifact_audit_trigger_{suffix}");
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+    client
+        .batch_execute(&format!(
+            "CREATE FUNCTION {function_name}() RETURNS trigger
+             LANGUAGE plpgsql AS $$
+             BEGIN
+               IF NEW.action = 'supervised_patch.artifact_record' THEN
+                 RAISE EXCEPTION 'injected product artifact audit failure';
+               END IF;
+               RETURN NEW;
+             END;
+             $$;
+             CREATE TRIGGER {trigger_name}
+             BEFORE INSERT ON audit_log
+             FOR EACH ROW EXECUTE FUNCTION {function_name}();"
+        ))
+        .unwrap();
+
+    let error = store
+        .finalize_product_task_after_execution_with_authority(&task_id, "pg-verifier", &|| {
+            Ok(pg_running_scheduler_authority())
+        })
+        .expect_err("PG artifact audit failure must abort the transaction");
+    assert!(
+        error.contains("db error"),
+        "unexpected PG artifact rollback error: {error}"
+    );
+    assert_eq!(
+        store.get_product_task(&task_id).unwrap().unwrap()["status"],
+        "verifying"
+    );
+    assert_ne!(
+        store
+            .get_supervised_patch_workspace(&workspace_id)
+            .unwrap()
+            .unwrap()["status"],
+        "patch_prepared"
+    );
+    assert!(store
+        .supervised_patch_artifacts(10_000)
+        .unwrap()
+        .iter()
+        .all(|artifact| artifact["workspace_id"] != workspace_id));
+
+    client
+        .batch_execute(&format!(
+            "DROP TRIGGER {trigger_name} ON audit_log;
+             DROP FUNCTION {function_name}();"
+        ))
+        .unwrap();
+    let retry = store
+        .finalize_product_task_after_execution_with_authority(&task_id, "pg-verifier", &|| {
+            Ok(pg_running_scheduler_authority())
+        })
+        .unwrap();
+    assert_eq!(retry["phase"], "awaiting_approval");
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_restart_after_persisted_effect_rejects_changed_pre_patch_binding() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg restart after product verify effect");
+    let tag = uuid_tag();
+    let store = Arc::new(store);
+    let (task_id, _) = pg_ready_for_verification(&store, repo.path(), &revision, &tag, "true");
+    let task = store.get_product_task(&task_id).unwrap().unwrap();
+    let workspace_path = task["workspace_binding"]["workspace_path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace_id = task["workspace_record_id"].as_str().unwrap().to_string();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let finalizer_store = Arc::clone(&store);
+    let finalizer_task = task_id.clone();
+    let finalizer_calls = Arc::clone(&calls);
+    let crash_workspace = workspace_path.clone();
+    let handle = thread::spawn(move || {
+        finalizer_store.finalize_product_task_after_execution_with_authority(
+            &finalizer_task,
+            "pg-verifier-before-crash",
+            &|| {
+                if finalizer_calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    std::fs::write(
+                        std::path::Path::new(&crash_workspace).join("README.md"),
+                        "changed in PG crash window\n",
+                    )
+                    .unwrap();
+                    panic!("simulated PG finalizer process loss after durable effect");
+                }
+                Ok(pg_running_scheduler_authority())
+            },
+        )
+    });
+    assert!(handle.join().is_err());
+
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let restarted = LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
+    let finalized = restarted
+        .finalize_product_task_after_execution_with_authority(
+            &task_id,
+            "pg-verifier-after-restart",
+            &|| Ok(pg_running_scheduler_authority()),
+        )
+        .unwrap();
+    assert_eq!(finalized["phase"], "verification_authority_lost");
+    assert_eq!(finalized["task"]["status"], "blocked");
+    assert!(finalized["artifact_id"].is_null());
+    assert!(finalized["verification"]["authority_loss_reason"]
+        .as_str()
+        .unwrap()
+        .contains("pre_patch_binding_superseded"));
+    assert_eq!(
+        restarted
+            .get_supervised_patch_workspace(&workspace_id)
+            .unwrap()
+            .unwrap()["status"],
+        "quarantined"
+    );
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_pause_during_verification_rejects_late_result() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg pause during verification");
+    let tag = uuid_tag();
+    let store = Arc::new(store);
+    let (task_id, run_id) =
+        pg_ready_for_verification(&store, repo.path(), &revision, &tag, "tail -f README.md");
+    let finalizer_store = Arc::clone(&store);
+    let finalizer_task = task_id.clone();
+    let handle = thread::spawn(move || {
+        finalizer_store.finalize_product_task_after_execution_with_authority(
+            &finalizer_task,
+            "pg-verifier",
+            &|| Ok(pg_running_scheduler_authority()),
+        )
+    });
+    thread::sleep(Duration::from_millis(100));
+    store
+        .update_run_pause_reason(&run_id, Some("pg_operator_hold"))
+        .unwrap();
+    let finalized = handle.join().unwrap().unwrap();
+    assert_eq!(finalized["phase"], "verification_authority_lost");
+    assert_eq!(finalized["task"]["status"], "paused");
+    assert!(finalized["artifact_id"].is_null());
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_node_attempt_and_lease_timestamp_supersession_reject_late_results() {
+    for mode in ["attempt", "leased_at"] {
+        let Some(store) = test_store() else { return };
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+        let workspace_root = tempfile::tempdir().unwrap();
+        std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+        let (repo, revision) = pg_product_repo(&format!("pg {mode} supersession"));
+        let tag = uuid_tag();
+        let store = Arc::new(store);
+        let (task_id, run_id) =
+            pg_ready_for_verification(&store, repo.path(), &revision, &tag, "tail -f README.md");
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task = task_id.clone();
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task,
+                "pg-verifier",
+                &|| Ok(pg_running_scheduler_authority()),
+            )
+        });
+        thread::sleep(Duration::from_millis(100));
+        let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+        let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+        if mode == "attempt" {
+            client
+                .execute(
+                    "UPDATE workflow_run_nodes SET attempt_count = attempt_count + 1 WHERE run_id = $1",
+                    &[&run_id],
+                )
+                .unwrap();
+        } else {
+            client
+                .execute(
+                    "UPDATE workflow_run_nodes SET leased_at = '2099-01-01T00:00:00Z' WHERE run_id = $1",
+                    &[&run_id],
+                )
+                .unwrap();
+        }
+        let finalized = handle.join().unwrap().unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "blocked");
+        assert!(finalized["artifact_id"].is_null());
+        assert!(finalized["verification"]["authority_loss_reason"]
+            .as_str()
+            .unwrap()
+            .contains("node_attempt_or_lease_superseded"));
+        std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+        std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_task_kill_and_version_supersession_reject_late_results() {
+    for mode in ["kill", "version"] {
+        let Some(store) = test_store() else { return };
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+        let workspace_root = tempfile::tempdir().unwrap();
+        std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+        let (repo, revision) = pg_product_repo(&format!("pg {mode} during verification"));
+        let tag = uuid_tag();
+        let store = Arc::new(store);
+        let (task_id, _) =
+            pg_ready_for_verification(&store, repo.path(), &revision, &tag, "tail -f README.md");
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task = task_id.clone();
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task,
+                "pg-verifier",
+                &|| Ok(pg_running_scheduler_authority()),
+            )
+        });
+        thread::sleep(Duration::from_millis(100));
+        let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+        let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+        if mode == "kill" {
+            client
+                .execute(
+                    "UPDATE product_tasks SET status='killed', version=version+1 WHERE task_id=$1",
+                    &[&task_id],
+                )
+                .unwrap();
+        } else {
+            client
+                .execute(
+                    "UPDATE product_tasks SET version=version+1 WHERE task_id=$1",
+                    &[&task_id],
+                )
+                .unwrap();
+        }
+        let finalized = handle.join().unwrap().unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(
+            finalized["task"]["status"],
+            if mode == "kill" { "killed" } else { "blocked" }
+        );
+        assert!(finalized["artifact_id"].is_null());
+        std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+        std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_workspace_replacement_during_verification_is_quarantined() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg workspace replacement");
+    let tag = uuid_tag();
+    let store = Arc::new(store);
+    let (task_id, _) =
+        pg_ready_for_verification(&store, repo.path(), &revision, &tag, "tail -f README.md");
+    let task = store.get_product_task(&task_id).unwrap().unwrap();
+    let workspace_id = task["workspace_record_id"].as_str().unwrap().to_string();
+    let workspace_path = task["workspace_binding"]["workspace_path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let finalizer_store = Arc::clone(&store);
+    let finalizer_task = task_id.clone();
+    let handle = thread::spawn(move || {
+        finalizer_store.finalize_product_task_after_execution_with_authority(
+            &finalizer_task,
+            "pg-verifier",
+            &|| Ok(pg_running_scheduler_authority()),
+        )
+    });
+    thread::sleep(Duration::from_millis(100));
+    std::fs::rename(&workspace_path, format!("{workspace_path}.replaced")).unwrap();
+    std::fs::create_dir(&workspace_path).unwrap();
+    let finalized = handle.join().unwrap().unwrap();
+    assert_eq!(finalized["phase"], "verification_authority_lost");
+    assert_eq!(finalized["task"]["status"], "blocked");
+    assert!(finalized["artifact_id"].is_null());
+    assert_eq!(
+        store
+            .get_supervised_patch_workspace(&workspace_id)
+            .unwrap()
+            .unwrap()["status"],
+        "quarantined"
+    );
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_remaining_elapsed_budget_caps_running_verification() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg verification elapsed budget");
+    let tag = uuid_tag();
+    let (task_id, _) = pg_ready_for_verification_with_budget(
+        &store,
+        repo.path(),
+        &revision,
+        &tag,
+        "tail -f README.md",
+        Some(ProductTaskBudget {
+            total_elapsed_ms: Some(2_500),
+            ..ProductTaskBudget::default()
+        }),
+    );
+    let started = std::time::Instant::now();
+    let finalized = store
+        .finalize_product_task_after_execution_with_authority(&task_id, "pg-verifier", &|| {
+            Ok(pg_running_scheduler_authority())
+        })
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let attempt = &finalized["verification"]["verification_attempts"][0];
+    assert!(attempt["effective_timeout_ms"].as_u64().unwrap() <= 2_500);
+    assert!(finalized["artifact_id"].is_null());
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
+}
+
 #[test]
 #[cfg(feature = "pg-tests")]
 fn pg_terminal_evidence_audit_failure_rolls_back_completion() {
@@ -349,7 +978,7 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_blocks_v31_rollback() {
     std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
     let (repo, revision) = pg_product_repo("pg concurrent terminal evidence");
     let tag = uuid_tag();
-    let (task, approval, _) =
+    let (task, approval, artifact) =
         pg_product_task_to_approval(&store, repo.path(), &revision, &tag, "artifact_only");
     let task_id = task["task_id"].as_str().unwrap().to_string();
     let task_version = task["version"].as_u64().unwrap();
@@ -391,6 +1020,17 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_blocks_v31_rollback() {
         })
         .count();
     assert_eq!(terminal_audits, 1);
+    let artifact_id = artifact["artifact_id"].as_str().unwrap();
+    let output_audits = store
+        .audit_events(10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event["action"] == "product_task.nonnetwork_output_completed"
+                && event["resource"] == artifact_id
+        })
+        .count();
+    assert_eq!(output_audits, 1);
 
     let rollback_error = store
         .rollback_v31_to_v30("pg-rollback-operator", true)

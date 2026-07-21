@@ -1461,7 +1461,7 @@ fn managed_resume_binding(
 
 async fn run_managed_tool_node(
     store: std::sync::Arc<LocalProductStore>,
-    executor: ToolPolicyNodeExecutor,
+    executor: ToolPolicyNodeExecutor<'static>,
     actor: &str,
     workspace_id: String,
     operation: &str,

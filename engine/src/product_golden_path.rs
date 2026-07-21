@@ -33,6 +33,9 @@ pub const MAX_PATH_BYTES: usize = 1_024;
 pub const MAX_ALLOWED_PATHS: usize = 64;
 pub const MAX_VERIFICATION_COMMANDS: usize = 8;
 pub const MAX_VERIFICATION_COMMAND_BYTES: usize = 512;
+pub const PRODUCT_VERIFICATION_READ_ONLY_COMMANDS: &[&str] = &[
+    "echo", "cat", "ls", "head", "tail", "grep", "wc", "true", "false", "test",
+];
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 pub const MAX_TARGET_ID_BYTES: usize = 128;
 pub const MAX_EXECUTOR_SET: usize = 16;
@@ -76,6 +79,63 @@ pub enum ProductTaskStatus {
     Blocked,
     /// External effect (push/PR) outcome could not be determined; must reconcile.
     OutcomeUnknown,
+}
+
+/// Runtime-owned authority sampled immediately before and after every Product Golden Path
+/// verification command. API callers must populate this from the attached scheduler; the
+/// compatibility/manual store path is explicit so it cannot be mistaken for automatic
+/// scheduler availability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductVerificationRuntimeAuthority {
+    pub scheduler_attached: bool,
+    pub scheduler_running: bool,
+    pub scheduler_paused: bool,
+    pub scheduler_killed: bool,
+    pub global_kill_active: bool,
+    pub manual_operational_tick: bool,
+}
+
+impl ProductVerificationRuntimeAuthority {
+    pub fn manual_operational() -> Self {
+        Self {
+            scheduler_attached: false,
+            scheduler_running: false,
+            scheduler_paused: false,
+            scheduler_killed: false,
+            global_kill_active: product_scheduler_kill_active(),
+            manual_operational_tick: true,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.global_kill_active {
+            return Err("global_kill_active");
+        }
+        if self.scheduler_killed {
+            return Err("scheduler_killed");
+        }
+        if self.scheduler_paused {
+            return Err("scheduler_paused");
+        }
+        if !self.manual_operational_tick && !self.scheduler_attached {
+            return Err("scheduler_not_attached");
+        }
+        if !self.manual_operational_tick && !self.scheduler_running {
+            return Err("scheduler_not_running");
+        }
+        Ok(())
+    }
+}
+
+pub fn product_scheduler_kill_active() -> bool {
+    std::env::var("ACP_SUPERVISED_WORKERS_KILL_SWITCH")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 impl ProductTaskStatus {
@@ -460,6 +520,32 @@ pub fn validate_intake(
                 "verification command must not be an absolute or relative binary path".to_string(),
             );
         }
+        let argv = command.split_whitespace().collect::<Vec<_>>();
+        if !PRODUCT_VERIFICATION_READ_ONLY_COMMANDS.contains(&argv[0]) {
+            return Err(format!(
+                "verification command must use a read-only admitted binary: {}",
+                argv[0]
+            ));
+        }
+        if argv.iter().skip(1).any(|argument| {
+            Path::new(argument).is_absolute()
+                || Path::new(argument)
+                    .components()
+                    .any(|component| matches!(component, Component::ParentDir))
+                || Path::new(argument).components().any(|component| {
+                    matches!(
+                        component,
+                        Component::Normal(name)
+                            if matches!(name.to_str(), Some(".git" | "target" | "node_modules"))
+                    )
+                })
+                || (argument.starts_with('-') && argument.contains('/'))
+        }) {
+            return Err(
+                "verification command arguments must remain relative to the bound workspace"
+                    .to_string(),
+            );
+        }
         if command.contains("..")
             || command.contains(';')
             || command.contains('|')
@@ -788,7 +874,13 @@ pub fn workspace_content_hash(workspace_path: &Path) -> Result<String, String> {
     reject_workspace_symlinks(workspace_path)?;
     let manifest =
         crate::storage::local_product_store::supervised_patch_compute_manifest(workspace_path)?;
-    let payload = serde_json::to_string(&manifest).map_err(|e| e.to_string())?;
+    // `compute_manifest` also carries an observational `computed_at` timestamp.  It must not
+    // participate in the content identity or an unchanged workspace can appear to mutate when a
+    // verification command crosses a wall-clock second boundary.
+    let files = manifest
+        .get("files")
+        .ok_or_else(|| "workspace manifest missing files".to_string())?;
+    let payload = serde_json::to_string(files).map_err(|e| e.to_string())?;
     Ok(hex::encode(Sha256::digest(payload.as_bytes())))
 }
 
@@ -1110,6 +1202,51 @@ mod tests {
     }
 
     #[test]
+    fn rejects_option_attached_absolute_verification_paths() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        for command in [
+            "grep -f/etc/shadow README.md",
+            "grep --file=/etc/shadow README.md",
+            "wc --files0-from=/etc/passwd",
+        ] {
+            let mut req = sample_request();
+            req.verification_commands = vec![ProductVerificationCommand {
+                command: command.to_string(),
+                timeout_ms: 1000,
+            }];
+            assert!(
+                validate_intake(&req, "local", "default").is_err(),
+                "option-attached path must be rejected: {command}"
+            );
+        }
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn rejects_verification_paths_excluded_from_workspace_observation() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        for command in [
+            "cat .git/config",
+            "cat target/leak",
+            "cat ./target/leak",
+            "grep needle node_modules/package/file.js",
+        ] {
+            let mut req = sample_request();
+            req.verification_commands = vec![ProductVerificationCommand {
+                command: command.to_string(),
+                timeout_ms: 1000,
+            }];
+            assert!(
+                validate_intake(&req, "local", "default").is_err(),
+                "unobserved workspace path must be rejected: {command}"
+            );
+        }
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+
+    #[test]
     fn status_transition_matrix_blocks_execution_from_admitted() {
         assert!(!ProductTaskStatus::Admitted.admits_execution());
         assert!(!ProductTaskStatus::WorkspaceBound.admits_execution());
@@ -1122,5 +1259,15 @@ mod tests {
             ProductTaskStatus::Admitted,
             ProductTaskStatus::WorkspacePreparing
         ));
+    }
+
+    #[test]
+    fn workspace_content_identity_excludes_observation_timestamp() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("README.md"), "stable\n").unwrap();
+        let first = workspace_content_hash(workspace.path()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        let second = workspace_content_hash(workspace.path()).unwrap();
+        assert_eq!(first, second);
     }
 }

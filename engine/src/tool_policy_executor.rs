@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
@@ -27,6 +28,10 @@ pub(crate) fn managed_tool_binding_sha256(
     let inputs = match operation {
         "verify" => json!({
             "command": required_string("command")?,
+        }),
+        "product_verify" => json!({
+            "command": required_string("command")?,
+            "pre_patch_sha256": required_string("pre_patch_sha256")?,
         }),
         "repair" => json!({
             "prompt": required_string("prompt")?,
@@ -74,19 +79,35 @@ pub enum ToolPolicyKind {
     Cli { tool_name: String },
 }
 
-pub struct ToolPolicyNodeExecutor {
+enum ToolPolicyStore<'a> {
+    Shared(Arc<LocalProductStore>),
+    Borrowed(&'a LocalProductStore),
+}
+
+impl Deref for ToolPolicyStore<'_> {
+    type Target = LocalProductStore;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Shared(store) => store,
+            Self::Borrowed(store) => store,
+        }
+    }
+}
+
+pub struct ToolPolicyNodeExecutor<'a> {
     inner: Arc<dyn NodeExecutor>,
-    store: Arc<LocalProductStore>,
+    store: ToolPolicyStore<'a>,
     kind: ToolPolicyKind,
     #[cfg(test)]
     before_authorization_claim: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
-impl ToolPolicyNodeExecutor {
+impl ToolPolicyNodeExecutor<'static> {
     pub fn command(inner: Arc<dyn NodeExecutor>, store: Arc<LocalProductStore>) -> Self {
         Self {
             inner,
-            store,
+            store: ToolPolicyStore::Shared(store),
             kind: ToolPolicyKind::Command,
             #[cfg(test)]
             before_authorization_claim: None,
@@ -100,10 +121,25 @@ impl ToolPolicyNodeExecutor {
     ) -> Self {
         Self {
             inner,
-            store,
+            store: ToolPolicyStore::Shared(store),
             kind: ToolPolicyKind::Cli {
                 tool_name: tool_name.into(),
             },
+            #[cfg(test)]
+            before_authorization_claim: None,
+        }
+    }
+}
+
+impl<'a> ToolPolicyNodeExecutor<'a> {
+    pub(crate) fn command_borrowed(
+        inner: Arc<dyn NodeExecutor>,
+        store: &'a LocalProductStore,
+    ) -> Self {
+        Self {
+            inner,
+            store: ToolPolicyStore::Borrowed(store),
+            kind: ToolPolicyKind::Command,
             #[cfg(test)]
             before_authorization_claim: None,
         }
@@ -153,7 +189,10 @@ impl ToolPolicyNodeExecutor {
         }
     }
 
-    fn bound_cli_workspace(&self, input: &NodeExecutionInput) -> Result<Option<String>, String> {
+    fn bound_managed_workspace(
+        &self,
+        input: &NodeExecutionInput,
+    ) -> Result<Option<String>, String> {
         let managed = input.node_metadata.get("managed_supervised_patch");
         let workspace = if let Some(managed) = managed {
             let binding = managed.as_object().ok_or_else(|| {
@@ -176,14 +215,20 @@ impl ToolPolicyNodeExecutor {
             let operation = binding
                 .get("operation")
                 .and_then(Value::as_str)
-                .filter(|value| *value == "repair")
+                .filter(|value| match &self.kind {
+                    ToolPolicyKind::Command => matches!(*value, "verify" | "product_verify"),
+                    ToolPolicyKind::Cli { .. } => *value == "repair",
+                })
                 .ok_or_else(|| {
-                    "CLI execution requires a managed supervised-patch repair binding".to_string()
+                    "managed tool operation does not match its executor kind".to_string()
                 })?;
             let attempt = binding
                 .get("attempt")
                 .and_then(Value::as_u64)
-                .filter(|value| (1..=5).contains(value))
+                .filter(|value| {
+                    let max_attempt = if operation == "product_verify" { 8 } else { 5 };
+                    (1..=max_attempt).contains(value)
+                })
                 .ok_or_else(|| {
                     "managed supervised-patch workspace binding has an invalid attempt".to_string()
                 })?;
@@ -348,7 +393,7 @@ impl ToolPolicyNodeExecutor {
     }
 }
 
-impl NodeExecutor for ToolPolicyNodeExecutor {
+impl NodeExecutor for ToolPolicyNodeExecutor<'_> {
     fn executor_type_name(&self) -> &str {
         self.policy_executor_type_name()
     }
@@ -368,7 +413,7 @@ impl NodeExecutor for ToolPolicyNodeExecutor {
                 .get("workspace_path")
                 .and_then(Value::as_str)
                 .filter(|value| !value.trim().is_empty());
-            let bound_workspace = match self.bound_cli_workspace(input) {
+            let bound_workspace = match self.bound_managed_workspace(input) {
                 Ok(value) => value,
                 Err(error) => return self.fail("cli_workspace_binding_error", error),
             };
@@ -379,6 +424,31 @@ impl NodeExecutor for ToolPolicyNodeExecutor {
                 return self.fail(
                     "cli_workspace_not_bound",
                     "CLI execution requires the exact app-owned workspace bound to this run",
+                );
+            }
+        }
+        let api_owned_managed_command = input
+            .node_metadata
+            .pointer("/managed_supervised_patch/operation")
+            .and_then(Value::as_str)
+            .is_some_and(|operation| matches!(operation, "verify" | "product_verify"));
+        if matches!(self.kind, ToolPolicyKind::Command) && api_owned_managed_command {
+            let requested_workspace = input
+                .node_metadata
+                .get("workspace_path")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty());
+            let bound_workspace = match self.bound_managed_workspace(input) {
+                Ok(value) => value,
+                Err(error) => return self.fail("command_workspace_binding_error", error),
+            };
+            if !matches!(
+                (requested_workspace, bound_workspace.as_deref()),
+                (Some(requested), Some(bound)) if requested == bound
+            ) {
+                return self.fail(
+                    "command_workspace_not_bound",
+                    "managed command execution requires its exact app-owned workspace",
                 );
             }
         }

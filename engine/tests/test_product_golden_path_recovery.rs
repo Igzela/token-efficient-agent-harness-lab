@@ -1,13 +1,16 @@
 //! Recovery, concurrency, and fail-closed matrix for product golden path.
 
 use engine::product_golden_path::{
-    validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest, ProductTaskStatus,
-    ProductVerificationCommand, PRODUCT_TASK_GATE,
+    validate_intake, ProductExecutorPolicy, ProductTaskBudget, ProductTaskIntakeRequest,
+    ProductTaskStatus, ProductVerificationCommand, ProductVerificationRuntimeAuthority,
+    PRODUCT_TASK_GATE,
 };
 use engine::storage::local_product_store::LocalProductStore;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+use std::time::Duration;
 
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -114,6 +117,47 @@ fn complete_run(store: &LocalProductStore, run_id: &str) {
             break;
         }
     }
+}
+
+fn running_scheduler_authority() -> ProductVerificationRuntimeAuthority {
+    ProductVerificationRuntimeAuthority {
+        scheduler_attached: true,
+        scheduler_running: true,
+        scheduler_paused: false,
+        scheduler_killed: false,
+        global_kill_active: false,
+        manual_operational_tick: false,
+    }
+}
+
+fn ready_for_slow_verification(
+    store: &LocalProductStore,
+    repo: &std::path::Path,
+    rev: &str,
+    key: &str,
+    command: &str,
+) -> (String, String, String, String) {
+    let mut request = intake(repo, rev, key);
+    request.verification_commands = vec![ProductVerificationCommand {
+        command: command.to_string(),
+        timeout_ms: 700,
+    }];
+    let validated = validate_intake(&request, "local", "default").unwrap();
+    let task = store.admit_product_task(&validated, "tester").unwrap();
+    let task_id = task["task_id"].as_str().unwrap().to_string();
+    let compiled = compile(store, &task_id);
+    let run_id = compiled["task"]["run_id"].as_str().unwrap().to_string();
+    complete_run(store, &run_id);
+    let current = store.get_product_task(&task_id).unwrap().unwrap();
+    (
+        task_id,
+        run_id,
+        current["workspace_record_id"].as_str().unwrap().to_string(),
+        current["workspace_binding"]["workspace_path"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    )
 }
 
 #[test]
@@ -229,6 +273,92 @@ fn restart_after_awaiting_approval_reuses_finalize() {
 }
 
 #[test]
+fn restart_before_verification_reuses_persisted_execution_authority() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, _, _, _) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-restart-before-verification",
+            "test -f docs/product_golden_path_fixture.md",
+        );
+        let db_path = store.db_path().to_path_buf();
+        drop(store);
+
+        let restarted = LocalProductStore::new(db_path).unwrap();
+        let finalized = restarted
+            .finalize_product_task_after_execution_with_authority(&task_id, "verifier", &|| {
+                Ok(running_scheduler_authority())
+            })
+            .unwrap();
+        assert_eq!(finalized["phase"], "awaiting_approval");
+        assert_eq!(finalized["task"]["status"], "awaiting_approval");
+        assert!(finalized["artifact_id"].is_string());
+    });
+}
+
+#[test]
+fn restart_during_verification_persists_pause_and_rejects_late_result() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, run_id, workspace_id, _) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-restart-during-verification",
+            "tail -f README.md",
+        );
+        let db_path = store.db_path().to_path_buf();
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task_id = task_id.clone();
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task_id,
+                "verifier",
+                &|| Ok(running_scheduler_authority()),
+            )
+        });
+        thread::sleep(Duration::from_millis(100));
+        let restarted = LocalProductStore::new(&db_path).unwrap();
+        restarted
+            .update_run_pause_reason(&run_id, Some("operator_hold_after_restart"))
+            .unwrap();
+        drop(restarted);
+
+        let finalized = handle.join().unwrap().unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "paused");
+        assert!(finalized["artifact_id"].is_null());
+
+        drop(store);
+        let restarted = LocalProductStore::new(db_path).unwrap();
+        let persisted = restarted.get_product_task(&task_id).unwrap().unwrap();
+        assert_eq!(persisted["status"], "paused");
+        let workspace = restarted
+            .get_supervised_patch_workspace(&workspace_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(workspace["verification"]["status"], "authority_lost");
+        assert_eq!(
+            workspace["verification"]["verification_attempts"][0]["late_result_rejected"],
+            true
+        );
+        let approval = restarted.approve_product_task(
+            &task_id,
+            "operator",
+            persisted["version"].as_u64().unwrap(),
+        );
+        assert!(approval.unwrap_err().contains("awaiting_approval"));
+    });
+}
+
+#[test]
 fn stale_approval_blocked_without_trustworthy_verification() {
     with_gates(|| {
         let (dir, store) = temp_store();
@@ -305,5 +435,722 @@ fn verification_records_all_commands_even_when_first_fails() {
             .as_array()
             .unwrap();
         assert_eq!(attempts.len(), 2);
+    });
+}
+
+#[test]
+fn verification_workflow_result_never_persists_repository_command_output() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        init_git_repo(&repo);
+        let marker = "private-repository-content-never-persist-7f5a";
+        std::fs::write(repo.join("README.md"), format!("{marker}\n")).unwrap();
+        for args in [
+            &["add", "README.md"][..],
+            &["commit", "--amend", "--no-edit"][..],
+        ] {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+        let revision = String::from_utf8_lossy(
+            &Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        let (task_id, _, _, _) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &revision,
+            "rec-redacted-workflow-output",
+            "cat README.md",
+        );
+        let finalized = store
+            .finalize_product_task_after_execution(&task_id, "tester")
+            .unwrap();
+        assert_eq!(finalized["phase"], "awaiting_approval");
+        let verification_run_id = finalized["verification"]["verification_attempts"][0]
+            ["verification_run_id"]
+            .as_str()
+            .unwrap();
+        let persisted_run = store
+            .get_workflow_run(verification_run_id)
+            .unwrap()
+            .unwrap()
+            .to_string();
+        assert!(!persisted_run.contains(marker));
+        assert!(persisted_run.contains("redacted_command_output_sha256"));
+    });
+}
+
+#[test]
+fn concurrent_finalizers_consume_one_managed_verification_effect() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, _, _, _) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-concurrent-finalize",
+            "tail -f README.md",
+        );
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let store = Arc::clone(&store);
+            let task_id = task_id.clone();
+            handles.push(thread::spawn(move || {
+                store.finalize_product_task_after_execution_with_authority(
+                    &task_id,
+                    "verifier",
+                    &|| Ok(running_scheduler_authority()),
+                )
+            }));
+        }
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert!(results.iter().any(Result::is_ok));
+        let allowed_effects = store
+            .audit_events(10_000)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event["action"] == "tool_execution.pre_policy_passed")
+            .count();
+        assert_eq!(allowed_effects, 1, "only one tool effect may pass policy");
+        let artifacts = store.supervised_patch_artifacts(100).unwrap();
+        assert!(
+            artifacts.is_empty(),
+            "late-writing verification must capture no artifact"
+        );
+    });
+}
+
+#[test]
+fn restart_after_persisted_effect_rejects_changed_pre_patch_binding() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, _, workspace_id, workspace_path) =
+            ready_for_slow_verification(&store, &repo, &rev, "rec-crash-after-effect", "true");
+        let db_path = store.db_path().to_path_buf();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task = task_id.clone();
+        let finalizer_calls = Arc::clone(&calls);
+        let crash_workspace = workspace_path.clone();
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task,
+                "verifier-before-crash",
+                &|| {
+                    if finalizer_calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                        std::fs::write(
+                            std::path::Path::new(&crash_workspace).join("README.md"),
+                            "changed in crash window\n",
+                        )
+                        .unwrap();
+                        panic!("simulated process loss after durable managed effect");
+                    }
+                    Ok(running_scheduler_authority())
+                },
+            )
+        });
+        assert!(handle.join().is_err());
+        drop(store);
+
+        let restarted = LocalProductStore::new(db_path).unwrap();
+        let finalized = restarted
+            .finalize_product_task_after_execution_with_authority(
+                &task_id,
+                "verifier-after-restart",
+                &|| Ok(running_scheduler_authority()),
+            )
+            .unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "blocked");
+        assert!(finalized["artifact_id"].is_null());
+        assert!(finalized["verification"]["authority_loss_reason"]
+            .as_str()
+            .unwrap()
+            .contains("pre_patch_binding_superseded"));
+        assert_eq!(
+            restarted
+                .get_supervised_patch_workspace(&workspace_id)
+                .unwrap()
+                .unwrap()["status"],
+            "quarantined"
+        );
+    });
+}
+
+#[test]
+fn product_verification_rejects_writable_or_absolute_path_commands_at_intake() {
+    with_gates(|| {
+        let (dir, _) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let protected = dir.path().join("target-main-protected.txt");
+        std::fs::write(&protected, "unchanged\n").unwrap();
+
+        for (index, (command, expected_error)) in [
+            (
+                format!("tee {}", protected.display()),
+                "read-only admitted binary",
+            ),
+            ("python3 mutate.py".to_string(), "read-only admitted binary"),
+            (
+                "cat /etc/passwd".to_string(),
+                "relative to the bound workspace",
+            ),
+            (
+                "test -f ../outside".to_string(),
+                "relative to the bound workspace",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut request = intake(&repo, &rev, &format!("reject-command-{index}"));
+            request.verification_commands = vec![ProductVerificationCommand {
+                command,
+                timeout_ms: 5_000,
+            }];
+            let error = validate_intake(&request, "local", "default").unwrap_err();
+            assert!(
+                error.contains(expected_error),
+                "unexpected rejection: {error}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(protected).unwrap(), "unchanged\n");
+    });
+}
+
+#[test]
+fn tracked_ignored_directory_write_changes_authoritative_patch_identity() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        init_git_repo(&repo);
+        std::fs::create_dir_all(repo.join("target")).unwrap();
+        std::fs::write(repo.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(repo.join("target/tracked.txt"), "before\n").unwrap();
+        for args in [
+            &["add", ".gitignore"][..],
+            &["add", "-f", "target/tracked.txt"][..],
+            &["commit", "-m", "add tracked ignored fixture"][..],
+        ] {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+        let rev = String::from_utf8_lossy(
+            &Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        let (task_id, _, _, workspace_path) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-tracked-ignored-write",
+            "tail -f README.md",
+        );
+        let store = Arc::new(store);
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task = task_id.clone();
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task,
+                "verifier",
+                &|| Ok(running_scheduler_authority()),
+            )
+        });
+        thread::sleep(Duration::from_millis(100));
+        std::fs::write(
+            std::path::Path::new(&workspace_path).join("target/tracked.txt"),
+            "after\n",
+        )
+        .unwrap();
+        let finalized = handle.join().unwrap().unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert!(finalized["artifact_id"].is_null());
+        assert!(finalized["verification"]["authority_loss_reason"]
+            .as_str()
+            .unwrap()
+            .contains("late_filesystem_write"));
+    });
+}
+
+#[test]
+fn total_elapsed_budget_exhaustion_blocks_verification_effect_and_artifact() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let mut request = intake(&repo, &rev, "rec-verification-elapsed-budget");
+        request.budget = Some(ProductTaskBudget {
+            total_elapsed_ms: Some(1),
+            ..ProductTaskBudget::default()
+        });
+        let validated = validate_intake(&request, "local", "default").unwrap();
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap().to_string();
+        let compiled = compile(&store, &task_id);
+        complete_run(&store, compiled["task"]["run_id"].as_str().unwrap());
+        thread::sleep(Duration::from_millis(1_100));
+        let finalized = store
+            .finalize_product_task_after_execution_with_authority(&task_id, "verifier", &|| {
+                Ok(running_scheduler_authority())
+            })
+            .unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "budget_exhausted");
+        assert!(finalized["artifact_id"].is_null());
+        assert!(finalized["verification"]["authority_loss_reason"]
+            .as_str()
+            .unwrap()
+            .contains("budget_exhausted"));
+    });
+}
+
+#[test]
+fn remaining_elapsed_budget_caps_the_running_command_timeout() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let mut request = intake(&repo, &rev, "rec-verification-running-budget");
+        request.verification_commands = vec![ProductVerificationCommand {
+            command: "tail -f README.md".to_string(),
+            timeout_ms: 3_600_000,
+        }];
+        request.budget = Some(ProductTaskBudget {
+            total_elapsed_ms: Some(2_500),
+            ..ProductTaskBudget::default()
+        });
+        let validated = validate_intake(&request, "local", "default").unwrap();
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap().to_string();
+        let compiled = compile(&store, &task_id);
+        complete_run(&store, compiled["task"]["run_id"].as_str().unwrap());
+        let started = std::time::Instant::now();
+        let finalized = store
+            .finalize_product_task_after_execution_with_authority(&task_id, "verifier", &|| {
+                Ok(running_scheduler_authority())
+            })
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let attempt = &finalized["verification"]["verification_attempts"][0];
+        assert!(attempt["effective_timeout_ms"].as_u64().unwrap() <= 2_500);
+        assert_eq!(attempt["declared_timeout_ms"], 3_600_000);
+        assert!(finalized["artifact_id"].is_null());
+    });
+}
+
+#[test]
+fn scheduler_kill_at_artifact_commit_boundary_prevents_artifact() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, _, _, _) =
+            ready_for_slow_verification(&store, &repo, &rev, "rec-kill-during-artifact", "true");
+        let calls = AtomicUsize::new(0);
+        let finalized = store
+            .finalize_product_task_after_execution_with_authority(&task_id, "verifier", &|| {
+                let mut authority = running_scheduler_authority();
+                authority.scheduler_killed = calls.fetch_add(1, Ordering::SeqCst) >= 3;
+                Ok(authority)
+            })
+            .unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "killed");
+        assert!(finalized["artifact_id"].is_null());
+        assert!(store.supervised_patch_artifacts(100).unwrap().is_empty());
+    });
+}
+
+#[test]
+fn sqlite_artifact_audit_failure_rolls_back_artifact_workspace_and_task() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, _, workspace_id, _) =
+            ready_for_slow_verification(&store, &repo, &rev, "rec-artifact-audit-rollback", "true");
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_product_artifact_audit
+                 BEFORE INSERT ON audit_log
+                 WHEN NEW.action = 'supervised_patch.artifact_record'
+                 BEGIN SELECT RAISE(ABORT, 'injected artifact audit failure'); END;",
+            )
+            .unwrap();
+        let error = store
+            .finalize_product_task_after_execution_with_authority(&task_id, "verifier", &|| {
+                Ok(running_scheduler_authority())
+            })
+            .expect_err("artifact audit failure must abort the whole transaction");
+        assert!(error.contains("injected artifact audit failure"));
+        assert_eq!(
+            store.get_product_task(&task_id).unwrap().unwrap()["status"],
+            "verifying"
+        );
+        assert_ne!(
+            store
+                .get_supervised_patch_workspace(&workspace_id)
+                .unwrap()
+                .unwrap()["status"],
+            "patch_prepared"
+        );
+        assert!(store.supervised_patch_artifacts(100).unwrap().is_empty());
+        connection
+            .execute_batch("DROP TRIGGER fail_product_artifact_audit")
+            .unwrap();
+        let retry = store
+            .finalize_product_task_after_execution_with_authority(&task_id, "verifier", &|| {
+                Ok(running_scheduler_authority())
+            })
+            .unwrap();
+        assert_eq!(retry["phase"], "awaiting_approval");
+        assert_eq!(store.supervised_patch_artifacts(100).unwrap().len(), 1);
+    });
+}
+
+#[test]
+fn pause_during_verification_rejects_late_result_without_artifact() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, run_id, _, _) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-pause-verification",
+            "tail -f README.md",
+        );
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task_id = task_id.clone();
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task_id,
+                "verifier",
+                &|| Ok(running_scheduler_authority()),
+            )
+        });
+        thread::sleep(Duration::from_millis(100));
+        store
+            .update_run_pause_reason(&run_id, Some("operator_hold"))
+            .unwrap();
+        let finalized = handle.join().unwrap().unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "paused");
+        assert!(finalized["artifact_id"].is_null());
+        assert_eq!(
+            finalized["verification"]["verification_attempts"][0]["result_status"],
+            "stale_rejected"
+        );
+        assert_eq!(
+            finalized["verification"]["verification_attempts"][0]["late_result_rejected"],
+            true
+        );
+    });
+}
+
+#[test]
+fn scheduler_kill_during_verification_rejects_late_result() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, _, _, _) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-kill-verification",
+            "tail -f README.md",
+        );
+        let killed = Arc::new(AtomicBool::new(false));
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task_id = task_id.clone();
+        let finalizer_killed = Arc::clone(&killed);
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task_id,
+                "verifier",
+                &|| {
+                    let mut authority = running_scheduler_authority();
+                    authority.scheduler_killed = finalizer_killed.load(Ordering::SeqCst);
+                    Ok(authority)
+                },
+            )
+        });
+        thread::sleep(Duration::from_millis(100));
+        killed.store(true, Ordering::SeqCst);
+        let finalized = handle.join().unwrap().unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "killed");
+        assert!(finalized["artifact_id"].is_null());
+    });
+}
+
+#[test]
+fn lease_attempt_change_during_verification_blocks_late_result() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, run_id, _, _) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-lease-loss-verification",
+            "tail -f README.md",
+        );
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task_id = task_id.clone();
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task_id,
+                "verifier",
+                &|| Ok(running_scheduler_authority()),
+            )
+        });
+        thread::sleep(Duration::from_millis(100));
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute(
+                "UPDATE workflow_run_nodes SET attempt_count = attempt_count + 1 WHERE run_id = ?1",
+                [&run_id],
+            )
+            .unwrap();
+        let finalized = handle.join().unwrap().unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "blocked");
+        assert!(finalized["artifact_id"].is_null());
+        assert!(finalized["verification"]["authority_loss_reason"]
+            .as_str()
+            .unwrap()
+            .contains("node_attempt_or_lease_superseded"));
+    });
+}
+
+#[test]
+fn task_version_change_during_verification_blocks_late_result() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, _, _, _) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-version-change-verification",
+            "tail -f README.md",
+        );
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task_id = task_id.clone();
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task_id,
+                "verifier",
+                &|| Ok(running_scheduler_authority()),
+            )
+        });
+        thread::sleep(Duration::from_millis(100));
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute(
+                "UPDATE product_tasks SET version = version + 1 WHERE task_id = ?1",
+                [&task_id],
+            )
+            .unwrap();
+        let finalized = handle.join().unwrap().unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "blocked");
+        assert!(finalized["artifact_id"].is_null());
+    });
+}
+
+#[test]
+fn task_kill_during_verification_preserves_killed_state_and_rejects_result() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, _, _, _) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-task-kill-verification",
+            "tail -f README.md",
+        );
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task_id = task_id.clone();
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task_id,
+                "verifier",
+                &|| Ok(running_scheduler_authority()),
+            )
+        });
+        thread::sleep(Duration::from_millis(100));
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute(
+                "UPDATE product_tasks SET status = 'killed', version = version + 1 WHERE task_id = ?1",
+                [&task_id],
+            )
+            .unwrap();
+        let finalized = handle.join().unwrap().unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "killed");
+        assert!(finalized["artifact_id"].is_null());
+    });
+}
+
+#[test]
+fn workspace_replacement_during_verification_is_quarantined() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, _, workspace_id, workspace_path) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-workspace-replaced-verification",
+            "tail -f README.md",
+        );
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task_id = task_id.clone();
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task_id,
+                "verifier",
+                &|| Ok(running_scheduler_authority()),
+            )
+        });
+        thread::sleep(Duration::from_millis(100));
+        let moved = format!("{workspace_path}.replaced");
+        std::fs::rename(&workspace_path, &moved).unwrap();
+        std::fs::create_dir(&workspace_path).unwrap();
+        let finalized = handle.join().unwrap().unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "blocked");
+        assert!(finalized["artifact_id"].is_null());
+        assert_eq!(
+            store
+                .get_supervised_patch_workspace(&workspace_id)
+                .unwrap()
+                .unwrap()["status"],
+            "quarantined"
+        );
+    });
+}
+
+#[test]
+fn verification_filesystem_write_is_quarantined_and_never_captured() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let store = Arc::new(store);
+        let (task_id, _, workspace_id, workspace_path) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-late-write-verification",
+            "tail -f README.md",
+        );
+        let finalizer_store = Arc::clone(&store);
+        let finalizer_task = task_id.clone();
+        let handle = thread::spawn(move || {
+            finalizer_store.finalize_product_task_after_execution_with_authority(
+                &finalizer_task,
+                "verifier",
+                &|| Ok(running_scheduler_authority()),
+            )
+        });
+        thread::sleep(Duration::from_millis(100));
+        std::fs::write(
+            std::path::Path::new(&workspace_path).join("README.md"),
+            "late write\n",
+        )
+        .unwrap();
+        let finalized = handle.join().unwrap().unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "blocked");
+        assert!(finalized["artifact_id"].is_null());
+        assert_eq!(
+            store
+                .get_supervised_patch_workspace(&workspace_id)
+                .unwrap()
+                .unwrap()["status"],
+            "quarantined"
+        );
+    });
+}
+
+#[test]
+fn global_kill_before_verification_runs_no_command_or_capture() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (task_id, _, _, _) = ready_for_slow_verification(
+            &store,
+            &repo,
+            &rev,
+            "rec-global-kill-verification",
+            "true",
+        );
+        let finalized = store
+            .finalize_product_task_after_execution_with_authority(&task_id, "verifier", &|| {
+                let mut authority = running_scheduler_authority();
+                authority.global_kill_active = true;
+                Ok(authority)
+            })
+            .unwrap();
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(finalized["task"]["status"], "killed");
+        assert!(finalized["artifact_id"].is_null());
+        assert_eq!(
+            finalized["verification"]["verification_attempts"][0]["late_result_rejected"],
+            false
+        );
     });
 }

@@ -514,6 +514,10 @@ pub fn inspect_git_patch(
             "--no-ext-diff",
         ],
     )?;
+    validate_patch_output(output)
+}
+
+fn validate_patch_output(output: GitOutput) -> Result<String, String> {
     if output.stdout_truncated {
         return Err(format!(
             "patch exceeds output limit of {MAX_GIT_OUTPUT_BYTES} bytes"
@@ -531,6 +535,38 @@ pub fn inspect_git_patch(
         return Err("patch contains sensitive content".to_string());
     }
     Ok(output.stdout)
+}
+
+/// Build the exact output patch through an isolated temporary index. This observes
+/// tracked and untracked workspace changes without changing the worktree's real index,
+/// so verification commands see the repository state the caller supplied.
+pub(crate) fn inspect_git_patch_read_only(
+    config: &TargetRepoOutputConfig,
+    workspace_path: &Path,
+) -> Result<String, String> {
+    let workspace = canonical_existing_dir(workspace_path, "workspace_path")?;
+    reject_unsafe_git_attributes(config, &workspace)?;
+    let index_dir = tempfile::Builder::new()
+        .prefix("acp-readonly-git-index-")
+        .tempdir()
+        .map_err(|error| format!("temporary git index unavailable: {error}"))?;
+    let index_path = index_dir.path().join("index");
+    run_git_with_index(config, &workspace, &["read-tree", "HEAD"], &index_path)?;
+    run_git_with_index(config, &workspace, &["add", "-A"], &index_path)?;
+    validate_staged_file_content_with_index(config, &workspace, &index_path)?;
+    let output = run_git_with_index(
+        config,
+        &workspace,
+        &[
+            "diff",
+            "--cached",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+        ],
+        &index_path,
+    )?;
+    validate_patch_output(output)
 }
 
 pub fn staged_changed_files(
@@ -676,6 +712,20 @@ pub fn push_approved_branch(
     })
 }
 
+/// Read the exact checked-out commit through the existing confined git owner.
+/// This is used by Product Golden Path verification authority checks; it performs
+/// no mutation and never enables network access or credential helpers.
+pub(crate) fn current_workspace_revision(
+    config: &TargetRepoOutputConfig,
+    workspace_path: &Path,
+) -> Result<String, String> {
+    let workspace = canonical_existing_dir(workspace_path, "workspace_path")?;
+    Ok(run_git(config, &workspace, &["rev-parse", "HEAD"])?
+        .stdout
+        .trim()
+        .to_string())
+}
+
 fn reuse_published_branch(
     config: &TargetRepoOutputConfig,
     request: &BranchPublishRequest,
@@ -812,6 +862,33 @@ fn validate_staged_file_content(
             "--diff-filter=ACMT",
             "-z",
         ],
+    )?;
+    if output.stdout_truncated {
+        return Err("git changed-file output exceeded limit".to_string());
+    }
+    for path in output.stdout.split('\0').filter(|path| !path.is_empty()) {
+        let path = authority::normalize_git_path(path)?;
+        validate_changed_file_content(workspace, &path)?;
+    }
+    Ok(())
+}
+
+fn validate_staged_file_content_with_index(
+    config: &TargetRepoOutputConfig,
+    workspace: &Path,
+    index_path: &Path,
+) -> Result<(), String> {
+    let output = run_git_with_index(
+        config,
+        workspace,
+        &[
+            "diff",
+            "--cached",
+            "--name-only",
+            "--diff-filter=ACMT",
+            "-z",
+        ],
+        index_path,
     )?;
     if output.stdout_truncated {
         return Err("git changed-file output exceeded limit".to_string());
@@ -1022,7 +1099,7 @@ fn run_git(
     cwd: &Path,
     args: &[&str],
 ) -> Result<GitOutput, String> {
-    run_git_inner(config, cwd, args, false)
+    run_git_inner(config, cwd, args, false, None)
 }
 
 fn run_git_with_identity(
@@ -1030,7 +1107,16 @@ fn run_git_with_identity(
     cwd: &Path,
     args: &[&str],
 ) -> Result<GitOutput, String> {
-    run_git_inner(config, cwd, args, true)
+    run_git_inner(config, cwd, args, true, None)
+}
+
+fn run_git_with_index(
+    config: &TargetRepoOutputConfig,
+    cwd: &Path,
+    args: &[&str],
+    index_path: &Path,
+) -> Result<GitOutput, String> {
+    run_git_inner(config, cwd, args, false, Some(index_path))
 }
 
 fn run_git_inner(
@@ -1038,6 +1124,7 @@ fn run_git_inner(
     cwd: &Path,
     args: &[&str],
     with_identity: bool,
+    index_path: Option<&Path>,
 ) -> Result<GitOutput, String> {
     let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
     let mut command = Command::new("git");
@@ -1058,6 +1145,9 @@ fn run_git_inner(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(index_path) = index_path {
+        command.env("GIT_INDEX_FILE", index_path);
+    }
     if let Some(token) = config.git_token.as_deref() {
         let credential = format!("{}:{token}", config.git_username);
         command
@@ -1181,6 +1271,60 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+    }
+
+    #[test]
+    fn read_only_patch_snapshot_preserves_real_git_index() {
+        let repo = tempfile::tempdir().unwrap();
+        test_git(repo.path(), &["init", "-b", "main"]);
+        test_git(
+            repo.path(),
+            &["config", "user.email", "test@example.invalid"],
+        );
+        test_git(repo.path(), &["config", "user.name", "Test"]);
+        std::fs::write(repo.path().join("tracked.txt"), "base\n").unwrap();
+        test_git(repo.path(), &["add", "tracked.txt"]);
+        test_git(repo.path(), &["commit", "-m", "base"]);
+        std::fs::write(repo.path().join("tracked.txt"), "changed\n").unwrap();
+        std::fs::write(repo.path().join("untracked.txt"), "new\n").unwrap();
+        test_git(repo.path(), &["add", "tracked.txt"]);
+
+        let index_path = repo.path().join(".git/index");
+        let index_before = std::fs::read(&index_path).unwrap();
+        let status_before = run_git(
+            &TargetRepoOutputConfig::for_test(false, false),
+            repo.path(),
+            &["status", "--porcelain=v1"],
+        )
+        .unwrap()
+        .stdout;
+        let patch = inspect_git_patch_read_only(
+            &TargetRepoOutputConfig::for_test(false, false),
+            repo.path(),
+        )
+        .unwrap();
+        assert!(patch.contains("tracked.txt"));
+        assert!(patch.contains("untracked.txt"));
+        assert_eq!(std::fs::read(index_path).unwrap(), index_before);
+        assert_eq!(
+            run_git(
+                &TargetRepoOutputConfig::for_test(false, false),
+                repo.path(),
+                &["status", "--porcelain=v1"],
+            )
+            .unwrap()
+            .stdout,
+            status_before
+        );
+    }
 
     #[test]
     fn remote_host_supports_https_ssh_and_scp_shapes() {

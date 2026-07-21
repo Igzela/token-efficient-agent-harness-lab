@@ -10,6 +10,7 @@ use crate::target_repo_output::{
     staged_changed_files, TargetRepoOutputConfig,
 };
 
+use super::product_tasks::validate_product_terminal_evidence_content_hash;
 #[cfg(test)]
 use super::workflow_runs::is_execution_owner_conflict;
 use super::workflow_runs::API_OWNED_SUPERVISED_PATCH;
@@ -188,7 +189,11 @@ impl LocalProductStore {
         let verification_status = required_str(verification, "status")?;
         if !matches!(
             verification_status,
-            "evidence_recorded" | "verification_failed" | "approval_required"
+            "evidence_recorded"
+                | "verification_failed"
+                | "approval_required"
+                | "authority_lost"
+                | "outcome_unknown"
         ) {
             return Err(format!(
                 "invalid workspace verification status: {verification_status}"
@@ -270,13 +275,16 @@ impl LocalProductStore {
         node_metadata: &Value,
         actor: &str,
     ) -> Result<String, String> {
-        if !matches!(operation, "verify" | "repair") {
+        if !matches!(operation, "verify" | "repair" | "product_verify") {
             return Err(format!(
                 "unsupported managed supervised-patch operation: {operation}"
             ));
         }
-        if attempt == 0 || attempt > 5 {
-            return Err("managed supervised-patch attempt must be between 1 and 5".to_string());
+        let max_attempt = if operation == "product_verify" { 8 } else { 5 };
+        if attempt == 0 || attempt > max_attempt {
+            return Err(format!(
+                "managed supervised-patch {operation} attempt must be between 1 and {max_attempt}"
+            ));
         }
         if binding_sha256.len() != 64
             || !binding_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -708,6 +716,10 @@ impl LocalProductStore {
     }
 
     pub fn capture_patch(&self, workspace_id: &str, actor: &str) -> Result<Value, String> {
+        self.capture_patch_inner(workspace_id, actor)
+    }
+
+    fn capture_patch_inner(&self, workspace_id: &str, actor: &str) -> Result<Value, String> {
         let workspace = self
             .get_supervised_patch_workspace(workspace_id)?
             .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
@@ -770,7 +782,6 @@ impl LocalProductStore {
         if changed_files.is_empty() {
             return Err("no changes detected against source snapshot".to_string());
         }
-
         let secret_findings = scan_for_secrets(path)?;
         let redaction_status = if secret_findings.is_empty() {
             "redacted"
@@ -818,6 +829,14 @@ impl LocalProductStore {
                 "target_repository_writes": if workspace_mode == "git_worktree" { "approval_bound_branch_only" } else { "disabled" },
             },
         });
+        if workspace_mode == "git_worktree" {
+            let confirmed_changes = staged_changed_files(&config, path)?;
+            let confirmed_patch = inspect_git_patch(&config, path)?;
+            let confirmed_hash = target_patch_hash(&confirmed_patch);
+            if confirmed_hash != patch_hash || confirmed_changes.changed_files != changed_files {
+                return Err("verified patch identity changed during artifact capture".to_string());
+            }
+        }
         let artifact = self.record_supervised_patch_artifact(&artifact_request, actor)?;
 
         self.update_workspace_status(workspace_id, "patch_prepared", actor)?;
@@ -830,6 +849,291 @@ impl LocalProductStore {
             obj.insert("deleted".to_string(), json!(deleted));
         }
         Ok(result)
+    }
+
+    /// Atomically bind the verified Git snapshot to one artifact and advance the exact
+    /// product-task version. The database row locks remain held while the bounded patch
+    /// snapshot is prepared. The automatic API caller holds its scheduler-control
+    /// authority guard around this entire method, so pause/kill cannot interleave
+    /// between artifact persistence and the awaiting-approval transition.
+    pub(crate) fn finalize_product_verification_artifact(
+        &self,
+        task_id: &str,
+        expected_task_version: u64,
+        workspace_id: &str,
+        expected_patch_hash: &str,
+        actor: &str,
+    ) -> Result<(Value, Value), String> {
+        let now = self.now();
+        let artifact = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")
+                    .map_err(|error| error.to_string())?;
+                let result = (|| {
+                    let (status, version, bound_workspace): (String, i64, Option<String>) = conn
+                        .query_row(
+                            "SELECT status, version, workspace_record_id FROM product_tasks
+                             WHERE task_id = ?1",
+                            params![task_id],
+                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        )
+                        .map_err(|_| format!("product task not found: {task_id}"))?;
+                    if status != "verifying"
+                        || version as u64 != expected_task_version
+                        || bound_workspace.as_deref() != Some(workspace_id)
+                    {
+                        return Err("product verification artifact authority is stale".to_string());
+                    }
+                    let workspace_json: String = conn
+                        .query_row(
+                            "SELECT workspace_json FROM supervised_patch_workspaces
+                             WHERE workspace_id = ?1",
+                            params![workspace_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|_| format!("workspace not found: {workspace_id}"))?;
+                    let mut workspace: Value = serde_json::from_str(&workspace_json)
+                        .map_err(|_| "workspace record is corrupt".to_string())?;
+                    let prepared = prepare_product_artifact_fields(
+                        &workspace,
+                        workspace_id,
+                        expected_patch_hash,
+                    )?;
+                    let sequence =
+                        next_sequence(conn, "supervised_patch_artifacts", "artifact_sequence")?;
+                    let artifact_id = format!("patch-artifact-{sequence:04}");
+                    let artifact = prepared.artifact(sequence, &artifact_id, &now);
+                    conn.execute(
+                        "INSERT INTO supervised_patch_artifacts
+                         (artifact_sequence, artifact_id, workspace_id, run_id, plan_id, target_id,
+                          source_revision, artifact_type, patch_hash, changed_files_json,
+                          redaction_status, created_at, artifact_json)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'patch_diff', ?8, ?9, ?10, ?11, ?12)",
+                        params![
+                            sequence,
+                            artifact_id,
+                            workspace_id,
+                            prepared.run_id,
+                            prepared.plan_id,
+                            prepared.target_id,
+                            prepared.source_revision,
+                            prepared.patch_hash,
+                            prepared.changed_files.to_string(),
+                            prepared.redaction_status,
+                            now,
+                            artifact.to_string(),
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    workspace["status"] = json!("patch_prepared");
+                    workspace["updated_at"] = json!(now);
+                    conn.execute(
+                        "UPDATE supervised_patch_workspaces
+                         SET status = 'patch_prepared', updated_at = ?1, workspace_json = ?2
+                         WHERE workspace_id = ?3",
+                        params![now, workspace.to_string(), workspace_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let updated = conn
+                        .execute(
+                            "UPDATE product_tasks SET status = 'awaiting_approval', version = ?1,
+                             updated_at = ?2, failure_code = NULL, failure_detail = NULL
+                             WHERE task_id = ?3 AND status = 'verifying' AND version = ?4
+                               AND workspace_record_id = ?5",
+                            params![
+                                (expected_task_version + 1) as i64,
+                                now,
+                                task_id,
+                                expected_task_version as i64,
+                                workspace_id,
+                            ],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if updated != 1 {
+                        return Err("product verification artifact authority changed".to_string());
+                    }
+                    append_audit_locked(
+                        conn,
+                        &now,
+                        actor,
+                        "supervised_patch.artifact_record",
+                        &artifact_id,
+                        &json!({
+                            "workspace_id": workspace_id,
+                            "run_id": prepared.run_id,
+                            "target_id": prepared.target_id,
+                            "artifact_type": "patch_diff",
+                            "metadata_only": true,
+                            "execution_authority": "disabled",
+                            "patch_apply_authority": "disabled",
+                            "secret_scan_status": prepared.secret_scan_status,
+                            "product_task_id": task_id,
+                            "atomic_product_transition": true,
+                        }),
+                    )?;
+                    append_audit_locked(
+                        conn,
+                        &now,
+                        actor,
+                        "product_task.transition",
+                        task_id,
+                        &json!({
+                            "from": "verifying",
+                            "to": "awaiting_approval",
+                            "version": expected_task_version + 1,
+                            "execution_admitted": false,
+                            "failure_code": null,
+                            "artifact_id": artifact_id,
+                        }),
+                    )?;
+                    Ok(artifact)
+                })();
+                match result {
+                    Ok(artifact) => {
+                        conn.execute_batch("COMMIT")
+                            .map_err(|error| error.to_string())?;
+                        Ok(artifact)
+                    }
+                    Err(error) => {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        Err(error)
+                    }
+                }
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let task = tx
+                    .query_opt(
+                        "SELECT status, version, workspace_record_id FROM product_tasks
+                         WHERE task_id = $1 FOR UPDATE",
+                        &[&task_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("product task not found: {task_id}"))?;
+                let status: String = task.get(0);
+                let version: i64 = task.get(1);
+                let bound_workspace: Option<String> = task.get(2);
+                if status != "verifying"
+                    || version as u64 != expected_task_version
+                    || bound_workspace.as_deref() != Some(workspace_id)
+                {
+                    return Err("product verification artifact authority is stale".to_string());
+                }
+                let row = tx
+                    .query_opt(
+                        "SELECT workspace_json FROM supervised_patch_workspaces
+                         WHERE workspace_id = $1 FOR UPDATE",
+                        &[&workspace_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+                let workspace_json: String = row.get(0);
+                let mut workspace: Value = serde_json::from_str(&workspace_json)
+                    .map_err(|_| "workspace record is corrupt".to_string())?;
+                let prepared =
+                    prepare_product_artifact_fields(&workspace, workspace_id, expected_patch_hash)?;
+                tx.batch_execute(
+                    "LOCK TABLE supervised_patch_artifacts IN SHARE ROW EXCLUSIVE MODE",
+                )
+                .map_err(|error| error.to_string())?;
+                let sequence =
+                    pg_next_sequence(&mut tx, "supervised_patch_artifacts", "artifact_sequence")?;
+                let artifact_id = format!("patch-artifact-{sequence:04}");
+                let artifact = prepared.artifact(sequence, &artifact_id, &now);
+                tx.execute(
+                    "INSERT INTO supervised_patch_artifacts
+                     (artifact_sequence, artifact_id, workspace_id, run_id, plan_id, target_id,
+                      source_revision, artifact_type, patch_hash, changed_files_json,
+                      redaction_status, created_at, artifact_json)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, 'patch_diff', $8, $9, $10, $11, $12)",
+                    &[
+                        &sequence,
+                        &artifact_id,
+                        &workspace_id,
+                        &prepared.run_id,
+                        &prepared.plan_id,
+                        &prepared.target_id,
+                        &prepared.source_revision,
+                        &prepared.patch_hash,
+                        &prepared.changed_files.to_string(),
+                        &prepared.redaction_status,
+                        &now,
+                        &artifact.to_string(),
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                workspace["status"] = json!("patch_prepared");
+                workspace["updated_at"] = json!(now);
+                tx.execute(
+                    "UPDATE supervised_patch_workspaces
+                     SET status = 'patch_prepared', updated_at = $1, workspace_json = $2
+                     WHERE workspace_id = $3",
+                    &[&now, &workspace.to_string(), &workspace_id],
+                )
+                .map_err(|error| error.to_string())?;
+                let updated = tx
+                    .execute(
+                        "UPDATE product_tasks SET status = 'awaiting_approval', version = $1,
+                         updated_at = $2, failure_code = NULL, failure_detail = NULL
+                         WHERE task_id = $3 AND status = 'verifying' AND version = $4
+                           AND workspace_record_id = $5",
+                        &[
+                            &((expected_task_version + 1) as i64),
+                            &now,
+                            &task_id,
+                            &(expected_task_version as i64),
+                            &workspace_id,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if updated != 1 {
+                    return Err("product verification artifact authority changed".to_string());
+                }
+                pg_append_audit(
+                    &mut tx,
+                    &now,
+                    actor,
+                    "supervised_patch.artifact_record",
+                    &artifact_id,
+                    &json!({
+                        "workspace_id": workspace_id,
+                        "run_id": prepared.run_id,
+                        "target_id": prepared.target_id,
+                        "artifact_type": "patch_diff",
+                        "metadata_only": true,
+                        "execution_authority": "disabled",
+                        "patch_apply_authority": "disabled",
+                        "secret_scan_status": prepared.secret_scan_status,
+                        "product_task_id": task_id,
+                        "atomic_product_transition": true,
+                    })
+                    .to_string(),
+                )?;
+                pg_append_audit(
+                    &mut tx,
+                    &now,
+                    actor,
+                    "product_task.transition",
+                    task_id,
+                    &json!({
+                        "from": "verifying",
+                        "to": "awaiting_approval",
+                        "version": expected_task_version + 1,
+                        "execution_admitted": false,
+                        "failure_code": null,
+                        "artifact_id": artifact_id,
+                    })
+                    .to_string(),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(artifact)
+            })?,
+        };
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "product task missing after artifact transition".to_string())?;
+        Ok((artifact, task))
     }
 
     fn workflow_verification_evidence(&self, run_id: &str) -> Value {
@@ -2322,6 +2626,7 @@ impl LocalProductStore {
             "approval_id": approval_id,
             "output_intent": output_intent,
             "expected_task_version": expected_task_version,
+            "allow_completed_idempotent": true,
         });
         let now = self.now();
         let stored_evidence = match &self.db {
@@ -2333,7 +2638,6 @@ impl LocalProductStore {
                 .map_err(|error| error.to_string())?;
                 let (task, approval) =
                     validate_product_output_request_authority_sqlite(&tx, &authority_request)?;
-                validate_terminal_product_task_status(&task, output_intent)?;
                 let raw: String = tx
                     .query_row(
                         "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id = ?1",
@@ -2354,6 +2658,29 @@ impl LocalProductStore {
                     output_intent,
                 )?;
                 let next_version = expected_task_version.saturating_add(1);
+                if task.get("status").and_then(Value::as_str) == Some("completed") {
+                    let raw: String = tx
+                        .query_row(
+                            "SELECT evidence_json FROM product_task_terminal_evidence
+                             WHERE product_task_id = ?1 AND task_version = ?2",
+                            params![product_task_id, next_version as i64],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let evidence: Value =
+                        serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+                    validate_product_terminal_evidence_content_hash(&evidence)?;
+                    validate_product_terminal_evidence_candidate(
+                        &evidence,
+                        &task,
+                        &artifact,
+                        &approval,
+                        next_version,
+                    )?;
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(evidence);
+                }
+                validate_terminal_product_task_status(&task, output_intent)?;
                 validate_product_terminal_evidence_candidate(
                     terminal_evidence,
                     &task,
@@ -2429,7 +2756,6 @@ impl LocalProductStore {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
                 let (task, approval) =
                     pg_validate_product_output_request_authority(&mut tx, &authority_request)?;
-                validate_terminal_product_task_status(&task, output_intent)?;
                 let row = tx
                     .query_one(
                         "SELECT artifact_json FROM supervised_patch_artifacts
@@ -2451,6 +2777,29 @@ impl LocalProductStore {
                     output_intent,
                 )?;
                 let next_version = expected_task_version.saturating_add(1);
+                if task.get("status").and_then(Value::as_str) == Some("completed") {
+                    let row = tx
+                        .query_one(
+                            "SELECT evidence_json FROM product_task_terminal_evidence
+                             WHERE product_task_id = $1 AND task_version = $2",
+                            &[&product_task_id, &(next_version as i64)],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let raw: String = row.get(0);
+                    let evidence: Value =
+                        serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+                    validate_product_terminal_evidence_content_hash(&evidence)?;
+                    validate_product_terminal_evidence_candidate(
+                        &evidence,
+                        &task,
+                        &artifact,
+                        &approval,
+                        next_version,
+                    )?;
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(evidence);
+                }
+                validate_terminal_product_task_status(&task, output_intent)?;
                 validate_product_terminal_evidence_candidate(
                     terminal_evidence,
                     &task,
@@ -2952,7 +3301,12 @@ impl LocalProductStore {
                 if let Some((request, (_, approval))) = authority_request.zip(approval.as_ref()) {
                     validate_product_output_approval_artifact(&artifact, request, approval)?;
                 }
+                let persisted_artifact = artifact.clone();
                 let result = mutate(&mut artifact, &now)?;
+                if artifact == persisted_artifact {
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(result);
+                }
                 tx.execute(
                     "UPDATE supervised_patch_artifacts SET artifact_json = ?1 WHERE artifact_id = ?2",
                     params![artifact.to_string(), artifact_id],
@@ -2993,7 +3347,12 @@ impl LocalProductStore {
                 if let Some((request, (_, approval))) = authority_request.zip(approval.as_ref()) {
                     validate_product_output_approval_artifact(&artifact, request, approval)?;
                 }
+                let persisted_artifact = artifact.clone();
                 let result = mutate(&mut artifact, &now)?;
+                if artifact == persisted_artifact {
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(result);
+                }
                 tx.execute(
                     "UPDATE supervised_patch_artifacts SET artifact_json = $1 WHERE artifact_id = $2",
                     &[&artifact.to_string(), &artifact_id],
@@ -3738,6 +4097,152 @@ fn build_managed_supervised_patch_run(
     Ok((node, graph, boundaries, run))
 }
 
+struct PreparedProductArtifact {
+    workspace_id: String,
+    run_id: String,
+    plan_id: Option<String>,
+    target_id: String,
+    source_revision: String,
+    patch_hash: String,
+    changed_files: Value,
+    review_diff: String,
+    verification: Value,
+    redaction_status: String,
+    secret_scan_status: String,
+    secret_findings: Value,
+    added: Value,
+    modified: Value,
+    deleted: Value,
+}
+
+impl PreparedProductArtifact {
+    fn artifact(&self, sequence: i64, artifact_id: &str, created_at: &str) -> Value {
+        json!({
+            "schema_version": SUPERVISED_PATCH_ARTIFACT_SCHEMA_VERSION,
+            "artifact_sequence": sequence,
+            "artifact_id": artifact_id,
+            "workspace_id": self.workspace_id,
+            "run_id": self.run_id,
+            "plan_id": self.plan_id,
+            "target_id": self.target_id,
+            "source_revision": self.source_revision,
+            "artifact_type": "patch_diff",
+            "patch_hash": self.patch_hash,
+            "changed_files": self.changed_files,
+            "redaction_status": self.redaction_status,
+            "secret_scan_status": self.secret_scan_status,
+            "review_diff": self.review_diff,
+            "storage_refs": {},
+            "evidence_bundle": {
+                "schema_version": "target_repo_evidence.v1",
+                "run_id": self.run_id,
+                "source_revision": self.source_revision,
+                "patch_hash": self.patch_hash,
+                "changed_files": self.changed_files,
+                "verification": self.verification,
+                "secret_scan_status": self.secret_scan_status,
+                "redaction_status": self.redaction_status,
+            },
+            "safety": {
+                "workspace_confinement": "app_owned_directory",
+                "secret_scan": self.secret_scan_status,
+                "review_diff": if self.secret_scan_status == "passed" { "generated" } else { "suppressed" },
+                "target_repository_writes": "approval_bound_branch_only",
+            },
+            "retention_expires_at": null,
+            "created_at": created_at,
+            "metadata_only": true,
+            "execution_authority": "disabled",
+            "patch_apply_authority": "disabled",
+            "artifact_file_created": false,
+            "secret_findings": self.secret_findings,
+            "added": self.added,
+            "modified": self.modified,
+            "deleted": self.deleted,
+        })
+    }
+}
+
+fn prepare_product_artifact_fields(
+    workspace: &Value,
+    workspace_id: &str,
+    expected_patch_hash: &str,
+) -> Result<PreparedProductArtifact, String> {
+    if workspace.get("workspace_id").and_then(Value::as_str) != Some(workspace_id)
+        || workspace.get("workspace_mode").and_then(Value::as_str) != Some("git_worktree")
+        || matches!(
+            workspace.get("status").and_then(Value::as_str),
+            Some("rejected" | "quarantined" | "cleaned") | None
+        )
+    {
+        return Err("product artifact workspace binding is invalid".to_string());
+    }
+    let workspace_path = required_str(workspace, "workspace_path")?;
+    let path = Path::new(workspace_path);
+    let config = TargetRepoOutputConfig::from_env();
+    let changes = staged_changed_files(&config, path)?;
+    if changes.changed_files.is_empty() {
+        return Err("no changes detected against source revision".to_string());
+    }
+    let patch = inspect_git_patch(&config, path)?;
+    let patch_hash = target_patch_hash(&patch);
+    if patch_hash != expected_patch_hash {
+        return Err("verified patch identity changed before atomic artifact commit".to_string());
+    }
+    let secret_findings = scan_for_secrets(path)?;
+    let secret_scan_status = if secret_findings.is_empty() {
+        "passed"
+    } else {
+        "blocked"
+    };
+    let redaction_status = if secret_findings.is_empty() {
+        "redacted"
+    } else {
+        "failed"
+    };
+    let review_diff = if secret_findings.is_empty() {
+        truncate_text(patch, MAX_REVIEW_DIFF_BYTES)
+    } else {
+        "review diff suppressed: secret scan failed".to_string()
+    };
+
+    // A second add/diff while the task/workspace rows remain locked catches writes that
+    // race with secret scanning or review generation. Only this confirmed identity commits.
+    let confirmed_changes = staged_changed_files(&config, path)?;
+    let confirmed_patch = inspect_git_patch(&config, path)?;
+    if target_patch_hash(&confirmed_patch) != patch_hash
+        || confirmed_changes.changed_files != changes.changed_files
+    {
+        return Err("verified patch identity changed during atomic artifact commit".to_string());
+    }
+    let verification = workspace
+        .get("verification")
+        .cloned()
+        .ok_or_else(|| "product artifact workspace verification is missing".to_string())?;
+    if verification.get("status").and_then(Value::as_str) != Some("evidence_recorded")
+        || verification.get("trustworthy").and_then(Value::as_bool) != Some(true)
+    {
+        return Err("product artifact workspace verification is not trustworthy".to_string());
+    }
+    Ok(PreparedProductArtifact {
+        workspace_id: workspace_id.to_string(),
+        run_id: required_str(workspace, "run_id")?.to_string(),
+        plan_id: optional_str(workspace, "plan_id").map(str::to_string),
+        target_id: required_str(workspace, "target_id")?.to_string(),
+        source_revision: required_str(workspace, "source_revision")?.to_string(),
+        patch_hash,
+        changed_files: json!(changes.changed_files),
+        review_diff,
+        verification,
+        redaction_status: redaction_status.to_string(),
+        secret_scan_status: secret_scan_status.to_string(),
+        secret_findings: json!(secret_findings),
+        added: json!(changes.added),
+        modified: json!(changes.modified),
+        deleted: json!(changes.deleted),
+    })
+}
+
 fn required_str<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
     value
         .get(field)
@@ -4340,7 +4845,15 @@ fn validate_product_output_request_task(
     {
         return Err("product output task state or intent authority changed".to_string());
     }
-    if task.get("version").and_then(Value::as_u64) != Some(expected_task_version) {
+    let task_status = task.get("status").and_then(Value::as_str);
+    let task_version = task.get("version").and_then(Value::as_u64);
+    let completed_idempotent = request
+        .get("allow_completed_idempotent")
+        .and_then(Value::as_bool)
+        == Some(true)
+        && task_status == Some("completed")
+        && task_version == Some(expected_task_version.saturating_add(1));
+    if task_version != Some(expected_task_version) && !completed_idempotent {
         return Err("stale product task version at output authority boundary".to_string());
     }
     for field in [
