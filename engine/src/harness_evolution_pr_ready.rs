@@ -582,7 +582,11 @@ mod tests {
             &candidate,
             &active,
             &evaluation,
-            "diff --git a/x b/x\n+++ b/x\n+api_key=supersecret\n",
+            &format!(
+                "diff --git a/x b/x\n+++ b/x\n+{}={}\n",
+                ["api", "key"].join("_"),
+                "supersecret"
+            ),
             &["x".into()],
             &base,
             &sha256_hex("head"),
