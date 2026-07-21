@@ -913,7 +913,7 @@ pub fn evaluate_candidate_fixture(
     Ok(bundle)
 }
 
-fn bundle_content_hash(
+pub fn bundle_content_hash(
     bundle: &CandidateEvaluationBundle,
 ) -> Result<String, EvolutionAdmissionError> {
     let mut for_hash = bundle.clone();

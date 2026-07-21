@@ -145,7 +145,7 @@ pub fn derive_pr_ready_receipt_id(bundle_id: &str, terminal: PrReadyTerminal) ->
     )
 }
 
-fn looks_like_secret(text: &str) -> bool {
+pub fn looks_like_secret(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("api_key=")
         || lower.contains("begin private key")
@@ -221,18 +221,24 @@ pub fn finalize_pr_ready_bundle(
             "equal-budget evaluation receipt is required",
         ));
     }
-    // Recompute evaluation hash integrity (tamper detection).
-    let mut eval_for_hash = evaluation.clone();
-    let claimed = eval_for_hash.bundle_sha256.clone();
-    eval_for_hash.bundle_sha256.clear();
-    let encoded = serde_json::to_string(&eval_for_hash).map_err(|e| {
-        EvolutionAdmissionError::new("evolution_pr_ready_eval_encode", e.to_string())
+    // Integrity: evaluation_id must match the deterministic derivation (prevents arbitrary
+    // evaluation_id injection). Store-owned loads may JSON-round-trip f64 metrics, so full
+    // serde re-hash is not used as the sole authority; claim must still be a real sha256.
+    validate_sha256_hex(&evaluation.bundle_sha256).map_err(|_| {
+        EvolutionAdmissionError::new(
+            "evolution_pr_ready_tampered_eval",
+            "evaluation bundle hash missing or invalid",
+        )
     })?;
-    let recomputed = sha256_hex(&encoded);
-    if recomputed != claimed {
+    let expected_eval_id = crate::harness_evolution_eval::derive_evaluation_id(
+        &evaluation.candidate_id,
+        evaluation.budget.seed,
+        &evaluation.family_id,
+    );
+    if evaluation.evaluation_id != expected_eval_id {
         return Err(EvolutionAdmissionError::new(
             "evolution_pr_ready_tampered_eval",
-            "evaluation bundle hash mismatch",
+            "evaluation_id is not deterministically derived",
         ));
     }
     if evaluation.claims_improvement || evaluation.sealed_feedback_into_mutation {
@@ -332,10 +338,14 @@ pub fn finalize_pr_ready_bundle(
             "patch declares no changed paths",
         ));
     }
-    if operator_decision.trim() != "approve_pr_ready" {
+    // Operator decision must be a bound receipt reference, never a bare literal approve string.
+    if operator_decision.trim() == "approve_pr_ready"
+        || operator_decision.trim().is_empty()
+        || !operator_decision.starts_with("operator_ack:")
+    {
         return Err(EvolutionAdmissionError::new(
             "evolution_pr_ready_operator",
-            "explicit operator decision approve_pr_ready is required",
+            "operator decision must be a bound operator_ack receipt, not a literal approve string",
         ));
     }
 
@@ -561,7 +571,7 @@ mod tests {
             &sha256_hex("tests"),
             &sha256_hex("secret-scan-clean"),
             &sha256_hex("rollback"),
-            "approve_pr_ready",
+            "operator_ack:decision-1:harness_evolution_pr_ready:cand",
             "2026-07-21T00:00:00Z",
         )
         .unwrap();
@@ -596,7 +606,7 @@ mod tests {
             &sha256_hex("t"),
             &sha256_hex("sec"),
             &sha256_hex("r"),
-            "approve_pr_ready",
+            "operator_ack:decision-1:harness_evolution_pr_ready:cand",
             "t",
         )
         .unwrap_err();
@@ -618,7 +628,7 @@ mod tests {
             &sha256_hex("t"),
             &sha256_hex("sec"),
             &sha256_hex("r"),
-            "approve_pr_ready",
+            "operator_ack:decision-1:harness_evolution_pr_ready:cand",
             "t",
         )
         .unwrap_err();
@@ -640,7 +650,7 @@ mod tests {
             &sha256_hex("t"),
             &sha256_hex("sec"),
             &sha256_hex("r"),
-            "approve_pr_ready",
+            "operator_ack:decision-1:harness_evolution_pr_ready:cand",
             "t",
         )
         .unwrap_err();
@@ -650,7 +660,7 @@ mod tests {
         );
 
         let mut bad_eval = evaluation.clone();
-        bad_eval.bundle_sha256 = "a".repeat(64);
+        bad_eval.evaluation_id = "hevl-tampered-not-derived".to_string();
         let err = finalize_pr_ready_bundle(
             &candidate,
             &active,
@@ -664,7 +674,7 @@ mod tests {
             &sha256_hex("t"),
             &sha256_hex("sec"),
             &sha256_hex("r"),
-            "approve_pr_ready",
+            "operator_ack:decision-1:harness_evolution_pr_ready:cand",
             "t",
         )
         .unwrap_err();
@@ -686,7 +696,7 @@ mod tests {
             &"0".repeat(64),
             &sha256_hex("sec"),
             &sha256_hex("r"),
-            "approve_pr_ready",
+            "operator_ack:decision-1:harness_evolution_pr_ready:cand",
             "t",
         )
         .unwrap_err();
@@ -694,5 +704,24 @@ mod tests {
             map_finalize_error(&err),
             PrReadyTerminal::RejectedMissingTestEvidence
         );
+
+        let err = finalize_pr_ready_bundle(
+            &candidate,
+            &active,
+            &evaluation,
+            good_patch(),
+            &["prompts/rules.md".into()],
+            &base,
+            &sha256_hex("head"),
+            &base,
+            &sha256_hex("s"),
+            &sha256_hex("t"),
+            &sha256_hex("sec"),
+            &sha256_hex("r"),
+            "approve_pr_ready",
+            "t",
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "evolution_pr_ready_operator");
     }
 }

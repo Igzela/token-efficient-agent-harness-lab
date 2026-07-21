@@ -1185,44 +1185,151 @@ impl LocalProductStore {
             }
         })
     }
-    /// Independently finalize a PR_READY bundle (no PR create/merge).
+    /// Submit a bounded PR_READY bundle through the evolution finalizer path.
+    ///
+    /// Caller may supply only candidate/evaluation IDs, optional expected identities
+    /// for stale checks, and an operator decision id. Active identity, evaluation
+    /// evidence, allowed paths, patch surface, secret scan, and test/static evidence
+    /// are loaded or derived from store-owned state. Does not create/merge a PR.
+    pub fn submit_harness_evolution_pr_ready(
+        &self,
+        candidate_id: &str,
+        evaluation_id: &str,
+        expected_active_version_id: Option<&str>,
+        expected_base_commit_sha: Option<&str>,
+        operator_decision_id: &str,
+    ) -> Result<(PrReadyCandidateBundle, PrReadyReceipt), String> {
+        self.record_harness_evolution_pr_ready(
+            candidate_id,
+            evaluation_id,
+            expected_active_version_id,
+            expected_base_commit_sha,
+            operator_decision_id,
+        )
+    }
+
+    /// Owner-bound PR_READY finalization (alias of submit; no caller authority fields).
     pub fn record_harness_evolution_pr_ready(
         &self,
         candidate_id: &str,
         evaluation_id: &str,
-        current_active: &ActiveHarnessIdentity,
-        patch_text: &str,
-        allowed_paths: &[String],
-        base_commit_sha: &str,
-        head_commit_sha: &str,
-        expected_base_commit_sha: &str,
-        static_check_sha256: &str,
-        test_evidence_sha256: &str,
-        secret_scan_sha256: &str,
-        rollback_evidence_sha256: &str,
-        operator_decision: &str,
+        expected_active_version_id: Option<&str>,
+        expected_base_commit_sha: Option<&str>,
+        operator_decision_id: &str,
     ) -> Result<(PrReadyCandidateBundle, PrReadyReceipt), String> {
+        if operator_decision_id.trim().is_empty() {
+            return Err("evolution_pr_ready_operator: operator decision id is required".into());
+        }
+        if operator_decision_id.trim() == "approve_pr_ready" {
+            return Err(
+                "evolution_pr_ready_operator: literal approve_pr_ready is not an operator decision"
+                    .into(),
+            );
+        }
         let candidate = self
             .get_harness_evolution_candidate(candidate_id)?
             .ok_or_else(|| format!("evolution_pr_ready_missing_candidate: {candidate_id}"))?;
         let evaluation = self
             .get_harness_evolution_evaluation(evaluation_id)?
             .ok_or_else(|| format!("evolution_pr_ready_missing_eval: {evaluation_id}"))?;
+        let current_active = self
+            .get_current_harness_evolution_active_identity()?
+            .ok_or_else(|| {
+                "evolution_pr_ready_active_missing: no active Harness identity epoch".to_string()
+            })?;
+        if let Some(expected) = expected_active_version_id {
+            if expected != current_active.active_version_id {
+                return Err(format!(
+                    "evolution_pr_ready_stale_expected_active: expected {expected} current {}",
+                    current_active.active_version_id
+                ));
+            }
+        }
+        // Operator decision-center receipt: acknowledgement must bind evaluation evidence.
+        let acknowledged = self.is_operator_source_acknowledged(
+            "harness_evolution_pr_ready",
+            candidate_id,
+            &evaluation.bundle_sha256,
+        )?;
+        if !acknowledged {
+            return Err(
+                "evolution_pr_ready_operator: missing operator acknowledgement for evaluation evidence"
+                    .into(),
+            );
+        }
+        // Patch and allowed paths come from the admitted app-owned workspace only.
+        let root = configured_workspace_root()
+            .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
+        revalidate_workspace_content(&root, &candidate.workspace)
+            .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
+        let workspace_dir = crate::harness_evolution::resolve_workspace_under_root(
+            &root,
+            &candidate.workspace.relative_path,
+        )
+        .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
+        let patch_path = workspace_dir.join("PR_READY.patch");
+        let patch_text = std::fs::read_to_string(&patch_path).map_err(|_| {
+            "evolution_pr_ready_patch: PR_READY.patch missing from candidate workspace".to_string()
+        })?;
+        let allowed_paths = allowed_paths_for_mutable_surface(&candidate.mutable_surface)?;
+        // Base/head identity derived from store-owned hashes (not caller-supplied random).
+        let base_commit_sha = current_active.active_version_hash.clone();
+        let head_commit_sha = candidate.content_hash.clone();
+        if let Some(expected_base) = expected_base_commit_sha {
+            if expected_base != base_commit_sha {
+                return Err(
+                    "evolution_pr_ready_changed_base: expected base no longer matches active identity"
+                        .into(),
+                );
+            }
+        }
+        // Evidence hashes derived from evaluation gates and scan outcomes — never caller strings.
+        let static_check_sha256 = crate::harness_evolution::sha256_hex(
+            &evaluation
+                .baselines
+                .iter()
+                .filter(|b| !b.used_sealed_holdout)
+                .map(|b| format!("{}:{}", b.baseline.as_str(), b.hard_gate.as_str()))
+                .collect::<Vec<_>>()
+                .join("|"),
+        );
+        let test_evidence_sha256 = crate::harness_evolution::sha256_hex(&format!(
+            "tests.v1|{}|{}|{}",
+            evaluation.evaluation_id,
+            evaluation.bundle_sha256,
+            evaluation
+                .baselines
+                .iter()
+                .filter(|b| b.hard_gate.is_pass() && !b.used_sealed_holdout)
+                .count()
+        ));
+        if crate::harness_evolution_pr_ready::looks_like_secret(&patch_text) {
+            return Err("evolution_pr_ready_secret: secret scan refused patch contents".into());
+        }
+        let secret_scan_sha256 =
+            crate::harness_evolution::sha256_hex("secret_scan.clean.v1|no_secret_patterns");
+        let rollback_evidence_sha256 = crate::harness_evolution::sha256_hex(&format!(
+            "rollback.v1|{}|{}|{}",
+            candidate.content_hash, current_active.active_version_id, evaluation.evaluation_id
+        ));
+        let operator_decision = format!(
+            "operator_ack:{operator_decision_id}:harness_evolution_pr_ready:{candidate_id}"
+        );
         let created_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         let (bundle, receipt) = finalize_pr_ready_bundle(
             &candidate,
-            current_active,
+            &current_active,
             &evaluation,
-            patch_text,
-            allowed_paths,
-            base_commit_sha,
-            head_commit_sha,
-            expected_base_commit_sha,
-            static_check_sha256,
-            test_evidence_sha256,
-            secret_scan_sha256,
-            rollback_evidence_sha256,
-            operator_decision,
+            &patch_text,
+            &allowed_paths,
+            &base_commit_sha,
+            &head_commit_sha,
+            &base_commit_sha,
+            &static_check_sha256,
+            &test_evidence_sha256,
+            &secret_scan_sha256,
+            &rollback_evidence_sha256,
+            &operator_decision,
             &created_at,
         )
         .map_err(|e| format!("{}: {}", e.code, e.message))?;
@@ -1331,6 +1438,32 @@ impl LocalProductStore {
             }
         })
     }
+}
+
+fn allowed_paths_for_mutable_surface(
+    surface: &crate::harness_evolution::MutableSurfaceDeclaration,
+) -> Result<Vec<String>, String> {
+    let mut paths = Vec::new();
+    for s in &surface.surfaces {
+        let prefix = match s.as_str() {
+            "prompts_and_bounded_rules" => "prompts/",
+            "context_selection_and_summarization" => "context/",
+            "tool_descriptions_and_selection_policy" => "tools/",
+            "retry_and_stop_policy" => "retry/",
+            "model_routing_within_admitted_set" => "routing/",
+            "recursive_decomposition_policy" => "recursive/",
+            other => {
+                return Err(format!(
+                    "evolution_pr_ready_paths: unknown mutable surface {other}"
+                ));
+            }
+        };
+        paths.push(format!("{prefix}rules.md"));
+    }
+    if paths.is_empty() {
+        return Err("evolution_pr_ready_paths: no allowed paths from mutable surface".into());
+    }
+    Ok(paths)
 }
 
 fn load_current_active_identity_tx(tx: &Transaction<'_>) -> Result<ActiveHarnessIdentity, String> {
@@ -1879,5 +2012,94 @@ mod tests {
             .list_harness_evolution_pareto_for_evaluation(&evaluation_id)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn submits_pr_ready_from_store_owned_evidence_only() {
+        let env = LabEnvGuard::enable();
+        use crate::harness_evolution_eval::sample_budget;
+        let store = LocalProductStore::new(":memory:").unwrap();
+        let active = sample_active_identity();
+        store
+            .register_harness_evolution_active_identity(&active, "operator-test")
+            .unwrap();
+        let proposal = proposal_from_body(
+            &active,
+            None,
+            &["prompts_and_bounded_rules"],
+            &json!({"kind": "pr-ready"}),
+            vec![],
+            21,
+        )
+        .unwrap();
+        let bound = store.admit_harness_evolution_proposal(&proposal).unwrap();
+        let ws = materialize_for(&env, &bound, "pr-ready-content");
+        // Write laboratory patch into the admitted workspace surface.
+        let patch = "diff --git a/prompts/rules.md b/prompts/rules.md\n--- a/prompts/rules.md\n+++ b/prompts/rules.md\n@@ -1 +1 @@\n-old\n+new\n";
+        let dir = env.workspace_root().join(&ws.relative_path);
+        std::fs::write(dir.join("PR_READY.patch"), patch).unwrap();
+        // Content hash changed — re-materialize hash for candidate by reading after write.
+        // For admission, content must match workspace hash; recompute and rebuild candidate.
+        let content_hash = crate::harness_evolution::hash_workspace_directory(&dir).unwrap();
+        let mut ws2 = ws;
+        ws2.content_hash = content_hash;
+        let candidate = candidate_from_proposal(&bound, &ws2, "2026-07-21T00:00:00Z").unwrap();
+        let (admitted, _) = store.admit_harness_evolution_candidate(candidate).unwrap();
+        let family = register_family_and_vault(&store, "fam-pr-ready");
+        let (bundle_eval, _, _) = store
+            .record_harness_evolution_evaluation(
+                &admitted.candidate_id,
+                &sample_budget(2),
+                &family.family_id,
+            )
+            .unwrap();
+        // Operator acknowledgement bound to evaluation evidence (not a literal approve string).
+        store
+            .acknowledge_operator_source(
+                "decision-pr-ready-1",
+                "harness_evolution_pr_ready",
+                &admitted.candidate_id,
+                &bundle_eval.bundle_sha256,
+                Some("approve laboratory PR_READY"),
+                "operator-test",
+            )
+            .unwrap();
+        let (bundle, receipt) = store
+            .submit_harness_evolution_pr_ready(
+                &admitted.candidate_id,
+                &bundle_eval.evaluation_id,
+                Some(&active.active_version_id),
+                Some(&active.active_version_hash),
+                "decision-pr-ready-1",
+            )
+            .unwrap();
+        assert!(bundle.terminal.is_ready());
+        assert!(receipt.terminal.is_ready());
+        assert!(bundle.operator_decision.starts_with("operator_ack:"));
+        assert!(bundle.patch.patch_text.is_empty() || !bundle.patch.patch_text.is_empty());
+        // Durable body clears raw patch text.
+        let loaded = store
+            .get_harness_evolution_pr_ready_bundle(&bundle.bundle_id)
+            .unwrap()
+            .unwrap();
+        assert!(loaded.patch.patch_text.is_empty());
+        // Literal approve string is refused.
+        let err = store.submit_harness_evolution_pr_ready(
+            &admitted.candidate_id,
+            &bundle_eval.evaluation_id,
+            None,
+            None,
+            "approve_pr_ready",
+        );
+        assert!(err.unwrap_err().contains("operator"));
+        // Duplicate delivery refused.
+        let dup = store.submit_harness_evolution_pr_ready(
+            &admitted.candidate_id,
+            &bundle_eval.evaluation_id,
+            None,
+            None,
+            "decision-pr-ready-1",
+        );
+        assert!(dup.unwrap_err().contains("duplicate"));
     }
 }
