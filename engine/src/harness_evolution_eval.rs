@@ -1,0 +1,1017 @@
+//! PE7 Harness Evolution B2 — fixture evaluation and Pareto archive (default-off).
+//!
+//! Deterministic equal-budget baselines, evaluator-owned sealed holdout (hashes only
+//! outside the evaluator), hard gates, and a conservative Pareto archive. Does not
+//! mutate the active Harness, produce PR_READY bundles (B3), call providers, or
+//! claim recursive self-improvement from fixture acceptance alone.
+
+use crate::harness_evolution::{
+    sha256_hex, validate_sha256_hex, EvolutionAdmissionError, KILL_SWITCH_ENV,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::BTreeSet;
+
+pub const EVAL_SCHEMA_VERSION: &str = "harness_evolution_eval.v1";
+pub const BUDGET_SCHEMA_VERSION: &str = "harness_evolution_eval_budget.v1";
+pub const SEALED_SCHEMA_VERSION: &str = "harness_evolution_sealed_holdout.v1";
+pub const ARCHIVE_SCHEMA_VERSION: &str = "harness_evolution_pareto_archive.v1";
+pub const EVAL_RECEIPT_SCHEMA_VERSION: &str = "harness_evolution_eval_receipt.v1";
+
+pub const MAX_BASELINE_COUNT: usize = 16;
+pub const MAX_TASK_FAMILY_TASKS: usize = 64;
+pub const MAX_SEALED_ENTRANTS: usize = 3;
+pub const MIN_SEALED_ENTRANTS: usize = 1;
+pub const MAX_PARETO_OBJECTIVES: usize = 8;
+
+/// Fixed baseline strategies admitted for equal-budget comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum BaselineKind {
+    StaticSinglePass,
+    BoundedReflectionRetry,
+    BestOfN,
+    PromptOnlyOptimization,
+    GreedyCurrentBestMutation,
+    RandomEqualCount,
+    LineageExperiment,
+    FixedExecutor,
+    FixtureOpencode,
+}
+
+impl BaselineKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StaticSinglePass => "static_single_pass",
+            Self::BoundedReflectionRetry => "bounded_reflection_retry",
+            Self::BestOfN => "best_of_n",
+            Self::PromptOnlyOptimization => "prompt_only_optimization",
+            Self::GreedyCurrentBestMutation => "greedy_current_best_mutation",
+            Self::RandomEqualCount => "random_equal_count",
+            Self::LineageExperiment => "lineage_experiment",
+            Self::FixedExecutor => "fixed_executor",
+            Self::FixtureOpencode => "fixture_opencode",
+        }
+    }
+
+    pub fn all() -> &'static [BaselineKind] {
+        &[
+            Self::StaticSinglePass,
+            Self::BoundedReflectionRetry,
+            Self::BestOfN,
+            Self::PromptOnlyOptimization,
+            Self::GreedyCurrentBestMutation,
+            Self::RandomEqualCount,
+            Self::LineageExperiment,
+            Self::FixedExecutor,
+            Self::FixtureOpencode,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetKind {
+    EqualCall,
+    EqualToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EqualBudgetContract {
+    pub schema_version: String,
+    pub budget_kind: BudgetKind,
+    pub call_limit: u64,
+    pub token_limit: u64,
+    pub candidate_count: u64,
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskSplit {
+    Development,
+    Validation,
+    SealedHoldout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FixtureTask {
+    pub task_id: String,
+    pub family_id: String,
+    pub split: TaskSplit,
+    /// Hash of the sealed label; plain labels never leave the evaluator.
+    pub label_sha256: String,
+    pub difficulty: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskFamilyManifest {
+    pub schema_version: String,
+    pub family_id: String,
+    pub development: Vec<FixtureTask>,
+    pub validation: Vec<FixtureTask>,
+    /// Sealed holdout tasks: only 1–3 preselected entrants may later be evaluated.
+    pub sealed_holdout: Vec<FixtureTask>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedHoldoutVault {
+    pub schema_version: String,
+    pub family_id: String,
+    /// Membership hashes only — never task bodies or labels for candidates.
+    pub sealed_task_hashes: Vec<String>,
+    pub vault_sha256: String,
+    pub preselected_entrant_limit: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetricVector {
+    pub quality: f64,
+    pub token_cost: f64,
+    pub latency_ms: f64,
+    pub robustness: f64,
+    pub behavioral_diversity: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvaluationUsage {
+    pub calls: u64,
+    pub tokens: u64,
+    pub incomplete: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HardGateResult {
+    Passed,
+    FailedCorrectness,
+    FailedSafety,
+    FailedIntegrity,
+    FailedScope,
+    FailedCompatibility,
+    FailedBudget,
+    FailedIncompleteEvidence,
+}
+
+impl HardGateResult {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::FailedCorrectness => "failed_correctness",
+            Self::FailedSafety => "failed_safety",
+            Self::FailedIntegrity => "failed_integrity",
+            Self::FailedScope => "failed_scope",
+            Self::FailedCompatibility => "failed_compatibility",
+            Self::FailedBudget => "failed_budget",
+            Self::FailedIncompleteEvidence => "failed_incomplete_evidence",
+        }
+    }
+
+    pub fn is_pass(self) -> bool {
+        matches!(self, Self::Passed)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BaselineEvaluation {
+    pub baseline: BaselineKind,
+    pub seed: u64,
+    pub metrics: MetricVector,
+    pub usage: EvaluationUsage,
+    pub hard_gate: HardGateResult,
+    pub split: TaskSplit,
+    /// True only when sealed holdout was used; sealed metrics never feed mutation.
+    pub used_sealed_holdout: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CandidateEvaluationBundle {
+    pub schema_version: String,
+    pub evaluation_id: String,
+    pub candidate_id: String,
+    pub lineage_id: String,
+    pub active_version_id: String,
+    pub active_version_hash: String,
+    pub evaluator_identity_hash: String,
+    pub budget: EqualBudgetContract,
+    pub family_id: String,
+    pub baselines: Vec<BaselineEvaluation>,
+    pub sealed_entrant_count: u8,
+    pub sealed_feedback_into_mutation: bool,
+    pub claims_improvement: bool,
+    pub bundle_sha256: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParetoArchiveEntry {
+    pub schema_version: String,
+    pub archive_id: String,
+    pub evaluation_id: String,
+    pub candidate_id: String,
+    pub lineage_id: String,
+    pub baseline: BaselineKind,
+    pub metrics: MetricVector,
+    pub hard_gate: HardGateResult,
+    pub sequential_rank: u32,
+    pub dominated: bool,
+    pub entry_sha256: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvalReceipt {
+    pub schema_version: String,
+    pub receipt_id: String,
+    pub evaluation_id: String,
+    pub candidate_id: String,
+    pub terminal: String,
+    pub bundle_sha256: String,
+    pub created_at: String,
+}
+
+pub fn lab_eval_enabled() -> bool {
+    crate::harness_evolution::lab_enabled()
+}
+
+pub fn kill_switch_active() -> bool {
+    std::env::var(KILL_SWITCH_ENV).as_deref() == Ok("1")
+}
+
+pub fn derive_evaluation_id(candidate_id: &str, budget_seed: u64, family_id: &str) -> String {
+    format!(
+        "eeval_{}",
+        &sha256_hex(&format!(
+            "eval|{}|{}|{}",
+            candidate_id, budget_seed, family_id
+        ))[..32]
+    )
+}
+
+pub fn derive_archive_id(
+    evaluation_id: &str,
+    baseline: BaselineKind,
+    sequential_rank: u32,
+) -> String {
+    format!(
+        "earch_{}",
+        &sha256_hex(&format!(
+            "archive|{}|{}|{}",
+            evaluation_id,
+            baseline.as_str(),
+            sequential_rank
+        ))[..32]
+    )
+}
+
+pub fn derive_eval_receipt_id(evaluation_id: &str, terminal: &str) -> String {
+    format!(
+        "ereceipt_{}",
+        &sha256_hex(&format!("eval_receipt|{}|{}", evaluation_id, terminal))[..32]
+    )
+}
+
+pub fn validate_budget(budget: &EqualBudgetContract) -> Result<(), EvolutionAdmissionError> {
+    if budget.schema_version != BUDGET_SCHEMA_VERSION {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_budget_schema",
+            "budget schema_version mismatch",
+        ));
+    }
+    if budget.call_limit == 0 || budget.token_limit == 0 || budget.candidate_count == 0 {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_budget_zero",
+            "call_limit, token_limit, and candidate_count must be positive",
+        ));
+    }
+    if budget.candidate_count > MAX_BASELINE_COUNT as u64 {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_budget_too_many",
+            "candidate_count exceeds admitted laboratory bound",
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_task_family(manifest: &TaskFamilyManifest) -> Result<(), EvolutionAdmissionError> {
+    if manifest.schema_version != EVAL_SCHEMA_VERSION {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_family_schema",
+            "task family schema_version mismatch",
+        ));
+    }
+    if manifest.family_id.trim().is_empty() {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_family_id",
+            "family_id required",
+        ));
+    }
+    let total =
+        manifest.development.len() + manifest.validation.len() + manifest.sealed_holdout.len();
+    if total == 0 || total > MAX_TASK_FAMILY_TASKS {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_family_size",
+            "task family size out of bounds",
+        ));
+    }
+    for task in manifest
+        .development
+        .iter()
+        .chain(manifest.validation.iter())
+        .chain(manifest.sealed_holdout.iter())
+    {
+        validate_sha256_hex(&task.label_sha256).map_err(|_| {
+            EvolutionAdmissionError::new(
+                "evolution_eval_label_hash",
+                "label_sha256 must be 64 lowercase hex",
+            )
+        })?;
+        if task.family_id != manifest.family_id {
+            return Err(EvolutionAdmissionError::new(
+                "evolution_eval_family_mismatch",
+                "task family_id must match manifest",
+            ));
+        }
+    }
+    if !(MIN_SEALED_ENTRANTS..=MAX_SEALED_ENTRANTS).contains(&manifest.sealed_holdout.len()) {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_sealed_count",
+            "sealed holdout must preselect 1–3 entrants",
+        ));
+    }
+    Ok(())
+}
+
+pub fn build_sealed_vault(
+    manifest: &TaskFamilyManifest,
+) -> Result<SealedHoldoutVault, EvolutionAdmissionError> {
+    validate_task_family(manifest)?;
+    let sealed_task_hashes: Vec<String> = manifest
+        .sealed_holdout
+        .iter()
+        .map(|t| {
+            sha256_hex(&format!(
+                "sealed|{}|{}|{}",
+                t.task_id, t.family_id, t.label_sha256
+            ))
+        })
+        .collect();
+    let vault_material = sealed_task_hashes.join("|");
+    let vault = SealedHoldoutVault {
+        schema_version: SEALED_SCHEMA_VERSION.to_string(),
+        family_id: manifest.family_id.clone(),
+        sealed_task_hashes: sealed_task_hashes.clone(),
+        vault_sha256: sha256_hex(&vault_material),
+        preselected_entrant_limit: manifest.sealed_holdout.len() as u8,
+    };
+    Ok(vault)
+}
+
+/// Deterministic fixture metrics for a baseline under an equal budget and seed.
+/// Metrics are synthetic and bounded; they do not encode real model quality claims.
+pub fn fixture_baseline_metrics(
+    baseline: BaselineKind,
+    budget: &EqualBudgetContract,
+    split: TaskSplit,
+    task_count: usize,
+) -> (MetricVector, EvaluationUsage, HardGateResult) {
+    let seed = budget.seed.wrapping_add(baseline as u64 * 17);
+    let base_quality = match baseline {
+        BaselineKind::StaticSinglePass => 0.55,
+        BaselineKind::BoundedReflectionRetry => 0.62,
+        BaselineKind::BestOfN => 0.68,
+        BaselineKind::PromptOnlyOptimization => 0.60,
+        BaselineKind::GreedyCurrentBestMutation => 0.66,
+        BaselineKind::RandomEqualCount => 0.50,
+        BaselineKind::LineageExperiment => 0.64,
+        BaselineKind::FixedExecutor => 0.58,
+        BaselineKind::FixtureOpencode => 0.57,
+    };
+    let split_factor = match split {
+        TaskSplit::Development => 1.0,
+        TaskSplit::Validation => 0.95,
+        TaskSplit::SealedHoldout => 0.90,
+    };
+    let jitter = ((seed % 100) as f64) / 1000.0;
+    let quality = (base_quality * split_factor + jitter).clamp(0.0, 1.0);
+    let calls = match budget.budget_kind {
+        BudgetKind::EqualCall => budget.call_limit.min(budget.candidate_count.max(1)),
+        BudgetKind::EqualToken => (budget.call_limit / 2).max(1),
+    };
+    let tokens = match budget.budget_kind {
+        BudgetKind::EqualToken => budget.token_limit,
+        BudgetKind::EqualCall => (budget.token_limit / 2).max(1),
+    };
+    // Incomplete evidence fails closed when task_count is zero.
+    if task_count == 0 {
+        return (
+            MetricVector {
+                quality: 0.0,
+                token_cost: tokens as f64,
+                latency_ms: 0.0,
+                robustness: 0.0,
+                behavioral_diversity: 0.0,
+            },
+            EvaluationUsage {
+                calls: 0,
+                tokens: 0,
+                incomplete: true,
+            },
+            HardGateResult::FailedIncompleteEvidence,
+        );
+    }
+    let usage = EvaluationUsage {
+        calls,
+        tokens,
+        incomplete: false,
+    };
+    let hard_gate = if calls > budget.call_limit || tokens > budget.token_limit {
+        HardGateResult::FailedBudget
+    } else if quality < 0.05 {
+        HardGateResult::FailedCorrectness
+    } else {
+        HardGateResult::Passed
+    };
+    let metrics = MetricVector {
+        quality,
+        token_cost: tokens as f64,
+        latency_ms: 10.0 + (seed % 50) as f64 + task_count as f64,
+        robustness: (quality * 0.9 + 0.05).clamp(0.0, 1.0),
+        behavioral_diversity: match baseline {
+            BaselineKind::RandomEqualCount | BaselineKind::LineageExperiment => 0.7,
+            BaselineKind::GreedyCurrentBestMutation => 0.35,
+            _ => 0.5,
+        },
+    };
+    (metrics, usage, hard_gate)
+}
+
+pub fn evaluate_candidate_fixture(
+    candidate_id: &str,
+    lineage_id: &str,
+    active_version_id: &str,
+    active_version_hash: &str,
+    evaluator_identity_hash: &str,
+    budget: &EqualBudgetContract,
+    family: &TaskFamilyManifest,
+    sealed_vault: &SealedHoldoutVault,
+    include_sealed: bool,
+    created_at: &str,
+) -> Result<CandidateEvaluationBundle, EvolutionAdmissionError> {
+    if !lab_eval_enabled() {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_lab_disabled",
+            "Harness evolution laboratory is default-off",
+        ));
+    }
+    if kill_switch_active() {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_kill_switch",
+            "Harness evolution kill switch is active",
+        ));
+    }
+    validate_budget(budget)?;
+    validate_task_family(family)?;
+    if sealed_vault.family_id != family.family_id {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_sealed_family",
+            "sealed vault family must match task family",
+        ));
+    }
+    if sealed_vault.schema_version != SEALED_SCHEMA_VERSION {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_sealed_schema",
+            "sealed vault schema mismatch",
+        ));
+    }
+    let expected = build_sealed_vault(family)?;
+    if expected.vault_sha256 != sealed_vault.vault_sha256 {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_sealed_tamper",
+            "sealed vault hash mismatch",
+        ));
+    }
+    if include_sealed
+        && !(MIN_SEALED_ENTRANTS as u8..=MAX_SEALED_ENTRANTS as u8)
+            .contains(&sealed_vault.preselected_entrant_limit)
+    {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_sealed_entrants",
+            "sealed entrant count must be 1–3",
+        ));
+    }
+
+    let mut baselines = Vec::new();
+    // Development + validation always; sealed only as terminal read, never mutation feedback.
+    for &baseline in BaselineKind::all() {
+        let (metrics, usage, hard_gate) = fixture_baseline_metrics(
+            baseline,
+            budget,
+            TaskSplit::Validation,
+            family.validation.len(),
+        );
+        baselines.push(BaselineEvaluation {
+            baseline,
+            seed: budget.seed,
+            metrics,
+            usage,
+            hard_gate,
+            split: TaskSplit::Validation,
+            used_sealed_holdout: false,
+        });
+    }
+    let sealed_entrant_count = if include_sealed {
+        sealed_vault.preselected_entrant_limit
+    } else {
+        0
+    };
+    if include_sealed {
+        // One sealed pass for FixedExecutor only — no feedback into mutation baselines.
+        let (metrics, usage, hard_gate) = fixture_baseline_metrics(
+            BaselineKind::FixedExecutor,
+            budget,
+            TaskSplit::SealedHoldout,
+            family.sealed_holdout.len(),
+        );
+        baselines.push(BaselineEvaluation {
+            baseline: BaselineKind::FixedExecutor,
+            seed: budget.seed.wrapping_add(999),
+            metrics,
+            usage,
+            hard_gate,
+            split: TaskSplit::SealedHoldout,
+            used_sealed_holdout: true,
+        });
+    }
+
+    // Fail closed if any non-sealed baseline has incomplete evidence.
+    for b in &baselines {
+        if b.usage.incomplete && !b.used_sealed_holdout {
+            return Err(EvolutionAdmissionError::new(
+                "evolution_eval_incomplete",
+                "incomplete token/cost/call evidence fails closed",
+            ));
+        }
+    }
+
+    let evaluation_id = derive_evaluation_id(candidate_id, budget.seed, &family.family_id);
+    let mut bundle = CandidateEvaluationBundle {
+        schema_version: EVAL_SCHEMA_VERSION.to_string(),
+        evaluation_id: evaluation_id.clone(),
+        candidate_id: candidate_id.to_string(),
+        lineage_id: lineage_id.to_string(),
+        active_version_id: active_version_id.to_string(),
+        active_version_hash: active_version_hash.to_string(),
+        evaluator_identity_hash: evaluator_identity_hash.to_string(),
+        budget: budget.clone(),
+        family_id: family.family_id.clone(),
+        baselines,
+        sealed_entrant_count,
+        // Laboratory never feeds sealed results into further mutation.
+        sealed_feedback_into_mutation: false,
+        // Fixture evaluation alone never claims improvement.
+        claims_improvement: false,
+        bundle_sha256: String::new(),
+        created_at: created_at.to_string(),
+    };
+    bundle.bundle_sha256 = bundle_content_hash(&bundle)?;
+    Ok(bundle)
+}
+
+fn bundle_content_hash(
+    bundle: &CandidateEvaluationBundle,
+) -> Result<String, EvolutionAdmissionError> {
+    let mut for_hash = bundle.clone();
+    for_hash.bundle_sha256.clear();
+    let encoded = serde_json::to_string(&for_hash)
+        .map_err(|e| EvolutionAdmissionError::new("evolution_eval_encode", e.to_string()))?;
+    Ok(sha256_hex(&encoded))
+}
+
+/// Pareto non-domination over quality (max), token_cost (min), latency (min),
+/// robustness (max), behavioral_diversity (max). Conservative sequential ranks.
+pub fn build_pareto_archive(
+    bundle: &CandidateEvaluationBundle,
+    created_at: &str,
+) -> Result<Vec<ParetoArchiveEntry>, EvolutionAdmissionError> {
+    if bundle.schema_version != EVAL_SCHEMA_VERSION {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_bundle_schema",
+            "evaluation bundle schema mismatch",
+        ));
+    }
+    if bundle.claims_improvement {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_forbidden_claim",
+            "evaluation must not claim improvement without meta-improver",
+        ));
+    }
+    if bundle.sealed_feedback_into_mutation {
+        return Err(EvolutionAdmissionError::new(
+            "evolution_eval_sealed_feedback",
+            "sealed holdout feedback into mutation is forbidden",
+        ));
+    }
+    // Only validation-split baselines with passing hard gates enter the archive.
+    let eligible: Vec<&BaselineEvaluation> = bundle
+        .baselines
+        .iter()
+        .filter(|b| {
+            !b.used_sealed_holdout
+                && matches!(b.split, TaskSplit::Validation)
+                && b.hard_gate.is_pass()
+                && !b.usage.incomplete
+        })
+        .collect();
+    let mut entries = Vec::new();
+    for (idx, baseline) in eligible.iter().enumerate() {
+        let dominated = eligible.iter().any(|other| {
+            dominates(&other.metrics, &baseline.metrics) && other.baseline != baseline.baseline
+        });
+        let archive_id = derive_archive_id(&bundle.evaluation_id, baseline.baseline, idx as u32);
+        let mut entry = ParetoArchiveEntry {
+            schema_version: ARCHIVE_SCHEMA_VERSION.to_string(),
+            archive_id: archive_id.clone(),
+            evaluation_id: bundle.evaluation_id.clone(),
+            candidate_id: bundle.candidate_id.clone(),
+            lineage_id: bundle.lineage_id.clone(),
+            baseline: baseline.baseline,
+            metrics: baseline.metrics.clone(),
+            hard_gate: baseline.hard_gate,
+            sequential_rank: idx as u32,
+            dominated,
+            entry_sha256: String::new(),
+            created_at: created_at.to_string(),
+        };
+        entry.entry_sha256 = archive_entry_hash(&entry)?;
+        entries.push(entry);
+    }
+    // Conservative sequential promotion: sort non-dominated by quality desc, then rank.
+    entries.sort_by(|a, b| {
+        a.dominated
+            .cmp(&b.dominated)
+            .then_with(|| {
+                b.metrics
+                    .quality
+                    .partial_cmp(&a.metrics.quality)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.sequential_rank.cmp(&b.sequential_rank))
+    });
+    for (i, entry) in entries.iter_mut().enumerate() {
+        entry.sequential_rank = i as u32;
+        entry.entry_sha256.clear();
+        entry.entry_sha256 = archive_entry_hash(entry)?;
+    }
+    Ok(entries)
+}
+
+fn dominates(a: &MetricVector, b: &MetricVector) -> bool {
+    let better_or_eq = a.quality >= b.quality
+        && a.token_cost <= b.token_cost
+        && a.latency_ms <= b.latency_ms
+        && a.robustness >= b.robustness
+        && a.behavioral_diversity >= b.behavioral_diversity;
+    let strictly_better = a.quality > b.quality
+        || a.token_cost < b.token_cost
+        || a.latency_ms < b.latency_ms
+        || a.robustness > b.robustness
+        || a.behavioral_diversity > b.behavioral_diversity;
+    better_or_eq && strictly_better
+}
+
+fn archive_entry_hash(entry: &ParetoArchiveEntry) -> Result<String, EvolutionAdmissionError> {
+    let mut for_hash = entry.clone();
+    for_hash.entry_sha256.clear();
+    let encoded = serde_json::to_string(&for_hash).map_err(|e| {
+        EvolutionAdmissionError::new("evolution_eval_archive_encode", e.to_string())
+    })?;
+    Ok(sha256_hex(&encoded))
+}
+
+pub fn build_eval_receipt(
+    bundle: &CandidateEvaluationBundle,
+    terminal: &str,
+    created_at: &str,
+) -> EvalReceipt {
+    EvalReceipt {
+        schema_version: EVAL_RECEIPT_SCHEMA_VERSION.to_string(),
+        receipt_id: derive_eval_receipt_id(&bundle.evaluation_id, terminal),
+        evaluation_id: bundle.evaluation_id.clone(),
+        candidate_id: bundle.candidate_id.clone(),
+        terminal: terminal.to_string(),
+        bundle_sha256: bundle.bundle_sha256.clone(),
+        created_at: created_at.to_string(),
+    }
+}
+
+/// Sample fixture task family for tests and default-off laboratory demos.
+pub fn sample_task_family(family_id: &str) -> TaskFamilyManifest {
+    let mk = |id: &str, split: TaskSplit, difficulty: u8| FixtureTask {
+        task_id: id.to_string(),
+        family_id: family_id.to_string(),
+        split,
+        label_sha256: sha256_hex(&format!("label|{family_id}|{id}")),
+        difficulty,
+    };
+    TaskFamilyManifest {
+        schema_version: EVAL_SCHEMA_VERSION.to_string(),
+        family_id: family_id.to_string(),
+        development: vec![
+            mk("dev-1", TaskSplit::Development, 1),
+            mk("dev-2", TaskSplit::Development, 2),
+        ],
+        validation: vec![
+            mk("val-1", TaskSplit::Validation, 2),
+            mk("val-2", TaskSplit::Validation, 3),
+        ],
+        sealed_holdout: vec![
+            mk("seal-1", TaskSplit::SealedHoldout, 3),
+            mk("seal-2", TaskSplit::SealedHoldout, 4),
+        ],
+    }
+}
+
+pub fn sample_budget(seed: u64) -> EqualBudgetContract {
+    EqualBudgetContract {
+        schema_version: BUDGET_SCHEMA_VERSION.to_string(),
+        budget_kind: BudgetKind::EqualCall,
+        call_limit: 8,
+        token_limit: 4_000,
+        candidate_count: 9,
+        seed,
+    }
+}
+
+/// Redacted evidence summary safe for durable storage (no labels/prompts).
+pub fn redacted_eval_evidence(bundle: &CandidateEvaluationBundle) -> Value {
+    json!({
+        "schema_version": EVAL_SCHEMA_VERSION,
+        "evaluation_id": bundle.evaluation_id,
+        "candidate_id": bundle.candidate_id,
+        "lineage_id": bundle.lineage_id,
+        "active_version_id": bundle.active_version_id,
+        "family_id": bundle.family_id,
+        "budget_kind": match bundle.budget.budget_kind {
+            BudgetKind::EqualCall => "equal_call",
+            BudgetKind::EqualToken => "equal_token",
+        },
+        "call_limit": bundle.budget.call_limit,
+        "token_limit": bundle.budget.token_limit,
+        "baseline_count": bundle.baselines.len(),
+        "sealed_entrant_count": bundle.sealed_entrant_count,
+        "sealed_feedback_into_mutation": bundle.sealed_feedback_into_mutation,
+        "claims_improvement": bundle.claims_improvement,
+        "bundle_sha256": bundle.bundle_sha256,
+        "hard_gates": bundle.baselines.iter().map(|b| {
+            json!({
+                "baseline": b.baseline.as_str(),
+                "gate": b.hard_gate.as_str(),
+                "split": match b.split {
+                    TaskSplit::Development => "development",
+                    TaskSplit::Validation => "validation",
+                    TaskSplit::SealedHoldout => "sealed_holdout",
+                },
+                "used_sealed": b.used_sealed_holdout,
+                "calls": b.usage.calls,
+                "tokens": b.usage.tokens,
+                "incomplete": b.usage.incomplete,
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+/// Detect duplicate objective keys for archive integrity checks.
+pub fn unique_baseline_set(entries: &[ParetoArchiveEntry]) -> BTreeSet<String> {
+    entries
+        .iter()
+        .map(|e| e.baseline.as_str().to_string())
+        .collect()
+}
+
+pub fn archive_non_dominated(entries: &[ParetoArchiveEntry]) -> Vec<&ParetoArchiveEntry> {
+    entries.iter().filter(|e| !e.dominated).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness_evolution::{ENABLE_ENV, KILL_SWITCH_ENV};
+
+    struct EnvGuard {
+        prev_enable: Option<String>,
+        prev_kill: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn enable_lab() -> Self {
+            let prev_enable = std::env::var(ENABLE_ENV).ok();
+            let prev_kill = std::env::var(KILL_SWITCH_ENV).ok();
+            std::env::set_var(ENABLE_ENV, "1");
+            std::env::remove_var(KILL_SWITCH_ENV);
+            Self {
+                prev_enable,
+                prev_kill,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev_enable {
+                Some(v) => std::env::set_var(ENABLE_ENV, v),
+                None => std::env::remove_var(ENABLE_ENV),
+            }
+            match &self.prev_kill {
+                Some(v) => std::env::set_var(KILL_SWITCH_ENV, v),
+                None => std::env::remove_var(KILL_SWITCH_ENV),
+            }
+        }
+    }
+
+    #[test]
+    fn equal_budget_fixture_evaluation_is_deterministic() {
+        let _g = EnvGuard::enable_lab();
+        let family = sample_task_family("fam-a");
+        let vault = build_sealed_vault(&family).unwrap();
+        let budget = sample_budget(7);
+        let a = evaluate_candidate_fixture(
+            "cand-1",
+            "lin-1",
+            "active-1",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &budget,
+            &family,
+            &vault,
+            true,
+            "2026-07-21T00:00:00Z",
+        )
+        .unwrap();
+        let b = evaluate_candidate_fixture(
+            "cand-1",
+            "lin-1",
+            "active-1",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &budget,
+            &family,
+            &vault,
+            true,
+            "2026-07-21T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(a.bundle_sha256, b.bundle_sha256);
+        assert_eq!(a.evaluation_id, b.evaluation_id);
+        assert!(!a.claims_improvement);
+        assert!(!a.sealed_feedback_into_mutation);
+        assert_eq!(a.sealed_entrant_count, 2);
+        assert!(a.baselines.iter().any(|x| x.used_sealed_holdout));
+        assert_eq!(BaselineKind::all().len(), 9);
+        assert!(a.baselines.len() >= 9);
+    }
+
+    #[test]
+    fn default_off_and_kill_switch_refuse_evaluation() {
+        let family = sample_task_family("fam-b");
+        let vault = build_sealed_vault(&family).unwrap();
+        let budget = sample_budget(1);
+        std::env::remove_var(ENABLE_ENV);
+        let err = evaluate_candidate_fixture(
+            "c",
+            "l",
+            "a",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &budget,
+            &family,
+            &vault,
+            false,
+            "2026-07-21T00:00:00Z",
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "evolution_lab_disabled");
+
+        let _g = EnvGuard::enable_lab();
+        std::env::set_var(KILL_SWITCH_ENV, "1");
+        let err = evaluate_candidate_fixture(
+            "c",
+            "l",
+            "a",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &budget,
+            &family,
+            &vault,
+            false,
+            "2026-07-21T00:00:00Z",
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "evolution_kill_switch");
+        std::env::remove_var(KILL_SWITCH_ENV);
+    }
+
+    #[test]
+    fn sealed_count_and_tamper_fail_closed() {
+        let mut family = sample_task_family("fam-c");
+        family.sealed_holdout.clear();
+        assert!(build_sealed_vault(&family).is_err());
+        family = sample_task_family("fam-c");
+        let mut vault = build_sealed_vault(&family).unwrap();
+        vault.vault_sha256 = "0".repeat(64);
+        let _g = EnvGuard::enable_lab();
+        let err = evaluate_candidate_fixture(
+            "c",
+            "l",
+            "a",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &sample_budget(2),
+            &family,
+            &vault,
+            true,
+            "2026-07-21T00:00:00Z",
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "evolution_eval_sealed_tamper");
+    }
+
+    #[test]
+    fn pareto_archive_refuses_improvement_claim_and_ranks_conservatively() {
+        let _g = EnvGuard::enable_lab();
+        let family = sample_task_family("fam-d");
+        let vault = build_sealed_vault(&family).unwrap();
+        let mut bundle = evaluate_candidate_fixture(
+            "cand-p",
+            "lin-p",
+            "active-1",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &sample_budget(3),
+            &family,
+            &vault,
+            false,
+            "2026-07-21T00:00:00Z",
+        )
+        .unwrap();
+        let archive = build_pareto_archive(&bundle, "2026-07-21T00:00:00Z").unwrap();
+        assert!(!archive.is_empty());
+        assert!(archive.iter().any(|e| !e.dominated));
+        let non_dom = archive_non_dominated(&archive);
+        assert!(!non_dom.is_empty());
+
+        bundle.claims_improvement = true;
+        assert_eq!(
+            build_pareto_archive(&bundle, "t").unwrap_err().code,
+            "evolution_eval_forbidden_claim"
+        );
+        bundle.claims_improvement = false;
+        bundle.sealed_feedback_into_mutation = true;
+        assert_eq!(
+            build_pareto_archive(&bundle, "t").unwrap_err().code,
+            "evolution_eval_sealed_feedback"
+        );
+    }
+
+    #[test]
+    fn incomplete_evidence_fails_closed_in_metrics() {
+        let budget = sample_budget(0);
+        let (_, usage, gate) = fixture_baseline_metrics(
+            BaselineKind::StaticSinglePass,
+            &budget,
+            TaskSplit::Validation,
+            0,
+        );
+        assert!(usage.incomplete);
+        assert_eq!(gate, HardGateResult::FailedIncompleteEvidence);
+    }
+
+    #[test]
+    fn redacted_evidence_has_no_label_fields() {
+        let _g = EnvGuard::enable_lab();
+        let family = sample_task_family("fam-e");
+        let vault = build_sealed_vault(&family).unwrap();
+        let bundle = evaluate_candidate_fixture(
+            "c",
+            "l",
+            "a",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &sample_budget(4),
+            &family,
+            &vault,
+            true,
+            "2026-07-21T00:00:00Z",
+        )
+        .unwrap();
+        let evidence = redacted_eval_evidence(&bundle);
+        let s = evidence.to_string();
+        assert!(!s.contains("label_sha256"));
+        assert!(!s.contains("transcript"));
+        assert!(!s.contains("raw_prompt"));
+        assert!(!s.contains("model_output"));
+        assert!(s.contains("bundle_sha256"));
+        // Redacted evidence is hashes and counters only — no task label digests.
+        assert!(!s.contains(&family.development[0].label_sha256));
+    }
+}

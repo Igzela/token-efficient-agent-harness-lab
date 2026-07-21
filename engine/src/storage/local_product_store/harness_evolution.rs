@@ -1,4 +1,4 @@
-//! Durable storage for PE7 Harness Evolution B1 evidence foundation.
+//! Durable storage for PE7 Harness Evolution B1 evidence + B2 evaluation/archive.
 
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 
@@ -8,6 +8,12 @@ use crate::harness_evolution::{
     ActiveHarnessIdentity, CandidateStatus, CandidateTerminalReason, EvolutionAdmissionError,
     EvolutionCandidate, EvolutionProposal, EvolutionReceipt, ACTIVE_VERSION_SCHEMA,
     CANDIDATE_SCHEMA_VERSION, EVOLUTION_LAB_SCHEMA_VERSION, RECEIPT_SCHEMA_VERSION,
+};
+use crate::harness_evolution_eval::{
+    build_eval_receipt, build_pareto_archive, evaluate_candidate_fixture, redacted_eval_evidence,
+    CandidateEvaluationBundle, EqualBudgetContract, EvalReceipt, ParetoArchiveEntry,
+    SealedHoldoutVault, TaskFamilyManifest, ARCHIVE_SCHEMA_VERSION, EVAL_RECEIPT_SCHEMA_VERSION,
+    EVAL_SCHEMA_VERSION, SEALED_SCHEMA_VERSION,
 };
 
 impl LocalProductStore {
@@ -366,6 +372,292 @@ impl LocalProductStore {
             Ok(out)
         })
     }
+
+    /// Persist evaluator-owned sealed holdout membership (hashes only).
+    pub fn store_harness_evolution_sealed_holdout(
+        &self,
+        vault: &SealedHoldoutVault,
+    ) -> Result<SealedHoldoutVault, String> {
+        if vault.schema_version != SEALED_SCHEMA_VERSION {
+            return Err("sealed holdout schema_version mismatch".into());
+        }
+        let body = serde_json::to_string(vault).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO harness_evolution_sealed_holdouts
+                    (vault_sha256, family_id, preselected_entrant_limit, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(vault_sha256) DO NOTHING",
+                params![
+                    vault.vault_sha256,
+                    vault.family_id,
+                    vault.preselected_entrant_limit as i64,
+                    body,
+                    now
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(vault.clone())
+        })
+    }
+
+    pub fn get_harness_evolution_sealed_holdout(
+        &self,
+        vault_sha256: &str,
+    ) -> Result<Option<SealedHoldoutVault>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_sealed_holdouts WHERE vault_sha256=?1",
+                    params![vault_sha256],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(
+                    serde_json::from_str(&body).map_err(|e| e.to_string())?,
+                )),
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Exactly-once fixture evaluation + Pareto archive under equal budgets.
+    pub fn record_harness_evolution_evaluation(
+        &self,
+        candidate_id: &str,
+        budget: &EqualBudgetContract,
+        family: &TaskFamilyManifest,
+        sealed_vault: &SealedHoldoutVault,
+        include_sealed: bool,
+        current_active: &ActiveHarnessIdentity,
+    ) -> Result<
+        (
+            CandidateEvaluationBundle,
+            Vec<ParetoArchiveEntry>,
+            EvalReceipt,
+        ),
+        String,
+    > {
+        let candidate = self
+            .get_harness_evolution_candidate(candidate_id)?
+            .ok_or_else(|| format!("evolution_eval_missing_candidate: {candidate_id}"))?;
+        if candidate.status != CandidateStatus::Admitted {
+            return Err("evolution_eval_candidate_not_admitted".into());
+        }
+        if candidate.active_version_id != current_active.active_version_id
+            || candidate.active_version_hash != current_active.active_version_hash
+            || candidate.evaluator_identity_hash != current_active.evaluator_identity_hash
+        {
+            return Err("evolution_eval_changed_active_version".into());
+        }
+        let created_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let bundle = evaluate_candidate_fixture(
+            &candidate.candidate_id,
+            &candidate.lineage_id,
+            &candidate.active_version_id,
+            &candidate.active_version_hash,
+            &candidate.evaluator_identity_hash,
+            budget,
+            family,
+            sealed_vault,
+            include_sealed,
+            &created_at,
+        )
+        .map_err(|e: EvolutionAdmissionError| format!("{}: {}", e.code, e.message))?;
+        if bundle.schema_version != EVAL_SCHEMA_VERSION {
+            return Err("evaluation bundle schema mismatch".into());
+        }
+        if bundle.claims_improvement || bundle.sealed_feedback_into_mutation {
+            return Err("evaluation violated immutable laboratory claims contract".into());
+        }
+        let archive = build_pareto_archive(&bundle, &created_at)
+            .map_err(|e| format!("{}: {}", e.code, e.message))?;
+        let receipt = build_eval_receipt(&bundle, "evaluated", &created_at);
+        let redacted = redacted_eval_evidence(&bundle);
+        let bundle_json = serde_json::to_string(&bundle).map_err(|e| e.to_string())?;
+        let receipt_json = serde_json::to_string(&receipt).map_err(|e| e.to_string())?;
+
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT evaluation_id FROM harness_evolution_evaluations
+                     WHERE candidate_id=?1 AND budget_seed=?2 AND family_id=?3",
+                    params![candidate_id, budget.seed as i64, family.family_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if existing.is_some() {
+                return Err(format!(
+                    "evolution_duplicate_evaluation: candidate {} seed {} family {}",
+                    candidate_id, budget.seed, family.family_id
+                ));
+            }
+            // Ensure sealed vault is durable under evaluator ownership.
+            tx.execute(
+                "INSERT INTO harness_evolution_sealed_holdouts
+                    (vault_sha256, family_id, preselected_entrant_limit, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(vault_sha256) DO NOTHING",
+                params![
+                    sealed_vault.vault_sha256,
+                    sealed_vault.family_id,
+                    sealed_vault.preselected_entrant_limit as i64,
+                    serde_json::to_string(sealed_vault).map_err(|e| e.to_string())?,
+                    created_at
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO harness_evolution_evaluations
+                    (evaluation_id, candidate_id, lineage_id, active_version_id, active_version_hash,
+                     evaluator_identity_hash, family_id, budget_seed, bundle_sha256,
+                     sealed_entrant_count, claims_improvement, sealed_feedback_into_mutation,
+                     body_json, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,0,0,?11,?12)",
+                params![
+                    bundle.evaluation_id,
+                    bundle.candidate_id,
+                    bundle.lineage_id,
+                    bundle.active_version_id,
+                    bundle.active_version_hash,
+                    bundle.evaluator_identity_hash,
+                    bundle.family_id,
+                    budget.seed as i64,
+                    bundle.bundle_sha256,
+                    bundle.sealed_entrant_count as i64,
+                    bundle_json,
+                    created_at
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            for entry in &archive {
+                if entry.schema_version != ARCHIVE_SCHEMA_VERSION {
+                    return Err("pareto archive schema mismatch".into());
+                }
+                let entry_json = serde_json::to_string(entry).map_err(|e| e.to_string())?;
+                tx.execute(
+                    "INSERT INTO harness_evolution_pareto_archive
+                        (archive_id, evaluation_id, candidate_id, lineage_id, baseline,
+                         sequential_rank, dominated, entry_sha256, body_json, created_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    params![
+                        entry.archive_id,
+                        entry.evaluation_id,
+                        entry.candidate_id,
+                        entry.lineage_id,
+                        entry.baseline.as_str(),
+                        entry.sequential_rank as i64,
+                        if entry.dominated { 1 } else { 0 },
+                        entry.entry_sha256,
+                        entry_json,
+                        created_at
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            if receipt.schema_version != EVAL_RECEIPT_SCHEMA_VERSION {
+                return Err("eval receipt schema mismatch".into());
+            }
+            tx.execute(
+                "INSERT INTO harness_evolution_eval_receipts
+                    (receipt_id, evaluation_id, candidate_id, terminal, bundle_sha256, body_json, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    receipt.receipt_id,
+                    receipt.evaluation_id,
+                    receipt.candidate_id,
+                    receipt.terminal,
+                    receipt.bundle_sha256,
+                    receipt_json,
+                    created_at
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                &tx,
+                &created_at,
+                "system",
+                "harness_evolution.evaluation_recorded",
+                &bundle.evaluation_id,
+                &redacted,
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok((bundle, archive, receipt))
+        })
+    }
+
+    pub fn get_harness_evolution_evaluation(
+        &self,
+        evaluation_id: &str,
+    ) -> Result<Option<CandidateEvaluationBundle>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_evaluations WHERE evaluation_id=?1",
+                    params![evaluation_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(
+                    serde_json::from_str(&body).map_err(|e| e.to_string())?,
+                )),
+                None => Ok(None),
+            }
+        })
+    }
+
+    pub fn list_harness_evolution_pareto_for_evaluation(
+        &self,
+        evaluation_id: &str,
+    ) -> Result<Vec<ParetoArchiveEntry>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT body_json FROM harness_evolution_pareto_archive
+                     WHERE evaluation_id=?1 ORDER BY sequential_rank ASC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![evaluation_id], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for row in rows {
+                let body = row.map_err(|e| e.to_string())?;
+                out.push(serde_json::from_str(&body).map_err(|e| e.to_string())?);
+            }
+            Ok(out)
+        })
+    }
+
+    pub fn get_harness_evolution_eval_receipt(
+        &self,
+        receipt_id: &str,
+    ) -> Result<Option<EvalReceipt>, String> {
+        self.with_conn(|conn| {
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT body_json FROM harness_evolution_eval_receipts WHERE receipt_id=?1",
+                    params![receipt_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match row {
+                Some(body) => Ok(Some(
+                    serde_json::from_str(&body).map_err(|e| e.to_string())?,
+                )),
+                None => Ok(None),
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -630,5 +922,144 @@ mod tests {
             "harness_evolution_proposal.v1"
         );
         assert_eq!(CANDIDATE_SCHEMA_VERSION, "harness_evolution_candidate.v1");
+    }
+
+    #[test]
+    fn records_equal_budget_evaluation_and_pareto_exactly_once() {
+        let _env = LabEnvGuard::enable();
+        use crate::harness_evolution_eval::{
+            build_sealed_vault, sample_budget, sample_task_family,
+        };
+        let store = LocalProductStore::new(":memory:").unwrap();
+        let active = sample_active_identity();
+        store
+            .set_harness_evolution_active_identity(&active)
+            .unwrap();
+        let proposal = proposal_from_body(
+            &active,
+            None,
+            &["prompts_and_bounded_rules"],
+            &json!({"kind": "eval"}),
+            vec![],
+            99,
+        )
+        .unwrap();
+        store.admit_harness_evolution_proposal(&proposal).unwrap();
+        let candidate = candidate_from_proposal(
+            &proposal,
+            &sha256_hex("eval-content"),
+            "candidates/eval",
+            &sha256_hex("ws-eval"),
+            "2026-07-21T00:00:00Z",
+        )
+        .unwrap();
+        let (admitted, _) = store
+            .admit_harness_evolution_candidate(candidate, &active)
+            .unwrap();
+        let family = sample_task_family("fam-store");
+        let vault = build_sealed_vault(&family).unwrap();
+        let budget = sample_budget(3);
+        let (bundle, archive, receipt) = store
+            .record_harness_evolution_evaluation(
+                &admitted.candidate_id,
+                &budget,
+                &family,
+                &vault,
+                true,
+                &active,
+            )
+            .unwrap();
+        assert!(!bundle.claims_improvement);
+        assert!(!bundle.sealed_feedback_into_mutation);
+        assert!(!archive.is_empty());
+        assert_eq!(receipt.bundle_sha256, bundle.bundle_sha256);
+        let loaded = store
+            .get_harness_evolution_evaluation(&bundle.evaluation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.bundle_sha256, bundle.bundle_sha256);
+        let pareto = store
+            .list_harness_evolution_pareto_for_evaluation(&bundle.evaluation_id)
+            .unwrap();
+        assert_eq!(pareto.len(), archive.len());
+        let r = store
+            .get_harness_evolution_eval_receipt(&receipt.receipt_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.receipt_id, receipt.receipt_id);
+        let dup = store.record_harness_evolution_evaluation(
+            &admitted.candidate_id,
+            &budget,
+            &family,
+            &vault,
+            true,
+            &active,
+        );
+        assert!(dup.unwrap_err().contains("duplicate"));
+    }
+
+    #[test]
+    fn evaluation_survives_durable_restart() {
+        let _env = LabEnvGuard::enable();
+        use crate::harness_evolution_eval::{
+            build_sealed_vault, sample_budget, sample_task_family,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("evo-eval.db");
+        let db_s = db.to_str().unwrap();
+        let (evaluation_id, receipt_id) = {
+            let store = LocalProductStore::new(db_s).unwrap();
+            let active = sample_active_identity();
+            store
+                .set_harness_evolution_active_identity(&active)
+                .unwrap();
+            let proposal = proposal_from_body(
+                &active,
+                None,
+                &["tool_descriptions_and_selection_policy"],
+                &json!({"kind": "restart-eval"}),
+                vec![],
+                7,
+            )
+            .unwrap();
+            store.admit_harness_evolution_proposal(&proposal).unwrap();
+            let candidate = candidate_from_proposal(
+                &proposal,
+                &sha256_hex("restart-eval-content"),
+                "candidates/restart-eval",
+                &sha256_hex("ws-re"),
+                "2026-07-21T00:00:00Z",
+            )
+            .unwrap();
+            let (admitted, _) = store
+                .admit_harness_evolution_candidate(candidate, &active)
+                .unwrap();
+            let family = sample_task_family("fam-restart");
+            let vault = build_sealed_vault(&family).unwrap();
+            let (bundle, _, receipt) = store
+                .record_harness_evolution_evaluation(
+                    &admitted.candidate_id,
+                    &sample_budget(1),
+                    &family,
+                    &vault,
+                    false,
+                    &active,
+                )
+                .unwrap();
+            (bundle.evaluation_id, receipt.receipt_id)
+        };
+        let store = LocalProductStore::new(db_s).unwrap();
+        assert!(store
+            .get_harness_evolution_evaluation(&evaluation_id)
+            .unwrap()
+            .is_some());
+        assert!(store
+            .get_harness_evolution_eval_receipt(&receipt_id)
+            .unwrap()
+            .is_some());
+        assert!(!store
+            .list_harness_evolution_pareto_for_evaluation(&evaluation_id)
+            .unwrap()
+            .is_empty());
     }
 }

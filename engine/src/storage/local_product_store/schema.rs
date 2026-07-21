@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 27;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 27;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 28;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 28;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -125,6 +125,11 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
         version: 27,
         description:
             "add harness evolution laboratory candidate/proposal/receipt evidence foundation",
+    },
+    SchemaMigration {
+        version: 28,
+        description:
+            "add harness evolution evaluation, sealed holdout, and Pareto archive evidence",
     },
 ];
 
@@ -467,6 +472,67 @@ CREATE TABLE IF NOT EXISTS harness_evolution_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_receipts_candidate
     ON harness_evolution_receipts(candidate_id, created_at);
+";
+
+pub(super) const V28_DDL: &str = "
+CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
+    vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
+    family_id TEXT NOT NULL,
+    preselected_entrant_limit INTEGER NOT NULL CHECK (preselected_entrant_limit BETWEEN 1 AND 3),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_sealed_family
+    ON harness_evolution_sealed_holdouts(family_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_evaluations (
+    evaluation_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    family_id TEXT NOT NULL,
+    budget_seed BIGINT NOT NULL,
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    sealed_entrant_count INTEGER NOT NULL,
+    claims_improvement INTEGER NOT NULL CHECK (claims_improvement = 0),
+    sealed_feedback_into_mutation INTEGER NOT NULL CHECK (sealed_feedback_into_mutation = 0),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(candidate_id, budget_seed, family_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_evaluations_lineage
+    ON harness_evolution_evaluations(lineage_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_pareto_archive (
+    archive_id TEXT PRIMARY KEY,
+    evaluation_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    baseline TEXT NOT NULL,
+    sequential_rank INTEGER NOT NULL,
+    dominated INTEGER NOT NULL,
+    entry_sha256 TEXT NOT NULL CHECK (length(entry_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(evaluation_id) REFERENCES harness_evolution_evaluations(evaluation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_pareto_eval
+    ON harness_evolution_pareto_archive(evaluation_id, sequential_rank);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_eval_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    evaluation_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    terminal TEXT NOT NULL,
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(evaluation_id) REFERENCES harness_evolution_evaluations(evaluation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_eval_receipts_eval
+    ON harness_evolution_eval_receipts(evaluation_id, created_at);
 ";
 
 pub(super) const SQLITE_DDL: &str = "
@@ -1231,6 +1297,65 @@ CREATE TABLE IF NOT EXISTS harness_evolution_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_receipts_candidate
     ON harness_evolution_receipts(candidate_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
+    vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
+    family_id TEXT NOT NULL,
+    preselected_entrant_limit INTEGER NOT NULL CHECK (preselected_entrant_limit BETWEEN 1 AND 3),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_sealed_family
+    ON harness_evolution_sealed_holdouts(family_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_evaluations (
+    evaluation_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    family_id TEXT NOT NULL,
+    budget_seed BIGINT NOT NULL,
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    sealed_entrant_count INTEGER NOT NULL,
+    claims_improvement INTEGER NOT NULL CHECK (claims_improvement = 0),
+    sealed_feedback_into_mutation INTEGER NOT NULL CHECK (sealed_feedback_into_mutation = 0),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(candidate_id, budget_seed, family_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_evaluations_lineage
+    ON harness_evolution_evaluations(lineage_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_pareto_archive (
+    archive_id TEXT PRIMARY KEY,
+    evaluation_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    baseline TEXT NOT NULL,
+    sequential_rank INTEGER NOT NULL,
+    dominated INTEGER NOT NULL,
+    entry_sha256 TEXT NOT NULL CHECK (length(entry_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(evaluation_id) REFERENCES harness_evolution_evaluations(evaluation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_pareto_eval
+    ON harness_evolution_pareto_archive(evaluation_id, sequential_rank);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_eval_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    evaluation_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    terminal TEXT NOT NULL,
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(evaluation_id) REFERENCES harness_evolution_evaluations(evaluation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_eval_receipts_eval
+    ON harness_evolution_eval_receipts(evaluation_id, created_at);
 ";
 
 pub(crate) const POSTGRES_DDL: &str = "
@@ -2030,6 +2155,65 @@ CREATE TABLE IF NOT EXISTS harness_evolution_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_evolution_receipts_candidate
     ON harness_evolution_receipts(candidate_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_sealed_holdouts (
+    vault_sha256 TEXT PRIMARY KEY CHECK (length(vault_sha256) = 64),
+    family_id TEXT NOT NULL,
+    preselected_entrant_limit INTEGER NOT NULL CHECK (preselected_entrant_limit BETWEEN 1 AND 3),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_sealed_family
+    ON harness_evolution_sealed_holdouts(family_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_evaluations (
+    evaluation_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    active_version_id TEXT NOT NULL,
+    active_version_hash TEXT NOT NULL CHECK (length(active_version_hash) = 64),
+    evaluator_identity_hash TEXT NOT NULL CHECK (length(evaluator_identity_hash) = 64),
+    family_id TEXT NOT NULL,
+    budget_seed BIGINT NOT NULL,
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    sealed_entrant_count INTEGER NOT NULL,
+    claims_improvement INTEGER NOT NULL CHECK (claims_improvement = 0),
+    sealed_feedback_into_mutation INTEGER NOT NULL CHECK (sealed_feedback_into_mutation = 0),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(candidate_id, budget_seed, family_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_evaluations_lineage
+    ON harness_evolution_evaluations(lineage_id, created_at);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_pareto_archive (
+    archive_id TEXT PRIMARY KEY,
+    evaluation_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    lineage_id TEXT NOT NULL,
+    baseline TEXT NOT NULL,
+    sequential_rank INTEGER NOT NULL,
+    dominated INTEGER NOT NULL,
+    entry_sha256 TEXT NOT NULL CHECK (length(entry_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(evaluation_id) REFERENCES harness_evolution_evaluations(evaluation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_pareto_eval
+    ON harness_evolution_pareto_archive(evaluation_id, sequential_rank);
+
+CREATE TABLE IF NOT EXISTS harness_evolution_eval_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    evaluation_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    terminal TEXT NOT NULL,
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(evaluation_id) REFERENCES harness_evolution_evaluations(evaluation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harness_evolution_eval_receipts_eval
+    ON harness_evolution_eval_receipts(evaluation_id, created_at);
 ";
 
 #[cfg(test)]
@@ -2086,6 +2270,10 @@ mod tests {
             "harness_evolution_candidates",
             "harness_evolution_receipts",
             "idx_harness_evolution_candidates_lineage",
+            "harness_evolution_sealed_holdouts",
+            "harness_evolution_evaluations",
+            "harness_evolution_pareto_archive",
+            "harness_evolution_eval_receipts",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),
