@@ -4186,11 +4186,13 @@ fn validate_product_artifact_allowed_paths(
         })?
         .iter()
         .map(|path| {
-            path.as_str()
+            let path = path
+                .as_str()
                 .filter(|path| !path.is_empty())
                 .ok_or_else(|| {
                     "product task allowed_paths are invalid during artifact capture".to_string()
-                })
+                })?;
+            normalized_product_artifact_path(path, "allowed_paths")
         })
         .collect::<Result<Vec<_>, _>>()?;
     let changed_files = artifact
@@ -4200,22 +4202,55 @@ fn validate_product_artifact_allowed_paths(
     for changed_file in changed_files {
         let changed_file = changed_file
             .as_str()
-            .and_then(|path| path.get(1..))
+            .ok_or_else(|| "product artifact changed_files are invalid".to_string())?;
+        let marker = changed_file
+            .chars()
+            .next()
+            .filter(|marker| matches!(marker, '+' | '~' | '-'))
+            .ok_or_else(|| "product artifact changed_files are invalid".to_string())?;
+        let path = changed_file
+            .get(marker.len_utf8()..)
             .filter(|path| !path.is_empty())
             .ok_or_else(|| "product artifact changed_files are invalid".to_string())?;
-        let admitted = allowed_paths.iter().any(|allowed| {
-            changed_file == *allowed
-                || changed_file
-                    .strip_prefix(*allowed)
-                    .is_some_and(|suffix| suffix.starts_with('/'))
-        });
+        let changed_components = normalized_product_artifact_path(path, "changed_files")?;
+        let admitted = allowed_paths
+            .iter()
+            .any(|allowed| changed_components.starts_with(allowed));
         if !admitted {
             return Err(format!(
-                "product artifact path is outside product task allowed_paths: {changed_file}"
+                "product artifact path is outside product task allowed_paths: {path}"
             ));
         }
     }
     Ok(())
+}
+
+fn normalized_product_artifact_path(path: &str, field: &str) -> Result<Vec<String>, String> {
+    let mut components = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(part) => components.push(
+                part.to_str()
+                    .filter(|part| !part.is_empty())
+                    .ok_or_else(|| {
+                        format!("product task {field} path is invalid during artifact capture")
+                    })?
+                    .to_string(),
+            ),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "product task {field} path is invalid during artifact capture"
+                ));
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(format!(
+            "product task {field} path is invalid during artifact capture"
+        ));
+    }
+    Ok(components)
 }
 
 fn prepare_product_artifact_fields(

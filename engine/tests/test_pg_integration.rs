@@ -294,7 +294,10 @@ fn pg_product_artifact_rejects_changes_outside_allowed_paths() {
         target_repo_path: repo.path().to_string_lossy().into_owned(),
         source_revision: revision,
         source_tree_hash: None,
-        allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+        allowed_paths: vec![
+            "docs/product_golden_path_fixture.md".to_string(),
+            "./admitted-subtree/".to_string(),
+        ],
         verification_commands: vec![ProductVerificationCommand {
             command: "test -f docs/product_golden_path_fixture.md".to_string(),
             timeout_ms: 5_000,
@@ -339,6 +342,13 @@ fn pg_product_artifact_rejects_changes_outside_allowed_paths() {
     let workspace = compiled["task"]["workspace_binding"]["workspace_path"]
         .as_str()
         .unwrap();
+    std::fs::create_dir_all(std::path::Path::new(workspace).join("admitted-subtree/nested"))
+        .unwrap();
+    std::fs::write(
+        std::path::Path::new(workspace).join("admitted-subtree/nested/allowed.md"),
+        "admitted subtree change\n",
+    )
+    .unwrap();
     std::fs::write(
         std::path::Path::new(workspace).join("outside-product-scope.txt"),
         "must not enter artifact\n",
@@ -354,7 +364,7 @@ fn pg_product_artifact_rejects_changes_outside_allowed_paths() {
     assert_eq!(finalized["verification"]["status"], "authority_lost");
     assert!(finalized["verification"]["authority_loss_reason"]
         .as_str()
-        .is_some_and(|reason| reason.contains("outside product task allowed_paths")));
+        .is_some_and(|reason| reason.ends_with("outside-product-scope.txt")));
     assert!(!store
         .supervised_patch_artifacts(10_000)
         .unwrap()

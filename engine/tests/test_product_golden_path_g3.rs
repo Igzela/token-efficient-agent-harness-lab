@@ -232,12 +232,11 @@ fn artifact_capture_rejects_changes_outside_product_allowed_paths() {
         let (dir, store) = temp_store();
         let repo = dir.path().join("repo");
         let rev = init_git_repo(&repo);
-        let validated = validate_intake(
-            &intake(&repo, &rev, "g3-out-of-scope-artifact", pass_verify()),
-            "local",
-            "default",
-        )
-        .unwrap();
+        let mut request = intake(&repo, &rev, "g3-out-of-scope-artifact", pass_verify());
+        request
+            .allowed_paths
+            .push("./admitted-subtree/".to_string());
+        let validated = validate_intake(&request, "local", "default").unwrap();
         let task = store.admit_product_task(&validated, "tester").unwrap();
         let task_id = task["task_id"].as_str().unwrap();
         let compiled = store
@@ -249,6 +248,13 @@ fn artifact_capture_rejects_changes_outside_product_allowed_paths() {
         let workspace = compiled["task"]["workspace_binding"]["workspace_path"]
             .as_str()
             .unwrap();
+        std::fs::create_dir_all(std::path::Path::new(workspace).join("admitted-subtree/nested"))
+            .unwrap();
+        std::fs::write(
+            std::path::Path::new(workspace).join("admitted-subtree/nested/allowed.md"),
+            "admitted subtree change\n",
+        )
+        .unwrap();
         std::fs::write(
             std::path::Path::new(workspace).join("outside-product-scope.txt"),
             "must not enter artifact\n",
@@ -268,7 +274,7 @@ fn artifact_capture_rejects_changes_outside_product_allowed_paths() {
         assert_eq!(finalized["verification"]["trustworthy"], false);
         assert!(finalized["verification"]["authority_loss_reason"]
             .as_str()
-            .is_some_and(|reason| reason.contains("outside product task allowed_paths")));
+            .is_some_and(|reason| reason.ends_with("outside-product-scope.txt")));
         assert!(store.supervised_patch_artifacts(100).unwrap().is_empty());
         let task = store.get_product_task(task_id).unwrap().unwrap();
         assert_eq!(task["status"], ProductTaskStatus::Blocked.as_str());
