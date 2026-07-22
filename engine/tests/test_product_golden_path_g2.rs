@@ -269,6 +269,8 @@ fn postgres_managed_executor_receives_exact_long_objective_without_public_persis
     };
     with_gates(|| {
         let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("product-workspaces");
+        std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", &workspace_root);
         let repo = dir.path().join("repo");
         let rev = init_git_repo(&repo);
         let store =
@@ -283,6 +285,7 @@ fn postgres_managed_executor_receives_exact_long_objective_without_public_persis
         let restarted =
             LocalProductStore::new_postgres(&url, || "2026-07-22T12:00:01Z".to_string()).unwrap();
         assert_managed_long_objective_delivery(&restarted, &objective, &task_id, &run_id);
+        std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
     });
 }
 
