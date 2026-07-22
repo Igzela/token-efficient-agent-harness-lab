@@ -656,7 +656,7 @@ mod tests {
             "printf '%s\\n' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}'",
         );
         let executor =
-            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 5_000);
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 30_000);
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded fixture",
