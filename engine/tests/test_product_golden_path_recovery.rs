@@ -25,12 +25,15 @@ fn with_gates<R>(f: impl FnOnce() -> R) -> R {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let workspace_root = tempfile::tempdir().unwrap();
     std::env::set_var(PRODUCT_TASK_GATE, "1");
     std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
     std::env::set_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH", "0");
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
     let result = f();
     std::env::remove_var(PRODUCT_TASK_GATE);
     std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
     result
 }
 
