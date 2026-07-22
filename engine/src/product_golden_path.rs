@@ -1096,6 +1096,10 @@ pub(crate) fn product_apply_binding_sha256(
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| format!("product apply binding is missing {field}"))
     };
+    let metadata_workspace_id = required_string("workspace_id")?;
+    if metadata_workspace_id != workspace_id {
+        return Err("product apply workspace identity changed".to_string());
+    }
     let allowed_paths = node_metadata
         .get("allowed_paths")
         .and_then(Value::as_array)
@@ -1108,7 +1112,7 @@ pub(crate) fn product_apply_binding_sha256(
         .ok_or_else(|| "product apply binding is missing allowed_paths".to_string())?;
     let payload = json!({
         "schema_version": "product_apply_binding.v1",
-        "workspace_id": workspace_id,
+        "workspace_id": metadata_workspace_id,
         "product_task_id": required_string("product_task_id")?,
         "source_revision": required_string("source_revision")?,
         "objective_fingerprint": required_string("objective_fingerprint")?,

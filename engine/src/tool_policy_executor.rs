@@ -332,6 +332,15 @@ impl<'a> ToolPolicyNodeExecutor<'a> {
             {
                 return Err("product apply run-to-workspace binding changed".to_string());
             }
+            if product_apply
+                && workspace.get("source_revision").and_then(Value::as_str)
+                    != input
+                        .node_metadata
+                        .get("source_revision")
+                        .and_then(Value::as_str)
+            {
+                return Err("product apply source revision binding changed".to_string());
+            }
             Some(workspace)
         } else {
             self.store
@@ -1062,6 +1071,16 @@ mod tests {
             })
             .expect_err("changed path scope must fail closed");
         assert!(error.contains("no longer matches its binding"));
+
+        let mut changed_workspace = input.node_metadata.clone();
+        changed_workspace["workspace_id"] = json!("different-workspace");
+        let error = executor
+            .bound_managed_workspace(&NodeExecutionInput {
+                node_metadata: changed_workspace,
+                ..input.clone()
+            })
+            .expect_err("changed workspace identity must fail closed");
+        assert!(error.contains("workspace identity changed"));
 
         let error = executor
             .bound_managed_workspace(&NodeExecutionInput {
