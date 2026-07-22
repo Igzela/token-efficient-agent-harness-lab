@@ -1080,6 +1080,54 @@ pub fn resolve_admitted_executor(policy: &ProductExecutorPolicy) -> Result<Strin
     Ok(resolved)
 }
 
+/// Bind the immutable product-task authority that a managed coding executor may use.
+///
+/// The raw objective is deliberately excluded from this receipt. Its authoritative
+/// fingerprint and the complete intake-contract hash bind the prompt without making
+/// terminal/audit evidence a prompt corpus.
+pub(crate) fn product_apply_binding_sha256(
+    workspace_id: &str,
+    node_metadata: &Value,
+) -> Result<String, String> {
+    let required_string = |field: &str| {
+        node_metadata
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| format!("product apply binding is missing {field}"))
+    };
+    let metadata_workspace_id = required_string("workspace_id")?;
+    if metadata_workspace_id != workspace_id {
+        return Err("product apply workspace identity changed".to_string());
+    }
+    let allowed_paths = node_metadata
+        .get("allowed_paths")
+        .and_then(Value::as_array)
+        .filter(|paths| {
+            !paths.is_empty()
+                && paths
+                    .iter()
+                    .all(|path| path.as_str().is_some_and(|value| !value.trim().is_empty()))
+        })
+        .ok_or_else(|| "product apply binding is missing allowed_paths".to_string())?;
+    let payload = json!({
+        "schema_version": "product_apply_binding.v1",
+        "workspace_id": metadata_workspace_id,
+        "product_task_id": required_string("product_task_id")?,
+        "source_revision": required_string("source_revision")?,
+        "objective_fingerprint": required_string("objective_fingerprint")?,
+        "intake_contract_sha256": required_string("intake_contract_sha256")?,
+        "allowed_paths": allowed_paths,
+        "executor": required_string("executor")?,
+        "executor_class": required_string("executor_class")?,
+        "workspace_path": required_string("workspace_path")?,
+        "workspace_root": required_string("workspace_root")?,
+        "output_intent": required_string("output_intent")?,
+    });
+    let encoded = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+    Ok(hex::encode(Sha256::digest(encoded)))
+}
+
 /// Compile a versioned executable graph for a workspace-bound product task.
 ///
 /// Does not create a second scheduler. Nodes carry exact task/workspace/source
@@ -1157,9 +1205,6 @@ pub fn compile_product_executable_graph(
     };
 
     let apply_node_id = format!("{}-apply", plan_ids.workflow_id);
-    let binding_sha256 = hex::encode(Sha256::digest(
-        format!("product_apply:{task_id}:{workspace_id}:{source_revision}").as_bytes(),
-    ));
     let mut apply_node = json!({
         "schema_version": "workflow_node.v1",
         "node_id": apply_node_id,
@@ -1196,16 +1241,18 @@ pub fn compile_product_executable_graph(
         "verification_commands": verification_commands,
         "output_intent": task.get("output_intent"),
         "product_graph_schema_version": PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
-        "managed_supervised_patch": {
-            "schema_version": "managed_supervised_patch.v1",
-            "workspace_id": workspace_id,
-            "operation": "product_apply",
-            "attempt": 1,
-            "binding_sha256": binding_sha256,
-            "content_excluded": true,
-            "product_task_id": task_id,
-            "executor_class": executor_class,
-        },
+        "managed_supervised_patch": Value::Null,
+    });
+    let binding_sha256 = product_apply_binding_sha256(workspace_id, &apply_node)?;
+    apply_node["managed_supervised_patch"] = json!({
+        "schema_version": "managed_supervised_patch.v1",
+        "workspace_id": workspace_id,
+        "operation": "product_apply",
+        "attempt": 1,
+        "binding_sha256": binding_sha256,
+        "content_excluded": true,
+        "product_task_id": task_id,
+        "executor_class": executor_class,
     });
     if is_fixture_deterministic {
         apply_node

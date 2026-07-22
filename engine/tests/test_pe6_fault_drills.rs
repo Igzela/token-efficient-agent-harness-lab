@@ -391,18 +391,34 @@ fn pe6_workflow_timeout_retry_concurrency_and_restart() {
     }
     let results = handles
         .into_iter()
-        .map(|handle| handle.join().expect("tick thread").expect("tick result"))
+        .map(|handle| handle.join().expect("tick thread"))
         .collect::<Vec<_>>();
     assert_eq!(
         results
             .iter()
-            .filter(|result| matches!(
-                result["action"].as_str(),
-                Some("node_retry") | Some("node_executed")
-            ))
+            .filter_map(|result| result.as_ref().ok())
+            .filter(|result| matches!(result["action"].as_str(), Some("node_executed")))
             .count(),
         1,
         "concurrent ticks must have one authority winner"
+    );
+    assert!(results.iter().all(|result| match result {
+        Ok(result) => matches!(
+            result["action"].as_str(),
+            Some("node_executed" | "no_ready_node")
+        ),
+        Err(error) => error == &format!("workflow run {run_id} is terminal: failed"),
+    }));
+    assert_eq!(
+        store.get_workflow_run(&run_id).unwrap().unwrap()["nodes"][0]["attempt_count"],
+        1,
+        "one lease claim must own the only executor effect"
+    );
+    assert_eq!(
+        store
+            .tick_with_executor(&run_id, "pe6-test", 0, &*executor)
+            .expect_err("terminal run rejects a later tick"),
+        format!("workflow run {run_id} is terminal: failed")
     );
 
     let _lease_run = new_run(&store, None);
