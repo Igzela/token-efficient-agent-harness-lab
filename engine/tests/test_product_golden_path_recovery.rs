@@ -36,6 +36,29 @@ fn temp_store() -> (tempfile::TempDir, LocalProductStore) {
     (dir, store)
 }
 
+fn tool_policy_pass_count(store: &LocalProductStore) -> usize {
+    store
+        .audit_events(100_000)
+        .expect("read tool-policy audit events")
+        .into_iter()
+        .filter(|event| event["action"] == "tool_execution.pre_policy_passed")
+        .count()
+}
+
+fn wait_for_new_tool_policy_pass(store: &LocalProductStore, baseline: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if tool_policy_pass_count(store) > baseline {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "managed verification did not reach the pre-policy execution boundary"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn init_git_repo(root: &std::path::Path) -> String {
     std::fs::create_dir_all(root).unwrap();
     std::fs::write(root.join("README.md"), "hello\n").unwrap();
@@ -315,6 +338,7 @@ fn restart_during_verification_persists_pause_and_rejects_late_result() {
             "tail -f README.md",
         );
         let db_path = store.db_path().to_path_buf();
+        let tool_passes_before = tool_policy_pass_count(&store);
         let finalizer_store = Arc::clone(&store);
         let finalizer_task_id = task_id.clone();
         let handle = thread::spawn(move || {
@@ -324,7 +348,7 @@ fn restart_during_verification_persists_pause_and_rejects_late_result() {
                 &|| Ok(running_scheduler_authority()),
             )
         });
-        thread::sleep(Duration::from_millis(100));
+        wait_for_new_tool_policy_pass(&store, tool_passes_before);
         let restarted = LocalProductStore::new(&db_path).unwrap();
         restarted
             .update_run_pause_reason(&run_id, Some("operator_hold_after_restart"))
@@ -681,6 +705,7 @@ fn tracked_ignored_directory_write_changes_authoritative_patch_identity() {
             "tail -f README.md",
         );
         let store = Arc::new(store);
+        let tool_passes_before = tool_policy_pass_count(&store);
         let finalizer_store = Arc::clone(&store);
         let finalizer_task = task_id.clone();
         let handle = thread::spawn(move || {
@@ -690,7 +715,7 @@ fn tracked_ignored_directory_write_changes_authoritative_patch_identity() {
                 &|| Ok(running_scheduler_authority()),
             )
         });
-        thread::sleep(Duration::from_millis(100));
+        wait_for_new_tool_policy_pass(&store, tool_passes_before);
         std::fs::write(
             std::path::Path::new(&workspace_path).join("target/tracked.txt"),
             "after\n",
@@ -857,6 +882,7 @@ fn pause_during_verification_rejects_late_result_without_artifact() {
             "rec-pause-verification",
             "tail -f README.md",
         );
+        let tool_passes_before = tool_policy_pass_count(&store);
         let finalizer_store = Arc::clone(&store);
         let finalizer_task_id = task_id.clone();
         let handle = thread::spawn(move || {
@@ -866,7 +892,7 @@ fn pause_during_verification_rejects_late_result_without_artifact() {
                 &|| Ok(running_scheduler_authority()),
             )
         });
-        thread::sleep(Duration::from_millis(100));
+        wait_for_new_tool_policy_pass(&store, tool_passes_before);
         store
             .update_run_pause_reason(&run_id, Some("operator_hold"))
             .unwrap();
@@ -900,6 +926,7 @@ fn scheduler_kill_during_verification_rejects_late_result() {
             "tail -f README.md",
         );
         let killed = Arc::new(AtomicBool::new(false));
+        let tool_passes_before = tool_policy_pass_count(&store);
         let finalizer_store = Arc::clone(&store);
         let finalizer_task_id = task_id.clone();
         let finalizer_killed = Arc::clone(&killed);
@@ -914,7 +941,7 @@ fn scheduler_kill_during_verification_rejects_late_result() {
                 },
             )
         });
-        thread::sleep(Duration::from_millis(100));
+        wait_for_new_tool_policy_pass(&store, tool_passes_before);
         killed.store(true, Ordering::SeqCst);
         let finalized = handle.join().unwrap().unwrap();
         assert_eq!(finalized["phase"], "verification_authority_lost");
@@ -937,6 +964,7 @@ fn lease_attempt_change_during_verification_blocks_late_result() {
             "rec-lease-loss-verification",
             "tail -f README.md",
         );
+        let tool_passes_before = tool_policy_pass_count(&store);
         let finalizer_store = Arc::clone(&store);
         let finalizer_task_id = task_id.clone();
         let handle = thread::spawn(move || {
@@ -946,7 +974,7 @@ fn lease_attempt_change_during_verification_blocks_late_result() {
                 &|| Ok(running_scheduler_authority()),
             )
         });
-        thread::sleep(Duration::from_millis(100));
+        wait_for_new_tool_policy_pass(&store, tool_passes_before);
         let connection = rusqlite::Connection::open(store.db_path()).unwrap();
         connection
             .execute(
@@ -979,6 +1007,7 @@ fn task_version_change_during_verification_blocks_late_result() {
             "rec-version-change-verification",
             "tail -f README.md",
         );
+        let tool_passes_before = tool_policy_pass_count(&store);
         let finalizer_store = Arc::clone(&store);
         let finalizer_task_id = task_id.clone();
         let handle = thread::spawn(move || {
@@ -988,7 +1017,7 @@ fn task_version_change_during_verification_blocks_late_result() {
                 &|| Ok(running_scheduler_authority()),
             )
         });
-        thread::sleep(Duration::from_millis(100));
+        wait_for_new_tool_policy_pass(&store, tool_passes_before);
         let connection = rusqlite::Connection::open(store.db_path()).unwrap();
         connection
             .execute(
@@ -1017,6 +1046,7 @@ fn task_kill_during_verification_preserves_killed_state_and_rejects_result() {
             "rec-task-kill-verification",
             "tail -f README.md",
         );
+        let tool_passes_before = tool_policy_pass_count(&store);
         let finalizer_store = Arc::clone(&store);
         let finalizer_task_id = task_id.clone();
         let handle = thread::spawn(move || {
@@ -1026,7 +1056,7 @@ fn task_kill_during_verification_preserves_killed_state_and_rejects_result() {
                 &|| Ok(running_scheduler_authority()),
             )
         });
-        thread::sleep(Duration::from_millis(100));
+        wait_for_new_tool_policy_pass(&store, tool_passes_before);
         let connection = rusqlite::Connection::open(store.db_path()).unwrap();
         connection
             .execute(
@@ -1055,6 +1085,7 @@ fn workspace_replacement_during_verification_is_quarantined() {
             "rec-workspace-replaced-verification",
             "tail -f README.md",
         );
+        let tool_passes_before = tool_policy_pass_count(&store);
         let finalizer_store = Arc::clone(&store);
         let finalizer_task_id = task_id.clone();
         let handle = thread::spawn(move || {
@@ -1064,7 +1095,7 @@ fn workspace_replacement_during_verification_is_quarantined() {
                 &|| Ok(running_scheduler_authority()),
             )
         });
-        thread::sleep(Duration::from_millis(100));
+        wait_for_new_tool_policy_pass(&store, tool_passes_before);
         let moved = format!("{workspace_path}.replaced");
         std::fs::rename(&workspace_path, &moved).unwrap();
         std::fs::create_dir(&workspace_path).unwrap();
@@ -1096,6 +1127,7 @@ fn verification_filesystem_write_is_quarantined_and_never_captured() {
             "rec-late-write-verification",
             "tail -f README.md",
         );
+        let tool_passes_before = tool_policy_pass_count(&store);
         let finalizer_store = Arc::clone(&store);
         let finalizer_task = task_id.clone();
         let handle = thread::spawn(move || {
@@ -1105,7 +1137,7 @@ fn verification_filesystem_write_is_quarantined_and_never_captured() {
                 &|| Ok(running_scheduler_authority()),
             )
         });
-        thread::sleep(Duration::from_millis(100));
+        wait_for_new_tool_policy_pass(&store, tool_passes_before);
         std::fs::write(
             std::path::Path::new(&workspace_path).join("README.md"),
             "late write\n",

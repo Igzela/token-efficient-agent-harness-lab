@@ -175,6 +175,31 @@ fn uuid_tag() -> String {
 }
 
 #[cfg(feature = "pg-tests")]
+fn tool_policy_pass_count(store: &LocalProductStore) -> usize {
+    store
+        .audit_events(100_000)
+        .expect("read tool-policy audit events")
+        .into_iter()
+        .filter(|event| event["action"] == "tool_execution.pre_policy_passed")
+        .count()
+}
+
+#[cfg(feature = "pg-tests")]
+fn wait_for_new_tool_policy_pass(store: &LocalProductStore, baseline: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if tool_policy_pass_count(store) > baseline {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "managed verification did not reach the pre-policy execution boundary"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(feature = "pg-tests")]
 fn pg_product_task_to_approval(
     store: &LocalProductStore,
     repo: &std::path::Path,
@@ -374,6 +399,7 @@ fn pg_scheduler_kill_during_verification_rejects_late_result() {
     let (task_id, _) =
         pg_ready_for_verification(&store, repo.path(), &revision, &tag, "tail -f README.md");
     let scheduler_killed = Arc::new(AtomicBool::new(false));
+    let tool_passes_before = tool_policy_pass_count(&store);
     let finalizer_store = Arc::clone(&store);
     let finalizer_task_id = task_id.clone();
     let finalizer_scheduler_killed = Arc::clone(&scheduler_killed);
@@ -388,7 +414,7 @@ fn pg_scheduler_kill_during_verification_rejects_late_result() {
             },
         )
     });
-    thread::sleep(Duration::from_millis(100));
+    wait_for_new_tool_policy_pass(&store, tool_passes_before);
     scheduler_killed.store(true, Ordering::SeqCst);
     let finalized = handle.join().unwrap().unwrap();
 
@@ -427,6 +453,7 @@ fn pg_verification_filesystem_write_is_quarantined_and_never_captured() {
         .as_str()
         .unwrap()
         .to_string();
+    let tool_passes_before = tool_policy_pass_count(&store);
     let finalizer_store = Arc::clone(&store);
     let finalizer_task = task_id.clone();
     let handle = thread::spawn(move || {
@@ -436,7 +463,7 @@ fn pg_verification_filesystem_write_is_quarantined_and_never_captured() {
             &|| Ok(pg_running_scheduler_authority()),
         )
     });
-    thread::sleep(Duration::from_millis(100));
+    wait_for_new_tool_policy_pass(&store, tool_passes_before);
     std::fs::write(
         std::path::Path::new(&workspace_path).join("README.md"),
         "late write\n",
@@ -688,6 +715,7 @@ fn pg_pause_during_verification_rejects_late_result() {
     let store = Arc::new(store);
     let (task_id, run_id) =
         pg_ready_for_verification(&store, repo.path(), &revision, &tag, "tail -f README.md");
+    let tool_passes_before = tool_policy_pass_count(&store);
     let finalizer_store = Arc::clone(&store);
     let finalizer_task = task_id.clone();
     let handle = thread::spawn(move || {
@@ -697,7 +725,7 @@ fn pg_pause_during_verification_rejects_late_result() {
             &|| Ok(pg_running_scheduler_authority()),
         )
     });
-    thread::sleep(Duration::from_millis(100));
+    wait_for_new_tool_policy_pass(&store, tool_passes_before);
     store
         .update_run_pause_reason(&run_id, Some("pg_operator_hold"))
         .unwrap();
@@ -724,6 +752,7 @@ fn pg_node_attempt_and_lease_timestamp_supersession_reject_late_results() {
         let store = Arc::new(store);
         let (task_id, run_id) =
             pg_ready_for_verification(&store, repo.path(), &revision, &tag, "tail -f README.md");
+        let tool_passes_before = tool_policy_pass_count(&store);
         let finalizer_store = Arc::clone(&store);
         let finalizer_task = task_id.clone();
         let handle = thread::spawn(move || {
@@ -733,7 +762,7 @@ fn pg_node_attempt_and_lease_timestamp_supersession_reject_late_results() {
                 &|| Ok(pg_running_scheduler_authority()),
             )
         });
-        thread::sleep(Duration::from_millis(100));
+        wait_for_new_tool_policy_pass(&store, tool_passes_before);
         let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
         let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
         if mode == "attempt" {
@@ -779,6 +808,7 @@ fn pg_task_kill_and_version_supersession_reject_late_results() {
         let store = Arc::new(store);
         let (task_id, _) =
             pg_ready_for_verification(&store, repo.path(), &revision, &tag, "tail -f README.md");
+        let tool_passes_before = tool_policy_pass_count(&store);
         let finalizer_store = Arc::clone(&store);
         let finalizer_task = task_id.clone();
         let handle = thread::spawn(move || {
@@ -788,7 +818,7 @@ fn pg_task_kill_and_version_supersession_reject_late_results() {
                 &|| Ok(pg_running_scheduler_authority()),
             )
         });
-        thread::sleep(Duration::from_millis(100));
+        wait_for_new_tool_policy_pass(&store, tool_passes_before);
         let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
         let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
         if mode == "kill" {
@@ -838,6 +868,7 @@ fn pg_workspace_replacement_during_verification_is_quarantined() {
         .as_str()
         .unwrap()
         .to_string();
+    let tool_passes_before = tool_policy_pass_count(&store);
     let finalizer_store = Arc::clone(&store);
     let finalizer_task = task_id.clone();
     let handle = thread::spawn(move || {
@@ -847,7 +878,7 @@ fn pg_workspace_replacement_during_verification_is_quarantined() {
             &|| Ok(pg_running_scheduler_authority()),
         )
     });
-    thread::sleep(Duration::from_millis(100));
+    wait_for_new_tool_policy_pass(&store, tool_passes_before);
     std::fs::rename(&workspace_path, format!("{workspace_path}.replaced")).unwrap();
     std::fs::create_dir(&workspace_path).unwrap();
     let finalized = handle.join().unwrap().unwrap();
