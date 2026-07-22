@@ -1110,8 +1110,18 @@ pub(crate) fn product_apply_binding_sha256(
                     .all(|path| path.as_str().is_some_and(|value| !value.trim().is_empty()))
         })
         .ok_or_else(|| "product apply binding is missing allowed_paths".to_string())?;
-    let payload = json!({
-        "schema_version": "product_apply_binding.v1",
+    let binding_schema_version = node_metadata
+        .get("product_apply_binding_schema_version")
+        .and_then(Value::as_str)
+        .unwrap_or("product_apply_binding.v1");
+    if !matches!(
+        binding_schema_version,
+        "product_apply_binding.v1" | "product_apply_binding.v2"
+    ) {
+        return Err("product apply binding schema version is unsupported".to_string());
+    }
+    let mut payload = json!({
+        "schema_version": binding_schema_version,
         "workspace_id": metadata_workspace_id,
         "product_task_id": required_string("product_task_id")?,
         "source_revision": required_string("source_revision")?,
@@ -1124,6 +1134,13 @@ pub(crate) fn product_apply_binding_sha256(
         "workspace_root": required_string("workspace_root")?,
         "output_intent": required_string("output_intent")?,
     });
+    if binding_schema_version == "product_apply_binding.v2" {
+        let product_budget = node_metadata
+            .get("product_budget")
+            .filter(|budget| budget.is_object())
+            .ok_or_else(|| "product apply binding is missing product_budget".to_string())?;
+        payload["product_budget"] = product_budget.clone();
+    }
     let encoded = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
     Ok(hex::encode(Sha256::digest(encoded)))
 }
@@ -1240,6 +1257,8 @@ pub fn compile_product_executable_graph(
         "intake_contract_sha256": task.get("intake_contract_sha256"),
         "verification_commands": verification_commands,
         "output_intent": task.get("output_intent"),
+        "product_apply_binding_schema_version": "product_apply_binding.v2",
+        "product_budget": budget,
         "product_graph_schema_version": PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
         "managed_supervised_patch": Value::Null,
     });

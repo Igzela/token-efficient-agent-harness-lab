@@ -1,5 +1,8 @@
 //! Recovery, concurrency, and fail-closed matrix for product golden path.
 
+use engine::node_executor::{
+    NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessOutcome,
+};
 use engine::product_golden_path::{
     validate_intake, ProductExecutorPolicy, ProductTaskBudget, ProductTaskIntakeRequest,
     ProductTaskStatus, ProductVerificationCommand, ProductVerificationRuntimeAuthority,
@@ -140,6 +143,79 @@ fn complete_run(store: &LocalProductStore, run_id: &str) {
             break;
         }
     }
+}
+
+struct OverBudgetManagedExecutor;
+
+impl NodeExecutor for OverBudgetManagedExecutor {
+    fn executor_type_name(&self) -> &str {
+        "codex_cli"
+    }
+
+    fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "codex_cli".to_string(),
+            output: Some("bounded managed fixture".to_string()),
+            error_domain: None,
+            error_message: None,
+            input_tokens: Some(41),
+            output_tokens: Some(10),
+            estimated_cost: None,
+            latency_ms: Some(10),
+            process_outcome: Some(ProcessOutcome::exited(0)),
+        }
+    }
+}
+
+fn assert_managed_token_budget_exhaustion(
+    store: &LocalProductStore,
+    repo: &std::path::Path,
+    rev: &str,
+    key: &str,
+) {
+    let mut request = intake(repo, rev, key);
+    request.executor_policy = ProductExecutorPolicy {
+        allowed_executors: vec!["codex_cli".to_string()],
+        prefer: Some("codex_cli".to_string()),
+    };
+    request.budget = Some(ProductTaskBudget {
+        total_tokens: Some(50),
+        total_calls: Some(1),
+        max_retries: Some(0),
+        max_repairs: Some(0),
+        ..ProductTaskBudget::default()
+    });
+    let validated = validate_intake(&request, "local", "default").unwrap();
+    let task = store.admit_product_task(&validated, "tester").unwrap();
+    let task_id = task["task_id"].as_str().unwrap();
+    let compiled = store
+        .compile_and_schedule_product_task(task_id, "tester", &["codex_cli".to_string()])
+        .unwrap();
+    let run_id = compiled["task"]["run_id"].as_str().unwrap();
+    let tick = store
+        .tick_with_executor(run_id, "scheduler", 1, &OverBudgetManagedExecutor)
+        .unwrap();
+    assert_eq!(tick["run"]["status"], "failed");
+    assert_eq!(
+        tick["result"]["error_domain"],
+        "product_token_budget_exhausted"
+    );
+    assert_eq!(tick["result"]["input_tokens"], 41);
+    assert_eq!(tick["result"]["output_tokens"], 10);
+
+    let finalized = store
+        .finalize_product_task_after_execution_with_authority(task_id, "verifier", &|| {
+            Ok(running_scheduler_authority())
+        })
+        .unwrap();
+    assert_eq!(finalized["task"]["status"], "budget_exhausted");
+    assert!(matches!(
+        finalized["phase"].as_str(),
+        Some("terminal_failure" | "execution_failed")
+    ));
+    assert!(finalized["task"]["artifact_id"].is_null());
+    assert!(finalized["verification"].is_null());
 }
 
 fn running_scheduler_authority() -> ProductVerificationRuntimeAuthority {
@@ -760,6 +836,45 @@ fn total_elapsed_budget_exhaustion_blocks_verification_effect_and_artifact() {
             .as_str()
             .unwrap()
             .contains("budget_exhausted"));
+    });
+}
+
+#[test]
+fn sqlite_managed_token_budget_exhaustion_blocks_verification_and_artifact() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        assert_managed_token_budget_exhaustion(
+            &store,
+            &repo,
+            &rev,
+            "rec-managed-token-budget-sqlite",
+        );
+    });
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn postgres_managed_token_budget_exhaustion_blocks_verification_and_artifact() {
+    let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        if std::env::var("CI").as_deref() == Ok("true") {
+            panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+        }
+        return;
+    };
+    with_gates(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let store =
+            LocalProductStore::new_postgres(&url, || "2026-07-22T12:00:00Z".to_string()).unwrap();
+        assert_managed_token_budget_exhaustion(
+            &store,
+            &repo,
+            &rev,
+            &format!("rec-managed-token-budget-pg-{}", uuid::Uuid::new_v4()),
+        );
     });
 }
 

@@ -1123,14 +1123,19 @@ impl LocalProductStore {
         let version = task.get("version").and_then(Value::as_u64);
         match run_status {
             "failed" | "cancelled" | "killed" => {
-                let code = if run_status == "killed" {
+                let token_budget_exhausted = product_run_token_budget_exhausted(&run);
+                let code = if token_budget_exhausted {
+                    "execution_budget_exhausted"
+                } else if run_status == "killed" {
                     "execution_killed"
                 } else {
                     "execution_failed"
                 };
                 self.transition_product_task(
                     task_id,
-                    if run_status == "killed" {
+                    if token_budget_exhausted {
+                        ProductTaskStatus::BudgetExhausted
+                    } else if run_status == "killed" {
                         ProductTaskStatus::Killed
                     } else {
                         ProductTaskStatus::Failed
@@ -1140,7 +1145,11 @@ impl LocalProductStore {
                     None,
                     None,
                     Some(code),
-                    Some(run_status),
+                    Some(if token_budget_exhausted {
+                        "budget_exhausted:total_tokens"
+                    } else {
+                        run_status
+                    }),
                     None,
                 )
             }
@@ -1316,9 +1325,12 @@ impl LocalProductStore {
         }
         if matches!(run_status, "failed" | "cancelled" | "killed") {
             let version = task.get("version").and_then(Value::as_u64);
+            let token_budget_exhausted = product_run_token_budget_exhausted(&run);
             let failed = self.transition_product_task(
                 task_id,
-                if run_status == "killed" {
+                if token_budget_exhausted {
+                    ProductTaskStatus::BudgetExhausted
+                } else if run_status == "killed" {
                     ProductTaskStatus::Killed
                 } else {
                     ProductTaskStatus::Failed
@@ -1327,8 +1339,16 @@ impl LocalProductStore {
                 actor,
                 None,
                 None,
-                Some("execution_failed"),
-                Some(run_status),
+                Some(if token_budget_exhausted {
+                    "execution_budget_exhausted"
+                } else {
+                    "execution_failed"
+                }),
+                Some(if token_budget_exhausted {
+                    "budget_exhausted:total_tokens"
+                } else {
+                    run_status
+                }),
                 None,
             )?;
             return Ok(json!({
@@ -3782,6 +3802,17 @@ fn validate_product_task_elapsed_budget(task: &Value, now: &str) -> Result<(), S
         ));
     }
     Ok(())
+}
+
+fn product_run_token_budget_exhausted(run: &Value) -> bool {
+    run.get("nodes")
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| {
+            nodes.iter().any(|node| {
+                node.pointer("/result/error_domain").and_then(Value::as_str)
+                    == Some("product_token_budget_exhausted")
+            })
+        })
 }
 
 fn product_task_remaining_elapsed_ms(task: &Value, now: &str) -> Result<u64, String> {

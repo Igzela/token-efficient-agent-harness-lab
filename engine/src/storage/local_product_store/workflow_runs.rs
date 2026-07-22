@@ -1959,6 +1959,7 @@ impl LocalProductStore {
                 } else {
                     executor.execute_node(&input)
                 };
+                let output = enforce_product_managed_token_budget(output, &input.node_metadata);
 
                 // Phase 3: Record result (inside lock)
                 let tick_result = match &self.db {
@@ -6302,8 +6303,132 @@ fn retryable_node_failure(output: &crate::node_executor::NodeExecutionOutput) ->
                 | "tool_execution_receipt_invalid"
                 | "tool_execution_receipt_error"
                 | "provider_outcome_unknown"
+                | "product_token_budget_exhausted"
+                | "product_token_usage_unavailable"
         )
     )
+}
+
+fn enforce_product_managed_token_budget(
+    mut output: crate::node_executor::NodeExecutionOutput,
+    node_metadata: &Value,
+) -> crate::node_executor::NodeExecutionOutput {
+    let is_managed_product_apply = node_metadata.get("executor_class").and_then(Value::as_str)
+        == Some("managed_coding")
+        && node_metadata
+            .pointer("/managed_supervised_patch/operation")
+            .and_then(Value::as_str)
+            == Some("product_apply");
+    if !is_managed_product_apply || output.status != "completed" {
+        return output;
+    }
+
+    let Some(limit) = node_metadata
+        .pointer("/product_budget/total_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            node_metadata
+                .get("budget")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value > 0.0 && value.fract() == 0.0)
+                .map(|value| value as u64)
+        })
+    else {
+        output.status = "failed".to_string();
+        output.error_domain = Some("product_token_usage_unavailable".to_string());
+        output.error_message = Some(
+            "product token budget is unavailable; managed completion cannot be trusted".to_string(),
+        );
+        return output;
+    };
+
+    let measured = match (output.input_tokens, output.output_tokens) {
+        (Some(input), Some(output_tokens)) if input >= 0 && output_tokens >= 0 => {
+            (input as u64).checked_add(output_tokens as u64)
+        }
+        _ => None,
+    };
+    let Some(measured) = measured else {
+        output.status = "failed".to_string();
+        output.error_domain = Some("product_token_usage_unavailable".to_string());
+        output.error_message = Some(
+            "managed executor did not provide authoritative non-negative token usage".to_string(),
+        );
+        return output;
+    };
+
+    if measured > limit {
+        output.status = "failed".to_string();
+        output.error_domain = Some("product_token_budget_exhausted".to_string());
+        output.error_message = Some(format!(
+            "budget_exhausted:total_tokens limit={limit} measured={measured}"
+        ));
+    }
+    output
+}
+
+#[cfg(test)]
+mod product_managed_token_budget_tests {
+    use super::*;
+    use crate::node_executor::{NodeExecutionOutput, ProcessOutcome};
+
+    fn metadata(limit: f64) -> Value {
+        json!({
+            "executor_class": "managed_coding",
+            "budget": limit,
+            "product_budget": {"total_tokens": limit as u64},
+            "managed_supervised_patch": {"operation": "product_apply"}
+        })
+    }
+
+    fn completed(input_tokens: Option<i64>, output_tokens: Option<i64>) -> NodeExecutionOutput {
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "codex_cli".to_string(),
+            output: Some("bounded result".to_string()),
+            error_domain: None,
+            error_message: None,
+            input_tokens,
+            output_tokens,
+            estimated_cost: None,
+            latency_ms: Some(25),
+            process_outcome: Some(ProcessOutcome::exited(0)),
+        }
+    }
+
+    #[test]
+    fn measured_managed_usage_within_product_budget_stays_complete() {
+        let output =
+            enforce_product_managed_token_budget(completed(Some(40), Some(10)), &metadata(50.0));
+        assert_eq!(output.status, "completed");
+        assert_eq!(output.process_outcome.unwrap().exit_code, Some(0));
+    }
+
+    #[test]
+    fn managed_usage_overage_is_nonretryable_and_preserves_measurement() {
+        let output =
+            enforce_product_managed_token_budget(completed(Some(41), Some(10)), &metadata(50.0));
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("product_token_budget_exhausted")
+        );
+        assert_eq!(output.input_tokens, Some(41));
+        assert_eq!(output.output_tokens, Some(10));
+        assert_eq!(output.process_outcome.as_ref().unwrap().exit_code, Some(0));
+        assert!(!retryable_node_failure(&output));
+    }
+
+    #[test]
+    fn missing_managed_usage_fails_closed_without_retry() {
+        let output = enforce_product_managed_token_budget(completed(None, None), &metadata(50.0));
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("product_token_usage_unavailable")
+        );
+        assert!(!retryable_node_failure(&output));
+    }
 }
 
 fn get_run_row(conn: &rusqlite::Connection, run_id: &str) -> Result<Value, String> {
