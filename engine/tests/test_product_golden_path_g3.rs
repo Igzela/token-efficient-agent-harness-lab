@@ -157,7 +157,16 @@ fn end_to_end_artifact_only_path_with_real_verification() {
             .finalize_product_task_after_execution(task_id, "tester")
             .expect("finalize");
         assert_eq!(finalized["phase"], "awaiting_approval");
-        assert!(finalized["artifact_id"].as_str().is_some());
+        let artifact_id = finalized["artifact_id"].as_str().expect("artifact id");
+        let artifact = store
+            .get_supervised_patch_artifact(artifact_id)
+            .unwrap()
+            .expect("artifact");
+        assert_eq!(
+            artifact["changed_files"],
+            serde_json::json!(["+docs/product_golden_path_fixture.md"]),
+            "fixture control files must never enter the product artifact"
+        );
         let verification = &finalized["verification"];
         assert_eq!(verification["status"], "evidence_recorded");
         assert_eq!(verification["trustworthy"], true);
@@ -184,6 +193,12 @@ fn end_to_end_artifact_only_path_with_real_verification() {
             .unwrap();
         let note = std::path::Path::new(ws).join("docs/product_golden_path_fixture.md");
         assert!(note.exists(), "exact fixture path must exist after apply");
+        assert!(
+            !std::path::Path::new(ws)
+                .join(".product_golden_path_apply.py")
+                .exists(),
+            "fixture control file must be removed before verification and capture"
+        );
         assert_eq!(
             std::fs::read_to_string(&note).unwrap(),
             FIXTURE_DETERMINISTIC_NOTE_CONTENT
@@ -208,6 +223,67 @@ fn end_to_end_artifact_only_path_with_real_verification() {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&main_head.stdout).trim(), rev);
+    });
+}
+
+#[test]
+fn artifact_capture_rejects_changes_outside_product_allowed_paths() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let mut request = intake(&repo, &rev, "g3-out-of-scope-artifact", pass_verify());
+        request
+            .allowed_paths
+            .push("./admitted-subtree/".to_string());
+        let validated = validate_intake(&request, "local", "default").unwrap();
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        let compiled = store
+            .compile_and_schedule_product_task(task_id, "tester", &["command".into()])
+            .unwrap();
+        let run_id = compiled["task"]["run_id"].as_str().unwrap();
+        run_scheduler_ticks(&store, run_id);
+
+        let workspace = compiled["task"]["workspace_binding"]["workspace_path"]
+            .as_str()
+            .unwrap();
+        std::fs::create_dir_all(std::path::Path::new(workspace).join("admitted-subtree/nested"))
+            .unwrap();
+        std::fs::write(
+            std::path::Path::new(workspace).join("admitted-subtree/nested/allowed.md"),
+            "admitted subtree change\n",
+        )
+        .unwrap();
+        std::fs::write(
+            std::path::Path::new(workspace).join("outside-product-scope.txt"),
+            "must not enter artifact\n",
+        )
+        .unwrap();
+
+        let finalized = store
+            .finalize_product_task_after_execution(task_id, "tester")
+            .expect("out-of-scope repository changes must produce a durable blocked result");
+        assert_eq!(finalized["phase"], "verification_authority_lost");
+        assert_eq!(
+            finalized["task"]["status"],
+            ProductTaskStatus::Blocked.as_str()
+        );
+        assert!(finalized["artifact_id"].is_null());
+        assert_eq!(finalized["verification"]["status"], "authority_lost");
+        assert_eq!(finalized["verification"]["trustworthy"], false);
+        assert!(finalized["verification"]["authority_loss_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.ends_with("outside-product-scope.txt")));
+        assert!(store.supervised_patch_artifacts(100).unwrap().is_empty());
+        let task = store.get_product_task(task_id).unwrap().unwrap();
+        assert_eq!(task["status"], ProductTaskStatus::Blocked.as_str());
+        let workspace = store
+            .get_supervised_patch_workspace(task["workspace_record_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(workspace["status"], "quarantined");
+        assert_eq!(workspace["verification"]["status"], "authority_lost");
     });
 }
 

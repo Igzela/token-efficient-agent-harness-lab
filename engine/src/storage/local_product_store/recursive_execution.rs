@@ -4351,7 +4351,7 @@ mod tests {
         store.save_recursive_tree(&tree).expect("save root");
 
         let proposal = RecursiveProposal {
-            proposal_id: "proposal-pg-binding".to_string(),
+            proposal_id: format!("proposal-pg-binding-{run_id}"),
             parent_node_id: tree.root_node_id.clone(),
             parent_version: tree.nodes[&tree.root_node_id].version,
             objective: "child objective".to_string(),
@@ -4432,7 +4432,7 @@ mod tests {
         store
             .create_proposal(
                 &proposal.proposal_id,
-                "corr-pg-binding",
+                &format!("corr-pg-binding-{run_id}"),
                 &run_id,
                 &tree.root_node_id,
                 "agent-pg-binding",
