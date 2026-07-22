@@ -870,12 +870,17 @@ impl LocalProductStore {
                 conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")
                     .map_err(|error| error.to_string())?;
                 let result = (|| {
-                    let (status, version, bound_workspace): (String, i64, Option<String>) = conn
+                    let (status, version, bound_workspace, intake_json): (
+                        String,
+                        i64,
+                        Option<String>,
+                        String,
+                    ) = conn
                         .query_row(
-                            "SELECT status, version, workspace_record_id FROM product_tasks
+                            "SELECT status, version, workspace_record_id, intake_json FROM product_tasks
                              WHERE task_id = ?1",
                             params![task_id],
-                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                         )
                         .map_err(|_| format!("product task not found: {task_id}"))?;
                     if status != "verifying"
@@ -899,6 +904,7 @@ impl LocalProductStore {
                         workspace_id,
                         expected_patch_hash,
                     )?;
+                    validate_product_artifact_allowed_paths(&prepared, &intake_json)?;
                     let sequence =
                         next_sequence(conn, "supervised_patch_artifacts", "artifact_sequence")?;
                     let artifact_id = format!("patch-artifact-{sequence:04}");
@@ -1005,7 +1011,7 @@ impl LocalProductStore {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
                 let task = tx
                     .query_opt(
-                        "SELECT status, version, workspace_record_id FROM product_tasks
+                        "SELECT status, version, workspace_record_id, intake_json FROM product_tasks
                          WHERE task_id = $1 FOR UPDATE",
                         &[&task_id],
                     )
@@ -1014,6 +1020,7 @@ impl LocalProductStore {
                 let status: String = task.get(0);
                 let version: i64 = task.get(1);
                 let bound_workspace: Option<String> = task.get(2);
+                let intake_json: String = task.get(3);
                 if status != "verifying"
                     || version as u64 != expected_task_version
                     || bound_workspace.as_deref() != Some(workspace_id)
@@ -1033,6 +1040,7 @@ impl LocalProductStore {
                     .map_err(|_| "workspace record is corrupt".to_string())?;
                 let prepared =
                     prepare_product_artifact_fields(&workspace, workspace_id, expected_patch_hash)?;
+                validate_product_artifact_allowed_paths(&prepared, &intake_json)?;
                 tx.batch_execute(
                     "LOCK TABLE supervised_patch_artifacts IN SHARE ROW EXCLUSIVE MODE",
                 )
@@ -4161,6 +4169,53 @@ impl PreparedProductArtifact {
             "deleted": self.deleted,
         })
     }
+}
+
+fn validate_product_artifact_allowed_paths(
+    artifact: &PreparedProductArtifact,
+    intake_json: &str,
+) -> Result<(), String> {
+    let intake: Value = serde_json::from_str(intake_json)
+        .map_err(|_| "product task intake is corrupt during artifact capture".to_string())?;
+    let allowed_paths = intake
+        .get("allowed_paths")
+        .and_then(Value::as_array)
+        .filter(|paths| !paths.is_empty())
+        .ok_or_else(|| {
+            "product task allowed_paths are missing during artifact capture".to_string()
+        })?
+        .iter()
+        .map(|path| {
+            path.as_str()
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| {
+                    "product task allowed_paths are invalid during artifact capture".to_string()
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let changed_files = artifact
+        .changed_files
+        .as_array()
+        .ok_or_else(|| "product artifact changed_files are invalid".to_string())?;
+    for changed_file in changed_files {
+        let changed_file = changed_file
+            .as_str()
+            .and_then(|path| path.get(1..))
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| "product artifact changed_files are invalid".to_string())?;
+        let admitted = allowed_paths.iter().any(|allowed| {
+            changed_file == *allowed
+                || changed_file
+                    .strip_prefix(*allowed)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        });
+        if !admitted {
+            return Err(format!(
+                "product artifact path is outside product task allowed_paths: {changed_file}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn prepare_product_artifact_fields(

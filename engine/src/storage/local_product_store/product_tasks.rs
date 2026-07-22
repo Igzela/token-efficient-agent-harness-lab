@@ -1586,10 +1586,20 @@ impl LocalProductStore {
         let artifact_result = commit_authority.commit(&mut artifact_operation);
         let (artifact, task) = match artifact_result {
             Ok(result) => result,
-            Err(reason)
-                if reason.starts_with("runtime_authority_lost:")
-                    || reason.starts_with("runtime_authority_unavailable:") =>
+            Err(error)
+                if error.starts_with("runtime_authority_lost:")
+                    || error.starts_with("runtime_authority_unavailable:")
+                    || error.starts_with(
+                        "product artifact path is outside product task allowed_paths:",
+                    ) =>
             {
+                let artifact_scope_violation = error
+                    .starts_with("product artifact path is outside product task allowed_paths:");
+                let reason = if artifact_scope_violation {
+                    format!("workspace_allowed_path_violation:{error}")
+                } else {
+                    error
+                };
                 verification["status"] = json!("authority_lost");
                 verification["result_status"] = json!("failed");
                 verification["trustworthy"] = json!(false);
@@ -1600,7 +1610,7 @@ impl LocalProductStore {
                     task_id,
                     &workspace_record_id,
                     &reason,
-                    false,
+                    artifact_scope_violation,
                     actor,
                 )?;
                 let current = self.get_product_task(task_id)?.ok_or_else(|| {
@@ -4301,6 +4311,10 @@ fn stage_product_apply_helper(workspace_path: &Path, task: &Value) -> Result<(),
 # Fixture-only deterministic apply for product golden path acceptance.
 # Not a managed coding agent. Mutates only the declared relative path.
 from pathlib import Path
+# The helper is control-plane scaffolding, not product output. Remove it before
+# creating the declared change so verification and artifact capture can observe
+# only repository paths admitted by the task.
+Path(__file__).unlink(missing_ok=True)
 target = Path({target_rel:?})
 if ".." in target.parts:
     raise SystemExit("path escape rejected")

@@ -270,7 +270,107 @@ fn pg_product_task_to_approval(
         .get_supervised_patch_artifact(approval["artifact_id"].as_str().unwrap())
         .unwrap()
         .unwrap();
+    assert_eq!(
+        artifact["changed_files"],
+        json!(["+docs/product_golden_path_fixture.md"]),
+        "PostgreSQL product artifacts must exclude fixture control files"
+    );
     (task, approval, artifact)
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_product_artifact_rejects_changes_outside_allowed_paths() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg out-of-scope product artifact");
+    let tag = uuid_tag();
+    let request = ProductTaskIntakeRequest {
+        objective: "postgres allowed-path artifact boundary".to_string(),
+        target_id: format!("pg-product-{tag}"),
+        target_repo_path: repo.path().to_string_lossy().into_owned(),
+        source_revision: revision,
+        source_tree_hash: None,
+        allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f docs/product_golden_path_fixture.md".to_string(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: "artifact_only".to_string(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["command".to_string()],
+            prefer: Some("command".to_string()),
+        },
+        budget: None,
+        risk_class: "low".to_string(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: None,
+        idempotency_key: format!("pg-product-out-of-scope-{tag}"),
+        expected_version: None,
+        tenant_id: Some("local".to_string()),
+        workspace_id: Some("default".to_string()),
+        workspace_mode: Some("git_worktree".to_string()),
+    };
+    let validated = validate_intake(&request, "local", "default").unwrap();
+    let task = store
+        .admit_product_task(&validated, "pg-product-test")
+        .unwrap();
+    let task_id = task["task_id"].as_str().unwrap();
+    let compiled = store
+        .compile_and_schedule_product_task(task_id, "pg-product-test", &["command".to_string()])
+        .unwrap();
+    let run_id = compiled["task"]["run_id"].as_str().unwrap();
+    let executor = engine::node_executor::CommandNodeExecutor::default();
+    for _ in 0..8 {
+        let tick = store
+            .tick_with_executor(run_id, "pg-product-test", 1, &executor)
+            .unwrap();
+        if matches!(
+            tick.pointer("/run/status").and_then(Value::as_str),
+            Some("completed" | "failed")
+        ) {
+            break;
+        }
+    }
+    let workspace = compiled["task"]["workspace_binding"]["workspace_path"]
+        .as_str()
+        .unwrap();
+    std::fs::write(
+        std::path::Path::new(workspace).join("outside-product-scope.txt"),
+        "must not enter artifact\n",
+    )
+    .unwrap();
+
+    let finalized = store
+        .finalize_product_task_after_execution(task_id, "pg-product-test")
+        .expect("PostgreSQL artifact capture must durably block out-of-scope changes");
+    assert_eq!(finalized["phase"], "verification_authority_lost");
+    assert_eq!(finalized["task"]["status"], "blocked");
+    assert!(finalized["artifact_id"].is_null());
+    assert_eq!(finalized["verification"]["status"], "authority_lost");
+    assert!(finalized["verification"]["authority_loss_reason"]
+        .as_str()
+        .is_some_and(|reason| reason.contains("outside product task allowed_paths")));
+    assert!(!store
+        .supervised_patch_artifacts(10_000)
+        .unwrap()
+        .iter()
+        .any(|artifact| artifact["run_id"] == run_id));
+    let task = store.get_product_task(task_id).unwrap().unwrap();
+    assert_eq!(task["status"], "blocked");
+    let workspace = store
+        .get_supervised_patch_workspace(task["workspace_record_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace["status"], "quarantined");
+    assert_eq!(workspace["verification"]["status"], "authority_lost");
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
 }
 
 #[cfg(feature = "pg-tests")]
