@@ -36,7 +36,7 @@ Repository evidence, CI, and current source remain authoritative.
 
 `intake → worktree bind → executable graph → existing scheduler advance → verification → artifact capture → awaiting_approval → separately authorized approval → explicit output confirmation → durable non-network receipt or phased branch/PR operation`
 
-PR #275 (`3e94501d`) repaired the managed `product_apply` run/workspace binding and made prompt/path/workspace/run drift fail closed. PR #276 (`4647b376`) then committed the exact objective and admission audit atomically under the existing private task owner while public task/plan/terminal evidence stays redacted, injected it only after scheduler lease and restart, ran Codex with explicit non-interactive approval policy inside the unchanged exact `workspace-write` sandbox, and hash-bound the resolved positive measured-token threshold plus complete call/retry budgets in `product_apply_binding.v2`. `product_managed_usage.v1` persists cumulative measured usage across failed attempts and restarts; missing or excessive usage and excess calls/retries cannot reach verification, artifact, approval, or output. Call/retry limits stop excess subprocess launches, but the audited installed Codex CLI `0.145.0` has no task-scoped token-cap option and reports JSONL usage only at `turn.completed`, so `total_tokens` cannot prevent the current call from first exceeding its threshold. Cost remains unavailable rather than fabricated when CLI pricing authority is absent. This missing pre/during-call token authority blocks strict managed acceptance and no fixture result substitutes for it.
+PR #275 (`3e94501d`) repaired the managed `product_apply` run/workspace binding and made prompt/path/workspace/run drift fail closed. PR #276 (`4647b376`) then committed the exact objective and admission audit atomically under the existing private task owner while public task/plan/terminal evidence stays redacted, injected it only after scheduler lease and restart, ran Codex with explicit non-interactive approval policy inside the unchanged exact `workspace-write` sandbox, and hash-bound the resolved positive measured-token threshold plus complete call/retry budgets in `product_apply_binding.v2`. `product_managed_usage.v1` persists cumulative measured usage across failed attempts and restarts; missing or excessive usage and excess calls/retries cannot reach verification, artifact, approval, or output. Call/retry limits stop excess subprocess launches, but the audited installed Codex CLI `0.145.0` has no task-scoped token-cap option and reports JSONL usage only at `turn.completed`, so `total_tokens` cannot prevent the current call from first exceeding its threshold. Cost remains unavailable rather than fabricated when CLI pricing authority is absent. Codex therefore cannot satisfy strict managed acceptance by itself; the focused Claude lane supplies the missing pre-call reservation contract but remains blocked on admitted model access. No fixture result substitutes for either requirement.
 
 PR #277 (`ddf13020`) seals the fixture/artifact boundary discovered during disposable acceptance preparation. Fixture control scaffolding deletes itself before the declared repository edit and is excluded from the patch. At artifact commit, SQLite and PostgreSQL atomically reread the current persisted intake and component-normalize both admitted and changed paths, accepting legal subtree spellings while rejecting sibling-prefix or escaping output. A violation makes verification untrustworthy, quarantines the workspace, blocks the task, and commits no artifact.
 
@@ -75,7 +75,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 | Capability | State | Current truth |
 |---|---|---|
-| Product Golden Path | in progress / default-off / Residual Seal 2 | Schema v30 root tasks plus schema v31 canonical terminal evidence, authoritative command process outcomes, separate approval/output authority, phased Draft PR operation, and verification-time late-result refusal; live Draft PR/managed E2E and final exact-head acceptance are not yet sealed. |
+| Product Golden Path | in progress / default-off / Residual Seal 2 | Schema v30 root tasks plus schema v31 canonical terminal evidence, authoritative command process outcomes, separate approval/output authority, phased Draft PR operation, and verification-time late-result refusal; disposable fixture Draft PR acceptance passed, while the combined managed-executor-to-Draft-PR E2E and final exact-head acceptance are not yet sealed. |
 | Rust API, scheduler, workflow store | implemented / active | `engine/` sole runtime/store authority. |
 | Plain `/dispatch` | implemented / default-noop | Unchanged compatibility path. |
 | Plans / workflow runs | implemented | Unchanged; golden path reuses them with product bindings. |
@@ -89,8 +89,8 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Confirmed Integration Gaps
 
-1. Real GitHub Draft PR acceptance remains under existing credential/host/repository gates.
-2. Managed coding-executor E2E remains mandatory and not yet proved.
+1. Real GitHub branch-push/Draft-PR output passed fixture acceptance in private disposable repository `Igzela/pe7-golden-path-acceptance-20260722`: open Draft PR #1 binds `acp/product-ptask-20260722135332-18c4a108f1d4e757` at `6c70195c` to base `main`; target `main` remains `926f3d47`.
+2. Managed coding-executor E2E through that accepted output path remains mandatory and not yet proved.
 3. Real-workload evidence remains blocked until the full Golden Path contract passes; there is no implicit fixture-only exception.
 4. Level-2 and Meta remain blocked.
 
@@ -102,7 +102,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Active Tracks
 
-- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (output authority, canonical terminal evidence/process outcome, verification-time authority, scheduler admission, backend recovery, managed execution authority/cumulative-budget, and artifact/helper path-boundary repairs are merged through PR #277; live Draft PR acceptance and a managed executor with pre/during-call task token authority remain).
+- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (repairs are merged through PR #277 and disposable fixture Draft PR acceptance passed; the current focused branch adds exact Claude Code admission with a pre-reserved three-turn token/client-estimate/call bound and owner-reported usage. CLI dollar output remains a client-side estimate, so canonical cost stays explicitly unavailable without a billing receipt. Live audit found Claude Code 2.1.217 installed and first-party OAuth logged in, but the admitted Haiku snapshot is unavailable to that account with zero usage/cost; the configured `mimo-*` proxy models lack an admitted context/pricing contract. Exact-head CI/review/merge and a credential/model-access prerequisite remain before live managed Claude → approval → Draft PR completion).
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until Residual Seal 2 satisfies the full acceptance contract.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE`.
 - `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: blocked; Issue #266 proposal only.

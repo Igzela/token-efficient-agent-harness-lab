@@ -3030,6 +3030,10 @@ impl LocalProductStore {
         };
 
         let fixture = executor_class == "fixture_deterministic";
+        let managed_executor_identity = node
+            .get("managed_executor_identity")
+            .cloned()
+            .filter(|identity| identity.is_object());
         let usage = if !fixture
             && (execution
                 .get("input_tokens")
@@ -3062,8 +3066,12 @@ impl LocalProductStore {
             "status": "unavailable",
             "reason": if fixture {
                 "fixture execution has no provider pricing or measured usage"
+            } else if managed_executor_identity.is_some()
+                && execution.get("estimated_cost").and_then(Value::as_f64).is_some()
+            {
+                "managed CLI cost is a client-side estimate, not authoritative billing evidence"
             } else {
-                "no exact provider/model/pricing receipt is bound to the node result"
+                "no authoritative provider billing receipt is bound to the node result"
             },
         });
         let declared_budget = task
@@ -3107,6 +3115,7 @@ impl LocalProductStore {
                 "execution_attempt": execution_attempt,
                 "executor_type": executor_type,
                 "executor_class": executor_class,
+                "managed_executor_identity": managed_executor_identity,
                 "process_outcome": execution.get("process_outcome").cloned().unwrap_or_else(|| json!({
                     "schema_version": "process_outcome.v1",
                     "state": "unavailable",

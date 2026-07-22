@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
+use super::config::ClaudeCodeAdmission;
 use crate::cli::{spawn_with_timeout, SpawnWithTimeoutError};
 use crate::node_executor::{
     exit_status_signal, process_outcome_from_exit_status, NodeExecutionInput, NodeExecutionOutput,
@@ -11,18 +12,19 @@ use crate::node_executor::{
 };
 use crate::provider::redaction::redact_sensitive_patterns;
 
-/// CLI-backed NodeExecutor for the managed Codex CLI process.
+/// CLI-backed NodeExecutor for admitted managed coding CLI processes.
 ///
 /// Gated behind `ACP_ENABLE_CLI_EXECUTION=1`. Reads `node_metadata` for:
 /// - `prompt` or `command`: the task text to send to the CLI
-/// - `executor`: `"codex_cli"`
-/// - `model`: optional model override
+/// - `executor`: `"codex_cli"` or the exactly admitted `"claude_code_cli"`
+/// - `model`: optional Codex model override; Claude uses its admitted snapshot
 /// - `workspace_path`: cwd for the subprocess
 pub struct CliNodeExecutor {
     pub claude_bin: Option<String>,
     pub codex_bin: Option<String>,
     pub timeout_ms: u64,
     pub default_executor: String,
+    pub claude_admission: Option<ClaudeCodeAdmission>,
 }
 
 impl CliNodeExecutor {
@@ -39,6 +41,17 @@ impl CliNodeExecutor {
             codex_bin,
             timeout_ms,
             default_executor,
+            claude_admission: None,
+        }
+    }
+
+    fn admitted_claude(admission: ClaudeCodeAdmission, timeout_ms: u64) -> Self {
+        Self {
+            claude_bin: admission.binary_path.to_str().map(str::to_string),
+            codex_bin: None,
+            timeout_ms,
+            default_executor: "claude_code_cli".to_string(),
+            claude_admission: Some(admission),
         }
     }
 
@@ -47,6 +60,10 @@ impl CliNodeExecutor {
             return None;
         }
         match executor_type {
+            "claude_code_cli" if config.claude_code_enabled => config
+                .claude_code_admission
+                .clone()
+                .map(|admission| Self::admitted_claude(admission, config.timeout_ms)),
             "codex_cli" if config.codex_enabled => config
                 .codex_bin
                 .clone()
@@ -124,23 +141,6 @@ impl NodeExecutor for CliNodeExecutor {
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
         let start = std::time::Instant::now();
         let executor_type = self.resolve_executor(input);
-        if executor_type == "claude_code_cli" {
-            return NodeExecutionOutput {
-                status: "failed".to_string(),
-                executor_type,
-                output: None,
-                error_domain: Some("cli_executor_unsupported".to_string()),
-                error_message: Some(
-                    "claude_code_cli is unavailable because nested tool calls cannot be mediated by the app-owned workspace and tool-policy boundary"
-                        .to_string(),
-                ),
-                input_tokens: None,
-                output_tokens: None,
-                estimated_cost: None,
-                latency_ms: Some(start.elapsed().as_millis() as i64),
-            process_outcome: None,
-            };
-        }
         let prompt = match product_execution_prompt(input, &self.resolve_prompt(input)) {
             Ok(prompt) => prompt,
             Err(error) => {
@@ -177,6 +177,30 @@ impl NodeExecutor for CliNodeExecutor {
         };
 
         let (bin_path, effective_type) = match executor_type.as_str() {
+            "claude_code_cli" => match &self.claude_admission {
+                Some(admission) => {
+                    if let Err(error) = validate_claude_execution_authority(input, admission) {
+                        return failed_without_process(
+                            "claude_code_cli",
+                            "cli_execution_authority_invalid",
+                            error,
+                            start.elapsed().as_millis() as i64,
+                        );
+                    }
+                    (
+                        admission.binary_path.to_string_lossy().into_owned(),
+                        "claude_code_cli",
+                    )
+                }
+                None => {
+                    return failed_without_process(
+                        "claude_code_cli",
+                        "cli_not_admitted",
+                        "Claude Code has no exact runtime admission".to_string(),
+                        start.elapsed().as_millis() as i64,
+                    );
+                }
+            },
             "codex_cli" => match &self.codex_bin {
                 Some(bin) => (bin.clone(), "codex_cli"),
                 None => {
@@ -212,21 +236,37 @@ impl NodeExecutor for CliNodeExecutor {
 
         let mut cmd = Command::new(&bin_path);
         match effective_type {
+            "claude_code_cli" => {
+                let admission = self.claude_admission.as_ref().expect("validated admission");
+                let allowed_paths = input
+                    .node_metadata
+                    .get("allowed_paths")
+                    .and_then(Value::as_array)
+                    .expect("validated allowed paths");
+                cmd.args(claude_invocation_args(admission, allowed_paths, &prompt));
+            }
             "codex_cli" => {
                 cmd.args(codex_invocation_args(&cwd, &prompt));
             }
             _ => unreachable!(),
         }
+        let child_path = if effective_type == "claude_code_cli" {
+            "/usr/bin:/bin".to_string()
+        } else {
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string())
+        };
         cmd.current_dir(&cwd)
             .env_clear()
-            .env(
-                "PATH",
-                std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string()),
-            )
+            .env("PATH", child_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for key in cli_env_allowlist() {
+        let environment_keys = if effective_type == "claude_code_cli" {
+            claude_env_allowlist()
+        } else {
+            cli_env_allowlist()
+        };
+        for key in environment_keys {
             if let Ok(value) = std::env::var(&key) {
                 cmd.env(key, value);
             }
@@ -267,13 +307,28 @@ impl NodeExecutor for CliNodeExecutor {
                 }
 
                 let stdout = redact_sensitive_patterns(&String::from_utf8_lossy(&output.stdout));
-                parse_cli_output(&stdout, effective_type, elapsed_ms, process_outcome)
+                if effective_type == "claude_code_cli" {
+                    parse_admitted_claude_output(
+                        &stdout,
+                        self.claude_admission.as_ref().expect("validated admission"),
+                        elapsed_ms,
+                        process_outcome,
+                    )
+                } else {
+                    parse_cli_output(&stdout, effective_type, elapsed_ms, process_outcome)
+                }
             }
             Err(error) => {
                 let (domain, msg, process_outcome) = match error {
-                    SpawnWithTimeoutError::SpawnFailed => (
-                        "cli_not_found",
-                        format!("failed to spawn {effective_type}"),
+                    SpawnWithTimeoutError::SpawnFailed { kind, raw_os_error } => (
+                        if kind == std::io::ErrorKind::NotFound {
+                            "cli_not_found"
+                        } else {
+                            "cli_spawn_error"
+                        },
+                        format!(
+                            "failed to spawn {effective_type}: kind={kind:?}, os_error={raw_os_error:?}"
+                        ),
                         ProcessOutcome::failure(
                             "spawn_failed",
                             None,
@@ -340,6 +395,305 @@ impl NodeExecutor for CliNodeExecutor {
     }
 }
 
+fn failed_without_process(
+    executor_type: &str,
+    domain: &str,
+    message: String,
+    latency_ms: i64,
+) -> NodeExecutionOutput {
+    NodeExecutionOutput {
+        status: "failed".to_string(),
+        executor_type: executor_type.to_string(),
+        output: None,
+        error_domain: Some(domain.to_string()),
+        error_message: Some(message),
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost: None,
+        latency_ms: Some(latency_ms),
+        process_outcome: None,
+    }
+}
+
+fn validate_claude_execution_authority(
+    input: &NodeExecutionInput,
+    admission: &ClaudeCodeAdmission,
+) -> Result<(), String> {
+    let current = ClaudeCodeAdmission::validate(
+        &admission.binary_path,
+        &admission.binary_version,
+        &admission.binary_sha256,
+        &admission.model,
+        admission.max_turns,
+        admission.max_budget_usd,
+    )?;
+    if &current != admission {
+        return Err("managed Claude runtime admission changed before execution".to_string());
+    }
+    if input.task_type != "claude_code_cli"
+        || input
+            .node_metadata
+            .pointer("/managed_supervised_patch/operation")
+            .and_then(Value::as_str)
+            != Some("product_apply")
+        || input
+            .node_metadata
+            .get("executor_class")
+            .and_then(Value::as_str)
+            != Some("managed_coding")
+    {
+        return Err("Claude Code is admitted only for managed product_apply nodes".to_string());
+    }
+    let identity = input
+        .node_metadata
+        .get("managed_executor_identity")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "managed Claude executor identity is missing".to_string())?;
+    if identity.get("schema_version").and_then(Value::as_str)
+        != Some("managed_executor_identity.v1")
+        || identity.get("executor_type").and_then(Value::as_str) != Some("claude_code_cli")
+        || identity.get("binary_path").and_then(Value::as_str) != admission.binary_path.to_str()
+        || identity.get("binary_version").and_then(Value::as_str)
+            != Some(admission.binary_version.as_str())
+        || identity.get("binary_sha256").and_then(Value::as_str)
+            != Some(admission.binary_sha256.as_str())
+        || identity.get("model").and_then(Value::as_str) != Some(admission.model.as_str())
+        || identity.get("max_turns").and_then(Value::as_u64) != Some(admission.max_turns)
+        || identity.get("max_attempt_tokens").and_then(Value::as_u64)
+            != Some(admission.max_attempt_tokens)
+        || identity.get("context_tokens").and_then(Value::as_u64) != Some(admission.context_tokens)
+        || identity.get("max_output_tokens").and_then(Value::as_u64)
+            != Some(admission.max_output_tokens)
+        || identity.get("max_budget_usd").and_then(Value::as_f64) != Some(admission.max_budget_usd)
+        || identity.get("input_usd_per_mtok").and_then(Value::as_f64)
+            != Some(admission.input_usd_per_mtok)
+        || identity
+            .get("cache_write_5m_usd_per_mtok")
+            .and_then(Value::as_f64)
+            != Some(admission.cache_write_5m_usd_per_mtok)
+        || identity
+            .get("cache_write_1h_usd_per_mtok")
+            .and_then(Value::as_f64)
+            != Some(admission.cache_write_1h_usd_per_mtok)
+        || identity
+            .get("cache_read_usd_per_mtok")
+            .and_then(Value::as_f64)
+            != Some(admission.cache_read_usd_per_mtok)
+        || identity.get("output_usd_per_mtok").and_then(Value::as_f64)
+            != Some(admission.output_usd_per_mtok)
+        || identity.get("pricing_source").and_then(Value::as_str)
+            != Some(admission.pricing_source.as_str())
+        || identity.get("pricing_verified_at").and_then(Value::as_str)
+            != Some(admission.pricing_verified_at.as_str())
+    {
+        return Err("managed Claude executor identity changed".to_string());
+    }
+    let budget = input
+        .node_metadata
+        .get("product_budget")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "managed Claude product budget is missing".to_string())?;
+    if budget
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .is_none_or(|limit| limit < admission.max_attempt_tokens)
+    {
+        return Err(format!(
+            "managed Claude token budget must be at least {}",
+            admission.max_attempt_tokens
+        ));
+    }
+    if budget.get("total_calls").and_then(Value::as_u64) != Some(1)
+        || budget.get("max_retries").and_then(Value::as_u64) != Some(0)
+    {
+        return Err(
+            "initial Claude admission requires total_calls=1 and max_retries=0".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn claude_invocation_args(
+    admission: &ClaudeCodeAdmission,
+    allowed_paths: &[Value],
+    prompt: &str,
+) -> Vec<OsString> {
+    let allow = allowed_paths
+        .iter()
+        .filter_map(Value::as_str)
+        .flat_map(|path| {
+            [
+                format!("Edit(./{path})"),
+                format!("Edit(./{path}/**)"),
+                format!("Write(./{path})"),
+                format!("Write(./{path}/**)"),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let settings = serde_json::json!({
+        "permissions": {
+            "defaultMode": "dontAsk",
+            "allow": allow,
+            "deny": [
+                "Bash",
+                "WebFetch",
+                "WebSearch",
+                "Agent",
+                "Task",
+                "NotebookEdit",
+                "Read(~/.claude/**)",
+                "Read(~/.ssh/**)",
+                "Read(~/.aws/**)",
+                "Read(~/.config/**)",
+                "Read(~/.git-credentials)",
+                "Read(~/.netrc)",
+                "Read(~/.bash_history)",
+                "Read(~/.zsh_history)",
+                "Read(**/.env)",
+                "Read(**/.env.*)"
+            ]
+        },
+        "sandbox": {
+            "enabled": true,
+            "failIfUnavailable": true,
+            "allowUnsandboxedCommands": false,
+            "autoAllowBashIfSandboxed": false
+        }
+    });
+    vec![
+        "-p".into(),
+        prompt.into(),
+        "--output-format".into(),
+        "json".into(),
+        "--safe-mode".into(),
+        "--no-chrome".into(),
+        "--disable-slash-commands".into(),
+        "--no-session-persistence".into(),
+        "--setting-sources".into(),
+        "".into(),
+        "--prompt-suggestions".into(),
+        "false".into(),
+        "--permission-mode".into(),
+        "dontAsk".into(),
+        "--strict-mcp-config".into(),
+        "--mcp-config".into(),
+        "{\"mcpServers\":{}}".into(),
+        "--tools".into(),
+        "Read,Edit,Write".into(),
+        "--settings".into(),
+        settings.to_string().into(),
+        "--model".into(),
+        admission.model.clone().into(),
+        "--max-turns".into(),
+        admission.max_turns.to_string().into(),
+        "--max-budget-usd".into(),
+        format!("{:.2}", admission.max_budget_usd).into(),
+    ]
+}
+
+fn parse_admitted_claude_output(
+    raw: &str,
+    admission: &ClaudeCodeAdmission,
+    latency_ms: i64,
+    process_outcome: ProcessOutcome,
+) -> NodeExecutionOutput {
+    let raw = redact_sensitive_patterns(raw);
+    let parsed: Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            return NodeExecutionOutput {
+                status: "failed".to_string(),
+                executor_type: "claude_code_cli".to_string(),
+                output: None,
+                error_domain: Some("cli_output_parse_error".to_string()),
+                error_message: Some(format!("failed to parse Claude Code JSON output: {error}")),
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(latency_ms),
+                process_outcome: Some(process_outcome),
+            };
+        }
+    };
+    let usage = parsed.get("usage").and_then(Value::as_object);
+    let input_tokens = usage
+        .and_then(|usage| {
+            let base = usage.get("input_tokens")?.as_u64()?;
+            ["cache_creation_input_tokens", "cache_read_input_tokens"]
+                .iter()
+                .try_fold(base, |total, key| {
+                    total.checked_add(usage.get(*key).and_then(Value::as_u64).unwrap_or(0))
+                })
+        })
+        .filter(|value| *value <= admission.context_tokens * admission.max_turns)
+        .and_then(|value| i64::try_from(value).ok());
+    let output_tokens = usage
+        .and_then(|usage| usage.get("output_tokens"))
+        .and_then(Value::as_u64)
+        .filter(|value| *value <= admission.max_output_tokens * admission.max_turns)
+        .and_then(|value| i64::try_from(value).ok());
+    let cost = parsed
+        .get("total_cost_usd")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0 && *value <= admission.max_budget_usd);
+    let admitted_model_cost = parsed
+        .get("modelUsage")
+        .and_then(Value::as_object)
+        .filter(|models| models.len() == 1)
+        .and_then(|models| models.get(&admission.model))
+        .and_then(|usage| usage.get("costUSD"))
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0);
+    let exact_model_used = cost.zip(admitted_model_cost).is_some_and(|(total, model)| {
+        (total - model).abs() <= 1e-9 && model <= admission.max_budget_usd
+    });
+    let successful_turns = parsed.get("subtype").and_then(Value::as_str) == Some("success")
+        && parsed.get("is_error").and_then(Value::as_bool) == Some(false)
+        && parsed
+            .get("num_turns")
+            .and_then(Value::as_u64)
+            .is_some_and(|turns| turns > 0 && turns <= admission.max_turns);
+    let result = parsed
+        .get("result")
+        .and_then(Value::as_str)
+        .map(redact_sensitive_patterns);
+    if input_tokens.is_none()
+        || output_tokens.is_none()
+        || cost.is_none()
+        || !exact_model_used
+        || !successful_turns
+        || result.is_none()
+    {
+        return NodeExecutionOutput {
+            status: "failed".to_string(),
+            executor_type: "claude_code_cli".to_string(),
+            output: None,
+            error_domain: Some("cli_evidence_incomplete".to_string()),
+            error_message: Some(
+                "Claude Code response lacks a successful bounded turn or exact admitted model, usage, and cost evidence"
+                    .to_string(),
+            ),
+            input_tokens,
+            output_tokens,
+            estimated_cost: cost,
+            latency_ms: Some(latency_ms),
+            process_outcome: Some(process_outcome),
+        };
+    }
+    NodeExecutionOutput {
+        status: "completed".to_string(),
+        executor_type: "claude_code_cli".to_string(),
+        output: result,
+        error_domain: None,
+        error_message: None,
+        input_tokens,
+        output_tokens,
+        estimated_cost: cost,
+        latency_ms: Some(latency_ms),
+        process_outcome: Some(process_outcome),
+    }
+}
+
 fn product_execution_prompt(input: &NodeExecutionInput, objective: &str) -> Result<String, String> {
     let managed = input.node_metadata.get("managed_supervised_patch");
     let is_product_apply = managed
@@ -401,6 +755,28 @@ fn cli_env_allowlist() -> Vec<String> {
         .map(str::trim)
         .filter(|key| !key.is_empty())
         .map(ToString::to_string)
+        .collect()
+}
+
+fn claude_env_allowlist() -> Vec<String> {
+    const ADMITTED: &[&str] = &[
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LOGNAME",
+        "SHELL",
+        "TEMP",
+        "TERM",
+        "TMP",
+        "TMPDIR",
+        "USER",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+    ];
+    cli_env_allowlist()
+        .into_iter()
+        .filter(|key| ADMITTED.contains(&key.as_str()))
         .collect()
 }
 
@@ -590,6 +966,76 @@ fn parse_codex_jsonl(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[cfg(unix)]
+    fn admitted_fake_claude(workspace: &Path, body: &str) -> ClaudeCodeAdmission {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::PermissionsExt;
+
+        let binary = workspace.join("claude-fixture-2.1.217");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '2.1.217 (Claude Code)\\n'; exit 0; fi\n{body}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let digest = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+        ClaudeCodeAdmission::validate(
+            &binary,
+            "2.1.217",
+            &digest,
+            super::super::config::ADMITTED_CLAUDE_CODE_MODEL,
+            3,
+            2.16,
+        )
+        .unwrap()
+    }
+
+    fn claude_metadata(workspace: &Path, admission: &ClaudeCodeAdmission) -> Value {
+        json!({
+            "executor": "claude_code_cli",
+            "executor_class": "managed_coding",
+            "workspace_path": workspace,
+            "workspace_root": workspace,
+            "product_task_id": "product-task-claude",
+            "allowed_paths": ["docs/managed.md"],
+            "managed_supervised_patch": {"operation": "product_apply"},
+            "managed_executor_identity": {
+                "schema_version": "managed_executor_identity.v1",
+                "executor_type": "claude_code_cli",
+                "binary_path": admission.binary_path,
+                "binary_version": admission.binary_version,
+                "binary_sha256": admission.binary_sha256,
+                "model": admission.model,
+                "max_turns": admission.max_turns,
+                "max_attempt_tokens": admission.max_attempt_tokens,
+                "context_tokens": admission.context_tokens,
+                "max_output_tokens": admission.max_output_tokens,
+                "max_budget_usd": admission.max_budget_usd,
+                "input_usd_per_mtok": admission.input_usd_per_mtok,
+                "cache_write_5m_usd_per_mtok": admission.cache_write_5m_usd_per_mtok,
+                "cache_write_1h_usd_per_mtok": admission.cache_write_1h_usd_per_mtok,
+                "cache_read_usd_per_mtok": admission.cache_read_usd_per_mtok,
+                "output_usd_per_mtok": admission.output_usd_per_mtok,
+                "pricing_source": admission.pricing_source,
+                "pricing_verified_at": admission.pricing_verified_at,
+            },
+            "product_budget": {
+                "total_tokens": admission.max_attempt_tokens,
+                "total_calls": 1,
+                "max_retries": 0,
+            },
+            "prompt": "Create docs/managed.md"
+        })
+    }
 
     fn make_input(metadata: Value) -> NodeExecutionInput {
         NodeExecutionInput {
@@ -627,10 +1073,167 @@ mod tests {
         }));
         let output = executor.execute_node(&input);
         assert_eq!(output.status, "failed");
+        assert_eq!(output.error_domain.as_deref(), Some("cli_not_admitted"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn admitted_claude_uses_bounded_invocation_and_owner_reported_usage_cost() {
+        let workspace = tempfile::tempdir().unwrap();
+        let admission = admitted_fake_claude(
+            workspace.path(),
+            &format!(
+                "printf '%s\\n' '{{\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"done\",\"usage\":{{\"input_tokens\":10,\"cache_creation_input_tokens\":3,\"cache_read_input_tokens\":2,\"output_tokens\":4}},\"total_cost_usd\":0.01,\"modelUsage\":{{\"{}\":{{\"costUSD\":0.01}}}}}}'",
+                super::super::config::ADMITTED_CLAUDE_CODE_MODEL
+            ),
+        );
+        let args =
+            claude_invocation_args(&admission, &[json!("docs/managed.md")], "bounded objective")
+                .into_iter()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+        assert!(args.iter().any(|value| value == "--safe-mode"));
+        assert!(args.iter().any(|value| value == "--no-chrome"));
+        assert!(args.iter().any(|value| value == "--no-session-persistence"));
+        assert!(args.iter().any(|value| value == "--disable-slash-commands"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--setting-sources", ""]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--model", super::super::config::ADMITTED_CLAUDE_CODE_MODEL]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--mcp-config", "{\"mcpServers\":{}}"]));
+        assert!(!args.iter().any(|value| value.contains("dangerously")));
+        assert!(args
+            .iter()
+            .any(|value| value.contains("\"deny\":[\"Bash\"")));
+        assert!(args
+            .iter()
+            .any(|value| value.contains("Read(~/.claude/**)")));
+        assert!(args
+            .iter()
+            .any(|value| value.contains("Write(./docs/managed.md)")));
+
+        let executor = CliNodeExecutor::admitted_claude(admission.clone(), 30_000);
+        let output = executor.execute_node(&NodeExecutionInput {
+            task_type: "claude_code_cli".to_string(),
+            ..make_input(claude_metadata(workspace.path(), &admission))
+        });
+        assert_eq!(output.status, "completed", "{output:?}");
+        assert_eq!(output.input_tokens, Some(15));
+        assert_eq!(output.output_tokens, Some(4));
+        assert_eq!(output.estimated_cost, Some(0.01));
+        assert_eq!(
+            output
+                .process_outcome
+                .as_ref()
+                .and_then(|value| value.exit_code),
+            Some(0)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn admitted_claude_rejects_provider_error_even_with_complete_usage() {
+        let workspace = tempfile::tempdir().unwrap();
+        let admission = admitted_fake_claude(workspace.path(), "exit 0");
+        let raw = format!(
+            "{{\"subtype\":\"error_during_execution\",\"is_error\":true,\"num_turns\":1,\"result\":\"unavailable\",\"usage\":{{\"input_tokens\":10,\"output_tokens\":4}},\"total_cost_usd\":0.01,\"modelUsage\":{{\"{}\":{{\"costUSD\":0.01}}}}}}",
+            super::super::config::ADMITTED_CLAUDE_CODE_MODEL
+        );
+
+        let output = parse_admitted_claude_output(&raw, &admission, 12, successful_process());
+
+        assert_eq!(output.status, "failed");
         assert_eq!(
             output.error_domain.as_deref(),
-            Some("cli_executor_unsupported")
+            Some("cli_evidence_incomplete")
         );
+        assert_eq!(output.input_tokens, Some(10));
+        assert_eq!(output.output_tokens, Some(4));
+        assert_eq!(output.estimated_cost, Some(0.01));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn admitted_claude_rejects_unbounded_tokens_or_inconsistent_model_cost() {
+        let workspace = tempfile::tempdir().unwrap();
+        let admission = admitted_fake_claude(workspace.path(), "exit 0");
+        let response = |output_tokens: u64, model_cost: f64| {
+            format!(
+                "{{\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"done\",\"usage\":{{\"input_tokens\":10,\"output_tokens\":{output_tokens}}},\"total_cost_usd\":0.01,\"modelUsage\":{{\"{}\":{{\"costUSD\":{model_cost}}}}}}}",
+                super::super::config::ADMITTED_CLAUDE_CODE_MODEL
+            )
+        };
+
+        let unbounded = parse_admitted_claude_output(
+            &response(admission.max_output_tokens * admission.max_turns + 1, 0.01),
+            &admission,
+            12,
+            successful_process(),
+        );
+        let inconsistent =
+            parse_admitted_claude_output(&response(4, 0.02), &admission, 12, successful_process());
+
+        assert_eq!(unbounded.status, "failed");
+        assert_eq!(inconsistent.status, "failed");
+        assert_eq!(unbounded.output_tokens, None);
+        assert_eq!(
+            inconsistent.error_domain.as_deref(),
+            Some("cli_evidence_incomplete")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_budget_refusal_occurs_before_provider_process() {
+        let workspace = tempfile::tempdir().unwrap();
+        let marker = workspace.path().join("provider-started");
+        let admission =
+            admitted_fake_claude(workspace.path(), &format!("touch '{}'", marker.display()));
+        let mut metadata = claude_metadata(workspace.path(), &admission);
+        metadata["product_budget"]["total_tokens"] = json!(50_000);
+        let executor = CliNodeExecutor::admitted_claude(admission, 30_000);
+        let output = executor.execute_node(&NodeExecutionInput {
+            task_type: "claude_code_cli".to_string(),
+            ..make_input(metadata)
+        });
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("cli_execution_authority_invalid")
+        );
+        assert!(!marker.exists());
+        assert!(output.process_outcome.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn changed_claude_binary_is_rejected_before_provider_process() {
+        let workspace = tempfile::tempdir().unwrap();
+        let marker = workspace.path().join("provider-started");
+        let admission = admitted_fake_claude(workspace.path(), "exit 0");
+        std::fs::write(
+            &admission.binary_path,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        let executor = CliNodeExecutor::admitted_claude(admission.clone(), 30_000);
+
+        let output = executor.execute_node(&NodeExecutionInput {
+            task_type: "claude_code_cli".to_string(),
+            ..make_input(claude_metadata(workspace.path(), &admission))
+        });
+
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("cli_execution_authority_invalid")
+        );
+        assert!(!marker.exists());
+        assert!(output.process_outcome.is_none());
     }
 
     #[test]
@@ -662,7 +1265,7 @@ mod tests {
             "prompt": "bounded fixture",
             "workspace_path": workspace.path(),
         })));
-        assert_eq!(output.status, "completed");
+        assert_eq!(output.status, "completed", "{output:?}");
         assert_eq!(output.process_outcome.as_ref().unwrap().state, "exited");
         assert_eq!(output.process_outcome.as_ref().unwrap().exit_code, Some(0));
     }
@@ -889,8 +1492,26 @@ mod tests {
 
     #[test]
     fn test_cli_env_allowlist_defaults_empty() {
+        let _guard = env_lock().lock().unwrap();
         std::env::remove_var("ACP_CLI_ENV_ALLOWLIST");
         assert!(cli_env_allowlist().is_empty());
+    }
+
+    #[test]
+    fn claude_env_allowlist_excludes_proxy_model_and_cloud_routing_overrides() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(
+            "ACP_CLI_ENV_ALLOWLIST",
+            "HOME,CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,ANTHROPIC_MODEL,CLAUDE_CODE_USE_BEDROCK,HTTPS_PROXY",
+        );
+
+        let admitted = claude_env_allowlist();
+
+        assert_eq!(
+            admitted,
+            ["HOME", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
+        );
+        std::env::remove_var("ACP_CLI_ENV_ALLOWLIST");
     }
 
     #[test]
@@ -899,6 +1520,7 @@ mod tests {
             enabled: false,
             claude_code_bin: Some("/bin/claude".into()),
             claude_code_enabled: true,
+            claude_code_admission: None,
             codex_bin: None,
             codex_enabled: false,
             timeout_ms: 5000,
@@ -912,6 +1534,7 @@ mod tests {
             enabled: true,
             claude_code_bin: None,
             claude_code_enabled: false,
+            claude_code_admission: None,
             codex_bin: None,
             codex_enabled: false,
             timeout_ms: 5000,
@@ -920,11 +1543,12 @@ mod tests {
     }
 
     #[test]
-    fn from_config_rejects_unsandboxed_claude_even_when_supplied() {
+    fn from_config_rejects_claude_without_exact_admission_even_when_supplied() {
         let config = super::super::config::CliConfig {
             enabled: true,
             claude_code_bin: Some("/bin/claude".into()),
             claude_code_enabled: true,
+            claude_code_admission: None,
             codex_bin: None,
             codex_enabled: false,
             timeout_ms: 5000,
@@ -938,6 +1562,7 @@ mod tests {
             enabled: true,
             claude_code_bin: Some("/bin/claude".into()),
             claude_code_enabled: true,
+            claude_code_admission: None,
             codex_bin: Some("/bin/codex".into()),
             codex_enabled: true,
             timeout_ms: 5000,

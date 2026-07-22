@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum SpawnWithTimeoutError {
-    SpawnFailed,
+    SpawnFailed {
+        kind: std::io::ErrorKind,
+        raw_os_error: Option<i32>,
+    },
     TimedOut {
         elapsed_ms: i64,
         terminated_status: Option<std::process::ExitStatus>,
@@ -29,9 +32,21 @@ pub fn spawn_with_timeout(
     timeout_ms: u64,
 ) -> Result<Output, SpawnWithTimeoutError> {
     let start = Instant::now();
-    let mut child: Child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(_) => return Err(SpawnWithTimeoutError::SpawnFailed),
+    let mut spawn_attempt = 0_u8;
+    let mut child: Child = loop {
+        match cmd.spawn() {
+            Ok(child) => break child,
+            Err(error) if is_transient_text_busy(&error) && spawn_attempt < 2 => {
+                spawn_attempt += 1;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => {
+                return Err(SpawnWithTimeoutError::SpawnFailed {
+                    kind: error.kind(),
+                    raw_os_error: error.raw_os_error(),
+                });
+            }
+        }
     };
 
     let deadline = Duration::from_millis(timeout_ms);
@@ -67,6 +82,18 @@ pub fn spawn_with_timeout(
                 });
             }
         }
+    }
+}
+
+pub(crate) fn is_transient_text_busy(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(26)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
     }
 }
 
@@ -116,7 +143,34 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            SpawnWithTimeoutError::SpawnFailed
+            SpawnWithTimeoutError::SpawnFailed {
+                kind: std::io::ErrorKind::NotFound,
+                ..
+            }
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_retries_transient_text_busy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("transient-binary");
+        std::fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&binary)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2));
+            drop(writer);
+        });
+
+        let result = spawn_with_timeout(&mut Command::new(&binary), 5_000);
+
+        release.join().unwrap();
+        assert!(result.unwrap().status.success());
     }
 }
