@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -140,7 +141,23 @@ impl NodeExecutor for CliNodeExecutor {
             process_outcome: None,
             };
         }
-        let prompt = self.resolve_prompt(input);
+        let prompt = match product_execution_prompt(input, &self.resolve_prompt(input)) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                return NodeExecutionOutput {
+                    status: "failed".to_string(),
+                    executor_type,
+                    output: None,
+                    error_domain: Some("cli_execution_authority_invalid".to_string()),
+                    error_message: Some(error),
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: Some(start.elapsed().as_millis() as i64),
+                    process_outcome: None,
+                };
+            }
+        };
         let cwd = match self.resolve_cwd(input) {
             Ok(cwd) => cwd,
             Err(error) => {
@@ -196,12 +213,7 @@ impl NodeExecutor for CliNodeExecutor {
         let mut cmd = Command::new(&bin_path);
         match effective_type {
             "codex_cli" => {
-                cmd.arg("exec")
-                    .arg("--json")
-                    .arg("--sandbox")
-                    .arg("workspace-write")
-                    .arg("--ephemeral")
-                    .arg(&prompt);
+                cmd.args(codex_invocation_args(&cwd, &prompt));
             }
             _ => unreachable!(),
         }
@@ -326,6 +338,60 @@ impl NodeExecutor for CliNodeExecutor {
             }
         }
     }
+}
+
+fn product_execution_prompt(input: &NodeExecutionInput, objective: &str) -> Result<String, String> {
+    let managed = input.node_metadata.get("managed_supervised_patch");
+    let is_product_apply = managed
+        .and_then(Value::as_object)
+        .and_then(|binding| binding.get("operation"))
+        .and_then(Value::as_str)
+        == Some("product_apply");
+    if !is_product_apply {
+        return Ok(objective.to_string());
+    }
+
+    let task_id = input
+        .node_metadata
+        .get("product_task_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "product apply task identity is missing".to_string())?;
+    let allowed_paths = input
+        .node_metadata
+        .get("allowed_paths")
+        .and_then(Value::as_array)
+        .filter(|paths| {
+            !paths.is_empty()
+                && paths
+                    .iter()
+                    .all(|path| path.as_str().is_some_and(|value| !value.trim().is_empty()))
+        })
+        .ok_or_else(|| "product apply allowed-path authority is missing".to_string())?;
+    let allowed_paths = allowed_paths
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join("\n- ");
+
+    Ok(format!(
+        "The control plane has already authorized this bounded workspace-apply execution for product task {task_id}. Do not request or wait for another execution approval. This authorization covers only edits inside the bound workspace and only the allowed paths below. It does not approve the artifact, confirm target output, authorize a branch push, or authorize pull-request creation. Complete the objective now, verify the requested change, and do not modify any other path.\n\nAllowed paths:\n- {allowed_paths}\n\nObjective:\n{objective}"
+    ))
+}
+
+fn codex_invocation_args(cwd: &Path, prompt: &str) -> Vec<OsString> {
+    vec![
+        "--ask-for-approval".into(),
+        "never".into(),
+        "exec".into(),
+        "--json".into(),
+        "--sandbox".into(),
+        "workspace-write".into(),
+        "--cd".into(),
+        cwd.as_os_str().to_os_string(),
+        "--ephemeral".into(),
+        prompt.into(),
+    ]
 }
 
 fn cli_env_allowlist() -> Vec<String> {
@@ -590,7 +656,7 @@ mod tests {
             "printf '%s\\n' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}'",
         );
         let executor =
-            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 5_000);
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 30_000);
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded fixture",
@@ -700,6 +766,53 @@ mod tests {
         let executor = CliNodeExecutor::new(None, Some("/bin/codex".into()), 5000);
         let input = make_input(json!({}));
         assert_eq!(executor.resolve_executor(&input), "codex_cli");
+    }
+
+    #[test]
+    fn product_apply_prompt_records_execution_authority_without_output_authority() {
+        let input = make_input(json!({
+            "product_task_id": "product-task-1",
+            "allowed_paths": ["docs/managed.md"],
+            "managed_supervised_patch": {
+                "operation": "product_apply"
+            }
+        }));
+
+        let prompt = product_execution_prompt(&input, "Create the requested file").unwrap();
+        assert!(prompt.contains("already authorized"));
+        assert!(prompt.contains("Do not request or wait for another execution approval"));
+        assert!(prompt.contains("does not approve the artifact"));
+        assert!(prompt.contains("docs/managed.md"));
+        assert!(prompt.ends_with("Create the requested file"));
+    }
+
+    #[test]
+    fn codex_invocation_is_noninteractive_but_keeps_workspace_write_sandbox() {
+        let args = codex_invocation_args(Path::new("/tmp/bound-workspace"), "bounded objective");
+        let args = args
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            args,
+            vec![
+                "--ask-for-approval",
+                "never",
+                "exec",
+                "--json",
+                "--sandbox",
+                "workspace-write",
+                "--cd",
+                "/tmp/bound-workspace",
+                "--ephemeral",
+                "bounded objective",
+            ]
+        );
+        assert!(!args.iter().any(|value| value == "danger-full-access"));
+        assert!(!args
+            .iter()
+            .any(|value| value == "--dangerously-bypass-approvals-and-sandbox"));
     }
 
     #[test]

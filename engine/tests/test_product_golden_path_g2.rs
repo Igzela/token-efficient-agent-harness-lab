@@ -1,13 +1,16 @@
 //! G2 tests: executable graph compile + scheduler-eligible product task runs.
 //! Finalize must not drive executor ticks; the existing tick/scheduler path does.
 
+use engine::node_executor::{
+    NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessOutcome,
+};
 use engine::product_golden_path::{
     validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest, ProductTaskStatus,
     ProductVerificationCommand, FIXTURE_DETERMINISTIC_NOTE_CONTENT, PRODUCT_TASK_GATE,
 };
 use engine::storage::local_product_store::LocalProductStore;
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 fn env_lock() -> &'static Mutex<()> {
@@ -99,6 +102,36 @@ fn admit_bound(
     store.admit_product_task(&validated, "tester").unwrap()
 }
 
+struct CapturingManagedExecutor {
+    prompt: Arc<Mutex<Option<String>>>,
+}
+
+impl NodeExecutor for CapturingManagedExecutor {
+    fn executor_type_name(&self) -> &str {
+        "codex_cli"
+    }
+
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        *self.prompt.lock().unwrap() = input
+            .node_metadata
+            .get("prompt")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "codex_cli".to_string(),
+            output: Some("bounded managed test".to_string()),
+            error_domain: None,
+            error_message: None,
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            estimated_cost: None,
+            latency_ms: Some(10),
+            process_outcome: Some(ProcessOutcome::exited(0)),
+        }
+    }
+}
+
 #[test]
 fn compile_creates_executable_run_bound_to_task() {
     with_gates(|| {
@@ -129,6 +162,11 @@ fn compile_creates_executable_run_bound_to_task() {
         assert_eq!(nodes[0]["product_task_id"], task_id);
         assert_eq!(nodes[0]["task_type"], "command");
         assert_eq!(nodes[0]["executor_class"], "fixture_deterministic");
+        assert_eq!(
+            nodes[0]["product_apply_binding_schema_version"],
+            "product_apply_binding.v2"
+        );
+        assert_eq!(nodes[0]["product_budget"]["total_tokens"], 50_000);
         assert!(nodes[0]["workspace_path"].as_str().is_some());
         assert!(nodes[0].get("managed_supervised_patch").is_some());
         let ws_id = task["workspace_record_id"].as_str().unwrap();
@@ -137,6 +175,117 @@ fn compile_creates_executable_run_bound_to_task() {
             .unwrap()
             .unwrap();
         assert_eq!(ws["run_id"].as_str(), Some(run_id));
+    });
+}
+
+fn prepare_managed_long_objective(
+    store: &LocalProductStore,
+    repo: &std::path::Path,
+    rev: &str,
+    key: &str,
+) -> (String, String, String) {
+    let objective = format!(
+            "Create docs/product_golden_path_fixture.md and preserve this exact bounded context: {} END-OF-OBJECTIVE",
+            "managed-context-".repeat(40)
+        );
+    assert!(objective.len() > 256);
+    let mut request = sample_intake(repo, rev, key);
+    request.objective = objective.clone();
+    request.executor_policy = ProductExecutorPolicy {
+        allowed_executors: vec!["codex_cli".to_string()],
+        prefer: Some("codex_cli".to_string()),
+    };
+    let validated = validate_intake(&request, "local", "default").unwrap();
+    let task = store.admit_product_task(&validated, "tester").unwrap();
+    assert!(task["intake"].get("_execution_objective_v1").is_none());
+    let objective_preview = task["intake"]["objective_preview"].clone();
+    let task_id = task["task_id"].as_str().unwrap();
+    let compiled = store
+        .compile_and_schedule_product_task(task_id, "tester", &["codex_cli".to_string()])
+        .unwrap();
+    let plan = store
+        .get_workflow_plan(compiled["task"]["plan_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_ne!(plan["raw_request"], objective);
+    assert_eq!(plan["raw_request"], objective_preview);
+
+    let public_task = store.get_product_task(task_id).unwrap().unwrap();
+    assert!(public_task["intake"]
+        .get("_execution_objective_v1")
+        .is_none());
+    (
+        objective,
+        task_id.to_string(),
+        compiled["task"]["run_id"].as_str().unwrap().to_string(),
+    )
+}
+
+fn assert_managed_long_objective_delivery(
+    store: &LocalProductStore,
+    objective: &str,
+    task_id: &str,
+    run_id: &str,
+) {
+    let captured = Arc::new(Mutex::new(None));
+    let executor = CapturingManagedExecutor {
+        prompt: captured.clone(),
+    };
+    let tick = store
+        .tick_with_executor(run_id, "scheduler", 0, &executor)
+        .unwrap();
+    assert_eq!(tick["run"]["status"], "completed");
+    assert_eq!(captured.lock().unwrap().as_deref(), Some(objective));
+    let public_task = store.get_product_task(task_id).unwrap().unwrap();
+    assert!(public_task["intake"]
+        .get("_execution_objective_v1")
+        .is_none());
+}
+
+#[test]
+fn managed_executor_receives_exact_long_objective_without_public_persistence() {
+    with_gates(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("store.db");
+        let store = LocalProductStore::new(&db_path).unwrap();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let (objective, task_id, run_id) =
+            prepare_managed_long_objective(&store, &repo, &rev, "g2-long-managed-objective");
+        drop(store);
+        let restarted = LocalProductStore::new(&db_path).unwrap();
+        assert_managed_long_objective_delivery(&restarted, &objective, &task_id, &run_id);
+    });
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn postgres_managed_executor_receives_exact_long_objective_without_public_persistence() {
+    let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        if std::env::var("CI").as_deref() == Ok("true") {
+            panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+        }
+        return;
+    };
+    with_gates(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("product-workspaces");
+        std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", &workspace_root);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let store =
+            LocalProductStore::new_postgres(&url, || "2026-07-22T12:00:00Z".to_string()).unwrap();
+        let (objective, task_id, run_id) = prepare_managed_long_objective(
+            &store,
+            &repo,
+            &rev,
+            &format!("g2-long-managed-objective-pg-{}", uuid::Uuid::new_v4()),
+        );
+        drop(store);
+        let restarted =
+            LocalProductStore::new_postgres(&url, || "2026-07-22T12:00:01Z".to_string()).unwrap();
+        assert_managed_long_objective_delivery(&restarted, &objective, &task_id, &run_id);
+        std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
     });
 }
 

@@ -1857,19 +1857,43 @@ impl LocalProductStore {
                     && node_metadata.get("prompt").is_none()
                     && node_metadata.get("command").is_none()
                 {
-                    if let Some(run) = self.get_workflow_run(run_id)? {
-                        if let Some(plan_id) = run.get("plan_id").and_then(Value::as_str) {
-                            if let Some(prompt) = self
-                                .get_workflow_plan(plan_id)?
-                                .and_then(|plan| plan.get("raw_request").cloned())
-                            {
-                                if !node_metadata.is_object() {
-                                    node_metadata = json!({});
-                                }
-                                if let Some(obj) = node_metadata.as_object_mut() {
-                                    obj.insert("prompt".to_string(), prompt);
-                                }
-                            }
+                    let exact_product_prompt = if node_metadata
+                        .pointer("/managed_supervised_patch/operation")
+                        .and_then(Value::as_str)
+                        == Some("product_apply")
+                    {
+                        node_metadata
+                            .get("product_task_id")
+                            .and_then(Value::as_str)
+                            .zip(
+                                node_metadata
+                                    .get("objective_fingerprint")
+                                    .and_then(Value::as_str),
+                            )
+                            .and_then(|(task_id, fingerprint)| {
+                                self.product_execution_objective(task_id, fingerprint).ok()
+                            })
+                            .map(Value::String)
+                    } else {
+                        None
+                    };
+                    let plan_prompt = if exact_product_prompt.is_none() {
+                        self.get_workflow_run(run_id)?
+                            .and_then(|run| {
+                                run.get("plan_id")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                            })
+                            .map(|plan_id| self.get_workflow_plan(&plan_id))
+                            .transpose()?
+                            .flatten()
+                            .and_then(|plan| plan.get("raw_request").cloned())
+                    } else {
+                        None
+                    };
+                    if let Some(prompt) = exact_product_prompt.or(plan_prompt) {
+                        if let Some(obj) = node_metadata.as_object_mut() {
+                            obj.insert("prompt".to_string(), prompt);
                         }
                     }
                 }
@@ -1959,6 +1983,10 @@ impl LocalProductStore {
                 } else {
                     executor.execute_node(&input)
                 };
+                let token_settlement =
+                    enforce_product_managed_token_budget(output, &input.node_metadata);
+                let output = token_settlement.output;
+                let product_managed_usage = token_settlement.usage_state;
 
                 // Phase 3: Record result (inside lock)
                 let tick_result = match &self.db {
@@ -2252,6 +2280,9 @@ impl LocalProductStore {
                         if let Some(obj) = identity.node_json.as_object_mut() {
                             obj.insert("status".to_string(), json!(persisted_status));
                             obj.insert("result".to_string(), result_json.clone());
+                            if let Some(usage) = &product_managed_usage {
+                                obj.insert("product_managed_usage".to_string(), usage.clone());
+                            }
                             if persisted_status == "completed" {
                                 obj.insert("completed_at".to_string(), json!(now));
                             }
@@ -2685,6 +2716,9 @@ impl LocalProductStore {
                         if let Some(obj) = identity.node_json.as_object_mut() {
                             obj.insert("status".to_string(), json!(persisted_status));
                             obj.insert("result".to_string(), result_json.clone());
+                            if let Some(usage) = &product_managed_usage {
+                                obj.insert("product_managed_usage".to_string(), usage.clone());
+                            }
                             if persisted_status == "completed" {
                                 obj.insert("completed_at".to_string(), json!(now));
                             }
@@ -6302,8 +6336,235 @@ fn retryable_node_failure(output: &crate::node_executor::NodeExecutionOutput) ->
                 | "tool_execution_receipt_invalid"
                 | "tool_execution_receipt_error"
                 | "provider_outcome_unknown"
+                | "product_token_budget_exhausted"
+                | "product_call_budget_exhausted"
+                | "product_token_usage_unavailable"
         )
     )
+}
+
+struct ProductManagedTokenSettlement {
+    output: crate::node_executor::NodeExecutionOutput,
+    usage_state: Option<Value>,
+}
+
+fn enforce_product_managed_token_budget(
+    mut output: crate::node_executor::NodeExecutionOutput,
+    node_metadata: &Value,
+) -> ProductManagedTokenSettlement {
+    let is_managed_product_apply = node_metadata.get("executor_class").and_then(Value::as_str)
+        == Some("managed_coding")
+        && node_metadata
+            .pointer("/managed_supervised_patch/operation")
+            .and_then(Value::as_str)
+            == Some("product_apply");
+    if !is_managed_product_apply {
+        return ProductManagedTokenSettlement {
+            output,
+            usage_state: None,
+        };
+    }
+
+    let Some(limit) = node_metadata
+        .pointer("/product_budget/total_tokens")
+        .and_then(Value::as_u64)
+        .filter(|limit| *limit > 0)
+    else {
+        output.status = "failed".to_string();
+        output.error_domain = Some("product_token_usage_unavailable".to_string());
+        output.error_message = Some(
+            "product token budget is unavailable; managed completion cannot be trusted".to_string(),
+        );
+        return ProductManagedTokenSettlement {
+            output,
+            usage_state: None,
+        };
+    };
+
+    let execution_attempt = node_metadata
+        .get("execution_attempt")
+        .and_then(Value::as_u64)
+        .filter(|attempt| *attempt > 0);
+    let prior = node_metadata.get("product_managed_usage");
+    let prior_cumulative = match (execution_attempt, prior) {
+        (Some(1), None) => Some(0),
+        (Some(attempt), Some(prior))
+            if prior.get("schema_version").and_then(Value::as_str)
+                == Some("product_managed_usage.v1")
+                && prior.get("last_attempt").and_then(Value::as_u64)
+                    == Some(attempt.saturating_sub(1)) =>
+        {
+            prior.get("cumulative_tokens").and_then(Value::as_u64)
+        }
+        _ => None,
+    };
+    let Some(prior_cumulative) = prior_cumulative else {
+        output.status = "failed".to_string();
+        output.error_domain = Some("product_token_usage_unavailable".to_string());
+        output.error_message =
+            Some("managed token usage attempt lineage is missing or stale".to_string());
+        return ProductManagedTokenSettlement {
+            output,
+            usage_state: None,
+        };
+    };
+    let execution_attempt = execution_attempt.expect("validated managed execution attempt");
+
+    let measured = match (output.input_tokens, output.output_tokens) {
+        (Some(input), Some(output_tokens)) if input >= 0 && output_tokens >= 0 => {
+            (input as u64).checked_add(output_tokens as u64)
+        }
+        _ => None,
+    };
+    let Some(measured) = measured else {
+        if output.status == "completed" || retryable_node_failure(&output) {
+            output.status = "failed".to_string();
+            output.error_domain = Some("product_token_usage_unavailable".to_string());
+            output.error_message = Some(
+                "managed executor did not provide authoritative non-negative token usage"
+                    .to_string(),
+            );
+        }
+        return ProductManagedTokenSettlement {
+            output,
+            usage_state: Some(json!({
+                "schema_version": "product_managed_usage.v1",
+                "last_attempt": execution_attempt,
+                "cumulative_tokens": prior_cumulative,
+                "current_attempt_tokens": Value::Null,
+                "status": "unavailable",
+                "raw_output_stored": false,
+            })),
+        };
+    };
+
+    let Some(cumulative) = prior_cumulative.checked_add(measured) else {
+        output.status = "failed".to_string();
+        output.error_domain = Some("product_token_budget_exhausted".to_string());
+        output.error_message = Some("budget_exhausted:total_tokens overflow".to_string());
+        return ProductManagedTokenSettlement {
+            output,
+            usage_state: None,
+        };
+    };
+
+    if cumulative > limit && (output.status == "completed" || retryable_node_failure(&output)) {
+        output.status = "failed".to_string();
+        output.error_domain = Some("product_token_budget_exhausted".to_string());
+        output.error_message = Some(format!(
+            "budget_exhausted:total_tokens limit={limit} cumulative={cumulative}"
+        ));
+    }
+    ProductManagedTokenSettlement {
+        output,
+        usage_state: Some(json!({
+            "schema_version": "product_managed_usage.v1",
+            "last_attempt": execution_attempt,
+            "cumulative_tokens": cumulative,
+            "current_attempt_tokens": measured,
+            "limit_tokens": limit,
+            "status": if cumulative > limit { "exhausted" } else { "within_budget" },
+            "raw_output_stored": false,
+        })),
+    }
+}
+
+#[cfg(test)]
+mod product_managed_token_budget_tests {
+    use super::*;
+    use crate::node_executor::{NodeExecutionOutput, ProcessOutcome};
+
+    fn metadata(limit: f64) -> Value {
+        json!({
+            "executor_class": "managed_coding",
+            "budget": limit,
+            "product_budget": {"total_tokens": limit as u64},
+            "execution_attempt": 1,
+            "managed_supervised_patch": {"operation": "product_apply"}
+        })
+    }
+
+    fn completed(input_tokens: Option<i64>, output_tokens: Option<i64>) -> NodeExecutionOutput {
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "codex_cli".to_string(),
+            output: Some("bounded result".to_string()),
+            error_domain: None,
+            error_message: None,
+            input_tokens,
+            output_tokens,
+            estimated_cost: None,
+            latency_ms: Some(25),
+            process_outcome: Some(ProcessOutcome::exited(0)),
+        }
+    }
+
+    #[test]
+    fn measured_managed_usage_within_product_budget_stays_complete() {
+        let output =
+            enforce_product_managed_token_budget(completed(Some(40), Some(10)), &metadata(50.0))
+                .output;
+        assert_eq!(output.status, "completed");
+        assert_eq!(output.process_outcome.unwrap().exit_code, Some(0));
+    }
+
+    #[test]
+    fn managed_usage_overage_is_nonretryable_and_preserves_measurement() {
+        let output =
+            enforce_product_managed_token_budget(completed(Some(41), Some(10)), &metadata(50.0))
+                .output;
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("product_token_budget_exhausted")
+        );
+        assert_eq!(output.input_tokens, Some(41));
+        assert_eq!(output.output_tokens, Some(10));
+        assert_eq!(output.process_outcome.as_ref().unwrap().exit_code, Some(0));
+        assert!(!retryable_node_failure(&output));
+    }
+
+    #[test]
+    fn missing_managed_usage_fails_closed_without_retry() {
+        let output =
+            enforce_product_managed_token_budget(completed(None, None), &metadata(50.0)).output;
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("product_token_usage_unavailable")
+        );
+        assert!(!retryable_node_failure(&output));
+    }
+
+    #[test]
+    fn product_call_budget_exhaustion_is_not_retryable() {
+        let mut output = completed(None, None);
+        output.status = "failed".to_string();
+        output.error_domain = Some("product_call_budget_exhausted".to_string());
+        assert!(!retryable_node_failure(&output));
+    }
+
+    #[test]
+    fn failed_attempt_usage_is_accumulated_before_retry() {
+        let mut failed = completed(Some(30), Some(10));
+        failed.status = "failed".to_string();
+        failed.error_domain = Some("retryable_fixture_failure".to_string());
+        let first = enforce_product_managed_token_budget(failed, &metadata(50.0));
+        assert_eq!(first.output.status, "failed");
+        assert_eq!(first.usage_state.as_ref().unwrap()["cumulative_tokens"], 40);
+
+        let mut second_metadata = metadata(50.0);
+        second_metadata["execution_attempt"] = json!(2);
+        second_metadata["product_managed_usage"] = first.usage_state.unwrap();
+        let second =
+            enforce_product_managed_token_budget(completed(Some(15), Some(5)), &second_metadata);
+        assert_eq!(second.output.status, "failed");
+        assert_eq!(
+            second.output.error_domain.as_deref(),
+            Some("product_token_budget_exhausted")
+        );
+        assert_eq!(second.usage_state.unwrap()["cumulative_tokens"], 60);
+    }
 }
 
 fn get_run_row(conn: &rusqlite::Connection, run_id: &str) -> Result<Value, String> {

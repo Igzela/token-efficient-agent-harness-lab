@@ -10,14 +10,15 @@ use crate::node_executor::{
     CommandNodeExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessOutcome,
 };
 use crate::product_golden_path::{
-    compile_product_executable_graph, is_valid_product_task_transition, planned_workspace_path,
-    product_gate_enabled, provisional_run_id_for_task, redacted_intake_json,
-    resolve_admitted_executor, validate_source_revision_format, workspace_content_hash,
-    ProductExecutorPolicy, ProductTaskStatus, ProductVerificationRuntimeAuthority,
-    ProductWorkspaceBinding, ValidatedProductTaskIntake, FIXTURE_DETERMINISTIC_APPLY_FILENAME,
-    FIXTURE_DETERMINISTIC_APPLY_SCHEMA, FIXTURE_DETERMINISTIC_NOTE_CONTENT,
-    PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION, PRODUCT_TASK_SCHEMA_VERSION,
-    PRODUCT_TASK_WORKSPACE_BINDING_SCHEMA_VERSION, PRODUCT_VERIFICATION_READ_ONLY_COMMANDS,
+    compile_product_executable_graph, fingerprint_objective, is_valid_product_task_transition,
+    planned_workspace_path, product_gate_enabled, provisional_run_id_for_task,
+    redacted_intake_json, resolve_admitted_executor, validate_source_revision_format,
+    workspace_content_hash, ProductExecutorPolicy, ProductTaskStatus,
+    ProductVerificationRuntimeAuthority, ProductWorkspaceBinding, ValidatedProductTaskIntake,
+    FIXTURE_DETERMINISTIC_APPLY_FILENAME, FIXTURE_DETERMINISTIC_APPLY_SCHEMA,
+    FIXTURE_DETERMINISTIC_NOTE_CONTENT, PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
+    PRODUCT_TASK_SCHEMA_VERSION, PRODUCT_TASK_WORKSPACE_BINDING_SCHEMA_VERSION,
+    PRODUCT_VERIFICATION_READ_ONLY_COMMANDS,
 };
 use crate::read_only_planner::{ReadOnlyPlanner, READ_ONLY_PLAN_SCHEMA_VERSION};
 use crate::target_repo_output::{
@@ -288,13 +289,14 @@ impl LocalProductStore {
 
         let now = self.now();
         let task_id = allocate_task_id(&now);
-        let intake_json = redacted_intake_json(intake).to_string();
+        let intake_json = persisted_product_intake_json(intake).to_string();
         let status = ProductTaskStatus::Admitted.as_str();
 
         match &self.db {
             DatabaseConnection::Sqlite(_) => {
                 self.with_conn(|conn| {
-                    match conn.execute(
+                    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+                    let inserted = match tx.execute(
                         "INSERT INTO product_tasks (
                             task_id, schema_version, tenant_id, workspace_id, idempotency_key,
                             status, version, objective_fingerprint, target_id, target_repo_path,
@@ -331,37 +333,39 @@ impl LocalProductStore {
                             actor,
                         ],
                     ) {
-                        Ok(_) => {
-                            append_audit_locked(
-                                conn,
-                                &now,
-                                actor,
-                                "product_task.admit",
-                                &task_id,
-                                &json!({
-                                    "status": status,
-                                    "tenant_id": intake.tenant_id,
-                                    "workspace_id": intake.workspace_id,
-                                    "idempotency_key": intake.idempotency_key,
-                                    "intake_contract_sha256": intake.intake_contract_sha256,
-                                    "execution_admitted": false,
-                                }),
-                            )?;
-                            Ok(())
-                        }
+                        Ok(_) => 1,
                         Err(rusqlite::Error::SqliteFailure(code, _))
                             if code.code == rusqlite::ErrorCode::ConstraintViolation =>
                         {
-                            Ok(())
+                            0
                         }
-                        Err(e) => Err(e.to_string()),
+                        Err(e) => return Err(e.to_string()),
+                    };
+                    if inserted > 0 {
+                        append_audit_locked(
+                            &tx,
+                            &now,
+                            actor,
+                            "product_task.admit",
+                            &task_id,
+                            &json!({
+                                "status": status,
+                                "tenant_id": intake.tenant_id,
+                                "workspace_id": intake.workspace_id,
+                                "idempotency_key": intake.idempotency_key,
+                                "intake_contract_sha256": intake.intake_contract_sha256,
+                                "execution_admitted": false,
+                            }),
+                        )?;
                     }
+                    tx.commit().map_err(|e| e.to_string())
                 })?;
             }
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => {
                 self.with_pg_conn(|client| {
-                    let n = client
+                    let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                    let n = tx
                         .execute(
                             "INSERT INTO product_tasks (
                                 task_id, schema_version, tenant_id, workspace_id, idempotency_key,
@@ -409,17 +413,17 @@ impl LocalProductStore {
                             "idempotency_key": intake.idempotency_key,
                             "intake_contract_sha256": intake.intake_contract_sha256,
                             "execution_admitted": false,
-                        })
-                        .to_string();
-                        client
-                            .execute(
-                                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
-                                 VALUES ($1, $2, 'product_task.admit', $3, $4)",
-                                &[&now, &actor, &task_id, &audit_details],
-                            )
-                            .map_err(|e| e.to_string())?;
+                        });
+                        super::workflow_runs::pg_append_audit(
+                            &mut tx,
+                            &now,
+                            actor,
+                            "product_task.admit",
+                            &task_id,
+                            &audit_details,
+                        )?;
                     }
-                    Ok(())
+                    tx.commit().map_err(|e| e.to_string())
                 })?;
             }
         }
@@ -974,6 +978,12 @@ impl LocalProductStore {
             .pointer("/intake/objective_preview")
             .and_then(Value::as_str)
             .unwrap_or("product golden path task");
+        self.product_execution_objective(
+            task_id,
+            task.get("objective_fingerprint")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        )?;
 
         let planner = ReadOnlyPlanner::new();
         let plan = self.create_workflow_plan(
@@ -1076,6 +1086,47 @@ impl LocalProductStore {
         }))
     }
 
+    pub(super) fn product_execution_objective(
+        &self,
+        task_id: &str,
+        expected_fingerprint: &str,
+    ) -> Result<String, String> {
+        let intake_json = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT intake_json FROM product_tasks WHERE task_id = ?1",
+                    [task_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT intake_json FROM product_tasks WHERE task_id = $1",
+                        &[&task_id],
+                    )
+                    .map_err(|error| error.to_string())
+                    .map(|row| row.map(|row| row.get::<_, String>(0)))
+            })?,
+        }
+        .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        let intake: Value = serde_json::from_str(&intake_json)
+            .map_err(|_| "product task persisted intake is malformed".to_string())?;
+        let objective = intake
+            .pointer("/_execution_objective_v1/objective")
+            .and_then(Value::as_str)
+            .or_else(|| intake.get("objective_preview").and_then(Value::as_str))
+            .filter(|value| fingerprint_objective(value) == expected_fingerprint)
+            .ok_or_else(|| {
+                "product task exact execution objective is unavailable or does not match its fingerprint"
+                    .to_string()
+            })?;
+        Ok(objective.to_string())
+    }
+
     /// Observe persisted run state and advance product-task lifecycle without executing nodes.
     ///
     /// This is not a second scheduler. Callers that need node advancement must use the
@@ -1123,24 +1174,17 @@ impl LocalProductStore {
         let version = task.get("version").and_then(Value::as_u64);
         match run_status {
             "failed" | "cancelled" | "killed" => {
-                let code = if run_status == "killed" {
-                    "execution_killed"
-                } else {
-                    "execution_failed"
-                };
+                let (target_status, code, detail) =
+                    product_run_failure_transition(&run, run_status);
                 self.transition_product_task(
                     task_id,
-                    if run_status == "killed" {
-                        ProductTaskStatus::Killed
-                    } else {
-                        ProductTaskStatus::Failed
-                    },
+                    target_status,
                     version,
                     actor,
                     None,
                     None,
                     Some(code),
-                    Some(run_status),
+                    Some(detail),
                     None,
                 )
             }
@@ -1316,19 +1360,16 @@ impl LocalProductStore {
         }
         if matches!(run_status, "failed" | "cancelled" | "killed") {
             let version = task.get("version").and_then(Value::as_u64);
+            let (target_status, code, detail) = product_run_failure_transition(&run, run_status);
             let failed = self.transition_product_task(
                 task_id,
-                if run_status == "killed" {
-                    ProductTaskStatus::Killed
-                } else {
-                    ProductTaskStatus::Failed
-                },
+                target_status,
                 version,
                 actor,
                 None,
                 None,
-                Some("execution_failed"),
-                Some(run_status),
+                Some(code),
+                Some(detail),
                 None,
             )?;
             return Ok(json!({
@@ -3784,6 +3825,36 @@ fn validate_product_task_elapsed_budget(task: &Value, now: &str) -> Result<(), S
     Ok(())
 }
 
+fn product_run_token_budget_exhausted(run: &Value) -> bool {
+    run.get("nodes")
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| {
+            nodes.iter().any(|node| {
+                matches!(
+                    node.pointer("/result/error_domain").and_then(Value::as_str),
+                    Some("product_token_budget_exhausted" | "product_call_budget_exhausted")
+                )
+            })
+        })
+}
+
+fn product_run_failure_transition<'a>(
+    run: &Value,
+    run_status: &'a str,
+) -> (ProductTaskStatus, &'static str, &'a str) {
+    if product_run_token_budget_exhausted(run) {
+        (
+            ProductTaskStatus::BudgetExhausted,
+            "execution_budget_exhausted",
+            "budget_exhausted:product_execution",
+        )
+    } else if run_status == "killed" {
+        (ProductTaskStatus::Killed, "execution_killed", run_status)
+    } else {
+        (ProductTaskStatus::Failed, "execution_failed", run_status)
+    }
+}
+
 fn product_task_remaining_elapsed_ms(task: &Value, now: &str) -> Result<u64, String> {
     let Some(limit_ms) = task
         .pointer("/intake/budget/total_elapsed_ms")
@@ -4134,10 +4205,29 @@ fn validate_completed_product_output_binding(
     Ok(json!({"receipt": receipt, "output": output}))
 }
 
+fn persisted_product_intake_json(intake: &ValidatedProductTaskIntake) -> Value {
+    let mut persisted = redacted_intake_json(intake);
+    persisted["_execution_objective_v1"] = json!({
+        "schema_version": "product_execution_objective.v1",
+        "objective": intake.objective,
+        "objective_fingerprint": intake.objective_fingerprint,
+        "content_excluded_from_public_task_and_terminal_evidence": true,
+    });
+    persisted
+}
+
+fn public_product_intake_json(encoded: &str) -> Value {
+    let mut intake: Value = serde_json::from_str(encoded).unwrap_or(Value::Null);
+    if let Some(object) = intake.as_object_mut() {
+        object.remove("_execution_objective_v1");
+    }
+    intake
+}
+
 fn map_product_task_row(row: &Row<'_>) -> rusqlite::Result<Value> {
     let intake_json: String = row.get("intake_json")?;
     let binding_json: Option<String> = row.get("workspace_binding_json")?;
-    let intake: Value = serde_json::from_str(&intake_json).unwrap_or(Value::Null);
+    let intake = public_product_intake_json(&intake_json);
     let binding = binding_json
         .as_deref()
         .and_then(|s| serde_json::from_str::<Value>(s).ok())
@@ -4371,7 +4461,7 @@ fn reconstruct_intake_from_task(
 fn product_task_row_to_json_pg(row: &postgres::Row) -> Value {
     let intake_json: String = row.get("intake_json");
     let binding_json: Option<String> = row.get("workspace_binding_json");
-    let intake: Value = serde_json::from_str(&intake_json).unwrap_or(Value::Null);
+    let intake = public_product_intake_json(&intake_json);
     let binding: Value = binding_json
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok())

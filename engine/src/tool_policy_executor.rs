@@ -11,6 +11,7 @@ use crate::workflow::tool_registry::{HookResult, HookType};
 const MAX_ENRICHMENT_BYTES: usize = 8 * 1024;
 const MAX_APPROVAL_REASON_BYTES: usize = 512;
 const DEFAULT_TOOL_PROFILE: &str = "default";
+const PRODUCT_CALL_BUDGET_EXHAUSTED: &str = "product apply call or retry budget exhausted";
 
 pub(crate) fn managed_tool_binding_sha256(
     workspace_id: &str,
@@ -289,6 +290,45 @@ impl<'a> ToolPolicyNodeExecutor<'a> {
                 {
                     return Err("product apply authority binding changed".to_string());
                 }
+                if input
+                    .node_metadata
+                    .get("product_apply_binding_schema_version")
+                    .and_then(Value::as_str)
+                    == Some("product_apply_binding.v2")
+                {
+                    let budget = input
+                        .node_metadata
+                        .get("product_budget")
+                        .and_then(Value::as_object)
+                        .ok_or_else(|| "product apply budget authority is missing".to_string())?;
+                    let execution_attempt = input
+                        .node_metadata
+                        .get("execution_attempt")
+                        .and_then(Value::as_u64)
+                        .filter(|attempt| *attempt > 0)
+                        .ok_or_else(|| {
+                            "product apply scheduler attempt authority is missing".to_string()
+                        })?;
+                    budget
+                        .get("total_tokens")
+                        .and_then(Value::as_u64)
+                        .filter(|limit| *limit > 0)
+                        .ok_or_else(|| "product apply token budget is missing".to_string())?;
+                    let total_calls = budget
+                        .get("total_calls")
+                        .and_then(Value::as_u64)
+                        .filter(|limit| *limit > 0)
+                        .ok_or_else(|| "product apply call budget is missing".to_string())?;
+                    let max_retries = budget
+                        .get("max_retries")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| "product apply retry budget is missing".to_string())?;
+                    if execution_attempt > total_calls
+                        || execution_attempt > max_retries.saturating_add(1)
+                    {
+                        return Err(PRODUCT_CALL_BUDGET_EXHAUSTED.to_string());
+                    }
+                }
                 crate::product_golden_path::product_apply_binding_sha256(
                     workspace_id,
                     &input.node_metadata,
@@ -477,6 +517,9 @@ impl NodeExecutor for ToolPolicyNodeExecutor<'_> {
                 .filter(|value| !value.trim().is_empty());
             let bound_workspace = match self.bound_managed_workspace(input) {
                 Ok(value) => value,
+                Err(error) if error == PRODUCT_CALL_BUDGET_EXHAUSTED => {
+                    return self.fail("product_call_budget_exhausted", error)
+                }
                 Err(error) => return self.fail("cli_workspace_binding_error", error),
             };
             if !matches!(
@@ -1014,6 +1057,13 @@ mod tests {
             "intake_contract_sha256": "cd".repeat(32),
             "allowed_paths": ["docs/managed.md"],
             "output_intent": "draft_pr",
+            "product_apply_binding_schema_version": "product_apply_binding.v2",
+            "product_budget": {
+                "total_tokens": 150000,
+                "total_calls": 1,
+                "max_retries": 0
+            },
+            "execution_attempt": 1,
         });
         let binding_sha256 = crate::product_golden_path::product_apply_binding_sha256(
             "product-apply-workspace",
@@ -1030,9 +1080,10 @@ mod tests {
             "product_task_id": task_id,
             "executor_class": "managed_coding",
         });
+        let calls = Arc::new(AtomicUsize::new(0));
         let executor = ToolPolicyNodeExecutor::cli(
             Arc::new(CountingExecutor {
-                calls: Arc::new(AtomicUsize::new(0)),
+                calls: calls.clone(),
             }),
             store,
             "codex_cli",
@@ -1071,6 +1122,45 @@ mod tests {
             })
             .expect_err("changed path scope must fail closed");
         assert!(error.contains("no longer matches its binding"));
+
+        let mut changed_budget = input.node_metadata.clone();
+        changed_budget["product_budget"]["total_tokens"] = json!(300_000);
+        let error = executor
+            .bound_managed_workspace(&NodeExecutionInput {
+                node_metadata: changed_budget,
+                ..input.clone()
+            })
+            .expect_err("changed token budget must fail closed");
+        assert!(error.contains("no longer matches its binding"));
+
+        let mut missing_token_ceiling = input.node_metadata.clone();
+        missing_token_ceiling["product_budget"]["total_tokens"] = Value::Null;
+        let error = executor
+            .bound_managed_workspace(&NodeExecutionInput {
+                node_metadata: missing_token_ceiling,
+                ..input.clone()
+            })
+            .expect_err("missing effective token ceiling must fail closed");
+        assert!(error.contains("token budget is missing"));
+
+        let mut second_call = input.node_metadata.clone();
+        second_call["execution_attempt"] = json!(2);
+        let error = executor
+            .bound_managed_workspace(&NodeExecutionInput {
+                node_metadata: second_call.clone(),
+                ..input.clone()
+            })
+            .expect_err("call and retry budget must prevent a second CLI call");
+        assert!(error.contains("call or retry budget exhausted"));
+        let denied = executor.execute_node(&NodeExecutionInput {
+            node_metadata: second_call,
+            ..input.clone()
+        });
+        assert_eq!(
+            denied.error_domain.as_deref(),
+            Some("product_call_budget_exhausted")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
 
         let mut changed_workspace = input.node_metadata.clone();
         changed_workspace["workspace_id"] = json!("different-workspace");
