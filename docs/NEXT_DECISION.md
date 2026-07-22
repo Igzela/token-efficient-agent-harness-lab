@@ -14,7 +14,7 @@ Do not create another roadmap, status, architecture, scheduler, runtime, queue, 
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS` (PRs #268–#271 are preserved; repair output/approval semantics, canonical evidence, process authority, recovery, Draft PR acceptance, and mandatory managed-executor E2E).
+1. `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS` (PRs #268–#274 are merged; disposable Draft PR acceptance and mandatory managed-executor E2E remain).
 2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` until golden path residual is closed or explicitly accepted with recorded evidence exception.
 3. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`; Issue #266 remains open as a proposal, not the active lane.
 4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
@@ -100,7 +100,7 @@ The result is neutral/no-improvement fixture evidence. The active Harness remain
 
 1. **Merged via PR #272.** Separate product approval from output authority; require exact current evidence and explicit output confirmation; persist non-network receipts and phased branch-push/Draft-PR operations; create or idempotently reconcile a real GitHub Draft PR under exact HTTPS host/repository admission.
 2. **Merged via PR #273.** Persist one canonical terminal-evidence record per terminal task version; make reads pure; use exact artifact/approval/output references and owner-backed replay, scorecard, executor, usage, cost, and actual process-outcome evidence.
-3. **Current focused slice.** Enforce verification-time pause, kill, scheduler-kill, lease, version, workspace, timeout, elapsed-budget, supersession, and late-write authority; close focused SQLite/PostgreSQL recovery tests; require an attached runnable scheduler whose routing mode can consume the admitted executor. The candidate routes every verification command through the existing API-owned managed-run and tool-policy receipt owner, admits only a fixed read-only command/relative-argument contract, redacts output before workflow persistence, observes the exact output patch through a temporary Git index, binds the pre-command patch identity durably for restart, caps timeout by remaining total budget, and holds the scheduler owner plus its worker-shared control gate through the atomic artifact/workspace/task/audit commit. The same gate covers worker-observed environment pause/kill. Exact-head CI/review/merge and any material review repairs remain pending.
+3. **Merged via PR #274.** Enforce verification-time pause, kill, scheduler-kill, lease, version, workspace, timeout, elapsed-budget, supersession, and late-write authority; close focused SQLite/PostgreSQL recovery tests; require an attached runnable scheduler whose routing mode can consume the admitted executor. Every verification command routes through the existing API-owned managed-run and tool-policy receipt owner, admits only a fixed read-only command/relative-argument contract, redacts output before workflow persistence, observes the exact output patch through a temporary Git index, binds the pre-command patch identity durably for restart, caps timeout by remaining total budget, and holds the scheduler owner plus its worker-shared control gate through the atomic artifact/workspace/task/audit commit. The same gate covers worker-observed environment pause/kill. Exact head `7ca2b8e6` passed run `29880211660`, exact-head check `29880211865`, external validation `29880211694`, and both complete-diff review axes before squash merge `4588906c`.
 4. **Final acceptance.** Pass the deterministic path and admitted managed coding-executor E2E plus disposable Draft PR acceptance, then synchronize SDK/Dashboard facts and active documents before marking the packet complete.
 
 Approval uses the existing workflow-approval owner but is a distinct `product_output_approval.v1` record requiring `team:admin`. Output requires `dispatch:execute`, the exact persisted approval, expected-current task version, and `confirm_output=true`. The legacy combined route is compatibility-only and must satisfy both scopes while invoking the same separate owners. Missing confirmation creates no approval, transition, claim, branch, PR, or success audit.
@@ -121,12 +121,12 @@ Draft PR output uses one progressive `product_output_operation.v1` under the sup
 - Evidence/output PR #271 → `main` `fe742052` (dynamic task-rooted terminal summary, export_patch, gated `acp/*` push; canonical persisted terminal evidence is owned by the current residual slice).
 - Residual output-authority PR #272 → `main` `c6806841` (separate approval/output permissions, terminal output semantics, progressive branch/PR receipt, real GitHub Draft PR adapter/reconciliation).
 - Residual terminal-evidence PR #273 → `main` `1d125252` (schema v31 canonical evidence, pure reads, exact owner bindings, authoritative process outcomes, SQLite/PostgreSQL atomicity).
+- Residual verification-authority PR #274 → `main` `4588906c` (per-command and artifact-commit authority, runnable-scheduler admission, read-only verification confinement, deterministic SQLite/PostgreSQL recovery synchronization).
 
 **Residual before `COMPLETE`:** governed by `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` above.
 
 1. Live `draft_pr` / `acp/*` push under existing target-output gates with disposable-repo proof.
-2. Exact-head CI/review/merge for the verification-time authority and scheduler-admission slice.
-3. Managed coding-executor E2E using an already-admitted executor without gate weakening, or an explicit separately reviewed acceptance-contract change.
+2. Managed coding-executor E2E using an already-admitted executor without gate weakening, or an explicit separately reviewed acceptance-contract change.
 
 Do not start `PE7-REAL-WORKLOAD-EVIDENCE-1` until residual is closed or explicitly accepted.
 
