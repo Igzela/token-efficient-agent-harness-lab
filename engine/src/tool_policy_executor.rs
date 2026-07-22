@@ -217,7 +217,7 @@ impl<'a> ToolPolicyNodeExecutor<'a> {
                 .and_then(Value::as_str)
                 .filter(|value| match &self.kind {
                     ToolPolicyKind::Command => matches!(*value, "verify" | "product_verify"),
-                    ToolPolicyKind::Cli { .. } => *value == "repair",
+                    ToolPolicyKind::Cli { .. } => matches!(*value, "repair" | "product_apply"),
                 })
                 .ok_or_else(|| {
                     "managed tool operation does not match its executor kind".to_string()
@@ -226,8 +226,12 @@ impl<'a> ToolPolicyNodeExecutor<'a> {
                 .get("attempt")
                 .and_then(Value::as_u64)
                 .filter(|value| {
-                    let max_attempt = if operation == "product_verify" { 8 } else { 5 };
-                    (1..=max_attempt).contains(value)
+                    if operation == "product_apply" {
+                        *value == 1
+                    } else {
+                        let max_attempt = if operation == "product_verify" { 8 } else { 5 };
+                        (1..=max_attempt).contains(value)
+                    }
                 })
                 .ok_or_else(|| {
                     "managed supervised-patch workspace binding has an invalid attempt".to_string()
@@ -244,31 +248,75 @@ impl<'a> ToolPolicyNodeExecutor<'a> {
             if binding.get("schema_version").and_then(Value::as_str)
                 != Some("managed_supervised_patch.v1")
                 || binding.get("content_excluded").and_then(Value::as_bool) != Some(true)
-                || input.node_id != format!("supervised-{operation}-{attempt}")
             {
                 return Err("managed supervised-patch workspace binding changed".to_string());
             }
-            let current_binding_sha256 = managed_tool_binding_sha256(
-                workspace_id,
-                operation,
-                attempt,
-                &input.node_metadata,
-            )?;
+            let product_apply = operation == "product_apply";
+            let current_binding_sha256 = if product_apply {
+                let task_id = input
+                    .node_metadata
+                    .get("product_task_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "product apply task identity is missing".to_string())?;
+                let prompt = input
+                    .node_metadata
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "product apply prompt is missing".to_string())?;
+                let expected_objective_fingerprint = input
+                    .node_metadata
+                    .get("objective_fingerprint")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "product apply objective fingerprint is missing".to_string())?;
+                let tool_name = match &self.kind {
+                    ToolPolicyKind::Cli { tool_name } => tool_name.as_str(),
+                    ToolPolicyKind::Command => "",
+                };
+                if binding.get("product_task_id").and_then(Value::as_str) != Some(task_id)
+                    || binding.get("executor_class").and_then(Value::as_str)
+                        != Some("managed_coding")
+                    || input
+                        .node_metadata
+                        .get("executor_class")
+                        .and_then(Value::as_str)
+                        != Some("managed_coding")
+                    || input.task_type != tool_name
+                    || input.node_id != format!("{}-apply", input.workflow_id)
+                    || crate::product_golden_path::fingerprint_objective(prompt)
+                        != expected_objective_fingerprint
+                {
+                    return Err("product apply authority binding changed".to_string());
+                }
+                crate::product_golden_path::product_apply_binding_sha256(
+                    workspace_id,
+                    &input.node_metadata,
+                )?
+            } else {
+                if input.node_id != format!("supervised-{operation}-{attempt}") {
+                    return Err("managed supervised-patch workspace binding changed".to_string());
+                }
+                managed_tool_binding_sha256(workspace_id, operation, attempt, &input.node_metadata)?
+            };
             if current_binding_sha256 != binding_sha256 {
                 return Err(
                     "managed supervised-patch invocation no longer matches its binding".to_string(),
                 );
             }
-            let identity = serde_json::to_vec(&json!({
-                "schema_version": "managed_supervised_patch_identity.v1",
-                "workspace_id": workspace_id,
-                "operation": operation,
-                "attempt": attempt,
-            }))
-            .map_err(|error| error.to_string())?;
-            let expected_run_id = format!("managed-run-{}", hex::encode(Sha256::digest(identity)));
-            if input.run_id != expected_run_id {
-                return Err("managed supervised-patch run identity changed".to_string());
+            if !product_apply {
+                let identity = serde_json::to_vec(&json!({
+                    "schema_version": "managed_supervised_patch_identity.v1",
+                    "workspace_id": workspace_id,
+                    "operation": operation,
+                    "attempt": attempt,
+                }))
+                .map_err(|error| error.to_string())?;
+                let expected_run_id =
+                    format!("managed-run-{}", hex::encode(Sha256::digest(identity)));
+                if input.run_id != expected_run_id {
+                    return Err("managed supervised-patch run identity changed".to_string());
+                }
             }
             let workspace = self
                 .store
@@ -278,6 +326,11 @@ impl<'a> ToolPolicyNodeExecutor<'a> {
                 })?;
             if workspace.get("workspace_id").and_then(Value::as_str) != Some(workspace_id) {
                 return Err("managed supervised-patch workspace identity changed".to_string());
+            }
+            if product_apply
+                && workspace.get("run_id").and_then(Value::as_str) != Some(input.run_id.as_str())
+            {
+                return Err("product apply run-to-workspace binding changed".to_string());
             }
             Some(workspace)
         } else {
@@ -910,6 +963,113 @@ mod tests {
             run["run_id"].as_str().unwrap().to_string(),
             plan["workflow_id"].as_str().unwrap().to_string(),
         )
+    }
+
+    #[test]
+    fn managed_cli_accepts_exact_product_apply_workspace_binding() {
+        let target = tempfile::tempdir().expect("target");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let target_path = target.path().to_string_lossy().to_string();
+        let workspace_path = workspace.path().to_string_lossy().to_string();
+        let store = Arc::new(LocalProductStore::new(":memory:").expect("store"));
+        store
+            .import_supervised_patch_workspace(&json!({
+                "schema_version": "supervised_patch_workspace.v1",
+                "workspace_id": "product-apply-workspace",
+                "run_id": "product-run",
+                "target_id": "target",
+                "target_repo_path": target_path,
+                "target_repo_canonical_path": target_path,
+                "workspace_path": workspace_path,
+                "workspace_canonical_path": workspace_path,
+                "source_revision": "source-revision",
+                "status": "requested",
+                "metadata_only": true,
+                "execution_authority": "disabled",
+            }))
+            .expect("workspace import");
+
+        let task_id = "product-task";
+        let prompt = "Create the bounded product change";
+        let objective_fingerprint = crate::product_golden_path::fingerprint_objective(prompt);
+        let mut metadata = json!({
+            "executor": "codex_cli",
+            "executor_class": "managed_coding",
+            "prompt": prompt,
+            "workspace_path": workspace_path,
+            "workspace_root": workspace_path,
+            "workspace_id": "product-apply-workspace",
+            "source_revision": "source-revision",
+            "product_task_id": task_id,
+            "objective_fingerprint": objective_fingerprint,
+            "intake_contract_sha256": "cd".repeat(32),
+            "allowed_paths": ["docs/managed.md"],
+            "output_intent": "draft_pr",
+        });
+        let binding_sha256 = crate::product_golden_path::product_apply_binding_sha256(
+            "product-apply-workspace",
+            &metadata,
+        )
+        .expect("binding");
+        metadata["managed_supervised_patch"] = json!({
+            "schema_version": "managed_supervised_patch.v1",
+            "workspace_id": "product-apply-workspace",
+            "operation": "product_apply",
+            "attempt": 1,
+            "binding_sha256": binding_sha256,
+            "content_excluded": true,
+            "product_task_id": task_id,
+            "executor_class": "managed_coding",
+        });
+        let executor = ToolPolicyNodeExecutor::cli(
+            Arc::new(CountingExecutor {
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+            store,
+            "codex_cli",
+        );
+        let input = NodeExecutionInput {
+            node_id: "wf-product-apply".to_string(),
+            task_type: "codex_cli".to_string(),
+            run_id: "product-run".to_string(),
+            workflow_id: "wf-product".to_string(),
+            node_metadata: metadata,
+        };
+
+        assert_eq!(
+            executor
+                .bound_managed_workspace(&input)
+                .expect("exact product apply binding"),
+            Some(workspace_path)
+        );
+
+        let mut changed_prompt = input.node_metadata.clone();
+        changed_prompt["prompt"] = json!("Different product objective");
+        let error = executor
+            .bound_managed_workspace(&NodeExecutionInput {
+                node_metadata: changed_prompt,
+                ..input.clone()
+            })
+            .expect_err("changed prompt must fail closed");
+        assert!(error.contains("authority binding changed"));
+
+        let mut changed_paths = input.node_metadata.clone();
+        changed_paths["allowed_paths"] = json!(["docs/other.md"]);
+        let error = executor
+            .bound_managed_workspace(&NodeExecutionInput {
+                node_metadata: changed_paths,
+                ..input.clone()
+            })
+            .expect_err("changed path scope must fail closed");
+        assert!(error.contains("no longer matches its binding"));
+
+        let error = executor
+            .bound_managed_workspace(&NodeExecutionInput {
+                run_id: "different-run".to_string(),
+                ..input
+            })
+            .expect_err("changed run must fail closed");
+        assert!(error.contains("run-to-workspace binding changed"));
     }
 
     #[test]
