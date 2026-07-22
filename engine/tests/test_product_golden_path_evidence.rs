@@ -435,6 +435,13 @@ fn duplicate_concurrent_output_calls_reuse_one_canonical_terminal_evidence() {
             .filter(|event| event["action"] == "product_task.terminal_evidence_committed")
             .count();
         assert_eq!(terminal_audits, 1);
+        let output_audits = reopened
+            .audit_events(10_000)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event["action"] == "product_task.nonnetwork_output_completed")
+            .count();
+        assert_eq!(output_audits, 1);
     });
 }
 

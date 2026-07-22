@@ -293,6 +293,7 @@ fn create_scheduler_executor(
 pub struct WorkflowScheduler {
     store: Arc<LocalProductStore>,
     config: SchedulerConfig,
+    control_gate: Arc<std::sync::Mutex<()>>,
     running: Arc<AtomicBool>,
     handles: Vec<JoinHandle<()>>,
     paused: Arc<AtomicBool>,
@@ -323,11 +324,19 @@ pub struct WorkflowScheduler {
     opencode_cancel: Option<crate::opencode_runtime::OpenCodeCancellationHandle>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchedulerControlSnapshot {
+    pub running: bool,
+    pub paused: bool,
+    pub kill_requested: bool,
+}
+
 impl WorkflowScheduler {
     pub fn new(store: Arc<LocalProductStore>, config: SchedulerConfig) -> Self {
         Self {
             store,
             config,
+            control_gate: Arc::new(std::sync::Mutex::new(())),
             running: Arc::new(AtomicBool::new(false)),
             handles: Vec::new(),
             paused: Arc::new(AtomicBool::new(false)),
@@ -477,18 +486,23 @@ impl WorkflowScheduler {
             .unwrap_or(max_execution_timeout_ms);
         self.config
             .validate_lease_exceeds_execution_timeout(max_execution_timeout_ms)?;
-        if env_flag_enabled("ACP_SUPERVISED_WORKERS_KILL_SWITCH") {
-            return Err(
-                "supervised worker kill switch is active (ACP_SUPERVISED_WORKERS_KILL_SWITCH=1)"
-                    .to_string(),
-            );
+        {
+            let _control = self
+                .control_gate
+                .lock()
+                .map_err(|_| "scheduler control gate is unavailable".to_string())?;
+            if env_flag_enabled("ACP_SUPERVISED_WORKERS_KILL_SWITCH") {
+                return Err(
+                    "supervised worker kill switch is active (ACP_SUPERVISED_WORKERS_KILL_SWITCH=1)"
+                        .to_string(),
+                );
+            }
+            self.kill_requested.store(false, Ordering::SeqCst);
+            self.running.store(true, Ordering::SeqCst);
         }
-
-        self.kill_requested.store(false, Ordering::SeqCst);
         if let Some(ref handle) = self.opencode_cancel {
             handle.reset();
         }
-        self.running.store(true, Ordering::SeqCst);
 
         let cli_enabled = crate::cli::CliConfig::from_env().enabled;
         executor_pool::register_default_executors(
@@ -546,6 +560,7 @@ impl WorkflowScheduler {
                 } else {
                     self.config.max_concurrent
                 },
+                control_gate: self.control_gate.clone(),
                 running: self.running.clone(),
                 paused: self.paused.clone(),
                 kill_requested: self.kill_requested.clone(),
@@ -581,7 +596,13 @@ impl WorkflowScheduler {
         if !self.running.load(Ordering::SeqCst) && self.handles.is_empty() {
             return Err("scheduler not running".to_string());
         }
-        self.running.store(false, Ordering::SeqCst);
+        {
+            let _control = self
+                .control_gate
+                .lock()
+                .map_err(|_| "scheduler control gate is unavailable".to_string())?;
+            self.running.store(false, Ordering::SeqCst);
+        }
         if let Some(ref handle) = self.opencode_cancel {
             handle.cancel();
         }
@@ -594,6 +615,10 @@ impl WorkflowScheduler {
     }
 
     pub fn pause(&self, _actor: &str) -> Result<(), String> {
+        let _control = self
+            .control_gate
+            .lock()
+            .map_err(|_| "scheduler control gate is unavailable".to_string())?;
         self.store
             .set_recursive_execution_paused(true, Some("recursive_execution_paused"))?;
         self.paused.store(true, Ordering::SeqCst);
@@ -601,6 +626,10 @@ impl WorkflowScheduler {
     }
 
     pub fn resume(&self, _actor: &str) -> Result<(), String> {
+        let _control = self
+            .control_gate
+            .lock()
+            .map_err(|_| "scheduler control gate is unavailable".to_string())?;
         if self.kill_requested.load(Ordering::SeqCst) {
             return Err("scheduler was killed and must be started again".to_string());
         }
@@ -610,6 +639,10 @@ impl WorkflowScheduler {
     }
 
     pub fn kill(&mut self, _actor: &str) -> Result<(), String> {
+        let _control = self
+            .control_gate
+            .lock()
+            .map_err(|_| "scheduler control gate is unavailable".to_string())?;
         self.store
             .set_recursive_execution_paused(true, Some("recursive_kill_switch_active"))?;
         self.kill_requested.store(true, Ordering::SeqCst);
@@ -622,6 +655,43 @@ impl WorkflowScheduler {
 
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    fn control_snapshot_unlocked(&self) -> SchedulerControlSnapshot {
+        self.control_snapshot_unlocked_with_environment(
+            env_flag_enabled("ACP_SUPERVISED_WORKERS_PAUSED"),
+            env_flag_enabled("ACP_SUPERVISED_WORKERS_KILL_SWITCH"),
+        )
+    }
+
+    fn control_snapshot_unlocked_with_environment(
+        &self,
+        environment_pause: bool,
+        environment_kill: bool,
+    ) -> SchedulerControlSnapshot {
+        SchedulerControlSnapshot {
+            running: self.running.load(Ordering::SeqCst),
+            paused: self.paused.load(Ordering::SeqCst) || environment_pause,
+            kill_requested: self.kill_requested.load(Ordering::SeqCst) || environment_kill,
+        }
+    }
+
+    /// Linearize a storage-free scheduler control sample with worker-observed
+    /// environment pause/kill gates. The callback may commit application storage;
+    /// worker and API control transitions cannot publish until it returns.
+    pub fn with_control_barrier<T>(
+        &self,
+        operation: impl FnOnce(SchedulerControlSnapshot) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _control = self
+            .control_gate
+            .try_lock()
+            .map_err(|_| "scheduler control gate is unavailable".to_string())?;
+        operation(self.control_snapshot_unlocked())
+    }
+
+    pub fn control_snapshot(&self) -> Result<SchedulerControlSnapshot, String> {
+        self.with_control_barrier(Ok)
     }
 
     pub fn executor_pool(&self) -> &Arc<ExecutorPool> {
@@ -641,8 +711,10 @@ impl WorkflowScheduler {
             "started_at": self.started_at,
             "supervised_workers_enabled": self.config.supervised_workers_enabled,
             "worker_count": if self.config.supervised_workers_enabled { self.config.worker_count } else { 1 },
-            "paused": self.paused.load(Ordering::SeqCst),
-            "kill_requested": self.kill_requested.load(Ordering::SeqCst),
+            "paused": self.paused.load(Ordering::SeqCst)
+                || env_flag_enabled("ACP_SUPERVISED_WORKERS_PAUSED"),
+            "kill_requested": self.kill_requested.load(Ordering::SeqCst)
+                || env_flag_enabled("ACP_SUPERVISED_WORKERS_KILL_SWITCH"),
             "workers": self.worker_states.lock().map(|states| states.values().cloned().collect::<Vec<_>>()).unwrap_or_default(),
             "config": {
                 "interval_ms": self.config.interval_ms,
@@ -715,6 +787,7 @@ struct SchedulerWorkerContext {
     store: Arc<LocalProductStore>,
     config: SchedulerConfig,
     tick_limit: usize,
+    control_gate: Arc<std::sync::Mutex<()>>,
     running: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     kill_requested: Arc<AtomicBool>,
@@ -735,6 +808,36 @@ struct SchedulerWorkerContext {
     backup: Option<SchedulerBackupContext>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchedulerWorkerControlState {
+    Running,
+    Paused,
+    Killed,
+}
+
+fn observe_scheduler_worker_control(
+    control_gate: &std::sync::Mutex<()>,
+    running: &AtomicBool,
+    paused: &AtomicBool,
+    kill_requested: &AtomicBool,
+    environment_kill: bool,
+    environment_pause: bool,
+) -> SchedulerWorkerControlState {
+    let _control = match control_gate.lock() {
+        Ok(control) => control,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if kill_requested.load(Ordering::SeqCst) || environment_kill {
+        kill_requested.store(true, Ordering::SeqCst);
+        running.store(false, Ordering::SeqCst);
+        return SchedulerWorkerControlState::Killed;
+    }
+    if paused.load(Ordering::SeqCst) || environment_pause {
+        return SchedulerWorkerControlState::Paused;
+    }
+    SchedulerWorkerControlState::Running
+}
+
 fn run_scheduler_worker(context: SchedulerWorkerContext) {
     let thread_start = Instant::now();
     let mut last_heartbeat_write = Instant::now();
@@ -748,22 +851,25 @@ fn run_scheduler_worker(context: SchedulerWorkerContext) {
     update_worker_state(&context, "starting", worker_ticks, worker_errors);
 
     while context.running.load(Ordering::SeqCst) {
-        if context.kill_requested.load(Ordering::SeqCst)
-            || env_flag_enabled("ACP_SUPERVISED_WORKERS_KILL_SWITCH")
-        {
-            context.kill_requested.store(true, Ordering::SeqCst);
-            context.running.store(false, Ordering::SeqCst);
-            update_worker_state(&context, "killed", worker_ticks, worker_errors);
-            break;
-        }
-
-        if context.paused.load(Ordering::SeqCst)
-            || env_flag_enabled("ACP_SUPERVISED_WORKERS_PAUSED")
-        {
-            update_worker_state(&context, "paused", worker_ticks, worker_errors);
-            write_worker_heartbeat(&context, thread_start.elapsed().as_secs_f64());
-            interruptible_sleep(&context, 100);
-            continue;
+        match observe_scheduler_worker_control(
+            &context.control_gate,
+            &context.running,
+            &context.paused,
+            &context.kill_requested,
+            env_flag_enabled("ACP_SUPERVISED_WORKERS_KILL_SWITCH"),
+            env_flag_enabled("ACP_SUPERVISED_WORKERS_PAUSED"),
+        ) {
+            SchedulerWorkerControlState::Killed => {
+                update_worker_state(&context, "killed", worker_ticks, worker_errors);
+                break;
+            }
+            SchedulerWorkerControlState::Paused => {
+                update_worker_state(&context, "paused", worker_ticks, worker_errors);
+                write_worker_heartbeat(&context, thread_start.elapsed().as_secs_f64());
+                interruptible_sleep(&context, 100);
+                continue;
+            }
+            SchedulerWorkerControlState::Running => {}
         }
 
         update_worker_state(&context, "running", worker_ticks, worker_errors);
@@ -1363,6 +1469,67 @@ mod tests {
         scheduler.kill("test").unwrap();
         assert!(!scheduler.is_running());
         assert_eq!(scheduler.status()["kill_requested"], true);
+    }
+
+    #[test]
+    fn worker_kill_observation_waits_for_control_barrier() {
+        let scheduler = WorkflowScheduler::new(test_store(), SchedulerConfig::default());
+        scheduler.running.store(true, Ordering::SeqCst);
+        let control_gate = Arc::clone(&scheduler.control_gate);
+        let running = Arc::clone(&scheduler.running);
+        let paused = Arc::clone(&scheduler.paused);
+        let kill_requested = Arc::clone(&scheduler.kill_requested);
+        let (attempted_tx, attempted_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let mut worker = None;
+
+        scheduler
+            .with_control_barrier(|snapshot| {
+                assert!(snapshot.running);
+                assert!(!snapshot.kill_requested);
+                worker = Some(std::thread::spawn(move || {
+                    attempted_tx.send(()).unwrap();
+                    let state = observe_scheduler_worker_control(
+                        &control_gate,
+                        &running,
+                        &paused,
+                        &kill_requested,
+                        true,
+                        false,
+                    );
+                    finished_tx.send(state).unwrap();
+                }));
+                attempted_rx.recv().unwrap();
+                assert!(finished_rx.try_recv().is_err());
+                assert!(scheduler.running.load(Ordering::SeqCst));
+                assert!(!scheduler.kill_requested.load(Ordering::SeqCst));
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            finished_rx.recv().unwrap(),
+            SchedulerWorkerControlState::Killed
+        );
+        worker.unwrap().join().unwrap();
+        assert!(!scheduler.running.load(Ordering::SeqCst));
+        assert!(scheduler.kill_requested.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn control_snapshot_includes_worker_environment_gates() {
+        let scheduler = WorkflowScheduler::new(test_store(), SchedulerConfig::default());
+        scheduler.running.store(true, Ordering::SeqCst);
+
+        let paused = scheduler.control_snapshot_unlocked_with_environment(true, false);
+        assert!(paused.running);
+        assert!(paused.paused);
+        assert!(!paused.kill_requested);
+
+        let killed = scheduler.control_snapshot_unlocked_with_environment(false, true);
+        assert!(killed.running);
+        assert!(!killed.paused);
+        assert!(killed.kill_requested);
     }
 
     #[test]

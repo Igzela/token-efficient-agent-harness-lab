@@ -10,8 +10,9 @@ use crate::http_server::middleware::{
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{ProductTaskIntakeApiRequest, AXUM_API_SCHEMA_VERSION};
 use crate::product_golden_path::{
-    product_gate_enabled, validate_intake, ProductExecutorPolicy, ProductTaskBudget,
-    ProductTaskIntakeRequest, ProductVerificationCommand, PRODUCT_TASK_GATE,
+    product_gate_enabled, product_scheduler_kill_active, validate_intake, ProductExecutorPolicy,
+    ProductTaskBudget, ProductTaskIntakeRequest, ProductVerificationCommand,
+    ProductVerificationRuntimeAuthority, PRODUCT_TASK_GATE,
 };
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, GitHubPullRequestConfig, GitHubPullRequestRequest,
@@ -191,10 +192,15 @@ pub(crate) async fn api_compile_and_schedule_product_task(
         ));
     }
     let store = require_store(&state)?;
-    // Resolve availability from the live executor pool (registration + enable/cooldown
-    // state). Fall back to a freshly registered default pool snapshot when the scheduler
-    // is not attached — never a hard-coded admission list that claims availability.
-    let available = live_available_executor_types(&state, &store);
+    // Automatic admission requires the actual attached/running scheduler and its live
+    // executor pool. A request-scoped registration snapshot cannot consume the run.
+    let available = live_available_executor_types(&state).map_err(|error| {
+        ApiError::with_code(
+            StatusCode::CONFLICT,
+            "product_task_scheduler_unavailable",
+            error,
+        )
+    })?;
     match store.compile_and_schedule_product_task(&task_id, &context.api_key_id, &available) {
         Ok(result) => Ok((
             cors_headers(),
@@ -240,7 +246,21 @@ pub(crate) async fn api_finalize_product_task(
         ));
     }
     let store = require_store(&state)?;
-    match store.finalize_product_task_after_execution(&task_id, &context.api_key_id) {
+    let scheduler_for_samples = state.scheduler.clone();
+    let scheduler_for_commit = state.scheduler.clone();
+    let authority = move || product_verification_runtime_authority(scheduler_for_samples.as_ref());
+    let commit_authority = move |operation: &mut dyn FnMut() -> Result<
+        (serde_json::Value, serde_json::Value),
+        String,
+    >| {
+        product_verification_commit_authority(scheduler_for_commit.as_ref(), operation)
+    };
+    match store.finalize_product_task_after_execution_with_commit_authority(
+        &task_id,
+        &context.api_key_id,
+        &authority,
+        &commit_authority,
+    ) {
         Ok(result) => Ok((
             cors_headers(),
             Json(json!({
@@ -633,35 +653,268 @@ pub(crate) async fn api_recover_product_task_workspace(
     }
 }
 
-/// Available executor types from the live scheduler pool when present; otherwise a
-/// ephemeral default registration snapshot for this request. Never invents availability.
-fn live_available_executor_types(
-    state: &AxumApiState,
-    store: &std::sync::Arc<crate::storage::local_product_store::LocalProductStore>,
-) -> Vec<String> {
-    if let Some(scheduler) = state.scheduler.as_ref() {
-        if let Ok(guard) = scheduler.lock() {
-            let snapshot = guard.executor_pool().snapshot();
-            let available: Vec<String> = snapshot
-                .into_iter()
-                .filter(|entry| entry.status.available)
-                .map(|entry| entry.executor_type)
-                .collect();
-            // If the scheduler pool has been started and registered entries, use it.
-            // An empty started pool still fails closed (no hard-coded fallback).
-            if guard.is_running() || !available.is_empty() {
-                return available;
-            }
-        }
+/// Executor types the attached scheduler can actually route to a worker right now.
+/// Pool-routed modes expose admitted live entries; fixed modes expose only their exact
+/// configured executor. Fixture/failure scheduler modes cannot admit automatic product work.
+fn live_available_executor_types(state: &AxumApiState) -> Result<Vec<String>, String> {
+    let scheduler = state
+        .scheduler
+        .as_ref()
+        .ok_or_else(|| "automatic product execution requires an attached scheduler".to_string())?;
+    let guard = scheduler
+        .lock()
+        .map_err(|_| "attached scheduler authority lock is unavailable".to_string())?;
+    let status = guard.status();
+    let control = guard.control_snapshot()?;
+    if !control.running {
+        return Err("automatic product execution requires a running scheduler".to_string());
     }
-    // No attached scheduler: register defaults into a request-scoped pool and report
-    // currently available types (enable state, CLI admission).
-    let pool = crate::executor_pool::ExecutorPool::new();
-    let cli_enabled = crate::cli::CliConfig::from_env().enabled;
-    crate::executor_pool::register_default_executors(&pool, cli_enabled, store.clone());
-    pool.snapshot()
+    if control.paused {
+        return Err("automatic product execution scheduler is paused".to_string());
+    }
+    if control.kill_requested || product_scheduler_kill_active() {
+        return Err("automatic product execution scheduler kill is active".to_string());
+    }
+    let registered_available = guard
+        .executor_pool()
+        .snapshot()
         .into_iter()
         .filter(|entry| entry.status.available)
         .map(|entry| entry.executor_type)
+        .collect::<Vec<_>>();
+    let configured_executor = status
+        .pointer("/config/executor_type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "attached scheduler executor mode is unavailable".to_string())?;
+    let available = scheduler_routable_executor_types(configured_executor, registered_available);
+    if available.is_empty() {
+        return Err("attached scheduler has no admitted runnable executor".to_string());
+    }
+    Ok(available)
+}
+
+fn scheduler_routable_executor_types(
+    configured_executor: &str,
+    registered_available: Vec<String>,
+) -> Vec<String> {
+    if matches!(
+        configured_executor,
+        "dynamic" | "dynamic_noop" | "dynamic_workflow" | "auto" | "pool"
+    ) {
+        return registered_available;
+    }
+    if matches!(configured_executor, "noop" | "stub" | "fail") {
+        return Vec::new();
+    }
+    registered_available
+        .into_iter()
+        .filter(|executor| executor == configured_executor)
         .collect()
+}
+
+fn product_verification_runtime_authority(
+    scheduler: Option<&std::sync::Arc<std::sync::Mutex<crate::scheduler::WorkflowScheduler>>>,
+) -> Result<ProductVerificationRuntimeAuthority, String> {
+    let scheduler = scheduler.ok_or_else(|| {
+        "automatic product verification requires an attached scheduler".to_string()
+    })?;
+    let guard = scheduler
+        .try_lock()
+        .map_err(|_| "attached scheduler authority lock is unavailable".to_string())?;
+    let control = guard.control_snapshot()?;
+    Ok(ProductVerificationRuntimeAuthority {
+        scheduler_attached: true,
+        scheduler_running: control.running,
+        scheduler_paused: control.paused,
+        scheduler_killed: control.kill_requested,
+        global_kill_active: product_scheduler_kill_active(),
+        manual_operational_tick: false,
+    })
+}
+
+fn product_verification_commit_authority(
+    scheduler: Option<&std::sync::Arc<std::sync::Mutex<crate::scheduler::WorkflowScheduler>>>,
+    operation: &mut dyn FnMut() -> Result<(serde_json::Value, serde_json::Value), String>,
+) -> Result<(serde_json::Value, serde_json::Value), String> {
+    let scheduler = scheduler.ok_or_else(|| {
+        "runtime_authority_unavailable:automatic product verification requires an attached scheduler"
+            .to_string()
+    })?;
+    // Never wait while a caller may already own application-store locks. Once acquired,
+    // keep both the scheduler owner and its worker-shared control gate through the database
+    // commit so API and worker-observed pause/kill have one linearization order.
+    let guard = scheduler.try_lock().map_err(|_| {
+        "runtime_authority_unavailable:attached scheduler authority lock is unavailable".to_string()
+    })?;
+    guard
+        .with_control_barrier(|control| {
+            let authority = ProductVerificationRuntimeAuthority {
+                scheduler_attached: true,
+                scheduler_running: control.running,
+                scheduler_paused: control.paused,
+                scheduler_killed: control.kill_requested,
+                global_kill_active: product_scheduler_kill_active(),
+                manual_operational_tick: false,
+            };
+            authority
+                .validate()
+                .map_err(|reason| format!("runtime_authority_lost:{reason}"))?;
+            operation()
+        })
+        .map_err(|error| {
+            if error == "scheduler control gate is unavailable" {
+                format!("runtime_authority_unavailable:{error}")
+            } else {
+                error
+            }
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scheduler::{SchedulerConfig, WorkflowScheduler};
+    use crate::storage::local_product_store::LocalProductStore;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn automatic_product_admission_requires_attached_running_scheduler() {
+        let state = AxumApiState::new();
+        assert!(live_available_executor_types(&state)
+            .unwrap_err()
+            .contains("attached scheduler"));
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            LocalProductStore::new(directory.path().join("scheduler-admission.db")).unwrap(),
+        );
+        let scheduler = WorkflowScheduler::new(Arc::clone(&store), SchedulerConfig::default());
+        crate::executor_pool::register_default_executors(scheduler.executor_pool(), false, store);
+        assert!(!scheduler.executor_pool().snapshot().is_empty());
+        let state = AxumApiState::new().with_scheduler(Arc::new(Mutex::new(scheduler)));
+        assert!(live_available_executor_types(&state)
+            .unwrap_err()
+            .contains("running scheduler"));
+    }
+
+    #[test]
+    fn automatic_product_verification_does_not_fall_back_to_manual_authority() {
+        assert!(product_verification_runtime_authority(None)
+            .unwrap_err()
+            .contains("attached scheduler"));
+    }
+
+    #[test]
+    fn automatic_product_verification_fails_closed_on_scheduler_lock_contention() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            LocalProductStore::new(directory.path().join("scheduler-authority.db")).unwrap(),
+        );
+        let scheduler = Arc::new(Mutex::new(WorkflowScheduler::new(
+            store,
+            SchedulerConfig::default(),
+        )));
+        let held = scheduler.lock().unwrap();
+        assert!(product_verification_runtime_authority(Some(&scheduler))
+            .unwrap_err()
+            .contains("lock is unavailable"));
+        drop(held);
+    }
+
+    #[test]
+    fn scheduler_pause_blocks_product_admission_and_artifact_commit() {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            Arc::new(LocalProductStore::new(directory.path().join("scheduler-paused.db")).unwrap());
+        let mut scheduler_value = WorkflowScheduler::new(
+            store,
+            SchedulerConfig {
+                executor_type: "command".to_string(),
+                supervised_workers_enabled: true,
+                interval_ms: 10_000,
+                ..SchedulerConfig::default()
+            },
+        );
+        scheduler_value.pause("test").unwrap();
+        scheduler_value.start().unwrap();
+        let scheduler = Arc::new(Mutex::new(scheduler_value));
+        assert_eq!(scheduler.lock().unwrap().status()["paused"], true);
+        let state = AxumApiState::new().with_scheduler(Arc::clone(&scheduler));
+        assert!(live_available_executor_types(&state)
+            .unwrap_err()
+            .contains("scheduler is paused"));
+        assert_eq!(
+            product_verification_runtime_authority(Some(&scheduler))
+                .unwrap()
+                .validate(),
+            Err("scheduler_paused")
+        );
+        let invoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let invoked_in_operation = Arc::clone(&invoked);
+        let mut operation = move || {
+            invoked_in_operation.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok((json!({}), json!({})))
+        };
+        assert!(
+            product_verification_commit_authority(Some(&scheduler), &mut operation)
+                .unwrap_err()
+                .contains("runtime_authority_lost:scheduler_paused")
+        );
+        assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
+        scheduler.lock().unwrap().stop().unwrap();
+    }
+
+    #[test]
+    fn automatic_product_artifact_commit_serializes_scheduler_control() {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            Arc::new(LocalProductStore::new(directory.path().join("scheduler-commit.db")).unwrap());
+        let store_in_operation = Arc::clone(&store);
+        let mut scheduler_value = WorkflowScheduler::new(
+            store,
+            SchedulerConfig {
+                supervised_workers_enabled: true,
+                interval_ms: 10_000,
+                ..SchedulerConfig::default()
+            },
+        );
+        scheduler_value.start().unwrap();
+        let scheduler = Arc::new(Mutex::new(scheduler_value));
+        let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed_in_operation = Arc::clone(&observed);
+        let scheduler_in_operation = Arc::clone(&scheduler);
+        let mut operation = move || {
+            // The commit body may acquire store locks while scheduler control is held;
+            // the authority sampler must therefore remain storage-free.
+            store_in_operation.audit_events(1)?;
+            observed_in_operation.store(
+                scheduler_in_operation.try_lock().is_err(),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            Ok((json!({"artifact": true}), json!({"task": true})))
+        };
+        let result = product_verification_commit_authority(Some(&scheduler), &mut operation)
+            .expect("commit authority");
+        assert_eq!(result.0, json!({"artifact": true}));
+        assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
+        scheduler.lock().unwrap().stop().unwrap();
+    }
+
+    #[test]
+    fn fixed_scheduler_modes_only_admit_the_executor_the_worker_consumes() {
+        let registered = vec![
+            "command".to_string(),
+            "codex_cli".to_string(),
+            "noop".to_string(),
+        ];
+        assert!(scheduler_routable_executor_types("noop", registered.clone()).is_empty());
+        assert_eq!(
+            scheduler_routable_executor_types("codex_cli", registered.clone()),
+            vec!["codex_cli"]
+        );
+        assert_eq!(
+            scheduler_routable_executor_types("pool", registered),
+            vec!["command", "codex_cli", "noop"]
+        );
+    }
 }

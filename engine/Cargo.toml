@@ -39,6 +39,7 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 libc = "0.2"
 tracing-subscriber = "0.3"
+tempfile = "3"
 postgres = { version = "0.19", optional = true }
 r2d2 = { version = "0.8", optional = true }
 r2d2_postgres = { version = "0.18", optional = true }
@@ -48,6 +49,5 @@ pg = ["dep:postgres", "dep:r2d2", "dep:r2d2_postgres"]
 pg-tests = ["pg"]
 
 [dev-dependencies]
-tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 flate2 = "1"

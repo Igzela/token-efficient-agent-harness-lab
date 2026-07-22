@@ -4,23 +4,50 @@ use rusqlite::{params, OptionalExtension, Row};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use crate::node_executor::{CommandNodeExecutor, NodeExecutionInput, NodeExecutor};
+use crate::node_executor::{
+    CommandNodeExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessOutcome,
+};
 use crate::product_golden_path::{
     compile_product_executable_graph, is_valid_product_task_transition, planned_workspace_path,
     product_gate_enabled, provisional_run_id_for_task, redacted_intake_json,
     resolve_admitted_executor, validate_source_revision_format, workspace_content_hash,
-    ProductExecutorPolicy, ProductTaskStatus, ProductWorkspaceBinding, ValidatedProductTaskIntake,
-    FIXTURE_DETERMINISTIC_APPLY_FILENAME, FIXTURE_DETERMINISTIC_APPLY_SCHEMA,
-    FIXTURE_DETERMINISTIC_NOTE_CONTENT, PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
-    PRODUCT_TASK_SCHEMA_VERSION, PRODUCT_TASK_WORKSPACE_BINDING_SCHEMA_VERSION,
+    ProductExecutorPolicy, ProductTaskStatus, ProductVerificationRuntimeAuthority,
+    ProductWorkspaceBinding, ValidatedProductTaskIntake, FIXTURE_DETERMINISTIC_APPLY_FILENAME,
+    FIXTURE_DETERMINISTIC_APPLY_SCHEMA, FIXTURE_DETERMINISTIC_NOTE_CONTENT,
+    PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION, PRODUCT_TASK_SCHEMA_VERSION,
+    PRODUCT_TASK_WORKSPACE_BINDING_SCHEMA_VERSION, PRODUCT_VERIFICATION_READ_ONLY_COMMANDS,
 };
 use crate::read_only_planner::{ReadOnlyPlanner, READ_ONLY_PLAN_SCHEMA_VERSION};
 use crate::target_repo_output::{
+    current_workspace_revision, inspect_git_patch_read_only, patch_hash as target_patch_hash,
     prepare_git_worktree, remove_git_worktree, TargetRepoOutputConfig,
 };
+use crate::tool_policy_executor::{managed_tool_binding_sha256, ToolPolicyNodeExecutor};
 
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
+
+pub(crate) type ProductArtifactCommitResult = Result<(Value, Value), String>;
+
+pub(crate) trait ProductArtifactCommitAuthority {
+    fn commit(
+        &self,
+        operation: &mut dyn FnMut() -> ProductArtifactCommitResult,
+    ) -> ProductArtifactCommitResult;
+}
+
+impl<F> ProductArtifactCommitAuthority for F
+where
+    F: Fn(&mut dyn FnMut() -> ProductArtifactCommitResult) -> ProductArtifactCommitResult,
+{
+    fn commit(
+        &self,
+        operation: &mut dyn FnMut() -> ProductArtifactCommitResult,
+    ) -> ProductArtifactCommitResult {
+        self(operation)
+    }
+}
 
 const PRODUCT_TASK_SELECT: &str = "SELECT schema_version, task_id, tenant_id, workspace_id,
     idempotency_key, status, version, objective_fingerprint, target_id, target_repo_path,
@@ -29,6 +56,14 @@ const PRODUCT_TASK_SELECT: &str = "SELECT schema_version, task_id, tenant_id, wo
     workspace_binding_json, plan_id, run_id, workspace_record_id, failure_code,
     failure_detail, created_at, updated_at, created_by
  FROM product_tasks";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProductVerificationNodeAuthority {
+    node_id: String,
+    attempt_count: u64,
+    leased_at: Option<String>,
+    result_sha256: String,
+}
 
 impl LocalProductStore {
     /// Authenticated intake: reserve canonical task under idempotency, prepare controlled
@@ -1172,6 +1207,39 @@ impl LocalProductStore {
         task_id: &str,
         actor: &str,
     ) -> Result<Value, String> {
+        self.finalize_product_task_after_execution_with_authority(task_id, actor, &|| {
+            Ok(ProductVerificationRuntimeAuthority::manual_operational())
+        })
+    }
+
+    pub fn finalize_product_task_after_execution_with_authority(
+        &self,
+        task_id: &str,
+        actor: &str,
+        runtime_authority: &dyn Fn() -> Result<ProductVerificationRuntimeAuthority, String>,
+    ) -> Result<Value, String> {
+        let commit_authority = |operation: &mut dyn FnMut() -> Result<(Value, Value), String>| {
+            runtime_authority()
+                .map_err(|error| format!("runtime_authority_unavailable:{error}"))?
+                .validate()
+                .map_err(|reason| format!("runtime_authority_lost:{reason}"))?;
+            operation()
+        };
+        self.finalize_product_task_after_execution_with_commit_authority(
+            task_id,
+            actor,
+            runtime_authority,
+            &commit_authority,
+        )
+    }
+
+    pub(crate) fn finalize_product_task_after_execution_with_commit_authority(
+        &self,
+        task_id: &str,
+        actor: &str,
+        runtime_authority: &dyn Fn() -> Result<ProductVerificationRuntimeAuthority, String>,
+        commit_authority: &dyn ProductArtifactCommitAuthority,
+    ) -> Result<Value, String> {
         if !product_gate_enabled() {
             return Err("product golden path intake is disabled".to_string());
         }
@@ -1330,7 +1398,7 @@ impl LocalProductStore {
             .and_then(|t| t.get("version").and_then(Value::as_u64))
             .unwrap_or(0);
 
-        let verification = self.execute_and_record_product_verifications(
+        let mut verification = self.execute_and_record_product_verifications(
             task_id,
             &tenant_id,
             &workspace_scope,
@@ -1341,24 +1409,79 @@ impl LocalProductStore {
             task_version,
             &task,
             actor,
+            runtime_authority,
         )?;
 
         let verification_status = verification
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("verification_failed");
+        if verification_status == "authority_lost" {
+            let reason = verification
+                .get("authority_loss_reason")
+                .and_then(Value::as_str)
+                .unwrap_or("verification_authority_lost");
+            let current = self.get_product_task(task_id)?.ok_or_else(|| {
+                "product task disappeared after verification authority loss".to_string()
+            })?;
+            let current_status = ProductTaskStatus::parse(
+                current.get("status").and_then(Value::as_str).unwrap_or(""),
+            )?;
+            let current_version = current.get("version").and_then(Value::as_u64);
+            let target_status = if reason.contains("budget_exhausted") {
+                ProductTaskStatus::BudgetExhausted
+            } else if reason.contains("kill") {
+                ProductTaskStatus::Killed
+            } else if reason.contains("pause") {
+                ProductTaskStatus::Paused
+            } else {
+                ProductTaskStatus::Blocked
+            };
+            let task = if current_status == ProductTaskStatus::Verifying {
+                self.transition_product_task(
+                    task_id,
+                    target_status,
+                    current_version,
+                    actor,
+                    None,
+                    None,
+                    Some("verification_authority_lost"),
+                    Some(reason),
+                    None,
+                )?
+            } else {
+                current
+            };
+            return Ok(json!({
+                "task": task,
+                "run": run,
+                "verification": verification,
+                "phase": "verification_authority_lost",
+                "reused": false,
+                "artifact_id": Value::Null,
+            }));
+        }
         if verification_status != "evidence_recorded" {
             let version = self
                 .get_product_task(task_id)?
                 .and_then(|t| t.get("version").and_then(Value::as_u64));
+            let outcome_unknown = verification_status == "outcome_unknown";
             let failed = self.transition_product_task(
                 task_id,
-                ProductTaskStatus::Failed,
+                if outcome_unknown {
+                    ProductTaskStatus::OutcomeUnknown
+                } else {
+                    ProductTaskStatus::Failed
+                },
                 version,
                 actor,
                 None,
                 None,
-                Some("verification_failed"),
+                Some(if outcome_unknown {
+                    "verification_outcome_unknown"
+                } else {
+                    "verification_failed"
+                }),
                 Some(verification_status),
                 None,
             )?;
@@ -1366,34 +1489,123 @@ impl LocalProductStore {
                 "task": failed,
                 "run": run,
                 "verification": verification,
-                "phase": "verification_failed",
+                "phase": if outcome_unknown { "verification_outcome_unknown" } else { "verification_failed" },
                 "reused": false,
                 "artifact_id": Value::Null,
             }));
         }
 
-        // Artifact capture only after trustworthy verification evidence exists.
-        let artifact = self.capture_patch(&workspace_record_id, actor)?;
+        let verified_patch_hash = verification
+            .get("verification_attempts")
+            .and_then(Value::as_array)
+            .and_then(|attempts| attempts.last())
+            .and_then(|attempt| attempt.get("workspace_hash_after"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "verification is missing its final patch identity".to_string())?;
+        let authoritative_node_id = run
+            .get("nodes")
+            .and_then(Value::as_array)
+            .and_then(|nodes| nodes.first())
+            .and_then(|node| node.get("node_id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "authoritative execution node missing before capture".to_string())?;
+        let node_authority = product_verification_node_authority(&run, authoritative_node_id)?;
+        let current_patch_hash = self.validate_product_verification_authority(
+            task_id,
+            &run_id,
+            &workspace_record_id,
+            &workspace_path,
+            &source_revision,
+            task_version,
+            &node_authority,
+            runtime_authority,
+        )?;
+        if current_patch_hash != verified_patch_hash {
+            self.record_product_verification_authority_loss(
+                task_id,
+                &workspace_record_id,
+                "late_filesystem_write_before_artifact_capture",
+                true,
+                actor,
+            )?;
+            return Err("verified patch identity changed before artifact capture".to_string());
+        }
+
+        // Artifact insertion, workspace update, task-version CAS, transition, and both
+        // audits commit in one backend transaction under the exact verified patch identity.
+        let mut artifact_operation = || {
+            self.finalize_product_verification_artifact(
+                task_id,
+                task_version,
+                &workspace_record_id,
+                verified_patch_hash,
+                actor,
+            )
+        };
+        let artifact_result = commit_authority.commit(&mut artifact_operation);
+        let (artifact, task) = match artifact_result {
+            Ok(result) => result,
+            Err(reason)
+                if reason.starts_with("runtime_authority_lost:")
+                    || reason.starts_with("runtime_authority_unavailable:") =>
+            {
+                verification["status"] = json!("authority_lost");
+                verification["result_status"] = json!("failed");
+                verification["trustworthy"] = json!(false);
+                verification["authority_loss_reason"] = json!(reason.clone());
+                verification["recorded_at"] = json!(self.now());
+                self.record_workspace_verification(&workspace_record_id, &verification, actor)?;
+                self.record_product_verification_authority_loss(
+                    task_id,
+                    &workspace_record_id,
+                    &reason,
+                    false,
+                    actor,
+                )?;
+                let current = self.get_product_task(task_id)?.ok_or_else(|| {
+                    "product task disappeared after artifact authority loss".to_string()
+                })?;
+                let current_status = ProductTaskStatus::parse(
+                    current.get("status").and_then(Value::as_str).unwrap_or(""),
+                )?;
+                let target_status = if reason.contains("kill") {
+                    ProductTaskStatus::Killed
+                } else if reason.contains("pause") {
+                    ProductTaskStatus::Paused
+                } else {
+                    ProductTaskStatus::Blocked
+                };
+                let task = if current_status == ProductTaskStatus::Verifying {
+                    self.transition_product_task(
+                        task_id,
+                        target_status,
+                        current.get("version").and_then(Value::as_u64),
+                        actor,
+                        None,
+                        None,
+                        Some("verification_authority_lost"),
+                        Some(&reason),
+                        None,
+                    )?
+                } else {
+                    current
+                };
+                return Ok(json!({
+                    "task": task,
+                    "run": run,
+                    "verification": verification,
+                    "phase": "verification_authority_lost",
+                    "reused": false,
+                    "artifact_id": Value::Null,
+                }));
+            }
+            Err(error) => return Err(error),
+        };
         let artifact_id = artifact
             .get("artifact_id")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-
-        let version = self
-            .get_product_task(task_id)?
-            .and_then(|t| t.get("version").and_then(Value::as_u64));
-        let task = self.transition_product_task(
-            task_id,
-            ProductTaskStatus::AwaitingApproval,
-            version,
-            actor,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )?;
 
         Ok(json!({
             "task": task,
@@ -1421,42 +1633,8 @@ impl LocalProductStore {
         expected_task_version: u64,
         task: &Value,
         actor: &str,
+        runtime_authority: &dyn Fn() -> Result<ProductVerificationRuntimeAuthority, String>,
     ) -> Result<Value, String> {
-        if !Path::new(workspace_path).is_dir() {
-            return Err(
-                "workspace missing before verification; zero capture/output effect".to_string(),
-            );
-        }
-        // Expected-current: reject if task version drifted.
-        let current = self
-            .get_product_task(task_id)?
-            .ok_or_else(|| "product task missing during verification".to_string())?;
-        let current_version = current.get("version").and_then(Value::as_u64).unwrap_or(0);
-        if current_version != expected_task_version {
-            return Err(format!(
-                "stale product task version during verification: expected {expected_task_version}, found {current_version}"
-            ));
-        }
-        let ws = self
-            .get_supervised_patch_workspace(workspace_record_id)?
-            .ok_or_else(|| "workspace record missing during verification".to_string())?;
-        let ws_status = ws.get("status").and_then(Value::as_str).unwrap_or("");
-        if matches!(ws_status, "quarantined" | "cleaned" | "rejected") {
-            return Err(format!(
-                "workspace status {ws_status} blocks verification; zero capture/output effect"
-            ));
-        }
-        let bound_path = ws
-            .get("workspace_path")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if bound_path != workspace_path {
-            return Err(
-                "workspace path mismatch during verification; zero capture/output effect"
-                    .to_string(),
-            );
-        }
-
         let commands = task
             .pointer("/intake/verification_commands")
             .and_then(Value::as_array)
@@ -1466,19 +1644,24 @@ impl LocalProductStore {
             return Err("no verification_commands declared on product task".to_string());
         }
 
-        let node_id = self
+        let initial_run = self
             .get_workflow_run(run_id)?
-            .and_then(|run| {
-                run.get("nodes")
-                    .and_then(Value::as_array)
-                    .and_then(|nodes| nodes.first())
-                    .and_then(|n| n.get("node_id").and_then(Value::as_str).map(str::to_string))
-            })
-            .unwrap_or_else(|| format!("{task_id}-verify"));
+            .ok_or_else(|| "workflow run missing before verification".to_string())?;
+        let node_id = initial_run
+            .get("nodes")
+            .and_then(Value::as_array)
+            .and_then(|nodes| nodes.first())
+            .and_then(|node| node.get("node_id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "authoritative execution node missing before verification".to_string())?
+            .to_string();
+        let node_authority = product_verification_node_authority(&initial_run, &node_id)?;
 
         let mut attempts: Vec<Value> = Vec::new();
         let mut all_passed = true;
         let mut final_status = "evidence_recorded";
+        let mut authority_loss_reason: Option<String> = None;
+        let mut previous_workspace_hash: Option<String> = None;
 
         for (idx, cmd_val) in commands.iter().enumerate() {
             let command = cmd_val
@@ -1486,7 +1669,7 @@ impl LocalProductStore {
                 .and_then(Value::as_str)
                 .ok_or_else(|| format!("verification command {idx} missing command"))?
                 .to_string();
-            let timeout_ms = cmd_val
+            let declared_timeout_ms = cmd_val
                 .get("timeout_ms")
                 .and_then(Value::as_u64)
                 .unwrap_or(30_000)
@@ -1494,22 +1677,86 @@ impl LocalProductStore {
             let attempt_number = (idx as u64) + 1;
             let started_at = self.now();
 
-            // Re-check workspace existence immediately before each command.
-            if !Path::new(workspace_path).is_dir() {
+            let pre_command_hash = match self.validate_product_verification_authority(
+                task_id,
+                run_id,
+                workspace_record_id,
+                workspace_path,
+                source_revision,
+                expected_task_version,
+                &node_authority,
+                runtime_authority,
+            ) {
+                Ok(hash) => hash,
+                Err(reason) => {
+                    self.record_product_verification_authority_loss(
+                        task_id,
+                        workspace_record_id,
+                        &reason,
+                        false,
+                        actor,
+                    )?;
+                    authority_loss_reason = Some(reason.clone());
+                    all_passed = false;
+                    final_status = "authority_lost";
+                    attempts.push(json!({
+                        "schema_version": "product_verification_attempt.v2",
+                        "attempt": attempt_number,
+                        "command": command,
+                        "timeout_ms": declared_timeout_ms,
+                        "started_at": started_at,
+                        "completed_at": self.now(),
+                        "exit_status": null,
+                        "process_outcome": null,
+                        "result_status": "stale_rejected",
+                        "trustworthy": false,
+                        "late_result_rejected": false,
+                        "error_domain": "verification_authority_lost",
+                        "error_message": reason,
+                        "product_task_id": task_id,
+                        "run_id": run_id,
+                        "node_id": node_id,
+                        "workspace_record_id": workspace_record_id,
+                        "workspace_path": workspace_path,
+                        "source_revision": source_revision,
+                        "expected_task_version": expected_task_version,
+                    }));
+                    break;
+                }
+            };
+            if previous_workspace_hash
+                .as_ref()
+                .is_some_and(|previous| previous != &pre_command_hash)
+            {
+                let reason = "late_filesystem_write_between_verification_commands".to_string();
+                self.record_product_verification_authority_loss(
+                    task_id,
+                    workspace_record_id,
+                    &reason,
+                    false,
+                    actor,
+                )?;
+                authority_loss_reason = Some(reason.clone());
                 all_passed = false;
-                final_status = "verification_failed";
+                final_status = "authority_lost";
                 attempts.push(json!({
+                    "schema_version": "product_verification_attempt.v2",
                     "attempt": attempt_number,
                     "command": command,
-                    "timeout_ms": timeout_ms,
+                    "timeout_ms": declared_timeout_ms,
                     "started_at": started_at,
                     "completed_at": self.now(),
                     "exit_status": null,
-                    "result_status": "failed",
-                    "error_domain": "workspace_missing",
-                    "error_message": "workspace disappeared before verification command",
+                    "process_outcome": null,
+                    "result_status": "stale_rejected",
+                    "trustworthy": false,
+                    "late_result_rejected": true,
+                    "error_domain": "verification_authority_lost",
+                    "error_message": reason,
                     "product_task_id": task_id,
                     "run_id": run_id,
+                    "node_id": node_id,
+                    "workspace_record_id": workspace_record_id,
                     "workspace_path": workspace_path,
                     "source_revision": source_revision,
                     "expected_task_version": expected_task_version,
@@ -1517,35 +1764,145 @@ impl LocalProductStore {
                 break;
             }
 
-            let executor = CommandNodeExecutor::default().with_timeout(timeout_ms);
-            let input = NodeExecutionInput {
-                node_id: format!("{node_id}-v{attempt_number}"),
-                task_type: "command".to_string(),
-                run_id: run_id.to_string(),
-                workflow_id: task_id.to_string(),
-                node_metadata: json!({
-                    "profile_id": "supervised_patch_verification",
-                    "command": command,
-                    "workspace_path": workspace_path,
-                    "workspace_root": workspace_path,
-                    "executor_timeout_ms": timeout_ms,
-                    "product_task_id": task_id,
-                    "tenant_id": tenant_id,
-                    "workspace_scope_id": workspace_scope,
-                    "source_revision": source_revision,
+            let remaining_elapsed_ms = self.product_task_remaining_elapsed_ms(task_id)?;
+            if remaining_elapsed_ms == 0 {
+                let reason = "budget_exhausted:total_elapsed_ms reached before command".to_string();
+                self.record_product_verification_authority_loss(
+                    task_id,
+                    workspace_record_id,
+                    &reason,
+                    false,
+                    actor,
+                )?;
+                authority_loss_reason = Some(reason.clone());
+                all_passed = false;
+                final_status = "authority_lost";
+                attempts.push(json!({
+                    "schema_version": "product_verification_attempt.v2",
                     "attempt": attempt_number,
-                }),
+                    "command": command,
+                    "declared_timeout_ms": declared_timeout_ms,
+                    "effective_timeout_ms": 0,
+                    "started_at": started_at,
+                    "completed_at": self.now(),
+                    "exit_status": null,
+                    "process_outcome": null,
+                    "result_status": "stale_rejected",
+                    "trustworthy": false,
+                    "late_result_rejected": false,
+                    "error_domain": "verification_authority_lost",
+                    "error_message": reason,
+                    "product_task_id": task_id,
+                    "run_id": run_id,
+                    "node_id": node_id,
+                    "workspace_record_id": workspace_record_id,
+                    "source_revision": source_revision,
+                    "expected_task_version": expected_task_version,
+                }));
+                break;
+            }
+            let effective_timeout_ms = declared_timeout_ms.min(remaining_elapsed_ms);
+            let execution = self.execute_managed_product_verification_command(
+                task_id,
+                tenant_id,
+                workspace_scope,
+                workspace_record_id,
+                workspace_path,
+                source_revision,
+                attempt_number,
+                &command,
+                &pre_command_hash,
+                effective_timeout_ms,
+                actor,
+            );
+            let (output, verification_run_id, verification_node_id) = match execution {
+                Ok(result) => result,
+                Err(error)
+                    if error
+                        .contains("binding changed for canonical workspace operation attempt") =>
+                {
+                    let reason = "late_filesystem_write_before_restart_reuse:verification_pre_patch_binding_superseded".to_string();
+                    self.record_product_verification_authority_loss(
+                        task_id,
+                        workspace_record_id,
+                        &reason,
+                        true,
+                        actor,
+                    )?;
+                    authority_loss_reason = Some(reason.clone());
+                    all_passed = false;
+                    final_status = "authority_lost";
+                    attempts.push(json!({
+                        "schema_version": "product_verification_attempt.v2",
+                        "attempt": attempt_number,
+                        "command": command,
+                        "declared_timeout_ms": declared_timeout_ms,
+                        "effective_timeout_ms": effective_timeout_ms,
+                        "started_at": started_at,
+                        "completed_at": self.now(),
+                        "exit_status": null,
+                        "process_outcome": null,
+                        "result_status": "stale_rejected",
+                        "trustworthy": false,
+                        "late_result_rejected": true,
+                        "error_domain": "verification_pre_state_superseded",
+                        "error_message": reason,
+                        "product_task_id": task_id,
+                        "run_id": run_id,
+                        "node_id": node_id,
+                        "workspace_record_id": workspace_record_id,
+                        "source_revision": source_revision,
+                        "expected_task_version": expected_task_version,
+                    }));
+                    break;
+                }
+                Err(error) => return Err(error),
             };
-            let output = executor.execute_node(&input);
             let completed_at = self.now();
-            let passed = output.status == "completed"
+            let post_authority = self.validate_product_verification_authority(
+                task_id,
+                run_id,
+                workspace_record_id,
+                workspace_path,
+                source_revision,
+                expected_task_version,
+                &node_authority,
+                runtime_authority,
+            );
+            let mut lost_after_effect = post_authority.as_ref().err().cloned();
+            if let Ok(post_hash) = post_authority.as_ref() {
+                if post_hash != &pre_command_hash {
+                    lost_after_effect =
+                        Some("late_filesystem_write_during_verification".to_string());
+                }
+                previous_workspace_hash = Some(post_hash.clone());
+            }
+            if let Some(reason) = lost_after_effect.as_deref() {
+                self.record_product_verification_authority_loss(
+                    task_id,
+                    workspace_record_id,
+                    reason,
+                    true,
+                    actor,
+                )?;
+                authority_loss_reason = Some(reason.to_string());
+                all_passed = false;
+                final_status = "authority_lost";
+            }
+            let passed = lost_after_effect.is_none()
+                && output.status == "completed"
                 && output
                     .process_outcome
                     .as_ref()
                     .is_some_and(crate::node_executor::ProcessOutcome::successful_exit);
             if !passed {
                 all_passed = false;
-                final_status = "verification_failed";
+                if lost_after_effect.is_none() {
+                    final_status = product_verification_failure_status(
+                        output.error_domain.as_deref(),
+                        output.process_outcome.as_ref(),
+                    );
+                }
             }
 
             // Digest stdout/stderr for bounded evidence (no raw corpus).
@@ -1565,10 +1922,16 @@ impl LocalProductStore {
                 "attempt": attempt_number,
                 "command": command,
                 "command_argv": command.split_whitespace().collect::<Vec<_>>(),
-                "timeout_ms": timeout_ms,
+                "declared_timeout_ms": declared_timeout_ms,
+                "effective_timeout_ms": effective_timeout_ms,
                 "started_at": started_at,
                 "completed_at": completed_at,
-                "result_status": output.status,
+                "result_status": if lost_after_effect.is_some() { "stale_rejected" } else { output.status.as_str() },
+                "trustworthy": passed,
+                "late_result_rejected": lost_after_effect.is_some(),
+                "authority_loss_reason": lost_after_effect,
+                "workspace_hash_before": pre_command_hash,
+                "workspace_hash_after": previous_workspace_hash,
                 "executor_type": output.executor_type,
                 "exit_status": output.process_outcome.as_ref().and_then(|outcome| outcome.exit_code),
                 "process_outcome": output.process_outcome,
@@ -1583,6 +1946,8 @@ impl LocalProductStore {
                 "workspace_scope_id": workspace_scope,
                 "run_id": run_id,
                 "node_id": node_id,
+                "verification_run_id": verification_run_id,
+                "verification_node_id": verification_node_id,
                 "workspace_record_id": workspace_record_id,
                 "workspace_path": workspace_path,
                 "source_revision": source_revision,
@@ -1592,6 +1957,9 @@ impl LocalProductStore {
             if !passed {
                 // Fail closed: do not continue remaining commands after a failure? Spec says
                 // run all declared commands. Continue collecting attempts but mark overall fail.
+            }
+            if authority_loss_reason.is_some() {
+                break;
             }
         }
 
@@ -1610,14 +1978,252 @@ impl LocalProductStore {
             "attempt": attempts.len() as u64,
             "verification_attempts": attempts,
             "repair_attempts": [],
-            "method": "product_golden_path_command_executor",
+            "method": "product_golden_path_managed_tool_policy",
             "trustworthy": all_passed,
+            "authority_loss_reason": authority_loss_reason,
             "recorded_at": self.now(),
             "recorded_by": actor,
         });
 
         self.record_workspace_verification(workspace_record_id, &verification, actor)?;
         Ok(verification)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_managed_product_verification_command(
+        &self,
+        task_id: &str,
+        tenant_id: &str,
+        workspace_scope: &str,
+        workspace_record_id: &str,
+        workspace_path: &str,
+        source_revision: &str,
+        attempt: u64,
+        command: &str,
+        pre_patch_sha256: &str,
+        timeout_ms: u64,
+        actor: &str,
+    ) -> Result<(NodeExecutionOutput, String, String), String> {
+        let mut metadata = json!({
+            "profile_id": "supervised_patch_verification",
+            "command": command,
+            "pre_patch_sha256": pre_patch_sha256,
+            "workspace_path": workspace_path,
+            "workspace_root": workspace_path,
+            "executor_timeout_ms": timeout_ms,
+            "product_task_id": task_id,
+            "tenant_id": tenant_id,
+            "workspace_scope_id": workspace_scope,
+            "source_revision": source_revision,
+            "attempt": attempt,
+        });
+        let operation = "product_verify";
+        let binding_sha256 =
+            managed_tool_binding_sha256(workspace_record_id, operation, attempt, &metadata)?;
+        metadata
+            .as_object_mut()
+            .ok_or_else(|| "product verification metadata must be an object".to_string())?
+            .insert(
+                "managed_supervised_patch".to_string(),
+                json!({
+                    "schema_version": "managed_supervised_patch.v1",
+                    "workspace_id": workspace_record_id,
+                    "operation": operation,
+                    "attempt": attempt,
+                    "binding_sha256": binding_sha256,
+                    "content_excluded": true,
+                }),
+            );
+        let managed_run_id = self.ensure_managed_supervised_patch_run(
+            workspace_record_id,
+            operation,
+            attempt,
+            &binding_sha256,
+            &metadata,
+            actor,
+        )?;
+        let managed_node_id = format!("supervised-{operation}-{attempt}");
+        if let Some(output) =
+            persisted_product_managed_output(self, &managed_run_id, &managed_node_id)?
+        {
+            return Ok((output, managed_run_id, managed_node_id));
+        }
+
+        let allowed_commands = PRODUCT_VERIFICATION_READ_ONLY_COMMANDS
+            .iter()
+            .map(|command| (*command).to_string())
+            .collect::<Vec<_>>();
+        let executor = ToolPolicyNodeExecutor::command_borrowed(
+            Arc::new(RedactedProductVerificationExecutor {
+                inner: CommandNodeExecutor {
+                    timeout_ms,
+                    allowed_commands: allowed_commands.clone(),
+                    allowed_binaries: allowed_commands,
+                    env_vars: Vec::new(),
+                },
+            }),
+            self,
+        );
+        let tick =
+            self.tick_managed_supervised_patch_with_executor(&managed_run_id, actor, &executor)?;
+        if tick.get("node_id").and_then(Value::as_str) != Some(managed_node_id.as_str()) {
+            if let Some(output) =
+                persisted_product_managed_output(self, &managed_run_id, &managed_node_id)?
+            {
+                return Ok((output, managed_run_id, managed_node_id));
+            }
+            return Err(
+                "product verification canonical managed operation is already in progress"
+                    .to_string(),
+            );
+        }
+        let output = tick
+            .get("result")
+            .ok_or_else(|| "managed product verification result is missing".to_string())
+            .and_then(product_node_output_from_value)?;
+        Ok((output, managed_run_id, managed_node_id))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_product_verification_authority(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        workspace_record_id: &str,
+        workspace_path: &str,
+        source_revision: &str,
+        expected_task_version: u64,
+        expected_node: &ProductVerificationNodeAuthority,
+        runtime_authority: &dyn Fn() -> Result<ProductVerificationRuntimeAuthority, String>,
+    ) -> Result<String, String> {
+        let runtime = runtime_authority()
+            .map_err(|error| format!("runtime_authority_unavailable:{error}"))?;
+        runtime
+            .validate()
+            .map_err(|reason| format!("runtime_authority_lost:{reason}"))?;
+
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "task_missing".to_string())?;
+        let current_version = task.get("version").and_then(Value::as_u64).unwrap_or(0);
+        if current_version != expected_task_version {
+            return Err(format!(
+                "task_version_superseded:expected={expected_task_version}:actual={current_version}"
+            ));
+        }
+        let status = task.get("status").and_then(Value::as_str).unwrap_or("");
+        match status {
+            "verifying" => {}
+            "paused" => return Err("task_paused".to_string()),
+            "killed" => return Err("task_killed".to_string()),
+            _ => return Err(format!("task_state_superseded:{status}")),
+        }
+        if task.get("run_id").and_then(Value::as_str) != Some(run_id)
+            || task.get("workspace_record_id").and_then(Value::as_str) != Some(workspace_record_id)
+            || task
+                .pointer("/workspace_binding/workspace_path")
+                .and_then(Value::as_str)
+                != Some(workspace_path)
+            || task
+                .pointer("/workspace_binding/source_revision")
+                .and_then(Value::as_str)
+                != Some(source_revision)
+        {
+            return Err("task_operation_binding_superseded".to_string());
+        }
+
+        let run = self
+            .get_workflow_run(run_id)?
+            .ok_or_else(|| "run_missing".to_string())?;
+        if run.get("pause_reason").and_then(Value::as_str).is_some() {
+            return Err("run_paused".to_string());
+        }
+        if run.get("status").and_then(Value::as_str) != Some("completed") {
+            return Err(format!(
+                "run_authority_lost:{}",
+                run.get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("missing")
+            ));
+        }
+        let current_node = product_verification_node_authority(&run, &expected_node.node_id)?;
+        if &current_node != expected_node {
+            return Err("node_attempt_or_lease_superseded".to_string());
+        }
+
+        let workspace = self
+            .get_supervised_patch_workspace(workspace_record_id)?
+            .ok_or_else(|| "workspace_record_missing".to_string())?;
+        let workspace_status = workspace
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if matches!(workspace_status, "quarantined" | "cleaned" | "rejected") {
+            return Err(format!("workspace_status_invalid:{workspace_status}"));
+        }
+        if workspace.get("run_id").and_then(Value::as_str) != Some(run_id)
+            || workspace.get("source_revision").and_then(Value::as_str) != Some(source_revision)
+            || workspace.get("workspace_path").and_then(Value::as_str) != Some(workspace_path)
+        {
+            return Err("workspace_binding_superseded".to_string());
+        }
+        let canonical_path = std::fs::canonicalize(workspace_path)
+            .map_err(|_| "workspace_missing_or_replaced".to_string())?;
+        if workspace
+            .get("workspace_canonical_path")
+            .and_then(Value::as_str)
+            != canonical_path.to_str()
+        {
+            return Err("workspace_canonical_path_superseded".to_string());
+        }
+        let current_revision = current_workspace_revision(
+            &TargetRepoOutputConfig::from_env(),
+            Path::new(workspace_path),
+        )
+        .map_err(|_| "workspace_source_revision_unavailable".to_string())?;
+        if current_revision != source_revision {
+            return Err("workspace_source_revision_superseded".to_string());
+        }
+        validate_product_task_elapsed_budget(&task, &self.now())?;
+        let patch = inspect_git_patch_read_only(
+            &TargetRepoOutputConfig::from_env(),
+            Path::new(workspace_path),
+        )
+        .map_err(|_| "workspace_patch_identity_unavailable".to_string())?;
+        Ok(target_patch_hash(&patch))
+    }
+
+    fn product_task_remaining_elapsed_ms(&self, task_id: &str) -> Result<u64, String> {
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "task_missing".to_string())?;
+        product_task_remaining_elapsed_ms(&task, &self.now())
+    }
+
+    fn record_product_verification_authority_loss(
+        &self,
+        task_id: &str,
+        workspace_record_id: &str,
+        reason: &str,
+        after_effect: bool,
+        actor: &str,
+    ) -> Result<(), String> {
+        self.append_audit(
+            actor,
+            "product_task.verification_authority_lost",
+            task_id,
+            &json!({
+                "reason": reason,
+                "after_effect": after_effect,
+                "late_result_rejected": after_effect,
+                "workspace_record_id": workspace_record_id,
+                "content_excluded": true,
+            }),
+        )?;
+        if reason.contains("workspace") || reason.contains("late_filesystem_write") {
+            self.quarantine_workspace(workspace_record_id, actor)?;
+        }
+        Ok(())
     }
 
     /// Record an independent, output-only approval bound to the exact evidence
@@ -3055,6 +3661,201 @@ fn product_export_root(store: &LocalProductStore) -> Result<PathBuf, String> {
         .ok_or_else(|| "store path has no parent".to_string())
 }
 
+fn product_verification_node_authority(
+    run: &Value,
+    node_id: &str,
+) -> Result<ProductVerificationNodeAuthority, String> {
+    let node = run
+        .get("nodes")
+        .and_then(Value::as_array)
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| node.get("node_id").and_then(Value::as_str) == Some(node_id))
+        })
+        .ok_or_else(|| "authoritative execution node missing".to_string())?;
+    if node.get("db_status").and_then(Value::as_str) != Some("completed") {
+        return Err(format!(
+            "execution node authority is not completed: {}",
+            node.get("db_status")
+                .and_then(Value::as_str)
+                .unwrap_or("missing")
+        ));
+    }
+    let attempt_count = node
+        .get("attempt_count")
+        .and_then(Value::as_u64)
+        .filter(|attempt| *attempt > 0)
+        .ok_or_else(|| "execution node attempt authority missing".to_string())?;
+    let result = node
+        .get("result")
+        .filter(|result| !result.is_null())
+        .ok_or_else(|| "execution node result authority missing".to_string())?;
+    Ok(ProductVerificationNodeAuthority {
+        node_id: node_id.to_string(),
+        attempt_count,
+        leased_at: node
+            .get("leased_at")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        result_sha256: product_json_sha256(result)?,
+    })
+}
+
+fn persisted_product_managed_output(
+    store: &LocalProductStore,
+    run_id: &str,
+    node_id: &str,
+) -> Result<Option<NodeExecutionOutput>, String> {
+    let run = store
+        .get_workflow_run(run_id)?
+        .ok_or_else(|| "managed product verification run disappeared".to_string())?;
+    let node = run
+        .get("nodes")
+        .and_then(Value::as_array)
+        .and_then(|nodes| nodes.first())
+        .filter(|node| node.get("node_id").and_then(Value::as_str) == Some(node_id))
+        .ok_or_else(|| "managed product verification node disappeared".to_string())?;
+    match node.get("status").and_then(Value::as_str) {
+        Some("completed" | "failed" | "awaiting_approval") => node
+            .get("result")
+            .ok_or_else(|| "managed product verification persisted result is missing".to_string())
+            .and_then(product_node_output_from_value)
+            .map(Some),
+        Some("pending") => Ok(None),
+        Some("running") => Err(
+            "product verification canonical managed operation is already in progress".to_string(),
+        ),
+        Some(status) => Err(format!(
+            "managed product verification has unsupported status: {status}"
+        )),
+        None => Err("managed product verification status is missing".to_string()),
+    }
+}
+
+fn product_node_output_from_value(value: &Value) -> Result<NodeExecutionOutput, String> {
+    let required = |field: &str| {
+        value
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("managed product verification result missing {field}"))
+    };
+    Ok(NodeExecutionOutput {
+        status: required("status")?,
+        executor_type: required("executor_type")?,
+        output: value
+            .get("output")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        error_domain: value
+            .get("error_domain")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        error_message: value
+            .get("error_message")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        input_tokens: value.get("input_tokens").and_then(Value::as_i64),
+        output_tokens: value.get("output_tokens").and_then(Value::as_i64),
+        estimated_cost: value.get("estimated_cost").and_then(Value::as_f64),
+        latency_ms: value.get("latency_ms").and_then(Value::as_i64),
+        process_outcome: value
+            .get("process_outcome")
+            .cloned()
+            .filter(|outcome| !outcome.is_null())
+            .map(serde_json::from_value::<ProcessOutcome>)
+            .transpose()
+            .map_err(|error| format!("invalid managed process_outcome: {error}"))?,
+    })
+}
+
+fn validate_product_task_elapsed_budget(task: &Value, now: &str) -> Result<(), String> {
+    let remaining = product_task_remaining_elapsed_ms(task, now)?;
+    if remaining == 0 {
+        let limit_ms = task
+            .pointer("/intake/budget/total_elapsed_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        return Err(format!(
+            "budget_exhausted:total_elapsed_ms={limit_ms}:remaining_ms=0"
+        ));
+    }
+    Ok(())
+}
+
+fn product_task_remaining_elapsed_ms(task: &Value, now: &str) -> Result<u64, String> {
+    let Some(limit_ms) = task
+        .pointer("/intake/budget/total_elapsed_ms")
+        .and_then(Value::as_u64)
+    else {
+        return Ok(u64::MAX);
+    };
+    let created_at = task
+        .get("created_at")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "task_elapsed_budget_created_at_missing".to_string())?;
+    let created = chrono::DateTime::parse_from_rfc3339(created_at)
+        .map_err(|_| "task_elapsed_budget_created_at_invalid".to_string())?;
+    let current = chrono::DateTime::parse_from_rfc3339(now)
+        .map_err(|_| "task_elapsed_budget_clock_invalid".to_string())?;
+    let elapsed_ms = current
+        .signed_duration_since(created)
+        .num_milliseconds()
+        .max(0) as u64;
+    Ok(limit_ms.saturating_sub(elapsed_ms))
+}
+
+fn product_verification_failure_status(
+    error_domain: Option<&str>,
+    process_outcome: Option<&ProcessOutcome>,
+) -> &'static str {
+    if matches!(
+        error_domain,
+        Some(
+            "tool_execution_outcome_unknown"
+                | "tool_effect_outcome_unknown"
+                | "tool_execution_receipt_error"
+        )
+    ) && process_outcome.is_none()
+    {
+        "outcome_unknown"
+    } else {
+        "verification_failed"
+    }
+}
+
+/// Product verification may inspect repository files, but workflow-node persistence must
+/// never retain their raw contents or command stderr. Preserve the authoritative process
+/// outcome and replace both text channels with content hashes before the generic workflow
+/// owner serializes the result.
+struct RedactedProductVerificationExecutor {
+    inner: CommandNodeExecutor,
+}
+
+impl NodeExecutor for RedactedProductVerificationExecutor {
+    fn executor_type_name(&self) -> &str {
+        self.inner.executor_type_name()
+    }
+
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        let mut output = self.inner.execute_node(input);
+        output.output = output.output.as_deref().map(|value| {
+            format!(
+                "redacted_command_output_sha256:{}",
+                hex::encode(Sha256::digest(value.as_bytes()))
+            )
+        });
+        output.error_message = output.error_message.as_deref().map(|value| {
+            format!(
+                "redacted_command_error_sha256:{}",
+                hex::encode(Sha256::digest(value.as_bytes()))
+            )
+        });
+        output
+    }
+}
+
 fn required_product_task_string(value: &Value, field: &str) -> Result<String, String> {
     value
         .get(field)
@@ -3104,7 +3905,9 @@ fn product_json_sha256(value: &Value) -> Result<String, String> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
-fn validate_product_terminal_evidence_content_hash(evidence: &Value) -> Result<(), String> {
+pub(super) fn validate_product_terminal_evidence_content_hash(
+    evidence: &Value,
+) -> Result<(), String> {
     if evidence.get("schema_version").and_then(Value::as_str)
         != Some("product_task_terminal_evidence.v2")
     {
@@ -3611,4 +4414,76 @@ fn product_task_row_to_json_pg(row: &postgres::Row) -> Value {
         "created_by": row.get::<_, String>("created_by"),
         "execution_admitted": admits,
     })
+}
+
+#[cfg(test)]
+mod product_verification_failure_tests {
+    use super::{product_verification_failure_status, RedactedProductVerificationExecutor};
+    use crate::node_executor::{
+        CommandNodeExecutor, NodeExecutionInput, NodeExecutor, ProcessOutcome,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn consumed_or_uncertain_tool_effect_remains_outcome_unknown() {
+        for domain in [
+            "tool_execution_outcome_unknown",
+            "tool_effect_outcome_unknown",
+            "tool_execution_receipt_error",
+        ] {
+            assert_eq!(
+                product_verification_failure_status(Some(domain), None),
+                "outcome_unknown"
+            );
+        }
+        assert_eq!(
+            product_verification_failure_status(Some("command_not_allowed"), None),
+            "verification_failed"
+        );
+        assert_eq!(
+            product_verification_failure_status(
+                Some("tool_effect_outcome_unknown"),
+                Some(&ProcessOutcome::failure(
+                    "exited",
+                    Some(7),
+                    "known non-zero exit",
+                )),
+            ),
+            "verification_failed"
+        );
+    }
+
+    #[test]
+    fn product_verification_redacts_command_content_before_workflow_persistence() {
+        let workspace = tempfile::tempdir().unwrap();
+        let secret_content = "repository-content-that-must-not-be-persisted";
+        std::fs::write(workspace.path().join("README.md"), secret_content).unwrap();
+        let executor = RedactedProductVerificationExecutor {
+            inner: CommandNodeExecutor {
+                timeout_ms: 5_000,
+                allowed_commands: vec!["cat".to_string()],
+                allowed_binaries: vec!["cat".to_string()],
+                env_vars: Vec::new(),
+            },
+        };
+        let output = executor.execute_node(&NodeExecutionInput {
+            node_id: "verify-node".to_string(),
+            task_type: "command".to_string(),
+            run_id: "verify-run".to_string(),
+            workflow_id: "verify-workflow".to_string(),
+            node_metadata: json!({
+                "command": "cat README.md",
+                "workspace_path": workspace.path(),
+                "workspace_root": workspace.path(),
+            }),
+        });
+        assert_eq!(output.status, "completed");
+        let persisted = output.to_value().to_string();
+        assert!(!persisted.contains(secret_content));
+        assert!(persisted.contains("redacted_command_output_sha256"));
+        assert_eq!(
+            output.process_outcome.and_then(|outcome| outcome.exit_code),
+            Some(0)
+        );
+    }
 }

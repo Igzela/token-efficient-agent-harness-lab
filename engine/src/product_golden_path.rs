@@ -33,6 +33,130 @@ pub const MAX_PATH_BYTES: usize = 1_024;
 pub const MAX_ALLOWED_PATHS: usize = 64;
 pub const MAX_VERIFICATION_COMMANDS: usize = 8;
 pub const MAX_VERIFICATION_COMMAND_BYTES: usize = 512;
+pub const PRODUCT_VERIFICATION_READ_ONLY_COMMANDS: &[&str] = &[
+    "echo", "cat", "ls", "head", "tail", "grep", "wc", "true", "false", "test",
+];
+
+fn grep_short_option_recurses(argument: &str) -> bool {
+    let mut flags = argument.trim_start_matches('-').chars().peekable();
+    while let Some(flag) = flags.next() {
+        if matches!(flag, 'r' | 'R') {
+            return true;
+        }
+        // These GNU grep short options consume the rest of the token as their value.
+        // A letter inside that value is not another option (for example `-eerror`).
+        if matches!(flag, 'A' | 'B' | 'C' | 'D' | 'd' | 'e' | 'f' | 'm') {
+            let value = flags.collect::<String>();
+            return flag == 'd' && value == "recurse";
+        }
+    }
+    false
+}
+
+fn matches_abbreviated_long_option(argument: &str, canonical: &str) -> bool {
+    let name = argument.split_once('=').map_or(argument, |(name, _)| name);
+    name.starts_with("--") && name.len() > 2 && canonical.starts_with(name)
+}
+
+fn validate_product_verification_command_argv(argv: &[&str]) -> Result<(), String> {
+    let binary = argv.first().copied().unwrap_or_default();
+    match binary {
+        // Recursive traversal composes unsafely with workspace directories deliberately
+        // excluded from patch hashing (`target` and `node_modules`). GNU grep also admits
+        // recursion through `--directories=recurse` without spelling `-r`.
+        "grep" => {
+            let mut expect_directories_value = false;
+            let mut options = true;
+            for argument in argv.iter().skip(1) {
+                if expect_directories_value {
+                    if *argument == "recurse" {
+                        return Err(
+                            "verification grep must not recursively traverse the workspace"
+                                .to_string(),
+                        );
+                    }
+                    expect_directories_value = false;
+                    continue;
+                }
+                if options && *argument == "--" {
+                    options = false;
+                    continue;
+                }
+                if !options {
+                    continue;
+                }
+                let abbreviated_recursive =
+                    matches_abbreviated_long_option(argument, "--recursive")
+                        || matches_abbreviated_long_option(argument, "--dereference-recursive");
+                let directories_recurse = argument.split_once('=').is_some_and(|(name, value)| {
+                    matches_abbreviated_long_option(name, "--directories") && value == "recurse"
+                });
+                if matches!(*argument, "-r" | "-R")
+                    || abbreviated_recursive
+                    || directories_recurse
+                    || (argument.starts_with('-')
+                        && !argument.starts_with("--")
+                        && grep_short_option_recurses(argument))
+                {
+                    return Err(
+                        "verification grep must not recursively traverse the workspace".to_string(),
+                    );
+                }
+                if *argument == "-d"
+                    || (!argument.contains('=')
+                        && matches_abbreviated_long_option(argument, "--directories"))
+                {
+                    expect_directories_value = true;
+                } else if argument
+                    .strip_prefix("-d")
+                    .is_some_and(|value| value == "recurse")
+                {
+                    return Err(
+                        "verification grep must not recursively traverse the workspace".to_string(),
+                    );
+                }
+            }
+        }
+        // `ls -RL .` can follow symlinks inside excluded directories even though no
+        // direct excluded-directory operand appears in argv.
+        "ls" => {
+            for argument in argv
+                .iter()
+                .skip(1)
+                .take_while(|argument| **argument != "--")
+            {
+                if *argument == "-R"
+                    || matches_abbreviated_long_option(argument, "--recursive")
+                    || (argument.starts_with('-')
+                        && !argument.starts_with("--")
+                        && argument.chars().skip(1).any(|flag| flag == 'R'))
+                {
+                    return Err(
+                        "verification ls must not recursively traverse the workspace".to_string(),
+                    );
+                }
+            }
+        }
+        // The control file contents are interpreted as path operands by wc, bypassing
+        // intake-time path validation entirely.
+        "wc" => {
+            for argument in argv
+                .iter()
+                .skip(1)
+                .take_while(|argument| **argument != "--")
+            {
+                if matches_abbreviated_long_option(argument, "--files0-from") {
+                    return Err(
+                        "verification wc must not load path operands from an indirect file"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 pub const MAX_TARGET_ID_BYTES: usize = 128;
 pub const MAX_EXECUTOR_SET: usize = 16;
@@ -76,6 +200,63 @@ pub enum ProductTaskStatus {
     Blocked,
     /// External effect (push/PR) outcome could not be determined; must reconcile.
     OutcomeUnknown,
+}
+
+/// Runtime-owned authority sampled immediately before and after every Product Golden Path
+/// verification command. API callers must populate this from the attached scheduler; the
+/// compatibility/manual store path is explicit so it cannot be mistaken for automatic
+/// scheduler availability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductVerificationRuntimeAuthority {
+    pub scheduler_attached: bool,
+    pub scheduler_running: bool,
+    pub scheduler_paused: bool,
+    pub scheduler_killed: bool,
+    pub global_kill_active: bool,
+    pub manual_operational_tick: bool,
+}
+
+impl ProductVerificationRuntimeAuthority {
+    pub fn manual_operational() -> Self {
+        Self {
+            scheduler_attached: false,
+            scheduler_running: false,
+            scheduler_paused: false,
+            scheduler_killed: false,
+            global_kill_active: product_scheduler_kill_active(),
+            manual_operational_tick: true,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.global_kill_active {
+            return Err("global_kill_active");
+        }
+        if self.scheduler_killed {
+            return Err("scheduler_killed");
+        }
+        if self.scheduler_paused {
+            return Err("scheduler_paused");
+        }
+        if !self.manual_operational_tick && !self.scheduler_attached {
+            return Err("scheduler_not_attached");
+        }
+        if !self.manual_operational_tick && !self.scheduler_running {
+            return Err("scheduler_not_running");
+        }
+        Ok(())
+    }
+}
+
+pub fn product_scheduler_kill_active() -> bool {
+    std::env::var("ACP_SUPERVISED_WORKERS_KILL_SWITCH")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 impl ProductTaskStatus {
@@ -460,6 +641,33 @@ pub fn validate_intake(
                 "verification command must not be an absolute or relative binary path".to_string(),
             );
         }
+        let argv = command.split_whitespace().collect::<Vec<_>>();
+        if !PRODUCT_VERIFICATION_READ_ONLY_COMMANDS.contains(&argv[0]) {
+            return Err(format!(
+                "verification command must use a read-only admitted binary: {}",
+                argv[0]
+            ));
+        }
+        validate_product_verification_command_argv(&argv)?;
+        if argv.iter().skip(1).any(|argument| {
+            Path::new(argument).is_absolute()
+                || Path::new(argument)
+                    .components()
+                    .any(|component| matches!(component, Component::ParentDir))
+                || Path::new(argument).components().any(|component| {
+                    matches!(
+                        component,
+                        Component::Normal(name)
+                            if matches!(name.to_str(), Some(".git" | "target" | "node_modules"))
+                    )
+                })
+                || (argument.starts_with('-') && argument.contains('/'))
+        }) {
+            return Err(
+                "verification command arguments must remain relative to the bound workspace"
+                    .to_string(),
+            );
+        }
         if command.contains("..")
             || command.contains(';')
             || command.contains('|')
@@ -788,7 +996,13 @@ pub fn workspace_content_hash(workspace_path: &Path) -> Result<String, String> {
     reject_workspace_symlinks(workspace_path)?;
     let manifest =
         crate::storage::local_product_store::supervised_patch_compute_manifest(workspace_path)?;
-    let payload = serde_json::to_string(&manifest).map_err(|e| e.to_string())?;
+    // `compute_manifest` also carries an observational `computed_at` timestamp.  It must not
+    // participate in the content identity or an unchanged workspace can appear to mutate when a
+    // verification command crosses a wall-clock second boundary.
+    let files = manifest
+        .get("files")
+        .ok_or_else(|| "workspace manifest missing files".to_string())?;
+    let payload = serde_json::to_string(files).map_err(|e| e.to_string())?;
     Ok(hex::encode(Sha256::digest(payload.as_bytes())))
 }
 
@@ -1110,6 +1324,110 @@ mod tests {
     }
 
     #[test]
+    fn rejects_option_attached_absolute_verification_paths() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        for command in [
+            "grep -f/etc/shadow README.md",
+            "grep --file=/etc/shadow README.md",
+            "wc --files0-from=/etc/passwd",
+        ] {
+            let mut req = sample_request();
+            req.verification_commands = vec![ProductVerificationCommand {
+                command: command.to_string(),
+                timeout_ms: 1000,
+            }];
+            assert!(
+                validate_intake(&req, "local", "default").is_err(),
+                "option-attached path must be rejected: {command}"
+            );
+        }
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn rejects_verification_paths_excluded_from_workspace_observation() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        for command in [
+            "cat .git/config",
+            "cat target/leak",
+            "cat ./target/leak",
+            "grep needle node_modules/package/file.js",
+        ] {
+            let mut req = sample_request();
+            req.verification_commands = vec![ProductVerificationCommand {
+                command: command.to_string(),
+                timeout_ms: 1000,
+            }];
+            assert!(
+                validate_intake(&req, "local", "default").is_err(),
+                "unobserved workspace path must be rejected: {command}"
+            );
+        }
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn rejects_recursive_or_indirect_verification_traversal() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        for command in [
+            "grep -R needle .",
+            "grep -rn needle .",
+            "grep --recursive needle .",
+            "grep --rec needle .",
+            "grep --dereference-recursive needle .",
+            "grep --dereference-rec needle .",
+            "grep -d recurse needle .",
+            "grep -drecurse needle .",
+            "grep --directories=recurse needle .",
+            "grep --dir=recurse needle .",
+            "ls -R .",
+            "ls -LR .",
+            "ls --recursive .",
+            "ls --rec .",
+            "wc --files0-from list",
+            "wc --files0-from=list",
+            "wc --files0-f=list",
+        ] {
+            let mut req = sample_request();
+            req.verification_commands = vec![ProductVerificationCommand {
+                command: command.to_string(),
+                timeout_ms: 1000,
+            }];
+            assert!(
+                validate_intake(&req, "local", "default").is_err(),
+                "recursive or indirect traversal must be rejected: {command}"
+            );
+        }
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn accepts_nonrecursive_options_with_recursive_letters_in_values() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        for command in [
+            "grep -eerror README.md",
+            "grep -- -R README.md",
+            "ls -- -R",
+            "wc -- --files0-from",
+        ] {
+            let mut req = sample_request();
+            req.verification_commands = vec![ProductVerificationCommand {
+                command: command.to_string(),
+                timeout_ms: 1000,
+            }];
+            assert!(
+                validate_intake(&req, "local", "default").is_ok(),
+                "nonrecursive option grammar must remain accepted: {command}"
+            );
+        }
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+
+    #[test]
     fn status_transition_matrix_blocks_execution_from_admitted() {
         assert!(!ProductTaskStatus::Admitted.admits_execution());
         assert!(!ProductTaskStatus::WorkspaceBound.admits_execution());
@@ -1122,5 +1440,15 @@ mod tests {
             ProductTaskStatus::Admitted,
             ProductTaskStatus::WorkspacePreparing
         ));
+    }
+
+    #[test]
+    fn workspace_content_identity_excludes_observation_timestamp() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("README.md"), "stable\n").unwrap();
+        let first = workspace_content_hash(workspace.path()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        let second = workspace_content_hash(workspace.path()).unwrap();
+        assert_eq!(first, second);
     }
 }

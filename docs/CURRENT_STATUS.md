@@ -6,7 +6,7 @@ Last updated: 2026-07-22.
 
 - Canonical repository: `Igzela/token-efficient-agent-harness-lab`.
 - Audited remote `main` at the start of Residual Seal 2: `364a2ad24fb494653ccbe3ff2e8b038e9e40d095`.
-- Refreshed `main` after the terminal-evidence slice: `1d1252525014c0f6e979953f916c81aab20a9ee9` (PR #273 terminal-evidence/process-outcome repair).
+- Refreshed `main` for the verification-authority slice: `a276b9caaead3d5cb3ac2119bedafe4bd365d725` (post-PR #273 factual document synchronization).
 - Commits `f7293548`, `fe742052`, `364a2ad2`, `c6806841`, and `1d125252` are all present in order.
 - Prior golden-path merges on this line:
   - PR #268 G1 → `178d020e`
@@ -35,7 +35,7 @@ Authority repairs from PR #270:
 - Declared verification commands execute via `CommandNodeExecutor` and are recorded through supervised-patch verification; fabricated `result: pass` is gone.
 - `/finalize` does not tick executors; it observes scheduler-owned run state then post-processes.
 - Compile stays at `graph_ready` until scheduler leases/advances.
-- Executor availability comes from the live pool / registration snapshot.
+- Automatic HTTP compilation requires an attached, running scheduler and an executor that its current routing mode can actually consume; a request-scoped registration snapshot is not execution availability.
 - Fixture apply helper is labeled `fixture_deterministic` and is not managed-agent evidence.
 
 The Residual Seal 2 audit found that PR #271's terminal/output summary was overstated:
@@ -50,19 +50,21 @@ The output-authority slice corrects the first four defects through separate `tea
 
 The terminal-evidence slice corrects the fifth defect. Schema v31 persists one content-hash-bound `product_task_terminal_evidence.v2` record with the exact task version, plan/run/node attempt, workspace/source, verification receipt set, artifact, approval, output receipt/operation, replay, native scorecard, usage/cost availability, and audit reference used by the terminal transition. Task completion, transition audit, evidence audit, and evidence insert commit atomically in SQLite and PostgreSQL. Reads and compatibility emission are pure/idempotent. Replay uses the replay owner's exact dispatch query rather than a capped artifact scan; scorecards and measured usage are linked only from their owners, and fixture usage/cost remains explicitly unavailable. `process_outcome.v1` preserves real command and admitted managed-CLI exit code, signal when available, timeout, spawn/wait/output-read failure, or an explicit unavailable reason; verification succeeds only on completed execution plus OS exit code zero.
 
+The verification-authority candidate closes the previously observed direct-executor and persisted late-result defects, but remains unmerged until exact-head CI/review passes. Each command uses a deterministic API-owned managed run plus the existing one-use tool-policy receipt, a fixed read-only binary set, and workspace-relative arguments; Python, writable commands, arbitrary runners, absolute paths, and parent traversal are rejected at intake and again by the product executor. Before generic workflow persistence, command output/error text becomes hashes while the actual process outcome remains intact. Before and after each command, the store revalidates exact task version/status/operation bindings, completed product run and node attempt/lease/result, current non-quarantined workspace/canonical path/source revision, total-elapsed budget, exact Git patch identity, and scheduler pause/kill/running authority. Patch identity is built with a temporary Git index and does not alter the real index. The pre-command hash is part of the durable managed-run binding, so restart cannot relabel a changed workspace as the baseline; effective timeout cannot exceed remaining total elapsed budget. Lost authority records bounded audit and `authority_lost` evidence, rejects the result as stale, quarantines workspace replacement or late writes, and commits no artifact. The automatic HTTP path acquires the scheduler owner and its worker-shared, storage-free control gate without waiting and holds both across bounded patch preparation and the SQLite/PostgreSQL artifact transaction. API controls and worker-observed environment pause/kill therefore have one order relative to completion; contention or audit failure rolls back artifact, workspace, task transition, and audits. The SQLite recovery file currently has 26 focused cases; PostgreSQL additionally proves successful atomic artifact/approval, concurrent one-effect verification, scheduler-kill, node-attempt/lease-timestamp supersession, late-write, true restart after a durable effect, and injected artifact-audit rollback/retry. Broader backend matrix parity and exact-head review remain acceptance evidence, not assumed facts.
+
 The fragmented manual plan/run/workspace/tick/verify/capture path remains available for compatibility. Legacy `/dispatch` default remains `noop`.
 
 ### Residual (packet not fully COMPLETE)
 
-1. Verification-time pause/kill/scheduler-kill/lease/version/workspace/supersession/late-write authority remains for the next slice.
-2. Real GitHub Draft PR acceptance remains to be proved in a disposable repository.
-3. Managed coding-executor E2E is mandatory under the current acceptance contract. Fixture evidence cannot substitute for it; an audited unavailable managed executor is an explicit blocker, not an acceptance exception.
+1. Real GitHub Draft PR acceptance remains to be proved in a disposable repository.
+2. Managed coding-executor E2E is mandatory under the current acceptance contract. Fixture evidence cannot substitute for it; an audited unavailable managed executor is an explicit blocker, not an acceptance exception.
+3. Exact-head CI, complete-diff review, merge, and post-merge document synchronization remain required for the verification-authority slice.
 
 ## Capability Status
 
 | Capability | State | Current truth |
 |---|---|---|
-| Product Golden Path | in progress / default-off / Residual Seal 2 | Schema v30 root tasks plus schema v31 canonical terminal evidence, authoritative command process outcomes, separate approval/output authority, and phased Draft PR operation; verification-time authority and final E2E are not yet sealed. |
+| Product Golden Path | in progress / default-off / Residual Seal 2 | Schema v30 root tasks plus schema v31 canonical terminal evidence, authoritative command process outcomes, separate approval/output authority, phased Draft PR operation, and verification-time late-result refusal; live Draft PR/managed E2E and final exact-head acceptance are not yet sealed. |
 | Rust API, scheduler, workflow store | implemented / active | `engine/` sole runtime/store authority. |
 | Plain `/dispatch` | implemented / default-noop | Unchanged compatibility path. |
 | Plans / workflow runs | implemented | Unchanged; golden path reuses them with product bindings. |
@@ -76,9 +78,9 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Confirmed Integration Gaps
 
-1. Verification-time pause/kill/lease/version/workspace/late-write authority remains open; process exit outcome is now authoritative.
-2. Real GitHub Draft PR acceptance remains under existing credential/host/repository gates.
-3. Managed coding-executor E2E remains mandatory and not yet proved.
+1. Real GitHub Draft PR acceptance remains under existing credential/host/repository gates.
+2. Managed coding-executor E2E remains mandatory and not yet proved.
+3. The verification-authority slice still requires exact-head CI, review, and merge.
 4. Real-workload evidence remains blocked until the full Golden Path contract passes; there is no implicit fixture-only exception.
 5. Level-2 and Meta remain blocked.
 
@@ -90,7 +92,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Active Tracks
 
-- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (output authority and canonical terminal evidence/process outcome merged through PR #273; verification-time authority and final recovery/E2E follow).
+- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (output authority and canonical terminal evidence/process outcome merged through PR #273; verification-time authority is implemented on the focused slice and awaits CI/review/merge; live Draft PR and managed E2E follow).
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until Residual Seal 2 satisfies the full acceptance contract.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE`.
 - `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: blocked; Issue #266 proposal only.
