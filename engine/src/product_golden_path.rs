@@ -53,6 +53,11 @@ fn grep_short_option_recurses(argument: &str) -> bool {
     false
 }
 
+fn matches_abbreviated_long_option(argument: &str, canonical: &str) -> bool {
+    let name = argument.split_once('=').map_or(argument, |(name, _)| name);
+    name.starts_with("--") && name.len() > 2 && canonical.starts_with(name)
+}
+
 fn validate_product_verification_command_argv(argv: &[&str]) -> Result<(), String> {
     let binary = argv.first().copied().unwrap_or_default();
     match binary {
@@ -80,12 +85,15 @@ fn validate_product_verification_command_argv(argv: &[&str]) -> Result<(), Strin
                 if !options {
                     continue;
                 }
-                if matches!(
-                    *argument,
-                    "-r" | "-R" | "--recursive" | "--dereference-recursive"
-                ) || argument
-                    .strip_prefix("--directories=")
-                    .is_some_and(|value| value == "recurse")
+                let abbreviated_recursive =
+                    matches_abbreviated_long_option(argument, "--recursive")
+                        || matches_abbreviated_long_option(argument, "--dereference-recursive");
+                let directories_recurse = argument.split_once('=').is_some_and(|(name, value)| {
+                    matches_abbreviated_long_option(name, "--directories") && value == "recurse"
+                });
+                if matches!(*argument, "-r" | "-R")
+                    || abbreviated_recursive
+                    || directories_recurse
                     || (argument.starts_with('-')
                         && !argument.starts_with("--")
                         && grep_short_option_recurses(argument))
@@ -94,7 +102,10 @@ fn validate_product_verification_command_argv(argv: &[&str]) -> Result<(), Strin
                         "verification grep must not recursively traverse the workspace".to_string(),
                     );
                 }
-                if *argument == "-d" || *argument == "--directories" {
+                if *argument == "-d"
+                    || (!argument.contains('=')
+                        && matches_abbreviated_long_option(argument, "--directories"))
+                {
                     expect_directories_value = true;
                 } else if argument
                     .strip_prefix("-d")
@@ -114,7 +125,8 @@ fn validate_product_verification_command_argv(argv: &[&str]) -> Result<(), Strin
                 .skip(1)
                 .take_while(|argument| **argument != "--")
             {
-                if matches!(*argument, "-R" | "--recursive")
+                if *argument == "-R"
+                    || matches_abbreviated_long_option(argument, "--recursive")
                     || (argument.starts_with('-')
                         && !argument.starts_with("--")
                         && argument.chars().skip(1).any(|flag| flag == 'R'))
@@ -133,7 +145,7 @@ fn validate_product_verification_command_argv(argv: &[&str]) -> Result<(), Strin
                 .skip(1)
                 .take_while(|argument| **argument != "--")
             {
-                if *argument == "--files0-from" || argument.starts_with("--files0-from=") {
+                if matches_abbreviated_long_option(argument, "--files0-from") {
                     return Err(
                         "verification wc must not load path operands from an indirect file"
                             .to_string(),
@@ -1364,15 +1376,20 @@ mod tests {
             "grep -R needle .",
             "grep -rn needle .",
             "grep --recursive needle .",
+            "grep --rec needle .",
             "grep --dereference-recursive needle .",
+            "grep --dereference-rec needle .",
             "grep -d recurse needle .",
             "grep -drecurse needle .",
             "grep --directories=recurse needle .",
+            "grep --dir=recurse needle .",
             "ls -R .",
             "ls -LR .",
             "ls --recursive .",
+            "ls --rec .",
             "wc --files0-from list",
             "wc --files0-from=list",
+            "wc --files0-f=list",
         ] {
             let mut req = sample_request();
             req.verification_commands = vec![ProductVerificationCommand {
