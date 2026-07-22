@@ -10,7 +10,8 @@ Last updated: 2026-07-22.
 - Post-verification-authority `main`: `4588906c9e38fddb7661de1d0a16eb8b6355d3ff`.
 - Refreshed managed-apply-binding `main`: `3e94501dada3859ac5f4331617ce285d5dae7c94`.
 - Post-managed-authority `main`: `4647b376d4e9db0ad3c180a1ea8f3bcb13074956`.
-- Commits `f7293548`, `fe742052`, `364a2ad2`, `c6806841`, `1d125252`, `4588906c`, `3e94501d`, and `4647b376` are all present or represented by their squash merge in order.
+- Post-artifact-boundary `main`: `ddf13020ee1728df21bcb151be8c1e321092906e`.
+- Commits `f7293548`, `fe742052`, `364a2ad2`, `c6806841`, `1d125252`, `4588906c`, `3e94501d`, `4647b376`, and `ddf13020` are all present or represented by their squash merge in order.
 - Prior golden-path merges on this line:
   - PR #268 G1 → `178d020e`
   - PR #269 G2–G4 → `8fa85c15`
@@ -21,7 +22,8 @@ Last updated: 2026-07-22.
   - PR #274 Residual Seal 2 verification authority/recovery → `4588906c`
   - PR #275 managed product-apply binding → `3e94501d`
   - PR #276 managed execution authority/cumulative-budget repair → `4647b376`
-- Exact-head CI: PR #270 head `70f883a4` run `29837940355` green; PR #271 head `73f025bc` run `29839301704` green; PR #272 head `e0184b0d` run `29856825945` and exact-head check `29856826057` green; PR #273 head `326b6a61` run `29864261336` and exact-head check `29864261056` green; PR #274 head `7ca2b8e6` run `29880211660`, exact-head check `29880211865`, and external validation `29880211694` green; PR #275 head `c4c68e3c` run `29911331734` and exact-head check `29911331702` green; PR #276 head `dbd05b94` run `29918901489` and exact-head check `29918901679` green.
+  - PR #277 artifact/helper path-boundary repair → `ddf13020`
+- Exact-head CI: PR #270 head `70f883a4` run `29837940355` green; PR #271 head `73f025bc` run `29839301704` green; PR #272 head `e0184b0d` run `29856825945` and exact-head check `29856826057` green; PR #273 head `326b6a61` run `29864261336` and exact-head check `29864261056` green; PR #274 head `7ca2b8e6` run `29880211660`, exact-head check `29880211865`, and external validation `29880211694` green; PR #275 head `c4c68e3c` run `29911331734` and exact-head check `29911331702` green; PR #276 head `dbd05b94` run `29918901489` and exact-head check `29918901679` green; PR #277 head `6a0e43ae` run `29924682114` and exact-head check `29924682259` green.
 - Open PR coordination: PR #225 remains presentation-only Dashboard work (theme files only).
 - Open research coordination: Issue #266 remains Level-2 proposal only (not the active lane).
 - Parked external acceptance: Issue #254 remains repository-agent smoke parking. Issue #208 remains emergency-stopped.
@@ -35,6 +37,8 @@ Repository evidence, CI, and current source remain authoritative.
 `intake → worktree bind → executable graph → existing scheduler advance → verification → artifact capture → awaiting_approval → separately authorized approval → explicit output confirmation → durable non-network receipt or phased branch/PR operation`
 
 PR #275 (`3e94501d`) repaired the managed `product_apply` run/workspace binding and made prompt/path/workspace/run drift fail closed. PR #276 (`4647b376`) then committed the exact objective and admission audit atomically under the existing private task owner while public task/plan/terminal evidence stays redacted, injected it only after scheduler lease and restart, ran Codex with explicit non-interactive approval policy inside the unchanged exact `workspace-write` sandbox, and hash-bound the resolved positive measured-token threshold plus complete call/retry budgets in `product_apply_binding.v2`. `product_managed_usage.v1` persists cumulative measured usage across failed attempts and restarts; missing or excessive usage and excess calls/retries cannot reach verification, artifact, approval, or output. Call/retry limits stop excess subprocess launches, but the audited installed Codex CLI `0.145.0` has no task-scoped token-cap option and reports JSONL usage only at `turn.completed`, so `total_tokens` cannot prevent the current call from first exceeding its threshold. Cost remains unavailable rather than fabricated when CLI pricing authority is absent. This missing pre/during-call token authority blocks strict managed acceptance and no fixture result substitutes for it.
+
+PR #277 (`ddf13020`) seals the fixture/artifact boundary discovered during disposable acceptance preparation. Fixture control scaffolding deletes itself before the declared repository edit and is excluded from the patch. At artifact commit, SQLite and PostgreSQL atomically reread the current persisted intake and component-normalize both admitted and changed paths, accepting legal subtree spellings while rejecting sibling-prefix or escaping output. A violation makes verification untrustworthy, quarantines the workspace, blocks the task, and commits no artifact.
 
 Gate: `ACP_PRODUCT_GOLDEN_PATH=1` (and existing `ACP_ENABLE_TARGET_REPO_OUTPUT` for git worktrees). Network draft/push also requires `ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT=1` plus existing target-output remote allowlists.
 
@@ -98,7 +102,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Active Tracks
 
-- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (output authority, canonical terminal evidence/process outcome, verification-time authority, scheduler admission, backend recovery, and managed execution authority/cumulative-budget repairs are merged through PR #276; live Draft PR acceptance and a managed executor with pre/during-call task token authority remain).
+- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (output authority, canonical terminal evidence/process outcome, verification-time authority, scheduler admission, backend recovery, managed execution authority/cumulative-budget, and artifact/helper path-boundary repairs are merged through PR #277; live Draft PR acceptance and a managed executor with pre/during-call task token authority remain).
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until Residual Seal 2 satisfies the full acceptance contract.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE`.
 - `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: blocked; Issue #266 proposal only.
@@ -109,7 +113,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Open Work Coordination
 
-PRs #268–#276 are merged. Residual Seal 2 owns current Golden Path live acceptance; PR #225 remains an independent presentation-only lane. Do not activate Real Workload Evidence, Level-2, Meta Improver, Vader, or Issue #208 yet.
+PRs #268–#277 are merged. Residual Seal 2 owns current Golden Path live acceptance; PR #225 remains an independent presentation-only lane. Do not activate Real Workload Evidence, Level-2, Meta Improver, Vader, or Issue #208 yet.
 
 ## Safety Boundary
 
