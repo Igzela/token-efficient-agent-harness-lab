@@ -309,6 +309,11 @@ impl<'a> ToolPolicyNodeExecutor<'a> {
                         .ok_or_else(|| {
                             "product apply scheduler attempt authority is missing".to_string()
                         })?;
+                    budget
+                        .get("total_tokens")
+                        .and_then(Value::as_u64)
+                        .filter(|limit| *limit > 0)
+                        .ok_or_else(|| "product apply token budget is missing".to_string())?;
                     let total_calls = budget
                         .get("total_calls")
                         .and_then(Value::as_u64)
@@ -1127,6 +1132,16 @@ mod tests {
             })
             .expect_err("changed token budget must fail closed");
         assert!(error.contains("no longer matches its binding"));
+
+        let mut missing_token_ceiling = input.node_metadata.clone();
+        missing_token_ceiling["product_budget"]["total_tokens"] = Value::Null;
+        let error = executor
+            .bound_managed_workspace(&NodeExecutionInput {
+                node_metadata: missing_token_ceiling,
+                ..input.clone()
+            })
+            .expect_err("missing effective token ceiling must fail closed");
+        assert!(error.contains("token budget is missing"));
 
         let mut second_call = input.node_metadata.clone();
         second_call["execution_attempt"] = json!(2);

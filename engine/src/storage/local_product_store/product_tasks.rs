@@ -295,7 +295,8 @@ impl LocalProductStore {
         match &self.db {
             DatabaseConnection::Sqlite(_) => {
                 self.with_conn(|conn| {
-                    match conn.execute(
+                    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+                    let inserted = match tx.execute(
                         "INSERT INTO product_tasks (
                             task_id, schema_version, tenant_id, workspace_id, idempotency_key,
                             status, version, objective_fingerprint, target_id, target_repo_path,
@@ -332,37 +333,39 @@ impl LocalProductStore {
                             actor,
                         ],
                     ) {
-                        Ok(_) => {
-                            append_audit_locked(
-                                conn,
-                                &now,
-                                actor,
-                                "product_task.admit",
-                                &task_id,
-                                &json!({
-                                    "status": status,
-                                    "tenant_id": intake.tenant_id,
-                                    "workspace_id": intake.workspace_id,
-                                    "idempotency_key": intake.idempotency_key,
-                                    "intake_contract_sha256": intake.intake_contract_sha256,
-                                    "execution_admitted": false,
-                                }),
-                            )?;
-                            Ok(())
-                        }
+                        Ok(_) => 1,
                         Err(rusqlite::Error::SqliteFailure(code, _))
                             if code.code == rusqlite::ErrorCode::ConstraintViolation =>
                         {
-                            Ok(())
+                            0
                         }
-                        Err(e) => Err(e.to_string()),
+                        Err(e) => return Err(e.to_string()),
+                    };
+                    if inserted > 0 {
+                        append_audit_locked(
+                            &tx,
+                            &now,
+                            actor,
+                            "product_task.admit",
+                            &task_id,
+                            &json!({
+                                "status": status,
+                                "tenant_id": intake.tenant_id,
+                                "workspace_id": intake.workspace_id,
+                                "idempotency_key": intake.idempotency_key,
+                                "intake_contract_sha256": intake.intake_contract_sha256,
+                                "execution_admitted": false,
+                            }),
+                        )?;
                     }
+                    tx.commit().map_err(|e| e.to_string())
                 })?;
             }
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => {
                 self.with_pg_conn(|client| {
-                    let n = client
+                    let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                    let n = tx
                         .execute(
                             "INSERT INTO product_tasks (
                                 task_id, schema_version, tenant_id, workspace_id, idempotency_key,
@@ -410,17 +413,17 @@ impl LocalProductStore {
                             "idempotency_key": intake.idempotency_key,
                             "intake_contract_sha256": intake.intake_contract_sha256,
                             "execution_admitted": false,
-                        })
-                        .to_string();
-                        client
-                            .execute(
-                                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
-                                 VALUES ($1, $2, 'product_task.admit', $3, $4)",
-                                &[&now, &actor, &task_id, &audit_details],
-                            )
-                            .map_err(|e| e.to_string())?;
+                        });
+                        super::workflow_runs::pg_append_audit(
+                            &mut tx,
+                            &now,
+                            actor,
+                            "product_task.admit",
+                            &task_id,
+                            &audit_details,
+                        )?;
                     }
-                    Ok(())
+                    tx.commit().map_err(|e| e.to_string())
                 })?;
             }
         }

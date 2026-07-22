@@ -9,6 +9,7 @@ use engine::product_golden_path::{
     PRODUCT_TASK_GATE,
 };
 use engine::storage::local_product_store::LocalProductStore;
+use engine::tool_policy_executor::ToolPolicyNodeExecutor;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -233,6 +234,78 @@ impl NodeExecutor for CumulativeManagedExecutor {
     }
 }
 
+struct MissingUsageManagedExecutor;
+
+impl NodeExecutor for MissingUsageManagedExecutor {
+    fn executor_type_name(&self) -> &str {
+        "codex_cli"
+    }
+
+    fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "codex_cli".to_string(),
+            output: Some("bounded result without authoritative usage".to_string()),
+            error_domain: None,
+            error_message: None,
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost: None,
+            latency_ms: Some(10),
+            process_outcome: Some(ProcessOutcome::exited(0)),
+        }
+    }
+}
+
+struct RetryableManagedExecutor;
+
+impl NodeExecutor for RetryableManagedExecutor {
+    fn executor_type_name(&self) -> &str {
+        "codex_cli"
+    }
+
+    fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+        NodeExecutionOutput {
+            status: "failed".to_string(),
+            executor_type: "codex_cli".to_string(),
+            output: Some("bounded retryable result".to_string()),
+            error_domain: Some("retryable_fixture_failure".to_string()),
+            error_message: Some("retryable fixture".to_string()),
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            estimated_cost: None,
+            latency_ms: Some(10),
+            process_outcome: Some(ProcessOutcome::exited(7)),
+        }
+    }
+}
+
+struct CountingManagedExecutor {
+    calls: Arc<AtomicUsize>,
+}
+
+impl NodeExecutor for CountingManagedExecutor {
+    fn executor_type_name(&self) -> &str {
+        "codex_cli"
+    }
+
+    fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "codex_cli".to_string(),
+            output: Some("unexpected second call".to_string()),
+            error_domain: None,
+            error_message: None,
+            input_tokens: Some(1),
+            output_tokens: Some(1),
+            estimated_cost: None,
+            latency_ms: Some(1),
+            process_outcome: Some(ProcessOutcome::exited(0)),
+        }
+    }
+}
+
 fn prepare_cumulative_managed_task(
     store: &LocalProductStore,
     repo: &std::path::Path,
@@ -344,6 +417,129 @@ fn assert_managed_token_budget_exhaustion(
     ));
     assert!(finalized["task"]["artifact_id"].is_null());
     assert!(finalized["verification"].is_null());
+}
+
+fn prepare_managed_negative_task(
+    store: &LocalProductStore,
+    repo: &std::path::Path,
+    rev: &str,
+    key: &str,
+    total_calls: u64,
+    max_retries: u64,
+) -> (String, String) {
+    let mut request = intake(repo, rev, key);
+    request.executor_policy = ProductExecutorPolicy {
+        allowed_executors: vec!["codex_cli".to_string()],
+        prefer: Some("codex_cli".to_string()),
+    };
+    request.budget = Some(ProductTaskBudget {
+        total_tokens: Some(50),
+        total_calls: Some(total_calls),
+        max_retries: Some(max_retries),
+        max_repairs: Some(0),
+        ..ProductTaskBudget::default()
+    });
+    let validated = validate_intake(&request, "local", "default").unwrap();
+    let task = store.admit_product_task(&validated, "tester").unwrap();
+    let task_id = task["task_id"].as_str().unwrap().to_string();
+    let compiled = store
+        .compile_and_schedule_product_task(&task_id, "tester", &["codex_cli".to_string()])
+        .unwrap();
+    (
+        task_id,
+        compiled["task"]["run_id"].as_str().unwrap().to_string(),
+    )
+}
+
+fn assert_no_product_effects(
+    store: &LocalProductStore,
+    task_id: &str,
+    repo: &std::path::Path,
+    rev: &str,
+) {
+    let finalized = store
+        .finalize_product_task_after_execution_with_authority(task_id, "verifier", &|| {
+            Ok(running_scheduler_authority())
+        })
+        .unwrap();
+    assert!(matches!(
+        finalized["task"]["status"].as_str(),
+        Some("failed" | "budget_exhausted")
+    ));
+    assert!(finalized["verification"].is_null());
+    assert!(finalized["artifact_id"].is_null());
+    assert!(finalized["task"]["artifact_id"].is_null());
+    assert_eq!(run_git_head(repo), rev);
+    assert!(git_status_paths(repo).is_empty());
+}
+
+fn assert_managed_missing_usage_fails_closed(
+    store: &LocalProductStore,
+    repo: &std::path::Path,
+    rev: &str,
+    key: &str,
+) {
+    let (task_id, run_id) = prepare_managed_negative_task(store, repo, rev, key, 1, 0);
+    let tick = store
+        .tick_with_executor(&run_id, "scheduler", 1, &MissingUsageManagedExecutor)
+        .unwrap();
+    assert_eq!(tick["run"]["status"], "failed");
+    assert_eq!(
+        tick["result"]["error_domain"],
+        "product_token_usage_unavailable"
+    );
+    let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+    assert_managed_usage_state(&run, "unavailable", 0, 1);
+    assert_no_product_effects(store, &task_id, repo, rev);
+}
+
+fn assert_managed_call_budget_denies_second_call(
+    store: Arc<LocalProductStore>,
+    repo: &std::path::Path,
+    rev: &str,
+    key: &str,
+) {
+    let (task_id, run_id) = prepare_managed_negative_task(&store, repo, rev, key, 1, 1);
+    let first = store
+        .tick_with_executor(&run_id, "scheduler", 1, &RetryableManagedExecutor)
+        .unwrap();
+    assert_eq!(first["action"], "node_retry");
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let policy = ToolPolicyNodeExecutor::cli(
+        Arc::new(CountingManagedExecutor {
+            calls: Arc::clone(&calls),
+        }),
+        Arc::clone(&store),
+        "codex_cli",
+    );
+    let second = store
+        .tick_with_executor(&run_id, "scheduler", 1, &policy)
+        .unwrap();
+    assert_eq!(second["run"]["status"], "failed");
+    assert_eq!(
+        second["result"]["error_domain"],
+        "product_call_budget_exhausted"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_no_product_effects(&store, &task_id, repo, rev);
+}
+
+fn assert_managed_usage_state(
+    run: &serde_json::Value,
+    status: &str,
+    cumulative: u64,
+    attempt: u64,
+) {
+    assert_eq!(run["nodes"][0]["product_managed_usage"]["status"], status);
+    assert_eq!(
+        run["nodes"][0]["product_managed_usage"]["cumulative_tokens"],
+        cumulative
+    );
+    assert_eq!(
+        run["nodes"][0]["product_managed_usage"]["last_attempt"],
+        attempt
+    );
 }
 
 fn running_scheduler_authority() -> ProductVerificationRuntimeAuthority {
@@ -983,6 +1179,69 @@ fn sqlite_managed_token_budget_exhaustion_blocks_verification_and_artifact() {
 }
 
 #[test]
+fn sqlite_managed_missing_usage_blocks_all_product_effects() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        assert_managed_missing_usage_fails_closed(
+            &store,
+            &repo,
+            &rev,
+            "rec-managed-missing-usage-sqlite",
+        );
+    });
+}
+
+#[test]
+fn sqlite_managed_call_budget_denies_second_executor_call() {
+    with_gates(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(LocalProductStore::new(dir.path().join("store.db")).unwrap());
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        assert_managed_call_budget_denies_second_call(
+            store,
+            &repo,
+            &rev,
+            "rec-managed-call-budget-sqlite",
+        );
+    });
+}
+
+#[test]
+fn sqlite_product_admission_audit_failure_rolls_back_private_objective() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let key = "rec-product-admit-audit-sqlite";
+        let request = intake(&repo, &rev, key);
+        let validated = validate_intake(&request, "local", "default").unwrap();
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_product_admit_audit
+                 BEFORE INSERT ON audit_log
+                 WHEN NEW.action = 'product_task.admit'
+                 BEGIN SELECT RAISE(ABORT, 'injected product admission audit failure'); END;",
+            )
+            .unwrap();
+        let error = store
+            .admit_product_task(&validated, "tester")
+            .expect_err("audit failure must roll back admission");
+        assert!(error.contains("injected product admission audit failure"));
+        assert!(store
+            .get_product_task_by_idempotency("local", "default", key)
+            .unwrap()
+            .is_none());
+        connection
+            .execute_batch("DROP TRIGGER fail_product_admit_audit")
+            .unwrap();
+    });
+}
+
+#[test]
 fn sqlite_restart_accumulates_failed_managed_attempt_usage() {
     with_gates(|| {
         let dir = tempfile::tempdir().unwrap();
@@ -1022,6 +1281,118 @@ fn postgres_managed_token_budget_exhaustion_blocks_verification_and_artifact() {
             &rev,
             &format!("rec-managed-token-budget-pg-{}", uuid::Uuid::new_v4()),
         );
+    });
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn postgres_managed_missing_usage_blocks_all_product_effects() {
+    let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        if std::env::var("CI").as_deref() == Ok("true") {
+            panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+        }
+        return;
+    };
+    with_gates(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let store =
+            LocalProductStore::new_postgres(&url, || "2026-07-22T12:00:00Z".to_string()).unwrap();
+        assert_managed_missing_usage_fails_closed(
+            &store,
+            &repo,
+            &rev,
+            &format!("rec-managed-missing-usage-pg-{}", uuid::Uuid::new_v4()),
+        );
+    });
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn postgres_managed_call_budget_denies_second_executor_call() {
+    let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        if std::env::var("CI").as_deref() == Ok("true") {
+            panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+        }
+        return;
+    };
+    with_gates(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let store = Arc::new(
+            LocalProductStore::new_postgres(&url, || "2026-07-22T12:00:00Z".to_string()).unwrap(),
+        );
+        assert_managed_call_budget_denies_second_call(
+            store,
+            &repo,
+            &rev,
+            &format!("rec-managed-call-budget-pg-{}", uuid::Uuid::new_v4()),
+        );
+    });
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn postgres_product_admission_audit_failure_rolls_back_private_objective() {
+    let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        if std::env::var("CI").as_deref() == Ok("true") {
+            panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+        }
+        return;
+    };
+    with_gates(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let key = format!("rec-product-admit-audit-pg-{}", uuid::Uuid::new_v4());
+        let request = intake(&repo, &rev, &key);
+        let validated = validate_intake(&request, "local", "default").unwrap();
+        let store =
+            LocalProductStore::new_postgres(&url, || "2026-07-22T12:00:00Z".to_string()).unwrap();
+        let suffix: String = uuid::Uuid::new_v4()
+            .simple()
+            .to_string()
+            .chars()
+            .take(12)
+            .collect();
+        let function_name = format!("reject_product_admit_audit_{suffix}");
+        let trigger_name = format!("reject_product_admit_audit_trigger_{suffix}");
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        client
+            .batch_execute(&format!(
+                "CREATE FUNCTION {function_name}() RETURNS trigger
+                 LANGUAGE plpgsql AS $$
+                 BEGIN
+                   IF NEW.action = 'product_task.admit' THEN
+                     RAISE EXCEPTION 'injected product admission audit failure';
+                   END IF;
+                   RETURN NEW;
+                 END;
+                 $$;
+                 CREATE TRIGGER {trigger_name}
+                 BEFORE INSERT ON audit_log
+                 FOR EACH ROW EXECUTE FUNCTION {function_name}();"
+            ))
+            .unwrap();
+        let result = store.admit_product_task(&validated, "tester");
+        let persisted = store
+            .get_product_task_by_idempotency("local", "default", &key)
+            .unwrap();
+        client
+            .batch_execute(&format!(
+                "DROP TRIGGER {trigger_name} ON audit_log;
+                 DROP FUNCTION {function_name}();"
+            ))
+            .unwrap();
+        let error = result.expect_err("audit failure must roll back admission");
+        assert!(
+            error.contains("injected product admission audit failure")
+                || error.contains("db error"),
+            "unexpected PostgreSQL admission audit error: {error}"
+        );
+        assert!(persisted.is_none());
     });
 }
 

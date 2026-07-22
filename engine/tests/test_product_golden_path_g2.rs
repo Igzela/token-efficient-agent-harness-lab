@@ -178,12 +178,12 @@ fn compile_creates_executable_run_bound_to_task() {
     });
 }
 
-fn assert_managed_long_objective_delivery(
+fn prepare_managed_long_objective(
     store: &LocalProductStore,
     repo: &std::path::Path,
     rev: &str,
     key: &str,
-) {
+) -> (String, String, String) {
     let objective = format!(
             "Create docs/product_golden_path_fixture.md and preserve this exact bounded context: {} END-OF-OBJECTIVE",
             "managed-context-".repeat(40)
@@ -210,23 +210,32 @@ fn assert_managed_long_objective_delivery(
     assert_ne!(plan["raw_request"], objective);
     assert_eq!(plan["raw_request"], objective_preview);
 
+    let public_task = store.get_product_task(task_id).unwrap().unwrap();
+    assert!(public_task["intake"]
+        .get("_execution_objective_v1")
+        .is_none());
+    (
+        objective,
+        task_id.to_string(),
+        compiled["task"]["run_id"].as_str().unwrap().to_string(),
+    )
+}
+
+fn assert_managed_long_objective_delivery(
+    store: &LocalProductStore,
+    objective: &str,
+    task_id: &str,
+    run_id: &str,
+) {
     let captured = Arc::new(Mutex::new(None));
     let executor = CapturingManagedExecutor {
         prompt: captured.clone(),
     };
     let tick = store
-        .tick_with_executor(
-            compiled["task"]["run_id"].as_str().unwrap(),
-            "scheduler",
-            0,
-            &executor,
-        )
+        .tick_with_executor(run_id, "scheduler", 0, &executor)
         .unwrap();
     assert_eq!(tick["run"]["status"], "completed");
-    assert_eq!(
-        captured.lock().unwrap().as_deref(),
-        Some(objective.as_str())
-    );
+    assert_eq!(captured.lock().unwrap().as_deref(), Some(objective));
     let public_task = store.get_product_task(task_id).unwrap().unwrap();
     assert!(public_task["intake"]
         .get("_execution_objective_v1")
@@ -236,10 +245,16 @@ fn assert_managed_long_objective_delivery(
 #[test]
 fn managed_executor_receives_exact_long_objective_without_public_persistence() {
     with_gates(|| {
-        let (dir, store) = temp_store();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("store.db");
+        let store = LocalProductStore::new(&db_path).unwrap();
         let repo = dir.path().join("repo");
         let rev = init_git_repo(&repo);
-        assert_managed_long_objective_delivery(&store, &repo, &rev, "g2-long-managed-objective");
+        let (objective, task_id, run_id) =
+            prepare_managed_long_objective(&store, &repo, &rev, "g2-long-managed-objective");
+        drop(store);
+        let restarted = LocalProductStore::new(&db_path).unwrap();
+        assert_managed_long_objective_delivery(&restarted, &objective, &task_id, &run_id);
     });
 }
 
@@ -258,12 +273,16 @@ fn postgres_managed_executor_receives_exact_long_objective_without_public_persis
         let rev = init_git_repo(&repo);
         let store =
             LocalProductStore::new_postgres(&url, || "2026-07-22T12:00:00Z".to_string()).unwrap();
-        assert_managed_long_objective_delivery(
+        let (objective, task_id, run_id) = prepare_managed_long_objective(
             &store,
             &repo,
             &rev,
             &format!("g2-long-managed-objective-pg-{}", uuid::Uuid::new_v4()),
         );
+        drop(store);
+        let restarted =
+            LocalProductStore::new_postgres(&url, || "2026-07-22T12:00:01Z".to_string()).unwrap();
+        assert_managed_long_objective_delivery(&restarted, &objective, &task_id, &run_id);
     });
 }
 

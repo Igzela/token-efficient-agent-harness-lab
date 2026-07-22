@@ -6368,13 +6368,7 @@ fn enforce_product_managed_token_budget(
     let Some(limit) = node_metadata
         .pointer("/product_budget/total_tokens")
         .and_then(Value::as_u64)
-        .or_else(|| {
-            node_metadata
-                .get("budget")
-                .and_then(Value::as_f64)
-                .filter(|value| value.is_finite() && *value > 0.0 && value.fract() == 0.0)
-                .map(|value| value as u64)
-        })
+        .filter(|limit| *limit > 0)
     else {
         output.status = "failed".to_string();
         output.error_domain = Some("product_token_usage_unavailable".to_string());

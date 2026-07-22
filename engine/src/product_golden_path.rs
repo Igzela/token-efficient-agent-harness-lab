@@ -1187,6 +1187,15 @@ pub fn compile_product_executable_graph(
     let allowed_paths = binding.get("allowed_paths").cloned().unwrap_or(json!([]));
     let intake = task.get("intake").cloned().unwrap_or(json!({}));
     let budget = intake.get("budget").cloned().unwrap_or(json!({}));
+    let effective_total_tokens = budget
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(50_000);
+    let mut product_budget = budget.clone();
+    product_budget
+        .as_object_mut()
+        .ok_or_else(|| "product task budget must be an object".to_string())?
+        .insert("total_tokens".to_string(), json!(effective_total_tokens));
     let verification_commands = intake
         .get("verification_commands")
         .cloned()
@@ -1231,7 +1240,7 @@ pub fn compile_product_executable_graph(
         "status": "pending",
         "input_refs": [],
         "output_ref": null,
-        "budget": budget.get("total_tokens").and_then(Value::as_u64).unwrap_or(50_000) as f64,
+        "budget": effective_total_tokens as f64,
         "cost_incurred": 0.0,
         "error": null,
         "created_at": created_at,
@@ -1258,7 +1267,7 @@ pub fn compile_product_executable_graph(
         "verification_commands": verification_commands,
         "output_intent": task.get("output_intent"),
         "product_apply_binding_schema_version": "product_apply_binding.v2",
-        "product_budget": budget,
+        "product_budget": product_budget,
         "product_graph_schema_version": PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
         "managed_supervised_patch": Value::Null,
     });
