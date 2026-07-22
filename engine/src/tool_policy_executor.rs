@@ -11,6 +11,7 @@ use crate::workflow::tool_registry::{HookResult, HookType};
 const MAX_ENRICHMENT_BYTES: usize = 8 * 1024;
 const MAX_APPROVAL_REASON_BYTES: usize = 512;
 const DEFAULT_TOOL_PROFILE: &str = "default";
+const PRODUCT_CALL_BUDGET_EXHAUSTED: &str = "product apply call or retry budget exhausted";
 
 pub(crate) fn managed_tool_binding_sha256(
     workspace_id: &str,
@@ -320,7 +321,7 @@ impl<'a> ToolPolicyNodeExecutor<'a> {
                     if execution_attempt > total_calls
                         || execution_attempt > max_retries.saturating_add(1)
                     {
-                        return Err("product apply call or retry budget exhausted".to_string());
+                        return Err(PRODUCT_CALL_BUDGET_EXHAUSTED.to_string());
                     }
                 }
                 crate::product_golden_path::product_apply_binding_sha256(
@@ -511,6 +512,9 @@ impl NodeExecutor for ToolPolicyNodeExecutor<'_> {
                 .filter(|value| !value.trim().is_empty());
             let bound_workspace = match self.bound_managed_workspace(input) {
                 Ok(value) => value,
+                Err(error) if error == PRODUCT_CALL_BUDGET_EXHAUSTED => {
+                    return self.fail("product_call_budget_exhausted", error)
+                }
                 Err(error) => return self.fail("cli_workspace_binding_error", error),
             };
             if !matches!(
@@ -1071,9 +1075,10 @@ mod tests {
             "product_task_id": task_id,
             "executor_class": "managed_coding",
         });
+        let calls = Arc::new(AtomicUsize::new(0));
         let executor = ToolPolicyNodeExecutor::cli(
             Arc::new(CountingExecutor {
-                calls: Arc::new(AtomicUsize::new(0)),
+                calls: calls.clone(),
             }),
             store,
             "codex_cli",
@@ -1127,11 +1132,20 @@ mod tests {
         second_call["execution_attempt"] = json!(2);
         let error = executor
             .bound_managed_workspace(&NodeExecutionInput {
-                node_metadata: second_call,
+                node_metadata: second_call.clone(),
                 ..input.clone()
             })
             .expect_err("call and retry budget must prevent a second CLI call");
         assert!(error.contains("call or retry budget exhausted"));
+        let denied = executor.execute_node(&NodeExecutionInput {
+            node_metadata: second_call,
+            ..input.clone()
+        });
+        assert_eq!(
+            denied.error_domain.as_deref(),
+            Some("product_call_budget_exhausted")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
 
         let mut changed_workspace = input.node_metadata.clone();
         changed_workspace["workspace_id"] = json!("different-workspace");

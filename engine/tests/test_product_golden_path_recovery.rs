@@ -87,6 +87,29 @@ fn init_git_repo(root: &std::path::Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+fn run_git_head(root: &std::path::Path) -> String {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn git_status_paths(root: &std::path::Path) -> Vec<String> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain=v1", "-uall"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
 fn intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskIntakeRequest {
     ProductTaskIntakeRequest {
         objective: "recovery matrix fixture task".to_string(),
@@ -166,6 +189,111 @@ impl NodeExecutor for OverBudgetManagedExecutor {
             process_outcome: Some(ProcessOutcome::exited(0)),
         }
     }
+}
+
+struct CumulativeManagedExecutor;
+
+impl NodeExecutor for CumulativeManagedExecutor {
+    fn executor_type_name(&self) -> &str {
+        "codex_cli"
+    }
+
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        match input
+            .node_metadata
+            .get("execution_attempt")
+            .and_then(serde_json::Value::as_u64)
+        {
+            Some(1) => NodeExecutionOutput {
+                status: "failed".to_string(),
+                executor_type: "codex_cli".to_string(),
+                output: Some("bounded retry fixture".to_string()),
+                error_domain: Some("retryable_fixture_failure".to_string()),
+                error_message: Some("retryable fixture".to_string()),
+                input_tokens: Some(30),
+                output_tokens: Some(10),
+                estimated_cost: None,
+                latency_ms: Some(10),
+                process_outcome: Some(ProcessOutcome::exited(7)),
+            },
+            Some(2) => NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "codex_cli".to_string(),
+                output: Some("bounded retry fixture".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: Some(15),
+                output_tokens: Some(5),
+                estimated_cost: None,
+                latency_ms: Some(10),
+                process_outcome: Some(ProcessOutcome::exited(0)),
+            },
+            attempt => panic!("unexpected managed attempt: {attempt:?}"),
+        }
+    }
+}
+
+fn prepare_cumulative_managed_task(
+    store: &LocalProductStore,
+    repo: &std::path::Path,
+    rev: &str,
+    key: &str,
+) -> (String, String) {
+    let mut request = intake(repo, rev, key);
+    request.executor_policy = ProductExecutorPolicy {
+        allowed_executors: vec!["codex_cli".to_string()],
+        prefer: Some("codex_cli".to_string()),
+    };
+    request.budget = Some(ProductTaskBudget {
+        total_tokens: Some(50),
+        total_calls: Some(2),
+        max_retries: Some(1),
+        max_repairs: Some(0),
+        ..ProductTaskBudget::default()
+    });
+    let validated = validate_intake(&request, "local", "default").unwrap();
+    let task = store.admit_product_task(&validated, "tester").unwrap();
+    let task_id = task["task_id"].as_str().unwrap().to_string();
+    let compiled = store
+        .compile_and_schedule_product_task(&task_id, "tester", &["codex_cli".to_string()])
+        .unwrap();
+    let run_id = compiled["task"]["run_id"].as_str().unwrap().to_string();
+    let first = store
+        .tick_with_executor(&run_id, "scheduler", 1, &CumulativeManagedExecutor)
+        .unwrap();
+    assert_eq!(first["action"], "node_retry");
+    let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+    assert_eq!(
+        run["nodes"][0]["product_managed_usage"]["cumulative_tokens"],
+        40
+    );
+    assert_eq!(run["nodes"][0]["product_managed_usage"]["last_attempt"], 1);
+    (task_id, run_id)
+}
+
+fn finish_cumulative_managed_task(store: &LocalProductStore, task_id: &str, run_id: &str) {
+    let second = store
+        .tick_with_executor(run_id, "scheduler", 1, &CumulativeManagedExecutor)
+        .unwrap();
+    assert_eq!(second["run"]["status"], "failed");
+    assert_eq!(
+        second["result"]["error_domain"],
+        "product_token_budget_exhausted"
+    );
+    let run = store.get_workflow_run(run_id).unwrap().unwrap();
+    assert_eq!(
+        run["nodes"][0]["product_managed_usage"]["cumulative_tokens"],
+        60
+    );
+    assert_eq!(run["nodes"][0]["product_managed_usage"]["last_attempt"], 2);
+    let finalized = store
+        .finalize_product_task_after_execution_with_authority(task_id, "verifier", &|| {
+            Ok(running_scheduler_authority())
+        })
+        .unwrap();
+    assert_eq!(finalized["task"]["status"], "budget_exhausted");
+    assert!(finalized["verification"].is_null());
+    assert!(finalized["artifact_id"].is_null());
 }
 
 fn assert_managed_token_budget_exhaustion(
@@ -854,6 +982,25 @@ fn sqlite_managed_token_budget_exhaustion_blocks_verification_and_artifact() {
     });
 }
 
+#[test]
+fn sqlite_restart_accumulates_failed_managed_attempt_usage() {
+    with_gates(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("store.db");
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let store = LocalProductStore::new(&db_path).unwrap();
+        let (task_id, run_id) =
+            prepare_cumulative_managed_task(&store, &repo, &rev, "rec-managed-cumulative-sqlite");
+        drop(store);
+
+        let restarted = LocalProductStore::new(&db_path).unwrap();
+        finish_cumulative_managed_task(&restarted, &task_id, &run_id);
+        assert_eq!(run_git_head(&repo), rev);
+        assert!(git_status_paths(&repo).is_empty());
+    });
+}
+
 #[cfg(feature = "pg-tests")]
 #[test]
 fn postgres_managed_token_budget_exhaustion_blocks_verification_and_artifact() {
@@ -875,6 +1022,38 @@ fn postgres_managed_token_budget_exhaustion_blocks_verification_and_artifact() {
             &rev,
             &format!("rec-managed-token-budget-pg-{}", uuid::Uuid::new_v4()),
         );
+    });
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn postgres_restart_accumulates_failed_managed_attempt_usage() {
+    let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        if std::env::var("CI").as_deref() == Ok("true") {
+            panic!("ACP_TEST_DATABASE_URL is required for PostgreSQL CI evidence");
+        }
+        return;
+    };
+    with_gates(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let suffix = uuid::Uuid::new_v4();
+        let store =
+            LocalProductStore::new_postgres(&url, || "2026-07-22T12:00:00Z".to_string()).unwrap();
+        let (task_id, run_id) = prepare_cumulative_managed_task(
+            &store,
+            &repo,
+            &rev,
+            &format!("rec-managed-cumulative-pg-{suffix}"),
+        );
+        drop(store);
+
+        let restarted =
+            LocalProductStore::new_postgres(&url, || "2026-07-22T12:00:01Z".to_string()).unwrap();
+        finish_cumulative_managed_task(&restarted, &task_id, &run_id);
+        assert_eq!(run_git_head(&repo), rev);
+        assert!(git_status_paths(&repo).is_empty());
     });
 }
 
