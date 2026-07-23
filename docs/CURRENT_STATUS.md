@@ -1,10 +1,10 @@
 # Current Status
 
-Last updated: 2026-07-23.
+Last updated: 2026-07-24.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `9c8c3a42a7c0a1141386fd5ad93c389c35715c62` after PR #285.
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `9db4845cfc25e4e6bbbddda53f7f6a2c22613b20` after PR #289.
 - Open PRs: #225 (presentation-only Dashboard) and #286 (independent TypeScript SDK metadata). Auto-merge is disabled.
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
@@ -25,6 +25,8 @@ The mandatory remaining product gate is one safely admitted managed coding-execu
 Phase 2 is complete via PR #282. The audit found no provider-independent worktree-only filesystem mediation for Claude 2.1.217, so managed Claude admission is fail-closed; no model request is permitted unless a separately reviewed mediation boundary proves the packet contract.
 
 Phase 3 is complete via PR #283. Product and Dynamic Workflow previews now truncate only at valid UTF-8 boundaries under a documented byte limit; objective fingerprints remain based on the full objective.
+
+CI cache budgeting is complete through PRs #285, #287, and #289. The final inventory is four main caches totaling `3,870,843,444` bytes; cutover has no full-target restore, PG disables incremental compilation, and RustSec data is not cached.
 
 Downstream order: known repairs → managed-executor Golden Path → frozen first RWE → Architecture Convergence → same-corpus RWE rerun → Level-2 GO/NO-GO → separately authorized Meta decision. PR #225 is independent and last. Architecture Convergence and RWE are not yet eligible.
 
@@ -63,7 +65,8 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: `COMPLETE` via PR #282 → `95c3528d`; admission remains disabled pending provider-independent confinement/model authority.
 - `PE7-UTF8-BOUNDARY-REPAIR-1`: `COMPLETE` via PR #283 → `9ee5544c`.
 - `PE7-CI-ACCELERATION-1`: `COMPLETE` via PR #284 → `456092fb`; exact-head/full cache-hit CI passed and main push CI `30006429193` passed.
-- `PE7-CI-CACHE-BUDGET-1`: `IN_PROGRESS` for a post-merge runner-disk repair. PR #285 → `9c8c3a42` established the bounded cache layout, but docs-sync main CI `30019076720` exposed that cutover cannot safely restore the full target archive. The repair removes only that restore; `rust-tests` remains the sole target-cache writer. No runtime, gate, or provider change.
+- `PE7-CI-CACHE-BUDGET-1`: `COMPLETE` via PR #285 → `9c8c3a42`, #287 → `1bd17d7a`, and #289 → `9db4845c`; exact-head/full/post-merge checks passed through main run `30026711865`. No runtime, gate, provider, or target-branch change.
+- Independent PR #288 → `a08d0e28` repaired the newly published PostCSS advisory; its audit and full CI passed. PR #286 is external work and untouched.
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
@@ -76,7 +79,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281–#285 are merged; PR #225 remains separate and last. The initial eight-cache inventory was `12,567,992,986` bytes, with four Rust target caches contributing `12,296,328,209`. The current cache API lists four `main` entries totaling `3,871,103,582` bytes: shared Rust dependencies, one shared Rust target cache, Bun, and uv; the usage endpoint has converged to the same total. Superseded closed-PR #285 caches `5992161902` and `5993251059` were removed; no `main` cache was removed. `rust-tests` remains the sole target-cache writer; the cutover repair removes its full-target restore because the post-merge run exhausted runner disk while extracting the archive; PG/native use dependency-only caching. No repeated-key thrashing was observed, and no advisory database is cached; RustSec refresh remains required. Return to Product Golden Path only after this repair is green; RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
+PR #281–#289 are merged except external #286; PR #225 remains separate and last. The initial eight-cache inventory was `12,567,992,986` bytes, with four Rust target caches contributing `12,296,328,209`; the final four main entries total `3,870,843,444` bytes. `rust-tests` is the sole target-cache writer; cutover has no full-target restore; PG/native use dependency-only caching; no advisory database is cached. No repeated-key thrashing was observed. Product Golden Path is next but remains blocked; RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
 
 ## Safety Boundary
 
