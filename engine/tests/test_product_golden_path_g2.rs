@@ -486,8 +486,17 @@ fn exact_claude_contract_fixture_runs_only_through_bound_scheduler_node() {
         assert_eq!(result["executor_type"], "claude_code_cli", "{tick}");
         assert_eq!(result["input_tokens"], 10);
         assert_eq!(result["estimated_cost"], 0.01);
+        assert_eq!(
+            result["resolved_model"].as_str(),
+            Some("claude-haiku-4-5-20251001"),
+            "pin-mode product path must persist resolved_model: {tick}"
+        );
         let node = &tick["run"]["graph"]["nodes"][0];
         assert_eq!(node["managed_executor_identity"]["binary_sha256"], digest);
+        assert_eq!(
+            node["managed_executor_identity"]["model"].as_str(),
+            Some("claude-haiku-4-5-20251001")
+        );
         let workspace = compiled["task"]["workspace_binding"]["workspace_path"]
             .as_str()
             .unwrap();
