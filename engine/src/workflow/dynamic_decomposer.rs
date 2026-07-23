@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
+use crate::text::truncate_utf8_bytes;
 use crate::workflow::agent_profiles::task_type_to_profile_id;
 use crate::workflow::dag_manager::types::DAGMutationProposal;
 
@@ -508,11 +509,9 @@ pub fn node_proposals_to_dag_mutations(
 // ---------------------------------------------------------------------------
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
-    }
+    // These existing metadata/reason limits are byte limits including the
+    // three-byte ASCII ellipsis when truncation occurs.
+    truncate_utf8_bytes(s, max, "...")
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +591,16 @@ mod tests {
         assert_eq!(result.proposals[1].node_id, "test-fix-n1");
         assert_eq!(result.proposals[1].task_type, "test");
         assert_eq!(result.proposals[1].depends_on, vec!["fix-n1"]);
+    }
+
+    #[test]
+    fn truncate_dynamic_metadata_handles_utf8_boundaries_deterministically() {
+        let first = truncate("错误🙂内容", 8);
+        let second = truncate("错误🙂内容", 8);
+        assert_eq!(first, "错...");
+        assert_eq!(first, second);
+        assert!(first.len() <= 8);
+        assert!(std::str::from_utf8(first.as_bytes()).is_ok());
     }
 
     #[test]

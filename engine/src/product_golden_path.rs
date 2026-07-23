@@ -1,13 +1,15 @@
-//! PE7 Product Golden Path — canonical user-task identity and intake contracts.
+//! PE7 Product Golden Path — canonical user-task identity and execution contracts.
 //!
-//! G1 owns the versioned root task record, intake validation, and worktree-first
-//! binding protocol. Executable graph compilation and scheduler eligibility are
-//! later slices; this module must not admit leased execution.
+//! This module owns versioned task intake, worktree binding, graph compilation,
+//! and product execution policy. State transitions remain Rust-owned and are
+//! advanced only through the existing scheduler and persistence owners.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
+
+use crate::text::truncate_utf8_bytes;
 
 pub const PRODUCT_TASK_SCHEMA_VERSION: &str = "product_task.v1";
 pub const PRODUCT_TASK_INTAKE_SCHEMA_VERSION: &str = "product_task_intake.v1";
@@ -818,8 +820,9 @@ pub fn redacted_intake_json(intake: &ValidatedProductTaskIntake) -> Value {
         "schema_version": intake.schema_version,
         "objective_fingerprint": intake.objective_fingerprint,
         // Bounded objective reference only — operators may need short text for review.
-        // Cap at 256 chars; full body is not a durable evidence corpus.
-        "objective_preview": truncate_preview(&intake.objective, 256),
+        // Cap at 256 bytes including the three-byte ellipsis if truncated;
+        // full body is not a durable evidence corpus.
+        "objective_preview": truncate_utf8_bytes(&intake.objective, 256, "…"),
         "target_id": intake.target_id,
         "target_repo_path": intake.target_repo_path,
         "source_revision": intake.source_revision,
@@ -840,14 +843,6 @@ pub fn redacted_intake_json(intake: &ValidatedProductTaskIntake) -> Value {
         "workspace_mode": intake.workspace_mode,
         "intake_contract_sha256": intake.intake_contract_sha256,
     })
-}
-
-fn truncate_preview(value: &str, max: usize) -> String {
-    if value.len() <= max {
-        value.to_string()
-    } else {
-        format!("{}…", &value[..max])
-    }
 }
 
 fn validate_allowed_path(path: &str) -> Result<String, String> {
@@ -1405,6 +1400,31 @@ mod tests {
         assert_eq!(validated.workspace_id, "default");
         assert_eq!(validated.output_intent, ProductOutputIntent::ArtifactOnly);
         assert_eq!(validated.intake_contract_sha256.len(), 64);
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn objective_preview_is_utf8_bounded_and_hash_stable() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        let mut request = sample_request();
+        request.objective = format!("前{}🙂", "界".repeat(100));
+        let validated = validate_intake(&request, "local", "default").unwrap();
+
+        let first = redacted_intake_json(&validated);
+        let second = redacted_intake_json(&validated);
+        let preview = first
+            .get("objective_preview")
+            .and_then(Value::as_str)
+            .expect("objective preview");
+        assert_eq!(first, second);
+        assert!(preview.len() <= 256);
+        assert!(preview.ends_with('…'));
+        assert!(std::str::from_utf8(preview.as_bytes()).is_ok());
+        assert_eq!(
+            validated.objective_fingerprint,
+            fingerprint_objective(&request.objective)
+        );
         std::env::remove_var(PRODUCT_TASK_GATE);
     }
 

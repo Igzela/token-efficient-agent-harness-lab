@@ -46,6 +46,7 @@ pub mod scheduler;
 pub mod storage;
 pub mod target_repo_output;
 pub mod task_analyzer;
+pub(crate) mod text;
 pub mod tool_policy_executor;
 pub mod trusted_local;
 pub mod wire_types;

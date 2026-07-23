@@ -7,7 +7,7 @@ This repository is a local, deterministic, auditable Agent harness and workflow 
 - Product Golden Path is default-off and target `main` is protected. No provider call in CI, target-default-branch write, auto-merge, release, deployment, or production installation.
 - Do not use Vader or Issue #208 as product runtime; Issue #254 is parked. Do not admit OpenCode, unpark Issue #254, replace the active Harness, or create a second runtime, scheduler, store, evaluator, workspace, output, audit, or rollback owner.
 - Fixture/fake/proxy evidence is not managed acceptance. Never persist or report credentials, raw prompts/outputs/transcripts, private paths, or unredacted repository content.
-- Level-2 and Meta work remain gated by the sequence in `docs/NEXT_DECISION.md`; no recursive self-improvement claim without the separately authorized unseen-task experiment.
+- Level-2 remains blocked until the post-convergence RWE decision; Meta remains blocked until accepted Level-2, separate authority, and the unseen-task experiment. No recursive self-improvement claim is allowed without that experiment.
 - Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`.
 
 ## Autonomous Operating Model
