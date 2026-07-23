@@ -112,6 +112,8 @@ Draft PR output uses one progressive `product_output_operation.v1` under the sup
 
 **Completion:** The parent Golden Path packet remains `IN_PROGRESS` until every acceptance item below passes, including the managed coding-executor task. “Managed E2E optional” is not an active exception. If no already-admitted managed executor with a task-scoped pre/during-call token authority is safely available after complete environment audit, record the exact binary/version/capability blocker and leave this packet incomplete unless a separately reviewed authority decision changes the acceptance contract. A post-execution measured threshold is useful failure evidence but does not satisfy this prerequisite.
 
+**Current audited blocker (2026-07-23):** Codex CLI `0.145.0` exposes usage only after execution and has no task-scoped pre/during-call token cap; the Claude subscription path remains blocked by the known API 404; OpenCode `1.18.4` is not admitted as a real upstream binary. The current operator direction is Codex-only for available quota, so no CLI substitution or OpenRouter provider path is authorized as managed Golden Path acceptance. RWE, Level-2, and Meta Improver remain blocked.
+
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
 **State:** `IN_PROGRESS`

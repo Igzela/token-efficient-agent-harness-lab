@@ -46,6 +46,8 @@ PR #277 (`ddf13020`) seals the fixture/artifact boundary discovered during dispo
 
 PR #280 (`edcfb2fc`, exact head `4049d952`) repairs the existing managed CLI wait owner: admitted CLI objectives receive EOF on stdin, stdout/stderr are drained concurrently, reader failures remain explicit wait failures, and Unix child process groups are contained so descendants cannot hold captured pipes past the bounded wait. It does not change executor admission and does not satisfy the mandatory live managed-executor Golden Path E2E.
 
+Latest environment audit on 2026-07-23 found installed binaries but no safe executor for the mandatory acceptance: Codex CLI `0.145.0` reports usage only after the call and has no task-scoped pre/during-call token cap; the configured Claude subscription path remains blocked by the known API 404; and OpenCode `1.18.4` lacks admitted upstream artifact/source identity and checksum evidence. Current operator direction allows only Codex for the available quota, so no Codex, OpenRouter, fixture, or fake-binary substitution is accepted or executed. The exact blocker is the missing admitted managed executor with task-scoped pre/during-call token authority; Golden Path remains `IN_PROGRESS`.
+
 Gate: `ACP_PRODUCT_GOLDEN_PATH=1` (and existing `ACP_ENABLE_TARGET_REPO_OUTPUT` for git worktrees). Network draft/push also requires `ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT=1` plus existing target-output remote allowlists.
 
 Authority repairs from PR #270:
