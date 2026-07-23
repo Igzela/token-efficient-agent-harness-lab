@@ -8,20 +8,19 @@ Finish known correctness/security repairs, complete the default-off managed-exec
 
 Rust remains the sole authority for state transitions, workflow execution, permissions, budgets, leases, approvals, evidence, output reconciliation, and persistence. TypeScript remains interaction/projection; Python remains a bounded adapter/evaluation/research layer. No second runtime, scheduler, store, evaluator, workspace, output, audit, or rollback owner.
 
-The current bounded packet is `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2`. It repairs the existing managed process owner before live execution. It does not authorize a provider call, Claude admission, target output, OpenCode admission, Vader/Issue #208 use, or active-Harness mutation.
+The managed process-boundary repair is complete via PR #281 squash merge `54b5a430…`. The next bounded packet is `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: provider-free admission, filesystem, environment, model-authority, and security-probe audit. It does not authorize a model request, target output, OpenCode admission, Vader/Issue #208 use, or active-Harness mutation.
 
 ## Active Routing
 
-1. `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2` — `IN_PROGRESS`.
-2. `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2` — `BLOCKED_PREREQUISITE`.
-3. `PE7-UTF8-BOUNDARY-REPAIR-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-PRODUCT-GOLDEN-PATH-1` / `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS`.
-5. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-8. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-9. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
-10. `PE7-OPENCODE-BINARY-ADMISSION-1` and `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remain deferred/parked; PR #225 remains presentation-only and last.
+1. `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2` — `READY_FOR_EXECUTION`.
+2. `PE7-UTF8-BOUNDARY-REPAIR-1` — `BLOCKED_PREREQUISITE`.
+3. `PE7-PRODUCT-GOLDEN-PATH-1` / `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+8. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+9. `PE7-OPENCODE-BINARY-ADMISSION-1` and `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remain deferred/parked; PR #225 remains presentation-only and last.
 
 ## Packet States
 
@@ -48,13 +47,13 @@ Historical labels retained for handoff compatibility: Packet PR207-REPAIR-1; Pac
 
 ## Packet PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2 — bounded managed process owner
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-Reuse `engine/src/cli/` and existing executor/store owners. Prove versioned per-stream and combined limits, bounded concurrent capture, descendant cleanup, typed spawn/wait/timeout/reader/limit/cleanup failures, hardened Claude probing, non-retry after effect, focused fault tests, full applicable verification, exact-head CI, review, and rollback. No provider request or live acceptance is included.
+PR #281 merged as `54b5a430…`. It proved versioned per-stream/combined limits, bounded concurrent capture, descendant cleanup, typed spawn/wait/timeout/reader/limit/cleanup failures, hardened probing, non-retry after effect, focused fault tests, full applicable verification, exact-head CI, review, and rollback. No provider request or live acceptance was included.
 
 ## Packet PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2 — Claude authority
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
 **Prerequisite:** PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2
 

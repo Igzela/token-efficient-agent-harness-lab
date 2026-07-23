@@ -4,8 +4,8 @@ Last updated: 2026-07-23.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `84042f5bf353fa8b7569785e1c68a0ccd2a9a903`.
-- Open PRs: #281 (current managed-CLI repair) and #225 (presentation-only Dashboard). Auto-merge is disabled.
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `54b5a430e6e56edaee9163941259186b2f17a1a1` after PR #281 squash merge.
+- Open PR: #225 (presentation-only Dashboard). Auto-merge is disabled.
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
 - Rust `engine/` and `LocalProductStore` remain the sole runtime and application-owned persistence authorities.
@@ -20,7 +20,9 @@ The mandatory remaining product gate is one safely admitted managed coding-execu
 
 ## Active Work
 
-`PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2` is the current PR #281 slice. It extends the existing managed CLI owner with versioned bounded stdout/stderr/combined capture, descendant cleanup, typed process failures, a hardened version probe, and non-retryable post-start failures. It does not authorize a provider call or change Golden Path admission.
+`PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2` is complete through PR #281 squash merge `54b5a430…`. It added versioned bounded stdout/stderr/combined capture, descendant cleanup, typed process failures, a hardened version probe, and non-retryable post-start failures. It did not authorize a provider call or change Golden Path admission.
+
+The next packet is `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: provider-free binary, environment, model-authority, filesystem-confinement, and security-probe audit. No model request is permitted until its contract is proved.
 
 Downstream order: known repairs → managed-executor Golden Path → frozen first RWE → Architecture Convergence → same-corpus RWE rerun → Level-2 GO/NO-GO → separately authorized Meta decision. PR #225 is independent and last. Architecture Convergence and RWE are not yet eligible.
 
@@ -28,6 +30,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 | Capability | State | Truth |
 |---|---|---|
+| Managed CLI process boundary | complete | PR #281; exact-head CI and full applicable checks passed. |
 | Product Golden Path | `IN_PROGRESS`, default-off | Fixture path accepted; managed-executor E2E remains open. |
 | Rust runtime/store | active | `engine/` and `LocalProductStore` are sole authorities. |
 | Supervised patch/output | default-off | Reused for worktree, verification, artifact, approval, export, and `acp/*` output. |
@@ -53,6 +56,8 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Active Tracks
 
+- `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2`: `COMPLETE` via PR #281 → `54b5a430`.
+- `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: `READY_FOR_EXECUTION`; provider-free audit only until confinement/model authority are proved.
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
@@ -65,7 +70,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281 owns the current bounded repair; PR #225 remains separate. Do not activate RWE, Architecture Convergence, Level-2, Meta, Vader, or Issue #208 before their prerequisites.
+PR #281 is merged; PR #225 remains separate and last. Claude admission audit is next. Do not activate RWE, Architecture Convergence, Level-2, Meta, Vader, or Issue #208 before their prerequisites.
 
 ## Safety Boundary
 
