@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-07-22.
+Last updated: 2026-07-23.
 
 This map records current code ownership and actual connection state. It is not a phase history. Forward routing is governed by `docs/NEXT_DECISION.md`; current facts are in `docs/CURRENT_STATUS.md`.
 
@@ -26,7 +26,7 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Persistence | `engine/src/storage/local_product_store/` | sole application-owned SQLite/PostgreSQL store, migrations, audit, evidence, backup/integrity |
 | Harness Evolution Level-1 | `harness_evolution.rs`, `harness_evolution_eval.rs`, `harness_evolution_pr_ready.rs`, v27-v29 store owners | accepted fixture laboratory through PR #265; default-off; active Harness immutable |
 | Dashboard | `dashboard/` | Mission Control exposes separate finalize, approve, and confirmed output controls; PR #225 theme files remain independent |
-| Product Golden Path | `product_golden_path.rs`, `storage/local_product_store/product_tasks.rs`, `storage/local_product_store/workflow_runs.rs`, policy-wrapped `cli/cli_node_executor.rs`, workflow/supervised-patch owners, product handlers, schema v30 `product_tasks`, schema v31 `product_task_terminal_evidence` | default-off root task through attached runnable scheduler; private exact objective injection, v2 task/budget plus exact managed-executor identity binding, cumulative managed usage, authority-revalidated verification, artifact/output and canonical terminal evidence; Residual Seal 2 still owns live Claude/Draft-PR E2E and final acceptance |
+| Product Golden Path | `product_golden_path.rs`, `storage/local_product_store/product_tasks.rs`, `storage/local_product_store/workflow_runs.rs`, policy-wrapped `cli/cli_node_executor.rs`, `cli/mod.rs`, `cli/config.rs`, workflow/supervised-patch owners, product handlers, schema v30 `product_tasks`, schema v31 `product_task_terminal_evidence` | default-off root task through attached runnable scheduler; private exact objective injection, v2 task/budget plus exact managed-executor identity binding, cumulative managed usage, bounded managed process ownership, authority-revalidated verification, artifact/output and canonical terminal evidence; Residual Seal 2 still owns live Claude/Draft-PR E2E and final acceptance |
 | SDKs | `sdk/typescript/`, `sdk/python/` | typed intake/compile/finalize plus separate approve/output clients; legacy combined method remains compatibility-only |
 | Contracts | `wire_contract/v1/`, `codegen/` | cross-language schemas; checked by `scripts/check_wire_codegen_drift.sh` |
 | Repository agent | `scripts/agent-control/`, `.github/workflows/agent-*.yml` | implemented, production-disabled, parked on Issue #254 |

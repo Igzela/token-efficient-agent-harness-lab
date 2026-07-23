@@ -46,6 +46,10 @@ PR #277 (`ddf13020`) seals the fixture/artifact boundary discovered during dispo
 
 PR #280 (`edcfb2fc`, exact head `4049d952`) repairs the existing managed CLI wait owner: admitted CLI objectives receive EOF on stdin, stdout/stderr are drained concurrently, reader failures remain explicit wait failures, and Unix child process groups are contained so descendants cannot hold captured pipes past the bounded wait. It does not change executor admission and does not satisfy the mandatory live managed-executor Golden Path E2E.
 
+`PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2` is the current bounded-maintenance slice on the focused branch. It extends that same owner with the versioned `managed_cli_output_limits.v1` contract, bounded stdout/stderr/combined capture, explicit cleanup outcomes, a bounded cleared-environment Claude version probe, and non-retryable post-start process-boundary failures; focused CLI tests are green, while the slice remains unmerged until exact-head CI and complete-diff review pass.
+
+Downstream order (2026-07-23): known repairs → managed-executor Golden Path → frozen first RWE → small Architecture Convergence packets → same-corpus RWE rerun → Level-2 GO/NO-GO. Convergence is not eligible yet; no Level-2 implementation has started.
+
 Latest environment audit on 2026-07-23 found installed binaries but no safe executor for the mandatory acceptance: Codex CLI `0.145.0` reports usage only after the call and has no task-scoped pre/during-call token cap; the configured Claude subscription path remains blocked by the known API 404; and OpenCode `1.18.4` lacks admitted upstream artifact/source identity and checksum evidence. Current operator direction allows only Codex for the available quota, so no Codex, OpenRouter, fixture, or fake-binary substitution is accepted or executed. The exact blocker is the missing admitted managed executor with task-scoped pre/during-call token authority; Golden Path remains `IN_PROGRESS`.
 
 Gate: `ACP_PRODUCT_GOLDEN_PATH=1` (and existing `ACP_ENABLE_TARGET_REPO_OUTPUT` for git worktrees). Network draft/push also requires `ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT=1` plus existing target-output remote allowlists.
@@ -112,8 +116,10 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (repairs merged through PR #280; Claude managed admission merged via PR #278 → `70bd413b`, exact head `3d97295c`; PR #279 → `116170e3` and PR #280 → `edcfb2fc` are merged. Model pin is optional — when `ACP_CLAUDE_MODEL` is set the invocation passes `--model` with that value and pinned-mode identity checks apply; when unset the invocation omits `--model`, the CLI resolves its configured default (e.g. an operator subscription import), and the owner-reported per-model usage must prove exactly one resolved model identity which is persisted as `resolved_model` in node output and terminal usage evidence. First-party `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL` pass through only when the operator explicitly lists them in `ACP_CLI_ENV_ALLOWLIST`. CLI dollar output remains a client-side estimate. The combined live E2E through approval → Draft PR output (using the subscription import path) remains the open acceptance task).
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until Residual Seal 2 satisfies the full acceptance contract.
-- `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE`.
-- `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: blocked; Issue #266 proposal only.
+- `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until the managed-executor Golden Path is genuinely complete.
+- `PE7-ARCHITECTURE-CONVERGENCE-1`: `BLOCKED_PREREQUISITE` until the first RWE corpus is accepted and frozen; AC1 is the next smallest packet only after that baseline.
+- `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1`: `BLOCKED_PREREQUISITE` until Architecture Convergence is accepted; it must rerun the same frozen corpus.
+- `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: blocked until the post-convergence RWE rerun and evidence decision; Issue #266 proposal only.
 - `PE7-META-IMPROVER-EXPERIMENT-1`: blocked.
 - `PE7-OPENCODE-BINARY-ADMISSION-1`: deferred.
 - `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`: parked on Issue #254.

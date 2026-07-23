@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-07-22.
+Last updated: 2026-07-23.
 
 ## Current Direction
 
@@ -8,18 +8,26 @@ The next product objective is to connect the already-implemented control-plane o
 
 The verified reason is architectural: the repository already owns dispatch, plans, workflow runs, scheduler leases, executor selection, git worktrees, verification/repair, artifacts, approvals, target output, replay, scorecards, and Harness Evolution Level-1, but normal users must manually create and bind these records across separate endpoints. Level-2 evolution would otherwise optimize fixture generations before the product can reliably execute and measure one ordinary repository task.
 
+The immediate bounded-maintenance prerequisite is `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2`: repair the existing managed process owner before any live managed execution. It may extend only `engine/src/cli/` and the minimum authoritative documentation/tests needed to prove bounded capture, process-tree cleanup, typed failures, and hardened Claude version probing. It does not authorize a provider call, Claude admission expansion, Product Golden Path acceptance, target output, or a second runtime owner.
+
+Downstream order: known repairs → managed-executor Golden Path → frozen first RWE corpus → small compatibility-preserving Architecture Convergence packets → same-corpus RWE rerun → Level-2 GO/NO-GO. Convergence does not replace the first baseline or authorize Level-2; Meta Improver remains later and separately authorized.
+
 This ordering does not assert that every Golden Path task needs a paid provider or a real OpenCode binary. Final Golden Path acceptance requires both the deterministic fixture path and one already-admitted managed coding executor in disposable repositories, while preserving all live-provider and binary-admission gates. If no managed executor is safely available, the packet remains incomplete unless a separately reviewed authority decision changes that contract.
 
 Do not create another roadmap, status, architecture, scheduler, runtime, queue, store, workspace owner, evaluator, output authority, or evidence source. Current facts belong in `docs/CURRENT_STATUS.md`; durable owner boundaries remain in `docs/ARCHITECTURE_BOOK.md`; ownership belongs in `docs/MODULE_MAP.md`; proven procedures belong in `docs/RUNBOOK.md`.
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS` (PRs #268–#280 are merged and disposable fixture Draft PR acceptance passed; mandatory managed-executor E2E through Draft PR output remains).
-2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` until golden path residual is closed or explicitly accepted with recorded evidence exception.
-3. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`; Issue #266 remains open as a proposal, not the active lane.
-4. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-OPENCODE-BINARY-ADMISSION-1` remains deferred. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remains parked on Issue #254.
-6. PR #225 remains an independent presentation-only Dashboard PR.
+1. `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2` — `IN_PROGRESS`; exact-head CI/review pending.
+2. `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2` — `BLOCKED_PREREQUISITE`; waits for #1.
+3. `PE7-UTF8-BOUNDARY-REPAIR-1` — `BLOCKED_PREREQUISITE`; waits for #2.
+4. `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS`; managed-executor E2E remains open.
+5. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`; waits for Golden Path.
+6. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`; waits for frozen first RWE.
+7. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`; waits for convergence.
+8. Level-2 packet — `BLOCKED_PREREQUISITE`; waits for the replay and evidence GO/NO-GO. Issue #266 is proposal-only.
+9. Meta Improver — `BLOCKED_PREREQUISITE`; OpenCode admission remains deferred; Issue #254 remains parked.
+10. PR #225 remains independent presentation-only Dashboard work and is last.
 
 ## Packet States
 
@@ -89,6 +97,34 @@ Deferred until an exact upstream release/source identity, immutable checksum, li
 PRs #258–#260 created B1–B3 scaffolding; PRs #262–#264 repaired active-identity/workspace authority, evaluator/sealed-task ownership, and PR_READY finalizer ownership; PR #265 accepted the fixture end-to-end owner path at `main` commit `6b4091e876b2fca0da03485540e5ce4f579ac13c`.
 
 The result is neutral/no-improvement fixture evidence. The active Harness remains immutable. This is not Level-2, Meta Improver, production recursion, or recursive self-improvement.
+
+## Packet PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2 — bounded managed process owner
+
+**State:** `IN_PROGRESS`
+
+**Goal:** Extend the existing managed CLI process owner with the versioned `managed_cli_output_limits.v1` per-stream/combined byte contract, concurrent bounded capture, process-tree cleanup evidence, typed failure taxonomy, and a bounded Claude version probe.
+
+**Preserved owners and non-goals:** Reuse `engine/src/cli/mod.rs`, `cli_node_executor.rs`, and `config.rs`; keep the Rust engine/scheduler, `LocalProductStore`, Product Golden Path, receipts, late-write rules, and executor admission owners unchanged. No provider request, target-repository write, Claude filesystem-confinement claim, OpenCode admission, Vader/Issue #208 use, or active-Harness mutation is authorized by this packet.
+
+**Acceptance:** Focused tests cover below/exact/over stream and combined limits, large-output drain, descendant cleanup after parent exit and timeout, nonzero exit, typed reader/wait/timeout/cleanup failures, unsupported-platform fail-closed admission, and bounded Claude probe hang/flood/malformed/nonzero/closed-stdin/cleared-environment behavior. Full applicable Rust, PostgreSQL, security, handoff, wire, stack, exact-head CI, correctness review, authority/security/recovery review, and rollback review are required before merge.
+
+**Rollback:** Disable managed CLI admission and revert the focused PR. No schema migration or durable-data rollback is required; the existing bounded process owner and product receipts remain the sole owners.
+
+## Packet PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2 — Claude authority
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2` merged.
+
+Before any model request, prove worktree-only confinement, synthetic app-owned HOME/TMP/config, exact binary identity, pre-call model/limit authority, and provider-free probes; otherwise disable managed Claude admission. No provider request, target output, or allowlist change.
+
+## Packet PE7-UTF8-BOUNDARY-REPAIR-1 — deterministic UTF-8 previews
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2` complete.
+
+Repair only arbitrary UTF-8 slicing in Product Golden Path/Dynamic Workflow previews, with deterministic helper/tests and minimum factual docs corrections. No authority, persistence, scheduler, evaluator, or acceptance-contract change.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2 — authoritative completion repair
 
@@ -284,11 +320,29 @@ No raw prompt/output/transcript/repository-content corpus is authorized. The wor
 
 **Acceptance:** repeated runs establish trustworthy baselines and failure distributions across more than one task class and executor mode; missing evidence is explicit; no fixture-only result is relabeled as production evidence.
 
+Freeze the first accepted corpus before Convergence, including outcomes, retries, available usage/cost, timeout/cancel, pause/kill, restart/recovery, SQLite/PostgreSQL, approvals, output/terminal evidence, target-main identity, and Draft PR behavior where applicable.
+
+## Packet PE7-ARCHITECTURE-CONVERGENCE-1 — compatibility-preserving convergence track
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** `PE7-REAL-WORKLOAD-EVIDENCE-1` accepted with a frozen corpus.
+
+This is a sequence of small packets, starting with AC1 Unified ProcessSupervisor. Rust remains the authority; TypeScript is projection/interaction; Python is bounded adapter/evaluation/automation; one database/transaction authority remains. Repair unsafe subprocess owners before extraction, preserve persisted compatibility and SQLite/PostgreSQL atomicity, and do not start Level-2 before acceptance.
+
+## Packet PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1 — same-corpus convergence rerun
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** `PE7-ARCHITECTURE-CONVERGENCE-1` accepted.
+
+Rerun the same frozen corpus without relabeling tasks or changing evaluator authority. Compare outcomes, recovery, persistence, approvals, output, target-main, Draft PR, and available usage/cost; unexplained regression blocks Level-2.
+
 ## Packet PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1 — bounded multi-generation laboratory
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PE7-REAL-WORKLOAD-EVIDENCE-1
+**Prerequisite:** PE7-REAL-WORKLOAD-EVIDENCE-1, PE7-ARCHITECTURE-CONVERGENCE-1, and PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1
 
 Issue #266 remains open as the initial proposal. Before activation it must be rewritten or amended to bind its generations to accepted real-workload evidence, current Level-1 owner contracts, deterministic per-lineage/global budgets, restart/concurrency/idempotency semantics, stop reasons, and an independently reviewed evidence threshold.
 
