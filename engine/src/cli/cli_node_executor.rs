@@ -1178,6 +1178,16 @@ mod tests {
         assert_eq!(output.output_tokens, Some(4));
         assert_eq!(output.estimated_cost, Some(0.01));
         assert_eq!(
+            output.resolved_model.as_deref(),
+            Some(super::super::config::ADMITTED_CLAUDE_CODE_MODEL),
+            "pin-mode must persist the exact admitted resolved_model"
+        );
+        let value = output.to_value();
+        assert_eq!(
+            value.get("resolved_model").and_then(Value::as_str),
+            Some(super::super::config::ADMITTED_CLAUDE_CODE_MODEL)
+        );
+        assert_eq!(
             output
                 .process_outcome
                 .as_ref()

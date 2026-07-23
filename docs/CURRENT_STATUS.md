@@ -46,7 +46,7 @@ Gate: `ACP_PRODUCT_GOLDEN_PATH=1` (and existing `ACP_ENABLE_TARGET_REPO_OUTPUT` 
 
 Authority repairs from PR #270:
 
-- Declared verification commands execute via `CommandNodeExecutor` and are recorded through supervised-patch verification; fabricated `result: pass` is gone.
+- Declared verification commands execute as API-owned `product_verify` managed runs under `ToolPolicyNodeExecutor` (read-only command allowlist, one-use receipts) and are recorded through supervised-patch verification; fabricated `result: pass` is gone. Managed product apply uses policy-wrapped `CliNodeExecutor` only after exact Claude/Codex admission.
 - `/finalize` does not tick executors; it observes scheduler-owned run state then post-processes.
 - Compile stays at `graph_ready` until scheduler leases/advances.
 - Automatic HTTP compilation requires an attached, running scheduler and an executor that its current routing mode can actually consume; a request-scoped registration snapshot is not execution availability.
@@ -70,8 +70,8 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ### Residual (packet not fully COMPLETE)
 
-1. Real GitHub Draft PR acceptance remains to be proved in a disposable repository.
-2. Managed coding-executor E2E is mandatory under the current acceptance contract. Fixture evidence cannot substitute for it; an audited unavailable managed executor is an explicit blocker, not an acceptance exception.
+1. Fixture Draft PR acceptance is already proved (see Confirmed Integration Gaps #1); it does not complete the packet by itself.
+2. Managed coding-executor E2E through that accepted output path remains mandatory under the current acceptance contract. Fixture evidence cannot substitute for it; an audited unavailable managed executor is an explicit blocker, not an acceptance exception.
 
 ## Capability Status
 
