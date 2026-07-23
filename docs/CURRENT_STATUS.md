@@ -62,6 +62,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2`: `COMPLETE` via PR #281 → `54b5a430`.
 - `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: `COMPLETE` via PR #282 → `95c3528d`; admission remains disabled pending provider-independent confinement/model authority.
 - `PE7-UTF8-BOUNDARY-REPAIR-1`: `COMPLETE` via PR #283 → `9ee5544c`.
+- `PE7-CI-ACCELERATION-1`: `IN_PROGRESS` on the focused cache-maintenance branch; no gate removal.
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
