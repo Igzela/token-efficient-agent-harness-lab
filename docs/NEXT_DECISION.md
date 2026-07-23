@@ -13,13 +13,12 @@ The managed process-boundary repair is complete via PR #281 squash merge `54b5a4
 ## Active Routing
 
 1. `PE7-PRODUCT-GOLDEN-PATH-1` / `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS`.
-2. `PE7-CI-CACHE-BUDGET-1` — `IN_PROGRESS`; independent maintenance only.
-3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
-8. `PE7-OPENCODE-BINARY-ADMISSION-1` and `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remain deferred/parked; PR #225 remains presentation-only and last.
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-OPENCODE-BINARY-ADMISSION-1` and `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remain deferred/parked; PR #225 remains presentation-only and last.
 
 ## Packet States
 
@@ -72,13 +71,13 @@ PR #284 squash-merged as `456092fb…`; exact head `52ae7720…`; exact-head run
 
 ## Packet PE7-CI-CACHE-BUDGET-1 — bounded cache budget
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-Inventory at `4246e7ae…`: 8 caches, `12,567,992,986` bytes; main `12,432,163,836`, PR #284 `135,829,150`. Four Rust target caches contribute `12,296,328,209`; a local proxy shows `target/debug/deps` and `target/debug/incremental` dominate. The repository storage-limit endpoint returns 402, so the configured limit is not retrievable and no higher custom limit is verified. Use a conservative 10 GB effective ceiling and 8 GB steady-state budget until stronger account evidence exists. Old PR target entries later disappeared, consistent with eviction or cleanup; repeated-key thrashing is not observed.
+PR #285 squash-merged as `9c8c3a42…` from exact head `a15d16e8…`. Exact-head `30014629247`, cache-miss full CI `30014629441` attempt 1, successful cache-hit attempt 3, and post-merge `main` CI `30017458718` passed. The initial inventory was eight caches / `12,567,992,986` bytes; four Rust target caches were `12,296,328,209` bytes. The current cache-list inventory is four `main` entries / `3,871,103,582` bytes. The storage-limit endpoint returned HTTP 402, so the configured limit is not verifiable; use a conservative 10 GB reference ceiling and 8 GB operating budget, not as a claim about the account setting. The usage endpoint remained stale at six caches / `7,605,958,900` bytes after closed-PR cleanup. No repeated-key thrashing was observed.
 
-Goal/result: bound repeatable CI cache storage without changing checks. Rust dependency paths use one shared key; `rust-tests` is the only full-target writer and cutover uses restore-only access to that key; PG/native have dependency-only caching. No audit-database cache, runtime change, gate removal, or provider call is allowed. Inputs are the runner OS, toolchain epoch, and `Cargo.lock` hash; outputs are bounded cache keys and byte inventories; cache miss, restore, save, and API failures remain visible CI outcomes. Ownership stays with GitHub Actions cache service and the existing workflow jobs; Rust/runtime/storage authorities are out of scope.
+Goal/result: bound repeatable CI cache storage without changing checks. Rust dependencies use one shared key; `rust-tests` is the sole full-target writer; cutover restores that target read-only; PG/native use dependency-only caching. No audit-database cache was added: each audit still refreshes RustSec data and loads 1,169 advisories. Superseded closed-PR caches `5992161902` and `5993251059` were deleted; `main` caches were retained. No runtime, gate, provider, or target-branch behavior changed.
 
-Prerequisite/verification: exact-head, cache-miss and cache-hit full CI, post-merge main CI, cache inventories, timings, action-pin/security/handoff checks, and complete diff reviews. Compatibility is workflow-only; rollback is a revert of cache path/key changes. Stop on a failed gate, cache growth above budget, missing advisory freshness, provider call, target-main mutation, or an inaccessible limit being misreported as known.
+Verification: exact-head `30014629247`; miss/hit full CI `30014629441` (hit attempt 2 had a transient PG linker SIGBUS; attempt 3 passed); post-merge `main` `30017458718` passed 7/7. Action pins, workflow parsing, security/handoff, diff, cache inventory, and complete-diff correctness/security reviews passed. Compatibility is workflow-only; rollback is a revert of PR #285. Stop on failed gates, cache growth above budget, missing advisory freshness, provider call, target-main mutation, or an inaccessible limit being presented as known.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
