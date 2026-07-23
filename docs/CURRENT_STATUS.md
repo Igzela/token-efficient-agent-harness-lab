@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-07-22.
+Last updated: 2026-07-23.
 
 ## Verified Repository State
 
@@ -11,7 +11,8 @@ Last updated: 2026-07-22.
 - Refreshed managed-apply-binding `main`: `3e94501dada3859ac5f4331617ce285d5dae7c94`.
 - Post-managed-authority `main`: `4647b376d4e9db0ad3c180a1ea8f3bcb13074956`.
 - Post-artifact-boundary `main`: `ddf13020ee1728df21bcb151be8c1e321092906e`.
-- Commits `f7293548`, `fe742052`, `364a2ad2`, `c6806841`, `1d125252`, `4588906c`, `3e94501d`, `4647b376`, and `ddf13020` are all present or represented by their squash merge in order.
+- Post-Claude-managed-admission `main`: `70bd413b2181b1f64bc441b30aadab9441395eca` (PR #278 squash).
+- Commits `f7293548`, `fe742052`, `364a2ad2`, `c6806841`, `1d125252`, `4588906c`, `3e94501d`, `4647b376`, `ddf13020`, and `70bd413b` are all present or represented by their squash merge in order.
 - Prior golden-path merges on this line:
   - PR #268 G1 → `178d020e`
   - PR #269 G2–G4 → `8fa85c15`
@@ -23,7 +24,8 @@ Last updated: 2026-07-22.
   - PR #275 managed product-apply binding → `3e94501d`
   - PR #276 managed execution authority/cumulative-budget repair → `4647b376`
   - PR #277 artifact/helper path-boundary repair → `ddf13020`
-- Exact-head CI: PR #270 head `70f883a4` run `29837940355` green; PR #271 head `73f025bc` run `29839301704` green; PR #272 head `e0184b0d` run `29856825945` and exact-head check `29856826057` green; PR #273 head `326b6a61` run `29864261336` and exact-head check `29864261056` green; PR #274 head `7ca2b8e6` run `29880211660`, exact-head check `29880211865`, and external validation `29880211694` green; PR #275 head `c4c68e3c` run `29911331734` and exact-head check `29911331702` green; PR #276 head `dbd05b94` run `29918901489` and exact-head check `29918901679` green; PR #277 head `6a0e43ae` run `29924682114` and exact-head check `29924682259` green.
+  - PR #278 Claude managed admission (optional model pin + owner-reported `resolved_model`) → `70bd413b` (exact head `3d97295c`)
+- Exact-head CI: PR #270 head `70f883a4` run `29837940355` green; PR #271 head `73f025bc` run `29839301704` green; PR #272 head `e0184b0d` run `29856825945` and exact-head check `29856826057` green; PR #273 head `326b6a61` run `29864261336` and exact-head check `29864261056` green; PR #274 head `7ca2b8e6` run `29880211660`, exact-head check `29880211865`, and external validation `29880211694` green; PR #275 head `c4c68e3c` run `29911331734` and exact-head check `29911331702` green; PR #276 head `dbd05b94` run `29918901489` and exact-head check `29918901679` green; PR #277 head `6a0e43ae` run `29924682114` and exact-head check `29924682259` green; PR #278 head `3d97295c` tests `29968752066`, exact-head check `29968752050`, and external validation `29968752063` green.
 - Open PR coordination: PR #225 remains presentation-only Dashboard work (theme files only).
 - Open research coordination: Issue #266 remains Level-2 proposal only (not the active lane).
 - Parked external acceptance: Issue #254 remains repository-agent smoke parking. Issue #208 remains emergency-stopped.
@@ -102,7 +104,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Active Tracks
 
-- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (repairs are merged through PR #277; PR #278 wires admission. New: model pin is optional — when `ACP_CLAUDE_MODEL` is set the invocation passes `--model` with that value and pinned-mode identity checks apply; when unset the invocation omits `--model`, the CLI resolves its configured default (e.g. an operator subscription import), and the owner-reported per-model usage must prove exactly one resolved model identity which is persisted as `resolved_model` in node output and terminal usage evidence. First-party `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL` pass through only when the operator explicitly lists them in `ACP_CLI_ENV_ALLOWLIST`. CLI dollar output remains a client-side estimate. The combined live E2E through approval → Draft PR output (using the subscription import path) remains the open acceptance task).
+- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` (repairs merged through PR #277; Claude managed admission merged via PR #278 → `70bd413b`, exact head `3d97295c`. Model pin is optional — when `ACP_CLAUDE_MODEL` is set the invocation passes `--model` with that value and pinned-mode identity checks apply; when unset the invocation omits `--model`, the CLI resolves its configured default (e.g. an operator subscription import), and the owner-reported per-model usage must prove exactly one resolved model identity which is persisted as `resolved_model` in node output and terminal usage evidence. First-party `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL` pass through only when the operator explicitly lists them in `ACP_CLI_ENV_ALLOWLIST`. CLI dollar output remains a client-side estimate. The combined live E2E through approval → Draft PR output (using the subscription import path) remains the open acceptance task).
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until Residual Seal 2 satisfies the full acceptance contract.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE`.
 - `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: blocked; Issue #266 proposal only.
@@ -113,7 +115,7 @@ The fragmented manual plan/run/workspace/tick/verify/capture path remains availa
 
 ## Open Work Coordination
 
-PRs #268–#277 are merged. Residual Seal 2 owns current Golden Path live acceptance; PR #225 remains an independent presentation-only lane. Do not activate Real Workload Evidence, Level-2, Meta Improver, Vader, or Issue #208 yet.
+PRs #268–#278 are merged. Residual Seal 2 owns current Golden Path live acceptance (subscription Claude → approval → Draft PR); PR #225 remains an independent presentation-only lane. Do not activate Real Workload Evidence, Level-2, Meta Improver, Vader, or Issue #208 yet.
 
 ## Safety Boundary
 
