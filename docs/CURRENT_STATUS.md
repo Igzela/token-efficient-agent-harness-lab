@@ -4,7 +4,7 @@ Last updated: 2026-07-23.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `54b5a430e6e56edaee9163941259186b2f17a1a1` after PR #281 squash merge.
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `95c3528d01186203c1ab04aa4bf8b6636e8cd182` after PR #282 squash merge.
 - Open PR: #225 (presentation-only Dashboard). Auto-merge is disabled.
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
@@ -22,7 +22,7 @@ The mandatory remaining product gate is one safely admitted managed coding-execu
 
 `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2` is complete through PR #281 squash merge `54b5a430…`. It added versioned bounded stdout/stderr/combined capture, descendant cleanup, typed process failures, a hardened version probe, and non-retryable post-start failures. It did not authorize a provider call or change Golden Path admission.
 
-The Phase 2 audit found no provider-independent worktree-only filesystem mediation for Claude 2.1.217; managed Claude admission is now fail-closed. No model request is permitted unless a separately reviewed mediation boundary proves the packet contract.
+Phase 2 is complete via PR #282. The audit found no provider-independent worktree-only filesystem mediation for Claude 2.1.217, so managed Claude admission is fail-closed; no model request is permitted unless a separately reviewed mediation boundary proves the packet contract.
 
 Downstream order: known repairs → managed-executor Golden Path → frozen first RWE → Architecture Convergence → same-corpus RWE rerun → Level-2 GO/NO-GO → separately authorized Meta decision. PR #225 is independent and last. Architecture Convergence and RWE are not yet eligible.
 
@@ -57,7 +57,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 ## Active Tracks
 
 - `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2`: `COMPLETE` via PR #281 → `54b5a430`.
-- `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: `IN_PROGRESS`; admission disabled pending provider-independent confinement/model authority.
+- `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: `COMPLETE` via PR #282 → `95c3528d`; admission remains disabled pending provider-independent confinement/model authority.
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
@@ -70,7 +70,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281 is merged; PR #225 remains separate and last. Claude admission audit is next. Do not activate RWE, Architecture Convergence, Level-2, Meta, Vader, or Issue #208 before their prerequisites.
+PR #281 and PR #282 are merged; PR #225 remains separate and last. UTF-8 boundary repair is next. Do not activate RWE, Architecture Convergence, Level-2, Meta, Vader, or Issue #208 before their prerequisites.
 
 ## Safety Boundary
 
