@@ -1979,6 +1979,7 @@ impl LocalProductStore {
                         estimated_cost: None,
                         latency_ms: Some(0),
                         process_outcome: None,
+                        resolved_model: None,
                     }
                 } else {
                     executor.execute_node(&input)
@@ -6496,6 +6497,7 @@ mod product_managed_token_budget_tests {
             estimated_cost: None,
             latency_ms: Some(25),
             process_outcome: Some(ProcessOutcome::exited(0)),
+            resolved_model: None,
         }
     }
 
@@ -7457,6 +7459,7 @@ mod recursive_scheduler_tests {
                 estimated_cost: None,
                 latency_ms: Some(0),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 
@@ -7506,6 +7509,7 @@ mod recursive_scheduler_tests {
                 estimated_cost: Some(0.000004),
                 latency_ms: Some(9),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 
@@ -7684,6 +7688,7 @@ mod recursive_scheduler_tests {
             estimated_cost: None,
             latency_ms: Some(0),
             process_outcome: None,
+            resolved_model: None,
         };
         let fixture = recursive_usage_from_output(
             &fixture_output,

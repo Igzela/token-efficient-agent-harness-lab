@@ -5700,6 +5700,7 @@ mod managed_owner_tests {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 

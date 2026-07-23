@@ -5,8 +5,9 @@ use engine::node_executor::{
     NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessOutcome,
 };
 use engine::product_golden_path::{
-    validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest, ProductTaskStatus,
-    ProductVerificationCommand, FIXTURE_DETERMINISTIC_NOTE_CONTENT, PRODUCT_TASK_GATE,
+    validate_intake, ProductExecutorPolicy, ProductTaskBudget, ProductTaskIntakeRequest,
+    ProductTaskStatus, ProductVerificationCommand, FIXTURE_DETERMINISTIC_NOTE_CONTENT,
+    PRODUCT_TASK_GATE,
 };
 use engine::storage::local_product_store::LocalProductStore;
 use std::process::Command;
@@ -128,6 +129,7 @@ impl NodeExecutor for CapturingManagedExecutor {
             estimated_cost: None,
             latency_ms: Some(10),
             process_outcome: Some(ProcessOutcome::exited(0)),
+            resolved_model: None,
         }
     }
 }
@@ -411,6 +413,252 @@ fn scheduler_tick_executes_command_in_bound_worktree() {
             "hello\n"
         );
         assert!(!repo.join("docs/product_golden_path_fixture.md").exists());
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn exact_claude_contract_fixture_runs_only_through_bound_scheduler_node() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let binary = dir.path().join("claude-2.1.217");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '2.1.217 (Claude Code)\\n'; exit 0; fi\nmkdir -p docs\nprintf 'managed fixture\\n' > docs/product_golden_path_fixture.md\nprintf '%s\\n' '{\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"done\",\"usage\":{\"input_tokens\":10,\"output_tokens\":4},\"total_cost_usd\":0.01,\"modelUsage\":{\"claude-haiku-4-5-20251001\":{\"costUSD\":0.01}}}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let digest = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+        for (key, value) in [
+            ("ACP_ENABLE_CLI_EXECUTION", "1"),
+            ("ACP_ENABLE_CLAUDE_CODE_EXECUTION", "1"),
+            ("ACP_CLAUDE_CODE_VERSION", "2.1.217"),
+            ("ACP_CLAUDE_MODEL", "claude-haiku-4-5-20251001"),
+            ("ACP_CLAUDE_MAX_TURNS", "3"),
+            ("ACP_CLAUDE_MAX_BUDGET_USD", "2.16"),
+        ] {
+            std::env::set_var(key, value);
+        }
+        std::env::set_var("ACP_CLAUDE_CODE_BIN", &binary);
+        std::env::set_var("ACP_CLAUDE_CODE_SHA256", &digest);
+
+        let mut request = sample_intake(&repo, &rev, "g2-claude-adapter");
+        request.objective = "Create docs/product_golden_path_fixture.md".to_string();
+        request.executor_policy = ProductExecutorPolicy {
+            allowed_executors: vec!["claude_code_cli".to_string()],
+            prefer: Some("claude_code_cli".to_string()),
+        };
+        request.budget = Some(ProductTaskBudget {
+            total_tokens: Some(792_000),
+            total_calls: Some(1),
+            total_elapsed_ms: Some(60_000),
+            max_retries: Some(0),
+            max_repairs: Some(0),
+            max_concurrency: Some(1),
+            stage_budgets: None,
+        });
+        let validated = validate_intake(&request, "local", "default").unwrap();
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        let compiled = store
+            .compile_and_schedule_product_task(task_id, "tester", &["claude_code_cli".to_string()])
+            .unwrap();
+        let run_id = compiled["task"]["run_id"].as_str().unwrap();
+        let config = engine::cli::CliConfig::from_env();
+        let inner = engine::cli::CliNodeExecutor::from_config_for(&config, "claude_code_cli")
+            .expect("exact admitted Claude executor");
+        let executor = engine::tool_policy_executor::ToolPolicyNodeExecutor::cli(
+            Arc::new(inner),
+            Arc::clone(&store),
+            "claude_code_cli",
+        );
+        let tick = store
+            .tick_with_executor(run_id, "scheduler", 0, &executor)
+            .unwrap();
+        assert_eq!(tick["run"]["status"], "completed", "{tick}");
+        let result = &tick["result"];
+        assert_eq!(result["executor_type"], "claude_code_cli", "{tick}");
+        assert_eq!(result["input_tokens"], 10);
+        assert_eq!(result["estimated_cost"], 0.01);
+        let node = &tick["run"]["graph"]["nodes"][0];
+        assert_eq!(node["managed_executor_identity"]["binary_sha256"], digest);
+        let workspace = compiled["task"]["workspace_binding"]["workspace_path"]
+            .as_str()
+            .unwrap();
+        assert!(std::path::Path::new(workspace)
+            .join("docs/product_golden_path_fixture.md")
+            .is_file());
+        let finalized = store
+            .finalize_product_task_after_execution(task_id, "scheduler")
+            .unwrap();
+        assert_eq!(finalized["task"]["status"], "awaiting_approval");
+        let task_version = finalized["task"]["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", task_version)
+            .unwrap();
+        let completed = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                task_version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        let evidence = &completed["terminal_evidence"];
+        assert_eq!(evidence["node"]["executor_type"], "claude_code_cli");
+        assert_eq!(evidence["usage"]["status"], "linked");
+        assert_eq!(evidence["cost"]["status"], "unavailable");
+        assert!(evidence["cost"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("client-side estimate"));
+        assert_eq!(
+            evidence["node"]["managed_executor_identity"]["pricing_verified_at"],
+            "2026-07-22"
+        );
+        assert_eq!(run_git(&repo, &["rev-parse", "HEAD"]).trim(), rev);
+
+        for key in [
+            "ACP_ENABLE_CLI_EXECUTION",
+            "ACP_ENABLE_CLAUDE_CODE_EXECUTION",
+            "ACP_CLAUDE_CODE_BIN",
+            "ACP_CLAUDE_CODE_VERSION",
+            "ACP_CLAUDE_CODE_SHA256",
+            "ACP_CLAUDE_MODEL",
+            "ACP_CLAUDE_MAX_TURNS",
+            "ACP_CLAUDE_MAX_BUDGET_USD",
+        ] {
+            std::env::remove_var(key);
+        }
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn subscription_claude_contract_fixture_records_resolved_model_identity() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let binary = dir.path().join("claude-subscription-2.1.217");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '2.1.217 (Claude Code)\\n'; exit 0; fi\nmkdir -p docs\nprintf 'managed fixture\\n' > docs/product_golden_path_fixture.md\nprintf '%s\\n' '{\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"done\",\"usage\":{\"input_tokens\":10,\"output_tokens\":4},\"total_cost_usd\":0.0,\"modelUsage\":{\"subscription-claude-default\":{\"costUSD\":0.0}}}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let digest = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+        // Subscription-default mode: no ACP_CLAUDE_MODEL; the admitted CLI resolves
+        // its own configured default and must prove the resolved identity.
+        std::env::remove_var("ACP_CLAUDE_MODEL");
+        for (key, value) in [
+            ("ACP_ENABLE_CLI_EXECUTION", "1"),
+            ("ACP_ENABLE_CLAUDE_CODE_EXECUTION", "1"),
+            ("ACP_CLAUDE_CODE_VERSION", "2.1.217"),
+            ("ACP_CLAUDE_MAX_TURNS", "3"),
+            ("ACP_CLAUDE_MAX_BUDGET_USD", "2.16"),
+        ] {
+            std::env::set_var(key, value);
+        }
+        std::env::set_var("ACP_CLAUDE_CODE_BIN", &binary);
+        std::env::set_var("ACP_CLAUDE_CODE_SHA256", &digest);
+
+        let mut request = sample_intake(&repo, &rev, "g2-claude-subscription");
+        request.objective = "Create docs/product_golden_path_fixture.md".to_string();
+        request.executor_policy = ProductExecutorPolicy {
+            allowed_executors: vec!["claude_code_cli".to_string()],
+            prefer: Some("claude_code_cli".to_string()),
+        };
+        request.budget = Some(ProductTaskBudget {
+            total_tokens: Some(792_000),
+            total_calls: Some(1),
+            total_elapsed_ms: Some(60_000),
+            max_retries: Some(0),
+            max_repairs: Some(0),
+            max_concurrency: Some(1),
+            stage_budgets: None,
+        });
+        let validated = validate_intake(&request, "local", "default").unwrap();
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        let compiled = store
+            .compile_and_schedule_product_task(task_id, "tester", &["claude_code_cli".to_string()])
+            .unwrap();
+        let run_id = compiled["task"]["run_id"].as_str().unwrap();
+        let config = engine::cli::CliConfig::from_env();
+        let inner = engine::cli::CliNodeExecutor::from_config_for(&config, "claude_code_cli")
+            .expect("subscription-default admitted Claude executor");
+        let executor = engine::tool_policy_executor::ToolPolicyNodeExecutor::cli(
+            Arc::new(inner),
+            Arc::clone(&store),
+            "claude_code_cli",
+        );
+        let tick = store
+            .tick_with_executor(run_id, "scheduler", 0, &executor)
+            .unwrap();
+        assert_eq!(tick["run"]["status"], "completed", "{tick}");
+        let result = &tick["result"];
+        assert_eq!(result["executor_type"], "claude_code_cli", "{tick}");
+        assert_eq!(
+            result["resolved_model"].as_str(),
+            Some("subscription-claude-default"),
+            "{tick}"
+        );
+        let node = &tick["run"]["graph"]["nodes"][0];
+        assert!(node["managed_executor_identity"]["model"].is_null());
+        assert_eq!(
+            node["managed_executor_identity"]["model_resolution"].as_str(),
+            Some("cli_subscription_default")
+        );
+        let finalized = store
+            .finalize_product_task_after_execution(task_id, "scheduler")
+            .unwrap();
+        assert_eq!(finalized["task"]["status"], "awaiting_approval");
+        let task_version = finalized["task"]["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", task_version)
+            .unwrap();
+        let completed = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                task_version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        let evidence = &completed["terminal_evidence"];
+        assert_eq!(evidence["usage"]["status"], "linked");
+        assert_eq!(
+            evidence["usage"]["resolved_model"].as_str(),
+            Some("subscription-claude-default")
+        );
+        assert_eq!(evidence["cost"]["status"], "unavailable");
+        assert_eq!(run_git(&repo, &["rev-parse", "HEAD"]).trim(), rev);
+
+        for key in [
+            "ACP_ENABLE_CLI_EXECUTION",
+            "ACP_ENABLE_CLAUDE_CODE_EXECUTION",
+            "ACP_CLAUDE_CODE_BIN",
+            "ACP_CLAUDE_CODE_VERSION",
+            "ACP_CLAUDE_CODE_SHA256",
+            "ACP_CLAUDE_MODEL",
+            "ACP_CLAUDE_MAX_TURNS",
+            "ACP_CLAUDE_MAX_BUDGET_USD",
+        ] {
+            std::env::remove_var(key);
+        }
     });
 }
 

@@ -744,6 +744,11 @@ pub struct NodeExecutionOutput {
     pub estimated_cost: Option<f64>,
     pub latency_ms: Option<i64>,
     pub process_outcome: Option<ProcessOutcome>,
+    /// Owner-reported model identity proven from execution evidence (for example
+    /// the single-entry `modelUsage` key reported by an admitted CLI). `None`
+    /// when the executor did not prove a model identity; never a fabricated
+    /// placeholder.
+    pub resolved_model: Option<String>,
 }
 
 impl NodeExecutionOutput {
@@ -764,6 +769,14 @@ impl NodeExecutionOutput {
                 )
             }),
         });
+        if let Some(resolved_model) = &self.resolved_model {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "resolved_model".to_string(),
+                    Value::String(resolved_model.clone()),
+                );
+            }
+        }
         if matches!(
             self.executor_type.as_str(),
             "provider"
@@ -856,6 +869,7 @@ impl NodeExecutor for NoopNodeExecutor {
             estimated_cost: None,
             latency_ms: None,
             process_outcome: None,
+            resolved_model: None,
         }
     }
 }
@@ -894,6 +908,7 @@ impl NodeExecutor for StubNodeExecutor {
             estimated_cost: Some(0.0),
             latency_ms: Some(0),
             process_outcome: None,
+            resolved_model: None,
         }
     }
 }
@@ -930,6 +945,7 @@ impl NodeExecutor for FailNodeExecutor {
             estimated_cost: None,
             latency_ms: None,
             process_outcome: None,
+            resolved_model: None,
         }
     }
 }
@@ -989,6 +1005,7 @@ impl LocalRunnerValidationExecutor {
                         estimated_cost: None,
                         latency_ms: Some(started.elapsed().as_millis() as i64),
                         process_outcome: None,
+                        resolved_model: None,
                     },
                     None,
                 );
@@ -1010,6 +1027,7 @@ impl LocalRunnerValidationExecutor {
                         estimated_cost: None,
                         latency_ms: Some(started.elapsed().as_millis() as i64),
                         process_outcome: None,
+                        resolved_model: None,
                     },
                     None,
                 );
@@ -1032,6 +1050,7 @@ impl LocalRunnerValidationExecutor {
                         estimated_cost: None,
                         latency_ms: Some(started.elapsed().as_millis() as i64),
                         process_outcome: None,
+                        resolved_model: None,
                     },
                     None,
                 );
@@ -1055,6 +1074,7 @@ impl LocalRunnerValidationExecutor {
                     estimated_cost: None,
                     latency_ms: Some(started.elapsed().as_millis() as i64),
                     process_outcome: None,
+                    resolved_model: None,
                 },
                 None,
             );
@@ -1088,6 +1108,7 @@ impl LocalRunnerValidationExecutor {
             estimated_cost: Some(0.0),
             latency_ms: Some(started.elapsed().as_millis() as i64),
             process_outcome: None,
+            resolved_model: None,
         };
 
         (output, Some(summary))
@@ -1298,6 +1319,7 @@ impl NodeExecutor for CommandNodeExecutor {
                 process_outcome: Some(ProcessOutcome::unavailable(
                     "command rejected before process spawn",
                 )),
+                resolved_model: None,
             };
         }
 
@@ -1318,6 +1340,7 @@ impl NodeExecutor for CommandNodeExecutor {
                 process_outcome: Some(ProcessOutcome::unavailable(
                     "command rejected before process spawn",
                 )),
+                resolved_model: None,
             };
         }
 
@@ -1336,6 +1359,7 @@ impl NodeExecutor for CommandNodeExecutor {
                 process_outcome: Some(ProcessOutcome::unavailable(
                     "empty command rejected before process spawn",
                 )),
+                resolved_model: None,
             };
         }
 
@@ -1355,6 +1379,7 @@ impl NodeExecutor for CommandNodeExecutor {
                     process_outcome: Some(ProcessOutcome::unavailable(
                         "workspace rejected before process spawn",
                     )),
+                    resolved_model: None,
                 };
             }
         };
@@ -1395,6 +1420,7 @@ impl NodeExecutor for CommandNodeExecutor {
                         None,
                         "OS process did not start",
                     )),
+                    resolved_model: None,
                 };
             }
         };
@@ -1429,6 +1455,7 @@ impl NodeExecutor for CommandNodeExecutor {
                                 terminated.as_ref().and_then(exit_status_signal),
                                 "timeout has no successful OS exit code",
                             )),
+                            resolved_model: None,
                         };
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1451,6 +1478,7 @@ impl NodeExecutor for CommandNodeExecutor {
                             terminated.as_ref().and_then(exit_status_signal),
                             "OS wait failed before an exit code was available",
                         )),
+                        resolved_model: None,
                     };
                 }
             }
@@ -1528,6 +1556,7 @@ impl NodeExecutor for CommandNodeExecutor {
                 estimated_cost: None,
                 latency_ms: Some(elapsed_ms),
                 process_outcome: Some(process_outcome),
+                resolved_model: None,
             }
         } else {
             NodeExecutionOutput {
@@ -1541,6 +1570,7 @@ impl NodeExecutor for CommandNodeExecutor {
                 estimated_cost: None,
                 latency_ms: Some(elapsed_ms),
                 process_outcome: Some(process_outcome),
+                resolved_model: None,
             }
         }
     }
@@ -1562,6 +1592,7 @@ fn command_output_error(
         estimated_cost: None,
         latency_ms: Some(start.elapsed().as_millis() as i64),
         process_outcome: Some(process_outcome),
+        resolved_model: None,
     }
 }
 
@@ -1645,6 +1676,7 @@ fn agent_step_fail(message: &str, start: &std::time::Instant) -> NodeExecutionOu
         estimated_cost: None,
         latency_ms: Some(start.elapsed().as_millis() as i64),
         process_outcome: None,
+        resolved_model: None,
     }
 }
 
@@ -1756,6 +1788,7 @@ fn completed_agent_step_output(
         estimated_cost,
         latency_ms: Some(latency_ms),
         process_outcome: None,
+        resolved_model: None,
     })
 }
 
@@ -3543,6 +3576,7 @@ mod tests {
             estimated_cost: Some(0.001),
             latency_ms: Some(100),
             process_outcome: None,
+            resolved_model: None,
         };
         let value = output.to_value();
         assert_eq!(value["status"], "completed");
@@ -3850,6 +3884,7 @@ mod tests {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
     }

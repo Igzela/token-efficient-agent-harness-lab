@@ -1140,6 +1140,10 @@ pub(crate) fn product_apply_binding_sha256(
             .filter(|budget| budget.is_object())
             .ok_or_else(|| "product apply binding is missing product_budget".to_string())?;
         payload["product_budget"] = product_budget.clone();
+        payload["managed_executor_identity"] = node_metadata
+            .get("managed_executor_identity")
+            .cloned()
+            .unwrap_or(Value::Null);
     }
     let encoded = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
     Ok(hex::encode(Sha256::digest(encoded)))
@@ -1229,6 +1233,46 @@ pub fn compile_product_executable_graph(
     } else {
         "managed_coding"
     };
+    let managed_executor_identity = if resolved_executor == "claude_code_cli" {
+        let config = crate::cli::CliConfig::from_env();
+        let admission = config.claude_code_admission.ok_or_else(|| {
+            "Claude Code executor is not exactly admitted at graph compile".to_string()
+        })?;
+        if effective_total_tokens < admission.max_attempt_tokens
+            || budget.get("total_calls").and_then(Value::as_u64) != Some(1)
+            || budget.get("max_retries").and_then(Value::as_u64) != Some(0)
+            || budget.get("max_concurrency").and_then(Value::as_u64) != Some(1)
+        {
+            return Err(format!(
+                "Claude Code requires total_tokens>={}, total_calls=1, max_retries=0, and max_concurrency=1",
+                admission.max_attempt_tokens
+            ));
+        }
+        json!({
+            "schema_version": "managed_executor_identity.v1",
+            "executor_type": "claude_code_cli",
+            "executor_class": "managed_coding",
+            "binary_path": admission.binary_path,
+            "binary_version": admission.binary_version,
+            "binary_sha256": admission.binary_sha256,
+            "model": admission.model,
+            "model_resolution": admission.model_resolution(),
+            "max_turns": admission.max_turns,
+            "max_budget_usd": admission.max_budget_usd,
+            "max_attempt_tokens": admission.max_attempt_tokens,
+            "context_tokens": admission.context_tokens,
+            "max_output_tokens": admission.max_output_tokens,
+            "input_usd_per_mtok": admission.input_usd_per_mtok,
+            "cache_write_5m_usd_per_mtok": admission.cache_write_5m_usd_per_mtok,
+            "cache_write_1h_usd_per_mtok": admission.cache_write_1h_usd_per_mtok,
+            "cache_read_usd_per_mtok": admission.cache_read_usd_per_mtok,
+            "output_usd_per_mtok": admission.output_usd_per_mtok,
+            "pricing_source": admission.pricing_source,
+            "pricing_verified_at": admission.pricing_verified_at,
+        })
+    } else {
+        Value::Null
+    };
 
     let apply_node_id = format!("{}-apply", plan_ids.workflow_id);
     let mut apply_node = json!({
@@ -1257,6 +1301,7 @@ pub fn compile_product_executable_graph(
         "suggested_executor": resolved_executor,
         "executor": if is_fixture_deterministic { "command" } else { resolved_executor },
         "executor_class": executor_class,
+        "managed_executor_identity": managed_executor_identity,
         "fixture_apply_schema": if is_fixture_deterministic {
             Value::String(FIXTURE_DETERMINISTIC_APPLY_SCHEMA.to_string())
         } else {

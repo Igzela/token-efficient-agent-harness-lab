@@ -122,6 +122,7 @@ fn adaptive_worker_context_error(context: &str) -> NodeExecutionOutput {
         estimated_cost: None,
         latency_ms: Some(0),
         process_outcome: None,
+        resolved_model: None,
     }
 }
 

@@ -191,6 +191,7 @@ impl NodeExecutor for OverBudgetManagedExecutor {
             estimated_cost: None,
             latency_ms: Some(10),
             process_outcome: Some(ProcessOutcome::exited(0)),
+            resolved_model: None,
         }
     }
 }
@@ -219,6 +220,7 @@ impl NodeExecutor for CumulativeManagedExecutor {
                 estimated_cost: None,
                 latency_ms: Some(10),
                 process_outcome: Some(ProcessOutcome::exited(7)),
+                resolved_model: None,
             },
             Some(2) => NodeExecutionOutput {
                 status: "completed".to_string(),
@@ -231,6 +233,7 @@ impl NodeExecutor for CumulativeManagedExecutor {
                 estimated_cost: None,
                 latency_ms: Some(10),
                 process_outcome: Some(ProcessOutcome::exited(0)),
+                resolved_model: None,
             },
             attempt => panic!("unexpected managed attempt: {attempt:?}"),
         }
@@ -256,6 +259,7 @@ impl NodeExecutor for MissingUsageManagedExecutor {
             estimated_cost: None,
             latency_ms: Some(10),
             process_outcome: Some(ProcessOutcome::exited(0)),
+            resolved_model: None,
         }
     }
 }
@@ -279,6 +283,7 @@ impl NodeExecutor for RetryableManagedExecutor {
             estimated_cost: None,
             latency_ms: Some(10),
             process_outcome: Some(ProcessOutcome::exited(7)),
+            resolved_model: None,
         }
     }
 }
@@ -305,6 +310,7 @@ impl NodeExecutor for CountingManagedExecutor {
             estimated_cost: None,
             latency_ms: Some(1),
             process_outcome: Some(ProcessOutcome::exited(0)),
+            resolved_model: None,
         }
     }
 }

@@ -227,7 +227,7 @@ class ReleaseProvenanceV2Tests(unittest.TestCase):
         packages = inventory["packages"]
         identities = {(item["ecosystem"], item["name"], item["version"]) for item in packages}
         self.assertIn(("cargo", "serde", "1.0.228"), identities)
-        self.assertIn(("npm", "next", "15.5.18"), identities)
+        self.assertIn(("npm", "next", "15.5.21"), identities)
         self.assertIn(("npm", "typescript", "5.9.3"), identities)
         self.assertTrue(all(item["source_lockfile"] for item in packages))
         self.assertTrue(all(item["purl"].startswith("pkg:") for item in packages))
@@ -258,7 +258,7 @@ class ReleaseProvenanceV2Tests(unittest.TestCase):
         shutil.copy(ROOT / "dashboard/bun.lock", lock_root / "bun.lock")
         before = MODULE.load_dependency_inventory(lock_root, ["Cargo.lock", "bun.lock"])
         text = (lock_root / "bun.lock").read_text(encoding="utf-8")
-        (lock_root / "bun.lock").write_text(text.replace("15.5.18", "15.5.19", 1), encoding="utf-8")
+        (lock_root / "bun.lock").write_text(text.replace("15.5.21", "15.5.22", 1), encoding="utf-8")
         after = MODULE.load_dependency_inventory(lock_root, ["Cargo.lock", "bun.lock"])
         self.assertNotEqual(MODULE.sha256_bytes(MODULE.canonical_json_bytes(before)), MODULE.sha256_bytes(MODULE.canonical_json_bytes(after)))
 

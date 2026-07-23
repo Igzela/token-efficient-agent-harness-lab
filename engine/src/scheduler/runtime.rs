@@ -1153,6 +1153,7 @@ mod tests {
                 enabled: true,
                 claude_code_bin: None,
                 claude_code_enabled: false,
+                claude_code_admission: None,
                 codex_bin: Some("/definitely/not/executed".to_string()),
                 codex_enabled: true,
                 timeout_ms: 1_000,
@@ -1227,6 +1228,7 @@ mod tests {
                 enabled: true,
                 claude_code_bin: Some("/definitely/not/executed-claude".to_string()),
                 claude_code_enabled: true,
+                claude_code_admission: None,
                 codex_bin: Some("/definitely/not/executed-codex".to_string()),
                 codex_enabled: true,
                 timeout_ms: 1_000,
@@ -1320,6 +1322,7 @@ mod tests {
                 enabled: true,
                 claude_code_bin: Some("/definitely/not/executed-claude".to_string()),
                 claude_code_enabled: true,
+                claude_code_admission: None,
                 codex_bin: Some("/definitely/not/executed-codex".to_string()),
                 codex_enabled: true,
                 timeout_ms: 1_000,
@@ -1598,6 +1601,7 @@ mod tests {
                 estimated_cost: Some(0.01),
                 latency_ms: Some(5),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
     }
@@ -1624,6 +1628,7 @@ mod tests {
                 estimated_cost: None,
                 latency_ms: Some(0),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
     }

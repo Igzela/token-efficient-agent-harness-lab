@@ -474,7 +474,8 @@ def _load_bun_inventory(
     packages: list[dict[str, Any]] = []
     by_name_version: dict[tuple[str, str], dict[str, Any]] = {}
     by_name: dict[str, list[dict[str, Any]]] = {}
-    raw_dependencies: list[tuple[dict[str, Any], dict[str, str]]] = []
+    # (source package, required name->version, optional peer names that may be absent)
+    raw_dependencies: list[tuple[dict[str, Any], dict[str, str], frozenset[str]]] = []
     for lock_key, record in records.items():
         if not isinstance(lock_key, str) or not isinstance(record, list) or len(record) < 4:
             raise ContractError(f"malformed Bun package record in {relative}")
@@ -510,15 +511,27 @@ def _load_bun_inventory(
             ):
                 raise ContractError(f"malformed Bun {field} for {name}@{version}")
             dependencies.update(values)
-        raw_dependencies.append((package, dependencies))
+        optional_peers_raw = metadata.get("optionalPeers", [])
+        if optional_peers_raw is None:
+            optional_peers_raw = []
+        if not isinstance(optional_peers_raw, list) or not all(
+            isinstance(item, str) for item in optional_peers_raw
+        ):
+            raise ContractError(f"malformed Bun optionalPeers for {name}@{version}")
+        raw_dependencies.append((package, dependencies, frozenset(optional_peers_raw)))
 
     relationships: list[dict[str, str]] = []
-    for source, dependencies in raw_dependencies:
+    for source, dependencies, optional_peers in raw_dependencies:
         for name, version in dependencies.items():
             target = by_name_version.get((name, version))
             if target is None:
                 candidates = by_name.get(name, [])
                 if len(candidates) != 1:
+                    # Optional peerDependencies may be absent from the lockfile when
+                    # the consumer does not install them (e.g. Next.js OTEL/playwright).
+                    # Skip those edges; required deps and required peers stay fail-closed.
+                    if not candidates and name in optional_peers:
+                        continue
                     raise ContractError(
                         f"Bun dependency cannot be resolved uniquely: {name}@{version} in {relative}"
                     )

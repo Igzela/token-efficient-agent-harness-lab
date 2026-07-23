@@ -36,6 +36,7 @@ impl NodeExecutor for ContextEchoExecutor {
             estimated_cost: Some(0.0),
             latency_ms: Some(0),
             process_outcome: None,
+            resolved_model: None,
         }
     }
 
@@ -78,6 +79,7 @@ impl NodeExecutor for ContextPreservingExecutor {
             estimated_cost: Some(0.0),
             latency_ms: Some(0),
             process_outcome: None,
+            resolved_model: None,
         }
     }
 
@@ -101,6 +103,7 @@ impl NodeExecutor for LargeOutputExecutor {
             estimated_cost: Some(0.0),
             latency_ms: Some(0),
             process_outcome: None,
+            resolved_model: None,
         }
     }
 
@@ -128,6 +131,7 @@ impl NodeExecutor for PromptEchoExecutor {
             estimated_cost: Some(0.0),
             latency_ms: Some(0),
             process_outcome: None,
+            resolved_model: None,
         }
     }
 
@@ -2150,6 +2154,7 @@ fn sqlite_implicit_tool_receipt_is_atomic_across_connections() {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 
@@ -2410,6 +2415,7 @@ fn sqlite_agent_global_cap_is_atomic_across_store_connections() {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
     }
@@ -2435,6 +2441,7 @@ fn sqlite_agent_global_cap_is_atomic_across_store_connections() {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
     }
@@ -2549,6 +2556,7 @@ fn sqlite_stale_worker_cannot_overwrite_reclaimed_attempt() {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 
@@ -2572,6 +2580,7 @@ fn sqlite_stale_worker_cannot_overwrite_reclaimed_attempt() {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 

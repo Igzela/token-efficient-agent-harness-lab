@@ -342,6 +342,7 @@ impl ExternalRuntimeNodeExecutor {
             estimated_cost: None,
             latency_ms: Some(started.elapsed().as_millis() as i64),
             process_outcome: None,
+            resolved_model: None,
         }
     }
 
@@ -980,6 +981,7 @@ fn output_from_summary(
         estimated_cost: scorecard.get("estimated_cost_usd").and_then(Value::as_f64),
         latency_ms: Some(started.elapsed().as_millis() as i64),
         process_outcome: None,
+        resolved_model: None,
     }
 }
 
@@ -1017,6 +1019,7 @@ fn cached_output(summary: Value, started: &Instant) -> NodeExecutionOutput {
             }),
         latency_ms: Some(started.elapsed().as_millis() as i64),
         process_outcome: None,
+        resolved_model: None,
     }
 }
 

@@ -485,6 +485,39 @@ pub fn register_cli_executors(
     if !config.enabled {
         return;
     }
+    if let Some(cli_exec) = crate::cli::CliNodeExecutor::from_config_for(config, "claude_code_cli")
+    {
+        pool.register(ExecutorEntry {
+            executor_type: "claude_code_cli".to_string(),
+            executor: Arc::new(ToolPolicyNodeExecutor::cli(
+                Arc::new(cli_exec),
+                Arc::clone(&store),
+                "claude_code_cli",
+            )),
+            capabilities: ExecutorCapabilities {
+                supported_task_types: vec!["claude_code_cli".to_string()],
+                // The exact task type and product binding are authoritative. The
+                // planner's heuristic domain (docs/config/code/architecture) must
+                // not make an explicitly admitted managed node unrunnable.
+                supported_task_domains: vec![],
+                requires_auth: true,
+                requires_cli: true,
+                max_timeout_ms: config.timeout_ms,
+            },
+            status: ExecutorStatus {
+                concurrency_limit: 1,
+                ..Default::default()
+            },
+            cost_profile: CostProfile {
+                cost_per_execution_usd: config
+                    .claude_code_admission
+                    .as_ref()
+                    .map(|admission| admission.max_budget_usd),
+                ..Default::default()
+            },
+            metrics: ExecutorMetrics::default(),
+        });
+    }
     if let Some(cli_exec) = crate::cli::CliNodeExecutor::from_config_for(config, "codex_cli") {
         pool.register(ExecutorEntry {
             executor_type: "codex_cli".to_string(),
@@ -779,6 +812,7 @@ mod tests {
             enabled: true,
             claude_code_bin: None,
             claude_code_enabled: false,
+            claude_code_admission: None,
             codex_bin: Some("/definitely/not/executed".to_string()),
             codex_enabled: true,
             timeout_ms: 1_000,
@@ -815,6 +849,61 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn exact_claude_admission_registers_one_policy_wrapped_managed_executor() {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("claude-2.1.217");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '2.1.217 (Claude Code)\\n'; exit 0; fi\nexit 2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let digest = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+        let admission = crate::cli::config::ClaudeCodeAdmission::validate(
+            &binary,
+            "2.1.217",
+            &digest,
+            Some(crate::cli::config::ADMITTED_CLAUDE_CODE_MODEL),
+            3,
+            2.16,
+        )
+        .unwrap();
+        let pool = test_pool();
+        let config = crate::cli::CliConfig {
+            enabled: true,
+            claude_code_bin: binary.to_str().map(str::to_string),
+            claude_code_enabled: true,
+            claude_code_admission: Some(admission),
+            codex_bin: None,
+            codex_enabled: false,
+            timeout_ms: 1_000,
+        };
+        register_cli_executors(
+            &pool,
+            &config,
+            Arc::new(LocalProductStore::new(":memory:").unwrap()),
+        );
+
+        let entry = pool
+            .snapshot()
+            .into_iter()
+            .find(|entry| entry.executor_type == "claude_code_cli")
+            .expect("exact Claude admission registration");
+        assert_eq!(entry.capabilities.supported_task_types, ["claude_code_cli"]);
+        assert!(entry.capabilities.supported_task_domains.is_empty());
+        assert_eq!(entry.status.concurrency_limit, 1);
+        assert_eq!(entry.cost_profile.cost_per_execution_usd, Some(2.16));
+        assert_eq!(
+            pool.best_for_task("claude_code_cli", "docs"),
+            Some("claude_code_cli".to_string())
+        );
+    }
+
     #[test]
     fn policy_bound_cli_registers_only_sandboxed_codex_and_rejects_cross_identity() {
         let pool = test_pool();
@@ -823,6 +912,7 @@ mod tests {
             enabled: true,
             claude_code_bin: Some("/definitely/not/executed-claude".to_string()),
             claude_code_enabled: true,
+            claude_code_admission: None,
             codex_bin: Some("/definitely/not/executed-codex".to_string()),
             codex_enabled: true,
             timeout_ms: 1_000,
