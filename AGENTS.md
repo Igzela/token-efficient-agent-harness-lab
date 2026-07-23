@@ -38,6 +38,10 @@ Execution-ready packets in `docs/NEXT_DECISION.md` are the default work units. T
 
 Material architecture, authority, schema, migration, security, evaluator-integrity, release, or recovery decisions must be recorded in an existing authoritative document before or with implementation. Do not silently create parallel runtimes, schedulers, queues, stores, policy owners, evaluator authorities, target-output owners, or rollback systems.
 
+## Active-Wait Advancement Rule
+
+When CI, compilation, tests, audits, or another bounded long-running check is in progress, do not wait passively. Continue with the next safe, in-scope action: refresh read-only repository/GitHub state, inspect the relevant diff and authority contracts, review documentation against current code, prepare the next verification or review, or repair a bounded prerequisite. Plan the next action independently and execute it when it does not interfere with the running check. Do not start a later packet or broaden authority merely to fill time; preserve packet ordering, ownership, hard stops, and rollback requirements.
+
 ## Default Development Path (Ship PR)
 
 The default daily repository development path is:
