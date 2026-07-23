@@ -1,11 +1,19 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use sha2::{Digest, Sha256};
 
+use super::{spawn_with_timeout_with_limits, OutputLimits, SpawnWithTimeoutError};
+
 pub const DEFAULT_CLI_TIMEOUT_MS: u64 = 300_000;
 pub const DEFAULT_CLI_EXECUTION_ENABLED: bool = false;
+pub const CLAUDE_VERSION_PROBE_TIMEOUT_MS: u64 = 2_000;
+pub const CLAUDE_VERSION_PROBE_OUTPUT_LIMITS: OutputLimits = OutputLimits {
+    stdout_bytes: 1_024,
+    stderr_bytes: 1_024,
+    combined_bytes: 2_048,
+};
 
 pub const ADMITTED_CLAUDE_CODE_VERSION: &str = "2.1.217";
 pub const ADMITTED_CLAUDE_CODE_MODEL: &str = "claude-haiku-4-5-20251001";
@@ -91,58 +99,28 @@ impl ClaudeCodeAdmission {
                     .to_string(),
             );
         }
-        let metadata = std::fs::symlink_metadata(binary_path)
-            .map_err(|error| format!("Claude Code binary is unavailable: {error}"))?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(
-                "Claude Code binary must be an exact regular file, not a symlink".to_string(),
-            );
-        }
-        if metadata.len() == 0 || metadata.len() > MAX_ADMITTED_CLI_BINARY_BYTES {
-            return Err("Claude Code binary size is outside the admitted bound".to_string());
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if metadata.permissions().mode() & 0o111 == 0 {
-                return Err("Claude Code binary must be executable".to_string());
-            }
-        }
-
         let expected_sha256 = expected_sha256.trim().to_ascii_lowercase();
-        if expected_sha256.len() != 64
-            || !expected_sha256
-                .chars()
-                .all(|value| value.is_ascii_hexdigit())
-        {
-            return Err("Claude Code binary SHA-256 must be 64 hexadecimal characters".to_string());
-        }
-        let binary_sha256 = sha256_file(binary_path)?;
-        if binary_sha256 != expected_sha256 {
-            return Err(
-                "Claude Code binary SHA-256 does not match the admitted identity".to_string(),
-            );
-        }
+        validate_binary_file_identity(binary_path, &expected_sha256)?;
 
         let expected_version = expected_version.trim();
         if expected_version != ADMITTED_CLAUDE_CODE_VERSION {
             return Err("Claude Code binary version is not the admitted version".to_string());
         }
-        let version_output = probe_claude_code_version(binary_path)?;
-        if !version_output.status.success() || version_output.stdout.len() > 1024 {
-            return Err("Claude Code version probe did not return a bounded success".to_string());
-        }
+        let version_output =
+            probe_claude_code_version(binary_path).map_err(|error| error.summary().to_string())?;
         let observed_version = String::from_utf8(version_output.stdout)
-            .map_err(|_| "Claude Code version probe returned non-UTF-8 output".to_string())?;
+            .map_err(|_| "claude_version_probe_malformed: non-UTF-8 output".to_string())?;
         let observed_version = observed_version
             .split_whitespace()
             .next()
             .unwrap_or_default();
         if observed_version != expected_version {
-            return Err(
-                "Claude Code binary version does not match the admitted identity".to_string(),
-            );
+            return Err("claude_version_probe_malformed: version identity mismatch".to_string());
         }
+        // Revalidate after the probe as well as before it. The version process
+        // must never be allowed to establish identity for a file that changed
+        // while it was running.
+        let binary_sha256 = validate_binary_file_identity(binary_path, &expected_sha256)?;
         if let Some(model) = model {
             if model != ADMITTED_CLAUDE_CODE_MODEL {
                 return Err("Claude Code model is not the exact admitted snapshot".to_string());
@@ -182,17 +160,97 @@ impl ClaudeCodeAdmission {
     }
 }
 
-fn probe_claude_code_version(binary_path: &Path) -> Result<std::process::Output, String> {
-    for attempt in 0..3 {
-        match Command::new(binary_path).arg("--version").output() {
-            Ok(output) => return Ok(output),
-            Err(error) if super::is_transient_text_busy(&error) && attempt < 2 => {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            Err(error) => return Err(format!("Claude Code version probe failed: {error}")),
+#[derive(Debug, PartialEq, Eq)]
+enum ClaudeCodeVersionProbeError {
+    Process(SpawnWithTimeoutError),
+    NonZeroExit { code: Option<i32> },
+    MalformedOutput,
+}
+
+impl ClaudeCodeVersionProbeError {
+    fn summary(&self) -> &'static str {
+        match self {
+            Self::Process(error) => error.reason_code(),
+            Self::NonZeroExit { .. } => "claude_version_probe_nonzero_exit",
+            Self::MalformedOutput => "claude_version_probe_malformed",
         }
     }
-    unreachable!("bounded version probe loop returns on its final attempt")
+}
+
+fn probe_claude_code_version(
+    binary_path: &Path,
+) -> Result<std::process::Output, ClaudeCodeVersionProbeError> {
+    let mut command = Command::new(binary_path);
+    command
+        .arg("--version")
+        .stdin(Stdio::null())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir("/");
+    let output = spawn_with_timeout_with_limits(
+        &mut command,
+        CLAUDE_VERSION_PROBE_TIMEOUT_MS,
+        CLAUDE_VERSION_PROBE_OUTPUT_LIMITS,
+    )
+    .map_err(ClaudeCodeVersionProbeError::Process)?;
+    if !output.status.success() {
+        return Err(ClaudeCodeVersionProbeError::NonZeroExit {
+            code: output.status.code(),
+        });
+    }
+    let output_text = std::str::from_utf8(&output.stdout)
+        .map_err(|_| ClaudeCodeVersionProbeError::MalformedOutput)?;
+    let version_token = output_text.split_whitespace().next().unwrap_or_default();
+    if version_token.is_empty()
+        || version_token.split('.').count() != 3
+        || version_token.split('.').any(|component| {
+            component.is_empty() || !component.chars().all(|value| value.is_ascii_digit())
+        })
+    {
+        return Err(ClaudeCodeVersionProbeError::MalformedOutput);
+    }
+    Ok(output)
+}
+
+fn validate_binary_file_identity(
+    binary_path: &Path,
+    expected_sha256: &str,
+) -> Result<String, String> {
+    let canonical_path = std::fs::canonicalize(binary_path)
+        .map_err(|error| format!("Claude Code binary is unavailable: {error}"))?;
+    if canonical_path != binary_path {
+        return Err(
+            "Claude Code binary path must already be canonical with no symlink components"
+                .to_string(),
+        );
+    }
+    let metadata = std::fs::symlink_metadata(binary_path)
+        .map_err(|error| format!("Claude Code binary is unavailable: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("Claude Code binary must be an exact regular file, not a symlink".to_string());
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_ADMITTED_CLI_BINARY_BYTES {
+        return Err("Claude Code binary size is outside the admitted bound".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err("Claude Code binary must be executable".to_string());
+        }
+    }
+    if expected_sha256.len() != 64
+        || !expected_sha256
+            .chars()
+            .all(|value| value.is_ascii_hexdigit())
+    {
+        return Err("Claude Code binary SHA-256 must be 64 hexadecimal characters".to_string());
+    }
+    let binary_sha256 = sha256_file(binary_path)?;
+    if binary_sha256 != expected_sha256 {
+        return Err("Claude Code binary SHA-256 does not match the admitted identity".to_string());
+    }
+    Ok(binary_sha256)
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -200,12 +258,17 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         .map_err(|error| format!("Claude Code binary could not be opened: {error}"))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
+    let mut total_read = 0_u64;
     loop {
         let read = file
             .read(&mut buffer)
             .map_err(|error| format!("Claude Code binary could not be hashed: {error}"))?;
         if read == 0 {
             break;
+        }
+        total_read = total_read.saturating_add(read as u64);
+        if total_read > MAX_ADMITTED_CLI_BINARY_BYTES {
+            return Err("Claude Code binary size is outside the admitted bound".to_string());
         }
         hasher.update(&buffer[..read]);
     }
@@ -355,6 +418,7 @@ fn env_required_f64(key: &str) -> Result<f64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::OutputStream;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -390,6 +454,132 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         binary
+    }
+
+    #[cfg(unix)]
+    fn fake_version_probe_binary(root: &std::path::Path, version_body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let binary = root.join("claude-version-probe");
+        std::fs::write(
+            &binary,
+            format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then {version_body}; fi\nexit 0\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        binary
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_version_probe_hang_is_typed_and_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_version_probe_binary(dir.path(), "sleep 5");
+        let error = probe_claude_code_version(&binary).expect_err("probe should time out");
+        assert!(matches!(
+            error,
+            ClaudeCodeVersionProbeError::Process(SpawnWithTimeoutError::TimedOut { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_version_probe_stdout_flood_is_typed_without_raw_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary =
+            fake_version_probe_binary(dir.path(), "dd if=/dev/zero bs=1024 count=2 status=none");
+        let error = probe_claude_code_version(&binary).expect_err("probe should reject flood");
+        let ClaudeCodeVersionProbeError::Process(SpawnWithTimeoutError::OutputLimitExceeded {
+            details,
+            ..
+        }) = error
+        else {
+            panic!("expected typed stdout flood");
+        };
+        assert_eq!(details.stream, OutputStream::Stdout);
+        assert!(!details.summary().contains("\0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_version_probe_stderr_flood_is_typed() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_version_probe_binary(
+            dir.path(),
+            "dd if=/dev/zero bs=1024 count=2 status=none >&2",
+        );
+        let error = probe_claude_code_version(&binary).expect_err("probe should reject flood");
+        let ClaudeCodeVersionProbeError::Process(SpawnWithTimeoutError::OutputLimitExceeded {
+            details,
+            ..
+        }) = error
+        else {
+            panic!("expected typed stderr flood");
+        };
+        assert_eq!(details.stream, OutputStream::Stderr);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_version_probe_nonzero_exit_is_typed() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_version_probe_binary(dir.path(), "exit 9");
+        let error = probe_claude_code_version(&binary).expect_err("probe should reject exit");
+        assert!(matches!(
+            error,
+            ClaudeCodeVersionProbeError::NonZeroExit { code: Some(9) }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_version_probe_malformed_version_is_typed() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_version_probe_binary(dir.path(), "printf 'not-a-version\\n'");
+        let digest = hex::encode(sha2::Sha256::digest(std::fs::read(&binary).unwrap()));
+        let error = ClaudeCodeAdmission::validate(
+            &binary,
+            ADMITTED_CLAUDE_CODE_VERSION,
+            &digest,
+            None,
+            ADMITTED_CLAUDE_CODE_MAX_TURNS,
+            ADMITTED_CLAUDE_CODE_MAX_ATTEMPT_COST_USD,
+        )
+        .expect_err("malformed version must not be admitted");
+        assert!(error.contains("malformed"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_version_probe_uses_cleared_environment_and_eof_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_version_probe_binary(
+            dir.path(),
+            "if [ -n \"$HOME\" ]; then exit 17; fi; if read value; then exit 18; fi; printf '2.1.217 (Claude Code)\\n'",
+        );
+        let digest = hex::encode(sha2::Sha256::digest(std::fs::read(&binary).unwrap()));
+        let admission = ClaudeCodeAdmission::validate(
+            &binary,
+            ADMITTED_CLAUDE_CODE_VERSION,
+            &digest,
+            None,
+            ADMITTED_CLAUDE_CODE_MAX_TURNS,
+            ADMITTED_CLAUDE_CODE_MAX_ATTEMPT_COST_USD,
+        )
+        .expect("cleared environment and EOF probe");
+        assert_eq!(admission.binary_path, binary);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn claude_version_probe_is_unavailable_before_process_start_on_unsupported_platform() {
+        let binary = PathBuf::from("/not/started/claude");
+        assert!(matches!(
+            probe_claude_code_version(&binary),
+            Err(ClaudeCodeVersionProbeError::Process(
+                SpawnWithTimeoutError::ProcessTreeContainmentUnsupported
+            ))
+        ));
     }
 
     #[cfg(unix)]

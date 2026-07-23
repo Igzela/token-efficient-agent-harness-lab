@@ -2,7 +2,7 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-07-22.
+Last updated: 2026-07-23.
 
 ## Agent Runtime and Tool Policy Operations
 
@@ -78,6 +78,8 @@ curl -sS -X PUT "$ACP_API_URL/api/v1/tool-policy/profiles/operator-bounded/allow
 Capability, allowlist, and hook mutation plus audit commit atomically. Configuration rejects unknown tools, duplicate IDs, oversized or secret-shaped metadata, stale hashes, invalid hook actions, and more than 32 enabled hooks. Dashboard Settings provides a read-only resource/hash inspector. Approval-required execution enters `awaiting_approval`; resolve the corresponding typed operator decision with its current queue hash and `dispatch:execute`. Do not use the metadata-only workflow-approval POST as execution authority. An approved authorization is bound to exact run, node, tool, profile, action hash, and request, and is consumed before one subprocess invocation. Non-approval tools claim an atomic implicit receipt before invocation. A retry cannot repeat the effect; if execution or a post hook fails after that claim, the node records an explicit non-retryable outcome-unknown failure for operator reconciliation.
 
 Use only a documented scheduler executor value. Startup rejects unknown `ACP_SCHEDULER_EXECUTOR` and `ACP_EXECUTION_MODE` values, and an unavailable configured CLI executor produces an explicit failed result rather than a noop. Direct `ACP_EXECUTION_MODE=cli`, `ACP_EXECUTION_MODE=auto`, and `/api/v1/dispatch` multi/CLI execution are retired. Use `ACP_SCHEDULER_EXECUTOR=auto` or `pool` for provider/CLI hybrid workflows; CLI tools then execute only as confirmed leased nodes with policy and receipt enforcement. Bind every CLI node to the exact app-owned supervised-patch workspace for its run; a missing or different path fails with no subprocess and no cwd fallback. Repeating a supervised-patch verification request reuses the canonical workspace/operation/attempt run when the exact binding matches, returns its terminal result, or reports `verification_in_progress`; a changed binding returns conflict. The run is marked `api_owned_supervised_patch`, so scheduler workers skip it in queue-enabled and queue-disabled modes. If the engine also mounts a scheduler, configure its lease timeout to exceed the larger of the verification-command timeout and CLI timeout by `max(interval, 1000 ms)`; otherwise the handler returns `unsafe_managed_execution_lease` before creating a run or subprocess effect. Treat a policy read error caused by corrupt stored JSON as an integrity incident; do not overwrite it through a guessed hash. Stop execution, back up the store, run the integrity procedure, and restore from verified app-owned evidence.
+
+Managed CLI subprocesses use `managed_cli_output_limits.v1`: 4 MiB stdout, 1 MiB stderr, and 5 MiB combined by default, with a 16 MiB maximum configured ceiling and a 1,000 ms cleanup bound. Output-limit, reader, timeout, wait, spawn, and process-tree-cleanup failures are terminal bounded failures for the attempt; post-start process-boundary failures are non-retryable, partial output is not retained, and none can authorize a later successful artifact. Managed admission is unavailable on platforms where process-tree containment is not proven. Do not treat a bounded fixture or fake binary as managed-executor acceptance evidence.
 
 Emergency disable and rollback:
 

@@ -346,11 +346,13 @@ impl NodeExecutor for CliNodeExecutor {
                     SpawnWithTimeoutError::TimedOut {
                         elapsed_ms,
                         terminated_status,
+                        termination,
                     } => (
                         "cli_timeout",
                         format!(
-                            "{effective_type} timed out after {elapsed_ms}ms (limit {}ms)",
-                            self.timeout_ms
+                            "{effective_type} timed out after {elapsed_ms}ms (limit {}ms); termination={}",
+                            self.timeout_ms,
+                            termination.summary(),
                         ),
                         ProcessOutcome::failure(
                             "timed_out",
@@ -361,6 +363,9 @@ impl NodeExecutor for CliNodeExecutor {
                     SpawnWithTimeoutError::WaitFailed {
                         elapsed_ms,
                         observed_status,
+                        kind,
+                        raw_os_error,
+                        termination,
                     } => {
                         let mut outcome = observed_status
                             .as_ref()
@@ -380,11 +385,89 @@ impl NodeExecutor for CliNodeExecutor {
                         (
                             "cli_wait_error",
                             format!(
-                                "{effective_type} wait/output collection failed after {elapsed_ms}ms"
+                                "{effective_type} wait/output collection failed after {elapsed_ms}ms; kind={kind:?}; os_error={raw_os_error:?}; termination={}",
+                                termination.summary(),
                             ),
                             outcome,
                         )
                     }
+                    SpawnWithTimeoutError::ReaderFailed {
+                        stream,
+                        kind,
+                        raw_os_error,
+                        termination,
+                    } => (
+                        match stream {
+                            crate::cli::OutputStream::Stdout => "cli_stdout_reader_error",
+                            crate::cli::OutputStream::Stderr => "cli_stderr_reader_error",
+                            crate::cli::OutputStream::Combined => "cli_combined_reader_error",
+                        },
+                        format!(
+                            "{effective_type} {stream:?} reader failed; kind={kind:?}; os_error={raw_os_error:?}; termination={}",
+                            termination.summary(),
+                        ),
+                        ProcessOutcome::failure(
+                            match stream {
+                                crate::cli::OutputStream::Stdout => "stdout_reader_failed",
+                                crate::cli::OutputStream::Stderr => "stderr_reader_failed",
+                                crate::cli::OutputStream::Combined => "combined_reader_failed",
+                            },
+                            None,
+                            "managed CLI output reader failed",
+                        ),
+                    ),
+                    SpawnWithTimeoutError::OutputLimitExceeded {
+                        details,
+                        termination,
+                    } => (
+                        "cli_output_limit_exceeded",
+                        format!(
+                            "{effective_type} output limit exceeded; {}; termination={}",
+                            details.summary(),
+                            termination.summary(),
+                        ),
+                        ProcessOutcome::failure(
+                            "output_limit_exceeded",
+                            None,
+                            "managed CLI output exceeded its bounded capture contract",
+                        ),
+                    ),
+                    SpawnWithTimeoutError::ProcessTreeCleanupFailed {
+                        elapsed_ms,
+                        primary_reason,
+                        termination,
+                    } => (
+                        "cli_process_tree_cleanup_error",
+                        format!(
+                            "{effective_type} process-tree cleanup failed after {elapsed_ms}ms; primary_reason={primary_reason}; termination={}",
+                            termination.summary(),
+                        ),
+                        ProcessOutcome::failure(
+                            "process_tree_cleanup_failed",
+                            None,
+                            "managed CLI process-tree cleanup was not proven",
+                        ),
+                    ),
+                    SpawnWithTimeoutError::ProcessTreeContainmentUnsupported => (
+                        "cli_process_tree_containment_unavailable",
+                        format!(
+                            "{effective_type} managed execution is unavailable because process-tree containment is unsupported"
+                        ),
+                        ProcessOutcome::failure(
+                            "process_tree_containment_unavailable",
+                            None,
+                            "managed CLI process-tree containment is unsupported",
+                        ),
+                    ),
+                    SpawnWithTimeoutError::InvalidOutputLimits { reason } => (
+                        "cli_output_limits_invalid",
+                        format!("{effective_type} managed output limits are invalid: {reason}"),
+                        ProcessOutcome::failure(
+                            "invalid_output_limits",
+                            None,
+                            "managed CLI output limits are invalid",
+                        ),
+                    ),
                 };
                 NodeExecutionOutput {
                     status: "failed".to_string(),
@@ -1464,6 +1547,35 @@ mod tests {
         assert_eq!(output.error_domain.as_deref(), Some("cli_timeout"));
         assert_eq!(output.process_outcome.as_ref().unwrap().state, "timed_out");
         assert_eq!(output.process_outcome.as_ref().unwrap().exit_code, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_cli_output_limit_fails_without_retaining_partial_output() {
+        let workspace = tempfile::tempdir().unwrap();
+        let binary = fake_codex(
+            workspace.path(),
+            "dd if=/dev/zero bs=1024 count=4097 status=none",
+        );
+        let executor =
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 30_000);
+        let output = executor.execute_node(&make_input(json!({
+            "executor": "codex_cli",
+            "prompt": "bounded flood",
+            "workspace_path": workspace.path(),
+        })));
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("cli_output_limit_exceeded")
+        );
+        assert!(output.output.is_none(), "partial output must be discarded");
+        let process_outcome = output.process_outcome.expect("process outcome");
+        assert_eq!(process_outcome.state, "output_limit_exceeded");
+        assert!(output
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("stream=stdout")));
     }
 
     #[test]

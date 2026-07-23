@@ -6340,6 +6340,14 @@ fn retryable_node_failure(output: &crate::node_executor::NodeExecutionOutput) ->
                 | "product_token_budget_exhausted"
                 | "product_call_budget_exhausted"
                 | "product_token_usage_unavailable"
+                | "cli_timeout"
+                | "cli_wait_error"
+                | "cli_stdout_reader_error"
+                | "cli_stderr_reader_error"
+                | "cli_combined_reader_error"
+                | "cli_output_limit_exceeded"
+                | "cli_process_tree_cleanup_error"
+                | "cli_process_tree_containment_unavailable"
         )
     )
 }
@@ -6544,6 +6552,28 @@ mod product_managed_token_budget_tests {
         output.status = "failed".to_string();
         output.error_domain = Some("product_call_budget_exhausted".to_string());
         assert!(!retryable_node_failure(&output));
+    }
+
+    #[test]
+    fn managed_process_boundary_failures_are_not_retryable() {
+        for error_domain in [
+            "cli_timeout",
+            "cli_wait_error",
+            "cli_stdout_reader_error",
+            "cli_stderr_reader_error",
+            "cli_combined_reader_error",
+            "cli_output_limit_exceeded",
+            "cli_process_tree_cleanup_error",
+            "cli_process_tree_containment_unavailable",
+        ] {
+            let mut output = completed(None, None);
+            output.status = "failed".to_string();
+            output.error_domain = Some(error_domain.to_string());
+            assert!(
+                !retryable_node_failure(&output),
+                "{error_domain} must not retry after managed-process handling"
+            );
+        }
     }
 
     #[test]

@@ -1,146 +1,62 @@
 # Project Instructions
 
-## Product Scope
+## Scope and Boundaries
 
-**What**: Local deterministic harness and self-hosted workflow control plane for studying token-efficient agent workflows. It provides deterministic dispatch planning, local API/Dashboard access, app-owned SQLite/PostgreSQL-compatible state, dynamic workflow state, executor coordination primitives, and cost-of-pass metrics.
+This is a local deterministic harness and self-hosted workflow control plane, not a cloud SaaS or unbounded deployment tool. Rust `engine/` owns runtime, API, scheduler, policy, state transitions, and persistence; `LocalProductStore` owns application data. TypeScript is interaction/projection; Python is a bounded adapter/evaluation/research layer.
 
-**What NOT**: Not a cloud production SaaS, hosted multi-tenant service, or unbounded direct-deploy tool. Registered target working trees and `main` remain protected by existing output authority. Trusted-local execution remains bounded by auth, credentials, budgets, audit, rollback, and kill controls.
-
-**Target user**: Solo developer or small local team studying deterministic agent infrastructure on one machine or LAN.
+Target worktrees and `main` remain protected by approval, worktree, branch, patch, audit, budget, kill, and rollback owners. Do not create parallel runtimes, schedulers, stores, state models, or authority systems.
 
 ## Current State
 
-**Active tracks:**
-- Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, and gated autonomous merge
-- Agent Autonomous Maintenance Mode — agents audit, plan, implement, verify, review, document, and ship bounded changes
-- Full Agent Autonomy Mode — repository-scoped architecture, authority, security, migration, release-workflow, recovery, and target-output evolution is authorized when testable, observable, verification-gated, and rollbackable
-- Post-LGB Product Evolution — PE-1 through PE-6 are acceptance-sealed; later stages are governed by `docs/NEXT_DECISION.md`
+PE-1 through PE-6 and the **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED are accepted. Product Golden Path is default-off and its managed-executor acceptance remains the active gate; later order and packet states are in `docs/NEXT_DECISION.md`. Vader/Issue #208 are stopped, Issue #254 is parked, real OpenCode admission is deferred, and the active Harness is immutable.
 
-**Complete tracks:**
-- Dispatch Kernel Phases 1–7
-- Rust runtime migration
-- Dynamic Workflow Batches 1–7
-- Macro-Orchestrator repair track
-- Self-Hosted GA readiness
-- HA hardening
-- V2 Real Production Output
-- Adaptive Fusion through AF-7
-- Agent Runtime through AR-6
-- Trusted Local Autonomous Execution through IAE-3
-- PE-1 Token Efficiency Regression Lab
+## Authority and Safety
 
-**Key facts:**
-- Rust `engine/` is the sole runtime, API, and storage implementation
-- Architecture Refactor R-series remains baselined at R7; documented, tested, rollbackable decisions may supersede it
-- **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED through `scripts/check_wire_codegen_drift.sh`
+Full Agent Autonomy Mode permits repository-scoped, testable, observable, reviewable, verification-gated, and rollbackable work. Record material architecture, authority, schema, security, evaluator, release, or recovery decisions in an authoritative document. Preserve safety, audit, approval, budget, evaluator, compatibility, compensation, and rollback boundaries.
 
-## App Runtime vs Agent Maintenance Boundary
-
-**App/runtime** does not write target repos by default. Existing approval, worktree, branch, patch, audit, budget, and rollback controls remain authoritative.
-
-**Agent maintenance** may autonomously inspect, plan, implement, test, review, merge, and iterate repository-scoped work. This includes new architecture directions, authority-boundary changes, execution-profile changes requested by the user, auth/security redesign, database migrations, release/tag/deploy workflow changes, target-output authority changes, recovery contracts, and superseding accepted decisions.
-
-Material decisions must be evidence-backed, recorded in an existing authoritative document, tested, reviewable, and rollbackable. Do not silently create parallel runtimes, stores, schedulers, policy authorities, or state models.
-
-**Hard stops:** committing real secrets; falsifying test/CI evidence; intentionally hiding failures; removing rollback without a tested replacement; bypassing required human approval; or performing irreversible external destruction without explicit authority and recovery.
+Hard stops: secrets or unredacted sensitive content, falsified evidence, hidden failures, bypassed approval, weakened guards, removed rollback, sealed-evaluator mutation, unbounded external effects, or target-default-branch writes.
 
 ## Model Selection
 
-Model and reasoning-effort selection are controlled by the user or execution environment. This repository does not require a particular model, model family, or reasoning tier.
+Model and reasoning effort are user/tool settings. Do not edit model configuration merely to satisfy repository instructions; model choice never reduces required tests, review, CI, audit, compatibility, compensation, or rollback.
 
-Do not edit model configuration merely to satisfy repository instructions. Model choice never reduces testing, review, CI, audit, compatibility, compensation, or rollback requirements. Strictly documentation-only PRs may use the targeted merge exception in `docs/REAL_WORLD_TESTING_PLAYBOOK.md`; the underlying evidence for any implementation claim must already be verified.
+## Reading Model
 
-## Minimal Agent Reading Model
+Read `AGENTS.md`, then relevant sections of `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and `docs/MODULE_MAP.md`. Add `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for PR/CI/merge work, `docs/ARCHITECTURE_BOOK.md` for architecture/authority/security/recovery, and `docs/RUNBOOK.md` only for proven procedures. Current code, merged history, tests, and CI are authoritative.
 
-Read before implementation:
-
-- `AGENTS.md`
-- `docs/CURRENT_STATUS.md`
-- `docs/NEXT_DECISION.md`
-- `docs/MODULE_MAP.md`
-- `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for PR, CI, review, and merge work
-- `docs/ARCHITECTURE_BOOK.md` for architecture, storage, authority, security, release, or recovery work
-- `docs/RUNBOOK.md` only for proven operator procedures
-
-Treat current code, merged history, tests, and CI as authoritative evidence. Repair stale documentation rather than silently following it.
-
-## Architecture Summary
-
-Deterministic, rule-based pipeline:
+## Architecture
 
 ```text
 Request → TaskAnalyzer → ModelSelector → BudgetManager → DispatchDecision → Executor → Evaluation → Ledger
 ```
 
-Key principles:
-- Rule-based dispatch kernel
-- Versioned bounded schemas
-- Explicit authority and failure states
-- Persistent auditability
-- Compatibility and rollback
-
-Current architecture baseline: `docs/ARCHITECTURE_BOOK.md`.
+The architecture baseline is `docs/ARCHITECTURE_BOOK.md`; wire/type governance is checked by `scripts/check_wire_codegen_drift.sh`.
 
 ## Autonomous Advancement Protocol
 
-For each autonomous session:
+1. Refresh branch, worktree, `main`, PRs/issues, CI, controls, and active documents.
+2. Choose the earliest eligible packet; audit existing code, tests, owners, and overlap.
+3. Define scope, non-goals, authority, acceptance, compatibility, risk, and rollback.
+4. Add focused tests where practical; implement one coherent slice.
+5. Run focused and applicable full checks; repair root causes without weakening guards.
+6. Review correctness, authority, security, evaluator integrity, compatibility, audit, recovery, and cost.
+7. Update minimal active docs and run `uv run --no-project python scripts/check_agent_handoff.py`.
+8. Commit in English, push a focused PR, wait for exact-head green CI and complete-diff review, manually merge only when eligible, refresh `main`, and report evidence.
 
-1. Inspect branch, working tree, open PRs, recent merges, and CI state.
-2. Read the active documents and choose the highest-value eligible packet, prerequisite repair, or bounded decision.
-3. Audit existing code before assuming a capability is absent.
-4. Resolve bounded missing decisions from repository evidence; record material decisions in an authoritative document.
-5. Add or update focused tests before behavior changes when practical.
-6. Implement one coherent reviewable slice using the tools available in the current environment.
-7. Run focused verification and all applicable full checks.
-8. Review authority, compatibility, security, audit, compensation, and rollback.
-9. Repair failures at their root cause; do not weaken tests or guards.
-10. Update the smallest necessary active documentation.
-11. Run `uv run --no-project python scripts/check_agent_handoff.py` and applicable verification.
-12. Commit in English, push, and open or update a PR. Wait for complete green CI unless the final diff qualifies for the strict documentation-only exception in the playbook.
-13. Merge only when the real-world testing playbook classifier or its documentation-only exception permits it.
-14. Refresh `main` and continue when the bounded objective includes later packets.
-15. Report decisions, files, tests, CI or targeted documentation checks, compatibility, residual risks, rollback, and next state.
+During long CI or compilation, continue safe read-only review or prerequisite work without starting a later packet or changing authority.
 
 ## Rules
 
-1. Reference the architecture book for durable implementation decisions.
-2. Update schemas and authoritative documentation together.
-3. Preserve safety, audit, approval, budget, and rollback boundaries.
-4. Use `docs/NEXT_DECISION.md` as the single forward plan.
-5. Keep documentation current and small.
-6. Run the handoff guard before commit.
-7. Do not invent evidence or claim implementation/CI success before the required underlying evidence exists. Documentation-only merge eligibility does not establish implementation success.
-8. Do not overwrite another agent's active work without reconciling scope and ownership.
+- Keep `docs/NEXT_DECISION.md` as the single forward plan and update schemas/contracts with their authoritative documentation.
+- Use one focused branch/PR per coherent change; any new head invalidates old CI/review evidence.
+- Do not invent evidence or claim implementation/CI success before the underlying check exists.
+- Preserve provider-free CI, default-off product gates, target-main protection, manual merge, and rollback.
+- Prefer concise comments and English commit messages.
 
 ## Documentation Maintenance
 
-Authoritative surfaces:
-- `docs/ARCHITECTURE_BOOK.md` — current architecture and boundaries
-- `docs/CURRENT_STATUS.md` — current state and limitations
-- `docs/NEXT_DECISION.md` — single forward plan
-- `docs/MODULE_MAP.md` — source/test ownership
-- `docs/REAL_WORLD_TESTING_PLAYBOOK.md` — maintenance, PR, CI, and merge workflow
-- `docs/RUNBOOK.md` — proven operator procedures
-- `README.md`, `CLAUDE.md`, `AGENTS.md` — entrypoints and agent boundaries
-
-Prefer prune/archive/link over adding more prose.
-
-## Code Style
-
-- Python 3.10+, dataclasses for schemas, no pydantic in the deterministic kernel
-- Deterministic, testable, auditable behavior
-- Comments only when the reason is non-obvious
-- English commit messages, concise and focused on why
+Keep these surfaces small and non-duplicative: `docs/ARCHITECTURE_BOOK.md`, `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, `docs/REAL_WORLD_TESTING_PLAYBOOK.md`, `docs/RUNBOOK.md`, `README.md`, `CLAUDE.md`, and `AGENTS.md`. Prune stale text before adding prose.
 
 ## Test Strategy
 
-- Rust `cargo test` for engine behavior
-- Python `unittest` for Python SDK and tools
-- TypeScript/Bun tests for SDK and Dashboard
-- Real PostgreSQL tests for persistence compatibility
-- Test alongside implementation
-- GitHub Actions on pull requests and pushes to `main`
-
-## External Dependencies
-
-The dispatch kernel remains free of runtime LLM dependencies. Provider integrations stay behind existing bounded adapters and gates.
+Rust `cargo test` covers engine behavior; Python `unittest` covers SDK/tools; Bun covers SDK/Dashboard; PostgreSQL checks cover persistence parity; GitHub Actions validates PRs and `main`. Add fault, recovery, migration, concurrency, browser, or evaluator-integrity checks when touched.
