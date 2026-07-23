@@ -13,7 +13,7 @@ The managed process-boundary repair is complete via PR #281 squash merge `54b5a4
 ## Active Routing
 
 1. `PE7-PRODUCT-GOLDEN-PATH-1` / `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS`.
-2. Independent maintenance: `PE7-CI-ACCELERATION-1` — `READY_FOR_EXECUTION`; cache/duplication optimization only, with every gate retained.
+2. Independent maintenance: `PE7-CI-ACCELERATION-1` — `IN_PROGRESS`; cache/duplication optimization only, with every gate retained.
 3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
 4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
 5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
@@ -66,9 +66,9 @@ PR #283 squash-merged as `9ee5544c…`; exact head `472c6608…`; full CI run `3
 
 ## Packet PE7-CI-ACCELERATION-1 — bounded CI speed maintenance
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `IN_PROGRESS`
 
-Baseline: tests run `30003155716`; Rust 12m28s, PG 11m00s, cutover 10m28s, Docker 6m27s, native 4m22s, TypeScript 50s, Python 25s. Add versioned Cargo/uv/Bun/BuildKit caching and remove only proven duplicate work; retain exact-head, security, PostgreSQL, provider-free, wire, and stack gates. Compare the same job timings after the change.
+Baseline: tests run `30003155716`; Rust 12m28s, PG 11m00s, cutover 10m28s, Docker 6m27s, native 4m22s, TypeScript 50s, Python 25s. This packet adds versioned Cargo/uv/Bun caching; Docker BuildKit remains a separate follow-up pending a safe compose cache contract. Remove only proven duplicate work; retain exact-head, security, PostgreSQL, provider-free, wire, and stack gates. Compare the same job timings after the change.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
