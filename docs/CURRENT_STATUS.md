@@ -4,7 +4,7 @@ Last updated: 2026-07-24.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `5bb65bbb6685b3d38fffd905a6c88c97df46a6b6` after the cache packet docs sync.
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `f8c027354b267926df5e7884597862e82a289a59` after final cache verification.
 - Open PRs: #225 (presentation-only Dashboard) and #286 (independent TypeScript SDK metadata). Auto-merge is disabled.
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
@@ -49,7 +49,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 ## Confirmed Integration Gaps
 
 1. Disposable Draft PR #1 proves real branch/output plumbing only; it binds `acp/product-ptask-20260722135332-18c4a108f1d4e757` at `6c70195c…` to target `main`, which remains `926f3d47…`.
-2. Managed coding-executor E2E is not proved.
+2. Managed coding-executor E2E is not proved. Main CI run `30029185064` failed once at the pre-existing concurrent output-authority test (`stale product task version at output authority boundary`) and passed on attempt 2; this remains a separate runtime correctness risk, not a cache failure.
 3. RWE has no accepted baseline; Architecture Convergence is blocked until that baseline is frozen.
 4. Level-2 and Meta remain blocked.
 
@@ -65,7 +65,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: `COMPLETE` via PR #282 → `95c3528d`; admission remains disabled pending provider-independent confinement/model authority.
 - `PE7-UTF8-BOUNDARY-REPAIR-1`: `COMPLETE` via PR #283 → `9ee5544c`.
 - `PE7-CI-ACCELERATION-1`: `COMPLETE` via PR #284 → `456092fb`; exact-head/full cache-hit CI passed and main push CI `30006429193` passed.
-- `PE7-CI-CACHE-BUDGET-1`: `COMPLETE` via PR #285 → `9c8c3a42`, #287 → `1bd17d7a`, and #289 → `9db4845c`; final docs-sync main run `30027618799` passed on attempt 2 after one flaky concurrent-test failure on attempt 1. No runtime, gate, provider, or target-branch change.
+- `PE7-CI-CACHE-BUDGET-1`: `COMPLETE` via PR #285 → `9c8c3a42`, #287 → `1bd17d7a`, and #289 → `9db4845c`; final docs-sync main run `30029185064` passed on attempt 2 after the same pre-existing concurrent-test failure on attempt 1. No runtime, gate, provider, or target-branch change.
 - Independent PR #288 → `a08d0e28` repaired the newly published PostCSS advisory; its audit and full CI passed. PR #286 is external work and untouched.
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.

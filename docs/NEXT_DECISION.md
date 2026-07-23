@@ -75,13 +75,13 @@ PR #284 squash-merged as `456092fb…`; exact head `52ae7720…`; exact-head run
 
 PR #285 (`9c8c3a42…`) established the bounded layout; PR #287 (`1bd17d7a…`) removed cutover's full-target restore; PR #289 (`9db4845c…`, exact head `01e67048…`) disabled incremental PG compilation. The initial eight caches used `12,567,992,986` bytes; the final four main caches use `3,870,843,444` bytes. The limit endpoint returned HTTP 402, so the configured account limit is unknown; use a 10 GB reference ceiling and 8 GB operating budget. No repeated-key thrashing or advisory-database cache was found. Old closed-PR caches and the superseded Bun cache were removed only after classification.
 
-Exact-head/full/post-merge verification passed: #285 `30014629247`/`30014629441`/`30017458718`; #287 `30020044817`/`30020044848`; #289 `30025724951`/`30025726379`/main `30026711865`; docs-sync main `30027618799` passed on attempt 2 after one flaky concurrent-test failure. RustSec data still refreshes during `cargo audit`; no security gate or check was removed. This was workflow-only; rollback is revert of #285/#287/#289 plus the docs commits.
+Exact-head/full/post-merge verification passed: #285 `30014629247`/`30014629441`/`30017458718`; #287 `30020044817`/`30020044848`; #289 `30025724951`/`30025726379`/main `30026711865`; final docs-sync main `30029185064` passed on attempt 2 after attempt 1 exposed the pre-existing concurrent output-authority test failure. RustSec data still refreshes during `cargo audit`; no security gate or check was removed. This was workflow-only; rollback is revert of #285/#287/#289 plus the docs commits.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
 **State:** `IN_PROGRESS`
 
-The fixture path and output authority are accepted; the managed coding-executor disposable E2E remains open. Do not start RWE until the residual seal is closed or explicitly accepted under its existing contract.
+The fixture path and output authority are accepted; the managed coding-executor disposable E2E remains open. The intermittent concurrent output-authority test failure is a separate correctness blocker and must not be hidden by a green retry. Do not start RWE until the residual seal is closed or explicitly accepted under its existing contract.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2 — managed acceptance
 
