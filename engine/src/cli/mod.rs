@@ -6,6 +6,7 @@ pub use config::CliConfig;
 
 use std::io::Read;
 use std::process::{Child, Command, Output, Stdio};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -29,6 +30,8 @@ pub enum SpawnWithTimeoutError {
 /// stdout/stderr are forced to pipes and drained on background threads while
 /// waiting so a long-running child that emits a large JSONL/trace stream cannot
 /// block forever once the OS pipe buffer fills.
+/// On Unix the child starts its own session so a timed-out or early-exiting CLI
+/// cannot leave descendants holding the captured pipes open.
 ///
 /// Returns Ok(output) if the child exits within the deadline, or an exact bounded
 /// process failure. Timeout and wait failure retain any termination status
@@ -41,6 +44,7 @@ pub fn spawn_with_timeout(
     // stdout/stderr still get an Output with empty captured buffers when the
     // child writes nothing.
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    configure_process_containment(cmd);
 
     let start = Instant::now();
     let mut spawn_attempt = 0_u8;
@@ -63,15 +67,13 @@ pub fn spawn_with_timeout(
     let stdout_reader = child.stdout.take().map(|mut pipe| {
         std::thread::spawn(move || {
             let mut buffer = Vec::new();
-            let _ = pipe.read_to_end(&mut buffer);
-            buffer
+            pipe.read_to_end(&mut buffer).map(|_| buffer)
         })
     });
     let stderr_reader = child.stderr.take().map(|mut pipe| {
         std::thread::spawn(move || {
             let mut buffer = Vec::new();
-            let _ = pipe.read_to_end(&mut buffer);
-            buffer
+            pipe.read_to_end(&mut buffer).map(|_| buffer)
         })
     });
 
@@ -83,6 +85,7 @@ pub fn spawn_with_timeout(
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if start.elapsed() >= deadline {
+                    kill_process_group(&child);
                     let _ = child.kill();
                     let terminated_status = child.wait().ok();
                     // Drain reader threads after kill so pipes close cleanly.
@@ -96,6 +99,7 @@ pub fn spawn_with_timeout(
                 std::thread::sleep(poll_interval);
             }
             Err(_) => {
+                kill_process_group(&child);
                 let _ = child.kill();
                 let observed_status = child.wait().ok();
                 let _ = join_pipe(stdout_reader);
@@ -110,9 +114,36 @@ pub fn spawn_with_timeout(
 
     // Child already exited; collect drained buffers. Do not call wait_with_output
     // because stdout/stderr handles were moved into the drain threads.
-    let _ = child.wait();
-    let stdout = join_pipe(stdout_reader).unwrap_or_default();
-    let stderr = join_pipe(stderr_reader).unwrap_or_default();
+    // Also terminate any descendants that inherited the pipes before joining the
+    // readers; otherwise an early-exiting shell wrapper can hold this function
+    // past its timeout indefinitely.
+    kill_process_group(&child);
+    let wait_succeeded = child.wait().is_ok();
+    let stdout = match join_pipe(stdout_reader) {
+        Ok(Some(stdout)) => stdout,
+        Ok(None) | Err(()) => {
+            let _ = join_pipe(stderr_reader);
+            return Err(SpawnWithTimeoutError::WaitFailed {
+                elapsed_ms: start.elapsed().as_millis() as i64,
+                observed_status: Some(status),
+            });
+        }
+    };
+    let stderr = match join_pipe(stderr_reader) {
+        Ok(Some(stderr)) => stderr,
+        Ok(None) | Err(()) => {
+            return Err(SpawnWithTimeoutError::WaitFailed {
+                elapsed_ms: start.elapsed().as_millis() as i64,
+                observed_status: Some(status),
+            });
+        }
+    };
+    if !wait_succeeded {
+        return Err(SpawnWithTimeoutError::WaitFailed {
+            elapsed_ms: start.elapsed().as_millis() as i64,
+            observed_status: Some(status),
+        });
+    }
     Ok(Output {
         status,
         stdout,
@@ -120,8 +151,50 @@ pub fn spawn_with_timeout(
     })
 }
 
-fn join_pipe(handle: Option<std::thread::JoinHandle<Vec<u8>>>) -> Option<Vec<u8>> {
-    handle.and_then(|thread| thread.join().ok())
+fn join_pipe(handle: Option<JoinHandle<std::io::Result<Vec<u8>>>>) -> Result<Option<Vec<u8>>, ()> {
+    match handle {
+        None => Ok(None),
+        Some(thread) => thread.join().map_err(|_| ())?.map(Some).map_err(|_| ()),
+    }
+}
+
+fn configure_process_containment(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        // `setsid` is async-signal-safe and runs between fork and exec. The
+        // resulting session/process-group id is the child pid, allowing cleanup
+        // to terminate CLI descendants without touching unrelated processes.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = cmd;
+    }
+}
+
+fn kill_process_group(child: &Child) {
+    #[cfg(unix)]
+    {
+        let process_group_id = child.id() as i32;
+        if process_group_id > 0 {
+            unsafe {
+                let _ = libc::kill(-process_group_id, libc::SIGKILL);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child;
+    }
 }
 
 pub(crate) fn is_transient_text_busy(error: &std::io::Error) -> bool {
@@ -200,6 +273,23 @@ mod tests {
         let result = spawn_with_timeout(&mut cmd, 5_000).expect("large stdout should complete");
         assert!(result.status.success());
         assert_eq!(result.stdout.len(), 256 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_with_timeout_terminates_descendants_after_parent_exit() {
+        // The shell exits immediately, while the background process keeps the
+        // inherited stdout pipe open. The process-group cleanup must close it
+        // instead of making reader joins wait for the background process.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 60 & exit 0"]);
+        let started = Instant::now();
+        let result = spawn_with_timeout(&mut cmd, 2_000).expect("parent should exit cleanly");
+        assert!(result.status.success());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "descendant containment must not extend the bounded wait"
+        );
     }
 
     #[cfg(unix)]
