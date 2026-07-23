@@ -12,13 +12,14 @@ The managed process-boundary repair is complete via PR #281 squash merge `54b5a4
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-1` / `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS`.
-2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-OPENCODE-BINARY-ADMISSION-1` and `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remain deferred/parked; PR #225 remains presentation-only and last.
+1. `PE7-CI-CACHE-BUDGET-1` — `IN_PROGRESS`; repair cutover runner-disk exhaustion before returning to product acceptance.
+2. `PE7-PRODUCT-GOLDEN-PATH-1` / `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS` after the cache repair.
+3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+8. `PE7-OPENCODE-BINARY-ADMISSION-1` and `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remain deferred/parked; PR #225 remains presentation-only and last.
 
 ## Packet States
 
@@ -71,13 +72,13 @@ PR #284 squash-merged as `456092fb…`; exact head `52ae7720…`; exact-head run
 
 ## Packet PE7-CI-CACHE-BUDGET-1 — bounded cache budget
 
-**State:** `COMPLETE`
+**State:** `IN_PROGRESS`
 
-PR #285 squash-merged as `9c8c3a42…` from exact head `a15d16e8…`. Exact-head `30014629247`, cache-miss full CI `30014629441` attempt 1, successful cache-hit attempt 3, and post-merge `main` CI `30017458718` passed. The initial inventory was eight caches / `12,567,992,986` bytes; four Rust target caches were `12,296,328,209` bytes. The current cache-list inventory is four `main` entries / `3,871,103,582` bytes. The storage-limit endpoint returned HTTP 402, so the configured limit is not verifiable; use a conservative 10 GB reference ceiling and 8 GB operating budget, not as a claim about the account setting. The usage endpoint remained stale at six caches / `7,605,958,900` bytes after closed-PR cleanup. No repeated-key thrashing was observed.
+PR #285 squash-merged as `9c8c3a42…` from exact head `a15d16e8…`; its exact-head `30014629247`, cache-miss full CI `30014629441` attempt 1, successful cache-hit attempt 3, and post-merge main CI `30017458718` passed. The subsequent docs-sync main run `30019076720` failed in cutover while restoring the full target archive: the runner reported `No space left on device`. The initial inventory was eight caches / `12,567,992,986` bytes; the current inventory is four `main` entries / `3,871,103,582` bytes. The storage-limit endpoint returned HTTP 402, so the configured limit is not verifiable; use a conservative 10 GB reference ceiling and 8 GB operating budget, not as a claim about the account setting. No repeated-key thrashing was observed.
 
-Goal/result: bound repeatable CI cache storage without changing checks. Rust dependencies use one shared key; `rust-tests` is the sole full-target writer; cutover restores that target read-only; PG/native use dependency-only caching. No audit-database cache was added: each audit still refreshes RustSec data and loads 1,169 advisories. Superseded closed-PR caches `5992161902` and `5993251059` were deleted; `main` caches were retained. No runtime, gate, provider, or target-branch behavior changed.
+Goal/result: bound repeatable CI cache storage without changing checks. Rust dependencies use one shared key; `rust-tests` is the sole full-target writer; cutover no longer restores the full target because the post-merge extraction exhausted runner disk; PG/native use dependency-only caching. No audit-database cache was added: each audit still refreshes RustSec data and loads 1,169 advisories. Superseded closed-PR caches `5992161902` and `5993251059` were deleted; `main` caches were retained. No runtime, gate, provider, or target-branch behavior changed.
 
-Verification: exact-head `30014629247`; miss/hit full CI `30014629441` (hit attempt 2 had a transient PG linker SIGBUS; attempt 3 passed); post-merge `main` `30017458718` passed 7/7. Action pins, workflow parsing, security/handoff, diff, cache inventory, and complete-diff correctness/security reviews passed. Compatibility is workflow-only; rollback is a revert of PR #285. Stop on failed gates, cache growth above budget, missing advisory freshness, provider call, target-main mutation, or an inaccessible limit being presented as known.
+Verification so far: exact-head `30014629247`; miss/hit full CI `30014629441` (hit attempt 2 had a transient PG linker SIGBUS; attempt 3 passed); post-merge `main` `30017458718` passed 7/7. Docs-sync `30019076720` is not accepted because cutover failed on runner disk exhaustion. The repair must pass exact-head, miss/hit/full CI, post-merge main CI, action pins, security/handoff, cache inventory, advisory freshness, and complete-diff correctness/security review. Compatibility is workflow-only; rollback is a revert of the repair.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
