@@ -138,9 +138,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target
-          key: ${{ runner.os }}-rust-target-2026-07-10-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-rust-target-2026-07-10-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-rust-target-2026-07-10-${{ github.job }}-
+            ${{ runner.os }}-rust-target-2026-07-10-
       - name: Run cargo test
         run: cargo test -p engine
       - name: Check formatting
@@ -367,13 +367,13 @@ jobs:
           key: ${{ runner.os }}-rust-deps-2026-07-10-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
-      - name: Cache Rust target for rust-typescript-cutover
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore shared Rust target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target
-          key: ${{ runner.os }}-rust-target-2026-07-10-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-rust-target-2026-07-10-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-rust-target-2026-07-10-${{ github.job }}-
+            ${{ runner.os }}-rust-target-2026-07-10-
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Cache Bun downloads

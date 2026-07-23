@@ -74,9 +74,11 @@ PR #284 squash-merged as `456092fb…`; exact head `52ae7720…`; exact-head run
 
 **State:** `IN_PROGRESS`
 
-Inventory at `4246e7ae…`: 8 caches, `12,567,992,986` bytes; main `12,432,163,836`, PR #284 `135,829,150`. Four Rust target caches contribute `12,296,328,209`; local proxy shows `target/debug/deps` and `target/debug/incremental` dominate. The repository storage-limit API returns 402 because no paid cache setting is available; no higher configured limit is provable, so use a conservative 10 GB effective ceiling and 8 GB steady-state budget. Old PR target caches disappeared, proving eviction; repeated-key thrashing is not yet observed.
+Inventory at `4246e7ae…`: 8 caches, `12,567,992,986` bytes; main `12,432,163,836`, PR #284 `135,829,150`. Four Rust target caches contribute `12,296,328,209`; a local proxy shows `target/debug/deps` and `target/debug/incremental` dominate. The repository storage-limit endpoint returns 402, so the configured limit is not retrievable and no higher custom limit is verified. Use a conservative 10 GB effective ceiling and 8 GB steady-state budget until stronger account evidence exists. Old PR target entries later disappeared, consistent with eviction or cleanup; repeated-key thrashing is not observed.
 
-This branch shares Cargo registry/Git dependencies across Rust jobs and retains full target caches only for `rust-tests` and `rust-typescript-cutover`; PG/native keep dependency caching without full target. No audit-database cache, runtime change, gate removal, provider call, or cache deletion is included before miss/hit/main evidence.
+Goal/result: bound repeatable CI cache storage without changing checks. Rust dependency paths use one shared key; `rust-tests` is the only full-target writer and cutover uses restore-only access to that key; PG/native have dependency-only caching. No audit-database cache, runtime change, gate removal, or provider call is allowed. Inputs are the runner OS, toolchain epoch, and `Cargo.lock` hash; outputs are bounded cache keys and byte inventories; cache miss, restore, save, and API failures remain visible CI outcomes. Ownership stays with GitHub Actions cache service and the existing workflow jobs; Rust/runtime/storage authorities are out of scope.
+
+Prerequisite/verification: exact-head, cache-miss and cache-hit full CI, post-merge main CI, cache inventories, timings, action-pin/security/handoff checks, and complete diff reviews. Compatibility is workflow-only; rollback is a revert of cache path/key changes. Stop on a failed gate, cache growth above budget, missing advisory freshness, provider call, target-main mutation, or an inaccessible limit being misreported as known.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 

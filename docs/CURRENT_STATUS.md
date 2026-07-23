@@ -76,7 +76,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281–#284 are merged; PR #225 remains separate and last. Cache inventory found four duplicated main Rust target caches at 12,296,328,209 bytes, plus small Bun/uv caches; old PR target caches have already disappeared, so eviction occurred, but repeated-key thrashing is not proven. The budget branch retains target caches only for Rust tests/cutover and shares Cargo dependencies. Do not activate RWE, Architecture Convergence, Level-2, Meta, Vader, or Issue #208 before prerequisites.
+PR #281–#284 are merged; PR #225 remains separate and last. Cache inventory found four duplicated main Rust target caches at 12,296,328,209 bytes, plus small Bun/uv caches; old PR target entries later disappeared, consistent with eviction or cleanup, but repeated-key thrashing is not proven. The budget branch shares Cargo dependencies, lets `rust-tests` be the sole target-cache writer, and lets cutover restore that cache read-only; PG/native retain dependency-only caching. Do not activate RWE, Architecture Convergence, Level-2, Meta, Vader, or Issue #208 before prerequisites.
 
 ## Safety Boundary
 
