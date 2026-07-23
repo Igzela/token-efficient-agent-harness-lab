@@ -13,13 +13,12 @@ The managed process-boundary repair is complete via PR #281 squash merge `54b5a4
 ## Active Routing
 
 1. `PE7-PRODUCT-GOLDEN-PATH-1` / `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS`.
-2. Independent maintenance: `PE7-CI-ACCELERATION-1` — `IN_PROGRESS`; cache/duplication optimization only, with every gate retained.
-3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
-8. `PE7-OPENCODE-BINARY-ADMISSION-1` and `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remain deferred/parked; PR #225 remains presentation-only and last.
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-OPENCODE-BINARY-ADMISSION-1` and `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remain deferred/parked; PR #225 remains presentation-only and last.
 
 ## Packet States
 
@@ -66,9 +65,9 @@ PR #283 squash-merged as `9ee5544c…`; exact head `472c6608…`; full CI run `3
 
 ## Packet PE7-CI-ACCELERATION-1 — bounded CI speed maintenance
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-Baseline: tests run `30003155716`; Rust 12m28s, PG 11m00s, cutover 10m28s, Docker 6m27s, native 4m22s, TypeScript 50s, Python 25s. This packet adds versioned Cargo/uv/Bun caching; Docker BuildKit remains a separate follow-up pending a safe compose cache contract. Remove only proven duplicate work; retain exact-head, security, PostgreSQL, provider-free, wire, and stack gates. Compare the same job timings after the change.
+PR #284 squash-merged as `456092fb…`; exact head `52ae7720…`; exact-head run `30004445550`, cache-hit full run `30004445554`, and post-merge main run `30006429193` passed. Baseline → cache-hit: Rust 12m28s → 11m05s, PG 11m00s → 11m02s, cutover 10m28s → 8m14s, Docker 6m27s → 5m02s, native 4m22s → 2m34s, TypeScript 50s → 51s, Python 25s → 22s. Main caches are present; no gate was removed. Cargo-audit (~2m09s), full-test duplication, Docker BuildKit, and cache-size/eviction policy remain unoptimized follow-ups.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 

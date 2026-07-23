@@ -4,7 +4,7 @@ Last updated: 2026-07-23.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `9ee5544c5a20988b05fbb21198671ae062a94599` after PR #283 squash merge.
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `456092fb6db19171f5fa325abd7bf52870ab6d7a` after PR #284 squash merge.
 - Open PR: #225 (presentation-only Dashboard). Auto-merge is disabled.
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
@@ -62,7 +62,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2`: `COMPLETE` via PR #281 → `54b5a430`.
 - `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: `COMPLETE` via PR #282 → `95c3528d`; admission remains disabled pending provider-independent confinement/model authority.
 - `PE7-UTF8-BOUNDARY-REPAIR-1`: `COMPLETE` via PR #283 → `9ee5544c`.
-- `PE7-CI-ACCELERATION-1`: `IN_PROGRESS` on the focused cache-maintenance branch; no gate removal.
+- `PE7-CI-ACCELERATION-1`: `COMPLETE` via PR #284 → `456092fb`; exact-head/full cache-hit CI passed and main push CI `30006429193` passed.
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
@@ -75,7 +75,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281–#283 are merged; PR #225 remains separate and last. CI is green but slow because Rust is cold-built in four jobs and dependency caches are disabled; speed work stays an independent cache/duplication-maintenance lane. Do not activate RWE, Architecture Convergence, Level-2, Meta, Vader, or Issue #208 before their prerequisites.
+PR #281–#284 are merged; PR #225 remains separate and last. Cargo, uv, and Bun caches now exist on `main`; cache-hit run `30004445554` reduced the critical Rust job from 12m28s to 11m05s and cutover from 10m28s to 8m14s. PG remained about 11m, so full-test and duplicate-gate work is still a separate candidate. Do not activate RWE, Architecture Convergence, Level-2, Meta, Vader, or Issue #208 before prerequisites.
 
 ## Safety Boundary
 
