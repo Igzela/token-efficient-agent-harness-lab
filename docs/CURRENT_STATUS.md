@@ -22,7 +22,7 @@ The mandatory remaining product gate is one safely admitted managed coding-execu
 
 `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2` is complete through PR #281 squash merge `54b5a430…`. It added versioned bounded stdout/stderr/combined capture, descendant cleanup, typed process failures, a hardened version probe, and non-retryable post-start failures. It did not authorize a provider call or change Golden Path admission.
 
-The next packet is `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: provider-free binary, environment, model-authority, filesystem-confinement, and security-probe audit. No model request is permitted until its contract is proved.
+The Phase 2 audit found no provider-independent worktree-only filesystem mediation for Claude 2.1.217; managed Claude admission is now fail-closed. No model request is permitted unless a separately reviewed mediation boundary proves the packet contract.
 
 Downstream order: known repairs → managed-executor Golden Path → frozen first RWE → Architecture Convergence → same-corpus RWE rerun → Level-2 GO/NO-GO → separately authorized Meta decision. PR #225 is independent and last. Architecture Convergence and RWE are not yet eligible.
 
@@ -57,7 +57,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 ## Active Tracks
 
 - `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2`: `COMPLETE` via PR #281 → `54b5a430`.
-- `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: `READY_FOR_EXECUTION`; provider-free audit only until confinement/model authority are proved.
+- `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: `IN_PROGRESS`; admission disabled pending provider-independent confinement/model authority.
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
