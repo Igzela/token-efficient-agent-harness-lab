@@ -259,10 +259,13 @@ impl NodeExecutor for CliNodeExecutor {
         } else {
             std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string())
         };
+        // Prompt/objective is already passed as a CLI argument for both admitted
+        // Codex and Claude invocations. Keep stdin closed (EOF) so the child does
+        // not block forever waiting for additional piped input.
         cmd.current_dir(&cwd)
             .env_clear()
             .env("PATH", child_path)
-            .stdin(Stdio::piped())
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let environment_keys = if effective_type == "claude_code_cli" {
@@ -765,14 +768,19 @@ fn product_execution_prompt(input: &NodeExecutionInput, objective: &str) -> Resu
         .join("\n- ");
 
     Ok(format!(
-        "The control plane has already authorized this bounded workspace-apply execution for product task {task_id}. Do not request or wait for another execution approval. This authorization covers only edits inside the bound workspace and only the allowed paths below. It does not approve the artifact, confirm target output, authorize a branch push, or authorize pull-request creation. Complete the objective now, verify the requested change, and do not modify any other path.\n\nAllowed paths:\n- {allowed_paths}\n\nObjective:\n{objective}"
+        "The control plane has already authorized this bounded workspace-apply execution for product task {task_id}. Do not request or wait for another execution approval, and do not stop after proposing a plan. Implement the objective immediately inside the bound workspace, using only the allowed paths below. This authorization covers only those edits. It does not approve the artifact, confirm target output, authorize a branch push, or authorize pull-request creation. After the files change, verify the requested change and stop. Do not modify any other path.\n\nAllowed paths:\n- {allowed_paths}\n\nObjective:\n{objective}"
     ))
 }
 
 fn codex_invocation_args(cwd: &Path, prompt: &str) -> Vec<OsString> {
+    // Product worktrees are app-owned git worktrees; skip the interactive trust
+    // prompt while preserving the exact workspace-write sandbox and never-
+    // approval policy. Prompt is a CLI arg and stdin is closed at spawn.
     vec![
         "--ask-for-approval".into(),
         "never".into(),
+        "-c".into(),
+        "approval_policy=\"never\"".into(),
         "exec".into(),
         "--json".into(),
         "--sandbox".into(),
@@ -780,6 +788,7 @@ fn codex_invocation_args(cwd: &Path, prompt: &str) -> Vec<OsString> {
         "--cd".into(),
         cwd.as_os_str().to_os_string(),
         "--ephemeral".into(),
+        "--skip-git-repo-check".into(),
         prompt.into(),
     ]
 }
@@ -1537,6 +1546,8 @@ mod tests {
         let prompt = product_execution_prompt(&input, "Create the requested file").unwrap();
         assert!(prompt.contains("already authorized"));
         assert!(prompt.contains("Do not request or wait for another execution approval"));
+        assert!(prompt.contains("do not stop after proposing a plan"));
+        assert!(prompt.contains("Implement the objective immediately"));
         assert!(prompt.contains("does not approve the artifact"));
         assert!(prompt.contains("docs/managed.md"));
         assert!(prompt.ends_with("Create the requested file"));
@@ -1555,6 +1566,8 @@ mod tests {
             vec![
                 "--ask-for-approval",
                 "never",
+                "-c",
+                "approval_policy=\"never\"",
                 "exec",
                 "--json",
                 "--sandbox",
@@ -1562,6 +1575,7 @@ mod tests {
                 "--cd",
                 "/tmp/bound-workspace",
                 "--ephemeral",
+                "--skip-git-repo-check",
                 "bounded objective",
             ]
         );
