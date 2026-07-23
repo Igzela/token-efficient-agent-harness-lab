@@ -4,7 +4,7 @@ Last updated: 2026-07-23.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `95c3528d01186203c1ab04aa4bf8b6636e8cd182` after PR #282 squash merge.
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `9ee5544c5a20988b05fbb21198671ae062a94599` after PR #283 squash merge.
 - Open PR: #225 (presentation-only Dashboard). Auto-merge is disabled.
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
@@ -24,6 +24,8 @@ The mandatory remaining product gate is one safely admitted managed coding-execu
 
 Phase 2 is complete via PR #282. The audit found no provider-independent worktree-only filesystem mediation for Claude 2.1.217, so managed Claude admission is fail-closed; no model request is permitted unless a separately reviewed mediation boundary proves the packet contract.
 
+Phase 3 is complete via PR #283. Product and Dynamic Workflow previews now truncate only at valid UTF-8 boundaries under a documented byte limit; objective fingerprints remain based on the full objective.
+
 Downstream order: known repairs → managed-executor Golden Path → frozen first RWE → Architecture Convergence → same-corpus RWE rerun → Level-2 GO/NO-GO → separately authorized Meta decision. PR #225 is independent and last. Architecture Convergence and RWE are not yet eligible.
 
 ## Capability Status
@@ -31,6 +33,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 | Capability | State | Truth |
 |---|---|---|
 | Managed CLI process boundary | complete | PR #281; exact-head CI and full applicable checks passed. |
+| UTF-8 bounded previews | complete | PR #283; shared byte-boundary helper and Unicode tests passed. |
 | Product Golden Path | `IN_PROGRESS`, default-off | Fixture path accepted; managed-executor E2E remains open. |
 | Rust runtime/store | active | `engine/` and `LocalProductStore` are sole authorities. |
 | Supervised patch/output | default-off | Reused for worktree, verification, artifact, approval, export, and `acp/*` output. |
@@ -58,6 +61,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 - `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2`: `COMPLETE` via PR #281 → `54b5a430`.
 - `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: `COMPLETE` via PR #282 → `95c3528d`; admission remains disabled pending provider-independent confinement/model authority.
+- `PE7-UTF8-BOUNDARY-REPAIR-1`: `COMPLETE` via PR #283 → `9ee5544c`.
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
@@ -70,7 +74,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281 and PR #282 are merged; PR #225 remains separate and last. UTF-8 boundary repair is next. Do not activate RWE, Architecture Convergence, Level-2, Meta, Vader, or Issue #208 before their prerequisites.
+PR #281–#283 are merged; PR #225 remains separate and last. CI is green but slow because Rust is cold-built in four jobs and dependency caches are disabled; speed work stays an independent cache/duplication-maintenance lane. Do not activate RWE, Architecture Convergence, Level-2, Meta, Vader, or Issue #208 before their prerequisites.
 
 ## Safety Boundary
 

@@ -12,8 +12,8 @@ The managed process-boundary repair is complete via PR #281 squash merge `54b5a4
 
 ## Active Routing
 
-1. `PE7-UTF8-BOUNDARY-REPAIR-1` — `READY_FOR_EXECUTION`.
-2. `PE7-PRODUCT-GOLDEN-PATH-1` / `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS`.
+1. `PE7-PRODUCT-GOLDEN-PATH-1` / `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS`.
+2. Independent maintenance: `PE7-CI-ACCELERATION-1` — `READY_FOR_EXECUTION`; cache/duplication optimization only, with every gate retained.
 3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
 4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
 5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
@@ -60,11 +60,15 @@ PR #282 merged as `95c3528d…`; exact-head `30001196729`, full tests `300011967
 
 ## Packet PE7-UTF8-BOUNDARY-REPAIR-1 — deterministic UTF-8 previews
 
+**State:** `COMPLETE`
+
+PR #283 squash-merged as `9ee5544c…`; exact head `472c6608…`; full CI run `30003155716` and exact-head run `30003155742` passed. The shared helper includes the ellipsis in the byte limit, preserves valid UTF-8 boundaries, and keeps hashes based on complete objectives. No external validation run was applicable.
+
+## Packet PE7-CI-ACCELERATION-1 — bounded CI speed maintenance
+
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2 (complete)
-
-Repair arbitrary byte slicing in Product Golden Path and Dynamic Workflow previews with one deterministic helper, boundary tests, and only the minimum factual documentation corrections.
+Baseline: tests run `30003155716`; Rust 12m28s, PG 11m00s, cutover 10m28s, Docker 6m27s, native 4m22s, TypeScript 50s, Python 25s. Add versioned Cargo/uv/Bun/BuildKit caching and remove only proven duplicate work; retain exact-head, security, PostgreSQL, provider-free, wire, and stack gates. Compare the same job timings after the change.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
