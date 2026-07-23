@@ -468,6 +468,7 @@ impl<'a> ToolPolicyNodeExecutor<'a> {
             estimated_cost: None,
             latency_ms: Some(0),
             process_outcome: None,
+            resolved_model: None,
         }
     }
 
@@ -755,6 +756,7 @@ impl NodeExecutor for ToolPolicyNodeExecutor<'_> {
                         estimated_cost: None,
                         latency_ms: Some(0),
                         process_outcome: None,
+                        resolved_model: None,
                     };
                 }
                 Ok(ToolExecutionGate::Authorized) => {
@@ -968,6 +970,7 @@ mod tests {
                 estimated_cost: Some(0.01),
                 latency_ms: Some(3),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 
@@ -1546,6 +1549,7 @@ mod tests {
                     estimated_cost: None,
                     latency_ms: Some(1),
                     process_outcome: None,
+                    resolved_model: None,
                 }
             }
 
@@ -1624,6 +1628,7 @@ mod tests {
                     estimated_cost: Some(0.25),
                     latency_ms: Some(9),
                     process_outcome: None,
+                    resolved_model: None,
                 }
             }
 
@@ -1831,6 +1836,7 @@ mod pg_tests {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 

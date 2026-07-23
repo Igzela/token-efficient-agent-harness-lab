@@ -868,7 +868,7 @@ mod tests {
             &binary,
             "2.1.217",
             &digest,
-            crate::cli::config::ADMITTED_CLAUDE_CODE_MODEL,
+            Some(crate::cli::config::ADMITTED_CLAUDE_CODE_MODEL),
             3,
             2.16,
         )

@@ -155,6 +155,7 @@ impl NodeExecutor for CliNodeExecutor {
                     estimated_cost: None,
                     latency_ms: Some(start.elapsed().as_millis() as i64),
                     process_outcome: None,
+                    resolved_model: None,
                 };
             }
         };
@@ -172,6 +173,7 @@ impl NodeExecutor for CliNodeExecutor {
                     estimated_cost: None,
                     latency_ms: Some(start.elapsed().as_millis() as i64),
                     process_outcome: None,
+                    resolved_model: None,
                 };
             }
         };
@@ -215,6 +217,7 @@ impl NodeExecutor for CliNodeExecutor {
                         estimated_cost: None,
                         latency_ms: Some(start.elapsed().as_millis() as i64),
                         process_outcome: None,
+                        resolved_model: None,
                     };
                 }
             },
@@ -230,6 +233,7 @@ impl NodeExecutor for CliNodeExecutor {
                     estimated_cost: None,
                     latency_ms: Some(start.elapsed().as_millis() as i64),
                     process_outcome: None,
+                    resolved_model: None,
                 };
             }
         };
@@ -303,6 +307,7 @@ impl NodeExecutor for CliNodeExecutor {
                         estimated_cost: None,
                         latency_ms: Some(elapsed_ms),
                         process_outcome: Some(process_outcome),
+                        resolved_model: None,
                     };
                 }
 
@@ -389,6 +394,7 @@ impl NodeExecutor for CliNodeExecutor {
                     estimated_cost: None,
                     latency_ms: Some(elapsed_ms),
                     process_outcome: Some(process_outcome),
+                    resolved_model: None,
                 }
             }
         }
@@ -412,6 +418,7 @@ fn failed_without_process(
         estimated_cost: None,
         latency_ms: Some(latency_ms),
         process_outcome: None,
+        resolved_model: None,
     }
 }
 
@@ -423,7 +430,7 @@ fn validate_claude_execution_authority(
         &admission.binary_path,
         &admission.binary_version,
         &admission.binary_sha256,
-        &admission.model,
+        admission.model.as_deref(),
         admission.max_turns,
         admission.max_budget_usd,
     )?;
@@ -457,7 +464,9 @@ fn validate_claude_execution_authority(
             != Some(admission.binary_version.as_str())
         || identity.get("binary_sha256").and_then(Value::as_str)
             != Some(admission.binary_sha256.as_str())
-        || identity.get("model").and_then(Value::as_str) != Some(admission.model.as_str())
+        || identity.get("model_resolution").and_then(Value::as_str)
+            != Some(admission.model_resolution())
+        || !model_identity_matches(identity.get("model"), admission.model.as_deref())
         || identity.get("max_turns").and_then(Value::as_u64) != Some(admission.max_turns)
         || identity.get("max_attempt_tokens").and_then(Value::as_u64)
             != Some(admission.max_attempt_tokens)
@@ -513,6 +522,13 @@ fn validate_claude_execution_authority(
     Ok(())
 }
 
+fn model_identity_matches(identity_model: Option<&Value>, admitted_model: Option<&str>) -> bool {
+    match admitted_model {
+        Some(pin) => identity_model.and_then(Value::as_str) == Some(pin),
+        None => identity_model.is_none_or(Value::is_null),
+    }
+}
+
 fn claude_invocation_args(
     admission: &ClaudeCodeAdmission,
     allowed_paths: &[Value],
@@ -560,7 +576,7 @@ fn claude_invocation_args(
             "autoAllowBashIfSandboxed": false
         }
     });
-    vec![
+    let mut args = vec![
         "-p".into(),
         prompt.into(),
         "--output-format".into(),
@@ -582,13 +598,16 @@ fn claude_invocation_args(
         "Read,Edit,Write".into(),
         "--settings".into(),
         settings.to_string().into(),
-        "--model".into(),
-        admission.model.clone().into(),
-        "--max-turns".into(),
-        admission.max_turns.to_string().into(),
-        "--max-budget-usd".into(),
-        format!("{:.2}", admission.max_budget_usd).into(),
-    ]
+    ];
+    if let Some(model) = &admission.model {
+        args.push("--model".into());
+        args.push(model.clone().into());
+    }
+    args.push("--max-turns".into());
+    args.push(admission.max_turns.to_string().into());
+    args.push("--max-budget-usd".into());
+    args.push(format!("{:.2}", admission.max_budget_usd).into());
+    args
 }
 
 fn parse_admitted_claude_output(
@@ -612,6 +631,7 @@ fn parse_admitted_claude_output(
                 estimated_cost: None,
                 latency_ms: Some(latency_ms),
                 process_outcome: Some(process_outcome),
+                resolved_model: None,
             };
         }
     };
@@ -636,17 +656,31 @@ fn parse_admitted_claude_output(
         .get("total_cost_usd")
         .and_then(Value::as_f64)
         .filter(|value| value.is_finite() && *value >= 0.0 && *value <= admission.max_budget_usd);
-    let admitted_model_cost = parsed
+    // The CLI must prove exactly one resolved model identity through its
+    // owner-reported per-model usage. In pinned mode that identity must equal
+    // the admitted snapshot; in subscription-default mode it is recorded as
+    // the resolved identity. Missing or ambiguous model identity fails closed.
+    let resolved = parsed
         .get("modelUsage")
         .and_then(Value::as_object)
         .filter(|models| models.len() == 1)
-        .and_then(|models| models.get(&admission.model))
-        .and_then(|usage| usage.get("costUSD"))
+        .and_then(|models| models.iter().next());
+    let resolved_model = resolved
+        .map(|(model, _)| model.clone())
+        .filter(|model| !model.trim().is_empty());
+    let resolved_model_cost = resolved
+        .and_then(|(_, usage)| usage.get("costUSD"))
         .and_then(Value::as_f64)
         .filter(|value| value.is_finite() && *value >= 0.0);
-    let exact_model_used = cost.zip(admitted_model_cost).is_some_and(|(total, model)| {
-        (total - model).abs() <= 1e-9 && model <= admission.max_budget_usd
-    });
+    let model_matches_admission = match (&admission.model, &resolved_model) {
+        (Some(pin), Some(resolved)) => resolved == pin,
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    let exact_model_used = model_matches_admission
+        && cost.zip(resolved_model_cost).is_some_and(|(total, model)| {
+            (total - model).abs() <= 1e-9 && model <= admission.max_budget_usd
+        });
     let successful_turns = parsed.get("subtype").and_then(Value::as_str) == Some("success")
         && parsed.get("is_error").and_then(Value::as_bool) == Some(false)
         && parsed
@@ -670,7 +704,7 @@ fn parse_admitted_claude_output(
             output: None,
             error_domain: Some("cli_evidence_incomplete".to_string()),
             error_message: Some(
-                "Claude Code response lacks a successful bounded turn or exact admitted model, usage, and cost evidence"
+                "Claude Code response lacks a successful bounded turn or proven resolved model, usage, and cost evidence"
                     .to_string(),
             ),
             input_tokens,
@@ -678,6 +712,7 @@ fn parse_admitted_claude_output(
             estimated_cost: cost,
             latency_ms: Some(latency_ms),
             process_outcome: Some(process_outcome),
+            resolved_model,
         };
     }
     NodeExecutionOutput {
@@ -691,6 +726,7 @@ fn parse_admitted_claude_output(
         estimated_cost: cost,
         latency_ms: Some(latency_ms),
         process_outcome: Some(process_outcome),
+        resolved_model,
     }
 }
 
@@ -759,6 +795,12 @@ fn cli_env_allowlist() -> Vec<String> {
 }
 
 fn claude_env_allowlist() -> Vec<String> {
+    // Bounded process variables plus explicitly selected first-party Claude Code
+    // credential/configuration variables. `ANTHROPIC_BASE_URL`,
+    // `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_MODEL` are the first-party variables
+    // an operator subscription import uses; they pass through only when the
+    // operator sets them. Generic proxy variables and TLS overrides stay
+    // discarded. Values are never persisted or logged by the harness.
     const ADMITTED: &[&str] = &[
         "HOME",
         "LANG",
@@ -773,6 +815,9 @@ fn claude_env_allowlist() -> Vec<String> {
         "USER",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_MODEL",
     ];
     cli_env_allowlist()
         .into_iter()
@@ -804,6 +849,7 @@ fn parse_cli_output(
                 estimated_cost: None,
                 latency_ms: Some(latency_ms),
                 process_outcome: Some(process_outcome),
+                resolved_model: None,
             };
         }
     };
@@ -844,6 +890,7 @@ fn parse_cli_output(
         estimated_cost: None,
         latency_ms: Some(latency_ms),
         process_outcome: Some(process_outcome),
+        resolved_model: None,
     }
 }
 
@@ -873,6 +920,7 @@ fn parse_codex_jsonl(
                     estimated_cost: None,
                     latency_ms: Some(latency_ms),
                     process_outcome: Some(process_outcome),
+                    resolved_model: None,
                 };
             }
         };
@@ -931,6 +979,7 @@ fn parse_codex_jsonl(
             estimated_cost: None,
             latency_ms: Some(latency_ms),
             process_outcome: Some(process_outcome),
+            resolved_model: None,
         };
     }
     if !completed {
@@ -945,6 +994,7 @@ fn parse_codex_jsonl(
             estimated_cost: None,
             latency_ms: Some(latency_ms),
             process_outcome: Some(process_outcome),
+            resolved_model: None,
         };
     }
 
@@ -959,6 +1009,7 @@ fn parse_codex_jsonl(
         estimated_cost: None,
         latency_ms: Some(latency_ms),
         process_outcome: Some(process_outcome),
+        resolved_model: None,
     }
 }
 
@@ -992,7 +1043,7 @@ mod tests {
             &binary,
             "2.1.217",
             &digest,
-            super::super::config::ADMITTED_CLAUDE_CODE_MODEL,
+            Some(super::super::config::ADMITTED_CLAUDE_CODE_MODEL),
             3,
             2.16,
         )
@@ -1015,6 +1066,7 @@ mod tests {
                 "binary_version": admission.binary_version,
                 "binary_sha256": admission.binary_sha256,
                 "model": admission.model,
+                "model_resolution": admission.model_resolution(),
                 "max_turns": admission.max_turns,
                 "max_attempt_tokens": admission.max_attempt_tokens,
                 "context_tokens": admission.context_tokens,
@@ -1184,6 +1236,97 @@ mod tests {
             inconsistent.error_domain.as_deref(),
             Some("cli_evidence_incomplete")
         );
+    }
+
+    #[cfg(unix)]
+    fn subscription_fake_claude(workspace: &Path, body: &str) -> ClaudeCodeAdmission {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::PermissionsExt;
+
+        let binary = workspace.join("claude-fixture-subscription-2.1.217");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '2.1.217 (Claude Code)\\n'; exit 0; fi\n{body}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let digest = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+        ClaudeCodeAdmission::validate(&binary, "2.1.217", &digest, None, 3, 2.16).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subscription_default_claude_omits_model_flag_and_records_resolved_identity() {
+        let workspace = tempfile::tempdir().unwrap();
+        let admission = subscription_fake_claude(
+            workspace.path(),
+            "printf '%s\\n' '{\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"done\",\"usage\":{\"input_tokens\":10,\"output_tokens\":4},\"total_cost_usd\":0.0,\"modelUsage\":{\"subscription-claude-default\":{\"costUSD\":0.0}}}'",
+        );
+        let args =
+            claude_invocation_args(&admission, &[json!("docs/managed.md")], "bounded objective")
+                .into_iter()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+        assert!(!args.iter().any(|value| value == "--model"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--max-budget-usd", "2.16"]));
+
+        let executor = CliNodeExecutor::admitted_claude(admission.clone(), 30_000);
+        let output = executor.execute_node(&NodeExecutionInput {
+            task_type: "claude_code_cli".to_string(),
+            ..make_input(claude_metadata(workspace.path(), &admission))
+        });
+        assert_eq!(output.status, "completed", "{output:?}");
+        assert_eq!(
+            output.resolved_model.as_deref(),
+            Some("subscription-claude-default")
+        );
+        assert_eq!(output.input_tokens, Some(10));
+        assert_eq!(output.output_tokens, Some(4));
+        let value = output.to_value();
+        assert_eq!(
+            value.get("resolved_model").and_then(Value::as_str),
+            Some("subscription-claude-default")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subscription_default_claude_rejects_ambiguous_or_missing_model_identity() {
+        let workspace = tempfile::tempdir().unwrap();
+        let admission = subscription_fake_claude(workspace.path(), "exit 0");
+        let ambiguous = "{\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"done\",\"usage\":{\"input_tokens\":10,\"output_tokens\":4},\"total_cost_usd\":0.01,\"modelUsage\":{\"model-a\":{\"costUSD\":0.01},\"model-b\":{\"costUSD\":0.0}}}";
+        let missing = "{\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"done\",\"usage\":{\"input_tokens\":10,\"output_tokens\":4},\"total_cost_usd\":0.01}";
+
+        for raw in [ambiguous, missing] {
+            let output = parse_admitted_claude_output(raw, &admission, 12, successful_process());
+            assert_eq!(output.status, "failed", "{raw}");
+            assert_eq!(
+                output.error_domain.as_deref(),
+                Some("cli_evidence_incomplete"),
+                "{raw}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_claude_rejects_a_different_resolved_model_identity() {
+        let workspace = tempfile::tempdir().unwrap();
+        let admission = admitted_fake_claude(workspace.path(), "exit 0");
+        let raw = "{\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"done\",\"usage\":{\"input_tokens\":10,\"output_tokens\":4},\"total_cost_usd\":0.01,\"modelUsage\":{\"some-other-model\":{\"costUSD\":0.01}}}";
+
+        let output = parse_admitted_claude_output(raw, &admission, 12, successful_process());
+
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("cli_evidence_incomplete")
+        );
+        assert_eq!(output.resolved_model.as_deref(), Some("some-other-model"));
     }
 
     #[cfg(unix)]
@@ -1498,20 +1641,28 @@ mod tests {
     }
 
     #[test]
-    fn claude_env_allowlist_excludes_proxy_model_and_cloud_routing_overrides() {
+    fn claude_env_allowlist_admits_first_party_subscription_vars_but_not_proxy_or_cloud_overrides()
+    {
         let _guard = env_lock().lock().unwrap();
         std::env::set_var(
             "ACP_CLI_ENV_ALLOWLIST",
-            "HOME,CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,ANTHROPIC_MODEL,CLAUDE_CODE_USE_BEDROCK,HTTPS_PROXY",
+            "HOME,CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_MODEL,CLAUDE_CODE_USE_BEDROCK,HTTPS_PROXY,ANTHROPIC_TLS_INSECURE",
         );
 
         let admitted = claude_env_allowlist();
+        std::env::remove_var("ACP_CLI_ENV_ALLOWLIST");
 
         assert_eq!(
             admitted,
-            ["HOME", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
+            [
+                "HOME",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_MODEL"
+            ]
         );
-        std::env::remove_var("ACP_CLI_ENV_ALLOWLIST");
     }
 
     #[test]

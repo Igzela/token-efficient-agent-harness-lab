@@ -1622,6 +1622,7 @@ impl NodeExecutor for PgCountingExecutor {
             estimated_cost: None,
             latency_ms: Some(1),
             process_outcome: None,
+            resolved_model: None,
         }
     }
 
@@ -2117,6 +2118,7 @@ fn pg_agent_global_cap_is_atomic_across_runs() {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 
@@ -2139,6 +2141,7 @@ fn pg_agent_global_cap_is_atomic_across_runs() {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 
@@ -2265,6 +2268,7 @@ fn pg_stale_worker_cannot_overwrite_reclaimed_attempt() {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 
@@ -2288,6 +2292,7 @@ fn pg_stale_worker_cannot_overwrite_reclaimed_attempt() {
                 estimated_cost: None,
                 latency_ms: Some(1),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
 

@@ -1601,6 +1601,7 @@ mod tests {
                 estimated_cost: Some(0.01),
                 latency_ms: Some(5),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
     }
@@ -1627,6 +1628,7 @@ mod tests {
                 estimated_cost: None,
                 latency_ms: Some(0),
                 process_outcome: None,
+                resolved_model: None,
             }
         }
     }

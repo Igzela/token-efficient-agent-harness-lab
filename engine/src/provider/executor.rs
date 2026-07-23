@@ -247,6 +247,7 @@ impl NodeExecutor for ProviderNodeExecutor {
                 estimated_cost: None,
                 latency_ms: Some(start.elapsed().as_millis() as i64),
                 process_outcome: None,
+                resolved_model: None,
             };
         }
 
@@ -275,6 +276,7 @@ impl NodeExecutor for ProviderNodeExecutor {
                 estimated_cost: Some(reserved_cost),
                 latency_ms: Some(start.elapsed().as_millis() as i64),
                 process_outcome: None,
+                resolved_model: None,
             };
         }
 
@@ -324,6 +326,7 @@ impl NodeExecutor for ProviderNodeExecutor {
                         estimated_cost: resp.estimated_cost.or(Some(reserved_cost)),
                         latency_ms: Some(start.elapsed().as_millis() as i64),
                         process_outcome: None,
+                        resolved_model: None,
                     };
                 }
                 Err(err) if should_retry(&err, &policy, attempt) => {
@@ -351,6 +354,7 @@ impl NodeExecutor for ProviderNodeExecutor {
                             estimated_cost: Some(reserved_cost),
                             latency_ms: Some(start.elapsed().as_millis() as i64),
                             process_outcome: None,
+                            resolved_model: None,
                         };
                     }
                     self.audit(
@@ -381,6 +385,7 @@ impl NodeExecutor for ProviderNodeExecutor {
                         estimated_cost: Some(reserved_cost),
                         latency_ms: Some(start.elapsed().as_millis() as i64),
                         process_outcome: None,
+                        resolved_model: None,
                     };
                 }
             }

@@ -850,6 +850,7 @@ impl NodeExecutor for AdaptiveProviderNodeExecutor {
                     estimated_cost: Some(result.total_provider_cost_usd),
                     latency_ms: Some(result.elapsed_ms as i64),
                     process_outcome: None,
+                    resolved_model: None,
                 }
             }
             Ok(Err(error)) => {
@@ -2141,6 +2142,7 @@ fn adaptive_node_error(
         estimated_cost,
         latency_ms: elapsed_ms.map(|value| value as i64),
         process_outcome: None,
+        resolved_model: None,
     }
 }
 

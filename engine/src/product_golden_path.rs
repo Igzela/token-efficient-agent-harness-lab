@@ -1256,6 +1256,7 @@ pub fn compile_product_executable_graph(
             "binary_version": admission.binary_version,
             "binary_sha256": admission.binary_sha256,
             "model": admission.model,
+            "model_resolution": admission.model_resolution(),
             "max_turns": admission.max_turns,
             "max_budget_usd": admission.max_budget_usd,
             "max_attempt_tokens": admission.max_attempt_tokens,

@@ -3049,6 +3049,7 @@ impl LocalProductStore {
                 "reference": {"run_id": run_id, "node_id": node_id, "attempt": execution_attempt},
                 "input_tokens": execution.get("input_tokens"),
                 "output_tokens": execution.get("output_tokens"),
+                "resolved_model": execution.get("resolved_model").cloned().unwrap_or(Value::Null),
                 "provenance": "node_executor_owner_reported",
             })
         } else {
@@ -3827,6 +3828,10 @@ fn product_node_output_from_value(value: &Value) -> Result<NodeExecutionOutput, 
             .map(serde_json::from_value::<ProcessOutcome>)
             .transpose()
             .map_err(|error| format!("invalid managed process_outcome: {error}"))?,
+        resolved_model: value
+            .get("resolved_model")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 

@@ -1053,6 +1053,7 @@ impl engine::node_executor::NodeExecutor for OutputStateMetricsExecutor {
             estimated_cost: Some(0.0),
             latency_ms: Some(1),
             process_outcome: None,
+            resolved_model: None,
         }
     }
 }
@@ -1078,6 +1079,7 @@ impl engine::node_executor::NodeExecutor for MetricsNodeExecutor {
             estimated_cost: Some(if is_tool { 0.0 } else { 0.012 }),
             latency_ms: Some(if is_tool { 9 } else { 33 }),
             process_outcome: None,
+            resolved_model: None,
         }
     }
 }

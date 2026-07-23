@@ -165,6 +165,7 @@ impl NodeExecutor for ReceiptReportingManagedExecutor {
             process_outcome: Some(ProcessOutcome::unavailable(
                 "in-process test executor has no OS process outcome",
             )),
+            resolved_model: None,
         }
     }
 }

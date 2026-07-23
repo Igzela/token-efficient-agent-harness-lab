@@ -32,12 +32,22 @@ const MAX_ADMITTED_CLI_BINARY_BYTES: u64 = 512 * 1024 * 1024;
 /// https://platform.claude.com/docs/en/about-claude/models/overview
 /// Claude Code's exact-model and bounded-turn flags are documented at:
 /// https://code.claude.com/docs/en/cli-usage#cli-flags
+///
+/// The model may be bound in two ways:
+/// - `Some(_)`: the exact admitted model snapshot is passed with `--model` and the
+///   CLI response must prove that exact identity.
+/// - `None`: no `--model` flag is passed and the admitted CLI resolves its own
+///   configured default (for example an operator subscription import through the
+///   first-party `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL`
+///   environment). The resolved identity must still be proven from the
+///   owner-reported single-entry `modelUsage` evidence and is recorded as
+///   `resolved_model`; absent or ambiguous model identity fails closed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClaudeCodeAdmission {
     pub binary_path: PathBuf,
     pub binary_version: String,
     pub binary_sha256: String,
-    pub model: String,
+    pub model: Option<String>,
     pub max_turns: u64,
     pub max_budget_usd: f64,
     pub max_attempt_tokens: u64,
@@ -53,11 +63,20 @@ pub struct ClaudeCodeAdmission {
 }
 
 impl ClaudeCodeAdmission {
+    /// Model-resolution mode recorded in the managed executor identity.
+    pub fn model_resolution(&self) -> &'static str {
+        if self.model.is_some() {
+            "exact_admitted_pin"
+        } else {
+            "cli_subscription_default"
+        }
+    }
+
     pub fn validate(
         binary_path: &Path,
         expected_version: &str,
         expected_sha256: &str,
-        model: &str,
+        model: Option<&str>,
         max_turns: u64,
         max_budget_usd: f64,
     ) -> Result<Self, String> {
@@ -124,8 +143,10 @@ impl ClaudeCodeAdmission {
                 "Claude Code binary version does not match the admitted identity".to_string(),
             );
         }
-        if model != ADMITTED_CLAUDE_CODE_MODEL {
-            return Err("Claude Code model is not the exact admitted snapshot".to_string());
+        if let Some(model) = model {
+            if model != ADMITTED_CLAUDE_CODE_MODEL {
+                return Err("Claude Code model is not the exact admitted snapshot".to_string());
+            }
         }
         if max_turns != ADMITTED_CLAUDE_CODE_MAX_TURNS {
             return Err(format!(
@@ -144,7 +165,7 @@ impl ClaudeCodeAdmission {
             binary_path: binary_path.to_path_buf(),
             binary_version: expected_version.to_string(),
             binary_sha256,
-            model: model.to_string(),
+            model: model.map(str::to_string),
             max_turns,
             max_budget_usd,
             max_attempt_tokens: ADMITTED_CLAUDE_CODE_MAX_ATTEMPT_TOKENS,
@@ -273,15 +294,17 @@ fn admit_claude_code_from_env() -> Result<ClaudeCodeAdmission, String> {
         .ok_or_else(|| "ACP_CLAUDE_CODE_VERSION is required".to_string())?;
     let sha256 = env_opt("ACP_CLAUDE_CODE_SHA256")
         .ok_or_else(|| "ACP_CLAUDE_CODE_SHA256 is required".to_string())?;
-    let model =
-        env_opt("ACP_CLAUDE_MODEL").ok_or_else(|| "ACP_CLAUDE_MODEL is required".to_string())?;
+    // Optional: when unset, the admitted CLI resolves its own configured default
+    // model (subscription import) and must prove the resolved identity in its
+    // owner-reported usage evidence.
+    let model = env_opt("ACP_CLAUDE_MODEL");
     let max_turns = env_required_u64("ACP_CLAUDE_MAX_TURNS")?;
     let max_budget_usd = env_required_f64("ACP_CLAUDE_MAX_BUDGET_USD")?;
     ClaudeCodeAdmission::validate(
         &binary_path,
         &version,
         &sha256,
-        &model,
+        model.as_deref(),
         max_turns,
         max_budget_usd,
     )
@@ -382,7 +405,7 @@ mod tests {
             &binary,
             "2.1.217",
             &digest,
-            "claude-haiku-4-5-20251001",
+            Some("claude-haiku-4-5-20251001"),
             3,
             2.16,
         )
@@ -391,7 +414,11 @@ mod tests {
         assert_eq!(admission.binary_path, binary);
         assert_eq!(admission.binary_version, "2.1.217");
         assert_eq!(admission.binary_sha256, digest);
-        assert_eq!(admission.model, "claude-haiku-4-5-20251001");
+        assert_eq!(
+            admission.model.as_deref(),
+            Some("claude-haiku-4-5-20251001")
+        );
+        assert_eq!(admission.model_resolution(), "exact_admitted_pin");
         assert_eq!(admission.max_turns, 3);
         assert_eq!(admission.max_attempt_tokens, 792_000);
         assert!((admission.max_budget_usd - 2.16).abs() < f64::EPSILON);
@@ -416,7 +443,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let binary = fake_claude_binary(dir.path());
         let digest = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
-        let validate = |model: &str, max_turns: u64, max_budget_usd: f64| {
+        let validate = |model: Option<&str>, max_turns: u64, max_budget_usd: f64| {
             ClaudeCodeAdmission::validate(
                 &binary,
                 "2.1.217",
@@ -427,18 +454,36 @@ mod tests {
             )
         };
 
-        assert!(validate("haiku", 3, 2.16).is_err());
-        assert!(validate(ADMITTED_CLAUDE_CODE_MODEL, 2, 2.16).is_err());
-        assert!(validate(ADMITTED_CLAUDE_CODE_MODEL, 3, 0.72).is_err());
+        assert!(validate(Some("haiku"), 3, 2.16).is_err());
+        assert!(validate(Some(ADMITTED_CLAUDE_CODE_MODEL), 2, 2.16).is_err());
+        assert!(validate(Some(ADMITTED_CLAUDE_CODE_MODEL), 3, 0.72).is_err());
         assert!(ClaudeCodeAdmission::validate(
             &binary,
             "2.1.218",
             &digest,
-            ADMITTED_CLAUDE_CODE_MODEL,
+            Some(ADMITTED_CLAUDE_CODE_MODEL),
             3,
             2.16,
         )
         .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unpinned_claude_model_is_admitted_in_subscription_default_mode() {
+        use sha2::{Digest, Sha256};
+
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_claude_binary(dir.path());
+        let digest = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+
+        let admission = ClaudeCodeAdmission::validate(&binary, "2.1.217", &digest, None, 3, 2.16)
+            .expect("subscription-default Claude admission");
+
+        assert_eq!(admission.model, None);
+        assert_eq!(admission.model_resolution(), "cli_subscription_default");
+        assert_eq!(admission.max_turns, 3);
+        assert!((admission.max_budget_usd - 2.16).abs() < f64::EPSILON);
     }
 
     #[cfg(unix)]
@@ -457,7 +502,7 @@ mod tests {
             &linked,
             "2.1.217",
             &digest,
-            ADMITTED_CLAUDE_CODE_MODEL,
+            Some(ADMITTED_CLAUDE_CODE_MODEL),
             3,
             2.16,
         )
@@ -494,9 +539,37 @@ mod tests {
             config
                 .claude_code_admission
                 .as_ref()
-                .map(|admission| admission.model.as_str()),
+                .and_then(|admission| admission.model.as_deref()),
             Some(ADMITTED_CLAUDE_CODE_MODEL)
         );
+        clear_claude_admission_env();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_config_admits_claude_without_model_env_in_subscription_default_mode() {
+        use sha2::{Digest, Sha256};
+
+        let _guard = env_lock().lock().unwrap();
+        clear_claude_admission_env();
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_claude_binary(dir.path());
+        let digest = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+        std::env::set_var("ACP_ENABLE_CLI_EXECUTION", "1");
+        std::env::set_var("ACP_ENABLE_CLAUDE_CODE_EXECUTION", "1");
+        std::env::set_var("ACP_CLAUDE_CODE_BIN", &binary);
+        std::env::set_var("ACP_CLAUDE_CODE_VERSION", "2.1.217");
+        std::env::set_var("ACP_CLAUDE_CODE_SHA256", &digest);
+        std::env::set_var("ACP_CLAUDE_MAX_TURNS", "3");
+        std::env::set_var("ACP_CLAUDE_MAX_BUDGET_USD", "2.16");
+
+        let config = CliConfig::from_env();
+
+        assert!(config.enabled);
+        assert!(config.claude_code_enabled);
+        let admission = config.claude_code_admission.expect("admission");
+        assert_eq!(admission.model, None);
+        assert_eq!(admission.model_resolution(), "cli_subscription_default");
         clear_claude_admission_env();
     }
 

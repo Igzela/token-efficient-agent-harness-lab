@@ -1748,6 +1748,10 @@ fn node_output_from_value(
             .map(serde_json::from_value)
             .transpose()
             .map_err(|error| internal_error(format!("invalid process_outcome: {error}")))?,
+        resolved_model: value
+            .get("resolved_model")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
     })
 }
 
