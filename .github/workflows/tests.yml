@@ -168,6 +168,7 @@ jobs:
           --health-retries=5
     env:
       ACP_TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/testdb
+      CARGO_INCREMENTAL: "0"
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
