@@ -8,7 +8,7 @@ Target worktrees and `main` remain protected by approval, worktree, branch, patc
 
 ## Current State
 
-PE-1 through PE-6 and the **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED are accepted. Product Golden Path is default-off and its managed-executor acceptance remains the active gate; later order and packet states are in `docs/NEXT_DECISION.md`. Vader/Issue #208 are stopped, Issue #254 is parked, real OpenCode admission is deferred, and the active Harness is immutable.
+PE-1 through PE-6 and the **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED are accepted. Product Golden Path is default-off; Claude managed admission is currently fail-closed because provider-independent worktree-only confinement is unproved. Later order and packet states are in `docs/NEXT_DECISION.md`. Vader/Issue #208 are stopped, Issue #254 is parked, real OpenCode admission is deferred, and the active Harness is immutable.
 
 ## Authority and Safety
 

@@ -8,11 +8,11 @@ Finish known correctness/security repairs, complete the default-off managed-exec
 
 Rust remains the sole authority for state transitions, workflow execution, permissions, budgets, leases, approvals, evidence, output reconciliation, and persistence. TypeScript remains interaction/projection; Python remains a bounded adapter/evaluation/research layer. No second runtime, scheduler, store, evaluator, workspace, output, audit, or rollback owner.
 
-The managed process-boundary repair is complete via PR #281 squash merge `54b5a430…`. The next bounded packet is `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: provider-free admission, filesystem, environment, model-authority, and security-probe audit. It does not authorize a model request, target output, OpenCode admission, Vader/Issue #208 use, or active-Harness mutation.
+The managed process-boundary repair is complete via PR #281 squash merge `54b5a430…`. Phase 2 audited Claude 2.1.217 and found no provider-independent worktree-only filesystem mediation, so managed Claude admission is fail-closed. The packet remains focused on documenting that blocker and preserving a no-request path; it does not authorize a model request, target output, OpenCode admission, Vader/Issue #208 use, or active-Harness mutation.
 
 ## Active Routing
 
-1. `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2` — `READY_FOR_EXECUTION`.
+1. `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2` — `IN_PROGRESS`.
 2. `PE7-UTF8-BOUNDARY-REPAIR-1` — `BLOCKED_PREREQUISITE`.
 3. `PE7-PRODUCT-GOLDEN-PATH-1` / `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS`.
 4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
@@ -53,11 +53,11 @@ PR #281 merged as `54b5a430…`. It proved versioned per-stream/combined limits,
 
 ## Packet PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2 — Claude authority
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2
 
-Before any model request, prove exact binary/version/SHA, worktree-only confinement, synthetic HOME/TMP/config, pre-call model/limit authority, bounded output/process tree, and provider-free security probes; otherwise disable managed Claude admission.
+Audit result: exact binary/version/SHA and bounded process/probe controls exist, but provider-independent worktree-only confinement is not proved and real `HOME` must not be inherited. Runtime Claude admission is disabled; do not make a model request. Reopen only with a separately reviewed mediation boundary and provider-free probes for admitted, out-of-scope, parent/sibling, `/etc`, `/proc/self/environ`, home/secret paths, symlink escape, Bash, WebFetch, WebSearch, MCP, Agent, Task/subagent, and notebook tools.
 
 ## Packet PE7-UTF8-BOUNDARY-REPAIR-1 — deterministic UTF-8 previews
 

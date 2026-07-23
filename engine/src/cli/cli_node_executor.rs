@@ -894,16 +894,12 @@ fn claude_env_allowlist() -> Vec<String> {
     // operator sets them. Generic proxy variables and TLS overrides stay
     // discarded. Values are never persisted or logged by the harness.
     const ADMITTED: &[&str] = &[
-        "HOME",
         "LANG",
         "LC_ALL",
         "LC_CTYPE",
         "LOGNAME",
         "SHELL",
-        "TEMP",
         "TERM",
-        "TMP",
-        "TMPDIR",
         "USER",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_API_KEY",
@@ -1777,12 +1773,11 @@ mod tests {
     }
 
     #[test]
-    fn claude_env_allowlist_admits_first_party_subscription_vars_but_not_proxy_or_cloud_overrides()
-    {
+    fn claude_env_allowlist_excludes_host_paths_and_unadmitted_routing_overrides() {
         let _guard = env_lock().lock().unwrap();
         std::env::set_var(
             "ACP_CLI_ENV_ALLOWLIST",
-            "HOME,CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_MODEL,CLAUDE_CODE_USE_BEDROCK,HTTPS_PROXY,ANTHROPIC_TLS_INSECURE",
+            "HOME,TMP,TMPDIR,CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_MODEL,CLAUDE_CODE_USE_BEDROCK,HTTPS_PROXY,ANTHROPIC_TLS_INSECURE",
         );
 
         let admitted = claude_env_allowlist();
@@ -1791,7 +1786,6 @@ mod tests {
         assert_eq!(
             admitted,
             [
-                "HOME",
                 "CLAUDE_CODE_OAUTH_TOKEN",
                 "ANTHROPIC_API_KEY",
                 "ANTHROPIC_BASE_URL",

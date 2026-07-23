@@ -418,7 +418,7 @@ fn scheduler_tick_executes_command_in_bound_worktree() {
 
 #[cfg(unix)]
 #[test]
-fn exact_claude_contract_fixture_runs_only_through_bound_scheduler_node() {
+fn claude_fixture_does_not_bypass_managed_admission() {
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
 
@@ -447,6 +447,27 @@ fn exact_claude_contract_fixture_runs_only_through_bound_scheduler_node() {
         }
         std::env::set_var("ACP_CLAUDE_CODE_BIN", &binary);
         std::env::set_var("ACP_CLAUDE_CODE_SHA256", &digest);
+
+        // A fixture binary can exercise the parser shape, but it cannot prove
+        // real Claude filesystem confinement. Runtime admission must therefore
+        // remain disabled until provider-independent mediation is accepted.
+        let admission_probe = engine::cli::CliConfig::from_env();
+        if !admission_probe.claude_code_enabled {
+            assert!(admission_probe.claude_code_admission.is_none());
+            for key in [
+                "ACP_ENABLE_CLI_EXECUTION",
+                "ACP_ENABLE_CLAUDE_CODE_EXECUTION",
+                "ACP_CLAUDE_CODE_BIN",
+                "ACP_CLAUDE_CODE_VERSION",
+                "ACP_CLAUDE_CODE_SHA256",
+                "ACP_CLAUDE_MODEL",
+                "ACP_CLAUDE_MAX_TURNS",
+                "ACP_CLAUDE_MAX_BUDGET_USD",
+            ] {
+                std::env::remove_var(key);
+            }
+            return;
+        }
 
         let mut request = sample_intake(&repo, &rev, "g2-claude-adapter");
         request.objective = "Create docs/product_golden_path_fixture.md".to_string();
@@ -551,7 +572,7 @@ fn exact_claude_contract_fixture_runs_only_through_bound_scheduler_node() {
 
 #[cfg(unix)]
 #[test]
-fn subscription_claude_contract_fixture_records_resolved_model_identity() {
+fn subscription_claude_fixture_does_not_bypass_managed_admission() {
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
 
@@ -582,6 +603,26 @@ fn subscription_claude_contract_fixture_records_resolved_model_identity() {
         }
         std::env::set_var("ACP_CLAUDE_CODE_BIN", &binary);
         std::env::set_var("ACP_CLAUDE_CODE_SHA256", &digest);
+
+        // Subscription/default model evidence from a fixture is not managed
+        // acceptance and cannot bypass the confinement gate.
+        let admission_probe = engine::cli::CliConfig::from_env();
+        if !admission_probe.claude_code_enabled {
+            assert!(admission_probe.claude_code_admission.is_none());
+            for key in [
+                "ACP_ENABLE_CLI_EXECUTION",
+                "ACP_ENABLE_CLAUDE_CODE_EXECUTION",
+                "ACP_CLAUDE_CODE_BIN",
+                "ACP_CLAUDE_CODE_VERSION",
+                "ACP_CLAUDE_CODE_SHA256",
+                "ACP_CLAUDE_MODEL",
+                "ACP_CLAUDE_MAX_TURNS",
+                "ACP_CLAUDE_MAX_BUDGET_USD",
+            ] {
+                std::env::remove_var(key);
+            }
+            return;
+        }
 
         let mut request = sample_intake(&repo, &rev, "g2-claude-subscription");
         request.objective = "Create docs/product_golden_path_fixture.md".to_string();

@@ -34,6 +34,15 @@ pub const ADMITTED_CLAUDE_CODE_PRICING_SOURCE: &str =
 pub const ADMITTED_CLAUDE_CODE_PRICING_VERIFIED_AT: &str = "2026-07-22";
 const MAX_ADMITTED_CLI_BINARY_BYTES: u64 = 512 * 1024 * 1024;
 
+// Claude Code 2.1.217 exposes permission/settings controls, but this repository
+// has not proved a provider-independent worktree-only filesystem boundary for
+// the real binary. Keep runtime admission fail-closed until such a mediation
+// owner is separately implemented and reviewed. Identity/probe tests remain
+// useful contract tests; they are not managed admission evidence.
+fn claude_worktree_confinement_proven() -> bool {
+    false
+}
+
 /// Exact Claude Code runtime admission for the managed product executor.
 ///
 /// Model limits and prices are pinned from Anthropic's model overview:
@@ -350,6 +359,12 @@ impl CliConfig {
 }
 
 fn admit_claude_code_from_env() -> Result<ClaudeCodeAdmission, String> {
+    if !claude_worktree_confinement_proven() {
+        return Err(
+            "Claude Code managed admission is disabled: provider-independent worktree-only filesystem confinement is not proven"
+                .to_string(),
+        );
+    }
     let binary_path = env_opt("ACP_CLAUDE_CODE_BIN")
         .map(PathBuf::from)
         .ok_or_else(|| "ACP_CLAUDE_CODE_BIN is required".to_string())?;
@@ -703,7 +718,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn cli_config_registers_only_explicit_exact_claude_admission() {
+    fn cli_config_keeps_claude_disabled_without_filesystem_confinement() {
         use sha2::{Digest, Sha256};
 
         let _guard = env_lock().lock().unwrap();
@@ -723,21 +738,15 @@ mod tests {
         let config = CliConfig::from_env();
 
         assert!(config.enabled);
-        assert!(config.claude_code_enabled);
-        assert_eq!(config.claude_code_bin.as_deref(), binary.to_str());
-        assert_eq!(
-            config
-                .claude_code_admission
-                .as_ref()
-                .and_then(|admission| admission.model.as_deref()),
-            Some(ADMITTED_CLAUDE_CODE_MODEL)
-        );
+        assert!(!config.claude_code_enabled);
+        assert!(config.claude_code_admission.is_none());
+        assert!(config.claude_code_bin.is_none());
         clear_claude_admission_env();
     }
 
     #[cfg(unix)]
     #[test]
-    fn cli_config_admits_claude_without_model_env_in_subscription_default_mode() {
+    fn cli_config_keeps_subscription_default_claude_disabled_without_confinement() {
         use sha2::{Digest, Sha256};
 
         let _guard = env_lock().lock().unwrap();
@@ -756,10 +765,8 @@ mod tests {
         let config = CliConfig::from_env();
 
         assert!(config.enabled);
-        assert!(config.claude_code_enabled);
-        let admission = config.claude_code_admission.expect("admission");
-        assert_eq!(admission.model, None);
-        assert_eq!(admission.model_resolution(), "cli_subscription_default");
+        assert!(!config.claude_code_enabled);
+        assert!(config.claude_code_admission.is_none());
         clear_claude_admission_env();
     }
 
