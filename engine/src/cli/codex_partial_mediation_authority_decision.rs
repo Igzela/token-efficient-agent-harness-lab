@@ -162,7 +162,9 @@ impl Default for BoundedTrialEnvelope {
             max_input_tokens: 32_000,
             max_output_tokens: 4_096,
             max_total_tokens: 36_096,
-            max_cost_usd_estimate: Some("client_estimate_only_unresolved_unless_provider_receipt".into()),
+            max_cost_usd_estimate: Some(
+                "client_estimate_only_unresolved_unless_provider_receipt".into(),
+            ),
             max_wall_time_ms: 600_000,
             draft_pr_only: true,
             target_default_branch_unchanged: true,
@@ -350,7 +352,9 @@ fn decision_body_hash_material(decision: &PartialMediationAuthorityDecision) -> 
 }
 
 fn compute_decision_body_sha256(decision: &PartialMediationAuthorityDecision) -> String {
-    hex::encode(Sha256::digest(decision_body_hash_material(decision).as_bytes()))
+    hex::encode(Sha256::digest(
+        decision_body_hash_material(decision).as_bytes(),
+    ))
 }
 
 fn build_residual_risks(finding: &ResidualAdmissionFinding) -> Vec<ResidualRiskEntry> {
@@ -568,7 +572,8 @@ pub fn validate_operator_acknowledgement(
         }
     }
     // Enforce trial envelope safety that residual NO-GO requires.
-    if decision.trial_envelope.max_retries != 0 && !decision.residual_verdict.contains("full_provider")
+    if decision.trial_envelope.max_retries != 0
+        && !decision.residual_verdict.contains("full_provider")
     {
         return Err("max_retries must be 0 while residual full admission is not closed".into());
     }
@@ -657,9 +662,17 @@ mod tests {
         assert!(!decision.decision_body_sha256.is_empty());
         assert_eq!(decision.decision_body_sha256.len(), 64);
         // Risks cover residual axes.
-        let ids: Vec<_> = decision.residual_risks.iter().map(|r| r.id.as_str()).collect();
+        let ids: Vec<_> = decision
+            .residual_risks
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect();
         assert!(ids.contains(&"retry_identity_unlabeled"));
-        assert!(ids.contains(&"network_not_loopback_only") || ids.contains(&"user_pid_ns_host_dependent") || ids.contains(&"live_credential_authorization"));
+        assert!(
+            ids.contains(&"network_not_loopback_only")
+                || ids.contains(&"user_pid_ns_host_dependent")
+                || ids.contains(&"live_credential_authorization")
+        );
         assert!(ids.contains(&"live_credential_authorization"));
         let json = decision.to_json();
         assert_eq!(json["status"], "draft_pending_operator");
@@ -706,7 +719,10 @@ mod tests {
     #[test]
     fn valid_human_acknowledgement_can_accept_without_agent_self_approve_helper() {
         let mut decision = draft_partial_mediation_authority_decision();
-        assert!(agent_must_not_self_approve(&decision) || !decision.status.authorizes_bounded_live_trial());
+        assert!(
+            agent_must_not_self_approve(&decision)
+                || !decision.status.authorizes_bounded_live_trial()
+        );
         let ok = OperatorAcknowledgementSubmission {
             actor: "operator-alice".into(),
             phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
@@ -749,6 +765,9 @@ mod tests {
         assert!(decision.no_go_alternative.starts_with("NO-GO"));
         assert!(!decision.rollback_and_kill.is_empty());
         assert!(!decision.post_trial_evidence_required.is_empty());
-        assert!(decision.non_claims.iter().any(|c| c.contains("self-approval")));
+        assert!(decision
+            .non_claims
+            .iter()
+            .any(|c| c.contains("self-approval")));
     }
 }
