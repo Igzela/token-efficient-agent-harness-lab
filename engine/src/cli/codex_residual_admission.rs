@@ -22,7 +22,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::codex_mediation_admission::{
-    unprivileged_user_ns_available, BUBBLEWRAP_BIN, CodexAdmissionClass,
+    unprivileged_user_ns_available, CodexAdmissionClass, BUBBLEWRAP_BIN,
 };
 use super::config::ADMITTED_CODEX_VERSION;
 
@@ -302,8 +302,7 @@ pub fn probe_loopback_only_unix_bridge_design() -> Result<NetworkBridgeProbeResu
     let sock_path = dir.path().join("gateway.sock");
     let _ = fs::remove_file(&sock_path);
 
-    let listener = UnixListener::bind(&sock_path)
-        .map_err(|e| format!("unix bind failed: {e}"))?;
+    let listener = UnixListener::bind(&sock_path).map_err(|e| format!("unix bind failed: {e}"))?;
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("unix nonblocking: {e}"))?;
@@ -403,9 +402,7 @@ PY"#,
 
     if !output.status.success() {
         if stderr.contains("uid map") || stderr.contains("Permission denied") {
-            return Err(format!(
-                "BLOCKED:bwrap_userns_unavailable: {stderr}"
-            ));
+            return Err(format!("BLOCKED:bwrap_userns_unavailable: {stderr}"));
         }
         return Err(format!(
             "bridge probe failed: status={:?} stderr={stderr} stdout={stdout}",
@@ -415,8 +412,8 @@ PY"#,
 
     let external_blocked = stdout.contains("EXTERNAL_BLOCKED");
     let host_loopback_isolated = stdout.contains("HOST_LOOPBACK_TCP_BLOCKED");
-    let unix_ok = stdout.contains("UNIX_GATEWAY_OK")
-        && accept_flag.load(std::sync::atomic::Ordering::SeqCst);
+    let unix_ok =
+        stdout.contains("UNIX_GATEWAY_OK") && accept_flag.load(std::sync::atomic::Ordering::SeqCst);
 
     Ok(NetworkBridgeProbeResult {
         external_egress_blocked: external_blocked,
@@ -482,64 +479,64 @@ pub fn investigate_network_confinement(
             .into(),
     ];
 
-    let (unix_bridge, external, host_lo, design_feasible) = match probe_loopback_only_unix_bridge_design()
-    {
-        Ok(result) => {
-            design_notes.push(format!("probe_stdout={}", result.raw_stdout_summary));
-            let unix = if result.unix_gateway_reachable {
-                CapabilityEvidenceClass::Proved
-            } else {
-                CapabilityEvidenceClass::UnavailableFailClosed
-            };
-            let ext = if result.external_egress_blocked {
-                CapabilityEvidenceClass::Proved
-            } else {
-                CapabilityEvidenceClass::UnavailableFailClosed
-            };
-            let hlo = if result.host_loopback_tcp_isolated {
-                CapabilityEvidenceClass::Proved
-            } else {
-                CapabilityEvidenceClass::UnavailableFailClosed
-            };
-            (unix, ext, hlo, result.design_feasible())
-        }
-        Err(err) if err.contains("BLOCKED:bwrap_userns_unavailable") => {
-            design_notes.push(format!("probe_blocked={err}"));
-            (
-                CapabilityEvidenceClass::UnavailableFailClosed,
-                CapabilityEvidenceClass::UnavailableFailClosed,
-                CapabilityEvidenceClass::UnavailableFailClosed,
-                false,
-            )
-        }
-        Err(err) if err.contains("unshare-net unavailable") => {
-            design_notes.push(format!("probe_skipped={err}"));
-            (
-                CapabilityEvidenceClass::UnavailableFailClosed,
-                CapabilityEvidenceClass::UnavailableFailClosed,
-                CapabilityEvidenceClass::UnavailableFailClosed,
-                false,
-            )
-        }
-        Err(err) if err.contains("bwrap unavailable") => {
-            design_notes.push(format!("probe_skipped={err}"));
-            (
-                CapabilityEvidenceClass::Unsupported,
-                CapabilityEvidenceClass::Unsupported,
-                CapabilityEvidenceClass::Unsupported,
-                false,
-            )
-        }
-        Err(err) => {
-            design_notes.push(format!("probe_outcome_unknown={err}"));
-            (
-                CapabilityEvidenceClass::OutcomeUnknown,
-                CapabilityEvidenceClass::OutcomeUnknown,
-                CapabilityEvidenceClass::OutcomeUnknown,
-                false,
-            )
-        }
-    };
+    let (unix_bridge, external, host_lo, design_feasible) =
+        match probe_loopback_only_unix_bridge_design() {
+            Ok(result) => {
+                design_notes.push(format!("probe_stdout={}", result.raw_stdout_summary));
+                let unix = if result.unix_gateway_reachable {
+                    CapabilityEvidenceClass::Proved
+                } else {
+                    CapabilityEvidenceClass::UnavailableFailClosed
+                };
+                let ext = if result.external_egress_blocked {
+                    CapabilityEvidenceClass::Proved
+                } else {
+                    CapabilityEvidenceClass::UnavailableFailClosed
+                };
+                let hlo = if result.host_loopback_tcp_isolated {
+                    CapabilityEvidenceClass::Proved
+                } else {
+                    CapabilityEvidenceClass::UnavailableFailClosed
+                };
+                (unix, ext, hlo, result.design_feasible())
+            }
+            Err(err) if err.contains("BLOCKED:bwrap_userns_unavailable") => {
+                design_notes.push(format!("probe_blocked={err}"));
+                (
+                    CapabilityEvidenceClass::UnavailableFailClosed,
+                    CapabilityEvidenceClass::UnavailableFailClosed,
+                    CapabilityEvidenceClass::UnavailableFailClosed,
+                    false,
+                )
+            }
+            Err(err) if err.contains("unshare-net unavailable") => {
+                design_notes.push(format!("probe_skipped={err}"));
+                (
+                    CapabilityEvidenceClass::UnavailableFailClosed,
+                    CapabilityEvidenceClass::UnavailableFailClosed,
+                    CapabilityEvidenceClass::UnavailableFailClosed,
+                    false,
+                )
+            }
+            Err(err) if err.contains("bwrap unavailable") => {
+                design_notes.push(format!("probe_skipped={err}"));
+                (
+                    CapabilityEvidenceClass::Unsupported,
+                    CapabilityEvidenceClass::Unsupported,
+                    CapabilityEvidenceClass::Unsupported,
+                    false,
+                )
+            }
+            Err(err) => {
+                design_notes.push(format!("probe_outcome_unknown={err}"));
+                (
+                    CapabilityEvidenceClass::OutcomeUnknown,
+                    CapabilityEvidenceClass::OutcomeUnknown,
+                    CapabilityEvidenceClass::OutcomeUnknown,
+                    false,
+                )
+            }
+        };
 
     // Product residual: design may be feasible, but full admission requires the
     // product launch path to enforce loopback-only. Current product path uses
@@ -593,11 +590,10 @@ pub fn investigate_user_pid_namespace() -> UserPidNamespaceFinding {
             classification: CapabilityEvidenceClass::Unsupported,
             unprivileged_user_ns: CapabilityEvidenceClass::Unsupported,
             pid_namespace_with_user_ns: CapabilityEvidenceClass::Unsupported,
-            reason: "bwrap is unavailable; user/PID namespace isolation is unsupported on this host."
-                .into(),
-            non_claims: vec![
-                "Do not silently claim PID isolation when bwrap is missing.".into(),
-            ],
+            reason:
+                "bwrap is unavailable; user/PID namespace isolation is unsupported on this host."
+                    .into(),
+            non_claims: vec!["Do not silently claim PID isolation when bwrap is missing.".into()],
         };
     }
 
@@ -782,10 +778,7 @@ mod tests {
             ResidualAdmissionVerdict::FullProviderFreeMediationAdmission
         );
         let json = finding.to_json();
-        assert_eq!(
-            json["verdict"],
-            "residual_admission_no_go"
-        );
+        assert_eq!(json["verdict"], "residual_admission_no_go");
         assert_eq!(json["retry_identity"]["enforceable_retry_identity"], false);
         // Redaction: no secret material.
         let rendered = json.to_string();
@@ -799,7 +792,10 @@ mod tests {
         assert_eq!(retry.admitted_cli_version, ADMITTED_CODEX_VERSION);
         assert!(!retry.enforceable_retry_identity);
         assert!(retry.non_claims.iter().any(|c| c.contains("timing")));
-        assert!(retry.non_claims.iter().any(|c| c.contains("idempotencyKey")));
+        assert!(retry
+            .non_claims
+            .iter()
+            .any(|c| c.contains("idempotencyKey")));
         assert!(retry
             .evidence_notes
             .iter()
@@ -871,10 +867,12 @@ mod tests {
                     !finding.classification.is_proved(),
                     "failed userns must not be marked proved"
                 );
-                assert!(finding.reason.contains("unavailable")
-                    || finding.reason.contains("unsupported")
-                    || finding.reason.contains("unknown")
-                    || finding.reason.contains("bwrap"));
+                assert!(
+                    finding.reason.contains("unavailable")
+                        || finding.reason.contains("unsupported")
+                        || finding.reason.contains("unknown")
+                        || finding.reason.contains("bwrap")
+                );
             }
         }
         assert!(finding.non_claims.iter().any(|c| c.contains("silently")));
