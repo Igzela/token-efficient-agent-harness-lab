@@ -13,7 +13,7 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -750,6 +750,7 @@ pub fn evaluate_residual_admission_for_current_product() -> ResidualAdmissionFin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixStream;
 
     #[test]
     fn residual_verdict_is_no_go_while_retry_identity_unproved() {
