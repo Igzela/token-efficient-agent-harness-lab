@@ -652,7 +652,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v32_to_v31(actor, &now),
             #[cfg(feature = "pg")]
-            DatabaseConnection::Pg(_) => Err("v32 pg rollback not implemented in this path".into()),
+            DatabaseConnection::Pg(_) => self.rollback_pg_v32_to_v31_internal(actor, &now),
         }
     }
 

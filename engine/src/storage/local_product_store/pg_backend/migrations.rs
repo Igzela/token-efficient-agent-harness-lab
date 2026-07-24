@@ -1070,6 +1070,67 @@ fn pg_v25_operation_schema_valid(
 }
 
 impl LocalProductStore {
+    pub(in crate::storage::local_product_store) fn rollback_pg_v32_to_v31_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.with_pg_conn(|client: &mut postgres::Client| {
+            let mut tx = client.transaction().map_err(|error| error.to_string())?;
+            let current_version = tx
+                .query_one(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                    &[],
+                )
+                .map(|row| row.get::<_, i64>(0))
+                .map_err(|error| error.to_string())?;
+            super::super::migrations::require_v32_rollback_source(current_version)?;
+            for table in super::super::migrations::V32_TABLES {
+                tx.batch_execute(&format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"))
+                    .map_err(|error| error.to_string())?;
+                let occupied = tx
+                    .query_one(
+                        &format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)"),
+                        &[],
+                    )
+                    .map(|row| row.get::<_, bool>(0))
+                    .map_err(|error| error.to_string())?;
+                if occupied {
+                    return Err(format!(
+                        "v32 rollback blocked: managed acceptance authority exists in {table}"
+                    ));
+                }
+            }
+            tx.batch_execute(
+                "DROP TABLE managed_acceptance_attempts;
+                 DROP TABLE managed_acceptance_authorizations;
+                 DROP TABLE managed_acceptance_decisions;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1,$2,'schema.rollback.v32_to_v31','local_product_store',$3)",
+                &[
+                    &now,
+                    &actor,
+                    &serde_json::json!({
+                        "from_version": super::super::migrations::V32_SCHEMA_VERSION,
+                        "to_version": super::super::migrations::V31_SCHEMA_VERSION,
+                        "tables": super::super::migrations::V32_TABLES,
+                    })
+                    .to_string(),
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version=$1",
+                &[&super::super::migrations::V32_SCHEMA_VERSION],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
+
     pub(in crate::storage::local_product_store) fn rollback_pg_v31_to_v30_internal(
         &self,
         actor: &str,
@@ -2007,6 +2068,10 @@ mod tests {
     #[cfg(feature = "pg-tests")]
     fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
         assert_eq!(store.schema_version().unwrap(), 32);
+        store
+            .rollback_v32_to_v31("migration-test-setup", true)
+            .unwrap();
+        assert_eq!(store.schema_version().unwrap(), 31);
         store
             .rollback_v31_to_v30("migration-test-setup", true)
             .unwrap();
