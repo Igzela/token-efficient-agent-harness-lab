@@ -83,8 +83,8 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-CODEX-FULL-MEDIATION-ADMISSION-1`: `COMPLETE` as **partial foundation only** via PR #295 → `381571bf` (full-admission claim withdrawn).
 - `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`: `COMPLETE` via PR #296 → `b5920116` (exact head `9cbce74a`; CI `30098047528` / `30098047448`); class remains `mediation_hardened_partial`.
 - `PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1`: evidence `COMPLETE` on stacked review head (verdict `residual_admission_no_go`); main seal still requires independent merge of residual PR.
-- `PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1`: `IN_PROGRESS` draft authority decision (stacked; operator approval required; agent does not self-approve).
-- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1`: `BLOCKED_PREREQUISITE` until authority-decision draft is ready on the stack.
+- `PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1`: evidence `COMPLETE` on stacked review head (draft only; operator approval required; agent does not self-approve); main seal requires independent merges of stacked PRs.
+- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1`: `IN_PROGRESS` provider-free preflight (stacked; no live model request).
 - `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`: `BLOCKED_PREREQUISITE` — residual NO-GO + parent-only API key + operator authorization (or explicit accepted partial-mediation decision).
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` until live managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.

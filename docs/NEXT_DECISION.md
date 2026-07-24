@@ -148,7 +148,7 @@ Independent residual investigation (`codex_residual_admission_finding.v1`):
 
 ## Packet PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1 — bounded trial authority draft
 
-**State:** `IN_PROGRESS` (reviewable stacked PR; **draft only** — agent does **not** self-approve; do not merge without independent approval)
+**State:** `COMPLETE` (draft contract complete on stacked review head; **draft only** — agent does **not** self-approve; main seal requires independent merge of stacked PRs)
 
 **Prerequisite:** PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1
 
@@ -165,9 +165,17 @@ Contract: `codex_partial_mediation_authority_decision.v1` (`engine/src/cli/codex
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1 — provider-free preflight
 
-**State:** `BLOCKED_PREREQUISITE` until the authority-decision draft packet is accepted as reviewable/complete on this stack.
+**State:** `IN_PROGRESS` (reviewable stacked PR; provider-free only; **no live model request**; do not merge without independent approval)
 
 **Prerequisite:** PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1
+
+Contract: `codex_managed_acceptance_preflight.v1` + redacted `codex_managed_acceptance_manifest.v1` (`engine/src/cli/codex_managed_acceptance_preflight.rs`).
+
+Typed results: `ready_under_full_admission` | `ready_pending_operator_risk_acceptance` | `blocked_missing_credential` | `blocked_missing_authorization` | `blocked_isolation` | `blocked_identity` | `blocked_budget` | `outcome_unknown`.
+
+Checks (secret values never recorded): execution gate; exact Codex path/version/SHA; model/provider identity; parent credential presence; child env non-credential; gateway loopback; parent journal durability; request/retry/token/cost/time bounds; bwrap/userns/net classifications; disposable target repo + main SHA; `acp/*` Draft PR only; auto-merge off; verification/approval/output-confirm; evidence sink; cancel/cleanup/rollback; authority decision binding.
+
+**Stacked:** not independently mergeable until parent authority-decision and residual PRs are accepted.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1 — live managed acceptance
 
