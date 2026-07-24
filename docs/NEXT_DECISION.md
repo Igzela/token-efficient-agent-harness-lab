@@ -132,11 +132,33 @@ Repaired authority gaps without live provider calls:
 
 Do **not** claim that only operator credential/authorization remains.
 
+## Packet PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1 — residual full-admission axes
+
+**State:** `IN_PROGRESS` (provider-free investigation; reviewable PR; **do not merge from this batch without independent approval**)
+
+**Prerequisite:** PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1
+
+Independent residual investigation (`codex_residual_admission_finding.v1`):
+
+1. **Retry identity — NO-GO.** Codex CLI 0.145.0 has internal retry modules but no gateway-visible wire identity that distinguishes an internal HTTP retry from a new logical request, transport replay, resumed stream, or second tool/model round. `max_retries` remains a subsequent-POST cap only. Heuristic inference is forbidden.
+2. **Network confinement — residual.** Executed probes prove an unprivileged design (`bwrap --unshare-net` + parent Unix gateway socket; external egress blocked; host loopback TCP isolated; Unix gateway reachable). Product launch still shares the host network (credential non-bypass only) and does **not** enforce loopback-only.
+3. **User/PID namespace — host-typed.** Executed probes classify `proved` / `unavailable_and_fail_closed` / `unsupported` / `outcome_unknown`. No silent downgrade; no host-wide sysctl mutation.
+
+**Verdict:** `residual_admission_no_go`. Product class remains `mediation_hardened_partial`. Do **not** upgrade to full admission.
+
+## Packet PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1 — bounded trial authority draft
+
+**State:** `BLOCKED_PREREQUISITE` until Packet residual-admission closure produces a final evidence-backed result (then open as stacked reviewable PR; agent does not self-approve).
+
+## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1 — provider-free preflight
+
+**State:** `BLOCKED_PREREQUISITE` until the authority-decision draft exists.
+
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1 — live managed acceptance
 
-**State:** `BLOCKED_PREREQUISITE` (admission class not full + operator credential + authorization)
+**State:** `BLOCKED_PREREQUISITE` (admission class not full + residual NO-GO + operator credential + authorization)
 
-**Prerequisite:** PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1 accepted with residual blockers closed **or** an explicit authority decision accepting partial mediation for a bounded live trial.
+**Prerequisite:** full residual closure **or** an explicit operator-accepted authority decision for a bounded live trial under partial mediation (decision packet; not agent self-approval).
 
 Do not start RWE until live managed acceptance completes under the accepted contract.
 

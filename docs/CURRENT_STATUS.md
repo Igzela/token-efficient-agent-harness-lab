@@ -4,9 +4,9 @@ Last updated: 2026-07-24.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `b5920116…` after PE7 Codex mediation admission repair (#296).
-- Open PRs: #225 (presentation-only Dashboard). Auto-merge is disabled.
-- PR #295 is a partial foundation only. PR #296 completed authority repair with class `mediation_hardened_partial` (not full admission).
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `2903dfc3…` after PE7 Codex mediation admission repair (#296) + docs seal.
+- Open PRs: #225 (presentation-only Dashboard). Auto-merge is disabled. Residual-admission / authority-decision / preflight stacked PRs may be open for review only.
+- PR #295 is a partial foundation only. PR #296 completed authority repair with class `mediation_hardened_partial` (not full admission). Residual closure investigation records `residual_admission_no_go` (retry identity + product loopback-only not enforced + host userns limits).
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
 - Rust `engine/` and `LocalProductStore` remain the sole runtime and application-owned persistence authorities.
@@ -21,7 +21,7 @@ Managed-executor classification (provider-free, Codex CLI **0.145.0**):
 
 | Executor | Class | Exact residual blocker |
 |---|---|---|
-| Codex API-key-mediated (gateway + bwrap) | **Mediation hardened partial** via PR #296 | Parent journal, fail-closed reserve/commit, attempt IDs, provider pin, FS isolation (+ PID ns when host permits), gateway→`execution_usage_event.v1` with JSONL corroboration. **Not full admission:** retry identity, loopback-only netns, host userns limits, live credential+authorization. Official ChatGPT-auth excluded. |
+| Codex API-key-mediated (gateway + bwrap) | **Mediation hardened partial** via PR #296; residual finding `residual_admission_no_go` | Parent journal, fail-closed reserve/commit, attempt IDs, provider pin, FS isolation (+ PID ns when host permits), gateway→`execution_usage_event.v1` with JSONL corroboration. **Not full admission:** (1) true retry identity unavailable on Codex 0.145.0 wire; (2) loopback-only net design host-proved but not product-enforced; (3) host-dependent userns/PID; (4) live credential+authorization. Official ChatGPT-auth excluded. |
 | Codex ChatGPT-auth / unmediated | Excluded | Child would hold reusable OAuth; not product-admitted. |
 | Claude Code | Blocked | Provider-independent worktree-only FS confinement unproved; configured subscription path has known API 404. |
 | OpenCode | Blocked | No admitted upstream artifact/checksum. |
@@ -82,7 +82,10 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1`: `COMPLETE` via PR #294 (unified usage evidence; not live admission).
 - `PE7-CODEX-FULL-MEDIATION-ADMISSION-1`: `COMPLETE` as **partial foundation only** via PR #295 → `381571bf` (full-admission claim withdrawn).
 - `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`: `COMPLETE` via PR #296 → `b5920116` (exact head `9cbce74a`; CI `30098047528` / `30098047448`); class remains `mediation_hardened_partial`.
-- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`: `BLOCKED_PREREQUISITE` — admission not full + residual blockers + parent-only API key + operator authorization.
+- `PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1`: `IN_PROGRESS` (reviewable PR; verdict `residual_admission_no_go`; do not self-merge in the three-packet batch).
+- `PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1`: draft authority decision for bounded trial (stacked; operator approval required; agent does not self-approve).
+- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1`: provider-free preflight only (stacked; no live model request).
+- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`: `BLOCKED_PREREQUISITE` — residual NO-GO + parent-only API key + operator authorization (or explicit accepted partial-mediation decision).
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` until live managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.

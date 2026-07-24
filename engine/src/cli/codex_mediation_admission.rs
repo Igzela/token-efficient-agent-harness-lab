@@ -149,15 +149,18 @@ pub struct CodexMediatedCapabilityReport {
 }
 
 impl CodexMediatedCapabilityReport {
-    /// Honest classification after PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1.
+    /// Honest classification after PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1
+    /// and PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1.
     ///
-    /// Does **not** claim full live Golden Path admission: Codex does not label
-    /// internal retries on the HTTP wire, and host-loopback-preserving network
-    /// isolation is unproved on this unprivileged profile.
+    /// Does **not** claim full live Golden Path admission. Residual axes are
+    /// investigated by `codex_residual_admission` (`residual_admission_no_go`
+    /// until every axis is proved). Product launch still uses shared host
+    /// network (credential non-bypass only); loopback-only is design-proved
+    /// on capable hosts but not product-enforced.
     pub fn evaluate(isolation: IsolationMode, bwrap_present: bool) -> Self {
         let fs_ok = matches!(isolation, IsolationMode::BubblewrapFilesystem) && bwrap_present;
         let network_confinement = if fs_ok {
-            "shared_host_network_credential_non_bypass_only;loopback_only_netns_unproved"
+            "shared_host_network_credential_non_bypass_only;loopback_only_design_proved_not_product_enforced"
                 .to_string()
         } else {
             "unavailable".to_string()
@@ -169,7 +172,7 @@ impl CodexMediatedCapabilityReport {
             )
         } else {
             Some(
-                "remaining full-admission blockers: (1) Codex internal retries are not wire-labeled so retry axis is only a subsequent-POST cap, not true retry identity; (2) process-level network isolation that reaches only the loopback gateway (not arbitrary egress) is unproved without elevated privileges; (3) unprivileged user-namespace/PID isolation is host-dependent (uid_map may be denied); (4) live operator credential+authorization still required for managed acceptance"
+                "residual_admission_no_go: (1) Codex 0.145.0 internal retries are not wire-labeled (true retry identity unavailable; max_retries is subsequent-POST cap only); (2) product launch does not enforce loopback-only network confinement (unshare-net+unix-bridge design is host-proved where available, not product-wired); (3) unprivileged user-namespace/PID isolation is host-dependent (uid_map may be denied); (4) live operator credential+authorization still required for managed acceptance. See codex_residual_admission_finding.v1."
                     .to_string(),
             )
         };
@@ -202,6 +205,8 @@ impl CodexMediatedCapabilityReport {
             remaining_blocker: remaining,
             notes: vec![
                 "PR #295 was a partial foundation; full admission is not claimed.".into(),
+                "PR #296 repaired authority gaps; class remains mediation_hardened_partial.".into(),
+                "PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1 records residual_admission_no_go.".into(),
                 "Official ChatGPT-auth Codex path remains excluded from Product Golden Path.".into(),
                 "Session JSONL importer is corroborating evidence only; gateway is the cross-call gate.".into(),
                 "ProductTask budget remains the sole durable budget authority.".into(),
