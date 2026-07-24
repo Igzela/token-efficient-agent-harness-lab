@@ -18,6 +18,7 @@ pub mod errors;
 pub mod evaluation_stub;
 pub mod event_schema;
 pub(crate) mod event_source;
+pub mod execution_usage;
 pub mod executor_adapter;
 pub mod executor_pool;
 pub mod external_runtime;

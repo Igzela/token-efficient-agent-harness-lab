@@ -77,6 +77,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - Independent PR #288 → `a08d0e28` repaired the newly published PostCSS advisory; its audit and full CI passed. PR #290/#291 are external/contribution maintenance and preserved.
 - `PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1`: `COMPLETE` via PR #292 → `234def24`; exact-head/full CI green without concurrency-job retry.
 - `PE7-CODEX-TASK-BUDGET-AUTHORITY-1` / `PE7-CODEX-SESSION-USAGE-AUTHORITY-1`: `COMPLETE` via PR #293 → `29262bce` (partial admission only; live E2E not eligible).
+- `PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1`: `IN_PROGRESS` — unified `execution_usage_event.v1` + Codex/Claude/OpenCode/provider adapters (evidence only; not a second budget owner).
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.

@@ -83,6 +83,12 @@ Exact-head/full/post-merge verification passed: #285 `30014629247`/`30014629441`
 
 PR #292 squash-merged as `234def24…`; exact head `799674df…`; exact-head run `30082115186` and full tests `30082115131` passed on first attempt. Concurrent identical non-network output callers now reconstruct the winner’s canonical receipt and terminal evidence after the ProductTask version advances; create-path expected-current authority remains strict; conflicting identities fail closed. SQLite and PostgreSQL concurrent coverage retained. Do not start RWE from this packet.
 
+## Packet PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1 — multi-executor usage evidence
+
+**State:** `IN_PROGRESS`
+
+One Rust-owned `execution_usage_event.v1` contract with adapters for Codex JSONL, Claude Code JSONL, OpenCode read-only SQLite, and provider/proxy responses. Cross-source reconcile prefers higher-precedence sources when counters agree and fails closed on contradictions. Importers produce evidence only; ProductTask budget remains the sole authority. Exact post-call usage evidence does **not** grant pre/cross-call hard budget authority. Live managed admission remains separately gated (Codex mediation/ordering, Claude confinement, OpenCode binary admission).
+
 ## Packet PE7-CODEX-TASK-BUDGET-AUTHORITY-1 / PE7-CODEX-SESSION-USAGE-AUTHORITY-1 — Codex budget + session usage
 
 **State:** `COMPLETE` (partial admission only; not live Golden Path ready)
