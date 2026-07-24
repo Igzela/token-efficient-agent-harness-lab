@@ -21,7 +21,7 @@ Managed-executor classification (provider-free, Codex CLI **0.145.0**):
 
 | Executor | Class | Exact residual blocker |
 |---|---|---|
-| Codex API-key-mediated (gateway + bwrap) | **Mediation hardened partial** (repair in progress) | #295 merged as foundation only. Repair hardens parent-owned fail-closed journal, UUID attempt IDs, provider pin, PID isolation, executed probes. **Not full admission:** Codex internal retries not wire-labeled; loopback-only network isolation unproved; live credential+authorization still required. Official ChatGPT-auth path remains excluded. |
+| Codex API-key-mediated (gateway + bwrap) | **Mediation hardened partial** (PR #296 repair) | #295 foundation only. Repair: parent journal, fail-closed reserve/commit, attempt IDs, provider pin, FS isolation (+ PID ns when host permits), gateway→`execution_usage_event.v1` mapping with JSONL corroboration. **Not full admission:** retry identity, loopback-only netns, live credential+authorization. Official ChatGPT-auth excluded. |
 | Codex ChatGPT-auth / unmediated | Excluded | Child would hold reusable OAuth; not product-admitted. |
 | Claude Code | Blocked | Provider-independent worktree-only FS confinement unproved; configured subscription path has known API 404. |
 | OpenCode | Blocked | No admitted upstream artifact/checksum. |

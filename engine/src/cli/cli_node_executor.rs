@@ -18,6 +18,9 @@ use super::codex_session_usage::{
 };
 use super::config::{ClaudeCodeAdmission, CodexAdmission};
 use crate::cli::{spawn_with_timeout, SpawnWithTimeoutError};
+use crate::execution_usage::codex_adapter::UsageBindingContext;
+use crate::execution_usage::gateway_adapter::mediated_codex_usage_evidence_bundle;
+use crate::execution_usage::reconcile::{admission_evidence_ok, reconcile_usage_events};
 use crate::node_executor::{
     exit_status_signal, process_outcome_from_exit_status, NodeExecutionInput, NodeExecutionOutput,
     NodeExecutor, ProcessOutcome,
@@ -1140,6 +1143,28 @@ fn execute_product_codex_with_budget_gateway(
         .as_ref()
         .map(|(_, rollup)| rollup.cumulative_output_tokens);
     let reconciled = reconcile_gateway_and_session_usage(&usage, session_input, session_output);
+    // Map gateway + optional session rollup into execution_usage_event.v1 and
+    // reconcile without granting ProductTask budget from session importers.
+    let binding = UsageBindingContext {
+        product_task_id: Some(authority_snapshot.task_id.clone()),
+        workflow_node_id: Some(authority_snapshot.workflow_node_id.clone()),
+        managed_execution_id: Some(authority_snapshot.execution_id.clone()),
+        requested_model: Some(authority_snapshot.model.clone()),
+        executable_path_fingerprint: None,
+        executable_version: Some(authority_snapshot.executable.binary_version.clone()),
+        executable_sha256: Some(authority_snapshot.executable.binary_sha256.clone()),
+    };
+    let usage_events = mediated_codex_usage_evidence_bundle(
+        &usage,
+        &authority_snapshot,
+        &binding,
+        session_evidence.as_ref().map(|(_, rollup)| rollup),
+        &format!("{}", start.elapsed().as_millis()),
+    );
+    let usage_reconcile = reconcile_usage_events(usage_events);
+    // Conflicts fail closed for admission evidence; session importers still do not
+    // restore or weaken gateway-enforced budget counters already applied above.
+    let evidence_conflict = admission_evidence_ok(&usage_reconcile).err();
     let _ = std::fs::remove_dir_all(&ephemeral_home);
     // Retain parent journal when halted, outcome-unknown, or any non-clean last
     // reject class so operators can inspect charged/blocked attempts.
@@ -1187,6 +1212,17 @@ fn execute_product_codex_with_budget_gateway(
                 };
             }
             let mut parsed = parse_cli_output(&stdout, "codex_cli", elapsed_ms, process_outcome);
+            if let Some(detail) = evidence_conflict.as_ref() {
+                parsed.status = "failed".to_string();
+                parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
+                parsed.error_message = Some(format!(
+                    "product-managed Codex execution_usage_event.v1 reconcile failed closed: {detail}"
+                ));
+                parsed.input_tokens = Some(usage.cumulative_input_tokens as i64);
+                parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
+                parsed.resolved_model = Some(admission.model.clone());
+                return parsed;
+            }
             match &reconciled {
                 UsageReconcileResult::PreferGateway {
                     input_tokens,

@@ -194,6 +194,12 @@ jobs:
             echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
             exit 1
           fi
+      - name: Install bubblewrap for Codex mediation isolation probes
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          test -x /usr/bin/bwrap
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Cache Cargo registry and Git dependencies

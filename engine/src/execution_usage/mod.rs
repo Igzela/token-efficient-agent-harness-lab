@@ -13,6 +13,7 @@
 
 pub mod claude_adapter;
 pub mod codex_adapter;
+pub mod gateway_adapter;
 pub mod opencode_adapter;
 pub mod provider_adapter;
 pub mod reconcile;
@@ -183,6 +184,9 @@ pub fn codex_usage_capability() -> ExecutorUsageCapability {
 }
 
 /// Capability when the product-managed mediated path is available (gateway + bwrap).
+///
+/// Usage-evidence closure does **not** clear residual admission blockers
+/// (retry identity, loopback-only network, live credential authorization).
 pub fn codex_mediated_usage_capability(bwrap_available: bool) -> ExecutorUsageCapability {
     if bwrap_available {
         ExecutorUsageCapability {
@@ -191,7 +195,9 @@ pub fn codex_mediated_usage_capability(bwrap_available: bool) -> ExecutorUsageCa
             enforceable_pre_or_cross_call_budget: true,
             cost_precision: "gateway_measured_tokens_cost_unavailable_or_estimated".into(),
             source_provenance: "codex_budget_gateway_plus_jsonl_corroboration".into(),
-            remaining_admission_blocker: String::new(),
+            remaining_admission_blocker:
+                "mediation_hardened_partial: Codex internal retries not wire-labeled; loopback-only network isolation unproved; live credential+authorization required; usage evidence closed via execution_usage_event.v1"
+                    .into(),
         }
     } else {
         ExecutorUsageCapability {
@@ -201,7 +207,7 @@ pub fn codex_mediated_usage_capability(bwrap_available: bool) -> ExecutorUsageCa
             cost_precision: "unavailable_or_gateway_only".into(),
             source_provenance: "codex_jsonl_token_count_0.145.0".into(),
             remaining_admission_blocker:
-                "product-managed Codex full admission requires /usr/bin/bwrap filesystem isolation"
+                "product-managed Codex mediation requires /usr/bin/bwrap filesystem isolation"
                     .into(),
         }
     }

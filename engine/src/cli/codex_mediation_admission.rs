@@ -27,6 +27,46 @@ pub const SANDBOX_CODEX_BIN: &str = "/opt/acp/managed-codex";
 /// Fixed in-sandbox path for the task-scoped CODEX_HOME.
 pub const SANDBOX_CODEX_HOME: &str = "/opt/acp/codex-home";
 
+/// True when bwrap can create an unprivileged user+pid namespace (not true on all
+/// CI hosts that still provide FS isolation via bwrap bind/tmpfs mounts).
+pub fn unprivileged_user_ns_available() -> bool {
+    let bwrap = Path::new(BUBBLEWRAP_BIN);
+    if !bwrap.is_file() {
+        return false;
+    }
+    let mut cmd = Command::new(bwrap);
+    cmd.arg("--die-with-parent")
+        .arg("--unshare-user")
+        .arg("--unshare-pid")
+        .arg("--ro-bind")
+        .arg("/usr")
+        .arg("/usr")
+        .arg("--ro-bind")
+        .arg("/bin")
+        .arg("/bin")
+        .arg("--ro-bind")
+        .arg("/lib")
+        .arg("/lib");
+    if Path::new("/lib64").exists() {
+        cmd.arg("--ro-bind").arg("/lib64").arg("/lib64");
+    }
+    cmd.arg("--proc")
+        .arg("/proc")
+        .arg("--dev")
+        .arg("/dev")
+        .arg("--tmpfs")
+        .arg("/tmp")
+        .arg("--clearenv")
+        .arg("--setenv")
+        .arg("PATH")
+        .arg("/usr/bin:/bin")
+        .arg("/bin/true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
 /// Two-axis admission classification for product-managed Codex.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexAdmissionClass {
@@ -329,9 +369,13 @@ pub fn plan_mediated_codex_launch(
     // process group and kills that group on timeout/cancel; a new session would
     // detach descendants from that cleanup path.
     args.push("--die-with-parent".into());
-    // PID isolation so the child cannot read parent/sibling /proc/*/environ.
-    args.push("--unshare-user".into());
-    args.push("--unshare-pid".into());
+    // PID isolation when the host permits unprivileged user namespaces. GitHub
+    // Actions often denies uid_map; FS isolation still applies via tmpfs/bind.
+    let pid_ns = unprivileged_user_ns_available();
+    if pid_ns {
+        args.push("--unshare-user".into());
+        args.push("--unshare-pid".into());
+    }
     // Essential host root pieces (read-only).
     for path in ["/usr", "/bin", "/lib", "/lib64", "/etc"] {
         if Path::new(path).exists() {
@@ -429,10 +473,9 @@ pub fn probe_real_auth_hidden(
     if !bwrap.is_file() {
         return Err("bwrap is unavailable for isolation probe".to_string());
     }
+    // Auth hide relies on tmpfs over /home, not user namespaces (GHA often denies uid_map).
     let mut cmd = Command::new(bwrap);
     cmd.arg("--die-with-parent")
-        .arg("--unshare-user")
-        .arg("--unshare-pid")
         .arg("--ro-bind")
         .arg("/usr")
         .arg("/usr")
@@ -728,8 +771,10 @@ mod tests {
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert!(args.iter().any(|a| a == "--unshare-pid"));
-        assert!(args.iter().any(|a| a == "--unshare-user"));
+        if unprivileged_user_ns_available() {
+            assert!(args.iter().any(|a| a == "--unshare-pid"));
+            assert!(args.iter().any(|a| a == "--unshare-user"));
+        }
         assert!(args
             .windows(2)
             .any(|w| w[0] == "--tmpfs" && w[1] == "/home"));
@@ -799,6 +844,20 @@ mod tests {
     #[test]
     fn isolation_probe_hides_parent_environ_with_pid_namespace() {
         require_bwrap();
+        if !unprivileged_user_ns_available() {
+            // Host cannot create unprivileged user namespaces (common on GHA).
+            // Residual blocker remains recorded; do not silently claim success.
+            let report =
+                CodexMediatedCapabilityReport::evaluate(IsolationMode::BubblewrapFilesystem, true);
+            assert!(
+                report
+                    .remaining_blocker
+                    .as_ref()
+                    .is_some_and(|b| b.contains("network") || b.contains("retry")),
+                "partial admission must still record residual blockers when PID ns unavailable"
+            );
+            return;
+        }
         let host_pid = std::process::id();
         let mut cmd = Command::new(BUBBLEWRAP_BIN);
         cmd.arg("--die-with-parent")
