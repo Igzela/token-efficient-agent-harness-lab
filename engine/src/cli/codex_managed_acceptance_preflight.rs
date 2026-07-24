@@ -417,7 +417,7 @@ pub fn run_managed_acceptance_preflight(
     );
     let req_ok = input
         .max_provider_requests
-        .is_some_and(|n| n >= 1 && n <= 8);
+        .is_some_and(|n| (1..=8).contains(&n));
     check(
         &mut checks,
         &mut blockers,
