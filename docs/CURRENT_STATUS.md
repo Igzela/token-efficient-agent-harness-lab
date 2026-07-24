@@ -4,9 +4,9 @@ Last updated: 2026-07-24.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main` after #295 docs seal; active repair packet `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`.
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `b5920116…` after PE7 Codex mediation admission repair (#296).
 - Open PRs: #225 (presentation-only Dashboard). Auto-merge is disabled.
-- **Do not treat PR #295 full-admission classification as accepted.** Independent repair is in progress for journal authority, attempt identity, provider binding, retry axis honesty, and executed bypass proofs.
+- PR #295 is a partial foundation only. PR #296 completed authority repair with class `mediation_hardened_partial` (not full admission).
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
 - Rust `engine/` and `LocalProductStore` remain the sole runtime and application-owned persistence authorities.
@@ -21,7 +21,7 @@ Managed-executor classification (provider-free, Codex CLI **0.145.0**):
 
 | Executor | Class | Exact residual blocker |
 |---|---|---|
-| Codex API-key-mediated (gateway + bwrap) | **Mediation hardened partial** (PR #296 repair) | #295 foundation only. Repair: parent journal, fail-closed reserve/commit, attempt IDs, provider pin, FS isolation (+ PID ns when host permits), gateway→`execution_usage_event.v1` mapping with JSONL corroboration. **Not full admission:** retry identity, loopback-only netns, live credential+authorization. Official ChatGPT-auth excluded. |
+| Codex API-key-mediated (gateway + bwrap) | **Mediation hardened partial** via PR #296 | Parent journal, fail-closed reserve/commit, attempt IDs, provider pin, FS isolation (+ PID ns when host permits), gateway→`execution_usage_event.v1` with JSONL corroboration. **Not full admission:** retry identity, loopback-only netns, host userns limits, live credential+authorization. Official ChatGPT-auth excluded. |
 | Codex ChatGPT-auth / unmediated | Excluded | Child would hold reusable OAuth; not product-admitted. |
 | Claude Code | Blocked | Provider-independent worktree-only FS confinement unproved; configured subscription path has known API 404. |
 | OpenCode | Blocked | No admitted upstream artifact/checksum. |
@@ -81,8 +81,8 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-CODEX-TASK-BUDGET-AUTHORITY-1` / `PE7-CODEX-SESSION-USAGE-AUTHORITY-1`: `COMPLETE` via PR #293 → `29262bce` (partial admission foundation).
 - `PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1`: `COMPLETE` via PR #294 (unified usage evidence; not live admission).
 - `PE7-CODEX-FULL-MEDIATION-ADMISSION-1`: `COMPLETE` as **partial foundation only** via PR #295 → `381571bf` (full-admission claim withdrawn).
-- `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`: `IN_PROGRESS` — journal/attempt/provider/retry/probe authority repair.
-- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`: `BLOCKED_PREREQUISITE` — admission not full + parent-only API key + operator authorization.
+- `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`: `COMPLETE` via PR #296 → `b5920116` (exact head `9cbce74a`; CI `30098047528` / `30098047448`); class remains `mediation_hardened_partial`.
+- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`: `BLOCKED_PREREQUISITE` — admission not full + residual blockers + parent-only API key + operator authorization.
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` until live managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
@@ -95,7 +95,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281–#295 are merged; PR #225 remains separate and last. Product Golden Path remains `IN_PROGRESS`: #295 is a partial mediation foundation; `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1` is repairing authority gaps and does not claim full admission. Live managed acceptance remains blocked on admission class + credentials + authorization. Claude confinement and OpenCode artifact admission remain blocked. RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
+PR #281–#296 are merged; PR #225 remains separate and last. Product Golden Path remains `IN_PROGRESS`: Codex mediation is `mediation_hardened_partial` after #296 (not full admission). Live managed acceptance remains blocked on residual admission blockers + credentials + authorization. Claude confinement and OpenCode artifact admission remain blocked. RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
 
 ## Safety Boundary
 

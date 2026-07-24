@@ -105,22 +105,32 @@ PR #295 squash-merged as `381571bf…`. Useful foundation (loopback gateway, bwr
 
 ## Packet PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1 — authority repair
 
-**State:** `IN_PROGRESS` (PR #296)
+**State:** `COMPLETE` (**partial admission class retained**)
 
 **Prerequisite:** PE7-CODEX-FULL-MEDIATION-ADMISSION-1 (merged foundation)
 
-Repair remaining authority gaps without live provider calls and without starting managed acceptance:
+PR #296 squash-merged as `b5920116…`; exact head `9cbce74a…`; exact-head `30098047528` and full tests `30098047448` passed (all jobs green).
+
+Repaired authority gaps without live provider calls:
 
 1. Parent-owned usage journal **outside** every child sandbox mount (`acp-codex-parent-journal/`).
 2. Fail-closed journal: durable pre-forward reserve → commit before response return; write/sync failure halts gateway; no further admits after halt.
-3. Restart: in-flight / outcome-unknown remains charged/blocked; never returns budget; exact `codex-attempt-*` UUID may only resume its own journal.
-4. Provider identity bound into `CodexBudgetAuthority` / `managed_executor_identity.v1` (kind, host, base URL, admitted paths, model, binary/SHA, budgets); environment substitution rejected.
-5. Separate `max_provider_requests` and `max_retries` axes; Codex does not wire-label internal retries — report residual blocker rather than full admission.
-6. Executed bypass probes (auth hidden via tmpfs; parent `/proc/*/environ` when unprivileged user ns available; proxy/credential env denied; provider URL pin); bwrap-required tests fail closed if bwrap absent; user-ns-unavailable hosts remain residual for PID isolation.
-7. Managed usage-accounting integration: gateway committed usage maps into existing `execution_usage_event.v1` (`gateway_adapter`); session JSONL rollup is corroborating only; cross-source reconcile prefers gateway; conflicts fail closed; ProductTask remains sole budget owner; session importers never restore budget.
-8. Admission class: `mediation_hardened_partial` (not `fully_admitted_*`). Remaining blockers: true Codex internal retry identity; loopback-only network isolation; live credential + operator authorization.
+3. Restart: in-flight / outcome-unknown remains charged/blocked; exact `codex-attempt-*` UUID may only resume its own journal.
+4. Provider identity bound into `CodexBudgetAuthority` / `managed_executor_identity.v1`; environment substitution rejected.
+5. Separate `max_provider_requests` and `max_retries` axes; Codex does not wire-label internal retries.
+6. bwrap FS isolation (+ user/pid ns when host permits); CI installs bubblewrap on rust/pg/cutover lanes; GHA uid_map denial classified BLOCKED residual (not silent success).
+7. Gateway committed usage maps into existing `execution_usage_event.v1` (`gateway_adapter`); session JSONL corroboration only; ProductTask sole budget owner.
 
-Do **not** claim that only operator credential/authorization remains. Live acceptance stays blocked on admission class + credentials + authorization.
+**Admission class:** `mediation_hardened_partial` — **not** full admission.
+
+**Remaining blockers for full admission / live managed acceptance:**
+
+1. True Codex internal retry identity (wire-unlabeled).
+2. Loopback-only network isolation (unproved without elevated privileges).
+3. Host-dependent unprivileged user-namespace/PID isolation (uid_map may be denied).
+4. Live operator credential + authorization for managed acceptance.
+
+Do **not** claim that only operator credential/authorization remains.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1 — live managed acceptance
 
