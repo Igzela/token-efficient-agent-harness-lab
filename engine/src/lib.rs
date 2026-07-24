@@ -43,6 +43,7 @@ pub mod read_only_planner;
 pub mod recursive_execution;
 pub mod routing;
 pub mod runtime;
+pub mod rwe;
 pub mod scheduler;
 pub mod storage;
 pub mod target_repo_output;
