@@ -79,15 +79,15 @@ Exact-head/full/post-merge verification passed: #285 `30014629247`/`30014629441`
 
 ## Packet PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1 — concurrent output CAS
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-Repair the intermittent concurrent non-network output failure (`duplicate_concurrent_output_calls_reuse_one_canonical_terminal_evidence` / `stale product task version at output authority boundary`). Root cause: receipt creation and terminal evidence are separate transactions; the loser could rebind after the winner advanced ProductTask version without a completed-idempotent canonical receipt replay. Do not suppress or quarantine the concurrent test. Do not start RWE from this packet.
+PR #292 squash-merged as `234def24…`; exact head `799674df…`; exact-head run `30082115186` and full tests `30082115131` passed on first attempt. Concurrent identical non-network output callers now reconstruct the winner’s canonical receipt and terminal evidence after the ProductTask version advances; create-path expected-current authority remains strict; conflicting identities fail closed. SQLite and PostgreSQL concurrent coverage retained. Do not start RWE from this packet.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
 **State:** `IN_PROGRESS`
 
-The fixture path and output authority are accepted; the managed coding-executor disposable E2E remains open. The concurrent output-authority repair is tracked as PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1 and must not be hidden by a green retry. Do not start RWE until the residual seal is closed or explicitly accepted under its existing contract.
+The fixture path and output authority (including concurrent CAS repair) are accepted; the managed coding-executor disposable E2E remains open. Do not start RWE until the residual seal is closed or explicitly accepted under its existing contract.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2 — managed acceptance
 

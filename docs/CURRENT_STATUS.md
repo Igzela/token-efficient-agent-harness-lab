@@ -4,7 +4,7 @@ Last updated: 2026-07-24.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `3bd916d436bf9a12d3f8c8ad74060cfadb1825dc` after external SDK metadata (#290) and fork exact-head (#291) maintenance.
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `234def245a433c6e70948cae38d39c9810132a12` after PE7 output-authority concurrency repair (#292).
 - Open PRs: #225 (presentation-only Dashboard). Auto-merge is disabled.
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
@@ -49,7 +49,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 ## Confirmed Integration Gaps
 
 1. Disposable Draft PR #1 proves real branch/output plumbing only; it binds `acp/product-ptask-20260722135332-18c4a108f1d4e757` at `6c70195c…` to target `main`, which remains `926f3d47…`.
-2. Managed coding-executor E2E is not proved. Concurrent product output authority repair is in progress as PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1 (receipt/terminal CAS race; not a flaky-test suppression).
+2. Managed coding-executor E2E is not proved. Concurrent non-network output authority is repaired via PR #292 (`234def24…`); remaining Golden Path gate is managed-executor admission under the existing contract.
 3. RWE has no accepted baseline; Architecture Convergence is blocked until that baseline is frozen.
 4. Level-2 and Meta remain blocked.
 
@@ -67,7 +67,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-CI-ACCELERATION-1`: `COMPLETE` via PR #284 → `456092fb`; exact-head/full cache-hit CI passed and main push CI `30006429193` passed.
 - `PE7-CI-CACHE-BUDGET-1`: `COMPLETE` via PR #285 → `9c8c3a42`, #287 → `1bd17d7a`, and #289 → `9db4845c`; final docs-sync main run `30029185064` passed on attempt 2 after the same pre-existing concurrent-test failure on attempt 1. No runtime, gate, provider, or target-branch change.
 - Independent PR #288 → `a08d0e28` repaired the newly published PostCSS advisory; its audit and full CI passed. PR #290/#291 are external/contribution maintenance and preserved.
-- `PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1`: `IN_PROGRESS` — concurrent non-network output canonical replay.
+- `PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1`: `COMPLETE` via PR #292 → `234def24`; exact-head/full CI green without concurrency-job retry.
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
@@ -80,7 +80,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281–#289 are merged except external #286; PR #225 remains separate and last. The initial eight-cache inventory was `12,567,992,986` bytes, with four Rust target caches contributing `12,296,328,209`; the final four main entries total `3,870,843,444` bytes. `rust-tests` is the sole target-cache writer; cutover has no full-target restore; PG/native use dependency-only caching; no advisory database is cached. No repeated-key thrashing was observed. Product Golden Path is next but remains blocked; RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
+PR #281–#292 are merged (including external #290/#291 and concurrency repair #292); PR #225 remains separate and last. Concurrent product output authority is repaired. Product Golden Path remains `IN_PROGRESS` solely for managed-executor disposable E2E admission under the existing contract; no currently available executor fully qualifies (Claude worktree confinement unproved, Codex lacks task-scoped pre/during token cap, OpenCode lacks admitted artifact/checksum). RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
 
 ## Safety Boundary
 
