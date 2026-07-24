@@ -634,6 +634,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
     }
 
     /// Roll back canonical terminal evidence only when no evidence rows exist.
+    pub fn rollback_v32_to_v31(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v32 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v32 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v32_to_v31(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => Err("v32 pg rollback not implemented in this path".into()),
+        }
+    }
+
     pub fn rollback_v31_to_v30(
         &self,
         actor: &str,
@@ -677,6 +699,48 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.rollback_pg_v30_to_v29_internal(actor, &now),
         }
+    }
+
+    fn rollback_sqlite_v32_to_v31(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            require_v32_rollback_source(current_version)?;
+            let occupied = occupied_sqlite_tables(&tx, &V32_TABLES)?;
+            if !occupied.is_empty() {
+                return Err(format!(
+                    "v32 rollback blocked: managed acceptance authority exists in {}",
+                    occupied.join(", ")
+                ));
+            }
+            tx.execute_batch(
+                "DROP TABLE managed_acceptance_attempts;
+                 DROP TABLE managed_acceptance_authorizations;
+                 DROP TABLE managed_acceptance_decisions;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v32_to_v31', 'local_product_store', ?3)",
+                rusqlite::params![
+                    now,
+                    actor,
+                    serde_json::json!({
+                        "from_version": V32_SCHEMA_VERSION,
+                        "to_version": V31_SCHEMA_VERSION,
+                        "tables": V32_TABLES,
+                    })
+                    .to_string()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V31_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
     }
 
     fn rollback_sqlite_v31_to_v30(&self, actor: &str, now: &str) -> Result<(), String> {
@@ -2165,6 +2229,16 @@ pub(super) fn require_v30_rollback_source(current_version: i64) -> Result<(), St
     }
 }
 
+pub(super) fn require_v32_rollback_source(current_version: i64) -> Result<(), String> {
+    if current_version == V32_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(format!(
+            "v32 rollback requires current schema version 32; found {current_version}"
+        ))
+    }
+}
+
 pub(super) fn require_v31_rollback_source(current_version: i64) -> Result<(), String> {
     if current_version == V31_SCHEMA_VERSION {
         Ok(())
@@ -2290,6 +2364,7 @@ mod tests {
 
     fn store_at_v25(path: impl AsRef<std::path::Path>) -> LocalProductStore {
         let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v32_to_v31("migration-test", true).unwrap();
         store.rollback_v31_to_v30("migration-test", true).unwrap();
         store.rollback_v30_to_v29("migration-test", true).unwrap();
         store.rollback_v29_to_v28("migration-test", true).unwrap();
