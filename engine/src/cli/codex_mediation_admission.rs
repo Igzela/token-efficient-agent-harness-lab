@@ -398,8 +398,10 @@ pub fn plan_mediated_codex_launch(
 
     let mut args: Vec<OsString> = Vec::new();
     // Die with parent so timeout/cancel of the outer process reaps the sandbox.
+    // Do not use --new-session: the managed CLI owner places the child in a
+    // process group and kills that group on timeout/cancel; a new session would
+    // detach descendants from that cleanup path.
     args.push("--die-with-parent".into());
-    args.push("--new-session".into());
     // Essential host root pieces (read-only).
     for path in ["/usr", "/bin", "/lib", "/lib64", "/etc"] {
         if Path::new(path).exists() {
