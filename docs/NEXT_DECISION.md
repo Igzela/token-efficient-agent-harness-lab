@@ -85,13 +85,15 @@ PR #292 squash-merged as `234def24…`; exact head `799674df…`; exact-head run
 
 ## Packet PE7-CODEX-TASK-BUDGET-AUTHORITY-1 / PE7-CODEX-SESSION-USAGE-AUTHORITY-1 — Codex budget + session usage
 
-**State:** `IN_PROGRESS` (same focused branch; partial admission only)
+**State:** `COMPLETE` (partial admission only; not live Golden Path ready)
+
+PR #293 squash-merged as `29262bce…`; exact head `77147a2c…`; exact-head run `30087476522` passed first attempt; full tests run `30087476493` passed (cutover linker bus-error was infrastructure-only and re-ran green on the same head).
 
 **Installed Codex:** `0.145.0` (standalone).
 
 **Verified session log contract (provider-free):** rollouts under `sessions/YYYY/MM/DD/rollout-*.jsonl` and `archived_sessions/`. Relevant types: `session_meta` (session/thread id, `parent_thread_id`/`forked_from_id`, subagent spawn, `cli_version`), `turn_context` (`model`), `event_msg` with `payload.type=token_count` carrying `info.total_token_usage` and `info.last_token_usage` (`input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `total_tokens`) plus optional `rate_limits.primary` account-window fields.
 
-**Implemented / implementing under Rust `engine/src/cli/`:**
+**Merged under Rust `engine/src/cli/`:**
 
 1. Loopback `CodexBudgetGateway` for API-key-mediated product path: session token, model pin, request count, injected `max_output_tokens`, cumulative residual check, real credential never in child env.
 2. `codex_session_usage` importer: root-thread binding, cumulative deltas, parent/child replay-prefix skip, cursors, idempotent import, unrelated-session exclusion, stable event IDs, product evidence rollup (no private paths/prompts).
@@ -100,7 +102,7 @@ PR #292 squash-merged as `234def24…`; exact head `799674df…`; exact-head run
 
 **Admission class:** partially admissible / evidence-capable. **Not** live Golden Path ready. Narrow residual blockers: hard cross-call interposition before the next provider request; hard single-request output cap without mediation; ChatGPT-auth child bypass of loopback without API-key-only forced mediation.
 
-Do not start RWE or live managed acceptance from this packet.
+Do not start RWE or live managed acceptance until full admission is proved under the existing contract.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
