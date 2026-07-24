@@ -2535,6 +2535,10 @@ impl LocalProductStore {
         if !matches!(output_intent, "artifact_only" | "export_patch") {
             return Err("nonnetwork output receipt intent is invalid".to_string());
         }
+        // Create/reuse path keeps strict expected-current authority. A concurrent
+        // winner may terminalize the task (version V -> V+1, status completed)
+        // between receipt creation and this caller's rebind; that race is recovered
+        // by replaying the already-committed canonical receipt only.
         let authority_request = json!({
             "schema_version": "product_output_authority_request.v1",
             "product_task_id": product_task_id,
@@ -2543,75 +2547,88 @@ impl LocalProductStore {
             "output_intent": output_intent,
             "expected_task_version": expected_task_version,
         });
-        self.mutate_product_output_operation(
+        match self.mutate_product_output_operation(
             artifact_id,
             actor,
             "product_task.nonnetwork_output_completed",
             Some(&authority_request),
             |artifact, now| {
-                if output.get("product_task_id").and_then(Value::as_str)
-                    != Some(product_task_id)
-                    || output.get("artifact_id").and_then(Value::as_str) != Some(artifact_id)
-                {
-                    return Err("nonnetwork output result identity changed".to_string());
-                }
-                if output_intent == "artifact_only" {
-                    if output.get("status").and_then(Value::as_str) != Some("artifact_only")
-                        || output.get("target_mutation").and_then(Value::as_bool) != Some(false)
-                    {
-                        return Err("artifact-only output result is not non-mutating".to_string());
+                record_or_reuse_nonnetwork_output_receipt(
+                    artifact,
+                    product_task_id,
+                    artifact_id,
+                    approval_id,
+                    output_intent,
+                    output,
+                    actor,
+                    now,
+                    /*allow_create=*/ true,
+                )
+            },
+        ) {
+            Ok(receipt) => Ok(receipt),
+            Err(error) if is_product_output_authority_race_error(&error) => self
+                .reuse_completed_nonnetwork_output_receipt(
+                    artifact_id,
+                    product_task_id,
+                    approval_id,
+                    output_intent,
+                    expected_task_version,
+                    output,
+                )
+                .map_err(|reuse_error| {
+                    if reuse_error.contains("canonical completed output missing") {
+                        error
+                    } else {
+                        reuse_error
                     }
-                } else if output.get("status").and_then(Value::as_str) != Some("exported")
-                    || output.get("patch_hash") != artifact.get("patch_hash")
-                {
-                    return Err("export output result does not match approved artifact".to_string());
-                }
-                let request = json!({
-                    "schema_version": "product_nonnetwork_output_request.v1",
-                    "product_task_id": product_task_id,
-                    "artifact_id": artifact_id,
-                    "approval_id": approval_id,
-                    "output_intent": output_intent,
-                    "source_revision": artifact.get("source_revision"),
-                    "patch_hash": artifact.get("patch_hash"),
-                });
-                let request_sha256 = target_output_json_sha256(&request)?;
-                let output_sha256 = target_output_json_sha256(output)?;
-                if let Some(existing) = artifact.get("product_output_receipt") {
-                    if existing.get("request") == Some(&request)
-                        && existing.get("request_sha256").and_then(Value::as_str)
-                            == Some(request_sha256.as_str())
-                        && existing.get("output") == Some(output)
-                        && existing.get("output_sha256").and_then(Value::as_str)
-                            == Some(output_sha256.as_str())
-                        && existing.get("state").and_then(Value::as_str) == Some("completed")
-                    {
-                        return Ok(existing.clone());
-                    }
-                    return Err("nonnetwork output receipt already exists with another binding".to_string());
-                }
-                let receipt = json!({
-                    "schema_version": "product_output_receipt.v1",
-                    "receipt_id": format!("product-output-receipt-{artifact_id}-{}", &request_sha256[..12]),
-                    "state": "completed",
-                    "product_task_id": product_task_id,
-                    "artifact_id": artifact_id,
-                    "approval_id": approval_id,
-                    "output_intent": output_intent,
-                    "source_revision": artifact.get("source_revision"),
-                    "patch_hash": artifact.get("patch_hash"),
-                    "request": request,
-                    "request_sha256": request_sha256,
-                    "output": output,
-                    "output_sha256": output_sha256,
-                    "created_at": now,
-                    "created_by": actor,
-                });
-                artifact
-                    .as_object_mut()
-                    .ok_or_else(|| "supervised patch artifact must be an object".to_string())?
-                    .insert("product_output_receipt".to_string(), receipt.clone());
-                Ok(receipt)
+                }),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Replay a non-network receipt after another caller already won terminal CAS.
+    ///
+    /// Authority remains current-state: only completed@expected+1 with a matching
+    /// durable receipt may be reconstructed. Conflicting identities stay fail-closed.
+    fn reuse_completed_nonnetwork_output_receipt(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        approval_id: &str,
+        output_intent: &str,
+        expected_task_version: u64,
+        output: &Value,
+    ) -> Result<Value, String> {
+        let authority_request = json!({
+            "schema_version": "product_output_authority_request.v1",
+            "product_task_id": product_task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval_id,
+            "output_intent": output_intent,
+            "expected_task_version": expected_task_version,
+            "allow_completed_idempotent": true,
+        });
+        self.mutate_product_output_operation(
+            artifact_id,
+            "canonical-replay",
+            "product_task.nonnetwork_output_completed",
+            Some(&authority_request),
+            |artifact, now| {
+                // Create is forbidden on the completed-idempotent recovery path.
+                // If the winner committed terminal evidence without a receipt the
+                // store is corrupt; refuse rather than invent a second effect.
+                record_or_reuse_nonnetwork_output_receipt(
+                    artifact,
+                    product_task_id,
+                    artifact_id,
+                    approval_id,
+                    output_intent,
+                    output,
+                    "canonical-replay",
+                    now,
+                    /*allow_create=*/ false,
+                )
             },
         )
     }
@@ -4917,6 +4934,94 @@ fn pg_validate_product_output_request_authority(
     let workspace_raw: String = workspace_row.get(0);
     validate_product_output_request_verification(&workspace_raw, &approval)?;
     Ok((task, approval))
+}
+
+fn is_product_output_authority_race_error(error: &str) -> bool {
+    error.contains("stale product task version at output authority boundary")
+        || error.contains("stale product task version at output")
+        || error.contains("product output terminal expected-current update conflict")
+        || error.contains("product task expected-current update conflict")
+        || error.contains("expected-current")
+}
+
+fn record_or_reuse_nonnetwork_output_receipt(
+    artifact: &mut Value,
+    product_task_id: &str,
+    artifact_id: &str,
+    approval_id: &str,
+    output_intent: &str,
+    output: &Value,
+    actor: &str,
+    now: &str,
+    allow_create: bool,
+) -> Result<Value, String> {
+    if output.get("product_task_id").and_then(Value::as_str) != Some(product_task_id)
+        || output.get("artifact_id").and_then(Value::as_str) != Some(artifact_id)
+    {
+        return Err("nonnetwork output result identity changed".to_string());
+    }
+    if output_intent == "artifact_only" {
+        if output.get("status").and_then(Value::as_str) != Some("artifact_only")
+            || output.get("target_mutation").and_then(Value::as_bool) != Some(false)
+        {
+            return Err("artifact-only output result is not non-mutating".to_string());
+        }
+    } else if output.get("status").and_then(Value::as_str) != Some("exported")
+        || output.get("patch_hash") != artifact.get("patch_hash")
+    {
+        return Err("export output result does not match approved artifact".to_string());
+    }
+    let request = json!({
+        "schema_version": "product_nonnetwork_output_request.v1",
+        "product_task_id": product_task_id,
+        "artifact_id": artifact_id,
+        "approval_id": approval_id,
+        "output_intent": output_intent,
+        "source_revision": artifact.get("source_revision"),
+        "patch_hash": artifact.get("patch_hash"),
+    });
+    let request_sha256 = target_output_json_sha256(&request)?;
+    let output_sha256 = target_output_json_sha256(output)?;
+    if let Some(existing) = artifact.get("product_output_receipt") {
+        // Canonical receipt identity is the request binding. Output payload may be
+        // reconstructed identically by concurrent callers; require exact match so a
+        // different export identity cannot silently overwrite or reuse another effect.
+        if existing.get("request") == Some(&request)
+            && existing.get("request_sha256").and_then(Value::as_str)
+                == Some(request_sha256.as_str())
+            && existing.get("output") == Some(output)
+            && existing.get("output_sha256").and_then(Value::as_str) == Some(output_sha256.as_str())
+            && existing.get("state").and_then(Value::as_str) == Some("completed")
+        {
+            return Ok(existing.clone());
+        }
+        return Err("nonnetwork output receipt already exists with another binding".to_string());
+    }
+    if !allow_create {
+        return Err("canonical completed output missing matching nonnetwork receipt".to_string());
+    }
+    let receipt = json!({
+        "schema_version": "product_output_receipt.v1",
+        "receipt_id": format!("product-output-receipt-{artifact_id}-{}", &request_sha256[..12]),
+        "state": "completed",
+        "product_task_id": product_task_id,
+        "artifact_id": artifact_id,
+        "approval_id": approval_id,
+        "output_intent": output_intent,
+        "source_revision": artifact.get("source_revision"),
+        "patch_hash": artifact.get("patch_hash"),
+        "request": request,
+        "request_sha256": request_sha256,
+        "output": output,
+        "output_sha256": output_sha256,
+        "created_at": now,
+        "created_by": actor,
+    });
+    artifact
+        .as_object_mut()
+        .ok_or_else(|| "supervised patch artifact must be an object".to_string())?
+        .insert("product_output_receipt".to_string(), receipt.clone());
+    Ok(receipt)
 }
 
 fn validate_product_output_request_task(
