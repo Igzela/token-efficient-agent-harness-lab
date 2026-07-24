@@ -85,7 +85,9 @@ PR #292 squash-merged as `234def24…`; exact head `799674df…`; exact-head run
 
 ## Packet PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1 — multi-executor usage evidence
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
+
+PR #294 squash-merged; exact head `58e549ba…`; exact-head `30089192304` and full tests `30089192331` passed first attempt. Unified `execution_usage_event.v1` with Codex/Claude/OpenCode/provider adapters and cross-source reconcile. Evidence only; no second budget owner; live admission still separately blocked per executor.
 
 One Rust-owned `execution_usage_event.v1` contract with adapters for Codex JSONL, Claude Code JSONL, OpenCode read-only SQLite, and provider/proxy responses. Cross-source reconcile prefers higher-precedence sources when counters agree and fails closed on contradictions. Importers produce evidence only; ProductTask budget remains the sole authority. Exact post-call usage evidence does **not** grant pre/cross-call hard budget authority. Live managed admission remains separately gated (Codex mediation/ordering, Claude confinement, OpenCode binary admission).
 

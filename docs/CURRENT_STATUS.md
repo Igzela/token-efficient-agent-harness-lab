@@ -4,7 +4,7 @@ Last updated: 2026-07-24.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `29262bce793a1a3563ab7e486be68c2ecd5c3789` after PE7 Codex session-usage / loopback budget mediation (#293).
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `a569cd02f8bd9d1972e357c4d29083b70e80fe06` after PE7 Codex session-usage / loopback budget mediation (#293).
 - Open PRs: #225 (presentation-only Dashboard). Auto-merge is disabled.
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
@@ -77,7 +77,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - Independent PR #288 → `a08d0e28` repaired the newly published PostCSS advisory; its audit and full CI passed. PR #290/#291 are external/contribution maintenance and preserved.
 - `PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1`: `COMPLETE` via PR #292 → `234def24`; exact-head/full CI green without concurrency-job retry.
 - `PE7-CODEX-TASK-BUDGET-AUTHORITY-1` / `PE7-CODEX-SESSION-USAGE-AUTHORITY-1`: `COMPLETE` via PR #293 → `29262bce` (partial admission only; live E2E not eligible).
-- `PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1`: `IN_PROGRESS` — unified `execution_usage_event.v1` + Codex/Claude/OpenCode/provider adapters (evidence only; not a second budget owner).
+- `PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1`: `COMPLETE` via PR #294 (unified usage evidence; not live admission).
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
