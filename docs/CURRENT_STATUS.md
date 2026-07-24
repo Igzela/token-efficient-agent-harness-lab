@@ -4,7 +4,7 @@ Last updated: 2026-07-24.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `234def245a433c6e70948cae38d39c9810132a12` after PE7 output-authority concurrency repair (#292).
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `8551a121a190fe111cbc3fb61b1b83fe84ac1bc7` after PE7 concurrency-repair docs seal (code merge #292 → `234def24…`).
 - Open PRs: #225 (presentation-only Dashboard). Auto-merge is disabled.
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
@@ -16,7 +16,15 @@ Product Golden Path is default-off and `IN_PROGRESS`.
 
 Fixture evidence proves the existing intake → worktree → graph → scheduler → verification → artifact → approval → output → `acp/*` Draft PR path, but is not managed acceptance. The target default branch remains unchanged.
 
-The mandatory remaining product gate is one safely admitted managed coding-executor run through verification, current approval, separate output confirmation, Draft PR creation, exact terminal evidence, and disposable-target checks. Codex `0.145.0` has no task-scoped pre/during-call token cap; the configured Claude subscription path has a known API 404; real OpenCode admission lacks artifact/checksum evidence. No substitution is authorized.
+Managed-executor classification (provider-free, Codex CLI **0.145.0**):
+
+| Executor | Class | Exact residual blocker |
+|---|---|---|
+| Codex workspace-write | **Partially admissible / evidence-capable** | Exact session JSONL usage (`event_msg`/`token_count` with `total_token_usage` + `last_token_usage`) and optional account-window rate-limit fields are parseable; a loopback budget gateway can inject `max_output_tokens` and count mediated API-key requests. **Not fully admissible:** request-ordering proof fails—real rollouts show further `response_item` provider rounds after `token_count` without an external gate; native `features.rollout_budget.limit_tokens` is not a hard pre/during-call cap; ChatGPT-auth bypass of the loopback gateway is not closed without API-key-only mediation + no child credential. |
+| Claude Code | Blocked | Provider-independent worktree-only FS confinement unproved; configured subscription path has known API 404. |
+| OpenCode | Blocked | No admitted upstream artifact/checksum. |
+
+Do **not** claim “Codex has no usage authority.” The narrower blockers are: (1) hard cross-call budget interposition before the next provider request, and (2) hard single-request output bounding for non-mediated (ChatGPT-auth) paths. Live managed Golden Path acceptance remains ineligible until full admission is proved.
 
 ## Active Work
 
@@ -49,7 +57,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 ## Confirmed Integration Gaps
 
 1. Disposable Draft PR #1 proves real branch/output plumbing only; it binds `acp/product-ptask-20260722135332-18c4a108f1d4e757` at `6c70195c…` to target `main`, which remains `926f3d47…`.
-2. Managed coding-executor E2E is not proved. Concurrent non-network output authority is repaired via PR #292 (`234def24…`); remaining Golden Path gate is managed-executor admission under the existing contract.
+2. Managed coding-executor E2E is not proved. Concurrent non-network output authority is repaired via PR #292 (`234def24…`). Codex is evidence-capable (session usage importer + optional loopback mediation) but not fully admitted for live Golden Path; residual blockers are hard cross-call interposition and single-request output authority on non-mediated paths.
 3. RWE has no accepted baseline; Architecture Convergence is blocked until that baseline is frozen.
 4. Level-2 and Meta remain blocked.
 
@@ -68,6 +76,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-CI-CACHE-BUDGET-1`: `COMPLETE` via PR #285 → `9c8c3a42`, #287 → `1bd17d7a`, and #289 → `9db4845c`; final docs-sync main run `30029185064` passed on attempt 2 after the same pre-existing concurrent-test failure on attempt 1. No runtime, gate, provider, or target-branch change.
 - Independent PR #288 → `a08d0e28` repaired the newly published PostCSS advisory; its audit and full CI passed. PR #290/#291 are external/contribution maintenance and preserved.
 - `PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1`: `COMPLETE` via PR #292 → `234def24`; exact-head/full CI green without concurrency-job retry.
+- `PE7-CODEX-TASK-BUDGET-AUTHORITY-1` / `PE7-CODEX-SESSION-USAGE-AUTHORITY-1`: `IN_PROGRESS` on branch `pe7/codex-task-budget-authority-1` (loopback gateway + session JSONL importer; partial admission only).
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
@@ -80,7 +89,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281–#292 are merged (including external #290/#291 and concurrency repair #292); PR #225 remains separate and last. Concurrent product output authority is repaired. Product Golden Path remains `IN_PROGRESS` solely for managed-executor disposable E2E admission under the existing contract; no currently available executor fully qualifies (Claude worktree confinement unproved, Codex lacks task-scoped pre/during token cap, OpenCode lacks admitted artifact/checksum). RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
+PR #281–#292 are merged (including external #290/#291 and concurrency repair #292); PR #225 remains separate and last. Concurrent product output authority is repaired. Product Golden Path remains `IN_PROGRESS`: Codex is partially admissible (exact session usage evidence; loopback mediation design) but not fully admitted for live managed acceptance because cross-call hard gates and non-mediated single-request caps are unproved. Claude confinement and OpenCode artifact admission remain blocked. RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
 
 ## Safety Boundary
 

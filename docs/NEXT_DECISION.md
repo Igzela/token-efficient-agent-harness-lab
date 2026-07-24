@@ -83,6 +83,25 @@ Exact-head/full/post-merge verification passed: #285 `30014629247`/`30014629441`
 
 PR #292 squash-merged as `234def24…`; exact head `799674df…`; exact-head run `30082115186` and full tests `30082115131` passed on first attempt. Concurrent identical non-network output callers now reconstruct the winner’s canonical receipt and terminal evidence after the ProductTask version advances; create-path expected-current authority remains strict; conflicting identities fail closed. SQLite and PostgreSQL concurrent coverage retained. Do not start RWE from this packet.
 
+## Packet PE7-CODEX-TASK-BUDGET-AUTHORITY-1 / PE7-CODEX-SESSION-USAGE-AUTHORITY-1 — Codex budget + session usage
+
+**State:** `IN_PROGRESS` (same focused branch; partial admission only)
+
+**Installed Codex:** `0.145.0` (standalone).
+
+**Verified session log contract (provider-free):** rollouts under `sessions/YYYY/MM/DD/rollout-*.jsonl` and `archived_sessions/`. Relevant types: `session_meta` (session/thread id, `parent_thread_id`/`forked_from_id`, subagent spawn, `cli_version`), `turn_context` (`model`), `event_msg` with `payload.type=token_count` carrying `info.total_token_usage` and `info.last_token_usage` (`input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `total_tokens`) plus optional `rate_limits.primary` account-window fields.
+
+**Implemented / implementing under Rust `engine/src/cli/`:**
+
+1. Loopback `CodexBudgetGateway` for API-key-mediated product path: session token, model pin, request count, injected `max_output_tokens`, cumulative residual check, real credential never in child env.
+2. `codex_session_usage` importer: root-thread binding, cumulative deltas, parent/child replay-prefix skip, cursors, idempotent import, unrelated-session exclusion, stable event IDs, product evidence rollup (no private paths/prompts).
+3. Request-ordering probe: **fails** on real sequencing (`token_count` then further `response_item` provider rounds) → JSONL watcher alone is **not** a hard cross-call authority.
+4. Official subscription quota: parse account-window fields from session `rate_limits`; live ChatGPT OAuth network preflight remains fail-closed/disabled in provider-free path and is never task-token budget.
+
+**Admission class:** partially admissible / evidence-capable. **Not** live Golden Path ready. Narrow residual blockers: hard cross-call interposition before the next provider request; hard single-request output cap without mediation; ChatGPT-auth child bypass of loopback without API-key-only forced mediation.
+
+Do not start RWE or live managed acceptance from this packet.
+
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
 **State:** `IN_PROGRESS`
@@ -93,7 +112,7 @@ The fixture path and output authority (including concurrent CAS repair) are acce
 
 **State:** `IN_PROGRESS`
 
-Existing PRs #268–#280 provide the intake, graph, scheduler, verification, artifact, approval, output, evidence, model-binding, and managed-process foundations. The remaining gate is one safely admitted managed coding-executor run through verification, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, exact terminal evidence, and all live-provider/security requirements. If no eligible executor exists, retain `IN_PROGRESS` and record the exact blocker; do not weaken the contract.
+Existing PRs #268–#280 provide the intake, graph, scheduler, verification, artifact, approval, output, evidence, model-binding, and managed-process foundations. The remaining gate is one **fully admitted** managed coding-executor run through verification, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, exact terminal evidence, and all live-provider/security requirements. Codex partial admission (usage evidence + optional loopback mediation) is insufficient. If no fully eligible executor exists, retain `IN_PROGRESS` and record the exact blocker; do not weaken the contract.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 

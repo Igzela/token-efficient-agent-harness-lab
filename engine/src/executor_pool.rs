@@ -815,6 +815,7 @@ mod tests {
             claude_code_admission: None,
             codex_bin: Some("/definitely/not/executed".to_string()),
             codex_enabled: true,
+            codex_admission: None,
             timeout_ms: 1_000,
         };
         register_cli_executors(&pool, &config, store);
@@ -881,6 +882,7 @@ mod tests {
             claude_code_admission: Some(admission),
             codex_bin: None,
             codex_enabled: false,
+            codex_admission: None,
             timeout_ms: 1_000,
         };
         register_cli_executors(
@@ -915,6 +917,7 @@ mod tests {
             claude_code_admission: None,
             codex_bin: Some("/definitely/not/executed-codex".to_string()),
             codex_enabled: true,
+            codex_admission: None,
             timeout_ms: 1_000,
         };
         register_cli_executors(&pool, &config, store);
