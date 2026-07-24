@@ -1141,10 +1141,18 @@ fn execute_product_codex_with_budget_gateway(
         .map(|(_, rollup)| rollup.cumulative_output_tokens);
     let reconciled = reconcile_gateway_and_session_usage(&usage, session_input, session_output);
     let _ = std::fs::remove_dir_all(&ephemeral_home);
-    // Parent journal is retained only while an attempt may resume; remove after
-    // a clean terminal shutdown of this launch. Outcome-unknown journals are
-    // left for operator inspection when halted mid-flight (journal_halted).
-    if !usage.journal_halted {
+    // Retain parent journal when halted, outcome-unknown, or any non-clean last
+    // reject class so operators can inspect charged/blocked attempts.
+    let retain_journal = usage.journal_halted
+        || usage
+            .last_reject_class
+            .as_deref()
+            .is_some_and(|c| c == "outcome_unknown")
+        || matches!(
+            reconciled,
+            UsageReconcileResult::Conflict { .. } | UsageReconcileResult::Missing { .. }
+        );
+    if !retain_journal {
         let _ = std::fs::remove_file(&journal_path);
     }
 
@@ -1188,13 +1196,17 @@ fn execute_product_codex_with_budget_gateway(
                     parsed.input_tokens = Some(*input_tokens as i64);
                     parsed.output_tokens = Some(*output_tokens as i64);
                 }
-                UsageReconcileResult::PreferSessionOnly {
-                    input_tokens,
-                    output_tokens,
-                    ..
-                } => {
-                    parsed.input_tokens = Some(*input_tokens as i64);
-                    parsed.output_tokens = Some(*output_tokens as i64);
+                // Product-mediated path requires gateway interposition. Session-only
+                // usage without gateway POSTs is fail-closed (child-writable logs
+                // must not admit success without the cross-call gate).
+                UsageReconcileResult::PreferSessionOnly { reason, .. } => {
+                    parsed.status = "failed".to_string();
+                    parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
+                    parsed.error_message = Some(format!(
+                        "product-managed Codex requires gateway-measured usage; session-only evidence is not admitted: {reason}"
+                    ));
+                    parsed.input_tokens = Some(usage.cumulative_input_tokens as i64);
+                    parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
                 }
                 UsageReconcileResult::Conflict { detail, .. } => {
                     parsed.status = "failed".to_string();
@@ -1206,13 +1218,13 @@ fn execute_product_codex_with_budget_gateway(
                     parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
                 }
                 UsageReconcileResult::Missing { detail } => {
-                    if parsed.input_tokens.is_none() && parsed.output_tokens.is_none() {
-                        parsed.status = "failed".to_string();
-                        parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
-                        parsed.error_message = Some(format!(
-                            "product-managed Codex completed without measured usage: {detail}"
-                        ));
-                    }
+                    parsed.status = "failed".to_string();
+                    parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
+                    parsed.error_message = Some(format!(
+                        "product-managed Codex completed without measured usage: {detail}"
+                    ));
+                    parsed.input_tokens = Some(usage.cumulative_input_tokens as i64);
+                    parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
                 }
             }
             parsed.resolved_model = Some(admission.model.clone());

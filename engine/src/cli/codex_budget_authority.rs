@@ -1046,8 +1046,19 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
                 }
             }
             Err(error) => {
+                // Charge reserved worst-case into both journal and gateway counters so
+                // ProductTask residual never under-accounts a possibly billed forward.
                 if let Ok(mut journal) = state.journal.lock() {
-                    let _ = journal.mark_outcome_unknown(&error);
+                    let reserved_in = journal.entry().reserved_input_tokens;
+                    let reserved_out = journal.entry().reserved_output_tokens;
+                    if journal.mark_outcome_unknown(&error).is_ok() {
+                        state
+                            .cumulative_input_tokens
+                            .fetch_add(reserved_in, Ordering::SeqCst);
+                        state
+                            .cumulative_output_tokens
+                            .fetch_add(reserved_out, Ordering::SeqCst);
+                    }
                 }
                 state.record_reject(BudgetRejectClass::OutcomeUnknown, error.clone());
                 json_error(502, "usage_unavailable", &error)
@@ -1055,7 +1066,16 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
         },
         Err(error) => {
             if let Ok(mut journal) = state.journal.lock() {
-                let _ = journal.mark_outcome_unknown(&error);
+                let reserved_in = journal.entry().reserved_input_tokens;
+                let reserved_out = journal.entry().reserved_output_tokens;
+                if journal.mark_outcome_unknown(&error).is_ok() {
+                    state
+                        .cumulative_input_tokens
+                        .fetch_add(reserved_in, Ordering::SeqCst);
+                    state
+                        .cumulative_output_tokens
+                        .fetch_add(reserved_out, Ordering::SeqCst);
+                }
             }
             state.record_reject(BudgetRejectClass::OutcomeUnknown, error.clone());
             json_error(502, "upstream_forward_failed", &error)

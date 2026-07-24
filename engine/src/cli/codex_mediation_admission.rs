@@ -144,8 +144,10 @@ impl CodexMediatedCapabilityReport {
             exact_post_call_usage_evidence: true,
             // Gateway enforces pre/cross-call residual for mediated API-key path.
             enforceable_pre_or_cross_call_budget: fs_ok,
-            process_containment: true,
-            worktree_path_confinement: true,
+            process_containment: fs_ok,
+            // Worktree binding is enforced by Codex workspace-write + absolute bind;
+            // full provider-independent path confinement is not claimed here.
+            worktree_path_confinement: fs_ok,
             no_direct_credential_bypass: fs_ok,
             // Network egress may still exist; credential non-bypass is the proved axis.
             no_direct_network_credential_bypass: false,
