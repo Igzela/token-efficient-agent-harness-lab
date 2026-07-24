@@ -17,6 +17,10 @@ pub const CLAUDE_VERSION_PROBE_OUTPUT_LIMITS: OutputLimits = OutputLimits {
 
 pub const ADMITTED_CLAUDE_CODE_VERSION: &str = "2.1.217";
 pub const ADMITTED_CLAUDE_CODE_MODEL: &str = "claude-haiku-4-5-20251001";
+/// Exact product-managed Codex CLI version pin. Do not silently upgrade.
+pub const ADMITTED_CODEX_VERSION: &str = "0.145.0";
+/// Default exact model pin for product-managed Codex budget mediation.
+pub const ADMITTED_CODEX_MODEL: &str = "gpt-5.6-luna";
 pub const ADMITTED_CLAUDE_CODE_CONTEXT_TOKENS: u64 = 200_000;
 pub const ADMITTED_CLAUDE_CODE_MAX_OUTPUT_TOKENS: u64 = 64_000;
 pub const ADMITTED_CLAUDE_CODE_MAX_TURNS: u64 = 3;
@@ -221,31 +225,31 @@ fn probe_claude_code_version(
     Ok(output)
 }
 
-fn validate_binary_file_identity(
+pub(crate) fn validate_binary_file_identity(
     binary_path: &Path,
     expected_sha256: &str,
 ) -> Result<String, String> {
     let canonical_path = std::fs::canonicalize(binary_path)
-        .map_err(|error| format!("Claude Code binary is unavailable: {error}"))?;
+        .map_err(|error| format!("managed CLI binary is unavailable: {error}"))?;
     if canonical_path != binary_path {
         return Err(
-            "Claude Code binary path must already be canonical with no symlink components"
+            "managed CLI binary path must already be canonical with no symlink components"
                 .to_string(),
         );
     }
     let metadata = std::fs::symlink_metadata(binary_path)
-        .map_err(|error| format!("Claude Code binary is unavailable: {error}"))?;
+        .map_err(|error| format!("managed CLI binary is unavailable: {error}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("Claude Code binary must be an exact regular file, not a symlink".to_string());
+        return Err("managed CLI binary must be an exact regular file, not a symlink".to_string());
     }
     if metadata.len() == 0 || metadata.len() > MAX_ADMITTED_CLI_BINARY_BYTES {
-        return Err("Claude Code binary size is outside the admitted bound".to_string());
+        return Err("managed CLI binary size is outside the admitted bound".to_string());
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o111 == 0 {
-            return Err("Claude Code binary must be executable".to_string());
+            return Err("managed CLI binary must be executable".to_string());
         }
     }
     if expected_sha256.len() != 64
@@ -253,35 +257,123 @@ fn validate_binary_file_identity(
             .chars()
             .all(|value| value.is_ascii_hexdigit())
     {
-        return Err("Claude Code binary SHA-256 must be 64 hexadecimal characters".to_string());
+        return Err("managed CLI binary SHA-256 must be 64 hexadecimal characters".to_string());
     }
     let binary_sha256 = sha256_file(binary_path)?;
     if binary_sha256 != expected_sha256 {
-        return Err("Claude Code binary SHA-256 does not match the admitted identity".to_string());
+        return Err("managed CLI binary SHA-256 does not match the admitted identity".to_string());
     }
     Ok(binary_sha256)
 }
 
-fn sha256_file(path: &Path) -> Result<String, String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file = std::fs::File::open(path)
-        .map_err(|error| format!("Claude Code binary could not be opened: {error}"))?;
+        .map_err(|error| format!("managed CLI binary could not be opened: {error}"))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     let mut total_read = 0_u64;
     loop {
         let read = file
             .read(&mut buffer)
-            .map_err(|error| format!("Claude Code binary could not be hashed: {error}"))?;
+            .map_err(|error| format!("managed CLI binary could not be hashed: {error}"))?;
         if read == 0 {
             break;
         }
         total_read = total_read.saturating_add(read as u64);
         if total_read > MAX_ADMITTED_CLI_BINARY_BYTES {
-            return Err("Claude Code binary size is outside the admitted bound".to_string());
+            return Err("managed CLI binary size is outside the admitted bound".to_string());
         }
         hasher.update(&buffer[..read]);
     }
     Ok(hex::encode(hasher.finalize()))
+}
+
+/// Exact Codex CLI identity for product-managed budget mediation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodexAdmission {
+    pub binary_path: PathBuf,
+    pub binary_version: String,
+    pub binary_sha256: String,
+    pub model: String,
+}
+
+impl CodexAdmission {
+    pub fn validate(
+        binary_path: &Path,
+        expected_version: &str,
+        expected_sha256: &str,
+        model: &str,
+    ) -> Result<Self, String> {
+        if !binary_path.is_absolute() {
+            return Err("Codex binary path must be absolute".to_string());
+        }
+        let canonical = std::fs::canonicalize(binary_path)
+            .map_err(|error| format!("Codex binary is unavailable: {error}"))?;
+        if canonical != binary_path {
+            return Err(
+                "Codex binary path must already be canonical with no symlink components"
+                    .to_string(),
+            );
+        }
+        let expected_version = expected_version.trim();
+        if expected_version != ADMITTED_CODEX_VERSION {
+            return Err(format!(
+                "Codex binary version is not the admitted version {ADMITTED_CODEX_VERSION}"
+            ));
+        }
+        let model = model.trim();
+        if model.is_empty() {
+            return Err("Codex model identity is required".to_string());
+        }
+        let expected_sha256 = expected_sha256.trim().to_ascii_lowercase();
+        let _ = validate_binary_file_identity(binary_path, &expected_sha256)?;
+        let version_output = probe_codex_version(binary_path)?;
+        if version_output != expected_version {
+            return Err(format!(
+                "codex version probe mismatch: observed={version_output} expected={expected_version}"
+            ));
+        }
+        // Re-hash after probe so a swapped binary cannot retain the pre-probe identity.
+        let binary_sha256 = validate_binary_file_identity(binary_path, &expected_sha256)?;
+        Ok(Self {
+            binary_path: binary_path.to_path_buf(),
+            binary_version: expected_version.to_string(),
+            binary_sha256,
+            model: model.to_string(),
+        })
+    }
+}
+
+fn probe_codex_version(binary_path: &Path) -> Result<String, String> {
+    let mut command = Command::new(binary_path);
+    command
+        .arg("--version")
+        .stdin(Stdio::null())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir("/");
+    let output = spawn_with_timeout_with_limits(
+        &mut command,
+        CLAUDE_VERSION_PROBE_TIMEOUT_MS,
+        CLAUDE_VERSION_PROBE_OUTPUT_LIMITS,
+    )
+    .map_err(|error| error.reason_code().to_string())?;
+    if !output.status.success() {
+        return Err("codex_version_probe_nonzero_exit".to_string());
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| "codex_version_probe_malformed: non-UTF-8 output".to_string())?;
+    // Observed forms: "codex-cli 0.145.0" or "0.145.0".
+    let version = stdout
+        .split_whitespace()
+        .find(|part| part.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if version.is_empty() {
+        return Err("codex_version_probe_malformed: missing version token".to_string());
+    }
+    Ok(version)
 }
 
 #[derive(Clone, Debug)]
@@ -292,6 +384,8 @@ pub struct CliConfig {
     pub claude_code_admission: Option<ClaudeCodeAdmission>,
     pub codex_bin: Option<String>,
     pub codex_enabled: bool,
+    /// Exact product-managed Codex admission. Required for Golden Path mediation.
+    pub codex_admission: Option<CodexAdmission>,
     pub timeout_ms: u64,
 }
 
@@ -314,6 +408,7 @@ impl CliConfig {
                 claude_code_admission: None,
                 codex_bin: None,
                 codex_enabled: false,
+                codex_admission: None,
                 timeout_ms,
             };
         }
@@ -337,6 +432,16 @@ impl CliConfig {
         let claude_code_enabled = claude_code_admission.is_some();
 
         let codex_bin = env_opt("ACP_CODEX_BIN").or_else(|| detect_binary("codex"));
+        // Presence of a binary enables the generic codex_cli adapter. Product
+        // Golden Path mediation additionally requires exact CodexAdmission.
+        let codex_admission = match admit_codex_from_env(codex_bin.as_deref()) {
+            Ok(Some(admission)) => Some(admission),
+            Ok(None) => None,
+            Err(error) => {
+                eprintln!("[acp-cli] Codex product admission refused: {error}");
+                None
+            }
+        };
         let codex_enabled = codex_bin.is_some();
 
         if !claude_code_enabled {
@@ -344,6 +449,10 @@ impl CliConfig {
         }
         if !codex_enabled {
             eprintln!("[acp-cli] codex binary not found; codex_cli executor disabled");
+        } else if codex_admission.is_none() {
+            eprintln!(
+                "[acp-cli] codex binary present but product budget mediation is not admitted (set ACP_CODEX_BIN to a canonical file, ACP_CODEX_SHA256, ACP_CODEX_VERSION={ADMITTED_CODEX_VERSION}, ACP_CODEX_MODEL)"
+            );
         }
 
         Self {
@@ -353,9 +462,31 @@ impl CliConfig {
             claude_code_admission,
             codex_bin,
             codex_enabled,
+            codex_admission,
             timeout_ms,
         }
     }
+}
+
+fn admit_codex_from_env(detected_bin: Option<&str>) -> Result<Option<CodexAdmission>, String> {
+    // Exact product admission is opt-in via identity env. Without it, the generic
+    // codex_cli adapter may still exist for non-product paths, but product apply
+    // fails closed at execution/graph compile.
+    let Some(sha256) = env_opt("ACP_CODEX_SHA256") else {
+        return Ok(None);
+    };
+    let binary = env_opt("ACP_CODEX_BIN")
+        .or_else(|| detected_bin.map(str::to_string))
+        .ok_or_else(|| "ACP_CODEX_BIN is required for product Codex admission".to_string())?;
+    let version =
+        env_opt("ACP_CODEX_VERSION").unwrap_or_else(|| ADMITTED_CODEX_VERSION.to_string());
+    let model = env_opt("ACP_CODEX_MODEL").unwrap_or_else(|| ADMITTED_CODEX_MODEL.to_string());
+    Ok(Some(CodexAdmission::validate(
+        Path::new(&binary),
+        &version,
+        &sha256,
+        &model,
+    )?))
 }
 
 fn admit_claude_code_from_env() -> Result<ClaudeCodeAdmission, String> {

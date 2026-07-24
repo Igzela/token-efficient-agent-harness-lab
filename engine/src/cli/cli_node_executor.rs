@@ -4,7 +4,15 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
-use super::config::ClaudeCodeAdmission;
+use super::codex_budget_authority::{
+    authority_from_product_metadata, write_ephemeral_codex_home, CodexBudgetAuthority,
+    CodexBudgetGateway, CodexExecutableIdentity,
+};
+use super::codex_session_usage::{
+    discover_rollout_files, import_managed_codex_home, rollup_to_product_evidence,
+    root_thread_id_from_file,
+};
+use super::config::{ClaudeCodeAdmission, CodexAdmission};
 use crate::cli::{spawn_with_timeout, SpawnWithTimeoutError};
 use crate::node_executor::{
     exit_status_signal, process_outcome_from_exit_status, NodeExecutionInput, NodeExecutionOutput,
@@ -19,12 +27,16 @@ use crate::provider::redaction::redact_sensitive_patterns;
 /// - `executor`: `"codex_cli"` or the exactly admitted `"claude_code_cli"`
 /// - `model`: optional Codex model override; Claude uses its admitted snapshot
 /// - `workspace_path`: cwd for the subprocess
+///
+/// Product-managed Codex (`product_apply`) requires exact `CodexAdmission` and
+/// routes every provider request through the app-owned loopback budget gateway.
 pub struct CliNodeExecutor {
     pub claude_bin: Option<String>,
     pub codex_bin: Option<String>,
     pub timeout_ms: u64,
     pub default_executor: String,
     pub claude_admission: Option<ClaudeCodeAdmission>,
+    pub codex_admission: Option<CodexAdmission>,
 }
 
 impl CliNodeExecutor {
@@ -42,6 +54,7 @@ impl CliNodeExecutor {
             timeout_ms,
             default_executor,
             claude_admission: None,
+            codex_admission: None,
         }
     }
 
@@ -52,6 +65,22 @@ impl CliNodeExecutor {
             timeout_ms,
             default_executor: "claude_code_cli".to_string(),
             claude_admission: Some(admission),
+            codex_admission: None,
+        }
+    }
+
+    fn admitted_codex(
+        admission: CodexAdmission,
+        codex_bin: Option<String>,
+        timeout_ms: u64,
+    ) -> Self {
+        Self {
+            claude_bin: None,
+            codex_bin: codex_bin.or_else(|| admission.binary_path.to_str().map(str::to_string)),
+            timeout_ms,
+            default_executor: "codex_cli".to_string(),
+            claude_admission: None,
+            codex_admission: Some(admission),
         }
     }
 
@@ -64,10 +93,20 @@ impl CliNodeExecutor {
                 .claude_code_admission
                 .clone()
                 .map(|admission| Self::admitted_claude(admission, config.timeout_ms)),
-            "codex_cli" if config.codex_enabled => config
-                .codex_bin
-                .clone()
-                .map(|binary| Self::new(None, Some(binary), config.timeout_ms)),
+            "codex_cli" if config.codex_enabled => {
+                if let Some(admission) = config.codex_admission.clone() {
+                    Some(Self::admitted_codex(
+                        admission,
+                        config.codex_bin.clone(),
+                        config.timeout_ms,
+                    ))
+                } else {
+                    config
+                        .codex_bin
+                        .clone()
+                        .map(|binary| Self::new(None, Some(binary), config.timeout_ms))
+                }
+            }
             _ => None,
         }
     }
@@ -238,6 +277,14 @@ impl NodeExecutor for CliNodeExecutor {
             }
         };
 
+        // Product-managed Codex must use the loopback budget gateway. Non-product
+        // codex_cli paths retain the existing workspace-write adapter.
+        if effective_type == "codex_cli" && is_product_apply(input) {
+            return execute_product_codex_with_budget_gateway(
+                self, input, &bin_path, &cwd, &prompt, start,
+            );
+        }
+
         let mut cmd = Command::new(&bin_path);
         match effective_type {
             "claude_code_cli" => {
@@ -250,7 +297,7 @@ impl NodeExecutor for CliNodeExecutor {
                 cmd.args(claude_invocation_args(admission, allowed_paths, &prompt));
             }
             "codex_cli" => {
-                cmd.args(codex_invocation_args(&cwd, &prompt));
+                cmd.args(codex_invocation_args(&cwd, &prompt, None, false));
             }
             _ => unreachable!(),
         }
@@ -855,11 +902,30 @@ fn product_execution_prompt(input: &NodeExecutionInput, objective: &str) -> Resu
     ))
 }
 
-fn codex_invocation_args(cwd: &Path, prompt: &str) -> Vec<OsString> {
+fn is_product_apply(input: &NodeExecutionInput) -> bool {
+    input
+        .node_metadata
+        .get("managed_supervised_patch")
+        .and_then(Value::as_object)
+        .and_then(|binding| binding.get("operation"))
+        .and_then(Value::as_str)
+        == Some("product_apply")
+}
+
+fn codex_invocation_args(
+    cwd: &Path,
+    prompt: &str,
+    model: Option<&str>,
+    persist_sessions: bool,
+) -> Vec<OsString> {
     // Product worktrees are app-owned git worktrees; skip the interactive trust
     // prompt while preserving the exact workspace-write sandbox and never-
     // approval policy. Prompt is a CLI arg and stdin is closed at spawn.
-    vec![
+    //
+    // Product-managed runs set persist_sessions=true so the Rust session-usage
+    // importer can bind exact token_count events from CODEX_HOME rollouts.
+    // Non-product paths keep --ephemeral.
+    let mut args: Vec<OsString> = vec![
         "--ask-for-approval".into(),
         "never".into(),
         "-c".into(),
@@ -870,11 +936,267 @@ fn codex_invocation_args(cwd: &Path, prompt: &str) -> Vec<OsString> {
         "workspace-write".into(),
         "--cd".into(),
         cwd.as_os_str().to_os_string(),
-        "--ephemeral".into(),
-        "--skip-git-repo-check".into(),
-        prompt.into(),
-    ]
+    ];
+    if !persist_sessions {
+        args.push("--ephemeral".into());
+    }
+    args.push("--skip-git-repo-check".into());
+    args.push("--ignore-user-config".into());
+    if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+        args.push("--model".into());
+        args.push(model.into());
+    }
+    args.push(prompt.into());
+    args
 }
+
+fn execute_product_codex_with_budget_gateway(
+    executor: &CliNodeExecutor,
+    input: &NodeExecutionInput,
+    bin_path: &str,
+    cwd: &Path,
+    prompt: &str,
+    start: std::time::Instant,
+) -> NodeExecutionOutput {
+    let admission = match executor.codex_admission.as_ref() {
+        Some(admission) => admission,
+        None => {
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                "product-managed Codex requires exact CodexAdmission and loopback budget mediation"
+                    .to_string(),
+                start.elapsed().as_millis() as i64,
+            );
+        }
+    };
+    let executable = CodexExecutableIdentity {
+        binary_path: admission.binary_path.clone(),
+        binary_version: admission.binary_version.clone(),
+        binary_sha256: admission.binary_sha256.clone(),
+    };
+    if executable.binary_path.to_string_lossy() != bin_path
+        && Path::new(bin_path).canonicalize().ok().as_ref() != Some(&executable.binary_path)
+    {
+        return failed_without_process(
+            "codex_cli",
+            "cli_execution_authority_invalid",
+            "codex binary path does not match the admitted product identity".to_string(),
+            start.elapsed().as_millis() as i64,
+        );
+    }
+
+    let authority = match authority_from_product_metadata(
+        executable,
+        &input.node_metadata,
+        &admission.model,
+        executor.timeout_ms,
+    ) {
+        Ok(authority) => authority,
+        Err(error) => {
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                error,
+                start.elapsed().as_millis() as i64,
+            );
+        }
+    };
+
+    let upstream_key = std::env::var("ACP_CODEX_UPSTREAM_API_KEY")
+        .or_else(|_| std::env::var("OPENAI_API_KEY"))
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let Some(upstream_key) = upstream_key else {
+        return failed_without_process(
+            "codex_cli",
+            "cli_execution_authority_invalid",
+            "product-managed Codex budget mediation requires ACP_CODEX_UPSTREAM_API_KEY (or OPENAI_API_KEY) held only by the parent gateway".to_string(),
+            start.elapsed().as_millis() as i64,
+        );
+    };
+    let upstream_base = std::env::var("ACP_CODEX_UPSTREAM_BASE_URL")
+        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+
+    let gateway = match CodexBudgetGateway::start(authority, &upstream_base, &upstream_key) {
+        Ok(gateway) => gateway,
+        Err(error) => {
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                format!("failed to start codex budget gateway: {error}"),
+                start.elapsed().as_millis() as i64,
+            );
+        }
+    };
+    // Drop the only copy of the upstream key from this stack frame.
+    drop(upstream_key);
+
+    let ephemeral_home = std::env::temp_dir().join(format!(
+        "acp-codex-home-{}",
+        gateway.authority().execution_id
+    ));
+    if let Err(error) = write_ephemeral_codex_home(
+        &ephemeral_home,
+        &gateway.authority().model,
+        &gateway.base_url(),
+    ) {
+        let _ = gateway.shutdown();
+        let _ = std::fs::remove_dir_all(&ephemeral_home);
+        return failed_without_process(
+            "codex_cli",
+            "cli_execution_authority_invalid",
+            error,
+            start.elapsed().as_millis() as i64,
+        );
+    }
+
+    let mut cmd = Command::new(bin_path);
+    cmd.args(codex_invocation_args(
+        cwd,
+        prompt,
+        Some(gateway.authority().model.as_str()),
+        true, // persist sessions into controlled CODEX_HOME for exact usage import
+    ));
+    cmd.current_dir(cwd)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("CODEX_HOME", &ephemeral_home)
+        .env("OPENAI_BASE_URL", gateway.base_url())
+        .env("OPENAI_API_KEY", gateway.session_token())
+        .env("HOME", &ephemeral_home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Locale-only allowlist; never forward real provider credentials or host HOME.
+    for key in ["LANG", "LC_ALL", "LC_CTYPE", "TERM"] {
+        if let Ok(value) = std::env::var(key) {
+            cmd.env(key, value);
+        }
+    }
+
+    let authority_snapshot = gateway.authority().clone();
+    let output = spawn_with_timeout(&mut cmd, executor.timeout_ms);
+    let elapsed_ms = start.elapsed().as_millis() as i64;
+    let usage = gateway.shutdown();
+
+    // Exact session-log usage evidence (owner-reported). Not a hard cross-call gate.
+    let session_evidence =
+        import_session_usage_evidence(&ephemeral_home, &authority_snapshot, admission);
+    let _ = std::fs::remove_dir_all(&ephemeral_home);
+
+    match output {
+        Ok(output) => {
+            let process_outcome = process_outcome_from_exit_status(&output.status);
+            let stdout = redact_sensitive_patterns(&String::from_utf8_lossy(&output.stdout));
+            let stderr = redact_sensitive_patterns(&String::from_utf8_lossy(&output.stderr));
+            if !output.status.success() {
+                let msg = if !stderr.is_empty() {
+                    stderr
+                } else {
+                    format!("exit code: {}", output.status.code().unwrap_or(-1))
+                };
+                return NodeExecutionOutput {
+                    status: "failed".to_string(),
+                    executor_type: "codex_cli".to_string(),
+                    output: if stdout.is_empty() {
+                        None
+                    } else {
+                        Some(stdout)
+                    },
+                    error_domain: Some("cli_execution_error".to_string()),
+                    error_message: Some(msg),
+                    input_tokens: Some(usage.cumulative_input_tokens as i64),
+                    output_tokens: Some(usage.cumulative_output_tokens as i64),
+                    estimated_cost: None,
+                    latency_ms: Some(elapsed_ms),
+                    process_outcome: Some(process_outcome),
+                    resolved_model: Some(admission.model.clone()),
+                };
+            }
+            let mut parsed = parse_cli_output(&stdout, "codex_cli", elapsed_ms, process_outcome);
+            // Prefer gateway-measured cumulative usage; corroborate with session logs.
+            if usage.provider_requests > 0 {
+                parsed.input_tokens = Some(usage.cumulative_input_tokens as i64);
+                parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
+            } else if let Some((_, rollup)) = session_evidence.as_ref() {
+                parsed.input_tokens = Some(rollup.cumulative_input_tokens as i64);
+                parsed.output_tokens = Some(rollup.cumulative_output_tokens as i64);
+            } else if parsed.input_tokens.is_none() && parsed.output_tokens.is_none() {
+                // Fail closed: product path requires owner-measured usage.
+                parsed.status = "failed".to_string();
+                parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
+                parsed.error_message = Some(
+                    "product-managed Codex completed without gateway- or session-measured usage"
+                        .to_string(),
+                );
+            }
+            parsed.resolved_model = Some(admission.model.clone());
+            let _ = session_evidence; // evidence is available for node metadata binding later
+            parsed
+        }
+        Err(error) => {
+            let domain = match error.reason_code() {
+                "spawn_failed" => "cli_spawn_error",
+                "timeout" => "cli_timeout",
+                "wait_failed" => "cli_wait_error",
+                "output_limit_exceeded" => "cli_output_limit_exceeded",
+                other => other,
+            };
+            let process_outcome = ProcessOutcome::failure(
+                error.reason_code(),
+                None,
+                "managed Codex process boundary failure",
+            );
+            NodeExecutionOutput {
+                status: "failed".to_string(),
+                executor_type: "codex_cli".to_string(),
+                output: None,
+                error_domain: Some(domain.to_string()),
+                error_message: Some(format!("codex_cli process boundary failure: {error:?}")),
+                input_tokens: Some(usage.cumulative_input_tokens as i64),
+                output_tokens: Some(usage.cumulative_output_tokens as i64),
+                estimated_cost: None,
+                latency_ms: Some(elapsed_ms),
+                process_outcome: Some(process_outcome),
+                resolved_model: Some(admission.model.clone()),
+            }
+        }
+    }
+}
+
+fn import_session_usage_evidence(
+    codex_home: &Path,
+    authority: &CodexBudgetAuthority,
+    admission: &CodexAdmission,
+) -> Option<(Value, super::codex_session_usage::SessionUsageRollup)> {
+    let files = discover_rollout_files(codex_home).ok()?;
+    let mut root_id = None;
+    for path in files {
+        if let Ok(Some(meta)) = root_thread_id_from_file(&path) {
+            if meta.parent_thread_id.is_none() {
+                root_id = Some(meta.thread_id);
+                break;
+            }
+            root_id.get_or_insert(meta.thread_id);
+        }
+    }
+    let root_id = root_id?;
+    let rollup = import_managed_codex_home(codex_home, &root_id).ok()?;
+    let evidence = rollup_to_product_evidence(
+        &rollup,
+        &authority.task_id,
+        &authority.workflow_node_id,
+        &authority.execution_id,
+        &admission.binary_version,
+        &admission.binary_sha256,
+    );
+    Some((evidence, rollup))
+}
+
+// Silence unused-import warnings when authority helpers are only used above.
+#[allow(dead_code)]
+fn _codex_authority_type_anchor(_: CodexBudgetAuthority) {}
 
 fn cli_env_allowlist() -> Vec<String> {
     std::env::var("ACP_CLI_ENV_ALLOWLIST")
@@ -1663,7 +1985,12 @@ mod tests {
 
     #[test]
     fn codex_invocation_is_noninteractive_but_keeps_workspace_write_sandbox() {
-        let args = codex_invocation_args(Path::new("/tmp/bound-workspace"), "bounded objective");
+        let args = codex_invocation_args(
+            Path::new("/tmp/bound-workspace"),
+            "bounded objective",
+            None,
+            false,
+        );
         let args = args
             .iter()
             .map(|value| value.to_string_lossy().into_owned())
@@ -1684,6 +2011,7 @@ mod tests {
                 "/tmp/bound-workspace",
                 "--ephemeral",
                 "--skip-git-repo-check",
+                "--ignore-user-config",
                 "bounded objective",
             ]
         );
@@ -1804,6 +2132,7 @@ mod tests {
             claude_code_admission: None,
             codex_bin: None,
             codex_enabled: false,
+            codex_admission: None,
             timeout_ms: 5000,
         };
         assert!(CliNodeExecutor::from_config_for(&config, "claude_code_cli").is_none());
@@ -1818,6 +2147,7 @@ mod tests {
             claude_code_admission: None,
             codex_bin: None,
             codex_enabled: false,
+            codex_admission: None,
             timeout_ms: 5000,
         };
         assert!(CliNodeExecutor::from_config_for(&config, "codex_cli").is_none());
@@ -1832,6 +2162,7 @@ mod tests {
             claude_code_admission: None,
             codex_bin: None,
             codex_enabled: false,
+            codex_admission: None,
             timeout_ms: 5000,
         };
         assert!(CliNodeExecutor::from_config_for(&config, "claude_code_cli").is_none());
@@ -1846,6 +2177,7 @@ mod tests {
             claude_code_admission: None,
             codex_bin: Some("/bin/codex".into()),
             codex_enabled: true,
+            codex_admission: None,
             timeout_ms: 5000,
         };
 
