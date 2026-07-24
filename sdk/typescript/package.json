@@ -2,6 +2,24 @@
   "name": "@token-efficient-agent-harness/agent-control-plane-sdk",
   "version": "0.1.0",
   "description": "TypeScript REST SDK for the local Agent Control Plane API",
+  "license": "MIT",
+  "keywords": [
+    "agent-control-plane",
+    "token-efficiency",
+    "llm",
+    "rest-client",
+    "sdk",
+    "agent-harness"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Igzela/token-efficient-agent-harness-lab.git",
+    "directory": "sdk/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/Igzela/token-efficient-agent-harness-lab/issues"
+  },
+  "homepage": "https://github.com/Igzela/token-efficient-agent-harness-lab/tree/main/sdk/typescript#readme",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
