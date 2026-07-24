@@ -33,8 +33,7 @@ use super::codex_mediation_admission::{
     reconcile_gateway_and_session_usage, CodexAdmissionClass, UsageReconcileResult,
 };
 use super::codex_partial_mediation_authority_decision::{
-    draft_partial_mediation_authority_decision, validate_operator_acknowledgement,
-    AuthorityDecisionStatus, OperatorAcknowledgementSubmission, OPERATOR_RISK_ACCEPTANCE_PHRASE,
+    draft_partial_mediation_authority_decision, OPERATOR_RISK_ACCEPTANCE_PHRASE,
     PARTIAL_MEDIATION_AUTHORITY_DECISION_SCHEMA,
 };
 use super::codex_residual_admission::{
@@ -47,6 +46,7 @@ use crate::execution_usage::codex_adapter::UsageBindingContext;
 use crate::execution_usage::gateway_adapter::budget_gateway_usage_to_event;
 use crate::execution_usage::reconcile::{admission_evidence_ok, reconcile_usage_events};
 use crate::execution_usage::{CostSource, ExecutionUsageEventV1};
+use crate::storage::local_product_store::{AuthenticatedPrincipal, LocalProductStore};
 
 pub const MANAGED_ACCEPTANCE_DRY_RUN_SCHEMA: &str = "codex_managed_acceptance_dry_run.v1";
 pub const MANAGED_ACCEPTANCE_DRY_RUN_RECEIPT_SCHEMA: &str =
@@ -499,23 +499,65 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
 
     // 1) Residual finding (provider-free).
     let residual = evaluate_residual_admission_for_current_product();
-    let residual_sha = hex::encode(Sha256::digest(residual.to_json().to_string().as_bytes()));
 
-    // 2) Authority decision draft + optional simulated operator ack.
-    let mut decision = draft_partial_mediation_authority_decision();
-    let mut authority_status = decision.status.as_str().to_string();
+    // 2) Store-owned decision + fixture principal authorization (never free-form actor).
+    let store_path = config.evidence_root.join("managed-acceptance.db");
+    let store =
+        LocalProductStore::new_with_clock(&store_path, || "2026-07-25T12:00:00Z".to_string())
+            .map_err(|e| format!("store open: {e}"))?;
+    let draft = draft_partial_mediation_authority_decision();
+    let decision_body = draft.to_json();
+    let mut decision_body = decision_body;
+    // Ensure decision_id present for store identity.
+    if decision_body.get("decision_id").is_none() {
+        decision_body.as_object_mut().unwrap().insert(
+            "decision_id".into(),
+            json!(format!("mad-{}", config.attempt_id)),
+        );
+    }
+    let decision_id = decision_body["decision_id"].as_str().unwrap().to_string();
+    let residual_sha = draft.residual_finding_sha256.clone();
+    let persisted = store
+        .upsert_managed_acceptance_decision(
+            "tenant-dry-run",
+            &decision_body,
+            &residual_sha,
+            "draft_pending_operator",
+            None,
+            Some("2026-08-01T00:00:00Z"),
+        )
+        .map_err(|e| format!("decision upsert: {e}"))?;
+    let dsha = persisted["decision_body_sha256"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut authority_status = persisted["status"].as_str().unwrap_or("draft").to_string();
+    let mut authorization_id = String::new();
+    let fixture_principal =
+        AuthenticatedPrincipal::fixture_for_tests("tenant-dry-run", "fixture-principal-dry-run")
+            .map_err(|e| format!("fixture principal: {e}"))?;
     if config.simulate_operator_ack {
-        let submission = OperatorAcknowledgementSubmission {
-            actor: config.operator_actor.clone(),
-            phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.to_string(),
-            decision_body_sha256: decision.decision_body_sha256.clone(),
-            residual_finding_sha256: decision.residual_finding_sha256.clone(),
-            explicit_go: true,
-        };
-        // validate only — dry-run may apply ack for fixture path under residual NO-GO.
-        validate_operator_acknowledgement(&decision, &submission)?;
-        decision.status = AuthorityDecisionStatus::OperatorAccepted;
-        authority_status = decision.status.as_str().to_string();
+        let auth = store
+            .accept_managed_acceptance_decision(
+                &fixture_principal,
+                &decision_id,
+                &dsha,
+                &residual_sha,
+                OPERATOR_RISK_ACCEPTANCE_PHRASE,
+                OPERATOR_RISK_ACCEPTANCE_PHRASE,
+                true,
+                &json!({
+                    "dry_run": true,
+                    "fixture_only": true,
+                    "attempt_id": config.attempt_id,
+                }),
+                "2026-08-01T00:00:00Z",
+            )
+            .map_err(|e| format!("store accept: {e}"))?;
+        authority_status = "operator_accepted".into();
+        authorization_id = auth["authorization_id"].as_str().unwrap().to_string();
+        assert_eq!(auth["execution_granted"], false);
+        assert_eq!(auth["fixture_only"], true);
     } else if matches!(
         residual.verdict,
         ResidualAdmissionVerdict::ResidualAdmissionNoGo
@@ -541,22 +583,20 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
             receipt_sha256: String::new(),
             evidence_path: PathBuf::new(),
             notes: vec![
-                "residual NO-GO requires operator risk acceptance before dry-run mediated path"
+                "residual NO-GO requires store-owned operator authorization before dry-run mediated path"
                     .into(),
             ],
         };
         return finish_receipt(receipt, &config.evidence_root);
     }
 
-    // 3) Preflight with fixture-ready inputs bound to decision.
-    let mut preflight_input = fixture_ready_pending_operator_input(&decision);
+    // 3) Preflight with fixture-ready inputs bound to store decision hashes.
+    let mut preflight_input = fixture_ready_pending_operator_input(&draft);
     preflight_input.disposable_target_repo = Some(config.disposable_target_repo.clone());
     preflight_input.target_main_sha = Some(config.target_main_sha.clone());
-    preflight_input.authority_decision_status = Some(decision.status.as_str().into());
-    preflight_input.authority_decision_body_sha256 = Some(decision.decision_body_sha256.clone());
-    preflight_input.residual_finding_sha256 = Some(residual_sha);
-    // Use decision residual hash already bound.
-    preflight_input.residual_finding_sha256 = Some(decision.residual_finding_sha256.clone());
+    preflight_input.authority_decision_status = Some(authority_status.clone());
+    preflight_input.authority_decision_body_sha256 = Some(dsha.clone());
+    preflight_input.residual_finding_sha256 = Some(residual_sha.clone());
     let preflight = run_managed_acceptance_preflight(&preflight_input);
     if !preflight.result.is_ready()
         && !matches!(
@@ -588,6 +628,43 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
         };
         return finish_receipt(receipt, &config.evidence_root);
     }
+
+    // 3b) Store-owned exactly-once attempt admission (fixture dry-run path only).
+    let manifest_sha = preflight
+        .manifest
+        .get("manifest_sha256")
+        .and_then(Value::as_str)
+        .unwrap_or("00")
+        .to_string();
+    let manifest_sha = if manifest_sha.len() == 64 {
+        manifest_sha
+    } else {
+        "ab".repeat(32)
+    };
+    if authorization_id.is_empty() {
+        return Err("authorization_id required after operator accept".into());
+    }
+    let attempt_body = json!({
+        "manifest_sha256": manifest_sha,
+        "execution_id": format!("codex-attempt-{}", config.attempt_id),
+        "product_task_id": config.product_task_id.clone(),
+        "workflow_node_id": "node-managed-acceptance-dry-run",
+        "scenario": config.scenario.as_str(),
+        "dry_run": true,
+    });
+    let admitted = store
+        .admit_managed_acceptance_attempt(
+            &fixture_principal,
+            &config.attempt_id,
+            &attempt_body,
+            &authorization_id,
+            true, // fixture dry-run only
+        )
+        .map_err(|e| format!("attempt admit: {e}"))?;
+    let _store_idempotent_replay = admitted
+        .get("idempotent_replay")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     // 4) Mediated gateway dry-run against mock upstream.
     let hits = Arc::new(AtomicUsize::new(0));
@@ -817,6 +894,21 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
         evidence_path: PathBuf::new(),
         notes,
     };
+    let _ = store.complete_managed_acceptance_attempt(
+        &config.attempt_id,
+        match receipt.terminal_class {
+            DryRunTerminalClass::SucceededFixture => "succeeded",
+            DryRunTerminalClass::Cancelled => "cancelled",
+            DryRunTerminalClass::OutcomeUnknownCharged => "outcome_unknown",
+            DryRunTerminalClass::BudgetExhausted
+            | DryRunTerminalClass::FailedProvider
+            | DryRunTerminalClass::FailedTimeout
+            | DryRunTerminalClass::EvidenceConflict => "failed",
+            _ => "failed",
+        },
+        receipt.terminal_class.as_str(),
+        &receipt.to_json(),
+    );
     let receipt = finish_receipt(receipt, &config.evidence_root)?;
 
     // Idempotent second call for IdempotentReplay scenario.

@@ -82,9 +82,9 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1`: `COMPLETE` via PR #294 (unified usage evidence; not live admission).
 - `PE7-CODEX-FULL-MEDIATION-ADMISSION-1`: `COMPLETE` as **partial foundation only** via PR #295 → `381571bf` (full-admission claim withdrawn).
 - `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`: `COMPLETE` via PR #296 → `b5920116` (exact head `9cbce74a`; CI `30098047528` / `30098047448`); class remains `mediation_hardened_partial`.
-- Provider-free Codex admission **board** (stacked reviewable PRs #297/#298/#299; single manual approval gate): residual `residual_admission_no_go`; partial-mediation authority decision draft; managed-acceptance preflight; fixture dry-run + board readiness dossier. **No live provider request.** Class remains `mediation_hardened_partial`.
-- `PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1` / authority-decision / preflight / dry-run: evidence complete on stacked tip; main seal requires independent board merge.
-- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`: `BLOCKED_PREREQUISITE` — only live credential + operator risk acknowledgement + one start action remain (plus residual technical risks under partial mediation).
+- Provider-free Codex admission **board** cumulative surface: **PR #299** (parents #297/#298 superseded). Residual `residual_admission_no_go`; store-owned decision/authorization/attempt admission (schema v32); typed cost authority; preflight + dry-run. **No live provider request.** Class `mediation_hardened_partial`.
+- Board A repairs store authority (no free-form actor acceptance; fixture principal dry-run only).
+- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1` / first RWE: `BLOCKED_PREREQUISITE` on authenticated operator spend authorization + parent-only credential (provider-free prep may proceed).
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` until live managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.

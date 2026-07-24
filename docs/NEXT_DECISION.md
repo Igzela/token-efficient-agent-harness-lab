@@ -185,15 +185,17 @@ Uses real loopback gateway + parent journal + mock upstream. Scenarios: success,
 
 ## Provider-free Codex admission board (single manual gate)
 
-**State:** reviewable stacked PRs **#297 → #298 → #299** (prefer merge tip #299 after independent board approval; auto-merge disabled).
+**State:** cumulative review surface **PR #299 only** (parent #297/#298 superseded by tip; auto-merge disabled; not approved for merge until independent review).
+
+**Board A repair (store-owned authority):** V32 tables `managed_acceptance_decisions` / `_authorizations` / `_attempts`; `AuthenticatedPrincipal` (API-key or explicit fixture); canonical full-body decision hash; typed `cost_authority` (`provider_reported` | `local_estimate` | `cost_unavailable`); store exactly-once attempt admission; dry-run uses store accept/admit (no direct `OperatorAccepted` mutation).
 
 **Final admission classification:** `residual_admission_no_go` / product class `mediation_hardened_partial`.
 
 **Single manual gate remaining (not engineering unfinished work):**
 
-1. Independent review/approval of the board stack.
-2. Operator multi-field residual-risk acknowledgement (when proceeding under partial mediation).
-3. Parent-only API key at runtime (never in git).
+1. Independent review/approval of cumulative PR #299.
+2. Store-owned operator authorization (authenticated principal; multi-field phrase + decision/residual hashes; fixture principal cannot production-live-start).
+3. Parent-only API key at runtime (never in git) + explicit current-session spend authorization.
 4. One command/API action to start the bounded disposable **live** task.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1 — live managed acceptance

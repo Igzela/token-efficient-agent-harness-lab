@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 31;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 31;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 32;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -142,6 +142,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 31,
         description: "add canonical product task terminal evidence",
+    },
+    SchemaMigration {
+        version: 32,
+        description: "add managed acceptance decision, authorization, and attempt admission",
     },
 ];
 
@@ -584,6 +588,74 @@ CREATE TABLE IF NOT EXISTS product_task_terminal_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_product_terminal_evidence_task
     ON product_task_terminal_evidence(product_task_id, task_version);
+";
+
+pub(super) const V32_DDL: &str = "
+CREATE TABLE IF NOT EXISTS managed_acceptance_decisions (
+    decision_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    residual_finding_sha256 TEXT NOT NULL CHECK (length(residual_finding_sha256) = 64),
+    status TEXT NOT NULL CHECK (status IN ('draft_pending_operator','operator_accepted','operator_rejected','invalidated','revoked','expired')),
+    principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
+    principal_id TEXT,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT,
+    revoked_at TEXT,
+    UNIQUE (tenant_id, decision_body_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_decisions_tenant
+    ON managed_acceptance_decisions(tenant_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS managed_acceptance_authorizations (
+    authorization_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
+    principal_id TEXT NOT NULL,
+    decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    residual_finding_sha256 TEXT NOT NULL CHECK (length(residual_finding_sha256) = 64),
+    authorization_sha256 TEXT NOT NULL CHECK (length(authorization_sha256) = 64),
+    scope_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active','revoked','expired','consumed')),
+    mutation_authority TEXT NOT NULL CHECK (mutation_authority = 'authorization_receipt_only'),
+    execution_granted INTEGER NOT NULL CHECK (execution_granted = 0),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    UNIQUE (decision_id, principal_id, decision_body_sha256),
+    FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_auth_tenant
+    ON managed_acceptance_authorizations(tenant_id, status, expires_at);
+
+CREATE TABLE IF NOT EXISTS managed_acceptance_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    product_task_id TEXT,
+    workflow_node_id TEXT,
+    execution_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL,
+    authorization_id TEXT NOT NULL,
+    manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+    attempt_body_sha256 TEXT NOT NULL CHECK (length(attempt_body_sha256) = 64),
+    status TEXT NOT NULL CHECK (status IN ('admitted','in_flight','succeeded','failed','cancelled','outcome_unknown','replayed')),
+    terminal_class TEXT,
+    body_json TEXT NOT NULL,
+    receipt_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (tenant_id, attempt_id),
+    UNIQUE (tenant_id, attempt_body_sha256),
+    FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id),
+    FOREIGN KEY(authorization_id) REFERENCES managed_acceptance_authorizations(authorization_id)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_attempts_status
+    ON managed_acceptance_attempts(tenant_id, status, updated_at);
 ";
 
 pub(super) const V28_DDL: &str = "
@@ -1563,6 +1635,72 @@ CREATE TABLE IF NOT EXISTS product_task_terminal_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_product_terminal_evidence_task
     ON product_task_terminal_evidence(product_task_id, task_version);
+
+CREATE TABLE IF NOT EXISTS managed_acceptance_decisions (
+    decision_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    residual_finding_sha256 TEXT NOT NULL CHECK (length(residual_finding_sha256) = 64),
+    status TEXT NOT NULL CHECK (status IN ('draft_pending_operator','operator_accepted','operator_rejected','invalidated','revoked','expired')),
+    principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
+    principal_id TEXT,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT,
+    revoked_at TEXT,
+    UNIQUE (tenant_id, decision_body_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_decisions_tenant
+    ON managed_acceptance_decisions(tenant_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS managed_acceptance_authorizations (
+    authorization_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
+    principal_id TEXT NOT NULL,
+    decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    residual_finding_sha256 TEXT NOT NULL CHECK (length(residual_finding_sha256) = 64),
+    authorization_sha256 TEXT NOT NULL CHECK (length(authorization_sha256) = 64),
+    scope_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active','revoked','expired','consumed')),
+    mutation_authority TEXT NOT NULL CHECK (mutation_authority = 'authorization_receipt_only'),
+    execution_granted INTEGER NOT NULL CHECK (execution_granted = 0),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    UNIQUE (decision_id, principal_id, decision_body_sha256),
+    FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_auth_tenant
+    ON managed_acceptance_authorizations(tenant_id, status, expires_at);
+
+CREATE TABLE IF NOT EXISTS managed_acceptance_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    product_task_id TEXT,
+    workflow_node_id TEXT,
+    execution_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL,
+    authorization_id TEXT NOT NULL,
+    manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+    attempt_body_sha256 TEXT NOT NULL CHECK (length(attempt_body_sha256) = 64),
+    status TEXT NOT NULL CHECK (status IN ('admitted','in_flight','succeeded','failed','cancelled','outcome_unknown','replayed')),
+    terminal_class TEXT,
+    body_json TEXT NOT NULL,
+    receipt_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (tenant_id, attempt_id),
+    UNIQUE (tenant_id, attempt_body_sha256),
+    FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id),
+    FOREIGN KEY(authorization_id) REFERENCES managed_acceptance_authorizations(authorization_id)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_attempts_status
+    ON managed_acceptance_attempts(tenant_id, status, updated_at);
 ";
 pub(crate) const POSTGRES_DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatch_history (
@@ -2514,6 +2652,72 @@ CREATE TABLE IF NOT EXISTS product_task_terminal_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_product_terminal_evidence_task
     ON product_task_terminal_evidence(product_task_id, task_version);
+
+CREATE TABLE IF NOT EXISTS managed_acceptance_decisions (
+    decision_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    residual_finding_sha256 TEXT NOT NULL CHECK (length(residual_finding_sha256) = 64),
+    status TEXT NOT NULL CHECK (status IN ('draft_pending_operator','operator_accepted','operator_rejected','invalidated','revoked','expired')),
+    principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
+    principal_id TEXT,
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT,
+    revoked_at TEXT,
+    UNIQUE (tenant_id, decision_body_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_decisions_tenant
+    ON managed_acceptance_decisions(tenant_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS managed_acceptance_authorizations (
+    authorization_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
+    principal_id TEXT NOT NULL,
+    decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    residual_finding_sha256 TEXT NOT NULL CHECK (length(residual_finding_sha256) = 64),
+    authorization_sha256 TEXT NOT NULL CHECK (length(authorization_sha256) = 64),
+    scope_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active','revoked','expired','consumed')),
+    mutation_authority TEXT NOT NULL CHECK (mutation_authority = 'authorization_receipt_only'),
+    execution_granted INTEGER NOT NULL CHECK (execution_granted = 0),
+    body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    UNIQUE (decision_id, principal_id, decision_body_sha256),
+    FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_auth_tenant
+    ON managed_acceptance_authorizations(tenant_id, status, expires_at);
+
+CREATE TABLE IF NOT EXISTS managed_acceptance_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    product_task_id TEXT,
+    workflow_node_id TEXT,
+    execution_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL,
+    authorization_id TEXT NOT NULL,
+    manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+    attempt_body_sha256 TEXT NOT NULL CHECK (length(attempt_body_sha256) = 64),
+    status TEXT NOT NULL CHECK (status IN ('admitted','in_flight','succeeded','failed','cancelled','outcome_unknown','replayed')),
+    terminal_class TEXT,
+    body_json TEXT NOT NULL,
+    receipt_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (tenant_id, attempt_id),
+    UNIQUE (tenant_id, attempt_body_sha256),
+    FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id),
+    FOREIGN KEY(authorization_id) REFERENCES managed_acceptance_authorizations(authorization_id)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_attempts_status
+    ON managed_acceptance_attempts(tenant_id, status, updated_at);
 ";
 
 #[cfg(test)]
@@ -2583,6 +2787,9 @@ mod tests {
             "idx_product_tasks_workspace_record",
             "product_task_terminal_evidence",
             "idx_product_terminal_evidence_task",
+            "managed_acceptance_decisions",
+            "managed_acceptance_authorizations",
+            "managed_acceptance_attempts",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),

@@ -67,7 +67,7 @@ impl ManagedAcceptancePreflightResult {
 }
 
 /// Redacted inputs for preflight (never include secret material).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ManagedAcceptancePreflightInput {
     pub execution_gate_enabled: bool,
     pub codex_binary_path: Option<PathBuf>,
@@ -91,7 +91,11 @@ pub struct ManagedAcceptancePreflightInput {
     pub max_input_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub max_total_tokens: Option<u64>,
-    pub max_cost_bound_declared: bool,
+    /// Typed cost authority: provider_reported | local_estimate | cost_unavailable.
+    pub cost_authority_kind: String,
+    pub max_cost_usd: Option<f64>,
+    pub pricing_table_version: Option<String>,
+    pub cost_currency: Option<String>,
     pub max_wall_time_ms: Option<u64>,
     pub product_launch_enforces_loopback_only: bool,
     pub disposable_target_repo: Option<String>,
@@ -133,7 +137,10 @@ impl Default for ManagedAcceptancePreflightInput {
             max_input_tokens: None,
             max_output_tokens: None,
             max_total_tokens: None,
-            max_cost_bound_declared: false,
+            cost_authority_kind: "cost_unavailable".into(),
+            max_cost_usd: None,
+            pricing_table_version: None,
+            cost_currency: None,
             max_wall_time_ms: None,
             product_launch_enforces_loopback_only: false,
             disposable_target_repo: None,
@@ -440,15 +447,35 @@ pub fn run_managed_acceptance_preflight(
         ),
         Some("blocked_budget"),
     );
+    let cost_ok = match input.cost_authority_kind.as_str() {
+        "provider_reported" => input.max_cost_usd.is_some_and(|c| c > 0.0),
+        "local_estimate" => {
+            input.max_cost_usd.is_some_and(|c| c > 0.0)
+                && input
+                    .pricing_table_version
+                    .as_ref()
+                    .is_some_and(|v| !v.is_empty())
+        }
+        "cost_unavailable" => true, // monetary ceiling not pretended
+        _ => false,
+    };
     check(
         &mut checks,
         &mut blockers,
-        "cost_and_time_bounds",
-        input.max_cost_bound_declared && input.max_wall_time_ms.is_some_and(|n| n > 0),
+        "cost_authority",
+        cost_ok,
         format!(
-            "cost_declared={} wall_ms={:?}",
-            input.max_cost_bound_declared, input.max_wall_time_ms
+            "kind={} max_cost={:?} pricing={:?}",
+            input.cost_authority_kind, input.max_cost_usd, input.pricing_table_version
         ),
+        Some("blocked_budget"),
+    );
+    check(
+        &mut checks,
+        &mut blockers,
+        "wall_time_bound",
+        input.max_wall_time_ms.is_some_and(|n| n > 0),
+        format!("wall_ms={:?}", input.max_wall_time_ms),
         Some("blocked_budget"),
     );
 
@@ -621,7 +648,10 @@ pub fn run_managed_acceptance_preflight(
             "max_input_tokens": input.max_input_tokens,
             "max_output_tokens": input.max_output_tokens,
             "max_total_tokens": input.max_total_tokens,
-            "max_cost_bound_declared": input.max_cost_bound_declared,
+            "cost_authority_kind": input.cost_authority_kind,
+            "max_cost_usd": input.max_cost_usd,
+            "pricing_table_version": input.pricing_table_version,
+            "cost_currency": input.cost_currency,
             "max_wall_time_ms": input.max_wall_time_ms,
         },
         "capabilities": {
@@ -774,7 +804,10 @@ pub fn fixture_ready_pending_operator_input(
         max_input_tokens: Some(32_000),
         max_output_tokens: Some(4_096),
         max_total_tokens: Some(36_096),
-        max_cost_bound_declared: true,
+        cost_authority_kind: "cost_unavailable".into(),
+        max_cost_usd: None,
+        pricing_table_version: None,
+        cost_currency: Some("USD".into()),
         max_wall_time_ms: Some(600_000),
         product_launch_enforces_loopback_only: false,
         disposable_target_repo: Some("Igzela/pe7-golden-path-acceptance-fixture".into()),

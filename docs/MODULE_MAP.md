@@ -19,7 +19,7 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Workspace | supervised-patch and `target_repo_output` owners | app-owned worktree, patch, source, and target-output lifecycle |
 | Verification/repair | supervised-patch verification, API-owned managed runs, tool-policy receipts | fixed read-only commands; hashed persisted text; pause/kill/late-write checks |
 | Artifact/approval/output | supervised capture/store, redaction/integrity, workflow approval, target-output owners | atomic artifact; separate approval and explicit output; `acp/*` only |
-| Persistence/evidence | `storage/local_product_store/` | sole SQLite/PostgreSQL store, transaction, audit, evidence, migration owner |
+| Persistence/evidence | `storage/local_product_store/` (+ `managed_acceptance.rs` v32 decisions/authorizations/attempts) | sole SQLite/PostgreSQL store, transaction, audit, evidence, managed-acceptance attempt admission, migration owner |
 | Harness Evolution | `harness_evolution*.rs` and existing store owners | default-off Level-1 fixture lab; active Harness immutable |
 | SDK/Dashboard | `sdk/`, `dashboard/` | typed interaction/projection; no backend authority |
 | Wire contracts | `wire_contract/`, `codegen/` | shared schemas; checked by `scripts/check_wire_codegen_drift.sh` |

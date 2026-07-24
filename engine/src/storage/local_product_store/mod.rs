@@ -22,6 +22,7 @@ mod harness_evolution;
 mod heartbeat;
 mod integrity;
 mod keys;
+mod managed_acceptance;
 mod migrations;
 mod native_scorecard_artifacts;
 mod offline_replay_artifacts;
@@ -90,6 +91,7 @@ pub use external_runtime::{
     MEMORY_STRATEGIES,
 };
 pub use integrity::{IntegrityReport, TableIntegrity};
+pub use managed_acceptance::{AuthenticatedPrincipal, PrincipalKind};
 pub use policy_replay_producer::{
     EvidenceChainPromotionRequest, ReplayProductionProfile, ReplayProductionRequest,
     REPLAY_PRODUCER_SCHEMA_VERSION,

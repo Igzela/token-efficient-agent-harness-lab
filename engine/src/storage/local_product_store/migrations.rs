@@ -12,6 +12,7 @@ pub(super) const V28_SCHEMA_VERSION: i64 = 28;
 pub(super) const V29_SCHEMA_VERSION: i64 = 29;
 pub(super) const V30_SCHEMA_VERSION: i64 = 30;
 pub(super) const V31_SCHEMA_VERSION: i64 = 31;
+pub(super) const V32_SCHEMA_VERSION: i64 = 32;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -49,6 +50,11 @@ pub(super) const V29_TABLES: [&str; 2] = [
 ];
 pub(super) const V30_TABLES: [&str; 1] = ["product_tasks"];
 pub(super) const V31_TABLES: [&str; 1] = ["product_task_terminal_evidence"];
+pub(super) const V32_TABLES: [&str; 3] = [
+    "managed_acceptance_decisions",
+    "managed_acceptance_authorizations",
+    "managed_acceptance_attempts",
+];
 
 #[allow(dead_code)]
 pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
@@ -105,6 +111,7 @@ impl LocalProductStore {
                     }
                     V30_SCHEMA_VERSION => Self::migrate_v30_add_product_tasks(conn)?,
                     V31_SCHEMA_VERSION => Self::migrate_v31_add_product_terminal_evidence(conn)?,
+                    V32_SCHEMA_VERSION => Self::migrate_v32_add_managed_acceptance(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -113,7 +120,9 @@ impl LocalProductStore {
             let final_version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if final_version == V31_SCHEMA_VERSION {
+            if final_version == V32_SCHEMA_VERSION {
+                validate_sqlite_v32_schema(conn)?;
+            } else if final_version == V31_SCHEMA_VERSION {
                 validate_sqlite_v31_schema(conn)?;
             } else if final_version == V30_SCHEMA_VERSION {
                 validate_sqlite_v30_schema(conn)?;
@@ -1598,6 +1607,28 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         conn.execute_batch(schema::V31_DDL)
             .map_err(|error| error.to_string())
     }
+
+    fn migrate_v32_add_managed_acceptance(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(schema::V32_DDL)
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn validate_sqlite_v32_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v31_schema(conn)?;
+    for table in V32_TABLES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v32 schema missing table {table}"));
+        }
+    }
+    Ok(())
 }
 
 fn validate_sqlite_v31_schema(conn: &Connection) -> Result<(), String> {

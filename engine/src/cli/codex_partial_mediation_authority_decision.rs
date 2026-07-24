@@ -317,38 +317,25 @@ fn residual_finding_sha256(finding: &ResidualAdmissionFinding) -> String {
     hex::encode(Sha256::digest(body.as_bytes()))
 }
 
+/// Canonical hash material covers every authority-relevant field (A2).
+/// Excludes only `decision_body_sha256` itself.
 fn decision_body_hash_material(decision: &PartialMediationAuthorityDecision) -> String {
-    // Hash excludes the hash field itself; use a stable subset.
-    json!({
-        "schema_version": decision.schema_version,
-        "status": decision.status.as_str(),
-        "residual_verdict": decision.residual_verdict,
-        "residual_finding_sha256": decision.residual_finding_sha256,
-        "product_admission_class": decision.product_admission_class,
-        "agent_recommendation": decision.agent_recommendation.as_str(),
-        "agent_recommendation_rationale": decision.agent_recommendation_rationale,
-        "go_alternative": decision.go_alternative,
-        "no_go_alternative": decision.no_go_alternative,
-        "trial_envelope": {
-            "exact_codex_version": decision.trial_envelope.exact_codex_version,
-            "model": decision.trial_envelope.model,
-            "max_retries": decision.trial_envelope.max_retries,
-            "max_provider_requests": decision.trial_envelope.max_provider_requests,
-            "max_input_tokens": decision.trial_envelope.max_input_tokens,
-            "max_output_tokens": decision.trial_envelope.max_output_tokens,
-            "max_total_tokens": decision.trial_envelope.max_total_tokens,
-            "max_wall_time_ms": decision.trial_envelope.max_wall_time_ms,
-            "provider_base_url": decision.trial_envelope.provider_base_url,
-            "draft_pr_only": decision.trial_envelope.draft_pr_only,
-            "auto_merge_disabled": decision.trial_envelope.auto_merge_disabled,
-        },
-        "acknowledgement_phrase": decision.acknowledgement.required_phrase,
-        "invalidation_conditions": decision.invalidation_conditions,
-        "rollback_and_kill": decision.rollback_and_kill,
-        "post_trial_evidence_required": decision.post_trial_evidence_required,
-        "residual_risk_ids": decision.residual_risks.iter().map(|r| &r.id).collect::<Vec<_>>(),
-    })
-    .to_string()
+    let mut full = decision.to_json();
+    if let Some(obj) = full.as_object_mut() {
+        obj.remove("decision_body_sha256");
+        // Sort keys for deterministic serialization.
+        let mut keys: Vec<_> = obj.keys().cloned().collect();
+        keys.sort();
+        let mut sorted = serde_json::Map::new();
+        for k in keys {
+            if let Some(v) = obj.remove(&k) {
+                sorted.insert(k, v);
+            }
+        }
+        *obj = sorted;
+    }
+    // Expand trial envelope completely (already in to_json).
+    full.to_string()
 }
 
 fn compute_decision_body_sha256(decision: &PartialMediationAuthorityDecision) -> String {
@@ -769,5 +756,23 @@ mod tests {
             .non_claims
             .iter()
             .any(|c| c.contains("self-approval")));
+    }
+
+    #[test]
+    fn mutating_authority_fields_changes_canonical_decision_hash() {
+        let base = draft_partial_mediation_authority_decision();
+        let base_hash = base.decision_body_sha256.clone();
+        let mut m = base.clone();
+        m.trial_envelope.max_retries = 3;
+        m.decision_body_sha256 = compute_decision_body_sha256(&m);
+        assert_ne!(base_hash, m.decision_body_sha256);
+        let mut m2 = base.clone();
+        m2.trial_envelope.model = "mutated-model".into();
+        m2.decision_body_sha256 = compute_decision_body_sha256(&m2);
+        assert_ne!(base_hash, m2.decision_body_sha256);
+        let mut m3 = base.clone();
+        m3.go_alternative = "mutated-go".into();
+        m3.decision_body_sha256 = compute_decision_body_sha256(&m3);
+        assert_ne!(base_hash, m3.decision_body_sha256);
     }
 }
