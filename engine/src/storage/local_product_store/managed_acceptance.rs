@@ -1202,7 +1202,7 @@ fn load_attempt_pg(
         "status": row.get::<_, String>(9),
         "terminal_class": row.get::<_, Option<String>>(10),
         "body_json": serde_json::from_str::<Value>(&body_s).unwrap_or(Value::Null),
-        "receipt_json": receipt_s.and_then(|s| serde_json::from_str(&s).ok()),
+        "receipt_json": receipt_s.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
         "created_at": row.get::<_, String>(13),
         "updated_at": row.get::<_, String>(14),
         "idempotent_replay": false,
