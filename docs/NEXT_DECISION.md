@@ -148,11 +148,24 @@ Independent residual investigation (`codex_residual_admission_finding.v1`):
 
 ## Packet PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1 — bounded trial authority draft
 
-**State:** `BLOCKED_PREREQUISITE` until Packet residual-admission closure produces a final evidence-backed result (then open as stacked reviewable PR; agent does not self-approve).
+**State:** `IN_PROGRESS` (reviewable stacked PR; **draft only** — agent does **not** self-approve)
+
+**Prerequisite:** PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1 (`residual_admission_no_go`)
+
+Contract: `codex_partial_mediation_authority_decision.v1` (`engine/src/cli/codex_partial_mediation_authority_decision.rs`).
+
+- Status on emit: `draft_pending_operator` (does **not** authorize live trial).
+- Agent recommendation: `recommend_go_bounded_trial` under compensating controls — **not** approval.
+- Operator acknowledgement requires exact phrase + decision body SHA-256 + residual finding SHA-256 + human actor identity; bare env/boolean and agent/bot actors are rejected.
+- Maximum trial envelope: one disposable repo, one ordinary coding task, exact Codex 0.145.0 + SHA, one provider binding, parent-only API key, no ChatGPT OAuth, `max_retries=0`, `max_provider_requests=1`, predeclared token/time limits, Draft PR only, target `main` unchanged, auto-merge off, no release/deploy, gateway+session reconcile, exact terminal evidence, explicit cancel/cleanup.
+- Invalidation: residual hash change, identity/envelope drift, auto-merge, OAuth reuse, expiry, operator reject.
+- GO/NO-GO alternatives and rollback/kill procedures are recorded in the contract.
+
+**Stacked:** not independently mergeable until residual-admission PR is accepted.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1 — provider-free preflight
 
-**State:** `BLOCKED_PREREQUISITE` until the authority-decision draft exists.
+**State:** `IN_PROGRESS` after authority-decision draft exists (stacked; no live model request).
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1 — live managed acceptance
 
