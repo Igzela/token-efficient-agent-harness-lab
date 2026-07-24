@@ -82,10 +82,9 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1`: `COMPLETE` via PR #294 (unified usage evidence; not live admission).
 - `PE7-CODEX-FULL-MEDIATION-ADMISSION-1`: `COMPLETE` as **partial foundation only** via PR #295 → `381571bf` (full-admission claim withdrawn).
 - `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`: `COMPLETE` via PR #296 → `b5920116` (exact head `9cbce74a`; CI `30098047528` / `30098047448`); class remains `mediation_hardened_partial`.
-- `PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1`: evidence `COMPLETE` on stacked review head (verdict `residual_admission_no_go`); main seal still requires independent merge of residual PR.
-- `PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1`: evidence `COMPLETE` on stacked review head (draft only; operator approval required; agent does not self-approve); main seal requires independent merges of stacked PRs.
-- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1`: `IN_PROGRESS` provider-free preflight (stacked; no live model request).
-- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`: `BLOCKED_PREREQUISITE` — residual NO-GO + parent-only API key + operator authorization (or explicit accepted partial-mediation decision).
+- Provider-free Codex admission **board** (stacked reviewable PRs #297/#298/#299; single manual approval gate): residual `residual_admission_no_go`; partial-mediation authority decision draft; managed-acceptance preflight; fixture dry-run + board readiness dossier. **No live provider request.** Class remains `mediation_hardened_partial`.
+- `PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1` / authority-decision / preflight / dry-run: evidence complete on stacked tip; main seal requires independent board merge.
+- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`: `BLOCKED_PREREQUISITE` — only live credential + operator risk acknowledgement + one start action remain (plus residual technical risks under partial mediation).
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` until live managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
@@ -98,7 +97,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281–#296 are merged; PR #225 remains separate and last. Product Golden Path remains `IN_PROGRESS`: Codex mediation is `mediation_hardened_partial` after #296 (not full admission). Live managed acceptance remains blocked on residual admission blockers + credentials + authorization. Claude confinement and OpenCode artifact admission remain blocked. RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
+PR #281–#296 are merged; provider-free Codex admission board is open as stacked PRs #297–#299 (single independent approval gate; no auto-merge). PR #225 remains separate and last. Product Golden Path remains `IN_PROGRESS`: class `mediation_hardened_partial` with `residual_admission_no_go`. Live managed acceptance waits only on operator risk ack + parent-only credential + one start action (residual technical risks remain under partial mediation). Claude confinement and OpenCode artifact admission remain blocked. RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
 
 ## Safety Boundary
 

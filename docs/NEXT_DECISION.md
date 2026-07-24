@@ -165,7 +165,7 @@ Contract: `codex_partial_mediation_authority_decision.v1` (`engine/src/cli/codex
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1 — provider-free preflight
 
-**State:** `IN_PROGRESS` (reviewable stacked PR; provider-free only; **no live model request**; do not merge without independent approval)
+**State:** `COMPLETE` on stacked review head (provider-free only; **no live model request**; main seal requires independent board approval/merge)
 
 **Prerequisite:** PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1
 
@@ -173,15 +173,34 @@ Contract: `codex_managed_acceptance_preflight.v1` + redacted `codex_managed_acce
 
 Typed results: `ready_under_full_admission` | `ready_pending_operator_risk_acceptance` | `blocked_missing_credential` | `blocked_missing_authorization` | `blocked_isolation` | `blocked_identity` | `blocked_budget` | `outcome_unknown`.
 
-Checks (secret values never recorded): execution gate; exact Codex path/version/SHA; model/provider identity; parent credential presence; child env non-credential; gateway loopback; parent journal durability; request/retry/token/cost/time bounds; bwrap/userns/net classifications; disposable target repo + main SHA; `acp/*` Draft PR only; auto-merge off; verification/approval/output-confirm; evidence sink; cancel/cleanup/rollback; authority decision binding.
+## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-DRY-RUN-1 — fixture/mock acceptance dry-run
 
-**Stacked:** not independently mergeable until parent authority-decision and residual PRs are accepted.
+**State:** `COMPLETE` on stacked review head (provider-free; **no live model request**)
+
+**Prerequisite:** PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1
+
+Contract: `codex_managed_acceptance_dry_run.v1` / receipt `codex_managed_acceptance_dry_run_receipt.v1` + board dossier `codex_admission_board_readiness.v1` (`engine/src/cli/codex_managed_acceptance_dry_run.rs`).
+
+Uses real loopback gateway + parent journal + mock upstream. Scenarios: success, provider failure, timeout, cancellation, budget exhaustion (`max_retries=0`), evidence contradiction, outcome-unknown + restart, duplicate-start rejection, idempotent replay. Hash-bound redacted receipts; SQLite (and `pg-tests`) operator-acknowledgement binding for receipt identity (acknowledgement-only, not approval).
+
+## Provider-free Codex admission board (single manual gate)
+
+**State:** reviewable stacked PRs **#297 → #298 → #299** (prefer merge tip #299 after independent board approval; auto-merge disabled).
+
+**Final admission classification:** `residual_admission_no_go` / product class `mediation_hardened_partial`.
+
+**Single manual gate remaining (not engineering unfinished work):**
+
+1. Independent review/approval of the board stack.
+2. Operator multi-field residual-risk acknowledgement (when proceeding under partial mediation).
+3. Parent-only API key at runtime (never in git).
+4. One command/API action to start the bounded disposable **live** task.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1 — live managed acceptance
 
-**State:** `BLOCKED_PREREQUISITE` (admission class not full + residual NO-GO + operator credential + authorization)
+**State:** `BLOCKED_PREREQUISITE` (residual NO-GO + operator credential + authorization; **provider-free board is ready**)
 
-**Prerequisite:** full residual closure **or** an explicit operator-accepted authority decision for a bounded live trial under partial mediation (decision packet; not agent self-approval).
+**Prerequisite:** operator-accepted authority decision for bounded live trial under partial mediation **or** future full residual closure.
 
 Do not start RWE until live managed acceptance completes under the accepted contract.
 

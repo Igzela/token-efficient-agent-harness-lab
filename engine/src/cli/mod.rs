@@ -1,5 +1,6 @@
 pub mod cli_node_executor;
 pub mod codex_budget_authority;
+pub mod codex_managed_acceptance_dry_run;
 pub mod codex_managed_acceptance_preflight;
 pub mod codex_mediation_admission;
 pub mod codex_partial_mediation_authority_decision;
