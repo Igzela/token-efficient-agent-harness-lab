@@ -533,6 +533,14 @@ pub fn probe_real_auth_hidden(
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // Non-setuid bwrap implies a user namespace; hosts that deny unprivileged
+        // uid_map (common on GitHub Actions) cannot execute FS isolation probes.
+        if stderr.contains("uid map") || stderr.contains("Permission denied") {
+            return Err(format!(
+                "BLOCKED:bwrap_userns_unavailable: isolation probe failed: status={:?} stderr={stderr}",
+                output.status.code()
+            ));
+        }
         return Err(format!(
             "isolation probe failed: status={:?} stderr={stderr}",
             output.status.code()
@@ -832,9 +840,26 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
-        let hidden = probe_real_auth_hidden(&auth, &binary, &eph, &worktree).unwrap();
-        assert!(hidden, "real auth must be unreadable inside sandbox");
-        assert!(auth.is_file());
+        match probe_real_auth_hidden(&auth, &binary, &eph, &worktree) {
+            Ok(hidden) => {
+                assert!(hidden, "real auth must be unreadable inside sandbox");
+                assert!(auth.is_file());
+            }
+            Err(error) if error.contains("BLOCKED:bwrap_userns_unavailable") => {
+                // Host cannot execute bwrap FS isolation (uid_map denied). Do not
+                // claim probe success; residual remains in partial admission report.
+                let report = CodexMediatedCapabilityReport::evaluate(
+                    IsolationMode::BubblewrapFilesystem,
+                    true,
+                );
+                assert!(
+                    !report.admission_class.admits_live_product_golden_path(),
+                    "must not claim full admission when executed FS probe is blocked"
+                );
+                eprintln!("executed auth-hide probe BLOCKED on host: {error}");
+            }
+            Err(error) => panic!("unexpected isolation probe failure: {error}"),
+        }
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&eph);
         let _ = std::fs::remove_dir_all(&fake_home);
