@@ -1,6 +1,6 @@
 name: exact-head-check
 
-# In-repo validation of the composite growth wedge on every pull request.
+# Re-read the live PR head from trusted base-branch action code on every pull request.
 # Pins follow repository Action pin policy.
 
 on:
@@ -15,16 +15,19 @@ jobs:
   exact-head:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
+      - name: Check out trusted base action source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-base
           persist-credentials: false
       - name: Verify live PR head matches expected SHA
-        uses: ./actions/exact-head-check
+        uses: ./trusted-base/actions/exact-head-check
         with:
           github-token: ${{ github.token }}
           pull-request: ${{ github.event.pull_request.number }}
           expected-head: ${{ github.event.pull_request.head.sha }}
+          allow-fork-head: "true"
       - name: Upload proof
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

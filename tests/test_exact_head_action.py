@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -42,6 +40,15 @@ class TestExactHeadAction(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("passed", result.stdout)
+
+    def test_repository_workflow_allows_forks_only_from_trusted_base_code(self):
+        workflow = ROOT / ".github" / "workflows" / "exact-head-check.yml"
+        text = workflow.read_text(encoding="utf-8")
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", text)
+        self.assertIn("path: trusted-base", text)
+        self.assertIn("uses: ./trusted-base/actions/exact-head-check", text)
+        self.assertIn('allow-fork-head: "true"', text)
+        self.assertNotIn("uses: ./actions/exact-head-check", text)
 
     def test_example_workflow_present(self):
         example = ROOT / "examples" / "github-actions" / "exact-head-check.yml"

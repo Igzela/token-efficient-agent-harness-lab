@@ -40,7 +40,9 @@ Pin to a tag or commit SHA in production consumers. `@main` is only for lab expe
 
 ## Fork policy
 
-By default, a fork head repository is rejected. Set `allow-fork-head: true` only when you intentionally verify external contributions.
+By default, a fork head repository is rejected. Set `allow-fork-head: true` only when you intentionally verify external contributions and the action implementation itself comes from a trusted source.
+
+For a remote action, pin `uses:` to a reviewed commit or release. For an in-repository local action, do not execute the action implementation from the pull-request merge checkout: check out `${{ github.event.pull_request.base.sha }}` into a separate path and invoke the local action from that trusted base checkout. The action only needs read access to pull-request metadata; it does not need to execute fork code.
 
 ## Local pure checks
 
