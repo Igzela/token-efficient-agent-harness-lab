@@ -99,9 +99,11 @@ PR #293 squash-merged as `29262bce…`. Established loopback gateway, session us
 
 ## Packet PE7-CODEX-FULL-MEDIATION-ADMISSION-1 — Codex full mediation admission
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE7-CODEX-TASK-BUDGET-AUTHORITY-1, PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1
+
+PR #295 squash-merged as `381571bf…`; exact head `7e3c1f70…`; exact-head run `30091019486` and full tests run `30091019491` passed first attempt on the merge head.
 
 Closes product-managed Codex admission for the **API-key-mediated** path only:
 
@@ -111,7 +113,36 @@ Closes product-managed Codex admission for the **API-key-mediated** path only:
 4. Official ChatGPT-auth Codex path remains **excluded** from Product Golden Path.
 5. Network posture: shared host network with credential non-bypass (unprivileged loopback-only netns that still reaches the host gateway is not available on this host profile).
 
-**Admission class (mediated API-key path, when bwrap present):** `fully_admitted_mediated_api_key` for provider-free proof of interposition/isolation. Live managed Golden Path acceptance still requires a separate packet with local operator credential + authorization — no live provider call in this packet.
+**Admission class (mediated API-key path, when bwrap present):** `fully_admitted_mediated_api_key` (provider-free mediation proof). Live managed Golden Path acceptance is a separate packet.
+
+## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1 — live managed acceptance
+
+**State:** `BLOCKED_PREREQUISITE` (operator credential + authorization)
+
+**Prerequisite:** PE7-CODEX-FULL-MEDIATION-ADMISSION-1
+
+Provider-free mediation is accepted. A live call is still required for residual-seal completion and is **not** started in this environment because:
+
+* `ACP_CODEX_UPSTREAM_API_KEY` / `OPENAI_API_KEY` are not present in the agent process environment;
+* product admission must not scrape or repurpose ChatGPT OAuth from the operator `~/.codex/auth.json`;
+* no explicit operator authorization for a bounded live provider spend was provided in-session.
+
+**Exact operator action to unblock (do not paste secrets into chat, git, CI, or evidence):**
+
+```bash
+# One-time identity (use real absolute canonical binary path + sha256):
+export ACP_ENABLE_CLI_EXECUTION=1
+export ACP_CODEX_BIN="$(readlink -f "$(command -v codex)")"
+export ACP_CODEX_VERSION=0.145.0
+export ACP_CODEX_SHA256="$(sha256sum "$ACP_CODEX_BIN" | awk '{print $1}')"
+export ACP_CODEX_MODEL="<admitted-model-id>"
+# Parent-only API key for the gateway (never given to the child):
+export ACP_CODEX_UPSTREAM_API_KEY="<third-party-or-api-key>"
+# Optional OpenAI-compatible base:
+# export ACP_CODEX_UPSTREAM_BASE_URL="https://api.openai.com/v1"
+```
+
+Then authorize one tightly bounded ordinary coding task on the disposable target (predeclare max tokens/cost; Draft PR only; no target-main write; no auto-merge). After that authorization, re-run `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1` as its own branch/PR.
 
 Do not start RWE until live managed acceptance completes.
 
