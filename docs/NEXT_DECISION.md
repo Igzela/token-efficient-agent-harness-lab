@@ -134,7 +134,7 @@ Do **not** claim that only operator credential/authorization remains.
 
 ## Packet PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1 — residual full-admission axes
 
-**State:** `IN_PROGRESS` (provider-free investigation; reviewable PR; **do not merge from this batch without independent approval**)
+**State:** `COMPLETE` (provider-free evidence complete on stacked review head; main merge still requires independent approval of the residual-admission PR — do not treat main as sealed until squash-merged)
 
 **Prerequisite:** PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1
 
@@ -148,9 +148,9 @@ Independent residual investigation (`codex_residual_admission_finding.v1`):
 
 ## Packet PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1 — bounded trial authority draft
 
-**State:** `IN_PROGRESS` (reviewable stacked PR; **draft only** — agent does **not** self-approve)
+**State:** `IN_PROGRESS` (reviewable stacked PR; **draft only** — agent does **not** self-approve; do not merge without independent approval)
 
-**Prerequisite:** PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1 (`residual_admission_no_go`)
+**Prerequisite:** PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1
 
 Contract: `codex_partial_mediation_authority_decision.v1` (`engine/src/cli/codex_partial_mediation_authority_decision.rs`).
 
@@ -161,11 +161,13 @@ Contract: `codex_partial_mediation_authority_decision.v1` (`engine/src/cli/codex
 - Invalidation: residual hash change, identity/envelope drift, auto-merge, OAuth reuse, expiry, operator reject.
 - GO/NO-GO alternatives and rollback/kill procedures are recorded in the contract.
 
-**Stacked:** not independently mergeable until residual-admission PR is accepted.
+**Stacked:** not independently mergeable until residual-admission PR is accepted on main.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1 — provider-free preflight
 
-**State:** `IN_PROGRESS` after authority-decision draft exists (stacked; no live model request).
+**State:** `BLOCKED_PREREQUISITE` until the authority-decision draft packet is accepted as reviewable/complete on this stack.
+
+**Prerequisite:** PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1 — live managed acceptance
 
