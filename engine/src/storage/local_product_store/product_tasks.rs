@@ -2510,8 +2510,12 @@ impl LocalProductStore {
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("failed");
+        // Receipt and terminal CAS are separate store transactions. A concurrent
+        // winner may commit receipt+terminal (advancing ProductTask version) before
+        // this caller rebinds; recover by reconstructing the canonical completed
+        // outcome rather than failing solely on the advanced version.
         let output_receipt = if matches!(output_intent.as_str(), "artifact_only" | "export_patch") {
-            Some(self.record_product_nonnetwork_output_receipt(
+            match self.record_product_nonnetwork_output_receipt(
                 &artifact_id,
                 task_id,
                 approval_id,
@@ -2519,7 +2523,19 @@ impl LocalProductStore {
                 expected_task_version,
                 &output_result,
                 actor,
-            )?)
+            ) {
+                Ok(receipt) => Some(receipt),
+                Err(error) if is_product_output_concurrency_race_error(&error) => {
+                    return self.reuse_completed_product_output_response(
+                        task_id,
+                        &artifact_id,
+                        &approval,
+                        expected_task_version,
+                        &error,
+                    );
+                }
+                Err(error) => return Err(error),
+            }
         } else {
             None
         };
@@ -2544,22 +2560,13 @@ impl LocalProductStore {
         let current_status =
             ProductTaskStatus::parse(current.get("status").and_then(Value::as_str).unwrap_or(""))?;
         if current_status == ProductTaskStatus::Completed {
-            let durable_artifact = self
-                .get_supervised_patch_artifact(&artifact_id)?
-                .ok_or_else(|| "completed output artifact disappeared".to_string())?;
-            let terminal_output =
-                validate_completed_product_output_binding(&current, &durable_artifact, &approval)?;
-            let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
-            return Ok(json!({
-                "task": current,
-                "approval": approval,
-                "artifact": durable_artifact,
-                "output": terminal_output.get("output"),
-                "output_receipt": terminal_output.get("receipt"),
-                "operation": terminal_output.get("operation"),
-                "terminal_evidence": terminal_evidence,
-                "reused": true,
-            }));
+            return self.reuse_completed_product_output_response(
+                task_id,
+                &artifact_id,
+                &approval,
+                expected_task_version,
+                "completed product task observed before terminal CAS",
+            );
         }
         let state_changed = current_status != next_status;
         let mut terminal_evidence = None;
@@ -2588,46 +2595,19 @@ impl LocalProductStore {
                     terminal_evidence = Some(evidence);
                     task
                 }
-                Err(error)
-                    if error.contains("expected-current")
-                        || error.contains("stale product task version") =>
-                {
-                    let completed = self
-                        .get_product_task(task_id)?
-                        .ok_or_else(|| "product task disappeared after output race".to_string())?;
-                    if completed.get("status").and_then(Value::as_str)
-                        != Some(ProductTaskStatus::Completed.as_str())
-                        || completed.get("version").and_then(Value::as_u64)
-                            != Some(expected_task_version.saturating_add(1))
-                    {
-                        return Err(error);
-                    }
-                    let completed_artifact = self
-                        .get_supervised_patch_artifact(&artifact_id)?
-                        .ok_or_else(|| {
-                            "completed output artifact disappeared after race".to_string()
-                        })?;
-                    let terminal_output = validate_completed_product_output_binding(
-                        &completed,
-                        &completed_artifact,
+                Err(error) if is_product_output_concurrency_race_error(&error) => {
+                    return self.reuse_completed_product_output_response(
+                        task_id,
+                        &artifact_id,
                         &approval,
-                    )?;
-                    let evidence = self.get_product_task_terminal_evidence(task_id)?;
-                    return Ok(json!({
-                        "task": completed,
-                        "approval": approval,
-                        "artifact": completed_artifact,
-                        "output": terminal_output.get("output"),
-                        "output_receipt": terminal_output.get("receipt"),
-                        "operation": terminal_output.get("operation"),
-                        "terminal_evidence": evidence,
-                        "reused": true,
-                    }));
+                        expected_task_version,
+                        &error,
+                    );
                 }
                 Err(error) => return Err(error),
             }
         } else if state_changed {
-            self.transition_product_task(
+            match self.transition_product_task(
                 task_id,
                 next_status,
                 current.get("version").and_then(Value::as_u64),
@@ -2637,7 +2617,19 @@ impl LocalProductStore {
                 None,
                 None,
                 None,
-            )?
+            ) {
+                Ok(task) => task,
+                Err(error) if is_product_output_concurrency_race_error(&error) => {
+                    return self.reuse_completed_product_output_response(
+                        task_id,
+                        &artifact_id,
+                        &approval,
+                        expected_task_version,
+                        &error,
+                    );
+                }
+                Err(error) => return Err(error),
+            }
         } else {
             current
         };
@@ -2649,6 +2641,50 @@ impl LocalProductStore {
             "output_receipt": output_receipt,
             "terminal_evidence": terminal_evidence,
             "reused": !state_changed,
+        }))
+    }
+
+    /// Reconstruct the already-committed canonical output outcome for a concurrent
+    /// or restarted caller. Requires completed@expected+1 (or completed@expected for
+    /// exact restart with the post-completion version) plus matching durable receipt
+    /// or Draft PR operation. Never converts outcome_unknown into success.
+    fn reuse_completed_product_output_response(
+        &self,
+        task_id: &str,
+        artifact_id: &str,
+        approval: &Value,
+        expected_task_version: u64,
+        race_error: &str,
+    ) -> Result<Value, String> {
+        let completed = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "product task disappeared after output race".to_string())?;
+        let completed_version = completed
+            .get("version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "completed product task version missing after race".to_string())?;
+        if completed.get("status").and_then(Value::as_str)
+            != Some(ProductTaskStatus::Completed.as_str())
+            || (completed_version != expected_task_version
+                && completed_version != expected_task_version.saturating_add(1))
+        {
+            return Err(race_error.to_string());
+        }
+        let completed_artifact = self
+            .get_supervised_patch_artifact(artifact_id)?
+            .ok_or_else(|| "completed output artifact disappeared after race".to_string())?;
+        let terminal_output =
+            validate_completed_product_output_binding(&completed, &completed_artifact, approval)?;
+        let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
+        Ok(json!({
+            "task": completed,
+            "approval": approval,
+            "artifact": completed_artifact,
+            "output": terminal_output.get("output"),
+            "output_receipt": terminal_output.get("receipt"),
+            "operation": terminal_output.get("operation"),
+            "terminal_evidence": terminal_evidence,
+            "reused": true,
         }))
     }
 
@@ -4053,6 +4089,15 @@ fn validate_product_verification_binding(
         );
     }
     Ok(())
+}
+
+fn is_product_output_concurrency_race_error(error: &str) -> bool {
+    error.contains("stale product task version at output authority boundary")
+        || error.contains("stale product task version at output")
+        || error.contains("product output terminal expected-current update conflict")
+        || error.contains("product task expected-current update conflict")
+        || error.contains("expected-current")
+        || error.contains("stale product task version")
 }
 
 fn validate_current_product_output_approval(

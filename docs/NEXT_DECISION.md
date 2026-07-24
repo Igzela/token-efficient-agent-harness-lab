@@ -77,11 +77,17 @@ PR #285 (`9c8c3a42…`) established the bounded layout; PR #287 (`1bd17d7a…`) 
 
 Exact-head/full/post-merge verification passed: #285 `30014629247`/`30014629441`/`30017458718`; #287 `30020044817`/`30020044848`; #289 `30025724951`/`30025726379`/main `30026711865`; final docs-sync main `30029185064` passed on attempt 2 after attempt 1 exposed the pre-existing concurrent output-authority test failure. RustSec data still refreshes during `cargo audit`; no security gate or check was removed. This was workflow-only; rollback is revert of #285/#287/#289 plus the docs commits.
 
+## Packet PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1 — concurrent output CAS
+
+**State:** `IN_PROGRESS`
+
+Repair the intermittent concurrent non-network output failure (`duplicate_concurrent_output_calls_reuse_one_canonical_terminal_evidence` / `stale product task version at output authority boundary`). Root cause: receipt creation and terminal evidence are separate transactions; the loser could rebind after the winner advanced ProductTask version without a completed-idempotent canonical receipt replay. Do not suppress or quarantine the concurrent test. Do not start RWE from this packet.
+
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
 **State:** `IN_PROGRESS`
 
-The fixture path and output authority are accepted; the managed coding-executor disposable E2E remains open. The intermittent concurrent output-authority test failure is a separate correctness blocker and must not be hidden by a green retry. Do not start RWE until the residual seal is closed or explicitly accepted under its existing contract.
+The fixture path and output authority are accepted; the managed coding-executor disposable E2E remains open. The concurrent output-authority repair is tracked as PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1 and must not be hidden by a green retry. Do not start RWE until the residual seal is closed or explicitly accepted under its existing contract.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2 — managed acceptance
 

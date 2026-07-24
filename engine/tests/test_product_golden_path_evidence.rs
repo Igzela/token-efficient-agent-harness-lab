@@ -446,6 +446,273 @@ fn duplicate_concurrent_output_calls_reuse_one_canonical_terminal_evidence() {
     });
 }
 
+/// Deterministic interleaving: winner commits receipt then terminal evidence before the
+/// loser rebinds. Loser must reconstruct the same canonical receipt/evidence and must
+/// not fail solely because ProductTask version advanced.
+#[test]
+fn loser_reuses_canonical_output_after_winner_commits_receipt_and_terminal() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task = drive_to_awaiting_approval(
+            &store,
+            &repo,
+            &rev,
+            "ev-output-authority-interleave-1",
+            "artifact_only",
+        );
+        let task_id = task["task_id"].as_str().unwrap();
+        let version = task["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .unwrap();
+        let approval_id = approval["approval_id"].as_str().unwrap();
+        let artifact_id = approval["artifact_id"].as_str().unwrap();
+
+        let winner = store
+            .output_product_task(task_id, "output-winner", version, Some(approval_id), true)
+            .expect("winner output");
+        assert_eq!(winner["task"]["status"], "completed");
+        assert_eq!(winner["task"]["version"], version + 1);
+        let winner_evidence_id = winner["terminal_evidence"]["evidence_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let winner_receipt_id = winner["output_receipt"]["receipt_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Explicit receipt rebind after terminal CAS: version is already advanced.
+        let output = serde_json::json!({
+            "mode": "artifact_only",
+            "status": "artifact_only",
+            "product_task_id": task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval_id,
+            "target_mutation": false,
+        });
+        let replayed_receipt = store
+            .record_product_nonnetwork_output_receipt(
+                artifact_id,
+                task_id,
+                approval_id,
+                "artifact_only",
+                version,
+                &output,
+                "output-loser-receipt",
+            )
+            .expect("loser receipt after winner terminal");
+        assert_eq!(replayed_receipt["receipt_id"], winner_receipt_id);
+
+        let loser = store
+            .output_product_task(task_id, "output-loser", version, Some(approval_id), true)
+            .expect("loser full output after winner terminal");
+        assert_eq!(loser["task"]["status"], "completed");
+        assert_eq!(loser["reused"], true);
+        assert_eq!(
+            loser["terminal_evidence"]["evidence_id"].as_str().unwrap(),
+            winner_evidence_id
+        );
+        assert_eq!(
+            loser["output_receipt"]["receipt_id"].as_str().unwrap(),
+            winner_receipt_id
+        );
+
+        // Process restart must reproduce the same canonical outcome.
+        drop(store);
+        let reopened = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+        let restarted = reopened
+            .output_product_task(task_id, "output-restart", version, Some(approval_id), true)
+            .expect("restart replay");
+        assert_eq!(restarted["reused"], true);
+        assert_eq!(
+            restarted["terminal_evidence"]["evidence_id"]
+                .as_str()
+                .unwrap(),
+            winner_evidence_id
+        );
+        let terminal_audits = reopened
+            .audit_events(10_000)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event["action"] == "product_task.terminal_evidence_committed")
+            .count();
+        assert_eq!(terminal_audits, 1);
+        let output_audits = reopened
+            .audit_events(10_000)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event["action"] == "product_task.nonnetwork_output_completed")
+            .count();
+        assert_eq!(output_audits, 1);
+    });
+}
+
+#[test]
+fn concurrent_conflicting_output_identities_fail_closed() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task = drive_to_awaiting_approval(
+            &store,
+            &repo,
+            &rev,
+            "ev-output-conflict-identity-1",
+            "artifact_only",
+        );
+        let task_id = task["task_id"].as_str().unwrap();
+        let version = task["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .unwrap();
+        let approval_id = approval["approval_id"].as_str().unwrap();
+        let artifact_id = approval["artifact_id"].as_str().unwrap();
+
+        let winner = store
+            .output_product_task(task_id, "output-winner", version, Some(approval_id), true)
+            .expect("winner");
+        assert_eq!(winner["task"]["status"], "completed");
+
+        let conflicting = serde_json::json!({
+            "mode": "artifact_only",
+            "status": "artifact_only",
+            "product_task_id": task_id,
+            "artifact_id": artifact_id,
+            "approval_id": "approval-not-the-winner",
+            "target_mutation": false,
+        });
+        let error = store
+            .record_product_nonnetwork_output_receipt(
+                artifact_id,
+                task_id,
+                "approval-not-the-winner",
+                "artifact_only",
+                version,
+                &conflicting,
+                "output-conflict",
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("authority")
+                || error.contains("binding")
+                || error.contains("approval")
+                || error.contains("stale"),
+            "conflicting identity must fail closed: {error}"
+        );
+
+        let stale_approval_error = store
+            .output_product_task(
+                task_id,
+                "output-stale-approval",
+                version,
+                Some("approval-missing-or-replaced"),
+                true,
+            )
+            .unwrap_err();
+        assert!(
+            stale_approval_error.contains("approval")
+                || stale_approval_error.contains("not found")
+                || stale_approval_error.contains("stale"),
+            "stale approval must fail closed: {stale_approval_error}"
+        );
+
+        let durable = store.get_product_task(task_id).unwrap().unwrap();
+        assert_eq!(durable["status"], "completed");
+        assert_eq!(
+            durable["version"], winner["task"]["version"],
+            "failed conflict must not create a second terminal version"
+        );
+    });
+}
+
+#[test]
+fn duplicate_concurrent_output_stress_retains_single_canonical_terminal() {
+    with_gates(|| {
+        for iteration in 0..12 {
+            let (dir, store) = temp_store();
+            let repo = dir.path().join("repo");
+            let rev = init_git_repo(&repo);
+            let task = drive_to_awaiting_approval(
+                &store,
+                &repo,
+                &rev,
+                &format!("ev-concurrent-stress-{iteration}"),
+                "artifact_only",
+            );
+            let task_id = task["task_id"].as_str().unwrap().to_string();
+            let version = task["version"].as_u64().unwrap();
+            let approval = store
+                .approve_product_task(&task_id, "independent-operator", version)
+                .unwrap();
+            let approval_id = approval["approval_id"].as_str().unwrap().to_string();
+            drop(store);
+
+            let barrier = Arc::new(Barrier::new(4));
+            let mut handles = Vec::new();
+            for actor_idx in 0..4 {
+                let store = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+                let barrier = Arc::clone(&barrier);
+                let task_id = task_id.clone();
+                let approval_id = approval_id.clone();
+                handles.push(std::thread::spawn(move || {
+                    barrier.wait();
+                    store.output_product_task(
+                        &task_id,
+                        &format!("stress-{actor_idx}"),
+                        version,
+                        Some(&approval_id),
+                        true,
+                    )
+                }));
+            }
+            let results = handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>();
+            let errors: Vec<_> = results
+                .iter()
+                .filter_map(|result| result.as_ref().err().cloned())
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "iteration {iteration} concurrent output races must not fail: {errors:?}"
+            );
+            let successes: Vec<_> = results.into_iter().map(Result::unwrap).collect();
+            assert!(successes
+                .iter()
+                .all(|result| result["task"]["status"] == "completed"));
+            let evidence_ids: std::collections::BTreeSet<_> = successes
+                .iter()
+                .map(|result| {
+                    result["terminal_evidence"]["evidence_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(evidence_ids.len(), 1, "iteration {iteration}");
+            let reopened = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+            let terminal_audits = reopened
+                .audit_events(10_000)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event["action"] == "product_task.terminal_evidence_committed")
+                .count();
+            assert_eq!(terminal_audits, 1, "iteration {iteration}");
+            let output_audits = reopened
+                .audit_events(10_000)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event["action"] == "product_task.nonnetwork_output_completed")
+                .count();
+            assert_eq!(output_audits, 1, "iteration {iteration}");
+        }
+    });
+}
+
 #[test]
 fn export_patch_writes_approved_patch_without_touching_main() {
     with_gates(|| {
