@@ -18,6 +18,9 @@ use super::codex_session_usage::{
 };
 use super::config::{ClaudeCodeAdmission, CodexAdmission};
 use crate::cli::{spawn_with_timeout, SpawnWithTimeoutError};
+use crate::execution_usage::codex_adapter::UsageBindingContext;
+use crate::execution_usage::gateway_adapter::mediated_codex_usage_evidence_bundle;
+use crate::execution_usage::reconcile::{admission_evidence_ok, reconcile_usage_events};
 use crate::node_executor::{
     exit_status_signal, process_outcome_from_exit_status, NodeExecutionInput, NodeExecutionOutput,
     NodeExecutor, ProcessOutcome,
@@ -990,23 +993,6 @@ fn execute_product_codex_with_budget_gateway(
         );
     }
 
-    let authority = match authority_from_product_metadata(
-        executable,
-        &input.node_metadata,
-        &admission.model,
-        executor.timeout_ms,
-    ) {
-        Ok(authority) => authority,
-        Err(error) => {
-            return failed_without_process(
-                "codex_cli",
-                "cli_execution_authority_invalid",
-                error,
-                start.elapsed().as_millis() as i64,
-            );
-        }
-    };
-
     let upstream_key = std::env::var("ACP_CODEX_UPSTREAM_API_KEY")
         .or_else(|_| std::env::var("OPENAI_API_KEY"))
         .ok()
@@ -1022,8 +1008,28 @@ fn execute_product_codex_with_budget_gateway(
     let upstream_base = std::env::var("ACP_CODEX_UPSTREAM_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
 
-    // Full product mediation requires bubblewrap filesystem isolation so the
-    // child cannot read the operator Codex home / real credentials.
+    // Bind provider identity into authority before gateway start so environment
+    // substitution of base URL after binding is rejected.
+    let authority = match authority_from_product_metadata(
+        executable,
+        &input.node_metadata,
+        &admission.model,
+        executor.timeout_ms,
+        &upstream_base,
+    ) {
+        Ok(authority) => authority,
+        Err(error) => {
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                error,
+                start.elapsed().as_millis() as i64,
+            );
+        }
+    };
+
+    // Mediated product launch requires bubblewrap filesystem+PID isolation.
+    // Full live Golden Path admission is still partial (retry/network blockers).
     let capability = CodexMediatedCapabilityReport::evaluate(
         if Path::new(super::codex_mediation_admission::BUBBLEWRAP_BIN).is_file() {
             IsolationMode::BubblewrapFilesystem
@@ -1032,29 +1038,32 @@ fn execute_product_codex_with_budget_gateway(
         },
         Path::new(super::codex_mediation_admission::BUBBLEWRAP_BIN).is_file(),
     );
-    if !capability.admission_class.admits_live_product_golden_path() {
+    if !capability.admission_class.allows_mediated_product_launch() {
         return failed_without_process(
             "codex_cli",
             "cli_execution_authority_invalid",
             capability
                 .remaining_blocker
-                .unwrap_or_else(|| "codex full mediation admission is blocked".to_string()),
+                .unwrap_or_else(|| "codex mediation admission is blocked".to_string()),
             start.elapsed().as_millis() as i64,
         );
     }
 
     let ephemeral_home =
         std::env::temp_dir().join(format!("acp-codex-home-{}", authority.execution_id));
-    let journal_path = ephemeral_home.join("acp-usage-journal.json");
-    let gateway = match CodexBudgetGateway::start_with_journal(
+    // Parent-owned journal path: NEVER under ephemeral_home (sandbox-mounted).
+    let journal_path =
+        super::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
+    let gateway = match CodexBudgetGateway::start(
         authority,
         &upstream_base,
         &upstream_key,
-        Some(journal_path),
+        journal_path.clone(),
     ) {
         Ok(gateway) => gateway,
         Err(error) => {
             let _ = std::fs::remove_dir_all(&ephemeral_home);
+            let _ = std::fs::remove_file(&journal_path);
             return failed_without_process(
                 "codex_cli",
                 "cli_execution_authority_invalid",
@@ -1134,7 +1143,43 @@ fn execute_product_codex_with_budget_gateway(
         .as_ref()
         .map(|(_, rollup)| rollup.cumulative_output_tokens);
     let reconciled = reconcile_gateway_and_session_usage(&usage, session_input, session_output);
+    // Map gateway + optional session rollup into execution_usage_event.v1 and
+    // reconcile without granting ProductTask budget from session importers.
+    let binding = UsageBindingContext {
+        product_task_id: Some(authority_snapshot.task_id.clone()),
+        workflow_node_id: Some(authority_snapshot.workflow_node_id.clone()),
+        managed_execution_id: Some(authority_snapshot.execution_id.clone()),
+        requested_model: Some(authority_snapshot.model.clone()),
+        executable_path_fingerprint: None,
+        executable_version: Some(authority_snapshot.executable.binary_version.clone()),
+        executable_sha256: Some(authority_snapshot.executable.binary_sha256.clone()),
+    };
+    let usage_events = mediated_codex_usage_evidence_bundle(
+        &usage,
+        &authority_snapshot,
+        &binding,
+        session_evidence.as_ref().map(|(_, rollup)| rollup),
+        &format!("{}", start.elapsed().as_millis()),
+    );
+    let usage_reconcile = reconcile_usage_events(usage_events);
+    // Conflicts fail closed for admission evidence; session importers still do not
+    // restore or weaken gateway-enforced budget counters already applied above.
+    let evidence_conflict = admission_evidence_ok(&usage_reconcile).err();
     let _ = std::fs::remove_dir_all(&ephemeral_home);
+    // Retain parent journal when halted, outcome-unknown, or any non-clean last
+    // reject class so operators can inspect charged/blocked attempts.
+    let retain_journal = usage.journal_halted
+        || usage
+            .last_reject_class
+            .as_deref()
+            .is_some_and(|c| c == "outcome_unknown")
+        || matches!(
+            reconciled,
+            UsageReconcileResult::Conflict { .. } | UsageReconcileResult::Missing { .. }
+        );
+    if !retain_journal {
+        let _ = std::fs::remove_file(&journal_path);
+    }
 
     match output {
         Ok(output) => {
@@ -1167,6 +1212,17 @@ fn execute_product_codex_with_budget_gateway(
                 };
             }
             let mut parsed = parse_cli_output(&stdout, "codex_cli", elapsed_ms, process_outcome);
+            if let Some(detail) = evidence_conflict.as_ref() {
+                parsed.status = "failed".to_string();
+                parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
+                parsed.error_message = Some(format!(
+                    "product-managed Codex execution_usage_event.v1 reconcile failed closed: {detail}"
+                ));
+                parsed.input_tokens = Some(usage.cumulative_input_tokens as i64);
+                parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
+                parsed.resolved_model = Some(admission.model.clone());
+                return parsed;
+            }
             match &reconciled {
                 UsageReconcileResult::PreferGateway {
                     input_tokens,
@@ -1176,13 +1232,17 @@ fn execute_product_codex_with_budget_gateway(
                     parsed.input_tokens = Some(*input_tokens as i64);
                     parsed.output_tokens = Some(*output_tokens as i64);
                 }
-                UsageReconcileResult::PreferSessionOnly {
-                    input_tokens,
-                    output_tokens,
-                    ..
-                } => {
-                    parsed.input_tokens = Some(*input_tokens as i64);
-                    parsed.output_tokens = Some(*output_tokens as i64);
+                // Product-mediated path requires gateway interposition. Session-only
+                // usage without gateway POSTs is fail-closed (child-writable logs
+                // must not admit success without the cross-call gate).
+                UsageReconcileResult::PreferSessionOnly { reason, .. } => {
+                    parsed.status = "failed".to_string();
+                    parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
+                    parsed.error_message = Some(format!(
+                        "product-managed Codex requires gateway-measured usage; session-only evidence is not admitted: {reason}"
+                    ));
+                    parsed.input_tokens = Some(usage.cumulative_input_tokens as i64);
+                    parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
                 }
                 UsageReconcileResult::Conflict { detail, .. } => {
                     parsed.status = "failed".to_string();
@@ -1194,13 +1254,13 @@ fn execute_product_codex_with_budget_gateway(
                     parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
                 }
                 UsageReconcileResult::Missing { detail } => {
-                    if parsed.input_tokens.is_none() && parsed.output_tokens.is_none() {
-                        parsed.status = "failed".to_string();
-                        parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
-                        parsed.error_message = Some(format!(
-                            "product-managed Codex completed without measured usage: {detail}"
-                        ));
-                    }
+                    parsed.status = "failed".to_string();
+                    parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
+                    parsed.error_message = Some(format!(
+                        "product-managed Codex completed without measured usage: {detail}"
+                    ));
+                    parsed.input_tokens = Some(usage.cumulative_input_tokens as i64);
+                    parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
                 }
             }
             parsed.resolved_model = Some(admission.model.clone());

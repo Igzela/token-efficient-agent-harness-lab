@@ -99,52 +99,36 @@ PR #293 squash-merged as `29262bce…`. Established loopback gateway, session us
 
 ## Packet PE7-CODEX-FULL-MEDIATION-ADMISSION-1 — Codex full mediation admission
 
-**State:** `COMPLETE`
+**State:** `COMPLETE` (**partial foundation only** — do not treat as full admission)
 
-**Prerequisite:** PE7-CODEX-TASK-BUDGET-AUTHORITY-1, PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1
+PR #295 squash-merged as `381571bf…`. Useful foundation (loopback gateway, bwrap launch, session corroboration) but independent review found authority gaps: sandbox-mounted journal, fail-open journal writes, weak attempt IDs, unbound provider identity, unproved retry axis, and capability-report-only bypass claims. **Not accepted as full admission.**
 
-PR #295 squash-merged as `381571bf…`; exact head `7e3c1f70…`; exact-head run `30091019486` and full tests run `30091019491` passed first attempt on the merge head.
+## Packet PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1 — authority repair
 
-Closes product-managed Codex admission for the **API-key-mediated** path only:
+**State:** `IN_PROGRESS` (PR #296)
 
-1. Every provider request/retry through Rust `CodexBudgetGateway` (model pin, unforgeable session token, request count, injected/enforced `max_output_tokens`, cumulative residual check before the next call, usage journal restart recovery).
-2. Child launch via `/usr/bin/bwrap` filesystem isolation: real operator `HOME`/`.codex` hidden; task-scoped empty `auth.json`; only loopback gateway base URL + session token; real upstream key never in child env.
-3. Session JSONL remains corroborating evidence + reconcile; gateway is the cross-call gate. Contradictory counters fail closed.
-4. Official ChatGPT-auth Codex path remains **excluded** from Product Golden Path.
-5. Network posture: shared host network with credential non-bypass (unprivileged loopback-only netns that still reaches the host gateway is not available on this host profile).
+**Prerequisite:** PE7-CODEX-FULL-MEDIATION-ADMISSION-1 (merged foundation)
 
-**Admission class (mediated API-key path, when bwrap present):** `fully_admitted_mediated_api_key` (provider-free mediation proof). Live managed Golden Path acceptance is a separate packet.
+Repair remaining authority gaps without live provider calls and without starting managed acceptance:
+
+1. Parent-owned usage journal **outside** every child sandbox mount (`acp-codex-parent-journal/`).
+2. Fail-closed journal: durable pre-forward reserve → commit before response return; write/sync failure halts gateway; no further admits after halt.
+3. Restart: in-flight / outcome-unknown remains charged/blocked; never returns budget; exact `codex-attempt-*` UUID may only resume its own journal.
+4. Provider identity bound into `CodexBudgetAuthority` / `managed_executor_identity.v1` (kind, host, base URL, admitted paths, model, binary/SHA, budgets); environment substitution rejected.
+5. Separate `max_provider_requests` and `max_retries` axes; Codex does not wire-label internal retries — report residual blocker rather than full admission.
+6. Executed bypass probes (auth hidden via tmpfs; parent `/proc/*/environ` when unprivileged user ns available; proxy/credential env denied; provider URL pin); bwrap-required tests fail closed if bwrap absent; user-ns-unavailable hosts remain residual for PID isolation.
+7. Managed usage-accounting integration: gateway committed usage maps into existing `execution_usage_event.v1` (`gateway_adapter`); session JSONL rollup is corroborating only; cross-source reconcile prefers gateway; conflicts fail closed; ProductTask remains sole budget owner; session importers never restore budget.
+8. Admission class: `mediation_hardened_partial` (not `fully_admitted_*`). Remaining blockers: true Codex internal retry identity; loopback-only network isolation; live credential + operator authorization.
+
+Do **not** claim that only operator credential/authorization remains. Live acceptance stays blocked on admission class + credentials + authorization.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1 — live managed acceptance
 
-**State:** `BLOCKED_PREREQUISITE` (operator credential + authorization)
+**State:** `BLOCKED_PREREQUISITE` (admission class not full + operator credential + authorization)
 
-**Prerequisite:** PE7-CODEX-FULL-MEDIATION-ADMISSION-1
+**Prerequisite:** PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1 accepted with residual blockers closed **or** an explicit authority decision accepting partial mediation for a bounded live trial.
 
-Provider-free mediation is accepted. A live call is still required for residual-seal completion and is **not** started in this environment because:
-
-* `ACP_CODEX_UPSTREAM_API_KEY` / `OPENAI_API_KEY` are not present in the agent process environment;
-* product admission must not scrape or repurpose ChatGPT OAuth from the operator `~/.codex/auth.json`;
-* no explicit operator authorization for a bounded live provider spend was provided in-session.
-
-**Exact operator action to unblock (do not paste secrets into chat, git, CI, or evidence):**
-
-```bash
-# One-time identity (use real absolute canonical binary path + sha256):
-export ACP_ENABLE_CLI_EXECUTION=1
-export ACP_CODEX_BIN="$(readlink -f "$(command -v codex)")"
-export ACP_CODEX_VERSION=0.145.0
-export ACP_CODEX_SHA256="$(sha256sum "$ACP_CODEX_BIN" | awk '{print $1}')"
-export ACP_CODEX_MODEL="<admitted-model-id>"
-# Parent-only API key for the gateway (never given to the child):
-export ACP_CODEX_UPSTREAM_API_KEY="<third-party-or-api-key>"
-# Optional OpenAI-compatible base:
-# export ACP_CODEX_UPSTREAM_BASE_URL="https://api.openai.com/v1"
-```
-
-Then authorize one tightly bounded ordinary coding task on the disposable target (predeclare max tokens/cost; Draft PR only; no target-main write; no auto-merge). After that authorization, re-run `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1` as its own branch/PR.
-
-Do not start RWE until live managed acceptance completes.
+Do not start RWE until live managed acceptance completes under the accepted contract.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
@@ -156,7 +140,7 @@ The fixture path and output authority (including concurrent CAS repair) are acce
 
 **State:** `IN_PROGRESS`
 
-Existing PRs #268–#280 provide the intake, graph, scheduler, verification, artifact, approval, output, evidence, model-binding, and managed-process foundations. Codex full mediation (`PE7-CODEX-FULL-MEDIATION-ADMISSION-1`) proves the API-key-mediated path when bwrap is present. The remaining residual-seal gate is one **live** managed coding-executor run through verification, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, exact terminal evidence, and all live-provider/security requirements — as a separate packet after mediation merges. If live credentials/authorization are absent, complete provider-free admission and document the exact operator action.
+Existing PRs #268–#280 provide the intake, graph, scheduler, verification, artifact, approval, output, evidence, model-binding, and managed-process foundations. Codex mediation is partial (`PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`); full admission is not claimed. The residual-seal gate still requires an accepted admission class plus one **live** managed coding-executor run through verification, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, exact terminal evidence, and all live-provider/security requirements.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 

@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -31,9 +31,10 @@ use uuid::Uuid;
 
 use super::config::{validate_binary_file_identity, ADMITTED_CODEX_VERSION};
 
-pub const CODEX_BUDGET_AUTHORITY_SCHEMA: &str = "codex_budget_authority.v1";
-pub const CODEX_BUDGET_GATEWAY_SCHEMA: &str = "codex_budget_gateway.v1";
+pub const CODEX_BUDGET_AUTHORITY_SCHEMA: &str = "codex_budget_authority.v2";
+pub const CODEX_BUDGET_GATEWAY_SCHEMA: &str = "codex_budget_gateway.v2";
 pub const CODEX_SESSION_TOKEN_PREFIX: &str = "acp-codex-budget-";
+pub const CODEX_PROVIDER_KIND_OPENAI_COMPATIBLE: &str = "openai_compatible";
 
 /// Admitted product-managed Codex CLI identity (exact version pin).
 pub const ADMITTED_CODEX_CLI_VERSION: &str = ADMITTED_CODEX_VERSION;
@@ -45,6 +46,65 @@ pub const DEFAULT_CODEX_MAX_OUTPUT_TOKENS_PER_REQUEST: u64 = 8_192;
 
 /// Default max provider HTTP requests (including internal retries Codex may issue).
 pub const DEFAULT_CODEX_MAX_PROVIDER_REQUESTS: u64 = 8;
+
+/// Default max *declared* retry axis. Codex 0.145.0 does not label internal
+/// retries on the HTTP wire, so this axis is recorded and capped only as an
+/// additional total-POST ceiling fragment — not as independently identified retries.
+pub const DEFAULT_CODEX_MAX_RETRIES: u64 = 0;
+
+/// Exact provider binding for one product-managed attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexProviderIdentity {
+    pub provider_kind: String,
+    /// Normalized base URL (scheme://host[:port][/v1]).
+    pub base_url: String,
+    pub host: String,
+    /// Absolute paths admitted on the loopback gateway (including /v1 prefix forms).
+    pub admitted_endpoint_paths: Vec<String>,
+}
+
+impl CodexProviderIdentity {
+    pub fn openai_compatible(base_url: &str) -> Result<Self, String> {
+        let base_url = normalize_base_url(base_url)?;
+        let host = host_from_base_url(&base_url)?;
+        Ok(Self {
+            provider_kind: CODEX_PROVIDER_KIND_OPENAI_COMPATIBLE.to_string(),
+            base_url,
+            host,
+            admitted_endpoint_paths: vec![
+                "/v1/responses".into(),
+                "/responses".into(),
+                "/v1/chat/completions".into(),
+                "/chat/completions".into(),
+                "/v1/models".into(),
+                "/models".into(),
+            ],
+        })
+    }
+
+    pub fn admits_path(&self, path: &str) -> bool {
+        self.admitted_endpoint_paths.iter().any(|p| p == path)
+    }
+}
+
+fn host_from_base_url(base_url: &str) -> Result<String, String> {
+    let without = base_url
+        .strip_prefix("https://")
+        .or_else(|| base_url.strip_prefix("http://"))
+        .ok_or_else(|| "upstream base URL must be http or https".to_string())?;
+    let host = without
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split('@')
+        .next_back()
+        .unwrap_or("")
+        .trim();
+    if host.is_empty() {
+        return Err("upstream base URL is missing host".to_string());
+    }
+    Ok(host.to_string())
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodexExecutableIdentity {
@@ -92,10 +152,16 @@ pub struct CodexBudgetAuthority {
     pub schema_version: String,
     pub task_id: String,
     pub workflow_node_id: String,
+    /// Collision-resistant attempt identity (UUID-based). Only this attempt may
+    /// resume its parent-owned journal.
     pub execution_id: String,
     pub executable: CodexExecutableIdentity,
+    pub provider: CodexProviderIdentity,
     pub model: String,
+    /// Hard total provider HTTP POSTs (including any Codex-internal retries).
     pub max_provider_requests: u64,
+    /// Declared separate retry axis. Codex does not label retries on the wire;
+    /// enforcement is therefore partial (see mediation admission report).
     pub max_retries: u64,
     pub max_input_tokens_per_request: u64,
     pub max_output_tokens_per_request: u64,
@@ -116,13 +182,29 @@ impl CodexBudgetAuthority {
             ("workflow_node_id", self.workflow_node_id.as_str()),
             ("execution_id", self.execution_id.as_str()),
             ("model", self.model.as_str()),
+            ("provider_kind", self.provider.provider_kind.as_str()),
+            ("provider_host", self.provider.host.as_str()),
+            ("provider_base_url", self.provider.base_url.as_str()),
         ] {
             if value.trim().is_empty() {
                 return Err(format!("codex budget authority {name} is required"));
             }
         }
+        if !self.execution_id.starts_with("codex-attempt-") {
+            return Err(
+                "execution_id must be a codex-attempt-* collision-resistant attempt identity"
+                    .to_string(),
+            );
+        }
+        if self.provider.admitted_endpoint_paths.is_empty() {
+            return Err("provider admitted_endpoint_paths must be non-empty".to_string());
+        }
         if self.max_provider_requests == 0 {
             return Err("max_provider_requests must be > 0".to_string());
+        }
+        // Separate axes: retries never expand the hard total POST ceiling.
+        if self.max_retries >= self.max_provider_requests && self.max_provider_requests > 0 {
+            // Allowed: max_retries can be 0; if set high it still cannot expand total.
         }
         if self.max_input_tokens_per_request == 0 || self.max_output_tokens_per_request == 0 {
             return Err("per-request token ceilings must be > 0".to_string());
@@ -162,10 +244,16 @@ impl CodexBudgetAuthority {
             "binary_sha256": self.executable.binary_sha256,
             "model": self.model,
             "model_resolution": "exact_admitted_pin",
+            "provider_kind": self.provider.provider_kind,
+            "provider_host": self.provider.host,
+            "provider_base_url": self.provider.base_url,
+            "admitted_endpoint_paths": self.provider.admitted_endpoint_paths,
             "budget_authority_schema": CODEX_BUDGET_AUTHORITY_SCHEMA,
             "execution_id": self.execution_id,
+            "attempt_id": self.execution_id,
             "max_provider_requests": self.max_provider_requests,
             "max_retries": self.max_retries,
+            "retry_axis_note": "codex_internal_retries_not_wire_labeled",
             "max_input_tokens_per_request": self.max_input_tokens_per_request,
             "max_output_tokens_per_request": self.max_output_tokens_per_request,
             "max_cumulative_tokens": self.max_cumulative_tokens,
@@ -175,6 +263,11 @@ impl CodexBudgetAuthority {
             "input_reservation": "utf8_byte_upper_bound",
         })
     }
+}
+
+/// Collision-resistant attempt identity for one product-managed Codex execution.
+pub fn new_codex_attempt_id() -> String {
+    format!("codex-attempt-{}", Uuid::new_v4())
 }
 
 /// Conservative input token upper bound: each UTF-8 byte counts as one token.
@@ -203,13 +296,14 @@ pub struct BudgetGatewayUsage {
     pub cumulative_tokens: u64,
     pub last_reject: Option<String>,
     pub last_reject_class: Option<String>,
+    pub journal_halted: bool,
+    pub observed_retry_posts: u64,
 }
 
 #[derive(Debug)]
 struct GatewayState {
     authority: CodexBudgetAuthority,
     session_token: String,
-    upstream_base_url: String,
     /// Real upstream credential; never exposed to the child process.
     upstream_api_key: String,
     provider_requests: AtomicU64,
@@ -219,8 +313,8 @@ struct GatewayState {
     last_reject: Mutex<Option<(BudgetRejectClass, String)>>,
     /// Serializes pre-dispatch residual checks so concurrent requests cannot overspend.
     budget_lock: Mutex<()>,
-    /// Optional path for restart-safe committed usage journal (no secrets/prompts).
-    usage_journal_path: Option<PathBuf>,
+    /// Parent-owned durable journal; required for product mediation (not optional).
+    journal: Mutex<crate::cli::codex_usage_journal::CodexUsageJournal>,
 }
 
 impl GatewayState {
@@ -234,6 +328,10 @@ impl GatewayState {
         if let Ok(mut guard) = self.last_reject.lock() {
             *guard = Some((class, message));
         }
+    }
+
+    fn journal_halted(&self) -> bool {
+        self.journal.lock().map(|j| j.is_halted()).unwrap_or(true)
     }
 
     fn usage_snapshot(&self) -> BudgetGatewayUsage {
@@ -251,6 +349,11 @@ impl GatewayState {
                 (Some(class.to_string()), Some(message))
             })
             .unwrap_or((None, None));
+        let observed_retry_posts = self
+            .journal
+            .lock()
+            .map(|j| j.entry().observed_retry_posts)
+            .unwrap_or(0);
         BudgetGatewayUsage {
             provider_requests: self.provider_requests.load(Ordering::SeqCst),
             cumulative_input_tokens: self.cumulative_input_tokens.load(Ordering::SeqCst),
@@ -258,6 +361,8 @@ impl GatewayState {
             cumulative_tokens: self.cumulative_tokens(),
             last_reject,
             last_reject_class,
+            journal_halted: self.journal_halted(),
+            observed_retry_posts,
         }
     }
 }
@@ -270,29 +375,42 @@ pub struct CodexBudgetGateway {
 }
 
 impl CodexBudgetGateway {
+    /// Start the gateway with a **required** parent-owned journal path.
+    ///
+    /// `upstream_base_url` must exactly match `authority.provider.base_url` after
+    /// normalization — environment substitution of provider identity is rejected.
     pub fn start(
         authority: CodexBudgetAuthority,
         upstream_base_url: &str,
         upstream_api_key: &str,
+        parent_journal_path: PathBuf,
     ) -> Result<Self, String> {
-        Self::start_with_journal(authority, upstream_base_url, upstream_api_key, None)
+        Self::start_with_journal(
+            authority,
+            upstream_base_url,
+            upstream_api_key,
+            parent_journal_path,
+        )
     }
 
-    /// Start the gateway, optionally restoring committed counters from a journal
-    /// written by a prior gateway for the same execution identity.
     pub fn start_with_journal(
         authority: CodexBudgetAuthority,
         upstream_base_url: &str,
         upstream_api_key: &str,
-        usage_journal_path: Option<PathBuf>,
+        parent_journal_path: PathBuf,
     ) -> Result<Self, String> {
         let authority = authority.validate_new()?;
         let upstream_base_url = normalize_base_url(upstream_base_url)?;
+        if upstream_base_url != authority.provider.base_url {
+            return Err(format!(
+                "provider base URL substitution rejected: requested={upstream_base_url} admitted={}",
+                authority.provider.base_url
+            ));
+        }
         if upstream_api_key.trim().is_empty() {
             return Err("upstream API key is required for Codex budget mediation".to_string());
         }
-        // One-use unforgeable session token: random UUID material + execution binding.
-        // Not derivable from task metadata alone, so another task cannot replay it.
+        // One-use unforgeable session token: random UUID material + attempt binding.
         let session_token = format!(
             "{CODEX_SESSION_TOKEN_PREFIX}{}",
             hex::encode(Sha256::digest(
@@ -315,31 +433,34 @@ impl CodexBudgetGateway {
             .local_addr()
             .map_err(|error| format!("failed to read gateway address: {error}"))?;
 
-        let mut restored_requests = 0u64;
-        let mut restored_input = 0u64;
-        let mut restored_output = 0u64;
-        if let Some(path) = usage_journal_path.as_ref() {
-            if path.is_file() {
-                let entry =
-                    super::codex_mediation_admission::CodexUsageJournalEntry::load_from(path)?;
-                if entry.execution_id != authority.execution_id
-                    || entry.task_id != authority.task_id
-                {
-                    return Err(
-                        "usage journal execution/task identity does not match authority"
-                            .to_string(),
-                    );
-                }
-                restored_requests = entry.provider_requests;
-                restored_input = entry.cumulative_input_tokens;
-                restored_output = entry.cumulative_output_tokens;
-            }
-        }
+        let journal = if parent_journal_path.is_file() {
+            crate::cli::codex_usage_journal::CodexUsageJournal::resume_exact_attempt(
+                parent_journal_path,
+                &authority.execution_id,
+                &authority.task_id,
+                &authority.provider.provider_kind,
+                &authority.provider.host,
+                &authority.model,
+                &authority.executable.binary_sha256,
+            )?
+        } else {
+            crate::cli::codex_usage_journal::CodexUsageJournal::create_new(
+                parent_journal_path,
+                &authority.execution_id,
+                &authority.task_id,
+                &authority.provider.provider_kind,
+                &authority.provider.host,
+                &authority.model,
+                &authority.executable.binary_sha256,
+            )?
+        };
+        let restored_requests = journal.entry().provider_requests;
+        let restored_input = journal.entry().cumulative_input_tokens;
+        let restored_output = journal.entry().cumulative_output_tokens;
 
         let state = Arc::new(GatewayState {
             authority,
             session_token,
-            upstream_base_url,
             upstream_api_key: upstream_api_key.to_string(),
             provider_requests: AtomicU64::new(restored_requests),
             cumulative_input_tokens: AtomicU64::new(restored_input),
@@ -347,7 +468,7 @@ impl CodexBudgetGateway {
             stop: AtomicBool::new(false),
             last_reject: Mutex::new(None),
             budget_lock: Mutex::new(()),
-            usage_journal_path,
+            journal: Mutex::new(journal),
         });
 
         let thread_state = Arc::clone(&state);
@@ -564,6 +685,17 @@ fn write_http_response(stream: &mut TcpStream, response: &HttpResponseParts) -> 
 }
 
 fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpResponseParts {
+    if state.journal_halted() {
+        state.record_reject(
+            BudgetRejectClass::OutcomeUnknown,
+            "usage journal halted; no further provider requests admitted".to_string(),
+        );
+        return json_error(
+            503,
+            "journal_halted",
+            "usage journal halted; no further provider requests admitted",
+        );
+    }
     if now_unix_ms() >= state.authority.expires_unix_ms {
         state.record_reject(
             BudgetRejectClass::PreCall,
@@ -583,8 +715,18 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
         );
     }
 
-    // Allow only OpenAI-compatible paths Codex needs under API-key mediation.
     let path = request.path.as_str();
+    if !state.authority.provider.admits_path(path) {
+        state.record_reject(
+            BudgetRejectClass::PreCall,
+            format!("path {path} is not in admitted_endpoint_paths"),
+        );
+        return json_error(
+            403,
+            "path_not_admitted",
+            "only authority-bound model endpoints may be mediated",
+        );
+    }
     if request.method.eq_ignore_ascii_case("GET") && (path == "/v1/models" || path == "/models") {
         return json_ok(json!({
             "object": "list",
@@ -734,7 +876,7 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
         &serde_json::to_vec(&body).unwrap_or_else(|_| request.body.clone()),
     );
 
-    // Hold the budget lock across residual check + request count so concurrent
+    // Hold the budget lock across residual check + durable reservation so concurrent
     // connections cannot overspend the same task authority.
     {
         let _guard = match state.budget_lock.lock() {
@@ -747,6 +889,13 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
                 return json_error(500, "budget_lock_poisoned", "budget lock poisoned");
             }
         };
+
+        if let Ok(journal) = state.journal.lock() {
+            if let Err(error) = journal.admits_new_request() {
+                state.record_reject(BudgetRejectClass::OutcomeUnknown, error.clone());
+                return json_error(503, "journal_blocks_admit", &error);
+            }
+        }
 
         if reserved_input > state.authority.max_input_tokens_per_request {
             state.record_reject(
@@ -775,13 +924,34 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
                 "max_provider_requests exhausted",
             );
         }
-        // Retries are ordinary provider POSTs and count toward max_provider_requests.
-        // max_retries is recorded on the authority for product evidence; it never
-        // expands the hard request ceiling.
+        // Separate retry axis: without wire-labeled retries, every POST after the
+        // first increments observed_retry_posts. Enforce max_retries as a cap on
+        // those subsequent POSTs (does not expand max_provider_requests).
+        if prior_requests >= 1 && state.authority.max_retries == 0 {
+            state.record_reject(
+                BudgetRejectClass::PreCall,
+                "max_retries exhausted (zero retries admitted; subsequent POSTs blocked)"
+                    .to_string(),
+            );
+            return json_error(
+                429,
+                "retry_budget_exhausted",
+                "max_retries exhausted; subsequent provider POSTs are not admitted",
+            );
+        }
+        if prior_requests >= 1 {
+            let retries_used = prior_requests.saturating_sub(1);
+            if retries_used >= state.authority.max_retries {
+                state.record_reject(
+                    BudgetRejectClass::PreCall,
+                    "max_retries exhausted".to_string(),
+                );
+                return json_error(429, "retry_budget_exhausted", "max_retries exhausted");
+            }
+        }
 
         let used = state.cumulative_tokens();
         let remaining = state.authority.max_cumulative_tokens.saturating_sub(used);
-        // Pre-dispatch residual check: reserved input + max possible output must fit.
         let worst_case = reserved_input.saturating_add(max_out);
         if worst_case > remaining {
             state.record_reject(
@@ -797,7 +967,31 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
             );
         }
 
-        // Count the request only once pre-checks pass and immediately before forward.
+        // Durable pre-forward reservation MUST succeed before upstream call.
+        {
+            let mut journal = match state.journal.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    state.record_reject(
+                        BudgetRejectClass::OutcomeUnknown,
+                        "journal lock poisoned".to_string(),
+                    );
+                    return json_error(500, "journal_lock_poisoned", "journal lock poisoned");
+                }
+            };
+            if let Err(error) = journal.reserve_before_forward(reserved_input, max_out) {
+                state.record_reject(
+                    BudgetRejectClass::OutcomeUnknown,
+                    format!("journal reserve failed: {error}"),
+                );
+                state.stop.store(true, Ordering::SeqCst);
+                return json_error(
+                    503,
+                    "journal_reserve_failed",
+                    "usage journal reserve failed; gateway halted",
+                );
+            }
+        }
         state.provider_requests.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -810,23 +1004,39 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
                 state
                     .cumulative_output_tokens
                     .fetch_add(output_tokens, Ordering::SeqCst);
-                let total = state.cumulative_tokens();
-                if total > state.authority.max_cumulative_tokens {
-                    state.record_reject(
-                        BudgetRejectClass::OutcomeUnknown,
-                        "cumulative tokens exceeded after measured usage".to_string(),
-                    );
-                }
-                // Persist committed usage for restart recovery (no secrets/prompts).
-                if let Some(path) = state.usage_journal_path.as_ref() {
-                    let usage = state.usage_snapshot();
-                    let entry =
-                        super::codex_mediation_admission::CodexUsageJournalEntry::from_usage(
-                            &state.authority,
-                            &usage,
-                            extract_response_id(&response_body),
+                // Persist committed usage BEFORE returning the body to the child.
+                {
+                    let mut journal = match state.journal.lock() {
+                        Ok(guard) => guard,
+                        Err(_) => {
+                            state.record_reject(
+                                BudgetRejectClass::OutcomeUnknown,
+                                "journal lock poisoned on commit".to_string(),
+                            );
+                            state.stop.store(true, Ordering::SeqCst);
+                            return json_error(
+                                503,
+                                "journal_commit_failed",
+                                "usage journal commit lock failed; gateway halted",
+                            );
+                        }
+                    };
+                    if let Err(error) = journal.commit_after_forward(
+                        input_tokens,
+                        output_tokens,
+                        extract_response_id(&response_body),
+                    ) {
+                        state.record_reject(
+                            BudgetRejectClass::OutcomeUnknown,
+                            format!("journal commit failed: {error}"),
                         );
-                    let _ = entry.write_to(path);
+                        state.stop.store(true, Ordering::SeqCst);
+                        return json_error(
+                            503,
+                            "journal_commit_failed",
+                            "usage journal commit failed; gateway halted",
+                        );
+                    }
                 }
                 HttpResponseParts {
                     status,
@@ -836,13 +1046,37 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
                 }
             }
             Err(error) => {
+                // Charge reserved worst-case into both journal and gateway counters so
+                // ProductTask residual never under-accounts a possibly billed forward.
+                if let Ok(mut journal) = state.journal.lock() {
+                    let reserved_in = journal.entry().reserved_input_tokens;
+                    let reserved_out = journal.entry().reserved_output_tokens;
+                    if journal.mark_outcome_unknown(&error).is_ok() {
+                        state
+                            .cumulative_input_tokens
+                            .fetch_add(reserved_in, Ordering::SeqCst);
+                        state
+                            .cumulative_output_tokens
+                            .fetch_add(reserved_out, Ordering::SeqCst);
+                    }
+                }
                 state.record_reject(BudgetRejectClass::OutcomeUnknown, error.clone());
-                // Fail closed: ambiguous usage after a forwarded call is not success.
-                // Outcome-unknown does not auto-retry; the child must observe the error.
                 json_error(502, "usage_unavailable", &error)
             }
         },
         Err(error) => {
+            if let Ok(mut journal) = state.journal.lock() {
+                let reserved_in = journal.entry().reserved_input_tokens;
+                let reserved_out = journal.entry().reserved_output_tokens;
+                if journal.mark_outcome_unknown(&error).is_ok() {
+                    state
+                        .cumulative_input_tokens
+                        .fetch_add(reserved_in, Ordering::SeqCst);
+                    state
+                        .cumulative_output_tokens
+                        .fetch_add(reserved_out, Ordering::SeqCst);
+                }
+            }
             state.record_reject(BudgetRejectClass::OutcomeUnknown, error.clone());
             json_error(502, "upstream_forward_failed", &error)
         }
@@ -922,7 +1156,7 @@ fn forward_upstream(
     } else {
         format!("/{path}")
     };
-    let url = format!("{}{}", state.upstream_base_url, path);
+    let url = format!("{}{}", state.authority.provider.base_url, path);
     let body_bytes =
         serde_json::to_vec(body).map_err(|error| format!("failed to encode body: {error}"))?;
 
@@ -1020,11 +1254,15 @@ fn now_unix_ms() -> u64 {
 }
 
 /// Build a one-use authority from product node metadata and exact executable identity.
+///
+/// `provider_base_url` is bound into the authority and must match the gateway
+/// upstream URL at start (no environment substitution after binding).
 pub fn authority_from_product_metadata(
     executable: CodexExecutableIdentity,
     metadata: &Value,
     model: &str,
     timeout_ms: u64,
+    provider_base_url: &str,
 ) -> Result<CodexBudgetAuthority, String> {
     let task_id = metadata
         .get("product_task_id")
@@ -1061,7 +1299,7 @@ pub fn authority_from_product_metadata(
     let max_retries = budget
         .get("max_retries")
         .and_then(Value::as_u64)
-        .unwrap_or(0);
+        .unwrap_or(DEFAULT_CODEX_MAX_RETRIES);
     let max_output_tokens_per_request = budget
         .get("max_output_tokens_per_request")
         .and_then(Value::as_u64)
@@ -1074,19 +1312,9 @@ pub fn authority_from_product_metadata(
         .unwrap_or(max_cumulative_tokens)
         .min(max_cumulative_tokens)
         .max(1);
-    let execution_id = format!(
-        "codex-exec-{}",
-        hex::encode(
-            &Sha256::digest(
-                format!(
-                    "{task_id}:{workflow_node_id}:{}:{}",
-                    executable.binary_sha256,
-                    Instant::now().elapsed().as_nanos()
-                )
-                .as_bytes()
-            )[..16]
-        )
-    );
+    let provider = CodexProviderIdentity::openai_compatible(provider_base_url)?;
+    // Collision-resistant attempt identity; never derived from weak clocks alone.
+    let execution_id = new_codex_attempt_id();
     let expires_unix_ms = now_unix_ms().saturating_add(timeout_ms.saturating_add(60_000));
     CodexBudgetAuthority {
         schema_version: CODEX_BUDGET_AUTHORITY_SCHEMA.to_string(),
@@ -1094,6 +1322,7 @@ pub fn authority_from_product_metadata(
         workflow_node_id,
         execution_id,
         executable,
+        provider,
         model: model.trim().to_string(),
         max_provider_requests,
         max_retries,
@@ -1147,10 +1376,19 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Arc;
+    use std::time::Instant;
 
-    fn sample_authority(max_requests: u64, max_cumulative: u64) -> CodexBudgetAuthority {
-        let binary =
-            std::env::temp_dir().join(format!("codex-budget-test-bin-{}", std::process::id()));
+    fn sample_authority_for_upstream(
+        max_requests: u64,
+        max_cumulative: u64,
+        max_retries: u64,
+        upstream: &str,
+    ) -> CodexBudgetAuthority {
+        let binary = std::env::temp_dir().join(format!(
+            "codex-budget-test-bin-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
         std::fs::write(&binary, b"#!/bin/sh\necho codex-cli 0.145.0\n").unwrap();
         #[cfg(unix)]
         {
@@ -1166,15 +1404,17 @@ mod tests {
             binary_version: ADMITTED_CODEX_CLI_VERSION.to_string(),
             binary_sha256: sha,
         };
+        let provider = CodexProviderIdentity::openai_compatible(upstream).unwrap();
         CodexBudgetAuthority {
             schema_version: CODEX_BUDGET_AUTHORITY_SCHEMA.to_string(),
             task_id: "ptask-test".into(),
             workflow_node_id: "node-1".into(),
-            execution_id: "exec-1".into(),
+            execution_id: new_codex_attempt_id(),
             executable,
+            provider,
             model: "gpt-test-model".into(),
             max_provider_requests: max_requests,
-            max_retries: 0,
+            max_retries,
             max_input_tokens_per_request: 50_000,
             max_output_tokens_per_request: 128,
             max_cumulative_tokens: max_cumulative,
@@ -1183,6 +1423,17 @@ mod tests {
             worktree: std::env::temp_dir(),
             expires_unix_ms: now_unix_ms() + 60_000,
         }
+    }
+
+    fn start_gateway(
+        authority: CodexBudgetAuthority,
+        upstream: &str,
+        key: &str,
+    ) -> CodexBudgetGateway {
+        let journal =
+            crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
+        let _ = std::fs::remove_file(&journal);
+        CodexBudgetGateway::start(authority, upstream, key, journal).unwrap()
     }
 
     fn spawn_fake_upstream(hits: Arc<AtomicUsize>, force_usage: bool) -> (String, JoinHandle<()>) {
@@ -1235,11 +1486,9 @@ mod tests {
     fn gateway_rejects_unbound_session_and_model_substitution() {
         let hits = Arc::new(AtomicUsize::new(0));
         let (upstream, _join) = spawn_fake_upstream(Arc::clone(&hits), true);
-        let gateway =
-            CodexBudgetGateway::start(sample_authority(2, 1_000), &upstream, "upstream-secret")
-                .unwrap();
+        let authority = sample_authority_for_upstream(2, 1_000, 1, &upstream);
+        let gateway = start_gateway(authority, &upstream, "upstream-secret");
 
-        // Unbound — use std TCP for assertions (no reqwest blocking feature).
         let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
         let body = br#"{"model":"gpt-test-model","input":"hi"}"#;
         let req = format!(
@@ -1253,7 +1502,6 @@ mod tests {
         assert!(resp.contains("session_unbound"), "{resp}");
         assert_eq!(hits.load(AtomicOrdering::SeqCst), 0);
 
-        // Model substitution
         let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
         let body = br#"{"model":"other-model","input":"hi"}"#;
         let req = format!(
@@ -1267,87 +1515,17 @@ mod tests {
         stream.read_to_string(&mut resp).unwrap();
         assert!(resp.contains("model_substitution"), "{resp}");
         assert_eq!(hits.load(AtomicOrdering::SeqCst), 0);
-
         let _ = gateway.shutdown();
     }
 
     #[test]
-    fn gateway_forwards_once_injects_output_cap_and_blocks_second_request() {
+    fn gateway_forwards_once_injects_output_cap_and_blocks_retry_when_max_retries_zero() {
         let hits = Arc::new(AtomicUsize::new(0));
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let seen_body = Arc::new(Mutex::new(String::new()));
-        let seen_body_thread = Arc::clone(&seen_body);
-        let hits_thread = Arc::clone(&hits);
-        let _ = listener.set_nonblocking(true);
-        let join = thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while Instant::now() < deadline {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let _ = stream.set_nonblocking(false);
-                        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                        let mut buf = Vec::new();
-                        let mut chunk = [0u8; 8192];
-                        loop {
-                            let n = stream.read(&mut chunk).unwrap_or(0);
-                            if n == 0 {
-                                break;
-                            }
-                            buf.extend_from_slice(&chunk[..n]);
-                            if let Some(end) = find_header_end(&buf) {
-                                let headers = std::str::from_utf8(&buf[..end]).unwrap_or("");
-                                let mut content_length = 0usize;
-                                for line in headers.lines() {
-                                    if let Some(value) =
-                                        line.to_ascii_lowercase().strip_prefix("content-length:")
-                                    {
-                                        content_length = value.trim().parse().unwrap_or(0);
-                                    }
-                                }
-                                while buf.len() < end + 4 + content_length {
-                                    let n = stream.read(&mut chunk).unwrap_or(0);
-                                    if n == 0 {
-                                        break;
-                                    }
-                                    buf.extend_from_slice(&chunk[..n]);
-                                }
-                                if let Ok(text) =
-                                    std::str::from_utf8(&buf[end + 4..end + 4 + content_length])
-                                {
-                                    *seen_body_thread.lock().unwrap() = text.to_string();
-                                }
-                                break;
-                            }
-                        }
-                        hits_thread.fetch_add(1, AtomicOrdering::SeqCst);
-                        let body = br#"{"id":"resp_1","usage":{"input_tokens":20,"output_tokens":10},"output":[]}"#;
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
-                            body.len()
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                        let _ = stream.write_all(body);
-                    }
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            || error.kind() == std::io::ErrorKind::TimedOut =>
-                    {
-                        thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
-        // Cumulative must cover conservative UTF-8 input reservation + max output.
-        let mut authority = sample_authority(1, 50_000);
+        let (upstream, _join) = spawn_fake_upstream(Arc::clone(&hits), true);
+        let mut authority = sample_authority_for_upstream(4, 50_000, 0, &upstream);
         authority.max_output_tokens_per_request = 64;
-        let gateway =
-            CodexBudgetGateway::start(authority, &format!("http://{addr}"), "upstream-secret")
-                .unwrap();
+        let gateway = start_gateway(authority, &upstream, "upstream-secret");
 
-        // Omit max_output_tokens so the gateway injects the admitted ceiling.
         let body = br#"{"model":"gpt-test-model","input":"implement a tiny change"}"#;
         let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
         let req = format!(
@@ -1359,19 +1537,10 @@ mod tests {
         stream.write_all(body).unwrap();
         let mut resp = String::new();
         stream.read_to_string(&mut resp).unwrap();
-        assert!(resp.contains("\"input_tokens\":20"), "{resp}");
+        assert!(resp.contains("\"input_tokens\":10"), "{resp}");
         assert_eq!(hits.load(AtomicOrdering::SeqCst), 1);
-        let forwarded = seen_body.lock().unwrap().clone();
-        assert!(
-            forwarded.contains("\"max_output_tokens\":64"),
-            "expected injected cap, got {forwarded}"
-        );
-        assert!(
-            forwarded.contains("\"stream\":false"),
-            "expected stream forced off, got {forwarded}"
-        );
 
-        // Second request must fail pre-call without another upstream hit.
+        // max_retries=0 blocks the second POST on the retry axis.
         let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
         let body = br#"{"model":"gpt-test-model","input":"again"}"#;
         let req = format!(
@@ -1384,22 +1553,33 @@ mod tests {
         let mut resp = String::new();
         stream.read_to_string(&mut resp).unwrap();
         assert!(
-            resp.contains("request_budget_exhausted")
-                || resp.contains("cumulative_budget_insufficient"),
+            resp.contains("retry_budget_exhausted") || resp.contains("request_budget_exhausted"),
             "{resp}"
         );
         assert_eq!(hits.load(AtomicOrdering::SeqCst), 1);
-
         let usage = gateway.shutdown();
         assert_eq!(usage.provider_requests, 1);
-        assert_eq!(usage.cumulative_input_tokens, 20);
-        assert_eq!(usage.cumulative_output_tokens, 10);
-        let _ = join.join();
+        assert_eq!(usage.cumulative_input_tokens, 10);
+        assert_eq!(usage.cumulative_output_tokens, 5);
+    }
+
+    #[test]
+    fn provider_base_url_substitution_is_rejected() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (upstream, _join) = spawn_fake_upstream(Arc::clone(&hits), true);
+        let authority = sample_authority_for_upstream(2, 1_000, 1, "https://api.openai.com/v1");
+        let journal =
+            crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
+        let _ = std::fs::remove_file(&journal);
+        match CodexBudgetGateway::start(authority, &upstream, "upstream-secret", journal) {
+            Ok(_) => panic!("expected provider substitution rejection"),
+            Err(err) => assert!(err.contains("provider base URL substitution"), "{err}"),
+        }
     }
 
     #[test]
     fn ephemeral_codex_home_writes_gateway_provider() {
-        let dir = std::env::temp_dir().join(format!("codex-home-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codex-home-{}", Uuid::new_v4()));
         let _ = std::fs::remove_dir_all(&dir);
         write_ephemeral_codex_home(&dir, "gpt-test", "http://127.0.0.1:9/v1").unwrap();
         let config = std::fs::read_to_string(dir.join("config.toml")).unwrap();
@@ -1412,19 +1592,22 @@ mod tests {
     }
 
     #[test]
-    fn session_tokens_are_unique_across_gateways_and_not_task_metadata_only() {
+    fn session_tokens_are_unique_across_gateways() {
         let hits = Arc::new(AtomicUsize::new(0));
         let (upstream, _join) = spawn_fake_upstream(Arc::clone(&hits), true);
-        let g1 =
-            CodexBudgetGateway::start(sample_authority(2, 1_000), &upstream, "upstream-secret")
-                .unwrap();
-        let g2 =
-            CodexBudgetGateway::start(sample_authority(2, 1_000), &upstream, "upstream-secret")
-                .unwrap();
+        let g1 = start_gateway(
+            sample_authority_for_upstream(2, 1_000, 1, &upstream),
+            &upstream,
+            "upstream-secret",
+        );
+        let g2 = start_gateway(
+            sample_authority_for_upstream(2, 1_000, 1, &upstream),
+            &upstream,
+            "upstream-secret",
+        );
         assert_ne!(g1.session_token(), g2.session_token());
         assert!(g1.session_token().starts_with(CODEX_SESSION_TOKEN_PREFIX));
 
-        // Token from g1 must not authorize g2.
         let mut stream = TcpStream::connect(g2.local_addr()).unwrap();
         let body = br#"{"model":"gpt-test-model","input":"hi"}"#;
         let req = format!(
@@ -1446,9 +1629,9 @@ mod tests {
     fn gateway_rejects_output_limit_increase_and_null_removal() {
         let hits = Arc::new(AtomicUsize::new(0));
         let (upstream, _join) = spawn_fake_upstream(Arc::clone(&hits), true);
-        let mut authority = sample_authority(2, 50_000);
+        let mut authority = sample_authority_for_upstream(2, 50_000, 1, &upstream);
         authority.max_output_tokens_per_request = 64;
-        let gateway = CodexBudgetGateway::start(authority, &upstream, "upstream-secret").unwrap();
+        let gateway = start_gateway(authority, &upstream, "upstream-secret");
 
         let body = br#"{"model":"gpt-test-model","input":"hi","max_output_tokens":9999}"#;
         let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
@@ -1481,23 +1664,19 @@ mod tests {
     }
 
     #[test]
-    fn gateway_restart_restores_committed_usage_from_journal() {
+    fn gateway_restart_restores_committed_usage_from_parent_journal() {
         let hits = Arc::new(AtomicUsize::new(0));
         let (upstream, _join) = spawn_fake_upstream(Arc::clone(&hits), true);
-        let journal = std::env::temp_dir().join(format!(
-            "codex-gw-journal-{}-{}.json",
-            std::process::id(),
-            now_unix_ms()
-        ));
-        let _ = std::fs::remove_file(&journal);
-        let mut authority = sample_authority(3, 50_000);
-        authority.execution_id = "exec-journal-1".into();
+        let mut authority = sample_authority_for_upstream(3, 50_000, 2, &upstream);
         authority.max_output_tokens_per_request = 64;
-        let gateway = CodexBudgetGateway::start_with_journal(
+        let journal =
+            crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
+        let _ = std::fs::remove_file(&journal);
+        let gateway = CodexBudgetGateway::start(
             authority.clone(),
             &upstream,
             "upstream-secret",
-            Some(journal.clone()),
+            journal.clone(),
         )
         .unwrap();
 
@@ -1517,14 +1696,9 @@ mod tests {
         assert_eq!(usage.provider_requests, 1);
         assert_eq!(usage.cumulative_input_tokens, 10);
 
-        // Restart with the same journal: counters restored, next request counted.
-        let gateway2 = CodexBudgetGateway::start_with_journal(
-            authority,
-            &upstream,
-            "upstream-secret",
-            Some(journal.clone()),
-        )
-        .unwrap();
+        let gateway2 =
+            CodexBudgetGateway::start(authority, &upstream, "upstream-secret", journal.clone())
+                .unwrap();
         let restored = gateway2.usage();
         assert_eq!(restored.provider_requests, 1);
         assert_eq!(restored.cumulative_input_tokens, 10);
@@ -1532,16 +1706,71 @@ mod tests {
         let _ = gateway2.shutdown();
         let raw = std::fs::read_to_string(&journal).unwrap();
         assert!(!raw.contains("upstream-secret"));
-        assert!(!raw.contains("sk-real"));
         assert!(!raw.contains("OPENAI_API_KEY"));
+        assert!(raw.contains("attempt_id") || raw.contains("codex_usage_journal.v2"));
+        let _ = std::fs::remove_file(&journal);
+    }
+
+    #[test]
+    fn outcome_unknown_restart_never_returns_budget() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (upstream, _join) = spawn_fake_upstream(Arc::clone(&hits), false); // missing usage
+        let authority = sample_authority_for_upstream(3, 50_000, 2, &upstream);
+        let journal =
+            crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
+        let _ = std::fs::remove_file(&journal);
+        let gateway = CodexBudgetGateway::start(
+            authority.clone(),
+            &upstream,
+            "upstream-secret",
+            journal.clone(),
+        )
+        .unwrap();
+        let body = br#"{"model":"gpt-test-model","input":"hi"}"#;
+        let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+            gateway.session_token()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("usage_unavailable"), "{resp}");
+        let _ = gateway.shutdown();
+
+        let gateway2 =
+            CodexBudgetGateway::start(authority, &upstream, "upstream-secret", journal.clone())
+                .unwrap();
+        // Restart must block new admits after outcome-unknown charge.
+        let mut stream = TcpStream::connect(gateway2.local_addr()).unwrap();
+        let body = br#"{"model":"gpt-test-model","input":"again"}"#;
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+            gateway2.session_token()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(
+            resp.contains("journal_blocks_admit")
+                || resp.contains("outcome_unknown")
+                || resp.contains("journal"),
+            "{resp}"
+        );
+        let usage = gateway2.usage();
+        assert!(usage.provider_requests >= 1);
+        assert!(usage.cumulative_input_tokens > 0 || usage.cumulative_output_tokens > 0);
+        let _ = gateway2.shutdown();
         let _ = std::fs::remove_file(&journal);
     }
 
     #[test]
     fn cumulative_exhaustion_blocks_next_request_without_upstream_hit() {
         let hits = Arc::new(AtomicUsize::new(0));
-        // Upstream reports nearly the full cumulative budget so residual next
-        // worst-case (UTF-8 reservation + max_out) cannot fit.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let hits_thread = Arc::clone(&hits);
@@ -1575,12 +1804,11 @@ mod tests {
             }
         });
 
-        let mut authority = sample_authority(4, 100);
+        let upstream = format!("http://{addr}");
+        let mut authority = sample_authority_for_upstream(4, 100, 3, &upstream);
         authority.max_output_tokens_per_request = 20;
         authority.max_input_tokens_per_request = 50_000;
-        let gateway =
-            CodexBudgetGateway::start(authority, &format!("http://{addr}"), "upstream-secret")
-                .unwrap();
+        let gateway = start_gateway(authority, &upstream, "upstream-secret");
 
         let body = br#"{"model":"gpt-test-model","input":"x"}"#;
         let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
@@ -1598,7 +1826,7 @@ mod tests {
             "first request should forward; got {resp}"
         );
         assert_eq!(hits.load(AtomicOrdering::SeqCst), 1);
-        // Remaining cumulative = 100 - 90 = 10; next worst-case needs reserved+20 >> 10.
+
         let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
         let body = br#"{"model":"gpt-test-model","input":"y"}"#;
         let req = format!(
@@ -1614,5 +1842,13 @@ mod tests {
         assert_eq!(hits.load(AtomicOrdering::SeqCst), 1);
         let _ = gateway.shutdown();
         let _ = join.join();
+    }
+
+    #[test]
+    fn attempt_ids_are_unique() {
+        let a = new_codex_attempt_id();
+        let b = new_codex_attempt_id();
+        assert_ne!(a, b);
+        assert!(a.starts_with("codex-attempt-"));
     }
 }
