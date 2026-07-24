@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::codex_mediation_admission::{
-    unprivileged_user_ns_available, BUBBLEWRAP_BIN, CodexAdmissionClass,
+    unprivileged_user_ns_available, CodexAdmissionClass, BUBBLEWRAP_BIN,
 };
 use super::codex_partial_mediation_authority_decision::{
     AuthorityDecisionStatus, PartialMediationAuthorityDecision,
@@ -22,10 +22,8 @@ use super::codex_residual_admission::{
 };
 use super::config::{ADMITTED_CODEX_MODEL, ADMITTED_CODEX_VERSION};
 
-pub const MANAGED_ACCEPTANCE_PREFLIGHT_SCHEMA: &str =
-    "codex_managed_acceptance_preflight.v1";
-pub const MANAGED_ACCEPTANCE_MANIFEST_SCHEMA: &str =
-    "codex_managed_acceptance_manifest.v1";
+pub const MANAGED_ACCEPTANCE_PREFLIGHT_SCHEMA: &str = "codex_managed_acceptance_preflight.v1";
+pub const MANAGED_ACCEPTANCE_MANIFEST_SCHEMA: &str = "codex_managed_acceptance_manifest.v1";
 
 /// Typed preflight result (fail closed on missing/contradictory state).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -417,7 +415,9 @@ pub fn run_managed_acceptance_preflight(
         format!("max_retries={:?}", input.max_retries),
         Some("blocked_budget"),
     );
-    let req_ok = input.max_provider_requests.is_some_and(|n| n >= 1 && n <= 8);
+    let req_ok = input
+        .max_provider_requests
+        .is_some_and(|n| n >= 1 && n <= 8);
     check(
         &mut checks,
         &mut blockers,
@@ -585,8 +585,7 @@ pub fn run_managed_acceptance_preflight(
     );
     let decision_status = input.authority_decision_status.as_deref().unwrap_or("");
     let operator_accepted = decision_status == AuthorityDecisionStatus::OperatorAccepted.as_str();
-    let draft_pending =
-        decision_status == AuthorityDecisionStatus::DraftPendingOperator.as_str();
+    let draft_pending = decision_status == AuthorityDecisionStatus::DraftPendingOperator.as_str();
 
     if residual_no_go {
         check(
@@ -835,7 +834,10 @@ mod tests {
         );
         assert!(report.result.is_ready());
         // Ready-pending does not mean live trial is authorized without operator ack.
-        assert_eq!(report.manifest["authority"]["decision_status"], "draft_pending_operator");
+        assert_eq!(
+            report.manifest["authority"]["decision_status"],
+            "draft_pending_operator"
+        );
     }
 
     #[test]
