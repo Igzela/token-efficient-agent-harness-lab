@@ -169,7 +169,7 @@ impl CodexMediatedCapabilityReport {
             )
         } else {
             Some(
-                "remaining full-admission blockers: (1) Codex internal retries are not wire-labeled so retry axis is only a subsequent-POST cap, not true retry identity; (2) process-level network isolation that reaches only the loopback gateway (not arbitrary egress) is unproved without elevated privileges; (3) live operator credential+authorization still required for managed acceptance"
+                "remaining full-admission blockers: (1) Codex internal retries are not wire-labeled so retry axis is only a subsequent-POST cap, not true retry identity; (2) process-level network isolation that reaches only the loopback gateway (not arbitrary egress) is unproved without elevated privileges; (3) unprivileged user-namespace/PID isolation is host-dependent (uid_map may be denied); (4) live operator credential+authorization still required for managed acceptance"
                     .to_string(),
             )
         };
