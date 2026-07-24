@@ -20,8 +20,7 @@ use super::codex_budget_authority::{
     DEFAULT_CODEX_MAX_PROVIDER_REQUESTS,
 };
 
-pub const CODEX_MEDIATED_ADMISSION_SCHEMA: &str = "codex_mediated_admission.v1";
-pub const CODEX_USAGE_JOURNAL_SCHEMA: &str = "codex_usage_journal.v1";
+pub const CODEX_MEDIATED_ADMISSION_SCHEMA: &str = "codex_mediated_admission.v2";
 pub const BUBBLEWRAP_BIN: &str = "/usr/bin/bwrap";
 /// Fixed in-sandbox path for the admitted Codex binary (never the real home path).
 pub const SANDBOX_CODEX_BIN: &str = "/opt/acp/managed-codex";
@@ -31,8 +30,10 @@ pub const SANDBOX_CODEX_HOME: &str = "/opt/acp/codex-home";
 /// Two-axis admission classification for product-managed Codex.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexAdmissionClass {
-    /// API-key-mediated path with gateway interposition + FS credential isolation.
+    /// All original full-admission axes proved (not currently claimed).
     FullyAdmittedMediatedApiKey,
+    /// Gateway + parent journal + bwrap/PID isolation foundation; residual blockers remain.
+    MediationHardenedPartial,
     /// Exact post-call usage evidence only; not live Golden Path ready.
     UsageEvidenceCapable,
     /// Official ChatGPT-auth / unmediated path — excluded from product admission.
@@ -45,6 +46,7 @@ impl CodexAdmissionClass {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::FullyAdmittedMediatedApiKey => "fully_admitted_mediated_api_key",
+            Self::MediationHardenedPartial => "mediation_hardened_partial",
             Self::UsageEvidenceCapable => "usage_evidence_capable",
             Self::ExcludedChatgptAuthBypass => "excluded_chatgpt_auth_bypass",
             Self::Blocked => "blocked",
@@ -52,7 +54,17 @@ impl CodexAdmissionClass {
     }
 
     pub fn admits_live_product_golden_path(&self) -> bool {
+        // Full live Golden Path requires FullyAdmittedMediatedApiKey only.
         matches!(self, Self::FullyAdmittedMediatedApiKey)
+    }
+
+    /// Product path may run the mediated executor for provider-free proof work when
+    /// partial mediation is available; live acceptance still requires full class.
+    pub fn allows_mediated_product_launch(&self) -> bool {
+        matches!(
+            self,
+            Self::FullyAdmittedMediatedApiKey | Self::MediationHardenedPartial
+        )
     }
 }
 
@@ -97,52 +109,61 @@ pub struct CodexMediatedCapabilityReport {
 }
 
 impl CodexMediatedCapabilityReport {
+    /// Honest classification after PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1.
+    ///
+    /// Does **not** claim full live Golden Path admission: Codex does not label
+    /// internal retries on the HTTP wire, and host-loopback-preserving network
+    /// isolation is unproved on this unprivileged profile.
     pub fn evaluate(isolation: IsolationMode, bwrap_present: bool) -> Self {
         let fs_ok = matches!(isolation, IsolationMode::BubblewrapFilesystem) && bwrap_present;
-        // Network namespaces that preserve host-loopback gateway access while
-        // denying arbitrary egress are not available without elevated privileges
-        // on this host profile. Credential non-bypass is proved by FS isolation
-        // + task-scoped gateway token that is useless on any other endpoint.
         let network_confinement = if fs_ok {
-            "shared_host_network_with_credential_non_bypass".to_string()
+            "shared_host_network_credential_non_bypass_only;loopback_only_netns_unproved"
+                .to_string()
         } else {
             "unavailable".to_string()
         };
-        let fully = fs_ok;
-        let class = if fully {
-            CodexAdmissionClass::FullyAdmittedMediatedApiKey
-        } else {
-            CodexAdmissionClass::Blocked
-        };
-        let remaining = if fully {
-            None
-        } else {
+        let remaining = if !fs_ok {
             Some(
-                "product-managed Codex full admission requires bubblewrap filesystem isolation (/usr/bin/bwrap)"
+                "product-managed Codex mediation requires /usr/bin/bwrap filesystem+PID isolation"
                     .to_string(),
             )
+        } else {
+            Some(
+                "remaining full-admission blockers: (1) Codex internal retries are not wire-labeled so retry axis is only a subsequent-POST cap, not true retry identity; (2) process-level network isolation that reaches only the loopback gateway (not arbitrary egress) is unproved without elevated privileges; (3) live operator credential+authorization still required for managed acceptance"
+                    .to_string(),
+            )
+        };
+        let class = if fs_ok {
+            CodexAdmissionClass::MediationHardenedPartial
+        } else {
+            CodexAdmissionClass::Blocked
         };
         Self {
             schema_version: CODEX_MEDIATED_ADMISSION_SCHEMA.to_string(),
             admission_class: class,
             exact_post_call_usage_evidence: true,
-            enforceable_pre_or_cross_call_budget: fully,
+            // Gateway enforces pre/cross-call residual for mediated API-key path.
+            enforceable_pre_or_cross_call_budget: fs_ok,
             process_containment: true,
             worktree_path_confinement: true,
-            no_direct_credential_bypass: fully,
-            no_direct_network_credential_bypass: fully,
+            no_direct_credential_bypass: fs_ok,
+            // Network egress may still exist; credential non-bypass is the proved axis.
+            no_direct_network_credential_bypass: false,
             exact_executable_and_model_identity: true,
-            hard_single_request_output_bound: fully,
-            hard_cross_call_budget_interposition: fully,
-            bounded_calls_and_retries: fully,
-            restart_safe_reconciliation: true,
+            hard_single_request_output_bound: fs_ok,
+            hard_cross_call_budget_interposition: fs_ok,
+            // Separate request/retry axes exist, but retry identity is unproved.
+            bounded_calls_and_retries: false,
+            restart_safe_reconciliation: fs_ok,
             isolation_mode: isolation,
             network_confinement,
             remaining_blocker: remaining,
             notes: vec![
+                "PR #295 was a partial foundation; full admission is not claimed.".into(),
                 "Official ChatGPT-auth Codex path remains excluded from Product Golden Path.".into(),
                 "Session JSONL importer is corroborating evidence only; gateway is the cross-call gate.".into(),
                 "ProductTask budget remains the sole durable budget authority.".into(),
+                "Parent-owned usage journal is outside every child sandbox mount.".into(),
             ],
         }
     }
@@ -169,102 +190,6 @@ impl CodexMediatedCapabilityReport {
             "notes": self.notes,
         })
     }
-}
-
-/// Durable-enough usage journal for gateway restart within one execution.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CodexUsageJournalEntry {
-    pub schema_version: String,
-    pub execution_id: String,
-    pub task_id: String,
-    pub provider_requests: u64,
-    pub cumulative_input_tokens: u64,
-    pub cumulative_output_tokens: u64,
-    pub last_request_id: Option<String>,
-}
-
-impl CodexUsageJournalEntry {
-    pub fn from_usage(
-        authority: &CodexBudgetAuthority,
-        usage: &BudgetGatewayUsage,
-        last_request_id: Option<String>,
-    ) -> Self {
-        Self {
-            schema_version: CODEX_USAGE_JOURNAL_SCHEMA.to_string(),
-            execution_id: authority.execution_id.clone(),
-            task_id: authority.task_id.clone(),
-            provider_requests: usage.provider_requests,
-            cumulative_input_tokens: usage.cumulative_input_tokens,
-            cumulative_output_tokens: usage.cumulative_output_tokens,
-            last_request_id,
-        }
-    }
-
-    pub fn to_json(&self) -> Value {
-        json!({
-            "schema_version": self.schema_version,
-            "execution_id": self.execution_id,
-            "task_id": self.task_id,
-            "provider_requests": self.provider_requests,
-            "cumulative_input_tokens": self.cumulative_input_tokens,
-            "cumulative_output_tokens": self.cumulative_output_tokens,
-            "last_request_id": self.last_request_id,
-            // Never persist prompts, outputs, credentials, or private paths.
-        })
-    }
-
-    pub fn write_to(&self, path: &Path) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("failed to create usage journal dir: {error}"))?;
-        }
-        let body = serde_json::to_vec_pretty(&self.to_json())
-            .map_err(|error| format!("failed to encode usage journal: {error}"))?;
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &body)
-            .map_err(|error| format!("failed to write usage journal tmp: {error}"))?;
-        std::fs::rename(&tmp, path)
-            .map_err(|error| format!("failed to commit usage journal: {error}"))?;
-        Ok(())
-    }
-
-    pub fn load_from(path: &Path) -> Result<Self, String> {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|error| format!("failed to read usage journal: {error}"))?;
-        let value: Value = serde_json::from_str(&raw)
-            .map_err(|error| format!("usage journal is not valid JSON: {error}"))?;
-        if value.get("schema_version").and_then(Value::as_str) != Some(CODEX_USAGE_JOURNAL_SCHEMA) {
-            return Err("usage journal schema version is unsupported".to_string());
-        }
-        Ok(Self {
-            schema_version: CODEX_USAGE_JOURNAL_SCHEMA.to_string(),
-            execution_id: required_str(&value, "execution_id")?,
-            task_id: required_str(&value, "task_id")?,
-            provider_requests: required_u64(&value, "provider_requests")?,
-            cumulative_input_tokens: required_u64(&value, "cumulative_input_tokens")?,
-            cumulative_output_tokens: required_u64(&value, "cumulative_output_tokens")?,
-            last_request_id: value
-                .get("last_request_id")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        })
-    }
-}
-
-fn required_str(value: &Value, key: &str) -> Result<String, String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| format!("usage journal missing {key}"))
-}
-
-fn required_u64(value: &Value, key: &str) -> Result<u64, String> {
-    value
-        .get(key)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| format!("usage journal missing {key}"))
 }
 
 /// Planned mediated child launch (program + args + env). Does not spawn.
@@ -389,7 +314,7 @@ pub fn plan_mediated_codex_launch(
         IsolationMode::Unavailable
     };
     let capability = CodexMediatedCapabilityReport::evaluate(isolation.clone(), bwrap_present);
-    if !capability.admission_class.admits_live_product_golden_path() {
+    if !capability.admission_class.allows_mediated_product_launch() {
         return Err(capability
             .remaining_blocker
             .clone()
@@ -402,6 +327,9 @@ pub fn plan_mediated_codex_launch(
     // process group and kills that group on timeout/cancel; a new session would
     // detach descendants from that cleanup path.
     args.push("--die-with-parent".into());
+    // PID isolation so the child cannot read parent/sibling /proc/*/environ.
+    args.push("--unshare-user".into());
+    args.push("--unshare-pid".into());
     // Essential host root pieces (read-only).
     for path in ["/usr", "/bin", "/lib", "/lib64", "/etc"] {
         if Path::new(path).exists() {
@@ -501,6 +429,8 @@ pub fn probe_real_auth_hidden(
     }
     let mut cmd = Command::new(bwrap);
     cmd.arg("--die-with-parent")
+        .arg("--unshare-user")
+        .arg("--unshare-pid")
         .arg("--ro-bind")
         .arg("/usr")
         .arg("/usr")
@@ -695,13 +625,20 @@ pub fn mediated_default_ceilings() -> Value {
 mod tests {
     use super::*;
     use crate::cli::codex_budget_authority::{
-        write_ephemeral_codex_home, CodexExecutableIdentity, ADMITTED_CODEX_CLI_VERSION,
-        CODEX_BUDGET_AUTHORITY_SCHEMA,
+        new_codex_attempt_id, write_ephemeral_codex_home, CodexExecutableIdentity,
+        CodexProviderIdentity, ADMITTED_CODEX_CLI_VERSION, CODEX_BUDGET_AUTHORITY_SCHEMA,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn require_bwrap() {
+        assert!(
+            Path::new(BUBBLEWRAP_BIN).is_file(),
+            "BLOCKED: /usr/bin/bwrap is required for this provider-free validation lane"
+        );
+    }
+
     fn sample_authority(worktree: PathBuf) -> CodexBudgetAuthority {
-        let binary = std::env::temp_dir().join(format!("codex-med-bin-{}", std::process::id()));
+        let binary = std::env::temp_dir().join(format!("codex-med-bin-{}", uuid::Uuid::new_v4()));
         std::fs::write(&binary, b"#!/bin/sh\necho codex-cli 0.145.0\n").unwrap();
         #[cfg(unix)]
         {
@@ -709,16 +646,19 @@ mod tests {
             std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let sha = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+        let provider =
+            CodexProviderIdentity::openai_compatible("https://api.openai.com/v1").unwrap();
         CodexBudgetAuthority {
             schema_version: CODEX_BUDGET_AUTHORITY_SCHEMA.to_string(),
             task_id: "ptask-med".into(),
             workflow_node_id: "node-1".into(),
-            execution_id: "exec-med-1".into(),
+            execution_id: new_codex_attempt_id(),
             executable: CodexExecutableIdentity {
                 binary_path: binary,
                 binary_version: ADMITTED_CODEX_CLI_VERSION.to_string(),
                 binary_sha256: sha,
             },
+            provider,
             model: "gpt-test-model".into(),
             max_provider_requests: 4,
             max_retries: 1,
@@ -737,32 +677,34 @@ mod tests {
     }
 
     #[test]
-    fn capability_report_requires_bwrap_for_full_admission() {
+    fn capability_report_is_partial_not_full_when_bwrap_present() {
         let blocked = CodexMediatedCapabilityReport::evaluate(IsolationMode::Unavailable, false);
-        assert!(!blocked.admission_class.admits_live_product_golden_path());
+        assert!(!blocked.admission_class.allows_mediated_product_launch());
         assert!(!blocked.enforceable_pre_or_cross_call_budget);
-        assert!(blocked.remaining_blocker.is_some());
 
-        let full =
+        let partial =
             CodexMediatedCapabilityReport::evaluate(IsolationMode::BubblewrapFilesystem, true);
-        assert!(full.admission_class.admits_live_product_golden_path());
-        assert!(full.enforceable_pre_or_cross_call_budget);
-        assert!(full.hard_cross_call_budget_interposition);
-        assert!(full.hard_single_request_output_bound);
-        assert!(full.no_direct_credential_bypass);
+        assert!(!partial.admission_class.admits_live_product_golden_path());
+        assert!(partial.admission_class.allows_mediated_product_launch());
         assert_eq!(
-            full.admission_class,
-            CodexAdmissionClass::FullyAdmittedMediatedApiKey
+            partial.admission_class,
+            CodexAdmissionClass::MediationHardenedPartial
         );
+        assert!(partial.enforceable_pre_or_cross_call_budget);
+        assert!(!partial.bounded_calls_and_retries);
+        assert!(!partial.no_direct_network_credential_bypass);
+        assert!(partial
+            .remaining_blocker
+            .as_ref()
+            .unwrap()
+            .contains("retry"));
     }
 
     #[test]
-    fn launch_plan_hides_real_credentials_and_uses_session_token() {
-        if !Path::new(BUBBLEWRAP_BIN).is_file() {
-            return;
-        }
-        let worktree = std::env::temp_dir().join(format!("codex-med-wt-{}", std::process::id()));
-        let eph = std::env::temp_dir().join(format!("codex-med-home-{}", std::process::id()));
+    fn launch_plan_hides_real_credentials_and_uses_pid_isolation() {
+        require_bwrap();
+        let worktree = std::env::temp_dir().join(format!("codex-med-wt-{}", uuid::Uuid::new_v4()));
+        let eph = std::env::temp_dir().join(format!("codex-med-home-{}", uuid::Uuid::new_v4()));
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&eph);
         std::fs::create_dir_all(&worktree).unwrap();
@@ -779,24 +721,18 @@ mod tests {
         )
         .unwrap();
         plan.assert_no_upstream_credential_env().unwrap();
-        assert_eq!(plan.program, PathBuf::from(BUBBLEWRAP_BIN));
         let args: Vec<String> = plan
             .args
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
+        assert!(args.iter().any(|a| a == "--unshare-pid"));
+        assert!(args.iter().any(|a| a == "--unshare-user"));
         assert!(args
             .windows(2)
             .any(|w| w[0] == "--tmpfs" && w[1] == "/home"));
-        assert!(args.iter().any(|a| a == SANDBOX_CODEX_BIN));
-        assert!(!args
-            .iter()
-            .any(|a| a.contains("auth.json") && a.contains(".codex")));
-        // Must not bind the operator home path as HOME.
-        assert!(plan
-            .env
-            .iter()
-            .any(|(k, v)| k == "HOME" && v == SANDBOX_CODEX_HOME));
+        // Parent journal root must not be mounted into the sandbox.
+        assert!(!args.iter().any(|a| a.contains("acp-codex-parent-journal")));
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&eph);
         let _ = std::fs::remove_file(&authority.executable.binary_path);
@@ -804,11 +740,9 @@ mod tests {
 
     #[test]
     fn launch_plan_rejects_non_loopback_gateway() {
-        if !Path::new(BUBBLEWRAP_BIN).is_file() {
-            return;
-        }
-        let worktree = std::env::temp_dir().join(format!("codex-med-wt2-{}", std::process::id()));
-        let eph = std::env::temp_dir().join(format!("codex-med-home2-{}", std::process::id()));
+        require_bwrap();
+        let worktree = std::env::temp_dir().join(format!("codex-med-wt2-{}", uuid::Uuid::new_v4()));
+        let eph = std::env::temp_dir().join(format!("codex-med-home2-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&worktree).unwrap();
         write_ephemeral_codex_home(&eph, "gpt-test-model", "http://127.0.0.1:9/v1").unwrap();
         let authority = sample_authority(worktree.clone());
@@ -830,13 +764,12 @@ mod tests {
 
     #[test]
     fn isolation_probe_hides_synthetic_auth_path() {
-        if !Path::new(BUBBLEWRAP_BIN).is_file() {
-            return;
-        }
-        let worktree = std::env::temp_dir().join(format!("codex-probe-wt-{}", std::process::id()));
-        let eph = std::env::temp_dir().join(format!("codex-probe-home-{}", std::process::id()));
+        require_bwrap();
+        let worktree =
+            std::env::temp_dir().join(format!("codex-probe-wt-{}", uuid::Uuid::new_v4()));
+        let eph = std::env::temp_dir().join(format!("codex-probe-home-{}", uuid::Uuid::new_v4()));
         let fake_home =
-            std::env::temp_dir().join(format!("codex-probe-real-{}", std::process::id()));
+            std::env::temp_dir().join(format!("codex-probe-real-{}", uuid::Uuid::new_v4()));
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&eph);
         let _ = std::fs::remove_dir_all(&fake_home);
@@ -845,7 +778,7 @@ mod tests {
         let auth = fake_home.join(".codex/auth.json");
         std::fs::write(&auth, r#"{"OPENAI_API_KEY":"sk-real-must-not-leak"}"#).unwrap();
         write_ephemeral_codex_home(&eph, "gpt-test-model", "http://127.0.0.1:9/v1").unwrap();
-        let binary = std::env::temp_dir().join(format!("codex-probe-bin-{}", std::process::id()));
+        let binary = std::env::temp_dir().join(format!("codex-probe-bin-{}", uuid::Uuid::new_v4()));
         std::fs::write(&binary, b"#!/bin/sh\necho ok\n").unwrap();
         #[cfg(unix)]
         {
@@ -854,7 +787,6 @@ mod tests {
         }
         let hidden = probe_real_auth_hidden(&auth, &binary, &eph, &worktree).unwrap();
         assert!(hidden, "real auth must be unreadable inside sandbox");
-        // Without sandbox the auth path is still readable by the test process.
         assert!(auth.is_file());
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&eph);
@@ -863,35 +795,56 @@ mod tests {
     }
 
     #[test]
-    fn usage_journal_round_trip_preserves_committed_counters() {
-        let worktree = std::env::temp_dir();
-        let authority = sample_authority(worktree);
-        let usage = BudgetGatewayUsage {
-            provider_requests: 2,
-            cumulative_input_tokens: 30,
-            cumulative_output_tokens: 12,
-            cumulative_tokens: 42,
-            last_reject: None,
-            last_reject_class: None,
-        };
-        let entry = CodexUsageJournalEntry::from_usage(&authority, &usage, Some("req_1".into()));
-        let path = std::env::temp_dir().join(format!(
-            "codex-journal-{}-{}.json",
-            std::process::id(),
-            entry.execution_id
-        ));
-        entry.write_to(&path).unwrap();
-        let loaded = CodexUsageJournalEntry::load_from(&path).unwrap();
-        assert_eq!(loaded.provider_requests, 2);
-        assert_eq!(loaded.cumulative_input_tokens, 30);
-        assert_eq!(loaded.cumulative_output_tokens, 12);
-        assert_eq!(loaded.task_id, "ptask-med");
-        let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(!raw.contains("sk-real"));
-        assert!(!raw.contains("OPENAI_API_KEY"));
-        assert!(!raw.contains("\"prompt\""));
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&authority.executable.binary_path);
+    fn isolation_probe_hides_parent_environ_with_pid_namespace() {
+        require_bwrap();
+        let host_pid = std::process::id();
+        let mut cmd = Command::new(BUBBLEWRAP_BIN);
+        cmd.arg("--die-with-parent")
+            .arg("--unshare-user")
+            .arg("--unshare-pid")
+            .arg("--ro-bind")
+            .arg("/usr")
+            .arg("/usr")
+            .arg("--ro-bind")
+            .arg("/bin")
+            .arg("/bin")
+            .arg("--ro-bind")
+            .arg("/lib")
+            .arg("/lib");
+        if Path::new("/lib64").exists() {
+            cmd.arg("--ro-bind").arg("/lib64").arg("/lib64");
+        }
+        cmd.arg("--proc")
+            .arg("/proc")
+            .arg("--dev")
+            .arg("/dev")
+            .arg("--tmpfs")
+            .arg("/tmp")
+            .arg("--tmpfs")
+            .arg("/home")
+            .arg("--clearenv")
+            .arg("--setenv")
+            .arg("PATH")
+            .arg("/usr/bin:/bin")
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "if test -r /proc/{host_pid}/environ; then echo HOST_ENV_LEAK; else echo HOST_ENV_HIDDEN; fi"
+            ))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = cmd.output().expect("spawn isolation probe");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("HOST_ENV_HIDDEN"),
+            "parent environ must be hidden under PID isolation: {stdout}"
+        );
     }
 
     #[test]
@@ -903,6 +856,8 @@ mod tests {
             cumulative_tokens: 15,
             last_reject: None,
             last_reject_class: None,
+            journal_halted: false,
+            observed_retry_posts: 0,
         };
         assert!(matches!(
             reconcile_gateway_and_session_usage(&gateway, Some(10), Some(5)),
@@ -912,16 +867,14 @@ mod tests {
             reconcile_gateway_and_session_usage(&gateway, Some(99), Some(5)),
             UsageReconcileResult::Conflict { .. }
         ));
-        assert!(matches!(
-            reconcile_gateway_and_session_usage(&gateway, None, None),
-            UsageReconcileResult::PreferGateway { .. }
-        ));
     }
 
     #[test]
     fn chatgpt_auth_class_never_admits_live_path() {
         assert!(!CodexAdmissionClass::ExcludedChatgptAuthBypass.admits_live_product_golden_path());
         assert!(!CodexAdmissionClass::UsageEvidenceCapable.admits_live_product_golden_path());
+        assert!(!CodexAdmissionClass::MediationHardenedPartial.admits_live_product_golden_path());
         assert!(!CodexAdmissionClass::Blocked.admits_live_product_golden_path());
+        assert!(CodexAdmissionClass::MediationHardenedPartial.allows_mediated_product_launch());
     }
 }

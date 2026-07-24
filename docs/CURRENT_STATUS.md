@@ -4,9 +4,9 @@ Last updated: 2026-07-24.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `381571bf42eeea74802d6ded423dbecb32e6ab6b` after PE7 Codex full mediation admission (#295).
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main` after #295 docs seal; active repair packet `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`.
 - Open PRs: #225 (presentation-only Dashboard). Auto-merge is disabled.
-- Live managed acceptance is blocked only on operator credential + authorization (see `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`).
+- **Do not treat PR #295 full-admission classification as accepted.** Independent repair is in progress for journal authority, attempt identity, provider binding, retry axis honesty, and executed bypass proofs.
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
 - Rust `engine/` and `LocalProductStore` remain the sole runtime and application-owned persistence authorities.
@@ -21,12 +21,12 @@ Managed-executor classification (provider-free, Codex CLI **0.145.0**):
 
 | Executor | Class | Exact residual blocker |
 |---|---|---|
-| Codex API-key-mediated (gateway + bwrap) | **Fully admitted (provider-free mediation proof)** via PR #295 | Loopback gateway + bwrap FS isolation + hard single/cross-call bounds proved without live provider calls. **Live E2E residual:** operator must export parent-only `ACP_CODEX_UPSTREAM_API_KEY` (or `OPENAI_API_KEY`), exact Codex identity env, and authorize one bounded disposable task. Official ChatGPT-auth path remains excluded. |
+| Codex API-key-mediated (gateway + bwrap) | **Mediation hardened partial** (repair in progress) | #295 merged as foundation only. Repair hardens parent-owned fail-closed journal, UUID attempt IDs, provider pin, PID isolation, executed probes. **Not full admission:** Codex internal retries not wire-labeled; loopback-only network isolation unproved; live credential+authorization still required. Official ChatGPT-auth path remains excluded. |
 | Codex ChatGPT-auth / unmediated | Excluded | Child would hold reusable OAuth; not product-admitted. |
 | Claude Code | Blocked | Provider-independent worktree-only FS confinement unproved; configured subscription path has known API 404. |
 | OpenCode | Blocked | No admitted upstream artifact/checksum. |
 
-Product Golden Path residual seal is blocked solely by live operator credential + authorization. RWE and Architecture Convergence remain blocked until that live acceptance completes.
+Product Golden Path residual seal is **not** blocked only by credentials: mediation admission class is partial, and live operator credential + authorization remain separate requirements. RWE and Architecture Convergence remain blocked.
 
 ## Active Work
 
@@ -80,8 +80,9 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1`: `COMPLETE` via PR #292 → `234def24`; exact-head/full CI green without concurrency-job retry.
 - `PE7-CODEX-TASK-BUDGET-AUTHORITY-1` / `PE7-CODEX-SESSION-USAGE-AUTHORITY-1`: `COMPLETE` via PR #293 → `29262bce` (partial admission foundation).
 - `PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1`: `COMPLETE` via PR #294 (unified usage evidence; not live admission).
-- `PE7-CODEX-FULL-MEDIATION-ADMISSION-1`: `COMPLETE` via PR #295 → `381571bf` (exact head `7e3c1f70`; CI `30091019486` / `30091019491`).
-- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`: `BLOCKED_PREREQUISITE` — needs parent-only API key env + operator authorization for one live disposable task.
+- `PE7-CODEX-FULL-MEDIATION-ADMISSION-1`: `COMPLETE` as **partial foundation only** via PR #295 → `381571bf` (full-admission claim withdrawn).
+- `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`: `IN_PROGRESS` — journal/attempt/provider/retry/probe authority repair.
+- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`: `BLOCKED_PREREQUISITE` — admission not full + parent-only API key + operator authorization.
 - `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` until live managed acceptance.
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
@@ -94,7 +95,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281–#295 are merged; PR #225 remains separate and last. Product Golden Path remains `IN_PROGRESS`: Codex API-key-mediated full mediation is complete (#295); live managed acceptance is blocked only on operator credential + authorization (do not scrape ChatGPT OAuth from `~/.codex/auth.json`). Claude confinement and OpenCode artifact admission remain blocked. RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
+PR #281–#295 are merged; PR #225 remains separate and last. Product Golden Path remains `IN_PROGRESS`: #295 is a partial mediation foundation; `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1` is repairing authority gaps and does not claim full admission. Live managed acceptance remains blocked on admission class + credentials + authorization. Claude confinement and OpenCode artifact admission remain blocked. RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
 
 ## Safety Boundary
 

@@ -14,7 +14,7 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Dispatch/planning | `dispatch_engine.rs`, analyzers, selectors, planners, decomposers | advisory/default-noop unless an explicit contract admits execution |
 | Workflow runtime | `workflow/`, `scheduler.rs`, `scheduler/runtime.rs`, `executor_pool.rs`, `node_executor.rs` | sole persisted run, lease, retry, and concurrency path |
 | Agent/recursive runtime | AgentStep/recursive execution owners plus scheduler/store | typed bounded nodes; no autonomous root or self-improvement |
-| Managed CLI/process | `cli/mod.rs`, `cli/config.rs`, `cli/cli_node_executor.rs`, `cli/codex_budget_authority.rs`, `cli/codex_mediation_admission.rs`, `cli/codex_session_usage.rs` | bounded process owner, probe, parser, admission, Codex loopback budget gateway, bwrap mediation isolation, session usage evidence |
+| Managed CLI/process | `cli/mod.rs`, `cli/config.rs`, `cli/cli_node_executor.rs`, `cli/codex_budget_authority.rs`, `cli/codex_mediation_admission.rs`, `cli/codex_usage_journal.rs`, `cli/codex_session_usage.rs` | bounded process owner, probe, parser, admission, Codex loopback budget gateway, parent-owned fail-closed usage journal, bwrap+PID mediation isolation, session usage evidence |
 | Multi-executor usage evidence | `execution_usage/` | normalized `execution_usage_event.v1` adapters + reconcile; evidence only, not a second budget owner |
 | Workspace | supervised-patch and `target_repo_output` owners | app-owned worktree, patch, source, and target-output lifecycle |
 | Verification/repair | supervised-patch verification, API-owned managed runs, tool-policy receipts | fixed read-only commands; hashed persisted text; pause/kill/late-write checks |

@@ -990,23 +990,6 @@ fn execute_product_codex_with_budget_gateway(
         );
     }
 
-    let authority = match authority_from_product_metadata(
-        executable,
-        &input.node_metadata,
-        &admission.model,
-        executor.timeout_ms,
-    ) {
-        Ok(authority) => authority,
-        Err(error) => {
-            return failed_without_process(
-                "codex_cli",
-                "cli_execution_authority_invalid",
-                error,
-                start.elapsed().as_millis() as i64,
-            );
-        }
-    };
-
     let upstream_key = std::env::var("ACP_CODEX_UPSTREAM_API_KEY")
         .or_else(|_| std::env::var("OPENAI_API_KEY"))
         .ok()
@@ -1022,8 +1005,28 @@ fn execute_product_codex_with_budget_gateway(
     let upstream_base = std::env::var("ACP_CODEX_UPSTREAM_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
 
-    // Full product mediation requires bubblewrap filesystem isolation so the
-    // child cannot read the operator Codex home / real credentials.
+    // Bind provider identity into authority before gateway start so environment
+    // substitution of base URL after binding is rejected.
+    let authority = match authority_from_product_metadata(
+        executable,
+        &input.node_metadata,
+        &admission.model,
+        executor.timeout_ms,
+        &upstream_base,
+    ) {
+        Ok(authority) => authority,
+        Err(error) => {
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                error,
+                start.elapsed().as_millis() as i64,
+            );
+        }
+    };
+
+    // Mediated product launch requires bubblewrap filesystem+PID isolation.
+    // Full live Golden Path admission is still partial (retry/network blockers).
     let capability = CodexMediatedCapabilityReport::evaluate(
         if Path::new(super::codex_mediation_admission::BUBBLEWRAP_BIN).is_file() {
             IsolationMode::BubblewrapFilesystem
@@ -1032,29 +1035,32 @@ fn execute_product_codex_with_budget_gateway(
         },
         Path::new(super::codex_mediation_admission::BUBBLEWRAP_BIN).is_file(),
     );
-    if !capability.admission_class.admits_live_product_golden_path() {
+    if !capability.admission_class.allows_mediated_product_launch() {
         return failed_without_process(
             "codex_cli",
             "cli_execution_authority_invalid",
             capability
                 .remaining_blocker
-                .unwrap_or_else(|| "codex full mediation admission is blocked".to_string()),
+                .unwrap_or_else(|| "codex mediation admission is blocked".to_string()),
             start.elapsed().as_millis() as i64,
         );
     }
 
     let ephemeral_home =
         std::env::temp_dir().join(format!("acp-codex-home-{}", authority.execution_id));
-    let journal_path = ephemeral_home.join("acp-usage-journal.json");
-    let gateway = match CodexBudgetGateway::start_with_journal(
+    // Parent-owned journal path: NEVER under ephemeral_home (sandbox-mounted).
+    let journal_path =
+        super::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
+    let gateway = match CodexBudgetGateway::start(
         authority,
         &upstream_base,
         &upstream_key,
-        Some(journal_path),
+        journal_path.clone(),
     ) {
         Ok(gateway) => gateway,
         Err(error) => {
             let _ = std::fs::remove_dir_all(&ephemeral_home);
+            let _ = std::fs::remove_file(&journal_path);
             return failed_without_process(
                 "codex_cli",
                 "cli_execution_authority_invalid",
@@ -1135,6 +1141,12 @@ fn execute_product_codex_with_budget_gateway(
         .map(|(_, rollup)| rollup.cumulative_output_tokens);
     let reconciled = reconcile_gateway_and_session_usage(&usage, session_input, session_output);
     let _ = std::fs::remove_dir_all(&ephemeral_home);
+    // Parent journal is retained only while an attempt may resume; remove after
+    // a clean terminal shutdown of this launch. Outcome-unknown journals are
+    // left for operator inspection when halted mid-flight (journal_halted).
+    if !usage.journal_halted {
+        let _ = std::fs::remove_file(&journal_path);
+    }
 
     match output {
         Ok(output) => {
