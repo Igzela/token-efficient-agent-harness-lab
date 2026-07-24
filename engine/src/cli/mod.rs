@@ -1,5 +1,6 @@
 pub mod cli_node_executor;
 pub mod codex_budget_authority;
+pub mod codex_mediation_admission;
 pub mod codex_session_usage;
 pub mod config;
 

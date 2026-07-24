@@ -168,6 +168,9 @@ pub struct ExecutorUsageCapability {
 }
 
 pub fn codex_usage_capability() -> ExecutorUsageCapability {
+    // Log-only JSONL evidence remains non-enforceable. Product-managed
+    // API-key-mediated Codex (gateway + bwrap) is classified separately via
+    // `cli::codex_mediation_admission::CodexMediatedCapabilityReport`.
     ExecutorUsageCapability {
         executor_kind: ExecutorKind::CodexCli,
         exact_post_call_usage_evidence: true,
@@ -175,7 +178,32 @@ pub fn codex_usage_capability() -> ExecutorUsageCapability {
         cost_precision: "unavailable_or_gateway_only".into(),
         source_provenance: "codex_jsonl_token_count_0.145.0".into(),
         remaining_admission_blocker:
-            "no hard cross-call gate from logs alone; single-request cap needs mediation".into(),
+            "JSONL alone is not a hard cross-call gate; product path requires loopback gateway + bwrap FS isolation (see codex_mediated_admission.v1)".into(),
+    }
+}
+
+/// Capability when the product-managed mediated path is available (gateway + bwrap).
+pub fn codex_mediated_usage_capability(bwrap_available: bool) -> ExecutorUsageCapability {
+    if bwrap_available {
+        ExecutorUsageCapability {
+            executor_kind: ExecutorKind::CodexCli,
+            exact_post_call_usage_evidence: true,
+            enforceable_pre_or_cross_call_budget: true,
+            cost_precision: "gateway_measured_tokens_cost_unavailable_or_estimated".into(),
+            source_provenance: "codex_budget_gateway_plus_jsonl_corroboration".into(),
+            remaining_admission_blocker: String::new(),
+        }
+    } else {
+        ExecutorUsageCapability {
+            executor_kind: ExecutorKind::CodexCli,
+            exact_post_call_usage_evidence: true,
+            enforceable_pre_or_cross_call_budget: false,
+            cost_precision: "unavailable_or_gateway_only".into(),
+            source_provenance: "codex_jsonl_token_count_0.145.0".into(),
+            remaining_admission_blocker:
+                "product-managed Codex full admission requires /usr/bin/bwrap filesystem isolation"
+                    .into(),
+        }
     }
 }
 
@@ -248,6 +276,8 @@ mod tests {
     fn capabilities_separate_evidence_from_enforcement() {
         assert!(codex_usage_capability().exact_post_call_usage_evidence);
         assert!(!codex_usage_capability().enforceable_pre_or_cross_call_budget);
+        assert!(codex_mediated_usage_capability(true).enforceable_pre_or_cross_call_budget);
+        assert!(!codex_mediated_usage_capability(false).enforceable_pre_or_cross_call_budget);
         assert!(claude_usage_capability().exact_post_call_usage_evidence);
         assert!(!claude_usage_capability().enforceable_pre_or_cross_call_budget);
         assert!(opencode_usage_capability().exact_post_call_usage_evidence);

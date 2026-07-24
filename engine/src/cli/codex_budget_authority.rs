@@ -27,6 +27,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use super::config::{validate_binary_file_identity, ADMITTED_CODEX_VERSION};
 
@@ -216,6 +217,10 @@ struct GatewayState {
     cumulative_output_tokens: AtomicU64,
     stop: AtomicBool,
     last_reject: Mutex<Option<(BudgetRejectClass, String)>>,
+    /// Serializes pre-dispatch residual checks so concurrent requests cannot overspend.
+    budget_lock: Mutex<()>,
+    /// Optional path for restart-safe committed usage journal (no secrets/prompts).
+    usage_journal_path: Option<PathBuf>,
 }
 
 impl GatewayState {
@@ -270,17 +275,33 @@ impl CodexBudgetGateway {
         upstream_base_url: &str,
         upstream_api_key: &str,
     ) -> Result<Self, String> {
+        Self::start_with_journal(authority, upstream_base_url, upstream_api_key, None)
+    }
+
+    /// Start the gateway, optionally restoring committed counters from a journal
+    /// written by a prior gateway for the same execution identity.
+    pub fn start_with_journal(
+        authority: CodexBudgetAuthority,
+        upstream_base_url: &str,
+        upstream_api_key: &str,
+        usage_journal_path: Option<PathBuf>,
+    ) -> Result<Self, String> {
         let authority = authority.validate_new()?;
         let upstream_base_url = normalize_base_url(upstream_base_url)?;
         if upstream_api_key.trim().is_empty() {
             return Err("upstream API key is required for Codex budget mediation".to_string());
         }
+        // One-use unforgeable session token: random UUID material + execution binding.
+        // Not derivable from task metadata alone, so another task cannot replay it.
         let session_token = format!(
             "{CODEX_SESSION_TOKEN_PREFIX}{}",
             hex::encode(Sha256::digest(
                 format!(
-                    "{}:{}:{}",
-                    authority.execution_id, authority.task_id, authority.expires_unix_ms
+                    "{}:{}:{}:{}",
+                    Uuid::new_v4(),
+                    authority.execution_id,
+                    authority.task_id,
+                    Uuid::new_v4()
                 )
                 .as_bytes()
             ))
@@ -294,16 +315,39 @@ impl CodexBudgetGateway {
             .local_addr()
             .map_err(|error| format!("failed to read gateway address: {error}"))?;
 
+        let mut restored_requests = 0u64;
+        let mut restored_input = 0u64;
+        let mut restored_output = 0u64;
+        if let Some(path) = usage_journal_path.as_ref() {
+            if path.is_file() {
+                let entry =
+                    super::codex_mediation_admission::CodexUsageJournalEntry::load_from(path)?;
+                if entry.execution_id != authority.execution_id
+                    || entry.task_id != authority.task_id
+                {
+                    return Err(
+                        "usage journal execution/task identity does not match authority"
+                            .to_string(),
+                    );
+                }
+                restored_requests = entry.provider_requests;
+                restored_input = entry.cumulative_input_tokens;
+                restored_output = entry.cumulative_output_tokens;
+            }
+        }
+
         let state = Arc::new(GatewayState {
             authority,
             session_token,
             upstream_base_url,
             upstream_api_key: upstream_api_key.to_string(),
-            provider_requests: AtomicU64::new(0),
-            cumulative_input_tokens: AtomicU64::new(0),
-            cumulative_output_tokens: AtomicU64::new(0),
+            provider_requests: AtomicU64::new(restored_requests),
+            cumulative_input_tokens: AtomicU64::new(restored_input),
+            cumulative_output_tokens: AtomicU64::new(restored_output),
             stop: AtomicBool::new(false),
             last_reject: Mutex::new(None),
+            budget_lock: Mutex::new(()),
+            usage_journal_path,
         });
 
         let thread_state = Arc::clone(&state);
@@ -621,59 +665,141 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
     }
 
     let max_out = state.authority.max_output_tokens_per_request;
+    // Reject explicit removal, zero, or increase of the provider-side output ceiling
+    // before injection. The gateway always re-injects the admitted cap for requests
+    // that omit the field.
+    if let Some(object) = body.as_object() {
+        let key = if is_responses {
+            "max_output_tokens"
+        } else {
+            "max_tokens"
+        };
+        match object.get(key) {
+            None => {}
+            Some(Value::Null) => {
+                state.record_reject(
+                    BudgetRejectClass::PreCall,
+                    "output token limit removal is not admitted".to_string(),
+                );
+                return json_error(
+                    403,
+                    "output_limit_required",
+                    "provider-side output token limit removal is not admitted",
+                );
+            }
+            Some(value) => match value.as_u64() {
+                Some(0) => {
+                    state.record_reject(
+                        BudgetRejectClass::PreCall,
+                        "output token limit must be > 0".to_string(),
+                    );
+                    return json_error(
+                        403,
+                        "output_limit_invalid",
+                        "provider-side output token limit must be positive",
+                    );
+                }
+                Some(requested) if requested > max_out => {
+                    state.record_reject(
+                        BudgetRejectClass::PreCall,
+                        format!(
+                            "output token limit increase rejected: requested={requested} admitted={max_out}"
+                        ),
+                    );
+                    return json_error(
+                        403,
+                        "output_limit_increase",
+                        "raising the provider-side output token limit is not admitted",
+                    );
+                }
+                Some(_) => {}
+                None => {
+                    state.record_reject(
+                        BudgetRejectClass::PreCall,
+                        "output token limit must be a positive integer".to_string(),
+                    );
+                    return json_error(
+                        403,
+                        "output_limit_invalid",
+                        "provider-side output token limit must be a positive integer",
+                    );
+                }
+            },
+        }
+    }
+    // Hard single-request bound: inject the admitted provider-side output ceiling.
     inject_max_output_tokens(&mut body, max_out, is_responses);
 
     let reserved_input = conservative_input_token_upper_bound(
         &serde_json::to_vec(&body).unwrap_or_else(|_| request.body.clone()),
     );
-    if reserved_input > state.authority.max_input_tokens_per_request {
-        state.record_reject(
-            BudgetRejectClass::PreCall,
-            format!(
-                "input reservation {reserved_input} exceeds max_input_tokens_per_request {}",
-                state.authority.max_input_tokens_per_request
-            ),
-        );
-        return json_error(
-            429,
-            "input_budget_exhausted",
-            "conservative input reservation exceeds per-request input ceiling",
-        );
-    }
 
-    let prior_requests = state.provider_requests.load(Ordering::SeqCst);
-    if prior_requests >= state.authority.max_provider_requests {
-        state.record_reject(
-            BudgetRejectClass::PreCall,
-            "max_provider_requests exhausted".to_string(),
-        );
-        return json_error(
-            429,
-            "request_budget_exhausted",
-            "max_provider_requests exhausted",
-        );
-    }
+    // Hold the budget lock across residual check + request count so concurrent
+    // connections cannot overspend the same task authority.
+    {
+        let _guard = match state.budget_lock.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                state.record_reject(
+                    BudgetRejectClass::PreCall,
+                    "budget lock poisoned".to_string(),
+                );
+                return json_error(500, "budget_lock_poisoned", "budget lock poisoned");
+            }
+        };
 
-    let used = state.cumulative_tokens();
-    let remaining = state.authority.max_cumulative_tokens.saturating_sub(used);
-    // Pre-dispatch residual check: reserved input + max possible output must fit.
-    let worst_case = reserved_input.saturating_add(max_out);
-    if worst_case > remaining {
-        state.record_reject(
-            BudgetRejectClass::PreCall,
-            format!(
-                "remaining cumulative budget {remaining} insufficient for reserved input {reserved_input} + max output {max_out}"
-            ),
-        );
-        return json_error(
-            429,
-            "cumulative_budget_insufficient",
-            "remaining cumulative budget is insufficient for the next bounded request",
-        );
-    }
+        if reserved_input > state.authority.max_input_tokens_per_request {
+            state.record_reject(
+                BudgetRejectClass::PreCall,
+                format!(
+                    "input reservation {reserved_input} exceeds max_input_tokens_per_request {}",
+                    state.authority.max_input_tokens_per_request
+                ),
+            );
+            return json_error(
+                429,
+                "input_budget_exhausted",
+                "conservative input reservation exceeds per-request input ceiling",
+            );
+        }
 
-    // Count the request only once pre-checks pass and immediately before forward.
-    state.provider_requests.fetch_add(1, Ordering::SeqCst);
+        let prior_requests = state.provider_requests.load(Ordering::SeqCst);
+        if prior_requests >= state.authority.max_provider_requests {
+            state.record_reject(
+                BudgetRejectClass::PreCall,
+                "max_provider_requests exhausted".to_string(),
+            );
+            return json_error(
+                429,
+                "request_budget_exhausted",
+                "max_provider_requests exhausted",
+            );
+        }
+        // Retries are ordinary provider POSTs and count toward max_provider_requests.
+        // max_retries is recorded on the authority for product evidence; it never
+        // expands the hard request ceiling.
+
+        let used = state.cumulative_tokens();
+        let remaining = state.authority.max_cumulative_tokens.saturating_sub(used);
+        // Pre-dispatch residual check: reserved input + max possible output must fit.
+        let worst_case = reserved_input.saturating_add(max_out);
+        if worst_case > remaining {
+            state.record_reject(
+                BudgetRejectClass::PreCall,
+                format!(
+                    "remaining cumulative budget {remaining} insufficient for reserved input {reserved_input} + max output {max_out}"
+                ),
+            );
+            return json_error(
+                429,
+                "cumulative_budget_insufficient",
+                "remaining cumulative budget is insufficient for the next bounded request",
+            );
+        }
+
+        // Count the request only once pre-checks pass and immediately before forward.
+        state.provider_requests.fetch_add(1, Ordering::SeqCst);
+    }
 
     match forward_upstream(state, path, &body) {
         Ok((status, response_body)) => match extract_usage(&response_body) {
@@ -691,6 +817,17 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
                         "cumulative tokens exceeded after measured usage".to_string(),
                     );
                 }
+                // Persist committed usage for restart recovery (no secrets/prompts).
+                if let Some(path) = state.usage_journal_path.as_ref() {
+                    let usage = state.usage_snapshot();
+                    let entry =
+                        super::codex_mediation_admission::CodexUsageJournalEntry::from_usage(
+                            &state.authority,
+                            &usage,
+                            extract_response_id(&response_body),
+                        );
+                    let _ = entry.write_to(path);
+                }
                 HttpResponseParts {
                     status,
                     reason: reason_phrase(status),
@@ -701,6 +838,7 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
             Err(error) => {
                 state.record_reject(BudgetRejectClass::OutcomeUnknown, error.clone());
                 // Fail closed: ambiguous usage after a forwarded call is not success.
+                // Outcome-unknown does not auto-retry; the child must observe the error.
                 json_error(502, "usage_unavailable", &error)
             }
         },
@@ -709,6 +847,11 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
             json_error(502, "upstream_forward_failed", &error)
         }
     }
+}
+
+fn extract_response_id(body: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    value.get("id").and_then(Value::as_str).map(str::to_string)
 }
 
 fn authorized(request: &HttpRequestParts, session_token: &str) -> bool {
@@ -1204,7 +1347,8 @@ mod tests {
             CodexBudgetGateway::start(authority, &format!("http://{addr}"), "upstream-secret")
                 .unwrap();
 
-        let body = br#"{"model":"gpt-test-model","input":"implement a tiny change","max_output_tokens":9999}"#;
+        // Omit max_output_tokens so the gateway injects the admitted ceiling.
+        let body = br#"{"model":"gpt-test-model","input":"implement a tiny change"}"#;
         let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
         let req = format!(
             "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
@@ -1261,8 +1405,214 @@ mod tests {
         let config = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert!(config.contains("acp_budget_gateway"));
         assert!(config.contains("http://127.0.0.1:9/v1"));
+        assert!(!config.contains("sk-"));
         let auth = std::fs::read_to_string(dir.join("auth.json")).unwrap();
         assert_eq!(auth.trim(), "{}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_tokens_are_unique_across_gateways_and_not_task_metadata_only() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (upstream, _join) = spawn_fake_upstream(Arc::clone(&hits), true);
+        let g1 =
+            CodexBudgetGateway::start(sample_authority(2, 1_000), &upstream, "upstream-secret")
+                .unwrap();
+        let g2 =
+            CodexBudgetGateway::start(sample_authority(2, 1_000), &upstream, "upstream-secret")
+                .unwrap();
+        assert_ne!(g1.session_token(), g2.session_token());
+        assert!(g1.session_token().starts_with(CODEX_SESSION_TOKEN_PREFIX));
+
+        // Token from g1 must not authorize g2.
+        let mut stream = TcpStream::connect(g2.local_addr()).unwrap();
+        let body = br#"{"model":"gpt-test-model","input":"hi"}"#;
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+            g1.session_token()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("session_unbound"), "{resp}");
+        assert_eq!(hits.load(AtomicOrdering::SeqCst), 0);
+        let _ = g1.shutdown();
+        let _ = g2.shutdown();
+    }
+
+    #[test]
+    fn gateway_rejects_output_limit_increase_and_null_removal() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (upstream, _join) = spawn_fake_upstream(Arc::clone(&hits), true);
+        let mut authority = sample_authority(2, 50_000);
+        authority.max_output_tokens_per_request = 64;
+        let gateway = CodexBudgetGateway::start(authority, &upstream, "upstream-secret").unwrap();
+
+        let body = br#"{"model":"gpt-test-model","input":"hi","max_output_tokens":9999}"#;
+        let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+            gateway.session_token()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("output_limit_increase"), "{resp}");
+        assert_eq!(hits.load(AtomicOrdering::SeqCst), 0);
+
+        let body = br#"{"model":"gpt-test-model","input":"hi","max_output_tokens":null}"#;
+        let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+            gateway.session_token()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("output_limit_required"), "{resp}");
+        assert_eq!(hits.load(AtomicOrdering::SeqCst), 0);
+        let _ = gateway.shutdown();
+    }
+
+    #[test]
+    fn gateway_restart_restores_committed_usage_from_journal() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (upstream, _join) = spawn_fake_upstream(Arc::clone(&hits), true);
+        let journal = std::env::temp_dir().join(format!(
+            "codex-gw-journal-{}-{}.json",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        let _ = std::fs::remove_file(&journal);
+        let mut authority = sample_authority(3, 50_000);
+        authority.execution_id = "exec-journal-1".into();
+        authority.max_output_tokens_per_request = 64;
+        let gateway = CodexBudgetGateway::start_with_journal(
+            authority.clone(),
+            &upstream,
+            "upstream-secret",
+            Some(journal.clone()),
+        )
+        .unwrap();
+
+        let body = br#"{"model":"gpt-test-model","input":"hi"}"#;
+        let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+            gateway.session_token()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("\"input_tokens\":10"), "{resp}");
+        let usage = gateway.shutdown();
+        assert_eq!(usage.provider_requests, 1);
+        assert_eq!(usage.cumulative_input_tokens, 10);
+
+        // Restart with the same journal: counters restored, next request counted.
+        let gateway2 = CodexBudgetGateway::start_with_journal(
+            authority,
+            &upstream,
+            "upstream-secret",
+            Some(journal.clone()),
+        )
+        .unwrap();
+        let restored = gateway2.usage();
+        assert_eq!(restored.provider_requests, 1);
+        assert_eq!(restored.cumulative_input_tokens, 10);
+        assert_eq!(restored.cumulative_output_tokens, 5);
+        let _ = gateway2.shutdown();
+        let raw = std::fs::read_to_string(&journal).unwrap();
+        assert!(!raw.contains("upstream-secret"));
+        assert!(!raw.contains("sk-real"));
+        assert!(!raw.contains("OPENAI_API_KEY"));
+        let _ = std::fs::remove_file(&journal);
+    }
+
+    #[test]
+    fn cumulative_exhaustion_blocks_next_request_without_upstream_hit() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        // Upstream reports nearly the full cumulative budget so residual next
+        // worst-case (UTF-8 reservation + max_out) cannot fit.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits_thread = Arc::clone(&hits);
+        let _ = listener.set_nonblocking(true);
+        let join = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                        let mut buf = [0u8; 65536];
+                        let _ = stream.read(&mut buf);
+                        hits_thread.fetch_add(1, AtomicOrdering::SeqCst);
+                        let body = br#"{"id":"resp_1","usage":{"input_tokens":80,"output_tokens":10},"output":[]}"#;
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.write_all(body);
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            || error.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let mut authority = sample_authority(4, 100);
+        authority.max_output_tokens_per_request = 20;
+        authority.max_input_tokens_per_request = 50_000;
+        let gateway =
+            CodexBudgetGateway::start(authority, &format!("http://{addr}"), "upstream-secret")
+                .unwrap();
+
+        let body = br#"{"model":"gpt-test-model","input":"x"}"#;
+        let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+            gateway.session_token()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(
+            resp.contains("\"input_tokens\":80"),
+            "first request should forward; got {resp}"
+        );
+        assert_eq!(hits.load(AtomicOrdering::SeqCst), 1);
+        // Remaining cumulative = 100 - 90 = 10; next worst-case needs reserved+20 >> 10.
+        let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
+        let body = br#"{"model":"gpt-test-model","input":"y"}"#;
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+            gateway.session_token()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("cumulative_budget_insufficient"), "{resp}");
+        assert_eq!(hits.load(AtomicOrdering::SeqCst), 1);
+        let _ = gateway.shutdown();
+        let _ = join.join();
     }
 }
