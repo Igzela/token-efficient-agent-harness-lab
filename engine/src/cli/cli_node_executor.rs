@@ -8,6 +8,10 @@ use super::codex_budget_authority::{
     authority_from_product_metadata, write_ephemeral_codex_home, CodexBudgetAuthority,
     CodexBudgetGateway, CodexExecutableIdentity,
 };
+use super::codex_mediation_admission::{
+    plan_mediated_codex_launch, reconcile_gateway_and_session_usage, CodexMediatedCapabilityReport,
+    IsolationMode, UsageReconcileResult,
+};
 use super::codex_session_usage::{
     discover_rollout_files, import_managed_codex_home, rollup_to_product_evidence,
     root_thread_id_from_file,
@@ -1018,9 +1022,39 @@ fn execute_product_codex_with_budget_gateway(
     let upstream_base = std::env::var("ACP_CODEX_UPSTREAM_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
 
-    let gateway = match CodexBudgetGateway::start(authority, &upstream_base, &upstream_key) {
+    // Full product mediation requires bubblewrap filesystem isolation so the
+    // child cannot read the operator Codex home / real credentials.
+    let capability = CodexMediatedCapabilityReport::evaluate(
+        if Path::new(super::codex_mediation_admission::BUBBLEWRAP_BIN).is_file() {
+            IsolationMode::BubblewrapFilesystem
+        } else {
+            IsolationMode::Unavailable
+        },
+        Path::new(super::codex_mediation_admission::BUBBLEWRAP_BIN).is_file(),
+    );
+    if !capability.admission_class.admits_live_product_golden_path() {
+        return failed_without_process(
+            "codex_cli",
+            "cli_execution_authority_invalid",
+            capability
+                .remaining_blocker
+                .unwrap_or_else(|| "codex full mediation admission is blocked".to_string()),
+            start.elapsed().as_millis() as i64,
+        );
+    }
+
+    let ephemeral_home =
+        std::env::temp_dir().join(format!("acp-codex-home-{}", authority.execution_id));
+    let journal_path = ephemeral_home.join("acp-usage-journal.json");
+    let gateway = match CodexBudgetGateway::start_with_journal(
+        authority,
+        &upstream_base,
+        &upstream_key,
+        Some(journal_path),
+    ) {
         Ok(gateway) => gateway,
         Err(error) => {
+            let _ = std::fs::remove_dir_all(&ephemeral_home);
             return failed_without_process(
                 "codex_cli",
                 "cli_execution_authority_invalid",
@@ -1032,10 +1066,6 @@ fn execute_product_codex_with_budget_gateway(
     // Drop the only copy of the upstream key from this stack frame.
     drop(upstream_key);
 
-    let ephemeral_home = std::env::temp_dir().join(format!(
-        "acp-codex-home-{}",
-        gateway.authority().execution_id
-    ));
     if let Err(error) = write_ephemeral_codex_home(
         &ephemeral_home,
         &gateway.authority().model,
@@ -1051,38 +1081,59 @@ fn execute_product_codex_with_budget_gateway(
         );
     }
 
-    let mut cmd = Command::new(bin_path);
-    cmd.args(codex_invocation_args(
+    let codex_args = codex_invocation_args(
         cwd,
         prompt,
         Some(gateway.authority().model.as_str()),
         true, // persist sessions into controlled CODEX_HOME for exact usage import
-    ));
-    cmd.current_dir(cwd)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("CODEX_HOME", &ephemeral_home)
-        .env("OPENAI_BASE_URL", gateway.base_url())
-        .env("OPENAI_API_KEY", gateway.session_token())
-        .env("HOME", &ephemeral_home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    // Locale-only allowlist; never forward real provider credentials or host HOME.
-    for key in ["LANG", "LC_ALL", "LC_CTYPE", "TERM"] {
-        if let Ok(value) = std::env::var(key) {
-            cmd.env(key, value);
+    );
+    let launch_plan = match plan_mediated_codex_launch(
+        gateway.authority(),
+        Path::new(bin_path),
+        &ephemeral_home,
+        &gateway.base_url(),
+        gateway.session_token(),
+        &codex_args,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            let _ = gateway.shutdown();
+            let _ = std::fs::remove_dir_all(&ephemeral_home);
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                format!("failed to plan mediated Codex launch: {error}"),
+                start.elapsed().as_millis() as i64,
+            );
         }
+    };
+    if let Err(error) = launch_plan.assert_no_upstream_credential_env() {
+        let _ = gateway.shutdown();
+        let _ = std::fs::remove_dir_all(&ephemeral_home);
+        return failed_without_process(
+            "codex_cli",
+            "cli_execution_authority_invalid",
+            error,
+            start.elapsed().as_millis() as i64,
+        );
     }
 
+    let mut cmd = launch_plan.to_command();
     let authority_snapshot = gateway.authority().clone();
     let output = spawn_with_timeout(&mut cmd, executor.timeout_ms);
     let elapsed_ms = start.elapsed().as_millis() as i64;
     let usage = gateway.shutdown();
 
-    // Exact session-log usage evidence (owner-reported). Not a hard cross-call gate.
+    // Exact session-log usage evidence (corroborating only). Gateway is the cross-call gate.
     let session_evidence =
         import_session_usage_evidence(&ephemeral_home, &authority_snapshot, admission);
+    let session_input = session_evidence
+        .as_ref()
+        .map(|(_, rollup)| rollup.cumulative_input_tokens);
+    let session_output = session_evidence
+        .as_ref()
+        .map(|(_, rollup)| rollup.cumulative_output_tokens);
+    let reconciled = reconcile_gateway_and_session_usage(&usage, session_input, session_output);
     let _ = std::fs::remove_dir_all(&ephemeral_home);
 
     match output {
@@ -1096,6 +1147,7 @@ fn execute_product_codex_with_budget_gateway(
                 } else {
                     format!("exit code: {}", output.status.code().unwrap_or(-1))
                 };
+                let (in_tok, out_tok) = reconciled_token_pair(&reconciled, &usage);
                 return NodeExecutionOutput {
                     status: "failed".to_string(),
                     executor_type: "codex_cli".to_string(),
@@ -1106,8 +1158,8 @@ fn execute_product_codex_with_budget_gateway(
                     },
                     error_domain: Some("cli_execution_error".to_string()),
                     error_message: Some(msg),
-                    input_tokens: Some(usage.cumulative_input_tokens as i64),
-                    output_tokens: Some(usage.cumulative_output_tokens as i64),
+                    input_tokens: in_tok,
+                    output_tokens: out_tok,
                     estimated_cost: None,
                     latency_ms: Some(elapsed_ms),
                     process_outcome: Some(process_outcome),
@@ -1115,24 +1167,52 @@ fn execute_product_codex_with_budget_gateway(
                 };
             }
             let mut parsed = parse_cli_output(&stdout, "codex_cli", elapsed_ms, process_outcome);
-            // Prefer gateway-measured cumulative usage; corroborate with session logs.
-            if usage.provider_requests > 0 {
-                parsed.input_tokens = Some(usage.cumulative_input_tokens as i64);
-                parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
-            } else if let Some((_, rollup)) = session_evidence.as_ref() {
-                parsed.input_tokens = Some(rollup.cumulative_input_tokens as i64);
-                parsed.output_tokens = Some(rollup.cumulative_output_tokens as i64);
-            } else if parsed.input_tokens.is_none() && parsed.output_tokens.is_none() {
-                // Fail closed: product path requires owner-measured usage.
-                parsed.status = "failed".to_string();
-                parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
-                parsed.error_message = Some(
-                    "product-managed Codex completed without gateway- or session-measured usage"
-                        .to_string(),
-                );
+            match &reconciled {
+                UsageReconcileResult::PreferGateway {
+                    input_tokens,
+                    output_tokens,
+                    ..
+                } => {
+                    parsed.input_tokens = Some(*input_tokens as i64);
+                    parsed.output_tokens = Some(*output_tokens as i64);
+                }
+                UsageReconcileResult::PreferSessionOnly {
+                    input_tokens,
+                    output_tokens,
+                    ..
+                } => {
+                    parsed.input_tokens = Some(*input_tokens as i64);
+                    parsed.output_tokens = Some(*output_tokens as i64);
+                }
+                UsageReconcileResult::Conflict { detail, .. } => {
+                    parsed.status = "failed".to_string();
+                    parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
+                    parsed.error_message = Some(format!(
+                        "product-managed Codex usage reconcile failed closed: {detail}"
+                    ));
+                    parsed.input_tokens = Some(usage.cumulative_input_tokens as i64);
+                    parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
+                }
+                UsageReconcileResult::Missing { detail } => {
+                    if parsed.input_tokens.is_none() && parsed.output_tokens.is_none() {
+                        parsed.status = "failed".to_string();
+                        parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
+                        parsed.error_message = Some(format!(
+                            "product-managed Codex completed without measured usage: {detail}"
+                        ));
+                    }
+                }
             }
             parsed.resolved_model = Some(admission.model.clone());
-            let _ = session_evidence; // evidence is available for node metadata binding later
+            // Redact again after parse: never retain prompt/credential-shaped durable text.
+            if let Some(text) = parsed.output.as_mut() {
+                *text = redact_sensitive_patterns(text);
+            }
+            if let Some(text) = parsed.error_message.as_mut() {
+                *text = redact_sensitive_patterns(text);
+            }
+            let _ = session_evidence;
+            let _ = capability;
             parsed
         }
         Err(error) => {
@@ -1148,20 +1228,43 @@ fn execute_product_codex_with_budget_gateway(
                 None,
                 "managed Codex process boundary failure",
             );
+            let (in_tok, out_tok) = reconciled_token_pair(&reconciled, &usage);
             NodeExecutionOutput {
                 status: "failed".to_string(),
                 executor_type: "codex_cli".to_string(),
                 output: None,
                 error_domain: Some(domain.to_string()),
                 error_message: Some(format!("codex_cli process boundary failure: {error:?}")),
-                input_tokens: Some(usage.cumulative_input_tokens as i64),
-                output_tokens: Some(usage.cumulative_output_tokens as i64),
+                input_tokens: in_tok,
+                output_tokens: out_tok,
                 estimated_cost: None,
                 latency_ms: Some(elapsed_ms),
                 process_outcome: Some(process_outcome),
                 resolved_model: Some(admission.model.clone()),
             }
         }
+    }
+}
+
+fn reconciled_token_pair(
+    reconciled: &UsageReconcileResult,
+    usage: &super::codex_budget_authority::BudgetGatewayUsage,
+) -> (Option<i64>, Option<i64>) {
+    match reconciled {
+        UsageReconcileResult::PreferGateway {
+            input_tokens,
+            output_tokens,
+            ..
+        }
+        | UsageReconcileResult::PreferSessionOnly {
+            input_tokens,
+            output_tokens,
+            ..
+        } => (Some(*input_tokens as i64), Some(*output_tokens as i64)),
+        UsageReconcileResult::Conflict { .. } | UsageReconcileResult::Missing { .. } => (
+            Some(usage.cumulative_input_tokens as i64),
+            Some(usage.cumulative_output_tokens as i64),
+        ),
     }
 }
 

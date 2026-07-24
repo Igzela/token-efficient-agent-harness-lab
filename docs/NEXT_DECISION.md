@@ -93,24 +93,27 @@ One Rust-owned `execution_usage_event.v1` contract with adapters for Codex JSONL
 
 ## Packet PE7-CODEX-TASK-BUDGET-AUTHORITY-1 / PE7-CODEX-SESSION-USAGE-AUTHORITY-1 — Codex budget + session usage
 
-**State:** `COMPLETE` (partial admission only; not live Golden Path ready)
+**State:** `COMPLETE` (superseded for product admission by PE7-CODEX-FULL-MEDIATION-ADMISSION-1)
 
-PR #293 squash-merged as `29262bce…`; exact head `77147a2c…`; exact-head run `30087476522` passed first attempt; full tests run `30087476493` passed (cutover linker bus-error was infrastructure-only and re-ran green on the same head).
+PR #293 squash-merged as `29262bce…`. Established loopback gateway, session usage importer, and partial admission evidence. JSONL alone is not a hard cross-call gate.
 
-**Installed Codex:** `0.145.0` (standalone).
+## Packet PE7-CODEX-FULL-MEDIATION-ADMISSION-1 — Codex full mediation admission
 
-**Verified session log contract (provider-free):** rollouts under `sessions/YYYY/MM/DD/rollout-*.jsonl` and `archived_sessions/`. Relevant types: `session_meta` (session/thread id, `parent_thread_id`/`forked_from_id`, subagent spawn, `cli_version`), `turn_context` (`model`), `event_msg` with `payload.type=token_count` carrying `info.total_token_usage` and `info.last_token_usage` (`input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `total_tokens`) plus optional `rate_limits.primary` account-window fields.
+**State:** `IN_PROGRESS`
 
-**Merged under Rust `engine/src/cli/`:**
+**Prerequisite:** PE7-CODEX-TASK-BUDGET-AUTHORITY-1, PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1
 
-1. Loopback `CodexBudgetGateway` for API-key-mediated product path: session token, model pin, request count, injected `max_output_tokens`, cumulative residual check, real credential never in child env.
-2. `codex_session_usage` importer: root-thread binding, cumulative deltas, parent/child replay-prefix skip, cursors, idempotent import, unrelated-session exclusion, stable event IDs, product evidence rollup (no private paths/prompts).
-3. Request-ordering probe: **fails** on real sequencing (`token_count` then further `response_item` provider rounds) → JSONL watcher alone is **not** a hard cross-call authority.
-4. Official subscription quota: parse account-window fields from session `rate_limits`; live ChatGPT OAuth network preflight remains fail-closed/disabled in provider-free path and is never task-token budget.
+Closes product-managed Codex admission for the **API-key-mediated** path only:
 
-**Admission class:** partially admissible / evidence-capable. **Not** live Golden Path ready. Narrow residual blockers: hard cross-call interposition before the next provider request; hard single-request output cap without mediation; ChatGPT-auth child bypass of loopback without API-key-only forced mediation.
+1. Every provider request/retry through Rust `CodexBudgetGateway` (model pin, unforgeable session token, request count, injected/enforced `max_output_tokens`, cumulative residual check before the next call, usage journal restart recovery).
+2. Child launch via `/usr/bin/bwrap` filesystem isolation: real operator `HOME`/`.codex` hidden; task-scoped empty `auth.json`; only loopback gateway base URL + session token; real upstream key never in child env.
+3. Session JSONL remains corroborating evidence + reconcile; gateway is the cross-call gate. Contradictory counters fail closed.
+4. Official ChatGPT-auth Codex path remains **excluded** from Product Golden Path.
+5. Network posture: shared host network with credential non-bypass (unprivileged loopback-only netns that still reaches the host gateway is not available on this host profile).
 
-Do not start RWE or live managed acceptance until full admission is proved under the existing contract.
+**Admission class (mediated API-key path, when bwrap present):** `fully_admitted_mediated_api_key` for provider-free proof of interposition/isolation. Live managed Golden Path acceptance still requires a separate packet with local operator credential + authorization — no live provider call in this packet.
+
+Do not start RWE until live managed acceptance completes.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
 
@@ -122,7 +125,7 @@ The fixture path and output authority (including concurrent CAS repair) are acce
 
 **State:** `IN_PROGRESS`
 
-Existing PRs #268–#280 provide the intake, graph, scheduler, verification, artifact, approval, output, evidence, model-binding, and managed-process foundations. The remaining gate is one **fully admitted** managed coding-executor run through verification, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, exact terminal evidence, and all live-provider/security requirements. Codex partial admission (usage evidence + optional loopback mediation) is insufficient. If no fully eligible executor exists, retain `IN_PROGRESS` and record the exact blocker; do not weaken the contract.
+Existing PRs #268–#280 provide the intake, graph, scheduler, verification, artifact, approval, output, evidence, model-binding, and managed-process foundations. Codex full mediation (`PE7-CODEX-FULL-MEDIATION-ADMISSION-1`) proves the API-key-mediated path when bwrap is present. The remaining residual-seal gate is one **live** managed coding-executor run through verification, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, exact terminal evidence, and all live-provider/security requirements — as a separate packet after mediation merges. If live credentials/authorization are absent, complete provider-free admission and document the exact operator action.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 

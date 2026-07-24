@@ -4,8 +4,8 @@ Last updated: 2026-07-24.
 
 ## Verified Repository State
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `a569cd02f8bd9d1972e357c4d29083b70e80fe06` after PE7 Codex session-usage / loopback budget mediation (#293).
-- Open PRs: #225 (presentation-only Dashboard). Auto-merge is disabled.
+- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `33c4bab98cb4cc95e9af34a7561af91f241f03bd` after PE7 multi-executor usage evidence (#294) docs seal.
+- Open PRs: #225 (presentation-only Dashboard). Auto-merge is disabled. Active packet: `PE7-CODEX-FULL-MEDIATION-ADMISSION-1`.
 - Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
 - Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
 - Rust `engine/` and `LocalProductStore` remain the sole runtime and application-owned persistence authorities.
@@ -20,11 +20,12 @@ Managed-executor classification (provider-free, Codex CLI **0.145.0**):
 
 | Executor | Class | Exact residual blocker |
 |---|---|---|
-| Codex workspace-write | **Partially admissible / evidence-capable** | Exact session JSONL usage (`event_msg`/`token_count` with `total_token_usage` + `last_token_usage`) and optional account-window rate-limit fields are parseable; a loopback budget gateway can inject `max_output_tokens` and count mediated API-key requests. **Not fully admissible:** request-ordering proof fails—real rollouts show further `response_item` provider rounds after `token_count` without an external gate; native `features.rollout_budget.limit_tokens` is not a hard pre/during-call cap; ChatGPT-auth bypass of the loopback gateway is not closed without API-key-only mediation + no child credential. |
+| Codex API-key-mediated (gateway + bwrap) | **Fully admitted (provider-free mediation proof)** when `/usr/bin/bwrap` is present | Product path forces loopback `CodexBudgetGateway`, unforgeable session token, FS isolation hiding real `HOME`/`.codex`, hard `max_output_tokens`, cross-call residual checks, usage journal restart recovery, JSONL corroboration with fail-closed conflict. **Live E2E still separate:** needs operator-held upstream key in parent only + operator authorization. Official ChatGPT-auth path remains excluded. |
+| Codex ChatGPT-auth / unmediated | Excluded | Child would hold reusable OAuth; not product-admitted. |
 | Claude Code | Blocked | Provider-independent worktree-only FS confinement unproved; configured subscription path has known API 404. |
 | OpenCode | Blocked | No admitted upstream artifact/checksum. |
 
-Do **not** claim “Codex has no usage authority.” The narrower blockers are: (1) hard cross-call budget interposition before the next provider request, and (2) hard single-request output bounding for non-mediated (ChatGPT-auth) paths. Live managed Golden Path acceptance remains ineligible until full admission is proved.
+Live managed Golden Path acceptance (`PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`) is the next packet after full mediation merges; it is not combined with the admission implementation PR.
 
 ## Active Work
 
@@ -57,7 +58,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 ## Confirmed Integration Gaps
 
 1. Disposable Draft PR #1 proves real branch/output plumbing only; it binds `acp/product-ptask-20260722135332-18c4a108f1d4e757` at `6c70195c…` to target `main`, which remains `926f3d47…`.
-2. Managed coding-executor E2E is not proved. Concurrent non-network output authority is repaired via PR #292 (`234def24…`). Codex is evidence-capable (session usage importer + optional loopback mediation) but not fully admitted for live Golden Path; residual blockers are hard cross-call interposition and single-request output authority on non-mediated paths.
+2. Managed coding-executor live E2E is not proved. Concurrent non-network output authority is repaired via PR #292. Codex API-key-mediated full mediation (gateway + bwrap) is the active admission packet; live acceptance is a separate follow-up that still requires local operator credential + authorization.
 3. RWE has no accepted baseline; Architecture Convergence is blocked until that baseline is frozen.
 4. Level-2 and Meta remain blocked.
 
@@ -76,9 +77,10 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 - `PE7-CI-CACHE-BUDGET-1`: `COMPLETE` via PR #285 → `9c8c3a42`, #287 → `1bd17d7a`, and #289 → `9db4845c`; final docs-sync main run `30029185064` passed on attempt 2 after the same pre-existing concurrent-test failure on attempt 1. No runtime, gate, provider, or target-branch change.
 - Independent PR #288 → `a08d0e28` repaired the newly published PostCSS advisory; its audit and full CI passed. PR #290/#291 are external/contribution maintenance and preserved.
 - `PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1`: `COMPLETE` via PR #292 → `234def24`; exact-head/full CI green without concurrency-job retry.
-- `PE7-CODEX-TASK-BUDGET-AUTHORITY-1` / `PE7-CODEX-SESSION-USAGE-AUTHORITY-1`: `COMPLETE` via PR #293 → `29262bce` (partial admission only; live E2E not eligible).
+- `PE7-CODEX-TASK-BUDGET-AUTHORITY-1` / `PE7-CODEX-SESSION-USAGE-AUTHORITY-1`: `COMPLETE` via PR #293 → `29262bce` (partial admission foundation).
 - `PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1`: `COMPLETE` via PR #294 (unified usage evidence; not live admission).
-- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance.
+- `PE7-CODEX-FULL-MEDIATION-ADMISSION-1`: `IN_PROGRESS` — gateway + bwrap FS isolation full mediation for API-key path.
+- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` through managed acceptance (after full mediation merges).
 - `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
 - `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
 - `PE7-ARCHITECTURE-CONVERGENCE-1`: `BLOCKED_PREREQUISITE` until the first RWE baseline.
@@ -90,7 +92,7 @@ Downstream order: known repairs → managed-executor Golden Path → frozen firs
 
 ## Open Work Coordination
 
-PR #281–#292 are merged (including external #290/#291 and concurrency repair #292); PR #225 remains separate and last. Concurrent product output authority is repaired. Product Golden Path remains `IN_PROGRESS`: Codex is partially admissible (exact session usage evidence; loopback mediation design) but not fully admitted for live managed acceptance because cross-call hard gates and non-mediated single-request caps are unproved. Claude confinement and OpenCode artifact admission remain blocked. RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
+PR #281–#294 are merged; PR #225 remains separate and last. Product Golden Path remains `IN_PROGRESS`: Codex API-key-mediated full mediation is in progress (`PE7-CODEX-FULL-MEDIATION-ADMISSION-1`); live managed acceptance remains a separate packet after mediation merges. Claude confinement and OpenCode artifact admission remain blocked. RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
 
 ## Safety Boundary
 
