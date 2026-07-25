@@ -533,6 +533,54 @@ fn apply_pg_v32_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|error| format!("failed to commit migration 32: {error}"))
 }
 
+fn apply_pg_v34_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V34_SCHEMA_VERSION;
+    let mut tx = client.transaction().map_err(|e| format!("m34 tx: {e}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(hashtext(current_database()), hashtext(current_schema()))",
+        &[],
+    )
+    .map_err(|e| e.to_string())?;
+    let current_version = tx
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map(|r| r.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?;
+    if current_version >= version {
+        tx.commit().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    tx.batch_execute(schema::V34_DDL)
+        .map_err(|e| format!("m34: {e}"))?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+fn validate_pg_v34_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    let version = client
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+        .get::<_, i64>(0);
+    if version != super::super::migrations::V34_SCHEMA_VERSION {
+        return Err(format!("PostgreSQL v34 schema version mismatch: {version}"));
+    }
+    for table in super::super::migrations::V34_TABLES {
+        if !pg_table_present(client, table)? {
+            return Err(format!("PostgreSQL v34 schema missing table {table}"));
+        }
+    }
+    validate_pg_v33_schema(client)
+}
+
 fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
     let version = super::super::migrations::V33_SCHEMA_VERSION;
     let mut tx = client
@@ -858,7 +906,7 @@ fn validate_pg_v33_schema(client: &mut impl postgres::GenericClient) -> Result<(
         )
         .map_err(|error| error.to_string())?
         .get::<_, i64>(0);
-    if version != super::super::migrations::V33_SCHEMA_VERSION {
+    if version < super::super::migrations::V33_SCHEMA_VERSION {
         return Err(format!("PostgreSQL v33 schema version mismatch: {version}"));
     }
     for table in super::super::migrations::V33_TABLES {
@@ -1567,6 +1615,31 @@ fn pg_v25_operation_schema_valid(
 }
 
 impl LocalProductStore {
+    pub(crate) fn rollback_pg_v34_to_v33_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.with_pg_conn(|client| {
+            let mut tx = client.transaction().map_err(|e| e.to_string())?;
+            let version = tx.query_one("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", &[]).map_err(|e| e.to_string())?.get::<_, i64>(0);
+            if version != super::super::migrations::V34_SCHEMA_VERSION {
+                return Err(format!("v34 rollback requires current schema version 34; found {version}"));
+            }
+            for table in super::super::migrations::V34_TABLES {
+                let count: i64 = tx.query_one(&format!("SELECT COUNT(*) FROM {table}"), &[]).map_err(|e| e.to_string())?.get(0);
+                if count > 0 {
+                    return Err(format!("v34 rollback blocked: RWE authority exists in {table}"));
+                }
+            }
+            tx.batch_execute("DROP TABLE IF EXISTS rwe_task_attempts; DROP TABLE IF EXISTS rwe_runs; DROP TABLE IF EXISTS rwe_run_authorizations;").map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM schema_migrations WHERE version=$1", &[&super::super::migrations::V34_SCHEMA_VERSION]).map_err(|e| e.to_string())?;
+            let details = serde_json::json!({"from_version": 34, "to_version": 33}).to_string();
+            tx.execute("INSERT INTO audit_log (created_at, actor, action, resource, details_json) VALUES ($1,$2,'schema.rollback.v34_to_v33','local_product_store',$3)", &[&now, &actor, &details]).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())
+        })
+    }
+
     pub(crate) fn rollback_pg_v33_to_v32_internal(
         &self,
         actor: &str,
@@ -2073,6 +2146,10 @@ impl LocalProductStore {
                     apply_pg_v33_migration(client)?;
                     continue;
                 }
+                if migration.version == 34 {
+                    apply_pg_v34_migration(client)?;
+                    continue;
+                }
                 if migration.version <= current {
                     continue;
                 }
@@ -2181,7 +2258,7 @@ impl LocalProductStore {
                 }
             }
 
-            validate_pg_v33_schema(client)?;
+            validate_pg_v34_schema(client)?;
 
             // Seed the scheduler_heartbeat singleton row.
             client
@@ -2622,6 +2699,10 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
+        assert_eq!(store.schema_version().unwrap(), 34);
+        store
+            .rollback_v34_to_v33("migration-test-setup", true)
+            .unwrap();
         assert_eq!(store.schema_version().unwrap(), 33);
         store
             .rollback_v33_to_v32("migration-test-setup", true)
@@ -2691,7 +2772,7 @@ mod tests {
             error.contains("missing primary key for recursive_execution_nodes"),
             "unexpected error: {error}"
         );
-        assert_eq!(fixture.store.schema_version().expect("version"), 33);
+        assert_eq!(fixture.store.schema_version().expect("version"), 34);
     }
 
     #[test]
@@ -2721,7 +2802,7 @@ mod tests {
             ),
             "unexpected error: {error}"
         );
-        assert_eq!(fixture.store.schema_version().expect("version"), 33);
+        assert_eq!(fixture.store.schema_version().expect("version"), 34);
     }
 
     #[test]
@@ -2771,7 +2852,7 @@ mod tests {
                 .run_pg_migrations_internal()
                 .expect_err("weakened v26 schema must fail closed");
             assert!(error.contains(expected), "unexpected error: {error}");
-            assert_eq!(fixture.store.schema_version().expect("version"), 33);
+            assert_eq!(fixture.store.schema_version().expect("version"), 34);
         }
     }
 
@@ -2870,7 +2951,7 @@ mod tests {
         left.unwrap();
         right.unwrap();
 
-        assert_eq!(store.schema_version().unwrap(), 33);
+        assert_eq!(store.schema_version().unwrap(), 34);
         store
             .with_pg_conn(|client| {
                 assert!(pg_column_exists(
@@ -2908,7 +2989,7 @@ mod tests {
             .unwrap();
         store.run_pg_migrations_internal().unwrap();
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 33);
+        assert_eq!(store.schema_version().unwrap(), 34);
 
         store
             .with_pg_conn(|client| {
@@ -2933,7 +3014,7 @@ mod tests {
         );
         // The refusal is atomic: deleting only the v25 marker does not move or
         // silently rewrite the existing v26 marker.
-        assert_eq!(store.schema_version().unwrap(), 33);
+        assert_eq!(store.schema_version().unwrap(), 34);
     }
 
     #[test]
@@ -3030,7 +3111,7 @@ mod tests {
             })
         );
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 33);
+        assert_eq!(store.schema_version().unwrap(), 34);
         for table in super::super::super::migrations::V24_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -3080,7 +3161,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 33);
+        assert_eq!(store.schema_version().unwrap(), 34);
         for table in super::super::super::migrations::V23_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -3189,7 +3270,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 33);
+        assert_eq!(store.schema_version().unwrap(), 34);
         for table in super::super::super::migrations::V22_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }

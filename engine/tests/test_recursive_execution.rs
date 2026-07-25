@@ -117,6 +117,9 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     // Peel managed acceptance (v33/v32), terminal evidence (v31), product-task (v30), then PR_READY/evolution.
     // so v26 recursive rollback can be attempted.
     occupied
+        .rollback_v34_to_v33("test", true)
+        .expect("empty rwe surface rollback");
+    occupied
         .rollback_v33_to_v32("test", true)
         .expect("empty managed acceptance spend rollback");
     occupied
@@ -146,6 +149,9 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     let empty_path = tempfile::NamedTempFile::new().expect("path");
     let empty = LocalProductStore::new(empty_path.path()).expect("store");
     empty
+        .rollback_v34_to_v33("test", true)
+        .expect("rollback v34");
+    empty
         .rollback_v33_to_v32("test", true)
         .expect("rollback v33");
     empty
@@ -172,5 +178,5 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     assert_eq!(empty.schema_version().expect("version"), 25);
     drop(empty);
     let reapplied = LocalProductStore::new(empty_path.path()).expect("reopen");
-    assert_eq!(reapplied.schema_version().expect("version"), 33);
+    assert_eq!(reapplied.schema_version().expect("version"), 34);
 }

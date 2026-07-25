@@ -91,6 +91,9 @@ const INTEGRITY_TABLES: &[&str] = &[
     "managed_acceptance_attempts",
     "managed_acceptance_spend_authorizations",
     "managed_acceptance_decision_transition_receipts",
+    "rwe_run_authorizations",
+    "rwe_runs",
+    "rwe_task_attempts",
 ];
 
 #[derive(Debug)]

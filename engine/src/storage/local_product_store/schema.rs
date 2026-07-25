@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 33;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 33;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 34;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 34;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -150,6 +150,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 33,
         description: "add managed acceptance stable logical spend authorization, lease, and receipt identity",
+    },
+    SchemaMigration {
+        version: 34,
+        description: "add RWE run authorization, runs, and task attempt evidence",
     },
 ];
 
@@ -723,6 +727,56 @@ CREATE INDEX IF NOT EXISTS idx_managed_acceptance_spend_tenant
 CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_spend_active_logical
     ON managed_acceptance_spend_authorizations(tenant_id, logical_authorization_sha256)
     WHERE status = 'active';
+";
+
+pub(super) const V34_DDL: &str = "
+CREATE TABLE IF NOT EXISTS rwe_run_authorizations (
+    authorization_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    principal_kind TEXT NOT NULL,
+    corpus_sha256 TEXT NOT NULL CHECK (length(corpus_sha256) = 64),
+    body_sha256 TEXT NOT NULL CHECK (length(body_sha256) = 64),
+    body_json TEXT NOT NULL,
+    fixture_only INTEGER NOT NULL CHECK (fixture_only IN (0,1)),
+    status TEXT NOT NULL CHECK (status IN ('active','consumed','revoked','expired')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    consumed_by_run_id TEXT,
+    revoked_at TEXT,
+    UNIQUE (tenant_id, body_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_rwe_run_auth_tenant ON rwe_run_authorizations(tenant_id, status, expires_at);
+
+CREATE TABLE IF NOT EXISTS rwe_runs (
+    run_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    authorization_id TEXT NOT NULL,
+    corpus_sha256 TEXT NOT NULL CHECK (length(corpus_sha256) = 64),
+    principal_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence_json TEXT,
+    evidence_sha256 TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(authorization_id) REFERENCES rwe_run_authorizations(authorization_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rwe_runs_tenant ON rwe_runs(tenant_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS rwe_task_attempts (
+    task_attempt_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    definition_sha256 TEXT NOT NULL CHECK (length(definition_sha256) = 64),
+    classification TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    evidence_sha256 TEXT NOT NULL CHECK (length(evidence_sha256) = 64),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES rwe_runs(run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rwe_task_attempts_run ON rwe_task_attempts(run_id, created_at);
 ";
 
 pub(super) const V28_DDL: &str = "
@@ -1831,6 +1885,54 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_child
 CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_genesis
     ON managed_acceptance_decision_transition_receipts(decision_id)
     WHERE previous_transition_sha256 IS NULL;
+
+CREATE TABLE IF NOT EXISTS rwe_run_authorizations (
+    authorization_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    principal_kind TEXT NOT NULL,
+    corpus_sha256 TEXT NOT NULL CHECK (length(corpus_sha256) = 64),
+    body_sha256 TEXT NOT NULL CHECK (length(body_sha256) = 64),
+    body_json TEXT NOT NULL,
+    fixture_only INTEGER NOT NULL CHECK (fixture_only IN (0,1)),
+    status TEXT NOT NULL CHECK (status IN ('active','consumed','revoked','expired')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    consumed_by_run_id TEXT,
+    revoked_at TEXT,
+    UNIQUE (tenant_id, body_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_rwe_run_auth_tenant ON rwe_run_authorizations(tenant_id, status, expires_at);
+
+CREATE TABLE IF NOT EXISTS rwe_runs (
+    run_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    authorization_id TEXT NOT NULL,
+    corpus_sha256 TEXT NOT NULL CHECK (length(corpus_sha256) = 64),
+    principal_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence_json TEXT,
+    evidence_sha256 TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(authorization_id) REFERENCES rwe_run_authorizations(authorization_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rwe_runs_tenant ON rwe_runs(tenant_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS rwe_task_attempts (
+    task_attempt_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    definition_sha256 TEXT NOT NULL CHECK (length(definition_sha256) = 64),
+    classification TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    evidence_sha256 TEXT NOT NULL CHECK (length(evidence_sha256) = 64),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES rwe_runs(run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rwe_task_attempts_run ON rwe_task_attempts(run_id, created_at);
 ";
 pub(crate) const POSTGRES_DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatch_history (
@@ -2911,6 +3013,54 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_child
 CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_genesis
     ON managed_acceptance_decision_transition_receipts(decision_id)
     WHERE previous_transition_sha256 IS NULL;
+
+CREATE TABLE IF NOT EXISTS rwe_run_authorizations (
+    authorization_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    principal_kind TEXT NOT NULL,
+    corpus_sha256 TEXT NOT NULL CHECK (length(corpus_sha256) = 64),
+    body_sha256 TEXT NOT NULL CHECK (length(body_sha256) = 64),
+    body_json TEXT NOT NULL,
+    fixture_only INTEGER NOT NULL CHECK (fixture_only IN (0,1)),
+    status TEXT NOT NULL CHECK (status IN ('active','consumed','revoked','expired')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    consumed_by_run_id TEXT,
+    revoked_at TEXT,
+    UNIQUE (tenant_id, body_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_rwe_run_auth_tenant ON rwe_run_authorizations(tenant_id, status, expires_at);
+
+CREATE TABLE IF NOT EXISTS rwe_runs (
+    run_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    authorization_id TEXT NOT NULL,
+    corpus_sha256 TEXT NOT NULL CHECK (length(corpus_sha256) = 64),
+    principal_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence_json TEXT,
+    evidence_sha256 TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(authorization_id) REFERENCES rwe_run_authorizations(authorization_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rwe_runs_tenant ON rwe_runs(tenant_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS rwe_task_attempts (
+    task_attempt_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    definition_sha256 TEXT NOT NULL CHECK (length(definition_sha256) = 64),
+    classification TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    evidence_sha256 TEXT NOT NULL CHECK (length(evidence_sha256) = 64),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES rwe_runs(run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rwe_task_attempts_run ON rwe_task_attempts(run_id, created_at);
 ";
 
 #[cfg(test)]
