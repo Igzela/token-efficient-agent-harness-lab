@@ -103,7 +103,7 @@ pub use policy_replay_producer::{
     REPLAY_PRODUCER_SCHEMA_VERSION,
 };
 pub use provider_audit::{ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest};
-pub use rwe_authority::RweAuthorizationIssueRequest;
+pub use rwe_authority::{RweAuthorizationIssueRequest, RwePerTaskBudget};
 pub(crate) use tool_execution_policy::ToolExecutionGate;
 pub(crate) use workflow_runs::is_execution_owner_conflict;
 

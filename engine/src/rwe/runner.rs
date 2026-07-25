@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use super::corpus::{freeze_first_rwe_corpus, FirstRweCorpus, RWE_CORPUS_SCHEMA};
 use crate::storage::local_product_store::{
     AuthenticatedPrincipal, CostAuthority, LocalProductStore, RweAuthorizationIssueRequest,
-    SCOPE_SPEND_AUTHORIZE,
+    RwePerTaskBudget, SCOPE_SPEND_AUTHORIZE,
 };
 
 pub const RWE_RUN_AUTH_SCHEMA: &str = "rwe_run_authorization.v1";
@@ -25,6 +25,13 @@ pub struct RweRunAuthorizationBody {
     pub max_total_tokens: u64,
     pub max_wall_time_ms: u64,
     pub cost_authority: CostAuthority,
+    pub per_task_budgets: Vec<RwePerTaskBudget>,
+    pub binary_path: String,
+    pub binary_version: String,
+    pub binary_sha256: String,
+    pub provider_kind: String,
+    pub provider_host: String,
+    pub provider_base_url: String,
     pub target_repo: String,
     pub target_main_sha: String,
     pub executor_identity: String,
@@ -47,6 +54,13 @@ impl RweRunAuthorizationBody {
             "max_total_tokens": self.max_total_tokens,
             "max_wall_time_ms": self.max_wall_time_ms,
             "cost_authority": self.cost_authority.to_json(),
+            "per_task_budgets": self.per_task_budgets.iter().map(RwePerTaskBudget::to_json).collect::<Vec<_>>(),
+            "binary_path": self.binary_path,
+            "binary_version": self.binary_version,
+            "binary_sha256": self.binary_sha256,
+            "provider_kind": self.provider_kind,
+            "provider_host": self.provider_host,
+            "provider_base_url": self.provider_base_url,
             "target_repo": self.target_repo,
             "target_main_sha": self.target_main_sha,
             "executor_identity": self.executor_identity,
@@ -124,7 +138,12 @@ pub fn evaluate_rwe_live_gate_from_store(
         return RweLiveGateResult::BlockedMissingRweSpendAuthorization;
     }
     if let Some(exp) = auth.get("expires_at").and_then(Value::as_str) {
-        if exp < now {
+        let expired = chrono::DateTime::parse_from_rfc3339(exp)
+            .ok()
+            .zip(chrono::DateTime::parse_from_rfc3339(now).ok())
+            .map(|(e, n)| e <= n)
+            .unwrap_or(true);
+        if expired {
             return RweLiveGateResult::BlockedExpired;
         }
     } else {
@@ -165,6 +184,13 @@ pub fn persist_rwe_run_authorization(
             max_total_tokens: body.max_total_tokens,
             max_wall_time_ms: body.max_wall_time_ms,
             cost_authority: body.cost_authority.clone(),
+            per_task_budgets: body.per_task_budgets.clone(),
+            binary_path: body.binary_path.clone(),
+            binary_version: body.binary_version.clone(),
+            binary_sha256: body.binary_sha256.clone(),
+            provider_kind: body.provider_kind.clone(),
+            provider_host: body.provider_host.clone(),
+            provider_base_url: body.provider_base_url.clone(),
             target_repo: body.target_repo.clone(),
             target_main_sha: body.target_main_sha.clone(),
             executor_identity: body.executor_identity.clone(),
@@ -197,7 +223,15 @@ pub fn run_provider_free_rwe(
         "run_id": run_id,
         "authorization_id": authorization_id,
         "corpus_sha256": corpus.corpus_sha256,
-        "task_ids": corpus.tasks.iter().map(|t| t.task_id.clone()).collect::<Vec<_>>(),
+        "task_ids": auth_body.get("task_ids"),
+        "cost_authority": auth_body.get("cost_authority"),
+        "per_task_budgets": auth_body.get("per_task_budgets"),
+        "binary_path": auth_body.get("binary_path"),
+        "binary_version": auth_body.get("binary_version"),
+        "binary_sha256": auth_body.get("binary_sha256"),
+        "provider_kind": auth_body.get("provider_kind"),
+        "provider_host": auth_body.get("provider_host"),
+        "provider_base_url": auth_body.get("provider_base_url"),
         "target_repo": auth_body.get("target_repo"),
         "target_main_sha": auth_body.get("target_main_sha"),
         "executor_identity": auth_body.get("executor_identity"),
@@ -270,6 +304,7 @@ pub fn run_provider_free_rwe(
         });
         store.persist_rwe_task_attempt(
             run_id,
+            &lease_token,
             &task_attempt_id,
             &task.task_id,
             &task.definition_sha256,
@@ -331,6 +366,53 @@ mod tests {
     use tempfile::tempdir;
     use uuid::Uuid;
 
+    fn fixture_auth_body(
+        auth_id: &str,
+        principal: &AuthenticatedPrincipal,
+        corpus: &FirstRweCorpus,
+        expires_at: &str,
+    ) -> RweRunAuthorizationBody {
+        let task_ids: Vec<String> = corpus.tasks.iter().map(|t| t.task_id.clone()).collect();
+        let per_task_budgets = corpus
+            .tasks
+            .iter()
+            .map(|t| RwePerTaskBudget {
+                task_id: t.task_id.clone(),
+                max_provider_requests: t.per_task_max_provider_requests,
+                max_input_tokens: t.per_task_max_total_tokens / 2,
+                max_output_tokens: t.per_task_max_total_tokens / 2,
+                max_total_tokens: t.per_task_max_total_tokens,
+                max_wall_time_ms: 180_000,
+                max_cost: None,
+            })
+            .collect();
+        RweRunAuthorizationBody {
+            authorization_id: auth_id.into(),
+            corpus_sha256: corpus.corpus_sha256.clone(),
+            golden_path_terminal_evidence_id: "gp-terminal-fixture".into(),
+            principal_id: principal.principal_id().into(),
+            principal_kind: principal.principal_kind().as_str().into(),
+            task_ids,
+            max_total_provider_requests: 5,
+            max_total_tokens: 60_000,
+            max_wall_time_ms: 900_000,
+            cost_authority: CostAuthority::CostUnavailable,
+            per_task_budgets,
+            binary_path: "/usr/bin/codex".into(),
+            binary_version: "0.145.0".into(),
+            binary_sha256: "ab".repeat(32),
+            provider_kind: "openai_compatible".into(),
+            provider_host: "api.openai.com".into(),
+            provider_base_url: "https://api.openai.com/v1".into(),
+            target_repo: "org/disposable".into(),
+            target_main_sha: "a".repeat(40),
+            executor_identity: "codex-0.145.0".into(),
+            model_identity: "gpt-test-model".into(),
+            draft_pr_only: true,
+            expires_at: expires_at.into(),
+        }
+    }
+
     #[test]
     fn gate_blocks_without_store_auth_and_rejects_fixture_for_live() {
         let corpus = freeze_first_rwe_corpus().unwrap();
@@ -362,30 +444,16 @@ mod tests {
                 .unwrap();
         let corpus = freeze_first_rwe_corpus().unwrap();
         let auth_id = format!("rwe-auth-{}", Uuid::new_v4());
-        let body = RweRunAuthorizationBody {
-            authorization_id: auth_id.clone(),
-            corpus_sha256: corpus.corpus_sha256.clone(),
-            golden_path_terminal_evidence_id: "gp-terminal-fixture".into(),
-            principal_id: principal.principal_id().into(),
-            principal_kind: principal.principal_kind().as_str().into(),
-            task_ids: corpus.tasks.iter().map(|t| t.task_id.clone()).collect(),
-            max_total_provider_requests: 5,
-            max_total_tokens: 60_000,
-            max_wall_time_ms: 900_000,
-            cost_authority: CostAuthority::CostUnavailable,
-            target_repo: "org/disposable".into(),
-            target_main_sha: "a".repeat(40),
-            executor_identity: "codex-0.145.0".into(),
-            model_identity: "gpt-test-model".into(),
-            draft_pr_only: true,
-            expires_at: "2026-08-01T00:00:00Z".into(),
-        };
+        let body = fixture_auth_body(&auth_id, &principal, &corpus, "2026-08-01T00:00:00Z");
         let _ = ALL_MANAGED_ACCEPTANCE_SCOPES;
         persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
         let run = run_provider_free_rwe(&store, &principal, "rwe-run-1", &auth_id, true).unwrap();
         assert_eq!(run["status"], "fixture_complete");
         assert_eq!(run["live_baseline_sealed"], false);
         assert_eq!(run["provider_free_fixture_completion"], true);
+        // General read must not expose lease capability.
+        let general = store.get_rwe_run("rwe-run-1").unwrap().unwrap();
+        assert!(general.get("lease_token").is_none());
         // one-use consumed
         let auth = store.get_rwe_run_authorization(&auth_id).unwrap().unwrap();
         assert_eq!(auth["status"], "consumed");
@@ -393,16 +461,16 @@ mod tests {
         let replay =
             run_provider_free_rwe(&store, &principal, "rwe-run-1", &auth_id, true).unwrap();
         assert_eq!(replay["idempotent_replay"], true);
-        // conflicting task-attempt mutation rejected
+        // conflicting task-attempt mutation rejected (terminal run + missing lease)
         let err = store.persist_rwe_task_attempt(
             "rwe-run-1",
+            "not-a-lease",
             "rwe-run-1:small_test_addition",
             "small_test_addition",
             &corpus.tasks[0].definition_sha256,
             "mutated",
             &json!({"different": true}),
         );
-        // run is terminal so new attempts fail OR conflict
         assert!(err.is_err());
     }
 
@@ -418,24 +486,7 @@ mod tests {
                 .unwrap();
         let corpus = freeze_first_rwe_corpus().unwrap();
         let auth_id = format!("rwe-auth-{}", Uuid::new_v4());
-        let body = RweRunAuthorizationBody {
-            authorization_id: auth_id.clone(),
-            corpus_sha256: corpus.corpus_sha256.clone(),
-            golden_path_terminal_evidence_id: "gp-terminal-fixture".into(),
-            principal_id: principal.principal_id().into(),
-            principal_kind: principal.principal_kind().as_str().into(),
-            task_ids: corpus.tasks.iter().map(|t| t.task_id.clone()).collect(),
-            max_total_provider_requests: 5,
-            max_total_tokens: 60_000,
-            max_wall_time_ms: 900_000,
-            cost_authority: CostAuthority::CostUnavailable,
-            target_repo: "org/disposable".into(),
-            target_main_sha: "a".repeat(40),
-            executor_identity: "codex-0.145.0".into(),
-            model_identity: "gpt-test-model".into(),
-            draft_pr_only: true,
-            expires_at: "2026-08-01T00:00:00Z".into(),
-        };
+        let body = fixture_auth_body(&auth_id, &principal, &corpus, "2026-08-01T00:00:00Z");
         persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
         store
             .revoke_rwe_run_authorization(&principal, &auth_id)
