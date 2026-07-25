@@ -829,8 +829,6 @@ pub fn fixture_ready_pending_operator_input(
     }
 }
 
-
-
 /// Production preflight entry: loads decision/risk/spend from store and verifies hash binding.
 /// Runtime binary SHA/version and host probes remain host-derived evidence.
 pub fn run_owner_derived_managed_acceptance_preflight(
@@ -844,7 +842,11 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     let decision = store
         .get_managed_acceptance_decision(decision_id)?
         .ok_or_else(|| format!("decision {decision_id} not found"))?;
-    if decision.get("tenant_id").and_then(serde_json::Value::as_str) != Some(tenant_id) {
+    if decision
+        .get("tenant_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(tenant_id)
+    {
         return Err("decision tenant mismatch".into());
     }
     let risk = store
@@ -869,10 +871,15 @@ pub fn run_owner_derived_managed_acceptance_preflight(
         {
             return Err(format!(
                 "spend authorization status {}",
-                spend.get("status").and_then(serde_json::Value::as_str).unwrap_or("?")
+                spend
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?")
             ));
         }
-        if spend.get("risk_authorization_id").and_then(serde_json::Value::as_str)
+        if spend
+            .get("risk_authorization_id")
+            .and_then(serde_json::Value::as_str)
             != Some(risk_authorization_id)
         {
             return Err("spend/risk authorization mismatch".into());
@@ -882,7 +889,10 @@ pub fn run_owner_derived_managed_acceptance_preflight(
             .authority_decision_body_sha256
             .as_deref()
         {
-            if spend.get("decision_body_sha256").and_then(serde_json::Value::as_str) != Some(exp_sha)
+            if spend
+                .get("decision_body_sha256")
+                .and_then(serde_json::Value::as_str)
+                != Some(exp_sha)
             {
                 return Err("spend decision hash mismatch vs expected identity".into());
             }
@@ -923,7 +933,9 @@ mod tests {
 
     #[test]
     fn default_input_is_blocked_identity_or_budget() {
-        let report = run_managed_acceptance_preflight_fixture_only(&ManagedAcceptancePreflightInput::default());
+        let report = run_managed_acceptance_preflight_fixture_only(
+            &ManagedAcceptancePreflightInput::default(),
+        );
         assert!(!report.result.is_ready());
         assert!(matches!(
             report.result,

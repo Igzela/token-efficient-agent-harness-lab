@@ -532,7 +532,6 @@ fn apply_pg_v32_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|error| format!("failed to commit migration 32: {error}"))
 }
 
-
 fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
     let version = super::super::migrations::V33_SCHEMA_VERSION;
     let mut tx = client
@@ -1144,8 +1143,11 @@ fn pg_v25_operation_schema_valid(
 }
 
 impl LocalProductStore {
-    pub(in crate::storage::local_product_store) 
-    pub(crate) fn rollback_pg_v33_to_v32_internal(&self, actor: &str, now: &str) -> Result<(), String> {
+    pub(crate) fn rollback_pg_v33_to_v32_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
         self.with_pg_conn(|client| {
             let mut tx = client.transaction().map_err(|e| e.to_string())?;
             let version = tx
@@ -1194,11 +1196,7 @@ impl LocalProductStore {
         })
     }
 
-fn rollback_pg_v32_to_v31_internal(
-        &self,
-        actor: &str,
-        now: &str,
-    ) -> Result<(), String> {
+    fn rollback_pg_v32_to_v31_internal(&self, actor: &str, now: &str) -> Result<(), String> {
         self.with_pg_conn(|client: &mut postgres::Client| {
             let mut tx = client.transaction().map_err(|error| error.to_string())?;
             let current_version = tx

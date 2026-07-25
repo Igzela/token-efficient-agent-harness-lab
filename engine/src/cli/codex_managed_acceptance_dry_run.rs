@@ -584,7 +584,10 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
                 },
             )
             .map_err(|e| format!("store spend: {e}"))?;
-        spend_authorization_id = spend["spend_authorization_id"].as_str().unwrap().to_string();
+        spend_authorization_id = spend["spend_authorization_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
     } else if matches!(
         residual.verdict,
         ResidualAdmissionVerdict::ResidualAdmissionNoGo

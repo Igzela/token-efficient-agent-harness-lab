@@ -56,9 +56,7 @@ pub(super) const V32_TABLES: [&str; 3] = [
     "managed_acceptance_authorizations",
     "managed_acceptance_attempts",
 ];
-pub(super) const V33_TABLES: [&str; 1] = [
-    "managed_acceptance_spend_authorizations",
-];
+pub(super) const V33_TABLES: [&str; 1] = ["managed_acceptance_spend_authorizations"];
 
 #[allow(dead_code)]
 pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
@@ -1760,9 +1758,7 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         ] {
             if !column_exists(conn, "managed_acceptance_attempts", col)? {
                 conn.execute(
-                    &format!(
-                        "ALTER TABLE managed_acceptance_attempts ADD COLUMN {col} {decl}"
-                    ),
+                    &format!("ALTER TABLE managed_acceptance_attempts ADD COLUMN {col} {decl}"),
                     [],
                 )
                 .map_err(|error| error.to_string())?;

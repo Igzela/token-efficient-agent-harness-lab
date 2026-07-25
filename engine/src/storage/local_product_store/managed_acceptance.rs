@@ -1061,7 +1061,10 @@ fn validate_accept_preconditions(
     if status != "draft_pending_operator" && status != "operator_accepted" {
         return Err(format!("decision status {status} cannot be accepted"));
     }
-    if matches!(status, "revoked" | "invalidated" | "expired" | "operator_rejected") {
+    if matches!(
+        status,
+        "revoked" | "invalidated" | "expired" | "operator_rejected"
+    ) {
         return Err(format!("decision status {status} cannot be accepted"));
     }
     if decision.get("decision_body_sha256").and_then(Value::as_str)
@@ -1081,10 +1084,7 @@ fn validate_accept_preconditions(
             return Err("decision expired".into());
         }
     }
-    let body = decision
-        .get("body_json")
-        .cloned()
-        .unwrap_or(Value::Null);
+    let body = decision.get("body_json").cloned().unwrap_or(Value::Null);
     let required_phrase = body
         .pointer("/acknowledgement/required_phrase")
         .and_then(Value::as_str)
@@ -1142,9 +1142,7 @@ fn accept_on_sqlite(
             fixture_only,
         );
         let expected_sha = sha256_hex(canonical_json(&expected_body)?.as_bytes());
-        if existing
-            .get("authorization_sha256")
-            .and_then(Value::as_str)
+        if existing.get("authorization_sha256").and_then(Value::as_str)
             != Some(expected_sha.as_str())
         {
             return Err("conflicting risk acknowledgement replay".into());
@@ -1247,9 +1245,7 @@ fn accept_on_pg(
             fixture_only,
         );
         let expected_sha = sha256_hex(canonical_json(&expected_body)?.as_bytes());
-        if existing
-            .get("authorization_sha256")
-            .and_then(Value::as_str)
+        if existing.get("authorization_sha256").and_then(Value::as_str)
             != Some(expected_sha.as_str())
         {
             return Err("conflicting risk acknowledgement replay".into());
@@ -1886,8 +1882,7 @@ fn validate_spend_for_admit(
     if spend.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id.as_str()) {
         return Err("spend tenant mismatch".into());
     }
-    if spend.get("principal_id").and_then(Value::as_str) != Some(principal.principal_id.as_str())
-    {
+    if spend.get("principal_id").and_then(Value::as_str) != Some(principal.principal_id.as_str()) {
         return Err("spend principal mismatch".into());
     }
     if spend.get("status").and_then(Value::as_str) != Some("active") {
@@ -2243,8 +2238,8 @@ mod tests {
     fn store() -> (tempfile::TempDir, LocalProductStore) {
         let dir = tempdir().unwrap();
         let path = dir.path().join("ma.db");
-        let store =
-            LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string()).unwrap();
+        let store = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
+            .unwrap();
         (dir, store)
     }
 
@@ -2380,9 +2375,15 @@ mod tests {
         assert_eq!(auth2["authorization_id"], auth_id);
 
         let spend = store
-            .issue_managed_acceptance_spend_authorization(&principal, &spend_req(&auth_id, "attempt-1"))
+            .issue_managed_acceptance_spend_authorization(
+                &principal,
+                &spend_req(&auth_id, "attempt-1"),
+            )
             .unwrap();
-        let spend_id = spend["spend_authorization_id"].as_str().unwrap().to_string();
+        let spend_id = spend["spend_authorization_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert_eq!(spend["status"], "active");
 
         let attempt_body = json!({
@@ -2441,7 +2442,10 @@ mod tests {
                 &spend_req(&auth_id, "attempt-2"),
             )
             .unwrap();
-        let spend2_id = spend2["spend_authorization_id"].as_str().unwrap().to_string();
+        let spend2_id = spend2["spend_authorization_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let err = store
             .admit_managed_acceptance_attempt(
                 &principal,
@@ -2451,7 +2455,10 @@ mod tests {
                 false,
             )
             .unwrap_err();
-        assert!(err.contains("fixture") || err.contains("production"), "{err}");
+        assert!(
+            err.contains("fixture") || err.contains("production"),
+            "{err}"
+        );
 
         store
             .complete_managed_acceptance_attempt(
@@ -2495,8 +2502,8 @@ mod tests {
     fn concurrent_admission_single_winner() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("race.db");
-        let store =
-            LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string()).unwrap();
+        let store = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
+            .unwrap();
         let principal =
             AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-race")
                 .unwrap();
@@ -2512,7 +2519,10 @@ mod tests {
                 Some("2026-07-26T00:00:00Z"),
             )
             .unwrap();
-        let dsha = decision["decision_body_sha256"].as_str().unwrap().to_string();
+        let dsha = decision["decision_body_sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let auth = store
             .accept_managed_acceptance_decision(
                 &principal,
@@ -2532,7 +2542,10 @@ mod tests {
                 &spend_req(&auth_id, "race-1"),
             )
             .unwrap();
-        let spend_id = spend["spend_authorization_id"].as_str().unwrap().to_string();
+        let spend_id = spend["spend_authorization_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let barrier = Arc::new(Barrier::new(2));
         let path2 = path.clone();
         let spend_a = spend_id.clone();
@@ -2543,11 +2556,8 @@ mod tests {
             let s =
                 LocalProductStore::new_with_clock(&path2, || "2026-07-25T12:00:00Z".to_string())
                     .unwrap();
-            let p = AuthenticatedPrincipal::fixture_for_tests(
-                "tenant-a",
-                "fixture-principal-race",
-            )
-            .unwrap();
+            let p = AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-race")
+                .unwrap();
             b1.wait();
             s.admit_managed_acceptance_attempt(
                 &p,
@@ -2562,11 +2572,8 @@ mod tests {
             let s =
                 LocalProductStore::new_with_clock(&path3, || "2026-07-25T12:00:00Z".to_string())
                     .unwrap();
-            let p = AuthenticatedPrincipal::fixture_for_tests(
-                "tenant-a",
-                "fixture-principal-race",
-            )
-            .unwrap();
+            let p = AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-race")
+                .unwrap();
             b2.wait();
             s.admit_managed_acceptance_attempt(
                 &p,
@@ -2586,7 +2593,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(final_spend["status"], "consumed");
-        let attempt = store.get_managed_acceptance_attempt("race-1").unwrap().unwrap();
+        let attempt = store
+            .get_managed_acceptance_attempt("race-1")
+            .unwrap()
+            .unwrap();
         assert_eq!(attempt["status"], "admitted");
     }
 
@@ -2594,8 +2604,7 @@ mod tests {
     fn revocation_blocks_spend() {
         let (_dir, store) = store();
         let principal =
-            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-bob")
-                .unwrap();
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-bob").unwrap();
         let residual = "33".repeat(32);
         let body = decision_body("mad-rev");
         let decision = store
@@ -2608,7 +2617,10 @@ mod tests {
                 Some("2026-07-26T00:00:00Z"),
             )
             .unwrap();
-        let dsha = decision["decision_body_sha256"].as_str().unwrap().to_string();
+        let dsha = decision["decision_body_sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let auth = store
             .accept_managed_acceptance_decision(
                 &principal,
@@ -2626,14 +2638,8 @@ mod tests {
             .revoke_managed_acceptance_authorization(&principal, &auth_id)
             .unwrap();
         let err = store
-            .issue_managed_acceptance_spend_authorization(
-                &principal,
-                &spend_req(&auth_id, "x"),
-            )
+            .issue_managed_acceptance_spend_authorization(&principal, &spend_req(&auth_id, "x"))
             .unwrap_err();
-        assert!(
-            err.contains("not active") || err.contains("revok"),
-            "{err}"
-        );
+        assert!(err.contains("not active") || err.contains("revok"), "{err}");
     }
 }
