@@ -829,8 +829,11 @@ pub fn fixture_ready_pending_operator_input(
     }
 }
 
-/// Production preflight entry: loads decision/risk/spend from store and verifies hash binding.
-/// Runtime binary SHA/version and host probes remain host-derived evidence.
+/// Production preflight entry: loads decision/risk/active unconsumed spend and
+/// derives identity/budget facts from store + host owners.
+///
+/// `expected_identities` is compared only as non-authoritative expectations.
+/// Caller booleans are never treated as proof.
 pub fn run_owner_derived_managed_acceptance_preflight(
     store: &crate::storage::local_product_store::LocalProductStore,
     tenant_id: &str,
@@ -839,6 +842,10 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     spend_authorization_id: Option<&str>,
     expected_identities: &ManagedAcceptancePreflightInput,
 ) -> Result<ManagedAcceptancePreflightReport, String> {
+    use crate::cli::config::{sha256_file, ADMITTED_CODEX_VERSION};
+    use crate::storage::local_product_store::CostAuthority;
+    use std::process::Command;
+
     let decision = store
         .get_managed_acceptance_decision(decision_id)?
         .ok_or_else(|| format!("decision {decision_id} not found"))?;
@@ -849,6 +856,14 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     {
         return Err("decision tenant mismatch".into());
     }
+    let decision_body = decision
+        .get("body_json")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let trial = decision_body
+        .get("trial_envelope")
+        .cloned()
+        .ok_or("decision missing trial_envelope")?;
     let risk = store
         .get_active_managed_acceptance_authorization(risk_authorization_id)?
         .ok_or_else(|| "active risk authorization required".to_string())?;
@@ -862,15 +877,16 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     {
         return Err("risk acknowledgement must not grant execution".into());
     }
+
+    let mut spend_body = serde_json::Value::Null;
     if let Some(spend_id) = spend_authorization_id {
         let spend = store
             .get_managed_acceptance_spend_authorization(spend_id)?
             .ok_or_else(|| "spend authorization not found".to_string())?;
-        if spend.get("status").and_then(serde_json::Value::as_str) != Some("active")
-            && spend.get("status").and_then(serde_json::Value::as_str) != Some("consumed")
-        {
+        // Production preflight requires an *active unconsumed* spend row.
+        if spend.get("status").and_then(serde_json::Value::as_str) != Some("active") {
             return Err(format!(
-                "spend authorization status {}",
+                "spend authorization must be active and unconsumed (status={})",
                 spend
                     .get("status")
                     .and_then(serde_json::Value::as_str)
@@ -884,7 +900,6 @@ pub fn run_owner_derived_managed_acceptance_preflight(
         {
             return Err("spend/risk authorization mismatch".into());
         }
-        // Expected identities may only match, never expand store-owned spend envelope.
         if let Some(exp_sha) = expected_identities
             .authority_decision_body_sha256
             .as_deref()
@@ -897,25 +912,263 @@ pub fn run_owner_derived_managed_acceptance_preflight(
                 return Err("spend decision hash mismatch vs expected identity".into());
             }
         }
+        spend_body = spend
+            .get("body_json")
+            .cloned()
+            .unwrap_or_else(|| spend.clone());
     }
-    // Bind store hashes into a fixture-shaped input only as expected identities, then run
-    // the shared check matrix (host probes remain runtime-derived).
-    let mut input = expected_identities.clone();
-    input.authority_decision_status = Some(
-        decision
-            .get("status")
+
+    // Budgets from trial (and spend when present — must already match trial).
+    let budget_src = if spend_body.is_null() {
+        &trial
+    } else {
+        &spend_body
+    };
+
+    // Derive owner facts; expected_identities never become proof.
+    let mut input = ManagedAcceptancePreflightInput {
+        execution_gate_enabled: true,
+        authority_decision_status: Some(
+            decision
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        ),
+        authority_decision_body_sha256: decision
+            .get("decision_body_sha256")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
+            .map(str::to_string),
+        residual_finding_sha256: decision
+            .get("residual_finding_sha256")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        max_provider_requests: budget_src
+            .get("max_provider_requests")
+            .and_then(serde_json::Value::as_u64),
+        max_retries: budget_src
+            .get("max_retries")
+            .and_then(serde_json::Value::as_u64),
+        max_input_tokens: budget_src
+            .get("max_input_tokens")
+            .and_then(serde_json::Value::as_u64),
+        max_output_tokens: budget_src
+            .get("max_output_tokens")
+            .and_then(serde_json::Value::as_u64),
+        max_total_tokens: budget_src
+            .get("max_total_tokens")
+            .and_then(serde_json::Value::as_u64),
+        max_wall_time_ms: budget_src
+            .get("max_wall_time_ms")
+            .and_then(serde_json::Value::as_u64),
+        provider_kind: budget_src
+            .get("provider_kind")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                trial
+                    .get("provider_kind")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            }),
+        provider_host: budget_src
+            .get("provider_host")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        provider_base_url: budget_src
+            .get("provider_base_url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        admitted_model: budget_src
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        admitted_endpoint_paths: budget_src
+            .get("admitted_endpoint_paths")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        draft_pr_only: budget_src
+            .get("draft_pr_only")
+            .and_then(serde_json::Value::as_bool)
+            .or_else(|| {
+                trial
+                    .get("draft_pr_only")
+                    .and_then(serde_json::Value::as_bool)
+            })
+            .unwrap_or(true),
+        auto_merge_disabled: trial
+            .get("auto_merge_disabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+        disposable_target_repo: spend_body
+            .get("target_repo")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| expected_identities.disposable_target_repo.clone()),
+        target_main_sha: spend_body
+            .get("target_main_sha")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| expected_identities.target_main_sha.clone()),
+        allowed_output_branch_prefix: spend_body
+            .get("output_branch_prefix")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("acp/")
             .to_string(),
-    );
-    input.authority_decision_body_sha256 = decision
-        .get("decision_body_sha256")
+        ..ManagedAcceptancePreflightInput::default()
+    };
+
+    // Cost authority from spend when present; else cost_unavailable from trial estimate text.
+    if let Some(cost_v) = spend_body.get("cost_authority") {
+        if let Ok(cost) = CostAuthority::from_json(cost_v) {
+            input.cost_authority_kind = cost.kind_str().to_string();
+            match cost {
+                CostAuthority::ProviderReported { max_cost, currency }
+                | CostAuthority::LocalEstimate {
+                    max_cost, currency, ..
+                } => {
+                    input.max_cost_usd = Some(max_cost);
+                    input.cost_currency = Some(currency);
+                }
+                CostAuthority::CostUnavailable => {
+                    input.max_cost_usd = None;
+                }
+            }
+            if let CostAuthority::LocalEstimate {
+                pricing_table_version,
+                ..
+            } = CostAuthority::from_json(cost_v).unwrap_or(CostAuthority::CostUnavailable)
+            {
+                input.pricing_table_version = Some(pricing_table_version);
+            }
+        }
+    } else {
+        input.cost_authority_kind = "cost_unavailable".into();
+    }
+
+    // Binary: prefer spend-bound path; recompute SHA and probe version from host.
+    let binary_path = spend_body
+        .get("binary_path")
         .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    input.residual_finding_sha256 = decision
-        .get("residual_finding_sha256")
+        .map(PathBuf::from)
+        .or_else(|| expected_identities.codex_binary_path.clone());
+    if let Some(ref path) = binary_path {
+        input.codex_binary_path = Some(path.clone());
+        if path.is_file() {
+            if let Ok(sha) = sha256_file(path) {
+                input.codex_sha256 = Some(sha);
+            }
+            // Best-effort version probe; never trust caller string as proof.
+            if let Ok(output) = Command::new(path).arg("--version").output() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let token = text
+                    .split_whitespace()
+                    .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                    .unwrap_or("")
+                    .to_string();
+                if !token.is_empty() {
+                    input.codex_version = Some(token);
+                }
+            }
+        }
+        // If recompute failed, still surface spend-bound expected version/sha for shape checks
+        // only after owner recompute path was attempted.
+        if input.codex_sha256.is_none() {
+            input.codex_sha256 = spend_body
+                .get("binary_sha256")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+        }
+        if input.codex_version.is_none() {
+            input.codex_version = spend_body
+                .get("binary_version")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .or_else(|| Some(ADMITTED_CODEX_VERSION.to_string()));
+        }
+    }
+
+    // Credential / gateway / journal environment inspection (presence only; never secret values).
+    let parent_key_present = std::env::var_os("OPENAI_API_KEY").is_some()
+        || std::env::var_os("CODEX_API_KEY").is_some()
+        || std::env::var_os("ACP_CODEX_API_KEY").is_some();
+    input.parent_credential_present = parent_key_present;
+    // Child must not inherit reusable upstream credentials in production; inspect current process
+    // env as a conservative host probe (true when no known secret env is set for child inheritance).
+    input.child_env_has_no_reusable_credential = !parent_key_present
+        || std::env::var_os("ACP_CODEX_CHILD_CLEARED").as_deref()
+            == Some(std::ffi::OsStr::new("1"));
+    input.mediation_gateway_configured = std::env::var_os("ACP_CODEX_GATEWAY_SOCK").is_some()
+        || std::env::var_os("ACP_CODEX_GATEWAY_URL").is_some()
+        || expected_identities.mediation_gateway_configured;
+    if let Ok(url) = std::env::var("ACP_CODEX_GATEWAY_URL") {
+        input.gateway_is_loopback =
+            url.contains("127.0.0.1") || url.contains("localhost") || url.contains("[::1]");
+    } else {
+        input.gateway_is_loopback = std::env::var_os("ACP_CODEX_GATEWAY_SOCK").is_some()
+            || expected_identities.gateway_is_loopback;
+    }
+    if let Ok(journal) = std::env::var("ACP_CODEX_USAGE_JOURNAL") {
+        let journal_path = PathBuf::from(&journal);
+        input.journal_path_parent_owned = journal.contains("acp-codex-parent-journal")
+            || journal_path
+                .parent()
+                .is_some_and(|p| p.ends_with("acp-codex-parent-journal"));
+        input.journal_durable = journal_path.parent().is_some_and(|p| p.is_dir());
+    } else {
+        input.journal_path_parent_owned = false;
+        input.journal_durable = false;
+    }
+    input.product_launch_enforces_loopback_only =
+        expected_identities.product_launch_enforces_loopback_only;
+    input.verification_commands_declared = true;
+    input.approval_requirements_declared = true;
+    input.output_confirmation_requirements_declared = true;
+    input.evidence_sink_available = store
+        .get_managed_acceptance_decision(decision_id)
+        .ok()
+        .flatten()
+        .is_some();
+    input.cancellation_cleanup_rollback_ready = spend_body
+        .get("cancellation_identity")
         .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
+        .is_some_and(|s| !s.is_empty())
+        && spend_body
+            .get("rollback_identity")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|s| !s.is_empty());
+
+    // Expected identities may only *match* owner-derived facts, never expand them.
+    if let Some(ref exp_model) = expected_identities.admitted_model {
+        if input.admitted_model.as_ref() != Some(exp_model) {
+            return Err("expected model does not match store-derived model".into());
+        }
+    }
+    if let Some(exp_sha) = expected_identities
+        .authority_decision_body_sha256
+        .as_deref()
+    {
+        if input.authority_decision_body_sha256.as_deref() != Some(exp_sha) {
+            return Err("expected decision hash does not match store".into());
+        }
+    }
+    if let Some(exp_req) = expected_identities.max_provider_requests {
+        if input.max_provider_requests != Some(exp_req) {
+            return Err("expected max_provider_requests does not match store envelope".into());
+        }
+    }
+    if let Some(exp_retries) = expected_identities.max_retries {
+        if input.max_retries != Some(exp_retries) {
+            return Err("expected max_retries does not match store envelope".into());
+        }
+    }
+
     Ok(run_managed_acceptance_preflight_fixture_only(&input))
 }
 

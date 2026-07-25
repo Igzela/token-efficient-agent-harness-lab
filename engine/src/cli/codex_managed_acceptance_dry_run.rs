@@ -540,6 +540,7 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
         AuthenticatedPrincipal::fixture_for_tests("tenant-dry-run", "fixture-principal-dry-run")
             .map_err(|e| format!("fixture principal: {e}"))?;
     let mut spend_authorization_id = String::new();
+    let mut issued_spend_request: Option<SpendAuthorizationRequest> = None;
     if config.simulate_operator_ack {
         let auth = store
             .accept_managed_acceptance_decision(
@@ -557,37 +558,44 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
         authorization_id = auth["authorization_id"].as_str().unwrap().to_string();
         assert_eq!(auth["execution_granted"], false);
         assert_eq!(auth["fixture_only"], true);
+        let trial = &draft.trial_envelope;
+        let spend_request = SpendAuthorizationRequest {
+            risk_authorization_id: authorization_id.clone(),
+            product_task_id: config.product_task_id.clone(),
+            workflow_id: Some("wf-managed-acceptance-dry-run".into()),
+            workflow_node_id: Some("node-managed-acceptance-dry-run".into()),
+            execution_id: format!("codex-attempt-{}", config.attempt_id),
+            attempt_id: config.attempt_id.clone(),
+            binary_path: "/fixture/codex".into(),
+            binary_version: trial.exact_codex_version.clone(),
+            binary_sha256: "ab".repeat(32),
+            provider_kind: trial.provider_kind.clone(),
+            provider_host: trial.provider_host.clone(),
+            provider_base_url: trial.provider_base_url.clone(),
+            admitted_endpoint_paths: trial.admitted_endpoint_paths.clone(),
+            model: trial.model.clone(),
+            target_repo: config.disposable_target_repo.clone(),
+            target_main_sha: config.target_main_sha.clone(),
+            output_branch_prefix: "acp/".into(),
+            draft_pr_only: trial.draft_pr_only,
+            max_provider_requests: trial.max_provider_requests,
+            max_retries: trial.max_retries,
+            max_input_tokens: trial.max_input_tokens,
+            max_output_tokens: trial.max_output_tokens,
+            max_total_tokens: trial.max_total_tokens,
+            max_wall_time_ms: trial.max_wall_time_ms,
+            cost_authority: CostAuthority::CostUnavailable,
+            cancellation_identity: format!("cancel-{}", config.attempt_id),
+            rollback_identity: format!("rollback-{}", config.attempt_id),
+        };
         let spend = store
-            .issue_managed_acceptance_spend_authorization(
-                &fixture_principal,
-                &SpendAuthorizationRequest {
-                    risk_authorization_id: authorization_id.clone(),
-                    product_task_id: config.product_task_id.clone(),
-                    workflow_node_id: Some("node-managed-acceptance-dry-run".into()),
-                    execution_id: format!("codex-attempt-{}", config.attempt_id),
-                    attempt_id: config.attempt_id.clone(),
-                    binary_path: "/fixture/codex".into(),
-                    binary_version: "0.145.0".into(),
-                    binary_sha256: "ab".repeat(32),
-                    provider_kind: "openai".into(),
-                    provider_host: "api.openai.com".into(),
-                    provider_base_url: "https://api.openai.com/v1".into(),
-                    admitted_endpoint_paths: vec!["/v1/responses".into()],
-                    model: "gpt-5".into(),
-                    target_repo: config.disposable_target_repo.clone(),
-                    target_main_sha: config.target_main_sha.clone(),
-                    output_branch_prefix: "acp/".into(),
-                    draft_pr_only: true,
-                    cost_authority: CostAuthority::CostUnavailable,
-                    cancellation_identity: format!("cancel-{}", config.attempt_id),
-                    rollback_identity: format!("rollback-{}", config.attempt_id),
-                },
-            )
+            .issue_managed_acceptance_spend_authorization(&fixture_principal, &spend_request)
             .map_err(|e| format!("store spend: {e}"))?;
         spend_authorization_id = spend["spend_authorization_id"]
             .as_str()
             .unwrap()
             .to_string();
+        issued_spend_request = Some(spend_request);
     } else if matches!(
         residual.verdict,
         ResidualAdmissionVerdict::ResidualAdmissionNoGo
@@ -674,17 +682,42 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
     if authorization_id.is_empty() {
         return Err("authorization_id required after operator accept".into());
     }
-    let attempt_body = json!({
-        "manifest_sha256": manifest_sha,
-        "execution_id": format!("codex-attempt-{}", config.attempt_id),
-        "product_task_id": config.product_task_id.clone(),
-        "workflow_node_id": "node-managed-acceptance-dry-run",
-        "scenario": config.scenario.as_str(),
-        "dry_run": true,
-    });
     if spend_authorization_id.is_empty() {
         return Err("spend_authorization_id required after operator accept".into());
     }
+    let spend_bound = issued_spend_request
+        .as_ref()
+        .ok_or("spend request required after operator accept")?;
+    let attempt_body = json!({
+        "manifest_sha256": manifest_sha,
+        "product_task_id": spend_bound.product_task_id,
+        "workflow_id": spend_bound.workflow_id,
+        "workflow_node_id": spend_bound.workflow_node_id,
+        "execution_id": spend_bound.execution_id,
+        "binary_path": spend_bound.binary_path,
+        "binary_version": spend_bound.binary_version,
+        "binary_sha256": spend_bound.binary_sha256,
+        "provider_kind": spend_bound.provider_kind,
+        "provider_host": spend_bound.provider_host,
+        "provider_base_url": spend_bound.provider_base_url,
+        "admitted_endpoint_paths": spend_bound.admitted_endpoint_paths,
+        "model": spend_bound.model,
+        "target_repo": spend_bound.target_repo,
+        "target_main_sha": spend_bound.target_main_sha,
+        "output_branch_prefix": spend_bound.output_branch_prefix,
+        "draft_pr_only": spend_bound.draft_pr_only,
+        "max_provider_requests": spend_bound.max_provider_requests,
+        "max_retries": spend_bound.max_retries,
+        "max_input_tokens": spend_bound.max_input_tokens,
+        "max_output_tokens": spend_bound.max_output_tokens,
+        "max_total_tokens": spend_bound.max_total_tokens,
+        "max_wall_time_ms": spend_bound.max_wall_time_ms,
+        "cost_authority": spend_bound.cost_authority.to_json(),
+        "cancellation_identity": spend_bound.cancellation_identity,
+        "rollback_identity": spend_bound.rollback_identity,
+        "scenario": config.scenario.as_str(),
+        "dry_run": true,
+    });
     let admitted = store
         .admit_managed_acceptance_attempt(
             &fixture_principal,

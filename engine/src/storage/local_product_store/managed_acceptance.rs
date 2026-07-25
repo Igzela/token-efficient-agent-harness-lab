@@ -244,10 +244,13 @@ impl CostAuthority {
 }
 
 /// Request to issue a one-use spend authorization (execution authority).
+/// Every budget/identity field is bound into the spend receipt and compared to the
+/// persisted decision trial envelope; expansion or mismatch fails closed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpendAuthorizationRequest {
     pub risk_authorization_id: String,
     pub product_task_id: String,
+    pub workflow_id: Option<String>,
     pub workflow_node_id: Option<String>,
     pub execution_id: String,
     pub attempt_id: String,
@@ -263,6 +266,12 @@ pub struct SpendAuthorizationRequest {
     pub target_main_sha: String,
     pub output_branch_prefix: String,
     pub draft_pr_only: bool,
+    pub max_provider_requests: u64,
+    pub max_retries: u64,
+    pub max_input_tokens: u64,
+    pub max_output_tokens: u64,
+    pub max_total_tokens: u64,
+    pub max_wall_time_ms: u64,
     pub cost_authority: CostAuthority,
     pub cancellation_identity: String,
     pub rollback_identity: String,
@@ -410,6 +419,9 @@ impl LocalProductStore {
 
     /// Persist a draft decision body. Body must already carry full canonical fields including
     /// acknowledgement.required_phrase and trial envelope.
+    ///
+    /// Finite `expires_at` is mandatory. The stored `decision_body_sha256` hashes one authority
+    /// envelope covering decision body, status, residual hash, expiry, and invalidation state.
     pub fn upsert_managed_acceptance_decision(
         &self,
         tenant_id: &str,
@@ -420,9 +432,14 @@ impl LocalProductStore {
         expires_at: Option<&str>,
     ) -> Result<Value, String> {
         validate_decision_status(status)?;
-        if residual_finding_sha256.len() != 64 {
+        if residual_finding_sha256.len() != 64
+            || !residual_finding_sha256
+                .chars()
+                .all(|c| c.is_ascii_hexdigit())
+        {
             return Err("residual_finding_sha256 must be 64 hex chars".into());
         }
+        let expires_at = require_finite_expiry(expires_at)?;
         let body = sort_value(decision_body);
         // Require acknowledgement phrase embedded for store-derived accept.
         let _ = body
@@ -430,7 +447,32 @@ impl LocalProductStore {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .ok_or("decision body must embed acknowledgement.required_phrase")?;
-        let decision_body_sha256 = sha256_hex(canonical_json(&body)?.as_bytes());
+        let trial = body
+            .get("trial_envelope")
+            .ok_or("decision body must embed trial_envelope")?;
+        validate_trial_envelope_shape(trial)?;
+        let invalidation_state = body
+            .get("invalidation_state")
+            .and_then(Value::as_str)
+            .unwrap_or("none");
+        if !matches!(
+            invalidation_state,
+            "none" | "invalidated" | "revoked" | "expired"
+        ) {
+            return Err(format!("invalid invalidation_state {invalidation_state}"));
+        }
+        if matches!(status, "invalidated" | "revoked" | "expired") && invalidation_state == "none" {
+            return Err(
+                "terminal invalidation status requires matching invalidation_state in body".into(),
+            );
+        }
+        let decision_body_sha256 = canonical_decision_authority_hash(
+            &body,
+            residual_finding_sha256,
+            status,
+            &expires_at,
+            invalidation_state,
+        )?;
         let decision_id = body
             .get("decision_id")
             .and_then(Value::as_str)
@@ -438,6 +480,9 @@ impl LocalProductStore {
             .map(str::to_string)
             .unwrap_or_else(|| format!("mad-{}", Uuid::new_v4()));
         let now = self.now();
+        if expires_at.as_str() <= now.as_str() {
+            return Err("decision expires_at must be strictly after store clock now".into());
+        }
         let principal_kind = principal
             .map(|p| p.principal_kind.as_str().to_string())
             .unwrap_or_else(|| "operator_api_key".into());
@@ -498,6 +543,7 @@ impl LocalProductStore {
                         "decision_body_sha256": decision_body_sha256,
                         "status": status,
                         "tenant_id": tenant_id,
+                        "expires_at": expires_at,
                     }),
                 )?;
                 let row = load_decision_sqlite(&tx, &decision_id)?;
@@ -808,6 +854,13 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
                 let auth = load_authorization_pg(&mut tx, authorization_id)?;
+                // Parity with SQLite: only owner principal or team:admin may revoke.
+                if auth.get("principal_id").and_then(Value::as_str)
+                    != Some(principal.principal_id.as_str())
+                    && !principal.has_scope("team:admin")
+                {
+                    return Err("principal cannot revoke this authorization".into());
+                }
                 tx.execute(
                     "UPDATE managed_acceptance_authorizations SET status='revoked', revoked_at=$1, updated_at=$1 WHERE authorization_id=$2",
                     &[&now, &authorization_id],
@@ -1092,17 +1145,20 @@ fn validate_accept_preconditions(
     if request.submitted_phrase != required_phrase {
         return Err("operator risk-acceptance phrase mismatch".into());
     }
-    // Scope and max expiry derived from decision only.
+    // Scope and max expiry derived from decision only — never invent far-future expiry.
+    let expires_at = require_finite_expiry(decision.get("expires_at").and_then(Value::as_str))?;
+    if expires_at.as_str() <= now {
+        return Err("decision expired".into());
+    }
     let scope = json!({
         "source": "persisted_decision",
         "trial_envelope": body.get("trial_envelope").cloned().unwrap_or(Value::Null),
         "decision_id": request.decision_id,
+        "decision_body_sha256": request.expected_decision_body_sha256,
+        "residual_finding_sha256": request.expected_residual_finding_sha256,
+        "expires_at": expires_at,
         "no_caller_scope_expansion": true,
     });
-    let expires_at = match decision.get("expires_at").and_then(Value::as_str) {
-        Some(e) => e.to_string(),
-        None => "2099-01-01T00:00:00Z".to_string(),
-    };
     let fixture_only = matches!(principal.principal_kind, PrincipalKind::FixturePrincipal);
     // Must still be draft for first accept; operator_accepted allows exact replay only.
     Ok((scope, expires_at, status.to_string(), fixture_only))
@@ -1565,33 +1621,143 @@ fn validate_spend_against_decision(
     let trial = decision_body
         .get("trial_envelope")
         .cloned()
-        .unwrap_or(Value::Null);
-    // Reject expansion of budgets if trial declares them.
-    if let Some(max_retries) = trial.get("max_retries").and_then(Value::as_u64) {
-        if max_retries > 0 {
-            // spend may not exceed; we bind exact in body later
-        }
-        let _ = max_retries;
+        .ok_or("decision missing trial_envelope")?;
+    validate_trial_envelope_shape(&trial)?;
+
+    // Budgets: exact match to trial (no expansion, no silent under-binding for production).
+    eq_u64_field(
+        &trial,
+        "max_provider_requests",
+        request.max_provider_requests,
+    )?;
+    eq_u64_field(&trial, "max_retries", request.max_retries)?;
+    eq_u64_field(&trial, "max_input_tokens", request.max_input_tokens)?;
+    eq_u64_field(&trial, "max_output_tokens", request.max_output_tokens)?;
+    eq_u64_field(&trial, "max_total_tokens", request.max_total_tokens)?;
+    eq_u64_field(&trial, "max_wall_time_ms", request.max_wall_time_ms)?;
+    if request.max_retries > 0 {
+        return Err("max_retries must be 0 under residual_admission_no_go".into());
     }
-    if !request.draft_pr_only
-        && trial
-            .get("draft_pr_only")
-            .and_then(Value::as_bool)
-            .unwrap_or(true)
+    if request.max_provider_requests == 0 {
+        return Err("max_provider_requests must be positive".into());
+    }
+    if request.max_total_tokens == 0
+        || request.max_input_tokens == 0
+        || request.max_output_tokens == 0
+        || request.max_wall_time_ms == 0
     {
+        return Err("token and wall-time budgets must be positive".into());
+    }
+
+    // Provider / model / endpoint identities must match trial exactly.
+    eq_str_field(&trial, "provider_kind", &request.provider_kind)?;
+    eq_str_field(&trial, "provider_host", &request.provider_host)?;
+    eq_str_field(&trial, "provider_base_url", &request.provider_base_url)?;
+    eq_str_field(&trial, "model", &request.model)?;
+    if let Some(paths) = trial
+        .get("admitted_endpoint_paths")
+        .and_then(Value::as_array)
+    {
+        let trial_paths: Vec<String> = paths
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        if trial_paths != request.admitted_endpoint_paths {
+            return Err("admitted_endpoint_paths mismatch vs decision trial envelope".into());
+        }
+    } else {
+        return Err("trial_envelope.admitted_endpoint_paths required".into());
+    }
+    if let Some(ver) = trial.get("exact_codex_version").and_then(Value::as_str) {
+        if ver != request.binary_version {
+            return Err("binary_version mismatch vs decision trial envelope".into());
+        }
+    }
+    if trial
+        .get("exact_codex_sha_required")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+        && (request.binary_sha256.len() != 64
+            || !request.binary_sha256.chars().all(|c| c.is_ascii_hexdigit()))
+    {
+        return Err("binary_sha256 must be 64 hex chars when exact_codex_sha_required".into());
+    }
+    if request.binary_path.trim().is_empty() || !request.binary_path.starts_with('/') {
+        return Err("binary_path must be absolute".into());
+    }
+
+    let draft_only = trial
+        .get("draft_pr_only")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if draft_only && !request.draft_pr_only {
         return Err("spend must keep draft_pr_only".into());
     }
-    if request.binary_sha256.len() != 64 {
-        return Err("binary_sha256 must be 64 hex chars".into());
+    if !request.draft_pr_only {
+        return Err("production spend requires draft_pr_only".into());
     }
     if request.target_main_sha.len() != 40 && request.target_main_sha.len() != 64 {
         return Err("target_main_sha invalid".into());
     }
+    if request.target_repo.trim().is_empty() {
+        return Err("target_repo required".into());
+    }
     if !request.output_branch_prefix.starts_with("acp/") {
         return Err("output_branch_prefix must be acp/*".into());
     }
+    if request.product_task_id.trim().is_empty()
+        || request.execution_id.trim().is_empty()
+        || request.attempt_id.trim().is_empty()
+    {
+        return Err("product_task_id/execution_id/attempt_id required".into());
+    }
+    if request.cancellation_identity.trim().is_empty()
+        || request.rollback_identity.trim().is_empty()
+    {
+        return Err("cancellation_identity and rollback_identity required".into());
+    }
     // cost_authority self-validates via construction
     let _ = CostAuthority::from_json(&request.cost_authority.to_json())?;
+    // If trial has monetary estimate text only, cost must not claim provider_reported without ceiling.
+    if matches!(
+        request.cost_authority,
+        CostAuthority::ProviderReported { .. }
+    ) && trial.get("max_cost_usd_estimate").is_some()
+        && trial
+            .get("max_cost_usd_estimate")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.contains("unresolved") || s.contains("estimate_only"))
+    {
+        return Err(
+            "cost_authority provider_reported rejected while trial marks cost estimate unresolved"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn eq_u64_field(trial: &Value, key: &str, observed: u64) -> Result<(), String> {
+    let expected = trial
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("trial_envelope.{key} required"))?;
+    if expected != observed {
+        return Err(format!(
+            "spend {key}={observed} mismatches decision trial envelope {key}={expected}"
+        ));
+    }
+    Ok(())
+}
+
+fn eq_str_field(trial: &Value, key: &str, observed: &str) -> Result<(), String> {
+    let expected = trial
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("trial_envelope.{key} required"))?;
+    if expected != observed {
+        return Err(format!("spend {key} mismatches decision trial envelope"));
+    }
     Ok(())
 }
 
@@ -1616,6 +1782,7 @@ fn build_spend_body(
         "principal_kind": principal.principal_kind.as_str(),
         "principal_id": principal.principal_id,
         "product_task_id": request.product_task_id,
+        "workflow_id": request.workflow_id,
         "workflow_node_id": request.workflow_node_id,
         "execution_id": request.execution_id,
         "attempt_id": request.attempt_id,
@@ -1631,6 +1798,12 @@ fn build_spend_body(
         "target_main_sha": request.target_main_sha,
         "output_branch_prefix": request.output_branch_prefix,
         "draft_pr_only": request.draft_pr_only,
+        "max_provider_requests": request.max_provider_requests,
+        "max_retries": request.max_retries,
+        "max_input_tokens": request.max_input_tokens,
+        "max_output_tokens": request.max_output_tokens,
+        "max_total_tokens": request.max_total_tokens,
+        "max_wall_time_ms": request.max_wall_time_ms,
         "cost_authority": request.cost_authority.to_json(),
         "cancellation_identity": request.cancellation_identity,
         "rollback_identity": request.rollback_identity,
@@ -1639,6 +1812,114 @@ fn build_spend_body(
         "created_at": now,
         "expires_at": risk.get("expires_at"),
     })))
+}
+
+/// Prove attempt body / manifest identities match the one-use spend authorization
+/// before atomic consumption.
+fn validate_attempt_body_matches_spend(
+    attempt_id: &str,
+    attempt_body: &Value,
+    spend: &Value,
+) -> Result<(), String> {
+    let spend_body = spend
+        .get("body_json")
+        .cloned()
+        .unwrap_or_else(|| spend.clone());
+    let require_match = |field: &str| -> Result<(), String> {
+        let expected = spend_body
+            .get(field)
+            .cloned()
+            .or_else(|| spend.get(field).cloned());
+        let observed = attempt_body.get(field).cloned();
+        match (expected, observed) {
+            (Some(Value::Null), None) | (None, None) => Ok(()),
+            (Some(e), Some(o)) if e == o => Ok(()),
+            (Some(e), Some(o)) => Err(format!(
+                "attempt body {field} mismatch vs spend authorization (attempt={o}, spend={e})"
+            )),
+            (Some(_), None) => Err(format!(
+                "attempt body missing required spend-bound field {field}"
+            )),
+            (None, Some(_)) => Ok(()), // attempt-only metadata allowed
+        }
+    };
+    for field in [
+        "product_task_id",
+        "workflow_id",
+        "workflow_node_id",
+        "execution_id",
+        "binary_path",
+        "binary_version",
+        "binary_sha256",
+        "provider_kind",
+        "provider_host",
+        "provider_base_url",
+        "model",
+        "target_repo",
+        "target_main_sha",
+        "output_branch_prefix",
+        "draft_pr_only",
+        "max_provider_requests",
+        "max_retries",
+        "max_input_tokens",
+        "max_output_tokens",
+        "max_total_tokens",
+        "max_wall_time_ms",
+        "cancellation_identity",
+        "rollback_identity",
+    ] {
+        require_match(field)?;
+    }
+    if let Some(paths) = spend_body.get("admitted_endpoint_paths") {
+        if attempt_body.get("admitted_endpoint_paths").is_some()
+            && attempt_body.get("admitted_endpoint_paths") != Some(paths)
+        {
+            return Err("attempt admitted_endpoint_paths mismatch vs spend".into());
+        }
+    }
+    if let Some(cost) = spend_body.get("cost_authority") {
+        if let Some(obs) = attempt_body.get("cost_authority") {
+            if obs != cost {
+                return Err("attempt cost_authority mismatch vs spend".into());
+            }
+        }
+    }
+    let spend_attempt = spend_body
+        .get("attempt_id")
+        .and_then(Value::as_str)
+        .or_else(|| spend.get("attempt_id").and_then(Value::as_str));
+    if let Some(expected_attempt) = spend_attempt {
+        if expected_attempt != attempt_id {
+            return Err("attempt_id mismatch vs spend authorization".into());
+        }
+    }
+    let _ = attempt_body
+        .get("manifest_sha256")
+        .and_then(Value::as_str)
+        .filter(|s| s.len() == 64)
+        .ok_or("attempt body requires manifest_sha256")?;
+    // Manifest may embed expected identities; if present, they must not expand spend.
+    if let Some(manifest) = attempt_body.get("manifest") {
+        for field in [
+            "product_task_id",
+            "execution_id",
+            "provider_kind",
+            "model",
+            "target_repo",
+            "target_main_sha",
+            "max_provider_requests",
+            "max_retries",
+        ] {
+            if let Some(mval) = manifest.get(field) {
+                if let Some(sval) = spend_body.get(field) {
+                    if mval != sval {
+                        return Err(format!("manifest.{field} mismatches spend authorization"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn admit_sqlite(
@@ -1685,7 +1966,8 @@ fn admit_sqlite(
 
     let spend = load_spend_sqlite(tx, spend_authorization_id)?;
     validate_spend_for_admit(&spend, principal, allow_fixture_dry_run, now)?;
-    // Consume one-use spend atomically.
+    validate_attempt_body_matches_spend(attempt_id, body, &spend)?;
+    // Consume one-use spend atomically only after identity match.
     let updated = tx
         .execute(
             "UPDATE managed_acceptance_spend_authorizations
@@ -1810,6 +2092,7 @@ fn admit_pg(
     }
     let spend = load_spend_pg(tx, spend_authorization_id)?;
     validate_spend_for_admit(&spend, principal, allow_fixture_dry_run, now)?;
+    validate_attempt_body_matches_spend(attempt_id, body, &spend)?;
     let updated = tx
         .execute(
             "UPDATE managed_acceptance_spend_authorizations
@@ -1921,6 +2204,75 @@ fn validate_decision_status(status: &str) -> Result<(), String> {
         | "expired" => Ok(()),
         other => Err(format!("invalid decision status {other}")),
     }
+}
+
+/// Finite expiry is mandatory. Rejects missing and far-future placeholders (e.g. 2099).
+fn require_finite_expiry(expires_at: Option<&str>) -> Result<String, String> {
+    let raw = expires_at
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or("finite expires_at is mandatory for managed acceptance decisions")?;
+    // Require RFC3339-like ISO timestamp with date+time.
+    if raw.len() < 19 || !raw.contains('T') {
+        return Err("expires_at must be an ISO-8601 date-time".into());
+    }
+    // Reject unbounded / placeholder far-future.
+    if raw.starts_with("2099") || raw.starts_with("9999") || raw.starts_with("2100") {
+        return Err("expires_at far-future placeholder is not a finite expiry".into());
+    }
+    // Basic year bound: must be within 10 years of 2026 epoch for safety.
+    let year: u32 = raw
+        .get(0..4)
+        .and_then(|y| y.parse().ok())
+        .ok_or("expires_at year unparseable")?;
+    if !(2020..=2036).contains(&year) {
+        return Err("expires_at year out of bounded finite range".into());
+    }
+    Ok(raw.to_string())
+}
+
+fn validate_trial_envelope_shape(trial: &Value) -> Result<(), String> {
+    if !trial.is_object() {
+        return Err("trial_envelope must be an object".into());
+    }
+    for key in [
+        "max_retries",
+        "max_provider_requests",
+        "max_input_tokens",
+        "max_output_tokens",
+        "max_total_tokens",
+        "max_wall_time_ms",
+        "provider_kind",
+        "provider_host",
+        "provider_base_url",
+        "model",
+        "admitted_endpoint_paths",
+        "draft_pr_only",
+    ] {
+        if trial.get(key).is_none() {
+            return Err(format!("trial_envelope.{key} required"));
+        }
+    }
+    Ok(())
+}
+
+/// One canonical authority hash over body + residual + status + expiry + invalidation.
+pub fn canonical_decision_authority_hash(
+    decision_body: &Value,
+    residual_finding_sha256: &str,
+    status: &str,
+    expires_at: &str,
+    invalidation_state: &str,
+) -> Result<String, String> {
+    let envelope = sort_value(&json!({
+        "schema_version": "managed_acceptance_decision_authority_envelope.v1",
+        "decision_body": decision_body,
+        "residual_finding_sha256": residual_finding_sha256,
+        "status": status,
+        "expires_at": expires_at,
+        "invalidation_state": invalidation_state,
+    }));
+    Ok(sha256_hex(canonical_json(&envelope)?.as_bytes()))
 }
 
 fn validate_attempt_terminal_status(status: &str) -> Result<(), String> {
@@ -2247,6 +2599,7 @@ mod tests {
             "decision_id": decision_id,
             "schema_version": "codex_partial_mediation_authority_decision.v2",
             "status": "draft_pending_operator",
+            "invalidation_state": "none",
             "acknowledgement": {
                 "required_phrase": OPERATOR_RISK_ACCEPTANCE_PHRASE,
             },
@@ -2258,6 +2611,13 @@ mod tests {
                 "max_output_tokens": 4000,
                 "max_total_tokens": 12000,
                 "max_wall_time_ms": 300000,
+                "exact_codex_version": "0.145.0",
+                "exact_codex_sha_required": true,
+                "provider_kind": "openai_compatible",
+                "provider_host": "api.openai.com",
+                "provider_base_url": "https://api.openai.com/v1",
+                "admitted_endpoint_paths": vec!["/v1/responses"],
+                "model": "gpt-5.6-luna",
             },
         })
     }
@@ -2281,25 +2641,63 @@ mod tests {
         SpendAuthorizationRequest {
             risk_authorization_id: risk_id.into(),
             product_task_id: "ptask-1".into(),
+            workflow_id: Some("wf-1".into()),
             workflow_node_id: Some("node-1".into()),
             execution_id: format!("codex-attempt-{attempt_id}"),
             attempt_id: attempt_id.into(),
             binary_path: "/usr/bin/codex".into(),
             binary_version: "0.145.0".into(),
             binary_sha256: "ab".repeat(32),
-            provider_kind: "openai".into(),
+            provider_kind: "openai_compatible".into(),
             provider_host: "api.openai.com".into(),
             provider_base_url: "https://api.openai.com/v1".into(),
             admitted_endpoint_paths: vec!["/v1/responses".into()],
-            model: "gpt-5".into(),
+            model: "gpt-5.6-luna".into(),
             target_repo: "org/disposable-trial".into(),
             target_main_sha: "a".repeat(40),
             output_branch_prefix: "acp/".into(),
             draft_pr_only: true,
+            max_provider_requests: 1,
+            max_retries: 0,
+            max_input_tokens: 8000,
+            max_output_tokens: 4000,
+            max_total_tokens: 12000,
+            max_wall_time_ms: 300000,
             cost_authority: CostAuthority::CostUnavailable,
             cancellation_identity: "cancel-1".into(),
             rollback_identity: "rollback-1".into(),
         }
+    }
+
+    fn attempt_body_for(req: &SpendAuthorizationRequest) -> Value {
+        json!({
+            "manifest_sha256": "cd".repeat(32),
+            "product_task_id": req.product_task_id,
+            "workflow_id": req.workflow_id,
+            "workflow_node_id": req.workflow_node_id,
+            "execution_id": req.execution_id,
+            "binary_path": req.binary_path,
+            "binary_version": req.binary_version,
+            "binary_sha256": req.binary_sha256,
+            "provider_kind": req.provider_kind,
+            "provider_host": req.provider_host,
+            "provider_base_url": req.provider_base_url,
+            "admitted_endpoint_paths": req.admitted_endpoint_paths,
+            "model": req.model,
+            "target_repo": req.target_repo,
+            "target_main_sha": req.target_main_sha,
+            "output_branch_prefix": req.output_branch_prefix,
+            "draft_pr_only": req.draft_pr_only,
+            "max_provider_requests": req.max_provider_requests,
+            "max_retries": req.max_retries,
+            "max_input_tokens": req.max_input_tokens,
+            "max_output_tokens": req.max_output_tokens,
+            "max_total_tokens": req.max_total_tokens,
+            "max_wall_time_ms": req.max_wall_time_ms,
+            "cost_authority": req.cost_authority.to_json(),
+            "cancellation_identity": req.cancellation_identity,
+            "rollback_identity": req.rollback_identity,
+        })
     }
 
     #[test]
@@ -2373,11 +2771,9 @@ mod tests {
             .unwrap();
         assert_eq!(auth2["authorization_id"], auth_id);
 
+        let spend_request = spend_req(&auth_id, "attempt-1");
         let spend = store
-            .issue_managed_acceptance_spend_authorization(
-                &principal,
-                &spend_req(&auth_id, "attempt-1"),
-            )
+            .issue_managed_acceptance_spend_authorization(&principal, &spend_request)
             .unwrap();
         let spend_id = spend["spend_authorization_id"]
             .as_str()
@@ -2385,12 +2781,7 @@ mod tests {
             .to_string();
         assert_eq!(spend["status"], "active");
 
-        let attempt_body = json!({
-            "manifest_sha256": "cd".repeat(32),
-            "execution_id": "codex-attempt-1",
-            "product_task_id": "ptask-1",
-            "workflow_node_id": "node-1",
-        });
+        let attempt_body = attempt_body_for(&spend_request);
         let a1 = store
             .admit_managed_acceptance_attempt(
                 &principal,
@@ -2422,24 +2813,21 @@ mod tests {
             .unwrap();
         assert_eq!(spend_row["status"], "consumed");
 
+        let mut conflict_body = attempt_body.clone();
+        conflict_body["manifest_sha256"] = json!("ee".repeat(32));
         let conflict = store.admit_managed_acceptance_attempt(
             &principal,
             "attempt-1",
-            &json!({
-                "manifest_sha256": "ee".repeat(32),
-                "execution_id": "codex-attempt-1",
-            }),
+            &conflict_body,
             &spend_id,
             true,
         );
         assert!(conflict.unwrap_err().contains("conflict"));
 
         // Fixture cannot admit without allow_fixture_dry_run
+        let spend2_req = spend_req(&auth_id, "attempt-2");
         let spend2 = store
-            .issue_managed_acceptance_spend_authorization(
-                &principal,
-                &spend_req(&auth_id, "attempt-2"),
-            )
+            .issue_managed_acceptance_spend_authorization(&principal, &spend2_req)
             .unwrap();
         let spend2_id = spend2["spend_authorization_id"]
             .as_str()
@@ -2449,7 +2837,7 @@ mod tests {
             .admit_managed_acceptance_attempt(
                 &principal,
                 "attempt-2",
-                &json!({"manifest_sha256": "ff".repeat(32), "execution_id": "x"}),
+                &attempt_body_for(&spend2_req),
                 &spend2_id,
                 false,
             )
@@ -2535,20 +2923,21 @@ mod tests {
             )
             .unwrap();
         let auth_id = auth["authorization_id"].as_str().unwrap().to_string();
+        let spend_request = spend_req(&auth_id, "race-1");
         let spend = store
-            .issue_managed_acceptance_spend_authorization(
-                &principal,
-                &spend_req(&auth_id, "race-1"),
-            )
+            .issue_managed_acceptance_spend_authorization(&principal, &spend_request)
             .unwrap();
         let spend_id = spend["spend_authorization_id"]
             .as_str()
             .unwrap()
             .to_string();
+        let attempt_body = attempt_body_for(&spend_request);
         let barrier = Arc::new(Barrier::new(2));
         let path2 = path.clone();
         let spend_a = spend_id.clone();
         let spend_b = spend_id.clone();
+        let body_a = attempt_body.clone();
+        let body_b = attempt_body.clone();
         let b1 = Arc::clone(&barrier);
         let b2 = Arc::clone(&barrier);
         let h1 = thread::spawn(move || {
@@ -2558,13 +2947,7 @@ mod tests {
             let p = AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-race")
                 .unwrap();
             b1.wait();
-            s.admit_managed_acceptance_attempt(
-                &p,
-                "race-1",
-                &json!({"manifest_sha256": "22".repeat(32), "execution_id": "e"}),
-                &spend_a,
-                true,
-            )
+            s.admit_managed_acceptance_attempt(&p, "race-1", &body_a, &spend_a, true)
         });
         let path3 = path.clone();
         let h2 = thread::spawn(move || {
@@ -2574,13 +2957,7 @@ mod tests {
             let p = AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-race")
                 .unwrap();
             b2.wait();
-            s.admit_managed_acceptance_attempt(
-                &p,
-                "race-1",
-                &json!({"manifest_sha256": "22".repeat(32), "execution_id": "e"}),
-                &spend_b,
-                true,
-            )
+            s.admit_managed_acceptance_attempt(&p, "race-1", &body_b, &spend_b, true)
         });
         let r1 = h1.join().unwrap();
         let r2 = h2.join().unwrap();
@@ -2640,5 +3017,209 @@ mod tests {
             .issue_managed_acceptance_spend_authorization(&principal, &spend_req(&auth_id, "x"))
             .unwrap_err();
         assert!(err.contains("not active") || err.contains("revok"), "{err}");
+    }
+
+    #[test]
+    fn finite_expiry_mandatory_and_bound_into_decision_hash() {
+        let (_dir, store) = store();
+        let body = decision_body("mad-exp");
+        let residual = "44".repeat(32);
+        let err = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &body,
+                &residual,
+                "draft_pending_operator",
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(err.contains("finite expires_at"), "{err}");
+        let err_far = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &body,
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2099-01-01T00:00:00Z"),
+            )
+            .unwrap_err();
+        assert!(
+            err_far.contains("far-future") || err_far.contains("finite"),
+            "{err_far}"
+        );
+        let d1 = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &body,
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let d2 = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body("mad-exp-2"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-27T00:00:00Z"),
+            )
+            .unwrap();
+        assert_ne!(
+            d1["decision_body_sha256"], d2["decision_body_sha256"],
+            "different expiry must change canonical authority hash"
+        );
+    }
+
+    #[test]
+    fn spend_budget_mismatch_against_decision_rejects() {
+        let (_dir, store) = store();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-budget")
+                .unwrap();
+        let residual = "55".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body("mad-budget"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let dsha = decision["decision_body_sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let auth = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: "mad-budget".into(),
+                    expected_decision_body_sha256: dsha,
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        let auth_id = auth["authorization_id"].as_str().unwrap().to_string();
+        let mut bad = spend_req(&auth_id, "bad-budget");
+        bad.max_provider_requests = 99;
+        let err = store
+            .issue_managed_acceptance_spend_authorization(&principal, &bad)
+            .unwrap_err();
+        assert!(err.contains("max_provider_requests"), "{err}");
+        bad = spend_req(&auth_id, "bad-model");
+        bad.model = "mutated-model".into();
+        let err = store
+            .issue_managed_acceptance_spend_authorization(&principal, &bad)
+            .unwrap_err();
+        assert!(err.contains("model"), "{err}");
+    }
+
+    #[test]
+    fn attempt_body_mismatch_rejects_before_spend_consumption() {
+        let (_dir, store) = store();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-mismatch")
+                .unwrap();
+        let residual = "66".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body("mad-mismatch"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let dsha = decision["decision_body_sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let auth = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: "mad-mismatch".into(),
+                    expected_decision_body_sha256: dsha,
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        let auth_id = auth["authorization_id"].as_str().unwrap().to_string();
+        let req = spend_req(&auth_id, "mismatch-1");
+        let spend = store
+            .issue_managed_acceptance_spend_authorization(&principal, &req)
+            .unwrap();
+        let spend_id = spend["spend_authorization_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut body = attempt_body_for(&req);
+        body["model"] = json!("wrong-model");
+        let err = store
+            .admit_managed_acceptance_attempt(&principal, "mismatch-1", &body, &spend_id, true)
+            .unwrap_err();
+        assert!(err.contains("mismatch") || err.contains("model"), "{err}");
+        // Spend must remain active (not consumed on mismatch).
+        let spend_row = store
+            .get_managed_acceptance_spend_authorization(&spend_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(spend_row["status"], "active");
+    }
+
+    #[test]
+    fn expired_decision_rejects_accept_and_spend() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("exp.db");
+        // Create decision while clock is early.
+        let store_early =
+            LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
+                .unwrap();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-exp").unwrap();
+        let residual = "77".repeat(32);
+        let decision = store_early
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body("mad-time"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-25T13:00:00Z"),
+            )
+            .unwrap();
+        let dsha = decision["decision_body_sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // Advance clock past expiry.
+        let store_late =
+            LocalProductStore::new_with_clock(&path, || "2026-07-25T14:00:00Z".to_string())
+                .unwrap();
+        let err = store_late
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: "mad-time".into(),
+                    expected_decision_body_sha256: dsha,
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap_err();
+        assert!(err.contains("expir"), "{err}");
     }
 }
