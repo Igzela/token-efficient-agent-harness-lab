@@ -1,222 +1,140 @@
 # Next Decision
 
-Last updated: 2026-07-24.
+Last updated: 2026-07-25.
 
 ## Current Direction
 
-Finish known correctness/security repairs, complete the default-off managed-executor Product Golden Path, run and freeze the first bounded Real Workload Evidence (RWE) corpus, then run small compatibility-preserving Architecture Convergence packets. Rerun the same corpus after convergence before making a Level-2 GO/NO-GO decision. Meta Improver is later and separately authorized; PR #225 is independent and last.
+The repository optimizes one outcome:
 
-Rust remains the sole authority for state transitions, workflow execution, permissions, budgets, leases, approvals, evidence, output reconciliation, and persistence. TypeScript remains interaction/projection; Python remains a bounded adapter/evaluation/research layer. No second runtime, scheduler, store, evaluator, workspace, output, audit, or rollback owner.
+> Under non-negotiable quality, safety, traceability, compatibility, and rollback constraints, increase verifiable and reusable task delivery per unit of total lifecycle cost.
 
-The managed process-boundary repair is complete via PR #281 squash merge `54b5a430…`; Claude authority repair is complete via PR #282 squash merge `95c3528d…`. The audit found no provider-independent worktree-only filesystem mediation for Claude 2.1.217, so managed Claude admission remains fail-closed. No model request, target output, OpenCode admission, Vader/Issue #208 use, or active-Harness mutation is authorized.
+Quality, safety, integrity, authority, and rollback are hard gates. Token use, monetary cost, latency, engineering effort, maintenance surface, and expected reuse are optimization evidence only after those gates pass.
+
+Do not substitute feature count, model/provider count, Dashboard completeness, PR creation, or fixture success for product capability or learning.
+
+The authoritative order is:
+
+```text
+Golden Path authority and one live managed acceptance
+→ first frozen Real Workload Evidence baseline
+→ Architecture Convergence AC1–AC7
+→ identical-corpus replay
+→ Level-2 GO/NO-GO
+→ bounded Level-2 controller only on GO
+→ separately authorized Meta Improver experiment
+→ Dashboard #225 last
+```
+
+Do not skip RWE and begin Architecture Convergence or Level-2 early. Provider-free fixture completion is not live acceptance.
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-1` / `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2` — `IN_PROGRESS`.
+1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS`.
 2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
 3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
 4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
 5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
 6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-OPENCODE-BINARY-ADMISSION-1` and `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` remain deferred/parked; PR #225 remains presentation-only and last.
 
 ## Packet States
 
-`READY_FOR_EXECUTION` means prerequisites and acceptance are sufficient. `BLOCKED_PREREQUISITE` means a named earlier condition is incomplete. `DECISION_REQUIRED` means safe authority cannot be derived. `IN_PROGRESS` means one branch/PR owns the work. `COMPLETE` means merged, verified, reviewed, and documented.
+- `READY_FOR_EXECUTION` — prerequisites and authority are sufficient to begin.
+- `BLOCKED_PREREQUISITE` — a named earlier evidence or authority condition is incomplete.
+- `DECISION_REQUIRED` — safe authority cannot be derived automatically.
+- `IN_PROGRESS` — one current branch/PR board owns the work.
+- `COMPLETE` — merged, verified, independently reviewed, and documented.
+
+Historical compatibility labels retained for handoff checks only: Packet PR207-REPAIR-1; Packet PE2-RUNTIME-PRODUCER-1; Packet PE4-EVIDENCE-ENTRY-1; Packet TOOL-DISCOVERY-BENCH-1. They are not active routing.
+
+## Open PR Coordination
+
+- PR #299 is the cumulative Golden Path authority review surface and supersedes #297/#298.
+- PR #300 is provider-free RWE preparation stacked on #299; it cannot establish a live baseline.
+- PR #301 is observation-only CC Switch adaptation; it does not close #299/#300 authority.
+- PR #225 is presentation-only and remains last.
+
+The immediate engineering task is to finish the final heads of #299/#300/#301 without overwriting the main documentation convergence, obtain complete CI and independent review, and merge only accepted surfaces in dependency order.
+
+## Evidence Required for Every Engineering Board
+
+Each coherent board must return a bounded `implementation_cost_receipt` in its final report. This is review evidence, not a new runtime store or budget authority.
+
+Record when available:
+
+```text
+agent_sessions
+review_cycles
+repair_iterations
+ci_runs
+ci_compute_minutes
+files_changed
+schema_migrations
+compatibility_adapters_added
+authority_boundaries_touched
+external_dependencies_added
+rollback_complexity
+known_maintenance_surface
+expected_reuse_count
+cost_or_measurement_unavailable_fields
+```
+
+The receipt may begin as a report/document contract. Persisting or automating it requires a later reviewed design and must reuse existing evidence owners.
+
+A Level-2 GO decision requires more than runtime token improvement. It must consider comparable quality/safety, provider/token/latency/cost evidence, implementation and review cost, migration/rollback risk, maintenance surface, authority growth, failure recovery, expected reuse, and realistic implementation feasibility.
+
+A change that reduces tokens but increases total lifecycle cost or weakens reliability is not an efficiency improvement.
 
 ## Common Execution Protocol
 
-Historical labels retained for handoff compatibility: Packet PR207-REPAIR-1; Packet PE2-RUNTIME-PRODUCER-1; Packet PE4-EVIDENCE-ENTRY-1; Packet TOOL-DISCOVERY-BENCH-1. They are not active routing.
+- Refresh actual `main`, open PR heads, CI, reviews, active documents, and overlapping ownership before work.
+- Use one Agent session per coherent board when practical, with internal commit boundaries rather than repeated approval interruptions.
+- Do not combine unrelated authority surfaces into one unreviewable commit.
+- A new head invalidates earlier CI and review conclusions.
+- Reuse the existing scheduler, executor, worktree, verification, artifact, approval, output, replay, scorecard, audit, and `LocalProductStore` owners.
+- Bind authority from persisted current owners, never caller assertions.
+- Preserve SQLite/PostgreSQL parity, atomicity, restart, concurrency, idempotency, cancellation, lease ownership, late-write refusal, and rollback.
+- Keep provider execution off in CI; keep target `main` unchanged; keep auto-merge disabled.
+- No Agent may self-approve risk, spend, merge, release, deployment, or production adoption.
+- Finish focused/full checks, exact-head CI, complete-diff review, handoff validation, and rollback review before merge.
 
-- Refresh actual `main`, PRs/issues, CI, controls, documents, and overlapping ownership.
-- Use one focused branch/PR per coherent risk surface; a new head invalidates old CI and review.
-- Reuse current scheduler, executor, worktree, verification, artifact, approval, output, replay, scorecard, audit, and `LocalProductStore` owners.
-- Bind authority from persisted current owners, not caller assertions; fail closed on stale, conflicting, tampered, duplicate, late, oversized, killed, paused, over-budget, or outcome-unknown state.
-- Preserve SQLite/PostgreSQL parity, atomicity, restart, concurrency, idempotency, compensation, and rollback.
-- Keep provider execution off in CI, target `main` unchanged, auto-merge disabled, and merge/release/deploy outside the runtime.
-- Run focused/full verification, exact-head CI, complete-diff correctness/security review, handoff checks, and explicit rollback review before manual squash merge.
+## Golden Path Acceptance Gate
+
+A live managed task may start only when all of these are current and exact:
+
+- accepted decision and residual-risk hashes;
+- authenticated non-fixture operator principal and required scopes;
+- separate one-use spend authorization;
+- parent-only credential that never enters the child;
+- exact executable path/version/SHA;
+- exact provider kind/host/base URL/admitted paths/model;
+- exact ProductTask/workflow/node/attempt identity;
+- exact target repository and target-main SHA;
+- request/retry/token/time/cost contract;
+- Draft-PR-only output, no auto-merge, no release/deploy;
+- gateway/session usage reconciliation;
+- cancellation, cleanup, rollback, approval, output-confirmation, and terminal-evidence owners.
+
+Codex remains `mediation_hardened_partial`. Retry identity, product-enforced loopback-only network confinement, and host namespace limitations remain explicit residual risks unless separately proved.
 
 ## Hard Stops
 
-- Secret, credential, raw prompt/output/transcript, private-path, or unredacted repository-content exposure.
-- A second authority, weakened allowlist, bypassed approval, target-default-branch write, provider call in CI, auto-merge, release, deployment, or production installation.
-- Missing proof of process containment, filesystem confinement, model/usage authority, atomicity, restart, concurrency, idempotency, late-write refusal, rollback, or external-effect status.
-- Hidden failure, falsified CI/review/evaluator/cost evidence, unresolved objection, overlapping ownership, or required CI not green for the exact head.
-
-## Packet PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2 — bounded managed process owner
-
-**State:** `COMPLETE`
-
-PR #281 merged as `54b5a430…`. It proved versioned per-stream/combined limits, bounded concurrent capture, descendant cleanup, typed spawn/wait/timeout/reader/limit/cleanup failures, hardened probing, non-retry after effect, focused fault tests, full applicable verification, exact-head CI, review, and rollback. No provider request or live acceptance was included.
-
-## Packet PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2 — Claude authority
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2
-
-PR #282 merged as `95c3528d…`; exact-head `30001196729`, full tests `30001196738`, and external validation `30001196749` passed. Exact binary/version/SHA and bounded process/probe controls exist, but provider-independent worktree-only confinement is not proved and real `HOME` must not be inherited. Runtime Claude admission is disabled; no model request was made. Reopen only with a separately reviewed mediation boundary and provider-free probes for admitted, out-of-scope, parent/sibling, `/etc`, `/proc/self/environ`, home/secret paths, symlink escape, Bash, WebFetch, WebSearch, MCP, Agent, Task/subagent, and notebook tools.
-
-## Packet PE7-UTF8-BOUNDARY-REPAIR-1 — deterministic UTF-8 previews
-
-**State:** `COMPLETE`
-
-PR #283 squash-merged as `9ee5544c…`; exact head `472c6608…`; full CI run `30003155716` and exact-head run `30003155742` passed. The shared helper includes the ellipsis in the byte limit, preserves valid UTF-8 boundaries, and keeps hashes based on complete objectives. No external validation run was applicable.
-
-## Packet PE7-CI-ACCELERATION-1 — bounded CI speed maintenance
-
-**State:** `COMPLETE`
-
-PR #284 squash-merged as `456092fb…`; exact head `52ae7720…`; exact-head run `30004445550`, cache-hit full run `30004445554`, and post-merge main run `30006429193` passed. Baseline → cache-hit: Rust 12m28s → 11m05s, PG 11m00s → 11m02s, cutover 10m28s → 8m14s, Docker 6m27s → 5m02s, native 4m22s → 2m34s, TypeScript 50s → 51s, Python 25s → 22s. Main caches are present; no gate was removed. Cargo-audit (~2m09s), full-test duplication, Docker BuildKit, and cache-size/eviction policy remain unoptimized follow-ups.
-
-## Packet PE7-CI-CACHE-BUDGET-1 — bounded cache budget
-
-**State:** `COMPLETE`
-
-PR #285 (`9c8c3a42…`) established the bounded layout; PR #287 (`1bd17d7a…`) removed cutover's full-target restore; PR #289 (`9db4845c…`, exact head `01e67048…`) disabled incremental PG compilation. The initial eight caches used `12,567,992,986` bytes; the final four main caches use `3,870,843,444` bytes. The limit endpoint returned HTTP 402, so the configured account limit is unknown; use a 10 GB reference ceiling and 8 GB operating budget. No repeated-key thrashing or advisory-database cache was found. Old closed-PR caches and the superseded Bun cache were removed only after classification.
-
-Exact-head/full/post-merge verification passed: #285 `30014629247`/`30014629441`/`30017458718`; #287 `30020044817`/`30020044848`; #289 `30025724951`/`30025726379`/main `30026711865`; final docs-sync main `30029185064` passed on attempt 2 after attempt 1 exposed the pre-existing concurrent output-authority test failure. RustSec data still refreshes during `cargo audit`; no security gate or check was removed. This was workflow-only; rollback is revert of #285/#287/#289 plus the docs commits.
-
-## Packet PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1 — concurrent output CAS
-
-**State:** `COMPLETE`
-
-PR #292 squash-merged as `234def24…`; exact head `799674df…`; exact-head run `30082115186` and full tests `30082115131` passed on first attempt. Concurrent identical non-network output callers now reconstruct the winner’s canonical receipt and terminal evidence after the ProductTask version advances; create-path expected-current authority remains strict; conflicting identities fail closed. SQLite and PostgreSQL concurrent coverage retained. Do not start RWE from this packet.
-
-## Packet PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1 — multi-executor usage evidence
-
-**State:** `COMPLETE`
-
-PR #294 squash-merged; exact head `58e549ba…`; exact-head `30089192304` and full tests `30089192331` passed first attempt. Unified `execution_usage_event.v1` with Codex/Claude/OpenCode/provider adapters and cross-source reconcile. Evidence only; no second budget owner; live admission still separately blocked per executor.
-
-One Rust-owned `execution_usage_event.v1` contract with adapters for Codex JSONL, Claude Code JSONL, OpenCode read-only SQLite, and provider/proxy responses. Cross-source reconcile prefers higher-precedence sources when counters agree and fails closed on contradictions. Importers produce evidence only; ProductTask budget remains the sole authority. Exact post-call usage evidence does **not** grant pre/cross-call hard budget authority. Live managed admission remains separately gated (Codex mediation/ordering, Claude confinement, OpenCode binary admission).
-
-## Packet PE7-CODEX-TASK-BUDGET-AUTHORITY-1 / PE7-CODEX-SESSION-USAGE-AUTHORITY-1 — Codex budget + session usage
-
-**State:** `COMPLETE` (superseded for product admission by PE7-CODEX-FULL-MEDIATION-ADMISSION-1)
-
-PR #293 squash-merged as `29262bce…`. Established loopback gateway, session usage importer, and partial admission evidence. JSONL alone is not a hard cross-call gate.
-
-## Packet PE7-CODEX-FULL-MEDIATION-ADMISSION-1 — Codex full mediation admission
-
-**State:** `COMPLETE` (**partial foundation only** — do not treat as full admission)
-
-PR #295 squash-merged as `381571bf…`. Useful foundation (loopback gateway, bwrap launch, session corroboration) but independent review found authority gaps: sandbox-mounted journal, fail-open journal writes, weak attempt IDs, unbound provider identity, unproved retry axis, and capability-report-only bypass claims. **Not accepted as full admission.**
-
-## Packet PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1 — authority repair
-
-**State:** `COMPLETE` (**partial admission class retained**)
-
-**Prerequisite:** PE7-CODEX-FULL-MEDIATION-ADMISSION-1 (merged foundation)
-
-PR #296 squash-merged as `b5920116…`; exact head `9cbce74a…`; exact-head `30098047528` and full tests `30098047448` passed (all jobs green).
-
-Repaired authority gaps without live provider calls:
-
-1. Parent-owned usage journal **outside** every child sandbox mount (`acp-codex-parent-journal/`).
-2. Fail-closed journal: durable pre-forward reserve → commit before response return; write/sync failure halts gateway; no further admits after halt.
-3. Restart: in-flight / outcome-unknown remains charged/blocked; exact `codex-attempt-*` UUID may only resume its own journal.
-4. Provider identity bound into `CodexBudgetAuthority` / `managed_executor_identity.v1`; environment substitution rejected.
-5. Separate `max_provider_requests` and `max_retries` axes; Codex does not wire-label internal retries.
-6. bwrap FS isolation (+ user/pid ns when host permits); CI installs bubblewrap on rust/pg/cutover lanes; GHA uid_map denial classified BLOCKED residual (not silent success).
-7. Gateway committed usage maps into existing `execution_usage_event.v1` (`gateway_adapter`); session JSONL corroboration only; ProductTask sole budget owner.
-
-**Admission class:** `mediation_hardened_partial` — **not** full admission.
-
-**Remaining blockers for full admission / live managed acceptance:**
-
-1. True Codex internal retry identity (wire-unlabeled).
-2. Loopback-only network isolation (unproved without elevated privileges).
-3. Host-dependent unprivileged user-namespace/PID isolation (uid_map may be denied).
-4. Live operator credential + authorization for managed acceptance.
-
-Do **not** claim that only operator credential/authorization remains.
-
-## Packet PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1 — residual full-admission axes
-
-**State:** `COMPLETE` (provider-free evidence complete on stacked review head; main merge still requires independent approval of the residual-admission PR — do not treat main as sealed until squash-merged)
-
-**Prerequisite:** PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1
-
-Independent residual investigation (`codex_residual_admission_finding.v1`):
-
-1. **Retry identity — NO-GO.** Codex CLI 0.145.0 has internal retry modules but no gateway-visible wire identity that distinguishes an internal HTTP retry from a new logical request, transport replay, resumed stream, or second tool/model round. `max_retries` remains a subsequent-POST cap only. Heuristic inference is forbidden.
-2. **Network confinement — residual.** Executed probes prove an unprivileged design (`bwrap --unshare-net` + parent Unix gateway socket; external egress blocked; host loopback TCP isolated; Unix gateway reachable). Product launch still shares the host network (credential non-bypass only) and does **not** enforce loopback-only.
-3. **User/PID namespace — host-typed.** Executed probes classify `proved` / `unavailable_and_fail_closed` / `unsupported` / `outcome_unknown`. No silent downgrade; no host-wide sysctl mutation.
-
-**Verdict:** `residual_admission_no_go`. Product class remains `mediation_hardened_partial`. Do **not** upgrade to full admission.
-
-## Packet PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1 — bounded trial authority draft
-
-**State:** `COMPLETE` (draft contract complete on stacked review head; **draft only** — agent does **not** self-approve; main seal requires independent merge of stacked PRs)
-
-**Prerequisite:** PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1
-
-Contract: `codex_partial_mediation_authority_decision.v1` (`engine/src/cli/codex_partial_mediation_authority_decision.rs`).
-
-- Status on emit: `draft_pending_operator` (does **not** authorize live trial).
-- Agent recommendation: `recommend_go_bounded_trial` under compensating controls — **not** approval.
-- Operator acknowledgement requires exact phrase + decision body SHA-256 + residual finding SHA-256 + human actor identity; bare env/boolean and agent/bot actors are rejected.
-- Maximum trial envelope: one disposable repo, one ordinary coding task, exact Codex 0.145.0 + SHA, one provider binding, parent-only API key, no ChatGPT OAuth, `max_retries=0`, `max_provider_requests=1`, predeclared token/time limits, Draft PR only, target `main` unchanged, auto-merge off, no release/deploy, gateway+session reconcile, exact terminal evidence, explicit cancel/cleanup.
-- Invalidation: residual hash change, identity/envelope drift, auto-merge, OAuth reuse, expiry, operator reject.
-- GO/NO-GO alternatives and rollback/kill procedures are recorded in the contract.
-
-**Stacked:** not independently mergeable until residual-admission PR is accepted on main.
-
-## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1 — provider-free preflight
-
-**State:** `COMPLETE` on stacked review head (provider-free only; **no live model request**; main seal requires independent board approval/merge)
-
-**Prerequisite:** PE7-CODEX-PARTIAL-MEDIATION-AUTHORITY-DECISION-1
-
-Contract: `codex_managed_acceptance_preflight.v1` + redacted `codex_managed_acceptance_manifest.v1` (`engine/src/cli/codex_managed_acceptance_preflight.rs`).
-
-Typed results: `ready_under_full_admission` | `ready_pending_operator_risk_acceptance` | `blocked_missing_credential` | `blocked_missing_authorization` | `blocked_isolation` | `blocked_identity` | `blocked_budget` | `outcome_unknown`.
-
-## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-DRY-RUN-1 — fixture/mock acceptance dry-run
-
-**State:** `COMPLETE` on stacked review head (provider-free; **no live model request**)
-
-**Prerequisite:** PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-PREFLIGHT-1
-
-Contract: `codex_managed_acceptance_dry_run.v1` / receipt `codex_managed_acceptance_dry_run_receipt.v1` + board dossier `codex_admission_board_readiness.v1` (`engine/src/cli/codex_managed_acceptance_dry_run.rs`).
-
-Uses real loopback gateway + parent journal + mock upstream. Scenarios: success, provider failure, timeout, cancellation, budget exhaustion (`max_retries=0`), evidence contradiction, outcome-unknown + restart, duplicate-start rejection, idempotent replay. Hash-bound redacted receipts; SQLite (and `pg-tests`) operator-acknowledgement binding for receipt identity (acknowledgement-only, not approval).
-
-## Provider-free Codex admission board (single manual gate)
-
-**State:** cumulative review surface **PR #299 only** (parent #297/#298 superseded by tip; auto-merge disabled; not approved for merge until independent review).
-
-**Board A repair (store-owned authority):** V33 adds `managed_acceptance_spend_authorizations` + attempt lease/receipt identity. Production principals only from verified `api_key_metadata` (not free-form `from_api_key`). Risk ack is store-derived (phrase/scope/expiry from decision; execution_granted=false). Separate one-use spend authorization consumed atomically at attempt admit. Owner-derived preflight entry loads decision/risk/spend from store. Typed `CostAuthority`. Dry-run uses store risk+spend+admit+lease terminalization.
-
-**Final admission classification:** `residual_admission_no_go` / product class `mediation_hardened_partial`.
-
-**Single manual gate remaining (not engineering unfinished work):**
-
-1. Independent review/approval of cumulative PR #299.
-2. Store-owned operator authorization (authenticated principal; multi-field phrase + decision/residual hashes; fixture principal cannot production-live-start).
-3. Parent-only API key at runtime (never in git) + explicit current-session spend authorization.
-4. One command/API action to start the bounded disposable **live** task.
-
-## Packet PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1 — live managed acceptance
-
-**State:** `BLOCKED_PREREQUISITE` (residual NO-GO + operator credential + authorization; **provider-free board is ready**)
-
-**Prerequisite:** operator-accepted authority decision for bounded live trial under partial mediation **or** future full residual closure.
-
-Do not start RWE until live managed acceptance completes under the accepted contract.
-
-## Packet PE7-PRODUCT-GOLDEN-PATH-1 — canonical user-task orchestration
+Stop before any of the following:
+
+- secret, credential, raw prompt/output/transcript, private path, or repository-content exposure;
+- second runtime, scheduler, store, evaluator, budget, approval, output, audit, or rollback owner;
+- caller-asserted authority, stale or conflicting identity, duplicate effect, late write, missing lease, or outcome-unknown treated as success;
+- provider call in CI;
+- target-default-branch write, auto-merge, merge, release, deployment, installation, or production adoption;
+- unreviewed schema migration or SQLite/PostgreSQL semantic divergence;
+- performance, cost, or learning claim without comparable evidence.
+
+## Packet PE7-PRODUCT-GOLDEN-PATH-1 — authority board and live residual seal
 
 **State:** `IN_PROGRESS`
 
-The fixture path and output authority (including concurrent CAS repair) are accepted; the managed coding-executor disposable E2E remains open. Do not start RWE until the residual seal is closed or explicitly accepted under its existing contract.
+Current provider-free surfaces are #299 and observation support #301. #297/#298 are superseded. Completion requires final accepted provider-free authority plus one bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
 
-## Packet PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2 — managed acceptance
-
-**State:** `IN_PROGRESS`
-
-Existing PRs #268–#280 provide the intake, graph, scheduler, verification, artifact, approval, output, evidence, model-binding, and managed-process foundations. Codex mediation is partial (`PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`); full admission is not claimed. The residual-seal gate still requires an accepted admission class plus one **live** managed coding-executor run through verification, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, exact terminal evidence, and all live-provider/security requirements.
+The live task requires a separate current-session spend authorization and parent-only credential. No repository prompt or fixture result grants that authority.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 
@@ -224,7 +142,11 @@ Existing PRs #268–#280 provide the intake, graph, scheduler, verification, art
 
 **Prerequisite:** PE7-PRODUCT-GOLDEN-PATH-1
 
-Use one versioned, hash-bound, disposable corpus with multiple ordinary task classes and accepted executor modes where trustworthy. Persist bounded identities/hashes/counters/references through existing evidence owners; record success/failure, retries, usage/cost availability, timeout/cancel, pause/kill, restart, SQLite/PostgreSQL parity, approval/output/terminal evidence, and cleanup.
+PR #300 may prepare provider-free corpus, authorization, runner, and evidence contracts, but live RWE requires accepted Golden Path terminal evidence plus a separately persisted one-use RWE spend envelope.
+
+The corpus must be real, versioned, hash-bound, replayable, and frozen before Architecture Convergence. Each task binds exact source repository/commit or fixture tree, task definition/reference, allowed mutable surface, verification, expected class, output bounds, timeout/cancel behavior, executor identity, budget, and cleanup.
+
+The baseline records quality/failure class, request/retry/token/latency/cost-source semantics, timeout/cancel/pause/kill/restart/outcome-unknown, SQLite/PostgreSQL parity, approval/output/target-main/Draft-PR/terminal evidence, and the implementation-cost receipt.
 
 ## Packet PE7-ARCHITECTURE-CONVERGENCE-1 — compatibility convergence
 
@@ -232,7 +154,17 @@ Use one versioned, hash-bound, disposable corpus with multiple ordinary task cla
 
 **Prerequisite:** PE7-REAL-WORKLOAD-EVIDENCE-1
 
-Implement small reviewed packets in order: AC1 Unified ProcessSupervisor, AC2 typed execution boundary, AC3 Golden Path responsibility split, AC4 transaction-scoped domain views, AC5 runtime composition, AC6 authoritative API/SDK/Dashboard convergence, AC7 obsolete-abstraction cleanup. Preserve Rust authority, one database/transaction owner, persisted compatibility, provider-free CI, cancellation/restart/atomicity, and the frozen corpus.
+Implement incrementally:
+
+1. AC1 unified process supervision.
+2. AC2 typed execution boundary.
+3. AC3 Golden Path responsibility split.
+4. AC4 transaction-scoped domain views.
+5. AC5 runtime composition.
+6. AC6 Rust-authoritative API/SDK/Dashboard schema convergence.
+7. AC7 obsolete-abstraction cleanup after all callers and evidence migrate.
+
+Each packet changes one coherent ownership boundary, preserves compatibility and rollback, and records implementation cost. It must not create a second scheduler, store, budget, approval, output, evidence, or rollback owner.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1 — post-convergence comparison
 
@@ -240,32 +172,22 @@ Implement small reviewed packets in order: AC1 Unified ProcessSupervisor, AC2 ty
 
 **Prerequisite:** PE7-ARCHITECTURE-CONVERGENCE-1
 
-Rerun the identical bounded corpus and compare classifications, retries, usage/cost evidence, recovery, approvals, output reconciliation, terminal evidence, target-main identity, and Draft PR behavior. Do not claim performance or token improvement without comparable evidence.
+Replay the identical frozen corpus. Compare quality/failure classifications, request/retry/token/latency/cost evidence, restart/recovery, approval/output/terminal behavior, implementation cost, maintenance surface, and rollback burden. Do not tune the corpus from convergence results.
 
-## Packet PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1 — Level-2 decision
+## Packet PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1 — bounded multi-generation decision
 
 **State:** `BLOCKED_PREREQUISITE`
 
 **Prerequisite:** PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1
 
-Issue #266 is proposal-only. First record an evidence-backed GO/NO-GO using Golden Path stability, both RWE results, contamination risk, deterministic budgets, and Level-1 composition. Implement Level-2 only on GO, reusing existing owners, default-off gates, immutable active Harness, sealed evaluator, exact receipts, SQLite/PostgreSQL parity, and no automatic PR/merge/deploy/adoption.
+First record an evidence-backed GO/NO-GO. On GO only, implement a default-off bounded laboratory controller with small fixed generation/candidate/evaluation limits, deterministic global budgets, one selected laboratory parent per generation, restart/lease/concurrency/exactly-once evidence, sealed-evaluator separation, and SQLite/PostgreSQL parity.
 
-## Packet PE7-META-IMPROVER-EXPERIMENT-1 — separate meta decision
+It may not modify `main`, merge, deploy, change the active production Harness, rewrite its evaluator, expand its own permissions, or continue across runs without explicit authority.
+
+## Packet PE7-META-IMPROVER-EXPERIMENT-1 — separate unseen-task experiment
 
 **State:** `BLOCKED_PREREQUISITE`
 
 **Prerequisite:** PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1
 
-Require a pre-registered unseen improvement-task set, immutable evaluator/labels, contamination controls, baselines, `Improvement@K`, statistical test, effect/error thresholds, seeds, budgets, stop/rollback, and immutable active Harness. Otherwise record NO-GO.
-
-## Packet PE7-OPENCODE-BINARY-ADMISSION-1 — real binary admission
-
-**State:** `BLOCKED_PREREQUISITE`
-
-Real OpenCode remains excluded until exact upstream artifact/source identity, checksum, supply-chain evidence, confinement, and review exist. Fixture evidence is not binary admission.
-
-## Packet PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1 — repository-agent smoke
-
-**State:** `BLOCKED_PREREQUISITE`
-
-Issue #254 remains parked and Issue #208 emergency-stopped. Do not run the replacement smoke or use Vader as product runtime.
+Require pre-registered unseen tasks, immutable evaluator/labels, contamination controls, baselines, statistical/effect/error thresholds, seeds, budgets, stop/rollback rules, and immutable active-Harness identity. A NO-GO result is valid completion.
