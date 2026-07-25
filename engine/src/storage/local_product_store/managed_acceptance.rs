@@ -120,7 +120,7 @@ impl AuthenticatedPrincipal {
         self.scopes.iter().any(|s| s == scope)
     }
 
-    fn require_scope(&self, scope: &str) -> Result<(), String> {
+    pub(crate) fn require_scope(&self, scope: &str) -> Result<(), String> {
         if self.has_scope(scope) {
             Ok(())
         } else {

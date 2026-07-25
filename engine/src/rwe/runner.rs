@@ -5,7 +5,8 @@ use sha2::{Digest, Sha256};
 
 use super::corpus::{freeze_first_rwe_corpus, FirstRweCorpus, RWE_CORPUS_SCHEMA};
 use crate::storage::local_product_store::{
-    AuthenticatedPrincipal, CostAuthority, LocalProductStore, SCOPE_SPEND_AUTHORIZE,
+    AuthenticatedPrincipal, CostAuthority, LocalProductStore, RweAuthorizationIssueRequest,
+    SCOPE_SPEND_AUTHORIZE,
 };
 
 pub const RWE_RUN_AUTH_SCHEMA: &str = "rwe_run_authorization.v1";
@@ -126,6 +127,8 @@ pub fn evaluate_rwe_live_gate_from_store(
         if exp < now {
             return RweLiveGateResult::BlockedExpired;
         }
+    } else {
+        return RweLiveGateResult::BlockedExpired;
     }
     let kind = auth
         .get("principal_kind")
@@ -140,8 +143,8 @@ pub fn evaluate_rwe_live_gate_from_store(
     RweLiveGateResult::ReadyAuthorized
 }
 
-/// Persist a one-use RWE run authorization. Fixture principals may persist fixture-only rows
-/// that can never pass the production live gate.
+/// Persist a one-use RWE run authorization via authenticated store owner.
+/// Fixture principals may persist fixture-only rows that never pass the production live gate.
 pub fn persist_rwe_run_authorization(
     store: &LocalProductStore,
     principal: &AuthenticatedPrincipal,
@@ -151,29 +154,25 @@ pub fn persist_rwe_run_authorization(
     if !principal.has_scope(SCOPE_SPEND_AUTHORIZE) {
         return Err("principal missing spend authorize scope".into());
     }
-    if fixture_only
-        != matches!(
-            principal.principal_kind(),
-            crate::storage::local_product_store::PrincipalKind::FixturePrincipal
-        )
-    {
-        return Err("fixture_only mismatch with principal kind".into());
-    }
-    if !fixture_only && !principal.may_authorize_production_live_start() {
-        return Err("principal cannot authorize production RWE spend".into());
-    }
-    let body_json = sort_value(&body.to_json());
-    let body_sha = body.body_sha256();
-    store.upsert_rwe_run_authorization(
-        principal.tenant_id(),
-        &body.authorization_id,
-        principal.principal_id(),
-        principal.principal_kind().as_str(),
-        &body.corpus_sha256,
-        &body_sha,
-        &body_json,
-        &body.expires_at,
-        fixture_only,
+    store.issue_rwe_run_authorization(
+        principal,
+        &RweAuthorizationIssueRequest {
+            authorization_id: body.authorization_id.clone(),
+            corpus_sha256: body.corpus_sha256.clone(),
+            golden_path_terminal_evidence_id: body.golden_path_terminal_evidence_id.clone(),
+            task_ids: body.task_ids.clone(),
+            max_total_provider_requests: body.max_total_provider_requests,
+            max_total_tokens: body.max_total_tokens,
+            max_wall_time_ms: body.max_wall_time_ms,
+            cost_authority: body.cost_authority.clone(),
+            target_repo: body.target_repo.clone(),
+            target_main_sha: body.target_main_sha.clone(),
+            executor_identity: body.executor_identity.clone(),
+            model_identity: body.model_identity.clone(),
+            draft_pr_only: body.draft_pr_only,
+            expires_at: body.expires_at.clone(),
+            fixture_only,
+        },
     )
 }
 
@@ -187,48 +186,49 @@ pub fn run_provider_free_rwe(
     allow_fixture: bool,
 ) -> Result<Value, String> {
     let corpus = freeze_first_rwe_corpus()?;
-    // Exact run replay must not require still-active (unconsumed) authorization.
-    if let Some(existing) = store.get_rwe_run(run_id)? {
-        let mut row = existing;
-        if let Value::Object(ref mut m) = row {
-            m.insert("idempotent_replay".into(), json!(true));
-        }
-        return Ok(row);
-    }
+    let now = store.now();
     let auth = store
         .get_rwe_run_authorization(authorization_id)?
         .ok_or_else(|| "RWE authorization not found".to_string())?;
-    let now = "2026-07-25T12:00:00Z";
+    let auth_body = auth.get("body_json").cloned().unwrap_or(Value::Null);
+
+    let run_body = sort_value(&json!({
+        "schema_version": "rwe_run_body.v1",
+        "run_id": run_id,
+        "authorization_id": authorization_id,
+        "corpus_sha256": corpus.corpus_sha256,
+        "task_ids": corpus.tasks.iter().map(|t| t.task_id.clone()).collect::<Vec<_>>(),
+        "target_repo": auth_body.get("target_repo"),
+        "target_main_sha": auth_body.get("target_main_sha"),
+        "executor_identity": auth_body.get("executor_identity"),
+        "model_identity": auth_body.get("model_identity"),
+        "max_total_provider_requests": auth_body.get("max_total_provider_requests"),
+        "max_total_tokens": auth_body.get("max_total_tokens"),
+        "max_wall_time_ms": auth_body.get("max_wall_time_ms"),
+        "golden_path_terminal_evidence_id": auth_body.get("golden_path_terminal_evidence_id"),
+        "draft_pr_only": auth_body.get("draft_pr_only"),
+        "provider_free_fixture": allow_fixture,
+    }));
+
+    // Exact run replay compares complete run body via store admit.
     if allow_fixture {
-        // Fixture path: still require active auth + corpus match, but fixture principal ok.
         if auth.get("corpus_sha256").and_then(Value::as_str) != Some(corpus.corpus_sha256.as_str())
         {
             return Err("corpus mismatch".into());
         }
-        if auth.get("status").and_then(Value::as_str) != Some("active") {
-            return Err("authorization not active".into());
-        }
-        if !auth
-            .get("fixture_only")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Err("fixture runner requires fixture_only authorization".into());
-        }
     } else {
-        match evaluate_rwe_live_gate_from_store(&corpus, Some(&auth), now) {
+        match evaluate_rwe_live_gate_from_store(&corpus, Some(&auth), &now) {
             RweLiveGateResult::ReadyAuthorized => {}
             other => return Err(format!("live gate blocked: {}", other.as_str())),
         }
     }
 
-    // Atomic admit + consume
     let admitted = store.admit_rwe_run(
-        principal.tenant_id(),
+        principal,
         run_id,
         authorization_id,
-        &corpus.corpus_sha256,
-        principal.principal_id(),
+        &run_body,
+        allow_fixture,
     )?;
     if admitted
         .get("idempotent_replay")
@@ -237,6 +237,11 @@ pub fn run_provider_free_rwe(
     {
         return Ok(admitted);
     }
+    let lease_token = admitted
+        .get("lease_token")
+        .and_then(Value::as_str)
+        .ok_or("admit missing lease_token")?
+        .to_string();
 
     let mut task_results = Vec::new();
     let mut total_requests = 0u64;
@@ -289,7 +294,13 @@ pub fn run_provider_free_rwe(
         "note": "Fixture completion is not a live RWE baseline",
     }));
     let evidence_sha = hex::encode(Sha256::digest(aggregate.to_string().as_bytes()));
-    store.complete_rwe_run(run_id, "fixture_complete", &aggregate, &evidence_sha)
+    store.complete_rwe_run(
+        run_id,
+        &lease_token,
+        "fixture_complete",
+        &aggregate,
+        &evidence_sha,
+    )
 }
 
 /// Provider-free gate dossier for handoff (no secrets).
@@ -300,7 +311,7 @@ pub fn provider_free_rwe_readiness_dossier() -> Value {
         "corpus_id": corpus.corpus_id,
         "corpus_sha256": corpus.corpus_sha256,
         "task_count": corpus.tasks.len(),
-        "live_gate": evaluate_rwe_live_gate_from_store(&corpus, None, "2026-07-25T12:00:00Z").as_str(),
+        "live_gate": evaluate_rwe_live_gate_from_store(&corpus, None, "1970-01-01T00:00:00Z").as_str(),
         "manual_gate": [
             "independent Board A (#299) approval",
             "live Golden Path terminal evidence",
@@ -309,6 +320,7 @@ pub fn provider_free_rwe_readiness_dossier() -> Value {
             "exact disposable target + target-main SHA",
         ],
         "live_calls_performed": false,
+        "note": "live_gate timestamp is non-authoritative; production uses store.now()",
     })
 }
 
@@ -381,5 +393,58 @@ mod tests {
         let replay =
             run_provider_free_rwe(&store, &principal, "rwe-run-1", &auth_id, true).unwrap();
         assert_eq!(replay["idempotent_replay"], true);
+        // conflicting task-attempt mutation rejected
+        let err = store.persist_rwe_task_attempt(
+            "rwe-run-1",
+            "rwe-run-1:small_test_addition",
+            "small_test_addition",
+            &corpus.tasks[0].definition_sha256,
+            "mutated",
+            &json!({"different": true}),
+        );
+        // run is terminal so new attempts fail OR conflict
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn revocation_and_expiry_block_admit() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("rwe2.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-rwe", "fixture-principal-rwe2")
+                .unwrap();
+        let corpus = freeze_first_rwe_corpus().unwrap();
+        let auth_id = format!("rwe-auth-{}", Uuid::new_v4());
+        let body = RweRunAuthorizationBody {
+            authorization_id: auth_id.clone(),
+            corpus_sha256: corpus.corpus_sha256.clone(),
+            golden_path_terminal_evidence_id: "gp-terminal-fixture".into(),
+            principal_id: principal.principal_id().into(),
+            principal_kind: principal.principal_kind().as_str().into(),
+            task_ids: corpus.tasks.iter().map(|t| t.task_id.clone()).collect(),
+            max_total_provider_requests: 5,
+            max_total_tokens: 60_000,
+            max_wall_time_ms: 900_000,
+            cost_authority: CostAuthority::CostUnavailable,
+            target_repo: "org/disposable".into(),
+            target_main_sha: "a".repeat(40),
+            executor_identity: "codex-0.145.0".into(),
+            model_identity: "gpt-test-model".into(),
+            draft_pr_only: true,
+            expires_at: "2026-08-01T00:00:00Z".into(),
+        };
+        persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+        store
+            .revoke_rwe_run_authorization(&principal, &auth_id)
+            .unwrap();
+        let err =
+            run_provider_free_rwe(&store, &principal, "rwe-run-rev", &auth_id, true).unwrap_err();
+        assert!(
+            err.contains("not active") || err.contains("revok") || err.contains("expired"),
+            "{err}"
+        );
     }
 }
