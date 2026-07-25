@@ -1573,14 +1573,13 @@ fn validate_spend_against_decision(
         }
         let _ = max_retries;
     }
-    if !request.draft_pr_only {
-        if trial
+    if !request.draft_pr_only
+        && trial
             .get("draft_pr_only")
             .and_then(Value::as_bool)
             .unwrap_or(true)
-        {
-            return Err("spend must keep draft_pr_only".into());
-        }
+    {
+        return Err("spend must keep draft_pr_only".into());
     }
     if request.binary_sha256.len() != 64 {
         return Err("binary_sha256 must be 64 hex chars".into());
