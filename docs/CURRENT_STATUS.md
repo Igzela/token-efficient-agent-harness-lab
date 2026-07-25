@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-25.
 
-## Repository Truth Model
+## Verified Repository State
 
 This document separates three states that must not be conflated:
 
@@ -11,8 +11,6 @@ This document separates three states that must not be conflated:
 3. **Blocked or deferred work** — design or implementation that remains ineligible because an earlier evidence or authority gate is incomplete.
 
 A new PR head invalidates earlier CI and review conclusions for that PR.
-
-## Merged and Accepted Truth
 
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
 - Accepted runtime baseline is merged through PR #296 plus its documentation seal.
@@ -63,7 +61,7 @@ The residual technical risks remain explicit:
 
 Therefore live acceptance is not blocked only by credential presence.
 
-## Roadmap Status
+## Capability Status
 
 | Stage | State | Entry requirement |
 |---|---|---|
@@ -93,7 +91,7 @@ Lifecycle cost includes:
 
 These engineering-cost dimensions are evidence for RWE replay and Level-2 decisions. They do not create a second runtime budget owner.
 
-## Confirmed Gaps
+## Confirmed Integration Gaps
 
 1. No accepted live managed coding-executor E2E exists.
 2. No accepted live RWE baseline exists.
@@ -101,6 +99,25 @@ These engineering-cost dimensions are evidence for RWE replay and Level-2 decisi
 4. No automatic multi-generation parent-selection loop is implemented.
 5. No demonstrated cross-task continuous-learning or Meta Improver result exists.
 6. Open PR claims remain proposals until their final heads are independently accepted.
+
+## Supporting Programs
+
+- **PE-5 Release Provenance:** implemented; product/evolution runtime gains no release authority.
+- **PE-6 Fault Injection and Recovery Drills:** implemented for disposable recovery evidence; no production bypass authority.
+- **Post-R7 wire/type governance:** implemented; `scripts/check_wire_codegen_drift.sh` remains a required guard.
+
+## Active Tracks
+
+- Provider-free Golden Path authority: #299, open and under final independent review.
+- Provider-free RWE preparation: #300, stacked and blocked on accepted #299 authority.
+- Observation adaptation: #301, open and limited to evidence parsing/normalization.
+- Live Golden Path, live RWE, Architecture Convergence, Level-2, and Meta remain blocked by their named prerequisites.
+
+## Open Work Coordination
+
+PRs #297/#298 are superseded by #299 and must not merge separately. #300 must be updated onto the final accepted #299 semantics. #301 may remain an independent observation-only layer but must not introduce a second budget, proxy, credential, store, or authorization owner. PR #225 remains presentation-only and last.
+
+All active branches must refresh this main documentation convergence before final merge and must not overwrite it with stale branch-local status text.
 
 ## Safety Boundary
 
