@@ -1174,6 +1174,9 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_blocks_v31_rollback() {
     assert_eq!(output_audits, 1);
 
     store
+        .rollback_v33_to_v32("pg-rollback-operator", true)
+        .unwrap();
+    store
         .rollback_v32_to_v31("pg-rollback-operator", true)
         .expect("empty managed acceptance tables roll back to v31");
     let rollback_error = store

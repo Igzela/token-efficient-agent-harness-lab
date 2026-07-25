@@ -187,7 +187,7 @@ Uses real loopback gateway + parent journal + mock upstream. Scenarios: success,
 
 **State:** cumulative review surface **PR #299 only** (parent #297/#298 superseded by tip; auto-merge disabled; not approved for merge until independent review).
 
-**Board A repair (store-owned authority):** V32 tables `managed_acceptance_decisions` / `_authorizations` / `_attempts`; `AuthenticatedPrincipal` (API-key or explicit fixture); canonical full-body decision hash; typed `cost_authority` (`provider_reported` | `local_estimate` | `cost_unavailable`); store exactly-once attempt admission; dry-run uses store accept/admit (no direct `OperatorAccepted` mutation).
+**Board A repair (store-owned authority):** V33 adds `managed_acceptance_spend_authorizations` + attempt lease/receipt identity. Production principals only from verified `api_key_metadata` (not free-form `from_api_key`). Risk ack is store-derived (phrase/scope/expiry from decision; execution_granted=false). Separate one-use spend authorization consumed atomically at attempt admit. Owner-derived preflight entry loads decision/risk/spend from store. Typed `CostAuthority`. Dry-run uses store risk+spend+admit+lease terminalization.
 
 **Final admission classification:** `residual_admission_no_go` / product class `mediation_hardened_partial`.
 

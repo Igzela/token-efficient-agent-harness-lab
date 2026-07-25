@@ -267,6 +267,9 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
         assert_eq!(emitted_again, again);
         assert_eq!(store.audit_events(10_000).unwrap(), audit_before_reads);
         store
+            .rollback_v33_to_v32("rollback-operator", true)
+            .unwrap();
+        store
             .rollback_v32_to_v31("rollback-operator", true)
             .expect("empty managed acceptance tables roll back to v31");
         let rollback_error = store

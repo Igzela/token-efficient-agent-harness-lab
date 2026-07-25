@@ -246,7 +246,10 @@ fn classify_userns_pid() -> CapabilityEvidenceClass {
 }
 
 /// Run deterministic managed-acceptance preflight (no live provider call).
-pub fn run_managed_acceptance_preflight(
+/// Fixture/caller-asserted preflight. Production must use
+/// [`run_owner_derived_managed_acceptance_preflight`].
+#[doc(hidden)]
+pub fn run_managed_acceptance_preflight_fixture_only(
     input: &ManagedAcceptancePreflightInput,
 ) -> ManagedAcceptancePreflightReport {
     let residual = evaluate_residual_admission(input.product_launch_enforces_loopback_only);
@@ -826,6 +829,93 @@ pub fn fixture_ready_pending_operator_input(
     }
 }
 
+
+
+/// Production preflight entry: loads decision/risk/spend from store and verifies hash binding.
+/// Runtime binary SHA/version and host probes remain host-derived evidence.
+pub fn run_owner_derived_managed_acceptance_preflight(
+    store: &crate::storage::local_product_store::LocalProductStore,
+    tenant_id: &str,
+    decision_id: &str,
+    risk_authorization_id: &str,
+    spend_authorization_id: Option<&str>,
+    expected_identities: &ManagedAcceptancePreflightInput,
+) -> Result<ManagedAcceptancePreflightReport, String> {
+    let decision = store
+        .get_managed_acceptance_decision(decision_id)?
+        .ok_or_else(|| format!("decision {decision_id} not found"))?;
+    if decision.get("tenant_id").and_then(serde_json::Value::as_str) != Some(tenant_id) {
+        return Err("decision tenant mismatch".into());
+    }
+    let risk = store
+        .get_active_managed_acceptance_authorization(risk_authorization_id)?
+        .ok_or_else(|| "active risk authorization required".to_string())?;
+    if risk.get("decision_id").and_then(serde_json::Value::as_str) != Some(decision_id) {
+        return Err("risk authorization decision mismatch".into());
+    }
+    if risk
+        .get("execution_granted")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err("risk acknowledgement must not grant execution".into());
+    }
+    if let Some(spend_id) = spend_authorization_id {
+        let spend = store
+            .get_managed_acceptance_spend_authorization(spend_id)?
+            .ok_or_else(|| "spend authorization not found".to_string())?;
+        if spend.get("status").and_then(serde_json::Value::as_str) != Some("active")
+            && spend.get("status").and_then(serde_json::Value::as_str) != Some("consumed")
+        {
+            return Err(format!(
+                "spend authorization status {}",
+                spend.get("status").and_then(serde_json::Value::as_str).unwrap_or("?")
+            ));
+        }
+        if spend.get("risk_authorization_id").and_then(serde_json::Value::as_str)
+            != Some(risk_authorization_id)
+        {
+            return Err("spend/risk authorization mismatch".into());
+        }
+        // Expected identities may only match, never expand store-owned spend envelope.
+        if let Some(exp_sha) = expected_identities
+            .authority_decision_body_sha256
+            .as_deref()
+        {
+            if spend.get("decision_body_sha256").and_then(serde_json::Value::as_str) != Some(exp_sha)
+            {
+                return Err("spend decision hash mismatch vs expected identity".into());
+            }
+        }
+    }
+    // Bind store hashes into a fixture-shaped input only as expected identities, then run
+    // the shared check matrix (host probes remain runtime-derived).
+    let mut input = expected_identities.clone();
+    input.authority_decision_status = Some(
+        decision
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    );
+    input.authority_decision_body_sha256 = decision
+        .get("decision_body_sha256")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    input.residual_finding_sha256 = decision
+        .get("residual_finding_sha256")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Ok(run_managed_acceptance_preflight_fixture_only(&input))
+}
+
+/// Back-compat fixture name used by dry-run harness only.
+pub fn run_managed_acceptance_preflight(
+    input: &ManagedAcceptancePreflightInput,
+) -> ManagedAcceptancePreflightReport {
+    run_managed_acceptance_preflight_fixture_only(input)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -833,7 +923,7 @@ mod tests {
 
     #[test]
     fn default_input_is_blocked_identity_or_budget() {
-        let report = run_managed_acceptance_preflight(&ManagedAcceptancePreflightInput::default());
+        let report = run_managed_acceptance_preflight_fixture_only(&ManagedAcceptancePreflightInput::default());
         assert!(!report.result.is_ready());
         assert!(matches!(
             report.result,
@@ -858,7 +948,7 @@ mod tests {
             AuthorityDecisionStatus::DraftPendingOperator
         );
         let input = fixture_ready_pending_operator_input(&decision);
-        let report = run_managed_acceptance_preflight(&input);
+        let report = run_managed_acceptance_preflight_fixture_only(&input);
         assert_eq!(
             report.result,
             ManagedAcceptancePreflightResult::ReadyPendingOperatorRiskAcceptance,
@@ -878,7 +968,7 @@ mod tests {
         let decision = draft_partial_mediation_authority_decision();
         let mut input = fixture_ready_pending_operator_input(&decision);
         input.parent_credential_present = false;
-        let report = run_managed_acceptance_preflight(&input);
+        let report = run_managed_acceptance_preflight_fixture_only(&input);
         assert_eq!(
             report.result,
             ManagedAcceptancePreflightResult::BlockedMissingCredential
@@ -890,7 +980,7 @@ mod tests {
         let decision = draft_partial_mediation_authority_decision();
         let mut input = fixture_ready_pending_operator_input(&decision);
         input.max_retries = Some(3);
-        let report = run_managed_acceptance_preflight(&input);
+        let report = run_managed_acceptance_preflight_fixture_only(&input);
         assert_eq!(
             report.result,
             ManagedAcceptancePreflightResult::BlockedBudget
@@ -902,7 +992,7 @@ mod tests {
         let decision = draft_partial_mediation_authority_decision();
         let mut input = fixture_ready_pending_operator_input(&decision);
         input.auto_merge_disabled = false;
-        let report = run_managed_acceptance_preflight(&input);
+        let report = run_managed_acceptance_preflight_fixture_only(&input);
         assert_eq!(
             report.result,
             ManagedAcceptancePreflightResult::BlockedIdentity
@@ -913,7 +1003,7 @@ mod tests {
     fn manifest_never_contains_secret_shapes() {
         let decision = draft_partial_mediation_authority_decision();
         let input = fixture_ready_pending_operator_input(&decision);
-        let report = run_managed_acceptance_preflight(&input);
+        let report = run_managed_acceptance_preflight_fixture_only(&input);
         let text = report.manifest.to_string();
         assert!(!text.contains("sk-"));
         assert!(!text.contains("Bearer "));

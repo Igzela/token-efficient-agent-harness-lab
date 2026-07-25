@@ -204,9 +204,11 @@ impl Default for OperatorAcknowledgementRequirement {
     }
 }
 
-/// Submitted operator acknowledgement attempt (validated; never agent-forged).
+/// Fixture-only in-memory acknowledgement submission. Production must use store-owned
+/// `RiskAcknowledgementRequest` + authenticated principal — never free-form `actor`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperatorAcknowledgementSubmission {
+    /// Deprecated free-form actor; ignored by production store path. Fixture tests only.
     pub actor: String,
     pub phrase: String,
     pub decision_body_sha256: String,
@@ -577,7 +579,10 @@ pub fn validate_operator_acknowledgement(
 }
 
 /// Apply a validated operator acknowledgement. Agent must not call this with forged actors.
-pub fn apply_operator_acknowledgement(
+/// Fixture/in-memory only. Does **not** create store-owned authority or execution rights.
+/// Production acceptance must go through `LocalProductStore::accept_managed_acceptance_decision`.
+#[doc(hidden)]
+pub fn apply_operator_acknowledgement_fixture_only(
     decision: &mut PartialMediationAuthorityDecision,
     submission: &OperatorAcknowledgementSubmission,
 ) -> Result<(), String> {
@@ -717,7 +722,7 @@ mod tests {
             residual_finding_sha256: decision.residual_finding_sha256.clone(),
             explicit_go: true,
         };
-        apply_operator_acknowledgement(&mut decision, &ok).expect("human ack");
+        apply_operator_acknowledgement_fixture_only(&mut decision, &ok).expect("human ack");
         assert_eq!(decision.status, AuthorityDecisionStatus::OperatorAccepted);
         assert!(decision.status.authorizes_bounded_live_trial());
         // Hash mismatch invalidates residual binding.

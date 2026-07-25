@@ -46,7 +46,10 @@ use crate::execution_usage::codex_adapter::UsageBindingContext;
 use crate::execution_usage::gateway_adapter::budget_gateway_usage_to_event;
 use crate::execution_usage::reconcile::{admission_evidence_ok, reconcile_usage_events};
 use crate::execution_usage::{CostSource, ExecutionUsageEventV1};
-use crate::storage::local_product_store::{AuthenticatedPrincipal, LocalProductStore};
+use crate::storage::local_product_store::{
+    AuthenticatedPrincipal, CostAuthority, LocalProductStore, RiskAcknowledgementRequest,
+    SpendAuthorizationRequest,
+};
 
 pub const MANAGED_ACCEPTANCE_DRY_RUN_SCHEMA: &str = "codex_managed_acceptance_dry_run.v1";
 pub const MANAGED_ACCEPTANCE_DRY_RUN_RECEIPT_SCHEMA: &str =
@@ -536,28 +539,52 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
     let fixture_principal =
         AuthenticatedPrincipal::fixture_for_tests("tenant-dry-run", "fixture-principal-dry-run")
             .map_err(|e| format!("fixture principal: {e}"))?;
+    let mut spend_authorization_id = String::new();
     if config.simulate_operator_ack {
         let auth = store
             .accept_managed_acceptance_decision(
                 &fixture_principal,
-                &decision_id,
-                &dsha,
-                &residual_sha,
-                OPERATOR_RISK_ACCEPTANCE_PHRASE,
-                OPERATOR_RISK_ACCEPTANCE_PHRASE,
-                true,
-                &json!({
-                    "dry_run": true,
-                    "fixture_only": true,
-                    "attempt_id": config.attempt_id,
-                }),
-                "2026-08-01T00:00:00Z",
+                &RiskAcknowledgementRequest {
+                    decision_id: decision_id.clone(),
+                    expected_decision_body_sha256: dsha.clone(),
+                    expected_residual_finding_sha256: residual_sha.clone(),
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.to_string(),
+                    explicit_go: true,
+                },
             )
             .map_err(|e| format!("store accept: {e}"))?;
         authority_status = "operator_accepted".into();
         authorization_id = auth["authorization_id"].as_str().unwrap().to_string();
         assert_eq!(auth["execution_granted"], false);
         assert_eq!(auth["fixture_only"], true);
+        let spend = store
+            .issue_managed_acceptance_spend_authorization(
+                &fixture_principal,
+                &SpendAuthorizationRequest {
+                    risk_authorization_id: authorization_id.clone(),
+                    product_task_id: config.product_task_id.clone(),
+                    workflow_node_id: Some("node-managed-acceptance-dry-run".into()),
+                    execution_id: format!("codex-attempt-{}", config.attempt_id),
+                    attempt_id: config.attempt_id.clone(),
+                    binary_path: "/fixture/codex".into(),
+                    binary_version: "0.145.0".into(),
+                    binary_sha256: "ab".repeat(32),
+                    provider_kind: "openai".into(),
+                    provider_host: "api.openai.com".into(),
+                    provider_base_url: "https://api.openai.com/v1".into(),
+                    admitted_endpoint_paths: vec!["/v1/responses".into()],
+                    model: "gpt-5".into(),
+                    target_repo: config.disposable_target_repo.clone(),
+                    target_main_sha: config.target_main_sha.clone(),
+                    output_branch_prefix: "acp/".into(),
+                    draft_pr_only: true,
+                    cost_authority: CostAuthority::CostUnavailable,
+                    cancellation_identity: format!("cancel-{}", config.attempt_id),
+                    rollback_identity: format!("rollback-{}", config.attempt_id),
+                },
+            )
+            .map_err(|e| format!("store spend: {e}"))?;
+        spend_authorization_id = spend["spend_authorization_id"].as_str().unwrap().to_string();
     } else if matches!(
         residual.verdict,
         ResidualAdmissionVerdict::ResidualAdmissionNoGo
@@ -652,12 +679,15 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
         "scenario": config.scenario.as_str(),
         "dry_run": true,
     });
+    if spend_authorization_id.is_empty() {
+        return Err("spend_authorization_id required after operator accept".into());
+    }
     let admitted = store
         .admit_managed_acceptance_attempt(
             &fixture_principal,
             &config.attempt_id,
             &attempt_body,
-            &authorization_id,
+            &spend_authorization_id,
             true, // fixture dry-run only
         )
         .map_err(|e| format!("attempt admit: {e}"))?;
@@ -665,6 +695,11 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
         .get("idempotent_replay")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let lease_token = admitted
+        .get("lease_token")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
 
     // 4) Mediated gateway dry-run against mock upstream.
     let hits = Arc::new(AtomicUsize::new(0));
@@ -894,21 +929,24 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
         evidence_path: PathBuf::new(),
         notes,
     };
-    let _ = store.complete_managed_acceptance_attempt(
-        &config.attempt_id,
-        match receipt.terminal_class {
-            DryRunTerminalClass::SucceededFixture => "succeeded",
-            DryRunTerminalClass::Cancelled => "cancelled",
-            DryRunTerminalClass::OutcomeUnknownCharged => "outcome_unknown",
-            DryRunTerminalClass::BudgetExhausted
-            | DryRunTerminalClass::FailedProvider
-            | DryRunTerminalClass::FailedTimeout
-            | DryRunTerminalClass::EvidenceConflict => "failed",
-            _ => "failed",
-        },
-        receipt.terminal_class.as_str(),
-        &receipt.to_json(),
-    );
+    if !lease_token.is_empty() {
+        let _ = store.complete_managed_acceptance_attempt(
+            &config.attempt_id,
+            &lease_token,
+            match receipt.terminal_class {
+                DryRunTerminalClass::SucceededFixture => "succeeded",
+                DryRunTerminalClass::Cancelled => "cancelled",
+                DryRunTerminalClass::OutcomeUnknownCharged => "outcome_unknown",
+                DryRunTerminalClass::BudgetExhausted
+                | DryRunTerminalClass::FailedProvider
+                | DryRunTerminalClass::FailedTimeout
+                | DryRunTerminalClass::EvidenceConflict => "failed",
+                _ => "failed",
+            },
+            receipt.terminal_class.as_str(),
+            &receipt.to_json(),
+        );
+    }
     let receipt = finish_receipt(receipt, &config.evidence_root)?;
 
     // Idempotent second call for IdempotentReplay scenario.

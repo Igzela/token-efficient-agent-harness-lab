@@ -91,7 +91,11 @@ pub use external_runtime::{
     MEMORY_STRATEGIES,
 };
 pub use integrity::{IntegrityReport, TableIntegrity};
-pub use managed_acceptance::{AuthenticatedPrincipal, PrincipalKind};
+pub use managed_acceptance::{
+    AuthenticatedPrincipal, CostAuthority, PrincipalKind, RiskAcknowledgementRequest,
+    SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_REVOKE,
+    SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
+};
 pub use policy_replay_producer::{
     EvidenceChainPromotionRequest, ReplayProductionProfile, ReplayProductionRequest,
     REPLAY_PRODUCER_SCHEMA_VERSION,

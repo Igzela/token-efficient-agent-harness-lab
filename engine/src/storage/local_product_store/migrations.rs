@@ -13,6 +13,7 @@ pub(super) const V29_SCHEMA_VERSION: i64 = 29;
 pub(super) const V30_SCHEMA_VERSION: i64 = 30;
 pub(super) const V31_SCHEMA_VERSION: i64 = 31;
 pub(super) const V32_SCHEMA_VERSION: i64 = 32;
+pub(super) const V33_SCHEMA_VERSION: i64 = 33;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -54,6 +55,9 @@ pub(super) const V32_TABLES: [&str; 3] = [
     "managed_acceptance_decisions",
     "managed_acceptance_authorizations",
     "managed_acceptance_attempts",
+];
+pub(super) const V33_TABLES: [&str; 1] = [
+    "managed_acceptance_spend_authorizations",
 ];
 
 #[allow(dead_code)]
@@ -112,6 +116,7 @@ impl LocalProductStore {
                     V30_SCHEMA_VERSION => Self::migrate_v30_add_product_tasks(conn)?,
                     V31_SCHEMA_VERSION => Self::migrate_v31_add_product_terminal_evidence(conn)?,
                     V32_SCHEMA_VERSION => Self::migrate_v32_add_managed_acceptance(conn)?,
+                    V33_SCHEMA_VERSION => Self::migrate_v33_add_managed_acceptance_spend(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -120,7 +125,9 @@ impl LocalProductStore {
             let final_version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if final_version == V32_SCHEMA_VERSION {
+            if final_version == V33_SCHEMA_VERSION {
+                validate_sqlite_v33_schema(conn)?;
+            } else if final_version == V32_SCHEMA_VERSION {
                 validate_sqlite_v32_schema(conn)?;
             } else if final_version == V31_SCHEMA_VERSION {
                 validate_sqlite_v31_schema(conn)?;
@@ -634,6 +641,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
     }
 
     /// Roll back canonical terminal evidence only when no evidence rows exist.
+    pub fn rollback_v33_to_v32(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v33 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v33 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v33_to_v32(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v33_to_v32_internal(actor, &now),
+        }
+    }
+
     pub fn rollback_v32_to_v31(
         &self,
         actor: &str,
@@ -699,6 +728,49 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.rollback_pg_v30_to_v29_internal(actor, &now),
         }
+    }
+
+    fn rollback_sqlite_v33_to_v32(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            if current_version != V33_SCHEMA_VERSION {
+                return Err(format!(
+                    "v33 rollback requires current schema version 33; found {current_version}"
+                ));
+            }
+            let occupied = occupied_sqlite_tables(&tx, &V33_TABLES)?;
+            if !occupied.is_empty() {
+                return Err(format!(
+                    "v33 rollback blocked: managed acceptance spend exists in {}",
+                    occupied.join(", ")
+                ));
+            }
+            tx.execute_batch("DROP TABLE IF EXISTS managed_acceptance_spend_authorizations;")
+                .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v33_to_v32', 'local_product_store', ?3)",
+                rusqlite::params![
+                    now,
+                    actor,
+                    serde_json::json!({
+                        "from_version": V33_SCHEMA_VERSION,
+                        "to_version": V32_SCHEMA_VERSION,
+                        "tables": V33_TABLES,
+                    })
+                    .to_string()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V32_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())?;
+            Ok(())
+        })
     }
 
     fn rollback_sqlite_v32_to_v31(&self, actor: &str, now: &str) -> Result<(), String> {
@@ -1676,6 +1748,45 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         conn.execute_batch(schema::V32_DDL)
             .map_err(|error| error.to_string())
     }
+
+    fn migrate_v33_add_managed_acceptance_spend(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(schema::V33_DDL)
+            .map_err(|error| error.to_string())?;
+        // Columns may already exist when full DDL bootstrapped current head.
+        for (col, decl) in [
+            ("spend_authorization_id", "TEXT"),
+            ("lease_token", "TEXT"),
+            ("receipt_sha256", "TEXT"),
+        ] {
+            if !column_exists(conn, "managed_acceptance_attempts", col)? {
+                conn.execute(
+                    &format!(
+                        "ALTER TABLE managed_acceptance_attempts ADD COLUMN {col} {decl}"
+                    ),
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_sqlite_v33_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v32_schema(conn)?;
+    for table in V33_TABLES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v33 schema missing table {table}"));
+        }
+    }
+    Ok(())
 }
 
 fn validate_sqlite_v32_schema(conn: &Connection) -> Result<(), String> {
@@ -2364,6 +2475,7 @@ mod tests {
 
     fn store_at_v25(path: impl AsRef<std::path::Path>) -> LocalProductStore {
         let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v33_to_v32("migration-test", true).unwrap();
         store.rollback_v32_to_v31("migration-test", true).unwrap();
         store.rollback_v31_to_v30("migration-test", true).unwrap();
         store.rollback_v30_to_v29("migration-test", true).unwrap();
