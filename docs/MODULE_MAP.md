@@ -6,7 +6,9 @@ This is the concise ownership map for accepted `main`. Current facts are in `doc
 
 Open PR branches are listed separately and are not canonical owners until merged.
 
-## Core Ownership on Main
+Full Agent Autonomy Mode permits repository-scoped work that is testable, observable, reviewable, verification-gated, compatible, and rollbackable. Provider calls, target output, release, deployment, spend, and authority-critical actions retain separate gates.
+
+## Core Ownership
 
 | Area | Canonical owner | Boundary |
 |---|---|---|
@@ -103,6 +105,14 @@ This evidence informs RWE replay and Level-2 GO/NO-GO. It does not become a call
 - Local price tables produce estimates only and must remain versioned and source-labeled.
 - OpenCode binary admission remains deferred; Vader/#208 remains stopped; Dashboard #225 remains last.
 - Release, package, provenance, signing, installer, deployment, and rollback pipelines remain outside product/evolution authority.
+
+## PE-5 Release Provenance Ownership
+
+Existing package/container builders, dependency locks, SBOM/provenance, signing, installer, release, deployment, and rollback owners remain authoritative. Product, RWE, and Harness Evolution work may reference their evidence but gain no release, signing, installation, or deployment authority.
+
+## PE-6 Fault Injection and Recovery Ownership
+
+Existing disposable fault scenarios, SQLite/PostgreSQL recovery tests, stubs, cleanup, compensation, and rollback drills remain authoritative. Product/evolution work may reuse them but may not create a second recovery authority or convert a fixture result into production acceptance.
 
 ## Active Documents
 
