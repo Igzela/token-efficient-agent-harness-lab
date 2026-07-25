@@ -37,6 +37,7 @@ mod product_tasks;
 mod provider_audit;
 mod recursive_execution;
 mod regression_report_artifacts;
+mod rwe_authority;
 mod schema;
 mod supervised_patch;
 pub use supervised_patch::TargetOutputClaim;

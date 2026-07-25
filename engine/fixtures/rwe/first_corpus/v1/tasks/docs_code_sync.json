@@ -1,0 +1,23 @@
+{
+  "schema_version": "rwe_task_definition.v1",
+  "task_id": "rwe-first-docs_code_sync",
+  "class": "docs_code_sync",
+  "objective": "sync a single doc comment with implementation",
+  "source_repository": "fixture://rwe-source-repo",
+  "source_commit": "cccccccccccccccccccccccccccccccccccccccc",
+  "source_tree_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "allowed_mutable_paths": ["src/lib.rs", "tests/smoke.rs", "README.md"],
+  "expected_verification_commands": ["cargo test -p engine --lib -- --exact"],
+  "expected_outcome_class": "success_or_controlled_failure",
+  "patch_max_files": 3,
+  "patch_max_lines": 80,
+  "timeout_ms": 180000,
+  "cancel_behavior": "fail_closed_charged",
+  "executor_identity": "codex-0.145.0",
+  "model_identity": "gpt-test-model",
+  "per_task_max_provider_requests": 1,
+  "per_task_max_retries": 0,
+  "per_task_max_total_tokens": 12000,
+  "deterministic_seed": 42,
+  "cleanup_rules": ["remove_worktree", "delete_draft_branch_if_created", "preserve_journal"]
+}

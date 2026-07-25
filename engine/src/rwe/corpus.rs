@@ -1,41 +1,42 @@
-//! Versioned, hash-bound first RWE corpus identity (pre-convergence baseline).
+//! Versioned, hash-bound first RWE corpus loaded from real task-definition fixtures.
 
-use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 pub const RWE_CORPUS_SCHEMA: &str = "rwe_first_corpus.v1";
+pub const RWE_TASK_DEFINITION_SCHEMA: &str = "rwe_task_definition.v1";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RweTaskClass {
-    BoundedSourceEdit,
-    FocusedBugRepair,
-    SmallTestAddition,
-    DocsCodeSync,
-    ControlledFailureOrCancel,
-}
-
-impl RweTaskClass {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::BoundedSourceEdit => "bounded_source_edit",
-            Self::FocusedBugRepair => "focused_bug_repair",
-            Self::SmallTestAddition => "small_test_addition",
-            Self::DocsCodeSync => "docs_code_sync",
-            Self::ControlledFailureOrCancel => "controlled_failure_or_cancel",
-        }
-    }
+/// Default fixture root relative to the engine crate.
+pub fn default_corpus_fixture_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/rwe/first_corpus/v1")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RweTaskSpec {
-    pub task_class: RweTaskClass,
-    /// Hash of task text only — raw task text is not stored in evidence.
-    pub task_text_sha256: String,
-    pub verification_commands: Vec<String>,
+pub struct RweTaskDefinition {
+    pub task_id: String,
+    pub class: String,
+    pub definition_path: String,
+    pub definition_sha256: String,
+    pub objective_sha256: String,
+    pub source_repository: String,
+    pub source_commit: String,
+    pub source_tree_hash: String,
+    pub allowed_mutable_paths: Vec<String>,
+    pub expected_verification_commands: Vec<String>,
+    pub expected_outcome_class: String,
+    pub patch_max_files: u64,
+    pub patch_max_lines: u64,
     pub timeout_ms: u64,
-    pub allow_cancel_case: bool,
-    pub max_provider_requests: u64,
-    pub max_retries: u64,
+    pub cancel_behavior: String,
+    pub executor_identity: String,
+    pub model_identity: String,
+    pub per_task_max_provider_requests: u64,
+    pub per_task_max_retries: u64,
+    pub per_task_max_total_tokens: u64,
+    pub deterministic_seed: u64,
+    pub cleanup_rules: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,13 +44,14 @@ pub struct FirstRweCorpus {
     pub schema_version: String,
     pub corpus_id: String,
     pub corpus_sha256: String,
+    pub fixture_root: String,
     pub disposable_target_repo: String,
     pub target_main_sha_required: bool,
     pub admitted_executor: String,
     pub admitted_codex_version: String,
     pub draft_pr_only: bool,
     pub auto_merge_disabled: bool,
-    pub tasks: Vec<RweTaskSpec>,
+    pub tasks: Vec<RweTaskDefinition>,
     pub notes: Vec<String>,
 }
 
@@ -59,109 +61,213 @@ impl FirstRweCorpus {
             "schema_version": self.schema_version,
             "corpus_id": self.corpus_id,
             "corpus_sha256": self.corpus_sha256,
+            "fixture_root": self.fixture_root,
             "disposable_target_repo": self.disposable_target_repo,
             "target_main_sha_required": self.target_main_sha_required,
             "admitted_executor": self.admitted_executor,
             "admitted_codex_version": self.admitted_codex_version,
             "draft_pr_only": self.draft_pr_only,
             "auto_merge_disabled": self.auto_merge_disabled,
-            "tasks": self.tasks.iter().map(|t| json!({
-                "task_class": t.task_class.as_str(),
-                "task_text_sha256": t.task_text_sha256,
-                "verification_commands": t.verification_commands,
-                "timeout_ms": t.timeout_ms,
-                "allow_cancel_case": t.allow_cancel_case,
-                "max_provider_requests": t.max_provider_requests,
-                "max_retries": t.max_retries,
-            })).collect::<Vec<_>>(),
+            "tasks": self.tasks.iter().map(|t| t.to_json()).collect::<Vec<_>>(),
             "notes": self.notes,
-            "raw_task_text_stored": false,
+            "raw_task_text_stored_in_evidence": false,
             "live_execution_authorized_by_this_corpus": false,
         })
     }
 }
 
-fn task_text_hash(label: &str) -> String {
-    // Stable fixture labels — not real operator task text.
-    hex::encode(Sha256::digest(
-        format!("rwe-fixture-task-v1:{label}").as_bytes(),
-    ))
+impl RweTaskDefinition {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "schema_version": RWE_TASK_DEFINITION_SCHEMA,
+            "task_id": self.task_id,
+            "class": self.class,
+            "definition_path": self.definition_path,
+            "definition_sha256": self.definition_sha256,
+            "objective_sha256": self.objective_sha256,
+            "source_repository": self.source_repository,
+            "source_commit": self.source_commit,
+            "source_tree_hash": self.source_tree_hash,
+            "allowed_mutable_paths": self.allowed_mutable_paths,
+            "expected_verification_commands": self.expected_verification_commands,
+            "expected_outcome_class": self.expected_outcome_class,
+            "patch_max_files": self.patch_max_files,
+            "patch_max_lines": self.patch_max_lines,
+            "timeout_ms": self.timeout_ms,
+            "cancel_behavior": self.cancel_behavior,
+            "executor_identity": self.executor_identity,
+            "model_identity": self.model_identity,
+            "per_task_max_provider_requests": self.per_task_max_provider_requests,
+            "per_task_max_retries": self.per_task_max_retries,
+            "per_task_max_total_tokens": self.per_task_max_total_tokens,
+            "deterministic_seed": self.deterministic_seed,
+            "cleanup_rules": self.cleanup_rules,
+        })
+    }
 }
 
-/// Freeze the first RWE corpus contract (provider-free; no live run).
-pub fn freeze_first_rwe_corpus() -> FirstRweCorpus {
-    let tasks = vec![
-        RweTaskSpec {
-            task_class: RweTaskClass::BoundedSourceEdit,
-            task_text_sha256: task_text_hash("bounded-source-edit"),
-            verification_commands: vec!["cargo test -p engine --lib".into()],
-            timeout_ms: 600_000,
-            allow_cancel_case: false,
-            max_provider_requests: 1,
-            max_retries: 0,
-        },
-        RweTaskSpec {
-            task_class: RweTaskClass::FocusedBugRepair,
-            task_text_sha256: task_text_hash("focused-bug-repair"),
-            verification_commands: vec!["cargo test -p engine --lib".into()],
-            timeout_ms: 600_000,
-            allow_cancel_case: false,
-            max_provider_requests: 1,
-            max_retries: 0,
-        },
-        RweTaskSpec {
-            task_class: RweTaskClass::SmallTestAddition,
-            task_text_sha256: task_text_hash("small-test-addition"),
-            verification_commands: vec!["cargo test -p engine --lib".into()],
-            timeout_ms: 600_000,
-            allow_cancel_case: false,
-            max_provider_requests: 1,
-            max_retries: 0,
-        },
-        RweTaskSpec {
-            task_class: RweTaskClass::DocsCodeSync,
-            task_text_sha256: task_text_hash("docs-code-sync"),
-            verification_commands: vec![
-                "uv run --no-project python scripts/check_agent_handoff.py".into(),
-            ],
-            timeout_ms: 300_000,
-            allow_cancel_case: false,
-            max_provider_requests: 1,
-            max_retries: 0,
-        },
-        RweTaskSpec {
-            task_class: RweTaskClass::ControlledFailureOrCancel,
-            task_text_sha256: task_text_hash("controlled-failure-or-cancel"),
-            verification_commands: vec![],
-            timeout_ms: 120_000,
-            allow_cancel_case: true,
-            max_provider_requests: 1,
-            max_retries: 0,
-        },
-    ];
-    let mut corpus = FirstRweCorpus {
-        schema_version: RWE_CORPUS_SCHEMA.to_string(),
-        corpus_id: "rwe-first-baseline-2026-07-25".into(),
-        corpus_sha256: String::new(),
-        disposable_target_repo: "Igzela/pe7-golden-path-acceptance-fixture".into(),
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn sort_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<_> = map.keys().cloned().collect();
+            keys.sort();
+            let mut out = Map::new();
+            for k in keys {
+                if let Some(v) = map.get(&k) {
+                    out.insert(k, sort_value(v));
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sort_value).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Load and freeze the first RWE corpus from versioned fixture task definitions.
+pub fn freeze_first_rwe_corpus() -> Result<FirstRweCorpus, String> {
+    freeze_first_rwe_corpus_from_root(&default_corpus_fixture_root())
+}
+
+pub fn freeze_first_rwe_corpus_from_root(root: &Path) -> Result<FirstRweCorpus, String> {
+    let tasks_dir = root.join("tasks");
+    if !tasks_dir.is_dir() {
+        return Err(format!(
+            "RWE corpus fixture tasks dir missing: {}",
+            tasks_dir.display()
+        ));
+    }
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&tasks_dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+        .collect();
+    paths.sort();
+    if paths.is_empty() {
+        return Err("RWE corpus has no task definition files".into());
+    }
+    let mut tasks = Vec::new();
+    for path in paths {
+        let raw = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let definition_sha256 = sha256_hex(&raw);
+        let v: Value =
+            serde_json::from_slice(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
+        if v.get("schema_version").and_then(Value::as_str) != Some(RWE_TASK_DEFINITION_SCHEMA) {
+            return Err(format!("{}: unexpected schema_version", path.display()));
+        }
+        let objective = v
+            .get("objective")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{}: objective required", path.display()))?;
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+        tasks.push(RweTaskDefinition {
+            task_id: required_str(&v, "task_id")?,
+            class: required_str(&v, "class")?,
+            definition_path: rel,
+            definition_sha256,
+            objective_sha256: sha256_hex(objective.as_bytes()),
+            source_repository: required_str(&v, "source_repository")?,
+            source_commit: required_str(&v, "source_commit")?,
+            source_tree_hash: required_str(&v, "source_tree_hash")?,
+            allowed_mutable_paths: string_array(&v, "allowed_mutable_paths")?,
+            expected_verification_commands: string_array(&v, "expected_verification_commands")?,
+            expected_outcome_class: required_str(&v, "expected_outcome_class")?,
+            patch_max_files: v
+                .get("patch_max_files")
+                .and_then(Value::as_u64)
+                .unwrap_or(3),
+            patch_max_lines: v
+                .get("patch_max_lines")
+                .and_then(Value::as_u64)
+                .unwrap_or(80),
+            timeout_ms: v
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(180_000),
+            cancel_behavior: required_str(&v, "cancel_behavior")?,
+            executor_identity: required_str(&v, "executor_identity")?,
+            model_identity: required_str(&v, "model_identity")?,
+            per_task_max_provider_requests: v
+                .get("per_task_max_provider_requests")
+                .and_then(Value::as_u64)
+                .unwrap_or(1),
+            per_task_max_retries: v
+                .get("per_task_max_retries")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            per_task_max_total_tokens: v
+                .get("per_task_max_total_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(12_000),
+            deterministic_seed: v
+                .get("deterministic_seed")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            cleanup_rules: string_array(&v, "cleanup_rules")?,
+        });
+    }
+    let corpus_id = "rwe-first-corpus-v1".to_string();
+    let mut authority_body = json!({
+        "schema_version": RWE_CORPUS_SCHEMA,
+        "corpus_id": corpus_id,
+        "tasks": tasks.iter().map(|t| t.to_json()).collect::<Vec<_>>(),
+        "disposable_target_repo": "operator-supplied-disposable-only",
+        "target_main_sha_required": true,
+        "admitted_executor": "codex-cli-api-key-mediated",
+        "admitted_codex_version": "0.145.0",
+        "draft_pr_only": true,
+        "auto_merge_disabled": true,
+    });
+    authority_body = sort_value(&authority_body);
+    let corpus_sha256 = sha256_hex(authority_body.to_string().as_bytes());
+    Ok(FirstRweCorpus {
+        schema_version: RWE_CORPUS_SCHEMA.into(),
+        corpus_id,
+        corpus_sha256,
+        fixture_root: root.display().to_string(),
+        disposable_target_repo: "operator-supplied-disposable-only".into(),
         target_main_sha_required: true,
-        admitted_executor: "codex_cli_mediated".into(),
-        admitted_codex_version: crate::cli::config::ADMITTED_CODEX_VERSION.to_string(),
+        admitted_executor: "codex-cli-api-key-mediated".into(),
+        admitted_codex_version: "0.145.0".into(),
         draft_pr_only: true,
         auto_merge_disabled: true,
         tasks,
         notes: vec![
-            "Pre-convergence baseline corpus; do not tune from later Architecture Convergence results.".into(),
-            "Live RWE requires separate persisted operator spend authorization (not this freeze alone).".into(),
-            "Task text is hash-bound only; raw task text is not stored in evidence.".into(),
+            "Corpus binds real task-definition files under engine/fixtures/rwe/first_corpus/v1."
+                .into(),
+            "Objective text is hash-bound only in operational evidence.".into(),
+            "Live RWE requires separate store-owned RweRunAuthorization.".into(),
+            "Not a live baseline until authorized live evidence is sealed.".into(),
         ],
-    };
-    let mut body = corpus.to_json();
-    if let Some(obj) = body.as_object_mut() {
-        obj.remove("corpus_sha256");
-    }
-    corpus.corpus_sha256 = hex::encode(Sha256::digest(body.to_string().as_bytes()));
-    corpus
+    })
+}
+
+fn required_str(v: &Value, key: &str) -> Result<String, String> {
+    v.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("{key} required"))
+}
+
+fn string_array(v: &Value, key: &str) -> Result<Vec<String>, String> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .ok_or_else(|| format!("{key} required array"))
 }
 
 #[cfg(test)]
@@ -169,16 +275,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_corpus_is_hash_bound_and_provider_free() {
-        let c = freeze_first_rwe_corpus();
-        assert_eq!(c.schema_version, RWE_CORPUS_SCHEMA);
-        assert_eq!(c.tasks.len(), 5);
-        assert!(c.draft_pr_only);
-        assert!(c.auto_merge_disabled);
-        assert_eq!(c.corpus_sha256.len(), 64);
-        let j = c.to_json();
-        assert_eq!(j["raw_task_text_stored"], false);
-        assert_eq!(j["live_execution_authorized_by_this_corpus"], false);
-        assert!(!j.to_string().contains("sk-"));
+    fn freezes_real_fixture_task_definitions() {
+        let corpus = freeze_first_rwe_corpus().expect("corpus");
+        assert_eq!(corpus.tasks.len(), 5);
+        assert_eq!(corpus.corpus_sha256.len(), 64);
+        for t in &corpus.tasks {
+            assert_eq!(t.definition_sha256.len(), 64);
+            assert_eq!(t.objective_sha256.len(), 64);
+            assert!(!t.definition_path.is_empty());
+            assert_eq!(t.per_task_max_retries, 0);
+            assert_eq!(t.per_task_max_provider_requests, 1);
+        }
+        let again = freeze_first_rwe_corpus().unwrap();
+        assert_eq!(corpus.corpus_sha256, again.corpus_sha256);
+        // Must not be generic label-only hashes of class names alone.
+        assert!(corpus
+            .tasks
+            .iter()
+            .any(|t| t.class == "bounded_source_edit"));
+        assert_ne!(
+            corpus.tasks[0].definition_sha256,
+            sha256_hex(b"rwe-fixture-task-v1:bounded-source-edit")
+        );
     }
 }

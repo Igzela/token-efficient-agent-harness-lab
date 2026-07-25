@@ -92,7 +92,7 @@ fn sample_intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskI
 #[test]
 fn schema_includes_product_tasks_at_v30() {
     let (_dir, store) = temp_store();
-    assert_eq!(store.schema_version().unwrap(), 33);
+    assert_eq!(store.schema_version().unwrap(), 34);
 }
 
 #[test]
@@ -255,7 +255,8 @@ fn rejects_absolute_verification_binary() {
 #[test]
 fn empty_v30_rollback_works() {
     let (_dir, store) = temp_store();
-    assert_eq!(store.schema_version().unwrap(), 33);
+    assert_eq!(store.schema_version().unwrap(), 34);
+    store.rollback_v34_to_v33("tester", true).unwrap();
     store.rollback_v33_to_v32("tester", true).unwrap();
     store
         .rollback_v32_to_v31("tester", true)
@@ -278,6 +279,7 @@ fn occupied_v30_rollback_blocked() {
         let intake = sample_intake(&repo, &rev, "idem-rollback-block");
         let validated = validate_intake(&intake, "local", "default").unwrap();
         store.admit_product_task(&validated, "tester").unwrap();
+        store.rollback_v34_to_v33("tester", true).unwrap();
         store.rollback_v33_to_v32("tester", true).unwrap();
         store
             .rollback_v32_to_v31("tester", true)

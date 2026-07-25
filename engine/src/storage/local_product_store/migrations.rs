@@ -15,6 +15,7 @@ pub(super) const V30_SCHEMA_VERSION: i64 = 30;
 pub(super) const V31_SCHEMA_VERSION: i64 = 31;
 pub(super) const V32_SCHEMA_VERSION: i64 = 32;
 pub(super) const V33_SCHEMA_VERSION: i64 = 33;
+pub(super) const V34_SCHEMA_VERSION: i64 = 34;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -59,6 +60,8 @@ pub(super) const V32_TABLES: [&str; 4] = [
     "managed_acceptance_decision_transition_receipts",
 ];
 pub(super) const V33_TABLES: [&str; 1] = ["managed_acceptance_spend_authorizations"];
+pub(super) const V34_TABLES: [&str; 3] =
+    ["rwe_run_authorizations", "rwe_runs", "rwe_task_attempts"];
 
 #[allow(dead_code)]
 pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
@@ -117,6 +120,7 @@ impl LocalProductStore {
                     V31_SCHEMA_VERSION => Self::migrate_v31_add_product_terminal_evidence(conn)?,
                     V32_SCHEMA_VERSION => Self::migrate_v32_add_managed_acceptance(conn)?,
                     V33_SCHEMA_VERSION => Self::migrate_v33_add_managed_acceptance_spend(conn)?,
+                    V34_SCHEMA_VERSION => Self::migrate_v34_add_rwe_authority(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -125,7 +129,9 @@ impl LocalProductStore {
             let final_version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if final_version == V33_SCHEMA_VERSION {
+            if final_version == V34_SCHEMA_VERSION {
+                validate_sqlite_v34_schema(conn)?;
+            } else if final_version == V33_SCHEMA_VERSION {
                 // V33 is intentionally repaired in place as well as migrated
                 // from v32. Older v33 databases predate the logical identity
                 // column/check/index and must not be accepted by the validator.
@@ -644,7 +650,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
         }
     }
 
-    /// Roll back v33 managed-acceptance spend storage only when it is empty.
+    /// Roll back canonical terminal evidence only when no evidence rows exist.
+    pub fn rollback_v34_to_v33(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v34 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v34 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v34_to_v33(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v34_to_v33_internal(actor, &now),
+        }
+    }
+
     pub fn rollback_v33_to_v32(
         &self,
         actor: &str,
@@ -732,6 +760,53 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.rollback_pg_v30_to_v29_internal(actor, &now),
         }
+    }
+
+    fn rollback_sqlite_v34_to_v33(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            if current_version != V34_SCHEMA_VERSION {
+                return Err(format!(
+                    "v34 rollback requires current schema version 34; found {current_version}"
+                ));
+            }
+            let occupied = occupied_sqlite_tables(&tx, &V34_TABLES)?;
+            if !occupied.is_empty() {
+                return Err(format!(
+                    "v34 rollback blocked: RWE authority exists in {}",
+                    occupied.join(", ")
+                ));
+            }
+            tx.execute_batch(
+                "DROP TABLE IF EXISTS rwe_task_attempts;
+                 DROP TABLE IF EXISTS rwe_runs;
+                 DROP TABLE IF EXISTS rwe_run_authorizations;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v34_to_v33', 'local_product_store', ?3)",
+                rusqlite::params![
+                    now,
+                    actor,
+                    serde_json::json!({
+                        "from_version": V34_SCHEMA_VERSION,
+                        "to_version": V33_SCHEMA_VERSION,
+                        "tables": V34_TABLES,
+                    })
+                    .to_string()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V33_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())?;
+            Ok(())
+        })
     }
 
     fn rollback_sqlite_v33_to_v32(&self, actor: &str, now: &str) -> Result<(), String> {
@@ -1754,6 +1829,11 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
             .map_err(|error| error.to_string())
     }
 
+    fn migrate_v34_add_rwe_authority(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(schema::V34_DDL)
+            .map_err(|error| error.to_string())
+    }
+
     fn migrate_v33_add_managed_acceptance_spend(conn: &Connection) -> Result<(), String> {
         repair_sqlite_v32_transition_schema(conn)?;
         let spend_table_exists =
@@ -1976,6 +2056,23 @@ fn repair_sqlite_v33_spend_schema(conn: &Connection) -> Result<(), String> {
         .map_err(|error| format!("v33 spend index repair failed: {error}"))?;
     }
     tx.commit().map_err(|error| error.to_string())
+}
+
+fn validate_sqlite_v34_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v33_schema(conn)?;
+    for table in V34_TABLES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v34 schema missing table {table}"));
+        }
+    }
+    Ok(())
 }
 
 fn validate_sqlite_v33_schema(conn: &Connection) -> Result<(), String> {
@@ -2795,6 +2892,7 @@ mod tests {
 
     fn store_at_v25(path: impl AsRef<std::path::Path>) -> LocalProductStore {
         let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v34_to_v33("migration-test", true).unwrap();
         store.rollback_v33_to_v32("migration-test", true).unwrap();
         store.rollback_v32_to_v31("migration-test", true).unwrap();
         store.rollback_v31_to_v30("migration-test", true).unwrap();
