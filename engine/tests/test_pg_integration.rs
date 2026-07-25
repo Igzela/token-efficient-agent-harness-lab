@@ -1818,6 +1818,9 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_preserves_spend_rollback_gua
         .count();
     assert_eq!(output_audits, 1);
 
+    store
+        .rollback_v34_to_v33("pg-rollback-operator", true)
+        .unwrap();
     let rollback_error = store
         .rollback_v33_to_v32("pg-rollback-operator", true)
         .expect_err("PostgreSQL must not drop spend history while any spend exists");

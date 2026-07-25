@@ -39,6 +39,32 @@ fn canonical_json(value: &Value) -> Result<String, String> {
     Ok(sort_value(value).to_string())
 }
 
+/// Per-task budget bound into the RWE authorization envelope.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RwePerTaskBudget {
+    pub task_id: String,
+    pub max_provider_requests: u64,
+    pub max_input_tokens: u64,
+    pub max_output_tokens: u64,
+    pub max_total_tokens: u64,
+    pub max_wall_time_ms: u64,
+    pub max_cost: Option<f64>,
+}
+
+impl RwePerTaskBudget {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "task_id": self.task_id,
+            "max_provider_requests": self.max_provider_requests,
+            "max_input_tokens": self.max_input_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "max_total_tokens": self.max_total_tokens,
+            "max_wall_time_ms": self.max_wall_time_ms,
+            "max_cost": self.max_cost,
+        })
+    }
+}
+
 /// Request to issue a one-use RWE run authorization (owner recomputes body/hash).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RweAuthorizationIssueRequest {
@@ -50,6 +76,13 @@ pub struct RweAuthorizationIssueRequest {
     pub max_total_tokens: u64,
     pub max_wall_time_ms: u64,
     pub cost_authority: super::CostAuthority,
+    pub per_task_budgets: Vec<RwePerTaskBudget>,
+    pub binary_path: String,
+    pub binary_version: String,
+    pub binary_sha256: String,
+    pub provider_kind: String,
+    pub provider_host: String,
+    pub provider_base_url: String,
     pub target_repo: String,
     pub target_main_sha: String,
     pub executor_identity: String,
@@ -57,6 +90,120 @@ pub struct RweAuthorizationIssueRequest {
     pub draft_pr_only: bool,
     pub expires_at: String,
     pub fixture_only: bool,
+}
+
+fn parse_rfc3339_utc(field: &str, value: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    chrono::DateTime::parse_from_rfc3339(value.trim())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|_| format!("{field} must be canonical RFC3339/UTC"))
+}
+
+fn is_at_or_before(expires_at: &str, now: &str) -> Result<bool, String> {
+    Ok(parse_rfc3339_utc("expires_at", expires_at)? <= parse_rfc3339_utc("now", now)?)
+}
+
+fn require_finite_rwe_expiry(expires_at: &str) -> Result<String, String> {
+    let raw = expires_at.trim();
+    if raw.is_empty() {
+        return Err("finite expires_at required".into());
+    }
+    let dt = parse_rfc3339_utc("expires_at", raw)?;
+    let year = dt.format("%Y").to_string();
+    if year == "2099" || year == "9999" || year == "2100" {
+        return Err("finite expires_at required (far-future placeholder rejected)".into());
+    }
+    Ok(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
+/// Validate Golden Path terminal evidence as successful, live, independently accepted,
+/// and identity-matched — not schema-only.
+fn validate_golden_path_terminal_evidence(
+    ev: &Value,
+    request: &RweAuthorizationIssueRequest,
+) -> Result<(), String> {
+    if ev.get("schema_version").and_then(Value::as_str) != Some("product_task_terminal_evidence.v2")
+    {
+        return Err(
+            "golden_path_terminal_evidence is not product_task_terminal_evidence.v2".into(),
+        );
+    }
+    if ev.get("task_status").and_then(Value::as_str) != Some("completed") {
+        return Err(
+            "golden_path_terminal_evidence is not successful (task_status!=completed)".into(),
+        );
+    }
+    let executor_class = ev
+        .pointer("/node/executor_class")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if executor_class == "fixture_deterministic" || executor_class.is_empty() {
+        return Err(
+            "golden_path_terminal_evidence must be live (non-fixture) executor_class".into(),
+        );
+    }
+    let trustworthy = ev
+        .pointer("/verification/trustworthy")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let verification_status = ev
+        .pointer("/verification/status")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !trustworthy && verification_status != "evidence_recorded" && verification_status != "passed"
+    {
+        return Err(
+            "golden_path_terminal_evidence verification is not independently accepted".into(),
+        );
+    }
+    let approval_id = ev
+        .pointer("/approval/approval_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if approval_id.is_empty() {
+        return Err("golden_path_terminal_evidence missing independent approval identity".into());
+    }
+    // Identity match: evidence id / product_task_id / main SHA / executor / model.
+    let evidence_id = ev.get("evidence_id").and_then(Value::as_str).unwrap_or("");
+    let product_task_id = ev
+        .get("product_task_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let gp_id = request.golden_path_terminal_evidence_id.trim();
+    if gp_id != evidence_id && gp_id != product_task_id {
+        return Err("golden_path_terminal_evidence_id does not match evidence identity".into());
+    }
+    if let Some(src) = ev.get("source_revision").and_then(Value::as_str) {
+        if !src.is_empty() && src != request.target_main_sha {
+            return Err(
+                "golden_path_terminal_evidence source_revision mismatches target_main_sha".into(),
+            );
+        }
+    }
+    if let Some(exec) = ev
+        .pointer("/node/managed_executor_identity")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        if exec != request.executor_identity {
+            return Err(
+                "golden_path_terminal_evidence executor identity mismatch vs authorization".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Strip lease capability tokens from a general-read run projection.
+fn redact_lease_from_run_view(mut row: Value) -> Value {
+    if let Value::Object(ref mut m) = row {
+        m.remove("lease_token");
+        if let Some(Value::Object(ev)) = m.get_mut("evidence_json") {
+            if let Some(Value::Object(admit)) = ev.get_mut("admit_state") {
+                admit.remove("lease_token");
+            }
+        }
+    }
+    row
 }
 
 impl LocalProductStore {
@@ -85,9 +232,7 @@ impl LocalProductStore {
         {
             return Err("corpus_sha256 must be 64 hex chars".into());
         }
-        if request.expires_at.trim().is_empty() || request.expires_at.starts_with("2099") {
-            return Err("finite expires_at required".into());
-        }
+        let expires_at = require_finite_rwe_expiry(&request.expires_at)?;
         if request.task_ids.is_empty() {
             return Err("task_ids required".into());
         }
@@ -106,30 +251,61 @@ impl LocalProductStore {
         {
             return Err("aggregate budgets must be positive".into());
         }
-        // Bind / verify Golden Path terminal evidence when not fixture-only.
-        if !fixture_only {
-            if request.golden_path_terminal_evidence_id.trim().is_empty() {
-                return Err("golden_path_terminal_evidence_id required for live RWE".into());
+        if request.per_task_budgets.is_empty() {
+            return Err("per_task_budgets required".into());
+        }
+        for budget in &request.per_task_budgets {
+            if budget.task_id.trim().is_empty()
+                || budget.max_provider_requests == 0
+                || budget.max_total_tokens == 0
+                || budget.max_wall_time_ms == 0
+            {
+                return Err(format!(
+                    "per-task budget incomplete or zero for task {}",
+                    budget.task_id
+                ));
             }
-            let te = self
-                .get_product_task_terminal_evidence(&request.golden_path_terminal_evidence_id)
-                .or_else(|_| {
-                    // Allow lookup by task_id stored as evidence id for fixtures.
-                    self.get_product_task_terminal_evidence(
-                        request.golden_path_terminal_evidence_id.trim(),
-                    )
-                });
+            if !request.task_ids.iter().any(|t| t == &budget.task_id) {
+                return Err(format!(
+                    "per-task budget task_id {} not in task_ids",
+                    budget.task_id
+                ));
+            }
+        }
+        for task_id in &request.task_ids {
+            if !request
+                .per_task_budgets
+                .iter()
+                .any(|b| &b.task_id == task_id)
+            {
+                return Err(format!("missing per-task budget for task_id {task_id}"));
+            }
+        }
+        if request.binary_path.trim().is_empty()
+            || request.binary_version.trim().is_empty()
+            || request.binary_sha256.len() != 64
+            || !request.binary_sha256.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return Err("exact binary path/version/sha256 required".into());
+        }
+        if request.provider_kind.trim().is_empty()
+            || request.provider_host.trim().is_empty()
+            || request.provider_base_url.trim().is_empty()
+        {
+            return Err("exact provider kind/host/base_url required".into());
+        }
+        let _ = super::CostAuthority::from_json(&request.cost_authority.to_json())?;
+        // Bind / verify Golden Path terminal evidence (live requires full acceptance proof).
+        if request.golden_path_terminal_evidence_id.trim().is_empty() {
+            return Err("golden_path_terminal_evidence_id required".into());
+        }
+        if !fixture_only {
+            let te = self.get_product_task_terminal_evidence(
+                request.golden_path_terminal_evidence_id.trim(),
+            );
             match te {
                 Ok(ev) if !ev.is_null() => {
-                    // Must be a real terminal evidence document.
-                    if ev.get("schema_version").and_then(Value::as_str)
-                        != Some("product_task_terminal_evidence.v2")
-                    {
-                        return Err(
-                            "golden_path_terminal_evidence_id is not accepted terminal evidence"
-                                .into(),
-                        );
-                    }
+                    validate_golden_path_terminal_evidence(&ev, request)?;
                 }
                 _ => {
                     return Err(
@@ -138,12 +314,13 @@ impl LocalProductStore {
                     );
                 }
             }
-        } else if request.golden_path_terminal_evidence_id.trim().is_empty() {
-            return Err(
-                "golden_path_terminal_evidence_id required even for fixture_only rows".into(),
-            );
         }
 
+        let per_task = request
+            .per_task_budgets
+            .iter()
+            .map(RwePerTaskBudget::to_json)
+            .collect::<Vec<_>>();
         let body_json = sort_value(&json!({
             "schema_version": "rwe_run_authorization.v1",
             "authorization_id": request.authorization_id,
@@ -157,6 +334,13 @@ impl LocalProductStore {
             "max_total_tokens": request.max_total_tokens,
             "max_wall_time_ms": request.max_wall_time_ms,
             "cost_authority": request.cost_authority.to_json(),
+            "per_task_budgets": per_task,
+            "binary_path": request.binary_path,
+            "binary_version": request.binary_version,
+            "binary_sha256": request.binary_sha256,
+            "provider_kind": request.provider_kind,
+            "provider_host": request.provider_host,
+            "provider_base_url": request.provider_base_url,
             "target_repo": request.target_repo,
             "target_main_sha": request.target_main_sha,
             "executor_identity": request.executor_identity,
@@ -164,7 +348,7 @@ impl LocalProductStore {
             "draft_pr_only": request.draft_pr_only,
             "one_use": true,
             "fixture_only": fixture_only,
-            "expires_at": request.expires_at,
+            "expires_at": expires_at,
         }));
         let body_sha256 = sha256_hex(canonical_json(&body_json)?.as_bytes());
         self.insert_rwe_run_authorization_owned(
@@ -175,7 +359,7 @@ impl LocalProductStore {
             &request.corpus_sha256,
             &body_sha256,
             &body_json,
-            &request.expires_at,
+            &expires_at,
             fixture_only,
         )
     }
@@ -194,7 +378,7 @@ impl LocalProductStore {
         fixture_only: bool,
     ) -> Result<Value, String> {
         let now = self.now();
-        if expires_at <= now.as_str() {
+        if is_at_or_before(expires_at, &now)? {
             return Err("RWE authorization already expired at issue time".into());
         }
         match &self.db {
@@ -298,18 +482,25 @@ impl LocalProductStore {
         }
     }
 
+    /// General run read. Lease tokens are capability secrets and are never returned here;
+    /// they are only returned from successful admission / current-owner context.
     pub fn get_rwe_run(&self, run_id: &str) -> Result<Option<Value>, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                conn.query_row(
-                    "SELECT run_id FROM rwe_runs WHERE run_id=?1",
-                    params![run_id],
-                    |_| Ok(()),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?
-                .map(|_| load_rwe_run_sqlite(conn, run_id))
-                .transpose()
+                let exists = conn
+                    .query_row(
+                        "SELECT run_id FROM rwe_runs WHERE run_id=?1",
+                        params![run_id],
+                        |_| Ok(()),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                if exists.is_none() {
+                    return Ok(None);
+                }
+                Ok(Some(redact_lease_from_run_view(load_rwe_run_sqlite(
+                    conn, run_id,
+                )?)))
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
@@ -318,7 +509,9 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?
                     .is_some()
                 {
-                    Ok(Some(load_rwe_run_pg(client, run_id)?))
+                    Ok(Some(redact_lease_from_run_view(load_rwe_run_pg(
+                        client, run_id,
+                    )?)))
                 } else {
                     Ok(None)
                 }
@@ -586,9 +779,11 @@ impl LocalProductStore {
     }
 
     /// Immutable exact-replay-or-conflict task-attempt persistence (no UPSERT mutation).
+    /// Requires the current run lease / owner for every new write.
     pub fn persist_rwe_task_attempt(
         &self,
         run_id: &str,
+        lease_token: &str,
         task_attempt_id: &str,
         task_id: &str,
         definition_sha256: &str,
@@ -603,38 +798,61 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                     .map_err(|e| e.to_string())?;
-                if let Some((existing_sha, existing_class)) = tx
+                if let Some((
+                    existing_run,
+                    existing_task,
+                    existing_def,
+                    existing_class,
+                    existing_sha,
+                )) = tx
                     .query_row(
-                        "SELECT evidence_sha256, classification FROM rwe_task_attempts WHERE task_attempt_id=?1",
+                        "SELECT run_id, task_id, definition_sha256, classification, evidence_sha256
+                         FROM rwe_task_attempts WHERE task_attempt_id=?1",
                         params![task_attempt_id],
-                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                        |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, String>(2)?,
+                                r.get::<_, String>(3)?,
+                                r.get::<_, String>(4)?,
+                            ))
+                        },
                     )
                     .optional()
                     .map_err(|e| e.to_string())?
                 {
-                    if existing_sha != evidence_sha || existing_class != classification {
-                        return Err("conflicting RWE task-attempt evidence".into());
+                    if existing_run != run_id
+                        || existing_task != task_id
+                        || existing_def != definition_sha256
+                        || existing_class != classification
+                        || existing_sha != evidence_sha
+                    {
+                        return Err("conflicting RWE task-attempt identity/evidence".into());
                     }
                     return Ok(json!({
                         "task_attempt_id": task_attempt_id,
                         "run_id": run_id,
+                        "task_id": task_id,
+                        "definition_sha256": definition_sha256,
                         "evidence_sha256": evidence_sha,
                         "classification": classification,
                         "idempotent_replay": true,
                     }));
                 }
-                // Run must be admitted (not terminal) for new attempts.
-                let status: String = tx
-                    .query_row(
-                        "SELECT status FROM rwe_runs WHERE run_id=?1",
-                        params![run_id],
-                        |r| r.get(0),
-                    )
-                    .map_err(|e| e.to_string())?;
+                let run = load_rwe_run_sqlite(&tx, run_id)?;
+                let status = run.get("status").and_then(Value::as_str).unwrap_or("");
                 if status != "admitted" {
                     return Err(format!(
                         "cannot persist task attempt on run status {status}"
                     ));
+                }
+                let expected_lease = run
+                    .pointer("/evidence_json/admit_state/lease_token")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if expected_lease.is_empty() || expected_lease != lease_token {
+                    return Err("RWE task-attempt write requires current run lease/owner".into());
                 }
                 tx.execute(
                     "INSERT INTO rwe_task_attempts (
@@ -657,6 +875,8 @@ impl LocalProductStore {
                 Ok(json!({
                     "task_attempt_id": task_attempt_id,
                     "run_id": run_id,
+                    "task_id": task_id,
+                    "definition_sha256": definition_sha256,
                     "evidence_sha256": evidence_sha,
                     "classification": classification,
                     "idempotent_replay": false,
@@ -667,35 +887,48 @@ impl LocalProductStore {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
                 if let Some(row) = tx
                     .query_opt(
-                        "SELECT evidence_sha256, classification FROM rwe_task_attempts WHERE task_attempt_id=$1 FOR UPDATE",
+                        "SELECT run_id, task_id, definition_sha256, classification, evidence_sha256
+                         FROM rwe_task_attempts WHERE task_attempt_id=$1 FOR UPDATE",
                         &[&task_attempt_id],
                     )
                     .map_err(|e| e.to_string())?
                 {
-                    let existing_sha: String = row.get(0);
-                    let existing_class: String = row.get(1);
-                    if existing_sha != evidence_sha || existing_class != classification {
-                        return Err("conflicting RWE task-attempt evidence".into());
+                    let existing_run: String = row.get(0);
+                    let existing_task: String = row.get(1);
+                    let existing_def: String = row.get(2);
+                    let existing_class: String = row.get(3);
+                    let existing_sha: String = row.get(4);
+                    if existing_run != run_id
+                        || existing_task != task_id
+                        || existing_def != definition_sha256
+                        || existing_class != classification
+                        || existing_sha != evidence_sha
+                    {
+                        return Err("conflicting RWE task-attempt identity/evidence".into());
                     }
                     return Ok(json!({
                         "task_attempt_id": task_attempt_id,
                         "run_id": run_id,
+                        "task_id": task_id,
+                        "definition_sha256": definition_sha256,
                         "evidence_sha256": evidence_sha,
                         "classification": classification,
                         "idempotent_replay": true,
                     }));
                 }
-                let status: String = tx
-                    .query_one(
-                        "SELECT status FROM rwe_runs WHERE run_id=$1 FOR UPDATE",
-                        &[&run_id],
-                    )
-                    .map_err(|e| e.to_string())?
-                    .get(0);
+                let run = load_rwe_run_pg(&mut tx, run_id)?;
+                let status = run.get("status").and_then(Value::as_str).unwrap_or("");
                 if status != "admitted" {
                     return Err(format!(
                         "cannot persist task attempt on run status {status}"
                     ));
+                }
+                let expected_lease = run
+                    .pointer("/evidence_json/admit_state/lease_token")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if expected_lease.is_empty() || expected_lease != lease_token {
+                    return Err("RWE task-attempt write requires current run lease/owner".into());
                 }
                 tx.execute(
                     "INSERT INTO rwe_task_attempts (
@@ -718,6 +951,8 @@ impl LocalProductStore {
                 Ok(json!({
                     "task_attempt_id": task_attempt_id,
                     "run_id": run_id,
+                    "task_id": task_id,
+                    "definition_sha256": definition_sha256,
                     "evidence_sha256": evidence_sha,
                     "classification": classification,
                     "idempotent_replay": false,
@@ -726,7 +961,8 @@ impl LocalProductStore {
         }
     }
 
-    /// Terminalize under current lease; exact receipt replay allowed; late write rejected.
+    /// Terminalize under current lease. Stores one canonical terminal receipt body/hash so
+    /// direct exact replay succeeds and conflicting replay rejects.
     pub fn complete_rwe_run(
         &self,
         run_id: &str,
@@ -743,8 +979,9 @@ impl LocalProductStore {
         }
         let now = self.now();
         let evidence_sorted = sort_value(evidence);
-        let recomputed = sha256_hex(canonical_json(&evidence_sorted)?.as_bytes());
-        if recomputed != evidence_sha256 {
+        // Caller evidence body must be self-consistent before owner wraps the receipt.
+        let caller_evidence_sha = sha256_hex(canonical_json(&evidence_sorted)?.as_bytes());
+        if caller_evidence_sha != evidence_sha256 {
             return Err("evidence_sha256 mismatch vs evidence body".into());
         }
         match &self.db {
@@ -756,13 +993,28 @@ impl LocalProductStore {
                     .get("status")
                     .and_then(Value::as_str)
                     .unwrap_or("");
+                let admit = existing
+                    .get("evidence_json")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let admit_body_sha = admit
+                    .pointer("/admit_state/run_body_sha256")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let receipt = build_canonical_terminal_receipt(
+                    run_id,
+                    status,
+                    &evidence_sorted,
+                    &admit_body_sha,
+                )?;
+                let receipt_sha = sha256_hex(canonical_json(&receipt)?.as_bytes());
                 if cur_status != "admitted" {
-                    // Terminal exact replay or late-write reject.
+                    // Exact terminal replay: stored hash must match rebuilt canonical receipt.
                     if cur_status == status
                         && existing.get("evidence_sha256").and_then(Value::as_str)
-                            == Some(evidence_sha256)
+                            == Some(receipt_sha.as_str())
                     {
-                        let mut row = existing;
+                        let mut row = redact_lease_from_run_view(existing);
                         if let Value::Object(ref mut m) = row {
                             m.insert("idempotent_replay".into(), json!(true));
                         }
@@ -770,10 +1022,6 @@ impl LocalProductStore {
                     }
                     return Err("late RWE terminal write rejected".into());
                 }
-                let admit = existing
-                    .get("evidence_json")
-                    .cloned()
-                    .unwrap_or(Value::Null);
                 let expected_lease = admit
                     .pointer("/admit_state/lease_token")
                     .and_then(Value::as_str)
@@ -781,25 +1029,13 @@ impl LocalProductStore {
                 if expected_lease != lease_token {
                     return Err("RWE lease_token mismatch".into());
                 }
-                // Preserve admit metadata flags under terminal evidence.
-                let mut terminal = evidence_sorted.clone();
-                if let Value::Object(ref mut m) = terminal {
-                    m.insert("admit_state".into(), admit.get("admit_state").cloned().unwrap_or(Value::Null));
-                    m.entry("live_baseline_sealed".to_string())
-                        .or_insert(json!(false));
-                    m.entry("provider_free_fixture_completion".to_string())
-                        .or_insert(json!(status == "fixture_complete"));
-                    m.entry("live_provider_request".to_string())
-                        .or_insert(json!(false));
-                }
-                let terminal_s = canonical_json(&terminal)?;
-                let terminal_sha = sha256_hex(terminal_s.as_bytes());
+                let terminal_s = canonical_json(&receipt)?;
                 tx.execute(
                     "UPDATE rwe_runs SET status=?1, evidence_json=?2, evidence_sha256=?3, updated_at=?4 WHERE run_id=?5 AND status='admitted'",
-                    params![status, terminal_s, terminal_sha, now, run_id],
+                    params![status, terminal_s, receipt_sha, now, run_id],
                 )
                 .map_err(|e| e.to_string())?;
-                let row = load_rwe_run_sqlite(&tx, run_id)?;
+                let row = redact_lease_from_run_view(load_rwe_run_sqlite(&tx, run_id)?);
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(row)
             }),
@@ -811,12 +1047,27 @@ impl LocalProductStore {
                     .get("status")
                     .and_then(Value::as_str)
                     .unwrap_or("");
+                let admit = existing
+                    .get("evidence_json")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let admit_body_sha = admit
+                    .pointer("/admit_state/run_body_sha256")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let receipt = build_canonical_terminal_receipt(
+                    run_id,
+                    status,
+                    &evidence_sorted,
+                    &admit_body_sha,
+                )?;
+                let receipt_sha = sha256_hex(canonical_json(&receipt)?.as_bytes());
                 if cur_status != "admitted" {
                     if cur_status == status
                         && existing.get("evidence_sha256").and_then(Value::as_str)
-                            == Some(evidence_sha256)
+                            == Some(receipt_sha.as_str())
                     {
-                        let mut row = existing;
+                        let mut row = redact_lease_from_run_view(existing);
                         if let Value::Object(ref mut m) = row {
                             m.insert("idempotent_replay".into(), json!(true));
                         }
@@ -824,10 +1075,6 @@ impl LocalProductStore {
                     }
                     return Err("late RWE terminal write rejected".into());
                 }
-                let admit = existing
-                    .get("evidence_json")
-                    .cloned()
-                    .unwrap_or(Value::Null);
                 let expected_lease = admit
                     .pointer("/admit_state/lease_token")
                     .and_then(Value::as_str)
@@ -835,28 +1082,17 @@ impl LocalProductStore {
                 if expected_lease != lease_token {
                     return Err("RWE lease_token mismatch".into());
                 }
-                let mut terminal = evidence_sorted.clone();
-                if let Value::Object(ref mut m) = terminal {
-                    m.insert("admit_state".into(), admit.get("admit_state").cloned().unwrap_or(Value::Null));
-                    m.entry("live_baseline_sealed".to_string())
-                        .or_insert(json!(false));
-                    m.entry("provider_free_fixture_completion".to_string())
-                        .or_insert(json!(status == "fixture_complete"));
-                    m.entry("live_provider_request".to_string())
-                        .or_insert(json!(false));
-                }
-                let terminal_s = canonical_json(&terminal)?;
-                let terminal_sha = sha256_hex(terminal_s.as_bytes());
+                let terminal_s = canonical_json(&receipt)?;
                 let updated = tx
                     .execute(
                         "UPDATE rwe_runs SET status=$1, evidence_json=$2, evidence_sha256=$3, updated_at=$4 WHERE run_id=$5 AND status='admitted'",
-                        &[&status, &terminal_s, &terminal_sha, &now, &run_id],
+                        &[&status, &terminal_s, &receipt_sha, &now, &run_id],
                     )
                     .map_err(|e| e.to_string())?;
                 if updated != 1 {
                     return Err("late RWE terminal write rejected".into());
                 }
-                let row = load_rwe_run_pg(&mut tx, run_id)?;
+                let row = redact_lease_from_run_view(load_rwe_run_pg(&mut tx, run_id)?);
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(row)
             }),
@@ -864,10 +1100,42 @@ impl LocalProductStore {
     }
 }
 
+fn build_canonical_terminal_receipt(
+    run_id: &str,
+    status: &str,
+    evidence: &Value,
+    admit_run_body_sha256: &Value,
+) -> Result<Value, String> {
+    Ok(sort_value(&json!({
+        "schema_version": "rwe_terminal_receipt.v1",
+        "run_id": run_id,
+        "status": status,
+        "admit_run_body_sha256": admit_run_body_sha256,
+        "evidence": evidence,
+        "live_baseline_sealed": evidence
+            .get("live_baseline_sealed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "provider_free_fixture_completion": evidence
+            .get("provider_free_fixture_completion")
+            .and_then(Value::as_bool)
+            .unwrap_or(status == "fixture_complete"),
+        "live_provider_request": evidence
+            .get("live_provider_request")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })))
+}
+
 fn exact_run_replay_or_conflict(existing: &Value, run_body_sha256: &str) -> Result<Value, String> {
     let existing_sha = existing
         .pointer("/evidence_json/admit_state/run_body_sha256")
         .and_then(Value::as_str)
+        .or_else(|| {
+            existing
+                .pointer("/evidence_json/admit_run_body_sha256")
+                .and_then(Value::as_str)
+        })
         .or_else(|| {
             existing
                 .pointer("/evidence_json/run_body_sha256")
@@ -880,17 +1148,22 @@ fn exact_run_replay_or_conflict(existing: &Value, run_body_sha256: &str) -> Resu
     } else if existing.get("status").and_then(Value::as_str) != Some("admitted")
         && existing.get("status").and_then(Value::as_str) != Some("fixture_complete")
     {
-        // Terminal without stored admit hash: only exact evidence identity allowed via complete.
         return Err("conflicting RWE run reuse without admit body identity".into());
     }
+    // Current-owner context only: surface lease when run is still admitted.
     let mut row = existing.clone();
     if let Value::Object(ref mut m) = row {
         m.insert("idempotent_replay".into(), json!(true));
-        if let Some(lease) = existing
-            .pointer("/evidence_json/admit_state/lease_token")
-            .cloned()
-        {
-            m.insert("lease_token".into(), lease);
+        if existing.get("status").and_then(Value::as_str) == Some("admitted") {
+            if let Some(lease) = existing
+                .pointer("/evidence_json/admit_state/lease_token")
+                .cloned()
+            {
+                m.insert("lease_token".into(), lease);
+            }
+        } else {
+            // Terminal runs: never re-expose lease via admit replay.
+            m.remove("lease_token");
         }
     }
     Ok(row)
@@ -913,7 +1186,7 @@ fn validate_rwe_auth_for_admit(
         return Err("RWE authorization not active".into());
     }
     if let Some(exp) = auth.get("expires_at").and_then(Value::as_str) {
-        if exp < now {
+        if is_at_or_before(exp, now)? {
             return Err("RWE authorization expired".into());
         }
     } else {
@@ -945,7 +1218,7 @@ fn validate_rwe_auth_for_admit(
         }
     }
     let body = auth.get("body_json").cloned().unwrap_or(Value::Null);
-    // Complete envelope vs run body.
+    // Complete envelope vs run body — every authority field is mandatory.
     for field in [
         "corpus_sha256",
         "target_repo",
@@ -957,26 +1230,27 @@ fn validate_rwe_auth_for_admit(
         "max_wall_time_ms",
         "golden_path_terminal_evidence_id",
         "draft_pr_only",
+        "task_ids",
+        "cost_authority",
+        "per_task_budgets",
+        "binary_path",
+        "binary_version",
+        "binary_sha256",
+        "provider_kind",
+        "provider_host",
+        "provider_base_url",
     ] {
         let expected = body
             .get(field)
             .cloned()
-            .or_else(|| auth.get(field).cloned());
-        let observed = run_body.get(field).cloned();
-        match (expected, observed) {
-            (Some(e), Some(o)) if e == o => {}
-            (Some(_), Some(_)) => {
-                return Err(format!("run body {field} mismatch vs RWE authorization"));
-            }
-            (Some(_), None) => {
-                return Err(format!("run body missing required field {field}"));
-            }
-            _ => {}
-        }
-    }
-    if let Some(tasks) = body.get("task_ids") {
-        if run_body.get("task_ids").is_some() && run_body.get("task_ids") != Some(tasks) {
-            return Err("run body task_ids mismatch vs authorization".into());
+            .or_else(|| auth.get(field).cloned())
+            .ok_or_else(|| format!("authorization missing field {field}"))?;
+        let observed = run_body
+            .get(field)
+            .cloned()
+            .ok_or_else(|| format!("run body missing required field {field}"))?;
+        if expected != observed {
+            return Err(format!("run body {field} mismatch vs RWE authorization"));
         }
     }
     if run_body.get("corpus_sha256").and_then(Value::as_str)
