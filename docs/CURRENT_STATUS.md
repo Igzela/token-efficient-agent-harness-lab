@@ -1,102 +1,107 @@
 # Current Status
 
-Last updated: 2026-07-24.
+Last updated: 2026-07-25.
 
-## Verified Repository State
+## Repository Truth Model
 
-- Repository: `Igzela/token-efficient-agent-harness-lab`; refreshed `origin/main`: `b5920116…` after PE7 Codex mediation admission repair (#296).
-- Open PRs: #225 (presentation-only Dashboard). Auto-merge is disabled.
-- PR #295 is a partial foundation only. PR #296 completed authority repair with class `mediation_hardened_partial` (not full admission).
-- Issue #266 is Level-2 proposal-only; Issue #254 is parked; Issue #208 is emergency-stopped.
-- Disposable target `Igzela/pe7-golden-path-acceptance-20260722`: Draft PR #1 remains open/draft; target `main` is `926f3d47a2a11e1cdcf05c3a960a5c89cd80679d`.
-- Rust `engine/` and `LocalProductStore` remain the sole runtime and application-owned persistence authorities.
+This document separates three states that must not be conflated:
+
+1. **Merged and accepted truth** — code on `main` that passed exact-head/full CI, independent review, merge, and documentation closeout.
+2. **Open review surfaces** — proposed code on PR branches. It may be useful or locally green, but it is not authoritative until the final unchanged head passes CI and independent review and is merged.
+3. **Blocked or deferred work** — design or implementation that remains ineligible because an earlier evidence or authority gate is incomplete.
+
+A new PR head invalidates earlier CI and review conclusions for that PR.
+
+## Merged and Accepted Truth
+
+- Repository: `Igzela/token-efficient-agent-harness-lab`.
+- Accepted runtime baseline is merged through PR #296 plus its documentation seal.
+- Rust `engine/` and `LocalProductStore` remain the sole authorities for workflow state, scheduling, leases, retries, budgets, approvals, evidence, output reconciliation, audit, and persistence.
+- SQLite is the default store; PostgreSQL is the supported parity backend.
+- ProductTask remains the sole product budget owner.
+- `execution_usage_event.v1` is the normalized post-call usage-evidence contract. Gateway evidence is primary for mediated Codex; CLI/session records are corroborating only.
+- Codex API-key mediation is classified `mediation_hardened_partial`, not full admission.
+- Claude Code managed admission remains fail-closed because provider-independent worktree-only confinement is unproved.
+- OpenCode real-binary admission remains deferred because no admitted upstream artifact/checksum exists.
+- Harness Evolution Level-1 is a default-off fixture laboratory. It does not establish recursive self-improvement or production self-update.
+- No runtime owner can merge, release, deploy, modify protected branches, or adopt a candidate as the production Harness.
+
+## Open Review Surfaces
+
+These surfaces are not accepted truth and must not be merged independently when their dependency is unresolved:
+
+| PR | Purpose | Current status |
+|---|---|---|
+| #299 | Cumulative Codex residual-admission, risk acknowledgement, one-use spend, owner-derived preflight, and managed-attempt authority | Open; supersedes #297/#298; requires final independent review and exact-head/full CI on its final unchanged head |
+| #300 | Provider-free first-RWE corpus, authorization, runner, and evidence preparation stacked on #299 | Open; must remain blocked until #299 authority is accepted; no live baseline exists |
+| #301 | CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification | Open; observation scope only; does not close #299/#300 authority; requires token-bucket/identity corrections and final CI |
+| #297/#298 | Earlier residual-admission and authority-decision slices | Superseded by #299; do not merge separately |
+| #225 | Presentation-only Dashboard work | Independent and last |
+
+No live provider request, live managed acceptance, or live RWE baseline is established by these open PRs.
 
 ## Current Product Verdict
 
 Product Golden Path is default-off and `IN_PROGRESS`.
 
-Fixture evidence proves the existing intake → worktree → graph → scheduler → verification → artifact → approval → output → `acp/*` Draft PR path, but is not managed acceptance. The target default branch remains unchanged.
+Fixture evidence proves the existing product sequence:
 
-Managed-executor classification (provider-free, Codex CLI **0.145.0**):
+```text
+intake → worktree/source binding → executable graph → scheduler lease
+→ bounded executor → verification → artifact → approval
+→ separate output confirmation → acp/* Draft PR → terminal evidence
+```
 
-| Executor | Class | Exact residual blocker |
+The remaining product proof is one tightly bounded live managed coding task under an accepted authority decision, authenticated non-fixture principal, parent-only provider credential, one-use spend authorization, unchanged target `main`, Draft-PR-only output, and exact terminal evidence.
+
+The residual technical risks remain explicit:
+
+1. Codex internal retries are not wire-labeled with a trustworthy retry identity.
+2. Product-enforced loopback-only network confinement is not proved under the current unprivileged host profile.
+3. User/PID namespace support is host-dependent and may fail closed.
+4. Live operator credential, risk acknowledgement, and spend authorization are not repository defaults.
+
+Therefore live acceptance is not blocked only by credential presence.
+
+## Roadmap Status
+
+| Stage | State | Entry requirement |
 |---|---|---|
-| Codex API-key-mediated (gateway + bwrap) | **Mediation hardened partial** via PR #296 | Parent journal, fail-closed reserve/commit, attempt IDs, provider pin, FS isolation (+ PID ns when host permits), gateway→`execution_usage_event.v1` with JSONL corroboration. **Not full admission:** retry identity, loopback-only netns, host userns limits, live credential+authorization. Official ChatGPT-auth excluded. |
-| Codex ChatGPT-auth / unmediated | Excluded | Child would hold reusable OAuth; not product-admitted. |
-| Claude Code | Blocked | Provider-independent worktree-only FS confinement unproved; configured subscription path has known API 404. |
-| OpenCode | Blocked | No admitted upstream artifact/checksum. |
+| Golden Path residual seal | `IN_PROGRESS` | Accept the final provider-free authority surface, then complete one bounded live managed task |
+| First Real Workload Evidence | `BLOCKED_PREREQUISITE` | Accepted Golden Path terminal evidence plus a separately authorized RWE spend envelope |
+| Architecture Convergence AC1–AC7 | `BLOCKED_PREREQUISITE` | Frozen and independently accepted pre-convergence RWE baseline |
+| Same-corpus RWE replay | `BLOCKED_PREREQUISITE` | Architecture Convergence complete |
+| Level-2 GO/NO-GO | `BLOCKED_PREREQUISITE` | Comparable pre/post-convergence evidence and lifecycle-cost evidence |
+| Level-2 generational controller | `BLOCKED_PREREQUISITE` | Explicit evidence-backed GO decision |
+| Meta Improver experiment | `BLOCKED_PREREQUISITE` | Accepted Level-2 plus a separately authorized unseen-task experiment |
+| Dashboard #225 | Deferred | Handle last; presentation cannot substitute for runtime proof |
 
-Product Golden Path residual seal is **not** blocked only by credentials: mediation admission class is partial, and live operator credential + authorization remain separate requirements. RWE and Architecture Convergence remain blocked.
+## Project Objective
 
-## Active Work
+The repository's single first-order objective is:
 
-`PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2` is complete through PR #281 squash merge `54b5a430…`. It added versioned bounded stdout/stderr/combined capture, descendant cleanup, typed process failures, a hardened version probe, and non-retryable post-start failures. It did not authorize a provider call or change Golden Path admission.
+> Under non-negotiable quality, safety, traceability, compatibility, and rollback constraints, continuously improve the amount of verifiable and reusable task delivery obtained per unit of total lifecycle cost.
 
-Phase 2 is complete via PR #282. The audit found no provider-independent worktree-only filesystem mediation for Claude 2.1.217, so managed Claude admission is fail-closed; no model request is permitted unless a separately reviewed mediation boundary proves the packet contract.
+Token reduction alone is not success. Lower cost is valid only when the compared runs meet the same accepted quality and safety gates.
 
-Phase 3 is complete via PR #283. Product and Dynamic Workflow previews now truncate only at valid UTF-8 boundaries under a documented byte limit; objective fingerprints remain based on the full objective.
+Lifecycle cost includes:
 
-CI cache budgeting is complete through PRs #285, #287, and #289. The final inventory is four main caches totaling `3,870,843,444` bytes; cutover has no full-target restore, PG disables incremental compilation, and RustSec data is not cached.
+- provider requests, tokens, monetary cost or explicit cost unavailability, latency, and infrastructure;
+- Agent sessions, review cycles, CI runs/compute time, and repair iterations;
+- migrations, compatibility adapters, authority boundaries touched, rollback complexity, and external dependencies;
+- long-term maintenance surface, failure recovery, state contamination risk, and expected reuse.
 
-Downstream order: known repairs → managed-executor Golden Path → frozen first RWE → Architecture Convergence → same-corpus RWE rerun → Level-2 GO/NO-GO → separately authorized Meta decision. PR #225 is independent and last. Architecture Convergence and RWE are not yet eligible.
+These engineering-cost dimensions are evidence for RWE replay and Level-2 decisions. They do not create a second runtime budget owner.
 
-## Capability Status
+## Confirmed Gaps
 
-| Capability | State | Truth |
-|---|---|---|
-| Managed CLI process boundary | complete | PR #281; exact-head CI and full applicable checks passed. |
-| UTF-8 bounded previews | complete | PR #283; shared byte-boundary helper and Unicode tests passed. |
-| Product Golden Path | `IN_PROGRESS`, default-off | Fixture path accepted; managed-executor E2E remains open. |
-| Rust runtime/store | active | `engine/` and `LocalProductStore` are sole authorities. |
-| Supervised patch/output | default-off | Reused for worktree, verification, artifact, approval, export, and `acp/*` output. |
-| Harness Evolution Level-1 | accepted fixture lab | Active Harness immutable; no self-improvement claim. |
-| Harness Evolution Level-2 | blocked | Requires post-convergence RWE decision; #266 is proposal-only. |
-| Meta Improver | blocked | Requires accepted Level-2 and separate authority. |
-| Repository-agent path | parked | #254 / #208. |
-| OpenCode binary | deferred | No admitted upstream identity/checksum. |
-| Dashboard PR #225 | independent | Presentation-only; handle last. |
-
-## Confirmed Integration Gaps
-
-1. Disposable Draft PR #1 proves real branch/output plumbing only; it binds `acp/product-ptask-20260722135332-18c4a108f1d4e757` at `6c70195c…` to target `main`, which remains `926f3d47…`.
-2. Managed coding-executor live E2E is not proved. Concurrent non-network output authority is repaired via PR #292. Codex API-key-mediated full mediation (gateway + bwrap) is the active admission packet; live acceptance is a separate follow-up that still requires local operator credential + authorization.
-3. RWE has no accepted baseline; Architecture Convergence is blocked until that baseline is frozen.
-4. Level-2 and Meta remain blocked.
-
-## Supporting Programs
-
-- **PE-5 Release Provenance:** implemented; no release authority.
-- **PE-6 Fault Injection and Recovery Drills:** implemented; disposable only.
-- **Post-R7 wire/type governance:** implemented; `scripts/check_wire_codegen_drift.sh` remains required.
-
-## Active Tracks
-
-- `PE7-MANAGED-CLI-PROCESS-BOUNDARY-REPAIR-2`: `COMPLETE` via PR #281 → `54b5a430`.
-- `PE7-CLAUDE-ADMISSION-AUTHORITY-REPAIR-2`: `COMPLETE` via PR #282 → `95c3528d`; admission remains disabled pending provider-independent confinement/model authority.
-- `PE7-UTF8-BOUNDARY-REPAIR-1`: `COMPLETE` via PR #283 → `9ee5544c`.
-- `PE7-CI-ACCELERATION-1`: `COMPLETE` via PR #284 → `456092fb`; exact-head/full cache-hit CI passed and main push CI `30006429193` passed.
-- `PE7-CI-CACHE-BUDGET-1`: `COMPLETE` via PR #285 → `9c8c3a42`, #287 → `1bd17d7a`, and #289 → `9db4845c`; final docs-sync main run `30029185064` passed on attempt 2 after the same pre-existing concurrent-test failure on attempt 1. No runtime, gate, provider, or target-branch change.
-- Independent PR #288 → `a08d0e28` repaired the newly published PostCSS advisory; its audit and full CI passed. PR #290/#291 are external/contribution maintenance and preserved.
-- `PE7-PRODUCT-OUTPUT-AUTHORITY-CONCURRENCY-REPAIR-1`: `COMPLETE` via PR #292 → `234def24`; exact-head/full CI green without concurrency-job retry.
-- `PE7-CODEX-TASK-BUDGET-AUTHORITY-1` / `PE7-CODEX-SESSION-USAGE-AUTHORITY-1`: `COMPLETE` via PR #293 → `29262bce` (partial admission foundation).
-- `PE7-MANAGED-EXECUTOR-USAGE-EVIDENCE-1`: `COMPLETE` via PR #294 (unified usage evidence; not live admission).
-- `PE7-CODEX-FULL-MEDIATION-ADMISSION-1`: `COMPLETE` as **partial foundation only** via PR #295 → `381571bf` (full-admission claim withdrawn).
-- `PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1`: `COMPLETE` via PR #296 → `b5920116` (exact head `9cbce74a`; CI `30098047528` / `30098047448`); class remains `mediation_hardened_partial`.
-- `PE7-PRODUCT-GOLDEN-PATH-MANAGED-ACCEPTANCE-1`: `BLOCKED_PREREQUISITE` — admission not full + residual blockers + parent-only API key + operator authorization.
-- `PE7-PRODUCT-GOLDEN-PATH-RESIDUAL-SEAL-2`: `IN_PROGRESS` until live managed acceptance.
-- `PE7-PRODUCT-GOLDEN-PATH-1`: `IN_PROGRESS` until the residual seal closes.
-- `PE7-REAL-WORKLOAD-EVIDENCE-1`: `BLOCKED_PREREQUISITE` until Golden Path completion.
-- `PE7-ARCHITECTURE-CONVERGENCE-1`: `BLOCKED_PREREQUISITE` until the first RWE baseline.
-- `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1`: `BLOCKED_PREREQUISITE` until convergence.
-- `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1`: blocked until replay and GO decision.
-- `PE7-META-IMPROVER-EXPERIMENT-1`: blocked.
-- `PE7-OPENCODE-BINARY-ADMISSION-1`: deferred; `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1`: parked.
-- PR #225: independent presentation-only Dashboard work.
-
-## Open Work Coordination
-
-PR #281–#296 are merged; PR #225 remains separate and last. Product Golden Path remains `IN_PROGRESS`: Codex mediation is `mediation_hardened_partial` after #296 (not full admission). Live managed acceptance remains blocked on residual admission blockers + credentials + authorization. Claude confinement and OpenCode artifact admission remain blocked. RWE, Architecture Convergence, Level-2, Meta, Vader, and Issue #208 remain blocked.
+1. No accepted live managed coding-executor E2E exists.
+2. No accepted live RWE baseline exists.
+3. Architecture Convergence cannot begin before that baseline is frozen.
+4. No automatic multi-generation parent-selection loop is implemented.
+5. No demonstrated cross-task continuous-learning or Meta Improver result exists.
+6. Open PR claims remain proposals until their final heads are independently accepted.
 
 ## Safety Boundary
 
-Default-off product gates; no provider call in CI; no target `main` write, merge, auto-merge, release, or deployment authority. No secret, raw prompt/output/transcript, or fixture-only result may become durable acceptance evidence.
+Default-off execution; no provider call in CI; no target-default-branch write; no auto-merge; no release or deployment authority; no reusable credential in a child; no secret, raw prompt, raw output, transcript, private path, or fixture-only result may become durable acceptance evidence.
