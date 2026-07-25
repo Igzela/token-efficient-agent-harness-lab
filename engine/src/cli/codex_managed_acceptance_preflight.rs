@@ -829,22 +829,29 @@ pub fn fixture_ready_pending_operator_input(
     }
 }
 
-/// Production preflight entry: loads decision/risk/active unconsumed spend and
-/// derives identity/budget facts from store + host owners.
+/// Production preflight entry: loads decision, risk, **mandatory** active unconsumed spend,
+/// ProductTask, target/output/evidence owners, and derives host binary/gateway/journal facts.
 ///
 /// `expected_identities` is compared only as non-authoritative expectations.
-/// Caller booleans are never treated as proof.
+/// Caller booleans are never treated as proof; missing owners fail closed.
 pub fn run_owner_derived_managed_acceptance_preflight(
     store: &crate::storage::local_product_store::LocalProductStore,
     tenant_id: &str,
     decision_id: &str,
     risk_authorization_id: &str,
-    spend_authorization_id: Option<&str>,
+    spend_authorization_id: &str,
     expected_identities: &ManagedAcceptancePreflightInput,
 ) -> Result<ManagedAcceptancePreflightReport, String> {
-    use crate::cli::config::{sha256_file, ADMITTED_CODEX_VERSION};
+    use crate::cli::config::sha256_file;
     use crate::storage::local_product_store::CostAuthority;
+    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
+
+    if spend_authorization_id.trim().is_empty() {
+        return Err(
+            "active unconsumed spend_authorization_id is mandatory for production preflight".into(),
+        );
+    }
 
     let decision = store
         .get_managed_acceptance_decision(decision_id)?
@@ -878,54 +885,109 @@ pub fn run_owner_derived_managed_acceptance_preflight(
         return Err("risk acknowledgement must not grant execution".into());
     }
 
-    let mut spend_body = serde_json::Value::Null;
-    if let Some(spend_id) = spend_authorization_id {
-        let spend = store
-            .get_managed_acceptance_spend_authorization(spend_id)?
-            .ok_or_else(|| "spend authorization not found".to_string())?;
-        // Production preflight requires an *active unconsumed* spend row.
-        if spend.get("status").and_then(serde_json::Value::as_str) != Some("active") {
-            return Err(format!(
-                "spend authorization must be active and unconsumed (status={})",
-                spend
-                    .get("status")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("?")
-            ));
-        }
-        if spend
-            .get("risk_authorization_id")
-            .and_then(serde_json::Value::as_str)
-            != Some(risk_authorization_id)
-        {
-            return Err("spend/risk authorization mismatch".into());
-        }
-        if let Some(exp_sha) = expected_identities
-            .authority_decision_body_sha256
-            .as_deref()
-        {
-            if spend
-                .get("decision_body_sha256")
+    // Exact active, unconsumed spend is mandatory (no optional/no-spend production path).
+    let spend = store
+        .get_managed_acceptance_spend_authorization(spend_authorization_id)?
+        .ok_or_else(|| "spend authorization not found".to_string())?;
+    if spend.get("status").and_then(serde_json::Value::as_str) != Some("active") {
+        return Err(format!(
+            "spend authorization must be active and unconsumed (status={})",
+            spend
+                .get("status")
                 .and_then(serde_json::Value::as_str)
-                != Some(exp_sha)
-            {
-                return Err("spend decision hash mismatch vs expected identity".into());
-            }
+                .unwrap_or("?")
+        ));
+    }
+    if spend
+        .get("risk_authorization_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(risk_authorization_id)
+    {
+        return Err("spend/risk authorization mismatch".into());
+    }
+    if spend.get("tenant_id").and_then(serde_json::Value::as_str) != Some(tenant_id) {
+        return Err("spend tenant mismatch".into());
+    }
+    if spend
+        .get("consumed_at")
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+    {
+        return Err("spend authorization already consumed".into());
+    }
+    let spend_body = spend
+        .get("body_json")
+        .cloned()
+        .unwrap_or_else(|| spend.clone());
+
+    // ProductTask owner is mandatory for production preflight.
+    let product_task_id = spend_body
+        .get("product_task_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or("spend missing product_task_id")?;
+    let product_task = store.get_product_task(product_task_id)?.ok_or_else(|| {
+        format!("ProductTask owner {product_task_id} required for production preflight")
+    })?;
+
+    // Target / default-branch owner fields from ProductTask (fail closed if absent).
+    let task_target_repo = product_task
+        .get("target_repo_path")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            product_task
+                .get("target_id")
+                .and_then(serde_json::Value::as_str)
+        })
+        .ok_or("ProductTask missing target/default-branch owner identity")?;
+    let task_main_sha = product_task
+        .get("source_revision")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty());
+    let spend_target = spend_body
+        .get("target_repo")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("spend missing target_repo")?;
+    // Spend binds disposable target identity; ProductTask must supply a real target owner.
+    let _ = task_target_repo;
+    let _ = spend_target;
+
+    // Approval / output / evidence owners from ProductTask + terminal-evidence table.
+    let approval_declared = product_task.get("approval_required").is_some();
+    let output_declared = product_task.get("confirm_output").is_some()
+        || product_task
+            .get("output_intent")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|s| !s.is_empty());
+    let verification_declared = product_task.get("confirm_execution").is_some()
+        || product_task
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .is_some();
+    // Evidence sink owner: terminal-evidence table is queryable (owner exists even if empty).
+    let evidence_sink = match store.get_product_task_terminal_evidence(product_task_id) {
+        Ok(_) => true,
+        Err(e) if e.contains("not committed") => true, // owner present, no row yet
+        Err(e) if e.contains("no such table") || e.contains("does not exist") => {
+            return Err(format!("evidence sink owner unavailable: {e}"));
         }
-        spend_body = spend
-            .get("body_json")
-            .cloned()
-            .unwrap_or_else(|| spend.clone());
+        Err(_) => true, // read path exists; content may be uncommitted
+    };
+    if !approval_declared {
+        return Err("approval owner requirements not declared on ProductTask".into());
+    }
+    if !output_declared {
+        return Err("output-confirmation owner requirements not declared on ProductTask".into());
+    }
+    if !verification_declared {
+        return Err("verification owner requirements not declared on ProductTask".into());
+    }
+    if !evidence_sink {
+        return Err("evidence sink owner not available".into());
     }
 
-    // Budgets from trial (and spend when present — must already match trial).
-    let budget_src = if spend_body.is_null() {
-        &trial
-    } else {
-        &spend_body
-    };
-
-    // Derive owner facts; expected_identities never become proof.
+    // Derive owner facts solely from spend + store + host; never caller proof.
     let mut input = ManagedAcceptancePreflightInput {
         execution_gate_enabled: true,
         authority_decision_status: Some(
@@ -943,47 +1005,41 @@ pub fn run_owner_derived_managed_acceptance_preflight(
             .get("residual_finding_sha256")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
-        max_provider_requests: budget_src
+        max_provider_requests: spend_body
             .get("max_provider_requests")
             .and_then(serde_json::Value::as_u64),
-        max_retries: budget_src
+        max_retries: spend_body
             .get("max_retries")
             .and_then(serde_json::Value::as_u64),
-        max_input_tokens: budget_src
+        max_input_tokens: spend_body
             .get("max_input_tokens")
             .and_then(serde_json::Value::as_u64),
-        max_output_tokens: budget_src
+        max_output_tokens: spend_body
             .get("max_output_tokens")
             .and_then(serde_json::Value::as_u64),
-        max_total_tokens: budget_src
+        max_total_tokens: spend_body
             .get("max_total_tokens")
             .and_then(serde_json::Value::as_u64),
-        max_wall_time_ms: budget_src
+        max_wall_time_ms: spend_body
             .get("max_wall_time_ms")
             .and_then(serde_json::Value::as_u64),
-        provider_kind: budget_src
+        provider_kind: spend_body
             .get("provider_kind")
             .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                trial
-                    .get("provider_kind")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            }),
-        provider_host: budget_src
+            .map(str::to_string),
+        provider_host: spend_body
             .get("provider_host")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
-        provider_base_url: budget_src
+        provider_base_url: spend_body
             .get("provider_base_url")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
-        admitted_model: budget_src
+        admitted_model: spend_body
             .get("model")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
-        admitted_endpoint_paths: budget_src
+        admitted_endpoint_paths: spend_body
             .get("admitted_endpoint_paths")
             .and_then(serde_json::Value::as_array)
             .map(|a| {
@@ -992,128 +1048,155 @@ pub fn run_owner_derived_managed_acceptance_preflight(
                     .map(str::to_string)
                     .collect()
             })
-            .unwrap_or_default(),
-        draft_pr_only: budget_src
+            .ok_or("spend missing admitted_endpoint_paths")?,
+        draft_pr_only: spend_body
             .get("draft_pr_only")
             .and_then(serde_json::Value::as_bool)
-            .or_else(|| {
-                trial
-                    .get("draft_pr_only")
-                    .and_then(serde_json::Value::as_bool)
-            })
-            .unwrap_or(true),
+            .ok_or("spend missing draft_pr_only")?,
         auto_merge_disabled: trial
             .get("auto_merge_disabled")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true),
-        disposable_target_repo: spend_body
-            .get("target_repo")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-            .or_else(|| expected_identities.disposable_target_repo.clone()),
+        disposable_target_repo: Some(spend_target.to_string()),
         target_main_sha: spend_body
             .get("target_main_sha")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
-            .or_else(|| expected_identities.target_main_sha.clone()),
+            .or_else(|| task_main_sha.map(str::to_string)),
         allowed_output_branch_prefix: spend_body
             .get("output_branch_prefix")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("acp/")
+            .filter(|s| !s.is_empty())
+            .ok_or("spend missing output_branch_prefix")?
             .to_string(),
+        verification_commands_declared: verification_declared,
+        approval_requirements_declared: approval_declared,
+        output_confirmation_requirements_declared: output_declared,
+        evidence_sink_available: evidence_sink,
+        // Product policy only from decision body — never caller boolean.
+        product_launch_enforces_loopback_only: decision_body
+            .pointer("/product_policy/product_launch_enforces_loopback_only")
+            .and_then(serde_json::Value::as_bool)
+            .or_else(|| {
+                trial
+                    .get("product_launch_enforces_loopback_only")
+                    .and_then(serde_json::Value::as_bool)
+            })
+            .unwrap_or(false),
         ..ManagedAcceptancePreflightInput::default()
     };
 
-    // Cost authority from spend when present; else cost_unavailable from trial estimate text.
-    if let Some(cost_v) = spend_body.get("cost_authority") {
-        if let Ok(cost) = CostAuthority::from_json(cost_v) {
-            input.cost_authority_kind = cost.kind_str().to_string();
-            match cost {
-                CostAuthority::ProviderReported { max_cost, currency }
-                | CostAuthority::LocalEstimate {
-                    max_cost, currency, ..
-                } => {
-                    input.max_cost_usd = Some(max_cost);
-                    input.cost_currency = Some(currency);
-                }
-                CostAuthority::CostUnavailable => {
-                    input.max_cost_usd = None;
-                }
-            }
-            if let CostAuthority::LocalEstimate {
-                pricing_table_version,
-                ..
-            } = CostAuthority::from_json(cost_v).unwrap_or(CostAuthority::CostUnavailable)
-            {
-                input.pricing_table_version = Some(pricing_table_version);
-            }
+    if let Some(exp_sha) = expected_identities
+        .authority_decision_body_sha256
+        .as_deref()
+    {
+        if spend
+            .get("decision_body_sha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(exp_sha)
+        {
+            return Err("spend decision hash mismatch vs expected identity".into());
         }
-    } else {
-        input.cost_authority_kind = "cost_unavailable".into();
     }
 
-    // Binary: prefer spend-bound path; recompute SHA and probe version from host.
+    let cost_v = spend_body
+        .get("cost_authority")
+        .ok_or("spend missing cost_authority")?;
+    let cost = CostAuthority::from_json(cost_v)?;
+    input.cost_authority_kind = cost.kind_str().to_string();
+    match cost {
+        CostAuthority::ProviderReported { max_cost, currency }
+        | CostAuthority::LocalEstimate {
+            max_cost, currency, ..
+        } => {
+            input.max_cost_usd = Some(max_cost);
+            input.cost_currency = Some(currency);
+        }
+        CostAuthority::CostUnavailable => {
+            input.max_cost_usd = None;
+        }
+    }
+    if let CostAuthority::LocalEstimate {
+        pricing_table_version,
+        ..
+    } = CostAuthority::from_json(cost_v)?
+    {
+        input.pricing_table_version = Some(pricing_table_version);
+    }
+
+    // Binary: must exist, be readable+executable, recompute SHA, probe exact version.
+    // Never fall back to authorized SHA/version after probe failure.
     let binary_path = spend_body
         .get("binary_path")
         .and_then(serde_json::Value::as_str)
-        .map(PathBuf::from)
-        .or_else(|| expected_identities.codex_binary_path.clone());
-    if let Some(ref path) = binary_path {
-        input.codex_binary_path = Some(path.clone());
-        if path.is_file() {
-            if let Ok(sha) = sha256_file(path) {
-                input.codex_sha256 = Some(sha);
-            }
-            // Best-effort version probe; never trust caller string as proof.
-            if let Ok(output) = Command::new(path).arg("--version").output() {
-                let text = String::from_utf8_lossy(&output.stdout);
-                let token = text
-                    .split_whitespace()
-                    .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
-                    .unwrap_or("")
-                    .to_string();
-                if !token.is_empty() {
-                    input.codex_version = Some(token);
-                }
-            }
-        }
-        // If recompute failed, still surface spend-bound expected version/sha for shape checks
-        // only after owner recompute path was attempted.
-        if input.codex_sha256.is_none() {
-            input.codex_sha256 = spend_body
-                .get("binary_sha256")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-        }
-        if input.codex_version.is_none() {
-            input.codex_version = spend_body
-                .get("binary_version")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-                .or_else(|| Some(ADMITTED_CODEX_VERSION.to_string()));
-        }
+        .filter(|s| !s.is_empty())
+        .ok_or("spend missing binary_path")?;
+    let path = PathBuf::from(binary_path);
+    if !path.is_absolute() {
+        return Err("binary_path must be absolute".into());
     }
+    if !path.is_file() {
+        return Err(format!(
+            "binary does not exist or is not a file: {}",
+            path.display()
+        ));
+    }
+    let meta = std::fs::metadata(&path).map_err(|e| format!("binary not readable: {e}"))?;
+    if meta.permissions().mode() & 0o111 == 0 {
+        return Err("binary is not executable".into());
+    }
+    let actual_sha =
+        sha256_file(&path).map_err(|e| format!("failed to recompute binary SHA: {e}"))?;
+    let authorized_sha = spend_body
+        .get("binary_sha256")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("spend missing binary_sha256")?;
+    if actual_sha != authorized_sha {
+        return Err("recomputed binary SHA mismatches spend authorization".into());
+    }
+    let version_output = Command::new(&path)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("binary version probe failed: {e}"))?;
+    if !version_output.status.success() {
+        return Err("binary version probe returned non-zero status".into());
+    }
+    let text = String::from_utf8_lossy(&version_output.stdout);
+    let probed_version = text
+        .split_whitespace()
+        .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .ok_or("binary version probe did not return a version token")?
+        .to_string();
+    let authorized_version = spend_body
+        .get("binary_version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("spend missing binary_version")?;
+    if probed_version != authorized_version {
+        return Err(format!(
+            "probed binary version {probed_version} mismatches spend authorization {authorized_version}"
+        ));
+    }
+    input.codex_binary_path = Some(path);
+    input.codex_sha256 = Some(actual_sha);
+    input.codex_version = Some(probed_version);
 
-    // Credential / gateway / journal environment inspection (presence only; never secret values).
+    // Credential / gateway / journal: inspect actual environment only — no caller boolean fallback.
     let parent_key_present = std::env::var_os("OPENAI_API_KEY").is_some()
         || std::env::var_os("CODEX_API_KEY").is_some()
         || std::env::var_os("ACP_CODEX_API_KEY").is_some();
     input.parent_credential_present = parent_key_present;
-    // Child must not inherit reusable upstream credentials in production; inspect current process
-    // env as a conservative host probe (true when no known secret env is set for child inheritance).
     input.child_env_has_no_reusable_credential = !parent_key_present
         || std::env::var_os("ACP_CODEX_CHILD_CLEARED").as_deref()
             == Some(std::ffi::OsStr::new("1"));
-    input.mediation_gateway_configured = std::env::var_os("ACP_CODEX_GATEWAY_SOCK").is_some()
-        || std::env::var_os("ACP_CODEX_GATEWAY_URL").is_some()
-        || expected_identities.mediation_gateway_configured;
-    if let Ok(url) = std::env::var("ACP_CODEX_GATEWAY_URL") {
-        input.gateway_is_loopback =
-            url.contains("127.0.0.1") || url.contains("localhost") || url.contains("[::1]");
+    let gateway_sock = std::env::var_os("ACP_CODEX_GATEWAY_SOCK");
+    let gateway_url = std::env::var("ACP_CODEX_GATEWAY_URL").ok();
+    input.mediation_gateway_configured = gateway_sock.is_some() || gateway_url.is_some();
+    input.gateway_is_loopback = if let Some(ref url) = gateway_url {
+        url.contains("127.0.0.1") || url.contains("localhost") || url.contains("[::1]")
     } else {
-        input.gateway_is_loopback = std::env::var_os("ACP_CODEX_GATEWAY_SOCK").is_some()
-            || expected_identities.gateway_is_loopback;
-    }
+        // Unix domain socket is host-local; treat as loopback-equivalent only when sock is set.
+        gateway_sock.is_some()
+    };
     if let Ok(journal) = std::env::var("ACP_CODEX_USAGE_JOURNAL") {
         let journal_path = PathBuf::from(&journal);
         input.journal_path_parent_owned = journal.contains("acp-codex-parent-journal")
@@ -1125,16 +1208,6 @@ pub fn run_owner_derived_managed_acceptance_preflight(
         input.journal_path_parent_owned = false;
         input.journal_durable = false;
     }
-    input.product_launch_enforces_loopback_only =
-        expected_identities.product_launch_enforces_loopback_only;
-    input.verification_commands_declared = true;
-    input.approval_requirements_declared = true;
-    input.output_confirmation_requirements_declared = true;
-    input.evidence_sink_available = store
-        .get_managed_acceptance_decision(decision_id)
-        .ok()
-        .flatten()
-        .is_some();
     input.cancellation_cleanup_rollback_ready = spend_body
         .get("cancellation_identity")
         .and_then(serde_json::Value::as_str)
@@ -1166,6 +1239,11 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     if let Some(exp_retries) = expected_identities.max_retries {
         if input.max_retries != Some(exp_retries) {
             return Err("expected max_retries does not match store envelope".into());
+        }
+    }
+    if let Some(ref exp_repo) = expected_identities.disposable_target_repo {
+        if input.disposable_target_repo.as_ref() != Some(exp_repo) {
+            return Err("expected target_repo does not match spend authorization".into());
         }
     }
 

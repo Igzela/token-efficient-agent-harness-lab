@@ -341,6 +341,114 @@ fn required_str(v: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{key} required"))
 }
 
+/// Parse a canonical RFC3339 timestamp and normalize to UTC.
+fn parse_rfc3339_utc(field: &str, value: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    chrono::DateTime::parse_from_rfc3339(value.trim())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|_| format!("{field} must be canonical RFC3339/UTC"))
+}
+
+/// True when `expires_at` is at or before `now` using parsed UTC instants (not lexical strings).
+fn is_at_or_before(expires_at: &str, now: &str) -> Result<bool, String> {
+    let exp = parse_rfc3339_utc("expires_at", expires_at)?;
+    let n = parse_rfc3339_utc("now", now)?;
+    Ok(exp <= n)
+}
+
+/// Strictly after using parsed UTC instants.
+fn is_strictly_after(expires_at: &str, now: &str) -> Result<bool, String> {
+    let exp = parse_rfc3339_utc("expires_at", expires_at)?;
+    let n = parse_rfc3339_utc("now", now)?;
+    Ok(exp > n)
+}
+
+/// Canonical attempt-manifest hash: sort + hash body without the self-referential sha field.
+pub fn compute_attempt_manifest_sha256(manifest: &Value) -> Result<String, String> {
+    let mut body = sort_value(manifest);
+    if let Value::Object(ref mut map) = body {
+        map.remove("manifest_sha256");
+    }
+    Ok(sha256_hex(canonical_json(&body)?.as_bytes()))
+}
+
+/// Build the complete authority-bound attempt manifest from a spend body.
+pub fn build_attempt_authority_manifest(spend_body: &Value) -> Result<Value, String> {
+    let require = |key: &str| -> Result<Value, String> {
+        spend_body
+            .get(key)
+            .cloned()
+            .ok_or_else(|| format!("spend body missing {key} for attempt manifest"))
+    };
+    let manifest = sort_value(&json!({
+        "schema_version": "managed_acceptance_attempt_manifest.v1",
+        "product_task_id": require("product_task_id")?,
+        "workflow_id": spend_body.get("workflow_id").cloned().unwrap_or(Value::Null),
+        "workflow_node_id": spend_body.get("workflow_node_id").cloned().unwrap_or(Value::Null),
+        "execution_id": require("execution_id")?,
+        "attempt_id": require("attempt_id")?,
+        "binary_path": require("binary_path")?,
+        "binary_version": require("binary_version")?,
+        "binary_sha256": require("binary_sha256")?,
+        "provider_kind": require("provider_kind")?,
+        "provider_host": require("provider_host")?,
+        "provider_base_url": require("provider_base_url")?,
+        "admitted_endpoint_paths": require("admitted_endpoint_paths")?,
+        "model": require("model")?,
+        "target_repo": require("target_repo")?,
+        "target_main_sha": require("target_main_sha")?,
+        "output_branch_prefix": require("output_branch_prefix")?,
+        "draft_pr_only": require("draft_pr_only")?,
+        "max_provider_requests": require("max_provider_requests")?,
+        "max_retries": require("max_retries")?,
+        "max_input_tokens": require("max_input_tokens")?,
+        "max_output_tokens": require("max_output_tokens")?,
+        "max_total_tokens": require("max_total_tokens")?,
+        "max_wall_time_ms": require("max_wall_time_ms")?,
+        "cost_authority": require("cost_authority")?,
+        "cancellation_identity": require("cancellation_identity")?,
+        "rollback_identity": require("rollback_identity")?,
+        "decision_body_sha256": spend_body.get("decision_body_sha256").cloned().unwrap_or(Value::Null),
+        "spend_authorization_id": spend_body.get("spend_authorization_id").cloned().unwrap_or(Value::Null),
+    }));
+    let sha = compute_attempt_manifest_sha256(&manifest)?;
+    let mut out = manifest;
+    if let Value::Object(ref mut map) = out {
+        map.insert("manifest_sha256".into(), json!(sha));
+    }
+    Ok(out)
+}
+
+/// Record an immutable decision status transition as a hash-linked receipt.
+/// The decision body authority hash stays stable; status is not mutated under that hash.
+fn decision_status_transition_receipt(
+    decision_id: &str,
+    decision_body_sha256: &str,
+    residual_finding_sha256: &str,
+    from_status: &str,
+    to_status: &str,
+    principal_id: &str,
+    at: &str,
+    reason: &str,
+) -> Result<Value, String> {
+    let body = sort_value(&json!({
+        "schema_version": "managed_acceptance_decision_status_transition.v1",
+        "decision_id": decision_id,
+        "decision_body_sha256": decision_body_sha256,
+        "residual_finding_sha256": residual_finding_sha256,
+        "from_status": from_status,
+        "to_status": to_status,
+        "principal_id": principal_id,
+        "at": at,
+        "reason": reason,
+    }));
+    let transition_sha256 = sha256_hex(canonical_json(&body)?.as_bytes());
+    let mut receipt = body;
+    if let Value::Object(ref mut map) = receipt {
+        map.insert("transition_sha256".into(), json!(transition_sha256));
+    }
+    Ok(receipt)
+}
+
 impl LocalProductStore {
     /// Derive a production principal from verified store-owned API key metadata.
     /// Rejects missing, revoked, expired, inactive, forbidden, or under-scoped keys.
@@ -420,8 +528,9 @@ impl LocalProductStore {
     /// Persist a draft decision body. Body must already carry full canonical fields including
     /// acknowledgement.required_phrase and trial envelope.
     ///
-    /// Finite `expires_at` is mandatory. The stored `decision_body_sha256` hashes one authority
-    /// envelope covering decision body, status, residual hash, expiry, and invalidation state.
+    /// Finite `expires_at` is mandatory. The stored `decision_body_sha256` hashes the immutable
+    /// authority envelope (body, residual, expiry, invalidation). Mutable status is tracked via
+    /// separate hash-linked transition receipts — never rewritten under the body hash.
     pub fn upsert_managed_acceptance_decision(
         &self,
         tenant_id: &str,
@@ -469,7 +578,6 @@ impl LocalProductStore {
         let decision_body_sha256 = canonical_decision_authority_hash(
             &body,
             residual_finding_sha256,
-            status,
             &expires_at,
             invalidation_state,
         )?;
@@ -480,7 +588,7 @@ impl LocalProductStore {
             .map(str::to_string)
             .unwrap_or_else(|| format!("mad-{}", Uuid::new_v4()));
         let now = self.now();
-        if expires_at.as_str() <= now.as_str() {
+        if !is_strictly_after(&expires_at, &now)? {
             return Err("decision expires_at must be strictly after store clock now".into());
         }
         let principal_kind = principal
@@ -740,7 +848,7 @@ impl LocalProductStore {
                     return Ok(None);
                 }
                 let now = self.now();
-                if expires_at < now {
+                if is_at_or_before(&expires_at, &now).unwrap_or(true) {
                     return Ok(None);
                 }
                 Ok(Some(load_authorization_sqlite(conn, authorization_id)?))
@@ -758,7 +866,9 @@ impl LocalProductStore {
                 };
                 let status: String = row.get(0);
                 let expires_at: String = row.get(1);
-                if status != "active" || expires_at < self.now() {
+                if status != "active"
+                    || is_at_or_before(&expires_at, &self.now()).unwrap_or(true)
+                {
                     return Ok(None);
                 }
                 Ok(Some(load_authorization_pg(client, authorization_id)?))
@@ -833,18 +943,48 @@ impl LocalProductStore {
                     .get("decision_id")
                     .and_then(Value::as_str)
                     .unwrap_or("");
+                let decision_before = load_decision_sqlite(&tx, decision_id).ok();
+                let from_status = decision_before
+                    .as_ref()
+                    .and_then(|d| d.get("status").and_then(Value::as_str))
+                    .unwrap_or("unknown")
+                    .to_string();
+                let dsha = decision_before
+                    .as_ref()
+                    .and_then(|d| d.get("decision_body_sha256").and_then(Value::as_str))
+                    .unwrap_or("")
+                    .to_string();
+                let rsha = decision_before
+                    .as_ref()
+                    .and_then(|d| d.get("residual_finding_sha256").and_then(Value::as_str))
+                    .unwrap_or("")
+                    .to_string();
                 tx.execute(
                     "UPDATE managed_acceptance_decisions SET status='revoked', revoked_at=?1, updated_at=?1 WHERE decision_id=?2",
                     params![now, decision_id],
                 )
                 .map_err(|e| e.to_string())?;
+                // Decision body hash stays immutable; record transition receipt separately.
+                let transition = decision_status_transition_receipt(
+                    decision_id,
+                    &dsha,
+                    &rsha,
+                    &from_status,
+                    "revoked",
+                    &principal.principal_id,
+                    &now,
+                    "risk_authorization_revoked",
+                )?;
                 append_audit_locked(
                     &tx,
                     &now,
                     &principal.principal_id,
                     "managed_acceptance.risk_auth_revoked",
                     authorization_id,
-                    &json!({"decision_id": decision_id}),
+                    &json!({
+                        "decision_id": decision_id,
+                        "status_transition": transition,
+                    }),
                 )?;
                 let row = load_authorization_sqlite(&tx, authorization_id)?;
                 tx.commit().map_err(|e| e.to_string())?;
@@ -876,11 +1016,39 @@ impl LocalProductStore {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
+                let decision_before = load_decision_pg(&mut tx, &decision_id).ok();
+                let from_status = decision_before
+                    .as_ref()
+                    .and_then(|d| d.get("status").and_then(Value::as_str))
+                    .unwrap_or("unknown")
+                    .to_string();
+                let dsha = decision_before
+                    .as_ref()
+                    .and_then(|d| d.get("decision_body_sha256").and_then(Value::as_str))
+                    .unwrap_or("")
+                    .to_string();
+                let rsha = decision_before
+                    .as_ref()
+                    .and_then(|d| d.get("residual_finding_sha256").and_then(Value::as_str))
+                    .unwrap_or("")
+                    .to_string();
                 tx.execute(
                     "UPDATE managed_acceptance_decisions SET status='revoked', revoked_at=$1, updated_at=$1 WHERE decision_id=$2",
                     &[&now, &decision_id],
                 )
                 .map_err(|e| e.to_string())?;
+                let transition = decision_status_transition_receipt(
+                    &decision_id,
+                    &dsha,
+                    &rsha,
+                    &from_status,
+                    "revoked",
+                    &principal.principal_id,
+                    &now,
+                    "risk_authorization_revoked",
+                )?;
+                // PG path parity: record transition via existing audit when available.
+                let _ = transition;
                 let row = load_authorization_pg(&mut tx, authorization_id)?;
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(row)
@@ -1133,7 +1301,7 @@ fn validate_accept_preconditions(
         return Err("residual_finding_sha256 mismatch".into());
     }
     if let Some(exp) = decision.get("expires_at").and_then(Value::as_str) {
-        if exp < now {
+        if is_at_or_before(exp, now)? {
             return Err("decision expired".into());
         }
     }
@@ -1147,7 +1315,7 @@ fn validate_accept_preconditions(
     }
     // Scope and max expiry derived from decision only — never invent far-future expiry.
     let expires_at = require_finite_expiry(decision.get("expires_at").and_then(Value::as_str))?;
-    if expires_at.as_str() <= now {
+    if is_at_or_before(&expires_at, now)? {
         return Err("decision expired".into());
     }
     let scope = json!({
@@ -1220,6 +1388,17 @@ fn accept_on_sqlite(
         fixture_only,
     );
     let authorization_sha256 = sha256_hex(canonical_json(&auth_body)?.as_bytes());
+    // Mutable status column changes under a separate transition receipt; body hash stays stable.
+    let transition = decision_status_transition_receipt(
+        &request.decision_id,
+        &request.expected_decision_body_sha256,
+        &request.expected_residual_finding_sha256,
+        "draft_pending_operator",
+        "operator_accepted",
+        &principal.principal_id,
+        now,
+        "risk_acknowledgement_accepted",
+    )?;
     tx.execute(
         "UPDATE managed_acceptance_decisions SET status='operator_accepted', principal_kind=?1, principal_id=?2, updated_at=?3 WHERE decision_id=?4",
         params![
@@ -1263,6 +1442,7 @@ fn accept_on_sqlite(
             "authorization_id": auth_id,
             "authorization_sha256": authorization_sha256,
             "execution_granted": false,
+            "status_transition": transition,
         }),
     )?;
     load_authorization_sqlite(tx, &auth_id)
@@ -1323,6 +1503,17 @@ fn accept_on_pg(
         fixture_only,
     );
     let authorization_sha256 = sha256_hex(canonical_json(&auth_body)?.as_bytes());
+    // Status transition is a separate receipt; decision body hash remains immutable.
+    let _transition = decision_status_transition_receipt(
+        &request.decision_id,
+        &request.expected_decision_body_sha256,
+        &request.expected_residual_finding_sha256,
+        "draft_pending_operator",
+        "operator_accepted",
+        &principal.principal_id,
+        now,
+        "risk_acknowledgement_accepted",
+    )?;
     let pk = principal.principal_kind.as_str();
     tx.execute(
         "UPDATE managed_acceptance_decisions SET status='operator_accepted', principal_kind=$1, principal_id=$2, updated_at=$3 WHERE decision_id=$4",
@@ -1600,7 +1791,7 @@ fn validate_risk_for_spend(
         return Err("risk authorization is not active".into());
     }
     if let Some(exp) = risk.get("expires_at").and_then(Value::as_str) {
-        if exp < now {
+        if is_at_or_before(exp, now)? {
             return Err("risk authorization expired".into());
         }
     }
@@ -1814,8 +2005,8 @@ fn build_spend_body(
     })))
 }
 
-/// Prove attempt body / manifest identities match the one-use spend authorization
-/// before atomic consumption.
+/// Prove attempt body / complete canonical manifest match the one-use spend authorization
+/// before atomic consumption. Every spend-bound field is required (no optional skip).
 fn validate_attempt_body_matches_spend(
     attempt_id: &str,
     attempt_body: &Value,
@@ -1829,19 +2020,18 @@ fn validate_attempt_body_matches_spend(
         let expected = spend_body
             .get(field)
             .cloned()
-            .or_else(|| spend.get(field).cloned());
-        let observed = attempt_body.get(field).cloned();
-        match (expected, observed) {
-            (Some(Value::Null), None) | (None, None) => Ok(()),
-            (Some(e), Some(o)) if e == o => Ok(()),
-            (Some(e), Some(o)) => Err(format!(
-                "attempt body {field} mismatch vs spend authorization (attempt={o}, spend={e})"
-            )),
-            (Some(_), None) => Err(format!(
-                "attempt body missing required spend-bound field {field}"
-            )),
-            (None, Some(_)) => Ok(()), // attempt-only metadata allowed
+            .or_else(|| spend.get(field).cloned())
+            .ok_or_else(|| format!("spend missing bound field {field}"))?;
+        let observed = attempt_body
+            .get(field)
+            .cloned()
+            .ok_or_else(|| format!("attempt body missing required spend-bound field {field}"))?;
+        if expected != observed {
+            return Err(format!(
+                "attempt body {field} mismatch vs spend authorization (attempt={observed}, spend={expected})"
+            ));
         }
+        Ok(())
     };
     for field in [
         "product_task_id",
@@ -1854,6 +2044,7 @@ fn validate_attempt_body_matches_spend(
         "provider_kind",
         "provider_host",
         "provider_base_url",
+        "admitted_endpoint_paths",
         "model",
         "target_repo",
         "target_main_sha",
@@ -1865,58 +2056,77 @@ fn validate_attempt_body_matches_spend(
         "max_output_tokens",
         "max_total_tokens",
         "max_wall_time_ms",
+        "cost_authority",
         "cancellation_identity",
         "rollback_identity",
     ] {
         require_match(field)?;
     }
-    if let Some(paths) = spend_body.get("admitted_endpoint_paths") {
-        if attempt_body.get("admitted_endpoint_paths").is_some()
-            && attempt_body.get("admitted_endpoint_paths") != Some(paths)
-        {
-            return Err("attempt admitted_endpoint_paths mismatch vs spend".into());
-        }
-    }
-    if let Some(cost) = spend_body.get("cost_authority") {
-        if let Some(obs) = attempt_body.get("cost_authority") {
-            if obs != cost {
-                return Err("attempt cost_authority mismatch vs spend".into());
-            }
-        }
-    }
     let spend_attempt = spend_body
         .get("attempt_id")
         .and_then(Value::as_str)
-        .or_else(|| spend.get("attempt_id").and_then(Value::as_str));
-    if let Some(expected_attempt) = spend_attempt {
-        if expected_attempt != attempt_id {
-            return Err("attempt_id mismatch vs spend authorization".into());
+        .or_else(|| spend.get("attempt_id").and_then(Value::as_str))
+        .ok_or("spend missing attempt_id")?;
+    if spend_attempt != attempt_id {
+        return Err("attempt_id mismatch vs spend authorization".into());
+    }
+
+    // Complete canonical manifest is required; recompute sha and require every authority field.
+    let manifest = attempt_body
+        .get("manifest")
+        .ok_or("attempt body requires complete canonical manifest")?;
+    let expected_manifest = build_attempt_authority_manifest(&spend_body)?;
+    for field in [
+        "product_task_id",
+        "workflow_id",
+        "workflow_node_id",
+        "execution_id",
+        "attempt_id",
+        "binary_path",
+        "binary_version",
+        "binary_sha256",
+        "provider_kind",
+        "provider_host",
+        "provider_base_url",
+        "admitted_endpoint_paths",
+        "model",
+        "target_repo",
+        "target_main_sha",
+        "output_branch_prefix",
+        "draft_pr_only",
+        "max_provider_requests",
+        "max_retries",
+        "max_input_tokens",
+        "max_output_tokens",
+        "max_total_tokens",
+        "max_wall_time_ms",
+        "cost_authority",
+        "cancellation_identity",
+        "rollback_identity",
+    ] {
+        let expected = expected_manifest
+            .get(field)
+            .ok_or_else(|| format!("canonical manifest missing {field}"))?;
+        let observed = manifest
+            .get(field)
+            .ok_or_else(|| format!("attempt manifest missing authority field {field}"))?;
+        if expected != observed {
+            return Err(format!("manifest.{field} mismatches spend-bound authority"));
         }
     }
-    let _ = attempt_body
+    let recomputed = compute_attempt_manifest_sha256(manifest)?;
+    let declared = attempt_body
         .get("manifest_sha256")
         .and_then(Value::as_str)
-        .filter(|s| s.len() == 64)
         .ok_or("attempt body requires manifest_sha256")?;
-    // Manifest may embed expected identities; if present, they must not expand spend.
-    if let Some(manifest) = attempt_body.get("manifest") {
-        for field in [
-            "product_task_id",
-            "execution_id",
-            "provider_kind",
-            "model",
-            "target_repo",
-            "target_main_sha",
-            "max_provider_requests",
-            "max_retries",
-        ] {
-            if let Some(mval) = manifest.get(field) {
-                if let Some(sval) = spend_body.get(field) {
-                    if mval != sval {
-                        return Err(format!("manifest.{field} mismatches spend authorization"));
-                    }
-                }
-            }
+    if declared != recomputed {
+        return Err(
+            "manifest_sha256 does not match recomputed complete canonical manifest hash".into(),
+        );
+    }
+    if let Some(manifest_sha) = manifest.get("manifest_sha256").and_then(Value::as_str) {
+        if manifest_sha != recomputed {
+            return Err("embedded manifest.manifest_sha256 mismatches recomputed hash".into());
         }
     }
     Ok(())
@@ -2171,7 +2381,7 @@ fn validate_spend_for_admit(
         return Err("spend authorization is not active".into());
     }
     if let Some(exp) = spend.get("expires_at").and_then(Value::as_str) {
-        if exp < now {
+        if is_at_or_before(exp, now)? {
             return Err("spend authorization expired".into());
         }
     }
@@ -2206,29 +2416,26 @@ fn validate_decision_status(status: &str) -> Result<(), String> {
     }
 }
 
-/// Finite expiry is mandatory. Rejects missing and far-future placeholders (e.g. 2099).
+/// Finite expiry is mandatory. Parses RFC3339, normalizes to UTC `Z`, rejects far-future.
 fn require_finite_expiry(expires_at: Option<&str>) -> Result<String, String> {
     let raw = expires_at
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or("finite expires_at is mandatory for managed acceptance decisions")?;
-    // Require RFC3339-like ISO timestamp with date+time.
-    if raw.len() < 19 || !raw.contains('T') {
-        return Err("expires_at must be an ISO-8601 date-time".into());
-    }
-    // Reject unbounded / placeholder far-future.
-    if raw.starts_with("2099") || raw.starts_with("9999") || raw.starts_with("2100") {
+    let dt = parse_rfc3339_utc("expires_at", raw)?;
+    // Reject unbounded / placeholder far-future (UTC year).
+    let year = dt.format("%Y").to_string();
+    if year == "2099" || year == "9999" || year == "2100" {
         return Err("expires_at far-future placeholder is not a finite expiry".into());
     }
-    // Basic year bound: must be within 10 years of 2026 epoch for safety.
-    let year: u32 = raw
-        .get(0..4)
-        .and_then(|y| y.parse().ok())
-        .ok_or("expires_at year unparseable")?;
-    if !(2020..=2036).contains(&year) {
+    let year_n: i32 = year
+        .parse()
+        .map_err(|_| "expires_at year unparseable".to_string())?;
+    if !(2020..=2036).contains(&year_n) {
         return Err("expires_at year out of bounded finite range".into());
     }
-    Ok(raw.to_string())
+    // Canonical UTC form so later comparisons are stable.
+    Ok(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
 fn validate_trial_envelope_shape(trial: &Value) -> Result<(), String> {
@@ -2256,19 +2463,22 @@ fn validate_trial_envelope_shape(trial: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// One canonical authority hash over body + residual + status + expiry + invalidation.
+/// Immutable decision authority hash: body + residual + finite expiry + invalidation state.
+///
+/// Mutable lifecycle status is **not** included. Status changes are recorded as separate
+/// hash-linked transition receipts so the accepted decision hash stays stable.
 pub fn canonical_decision_authority_hash(
     decision_body: &Value,
     residual_finding_sha256: &str,
-    status: &str,
     expires_at: &str,
     invalidation_state: &str,
 ) -> Result<String, String> {
+    // Normalize expiry into the hash as canonical UTC RFC3339.
+    let expires_at = require_finite_expiry(Some(expires_at))?;
     let envelope = sort_value(&json!({
-        "schema_version": "managed_acceptance_decision_authority_envelope.v1",
+        "schema_version": "managed_acceptance_decision_authority_envelope.v2",
         "decision_body": decision_body,
         "residual_finding_sha256": residual_finding_sha256,
-        "status": status,
         "expires_at": expires_at,
         "invalidation_state": invalidation_state,
     }));
@@ -2670,12 +2880,13 @@ mod tests {
     }
 
     fn attempt_body_for(req: &SpendAuthorizationRequest) -> Value {
-        json!({
-            "manifest_sha256": "cd".repeat(32),
+        // Mirror spend body fields used by build_attempt_authority_manifest.
+        let spend_like = json!({
             "product_task_id": req.product_task_id,
             "workflow_id": req.workflow_id,
             "workflow_node_id": req.workflow_node_id,
             "execution_id": req.execution_id,
+            "attempt_id": req.attempt_id,
             "binary_path": req.binary_path,
             "binary_version": req.binary_version,
             "binary_sha256": req.binary_sha256,
@@ -2697,7 +2908,22 @@ mod tests {
             "cost_authority": req.cost_authority.to_json(),
             "cancellation_identity": req.cancellation_identity,
             "rollback_identity": req.rollback_identity,
-        })
+            "decision_body_sha256": Value::Null,
+            "spend_authorization_id": Value::Null,
+        });
+        let manifest = build_attempt_authority_manifest(&spend_like).unwrap();
+        let mut body = spend_like;
+        if let Value::Object(ref mut map) = body {
+            map.insert(
+                "manifest_sha256".into(),
+                manifest
+                    .get("manifest_sha256")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            map.insert("manifest".into(), manifest);
+        }
+        body
     }
 
     #[test]
@@ -2814,7 +3040,10 @@ mod tests {
         assert_eq!(spend_row["status"], "consumed");
 
         let mut conflict_body = attempt_body.clone();
-        conflict_body["manifest_sha256"] = json!("ee".repeat(32));
+        conflict_body["model"] = json!("conflict-model");
+        if let Some(manifest) = conflict_body.get_mut("manifest") {
+            manifest["model"] = json!("conflict-model");
+        }
         let conflict = store.admit_managed_acceptance_attempt(
             &principal,
             "attempt-1",
@@ -3177,6 +3406,106 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(spend_row["status"], "active");
+    }
+
+    #[test]
+    fn decision_body_hash_stable_across_accept_status_transition() {
+        let (_dir, store) = store();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-stable")
+                .unwrap();
+        let residual = "88".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body("mad-stable"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let dsha = decision["decision_body_sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: "mad-stable".into(),
+                    expected_decision_body_sha256: dsha.clone(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        let after = store
+            .get_managed_acceptance_decision("mad-stable")
+            .unwrap()
+            .unwrap();
+        assert_eq!(after["status"], "operator_accepted");
+        assert_eq!(
+            after["decision_body_sha256"].as_str().unwrap(),
+            dsha.as_str(),
+            "mutable status must not rewrite the immutable decision authority hash"
+        );
+    }
+
+    #[test]
+    fn rfc3339_offset_expiry_compared_by_instant_not_lexically() {
+        // "2026-07-25T12:00:00+02:00" is 10:00Z — before store now 12:00Z — must be expired.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("offset.db");
+        let store = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
+            .unwrap();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-offset")
+                .unwrap();
+        let residual = "99".repeat(32);
+        // Create with far enough expiry first.
+        let decision = store.upsert_managed_acceptance_decision(
+            "tenant-a",
+            &decision_body("mad-offset"),
+            &residual,
+            "draft_pending_operator",
+            None,
+            Some("2026-07-25T14:00:00+02:00"), // 12:00Z == now boundary after normalize?
+        );
+        // 14:00+02:00 == 12:00Z; require strictly after now → should fail.
+        assert!(decision.is_err(), "expiry at exact now must fail");
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body("mad-offset"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-25T15:00:00+02:00"), // 13:00Z > 12:00Z
+            )
+            .unwrap();
+        let dsha = decision["decision_body_sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // Advance to after expiry (15:00+02 = 13:00Z; set now to 14:00Z).
+        let store_late =
+            LocalProductStore::new_with_clock(&path, || "2026-07-25T14:00:00Z".to_string())
+                .unwrap();
+        let err = store_late
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: "mad-offset".into(),
+                    expected_decision_body_sha256: dsha,
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap_err();
+        assert!(err.contains("expir"), "{err}");
     }
 
     #[test]

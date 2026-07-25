@@ -668,17 +668,6 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
     }
 
     // 3b) Store-owned exactly-once attempt admission (fixture dry-run path only).
-    let manifest_sha = preflight
-        .manifest
-        .get("manifest_sha256")
-        .and_then(Value::as_str)
-        .unwrap_or("00")
-        .to_string();
-    let manifest_sha = if manifest_sha.len() == 64 {
-        manifest_sha
-    } else {
-        "ab".repeat(32)
-    };
     if authorization_id.is_empty() {
         return Err("authorization_id required after operator accept".into());
     }
@@ -688,8 +677,20 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
     let spend_bound = issued_spend_request
         .as_ref()
         .ok_or("spend request required after operator accept")?;
+    let spend_row = store
+        .get_managed_acceptance_spend_authorization(&spend_authorization_id)
+        .map_err(|e| format!("load spend: {e}"))?
+        .ok_or("spend authorization missing after issue")?;
+    let spend_body = spend_row
+        .get("body_json")
+        .cloned()
+        .unwrap_or_else(|| spend_row.clone());
+    let authority_manifest =
+        crate::storage::local_product_store::build_attempt_authority_manifest(&spend_body)
+            .map_err(|e| format!("attempt manifest: {e}"))?;
     let attempt_body = json!({
-        "manifest_sha256": manifest_sha,
+        "manifest_sha256": authority_manifest.get("manifest_sha256"),
+        "manifest": authority_manifest,
         "product_task_id": spend_bound.product_task_id,
         "workflow_id": spend_bound.workflow_id,
         "workflow_node_id": spend_bound.workflow_node_id,

@@ -92,9 +92,9 @@ pub use external_runtime::{
 };
 pub use integrity::{IntegrityReport, TableIntegrity};
 pub use managed_acceptance::{
-    AuthenticatedPrincipal, CostAuthority, PrincipalKind, RiskAcknowledgementRequest,
-    SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_REVOKE,
-    SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
+    build_attempt_authority_manifest, AuthenticatedPrincipal, CostAuthority, PrincipalKind,
+    RiskAcknowledgementRequest, SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES,
+    SCOPE_ATTEMPT_ADMIT, SCOPE_REVOKE, SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
 };
 pub use policy_replay_producer::{
     EvidenceChainPromotionRequest, ReplayProductionProfile, ReplayProductionRequest,
