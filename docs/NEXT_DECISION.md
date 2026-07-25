@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-25.
 
-## First-Order Objective
+## Current Direction
 
 The repository optimizes one outcome:
 
@@ -12,49 +12,48 @@ Quality, safety, integrity, authority, and rollback are hard gates. Token use, m
 
 Do not substitute feature count, model/provider count, Dashboard completeness, PR creation, or fixture success for product capability or learning.
 
-## Authoritative Roadmap
+The authoritative order is:
 
-Execute in this order:
+```text
+Golden Path authority and one live managed acceptance
+→ first frozen Real Workload Evidence baseline
+→ Architecture Convergence AC1–AC7
+→ identical-corpus replay
+→ Level-2 GO/NO-GO
+→ bounded Level-2 controller only on GO
+→ separately authorized Meta Improver experiment
+→ Dashboard #225 last
+```
 
-1. **Close the provider-free Codex/Golden Path review board.**
-   - Repair and independently accept cumulative PR #299.
-   - Repair and independently accept provider-free RWE preparation PR #300.
-   - Repair and independently accept observation-only CC Switch adaptation PR #301.
-   - #297/#298 are superseded by #299 and must not merge separately.
-2. **Run one live managed Golden Path acceptance task.**
-   - Requires accepted partial-mediation authority, authenticated non-fixture principal, parent-only credential, explicit one-use spend authorization, exact target SHA, Draft-PR-only output, and terminal evidence.
-3. **Freeze and run the first bounded RWE baseline.**
-   - Requires a separate RWE spend envelope; Golden Path authorization is insufficient.
-4. **Run Architecture Convergence AC1–AC7.**
-   - AC1 unified process supervision.
-   - AC2 typed execution boundary.
-   - AC3 Golden Path responsibility split.
-   - AC4 transaction-scoped domain views.
-   - AC5 runtime composition.
-   - AC6 API/SDK/Dashboard schema convergence.
-   - AC7 obsolete-abstraction cleanup.
-5. **Replay the identical frozen RWE corpus.**
-6. **Make an evidence-backed Level-2 GO/NO-GO decision.**
-7. **Only on GO, implement the bounded Level-2 generational controller.**
-8. **Only after accepted Level-2 evidence, consider the separately authorized Meta Improver experiment.**
-9. **Handle Dashboard PR #225 last.**
+Do not skip RWE and begin Architecture Convergence or Level-2 early. Provider-free fixture completion is not live acceptance.
 
-Do not skip RWE and begin Architecture Convergence or Level-2 early. Do not treat provider-free fixture completion as live acceptance.
+## Active Routing
 
-## Current Routing
+1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS`.
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
-| Work | State | Exit evidence |
-|---|---|---|
-| PR #299 authority board | `IN_PROGRESS` | Final unchanged head, complete CI, independent complete-diff review, no unresolved authority objection |
-| PR #300 provider-free RWE preparation | `BLOCKED_ON_#299` | Accepted #299 base, genuine frozen corpus, store-owned one-use RWE authorization, provider-free runner/evidence owner, complete CI |
-| PR #301 observation adaptation | `IN_PROGRESS` | Correct canonical token buckets and provider/request identities, no second authority, MIT attribution, complete CI |
-| Live Golden Path | `BLOCKED_PREREQUISITE` | One bounded live task reaches verified Draft PR and exact terminal evidence under accepted authority |
-| First RWE baseline | `BLOCKED_PREREQUISITE` | Frozen corpus executed under separate authorization; baseline sealed and independently accepted |
-| Architecture Convergence | `BLOCKED_PREREQUISITE` | First RWE baseline accepted |
-| Same-corpus replay | `BLOCKED_PREREQUISITE` | AC1–AC7 complete |
-| Level-2 decision | `BLOCKED_PREREQUISITE` | Comparable pre/post evidence plus lifecycle-cost evidence |
-| Level-2 implementation | `BLOCKED_PREREQUISITE` | Explicit GO |
-| Meta Improver | `BLOCKED_PREREQUISITE` | Accepted Level-2 and pre-registered unseen-task experiment |
+## Packet States
+
+- `READY_FOR_EXECUTION` — prerequisites and authority are sufficient to begin.
+- `BLOCKED_PREREQUISITE` — a named earlier evidence or authority condition is incomplete.
+- `DECISION_REQUIRED` — safe authority cannot be derived automatically.
+- `IN_PROGRESS` — one current branch/PR board owns the work.
+- `COMPLETE` — merged, verified, independently reviewed, and documented.
+
+Historical compatibility labels retained for handoff checks only: Packet PR207-REPAIR-1; Packet PE2-RUNTIME-PRODUCER-1; Packet PE4-EVIDENCE-ENTRY-1; Packet TOOL-DISCOVERY-BENCH-1. They are not active routing.
+
+## Open PR Coordination
+
+- PR #299 is the cumulative Golden Path authority review surface and supersedes #297/#298.
+- PR #300 is provider-free RWE preparation stacked on #299; it cannot establish a live baseline.
+- PR #301 is observation-only CC Switch adaptation; it does not close #299/#300 authority.
+- PR #225 is presentation-only and remains last.
+
+The immediate engineering task is to finish the final heads of #299/#300/#301 without overwriting the main documentation convergence, obtain complete CI and independent review, and merge only accepted surfaces in dependency order.
 
 ## Evidence Required for Every Engineering Board
 
@@ -81,15 +80,7 @@ cost_or_measurement_unavailable_fields
 
 The receipt may begin as a report/document contract. Persisting or automating it requires a later reviewed design and must reuse existing evidence owners.
 
-Level-2 GO requires more than runtime token improvement. The decision must consider:
-
-- comparable quality and safety;
-- provider/token/latency/cost evidence;
-- implementation and review cost;
-- migration and rollback risk;
-- maintenance surface and authority growth;
-- failure recovery burden;
-- expected reuse and realistic probability of successful adoption.
+A Level-2 GO decision requires more than runtime token improvement. It must consider comparable quality/safety, provider/token/latency/cost evidence, implementation and review cost, migration/rollback risk, maintenance surface, authority growth, failure recovery, expected reuse, and realistic implementation feasibility.
 
 A change that reduces tokens but increases total lifecycle cost or weakens reliability is not an efficiency improvement.
 
@@ -123,28 +114,7 @@ A live managed task may start only when all of these are current and exact:
 - gateway/session usage reconciliation;
 - cancellation, cleanup, rollback, approval, output-confirmation, and terminal-evidence owners.
 
-Codex remains `mediation_hardened_partial`. Retry identity, loopback-only network confinement, and host namespace limitations remain explicit residual risks unless separately proved.
-
-## RWE Contract
-
-The first RWE corpus must be real, versioned, hash-bound, replayable, and frozen before Architecture Convergence. Each task binds exact source repository/commit or fixture tree, task definition/reference, allowed mutable surface, verification, expected class, output bounds, timeout/cancel behavior, executor identity, and budget.
-
-The baseline records at least:
-
-- quality/pass/failure classification;
-- request, retry, token, latency, and cost-source semantics;
-- timeout, cancellation, pause/kill, restart, outcome-unknown, and cleanup;
-- SQLite/PostgreSQL parity;
-- approval, output, Draft PR, target-main, and terminal evidence;
-- implementation-cost receipt for the board that produced the baseline.
-
-The post-convergence run must use the identical corpus. Do not tune the corpus using convergence results.
-
-## Level-2 and Meta Boundaries
-
-Level-2 remains a bounded laboratory controller, not production recursive self-update. Initial hard limits remain small and explicit: bounded generations, candidates, total evaluations, global budgets, concurrency, time, workspaces, and artifacts. It may select a laboratory parent but may not modify `main`, merge PRs, deploy, change the active production Harness, rewrite its evaluator, or expand its own authority.
-
-Meta Improver is a separate research decision. It requires unseen tasks, immutable evaluation labels, contamination controls, baselines, statistical thresholds, seeds, budgets, stop/rollback rules, and an immutable active Harness. A NO-GO result is valid completion.
+Codex remains `mediation_hardened_partial`. Retry identity, product-enforced loopback-only network confinement, and host namespace limitations remain explicit residual risks unless separately proved.
 
 ## Hard Stops
 
@@ -158,6 +128,66 @@ Stop before any of the following:
 - unreviewed schema migration or SQLite/PostgreSQL semantic divergence;
 - performance, cost, or learning claim without comparable evidence.
 
-## Immediate Next Decision
+## Packet PE7-PRODUCT-GOLDEN-PATH-1 — authority board and live residual seal
 
-The immediate engineering task is not a new provider or learning subsystem. It is to finish the final heads of #299/#300/#301 without overwriting this main documentation convergence, obtain independent review and complete CI, then merge only the accepted cumulative surfaces in dependency order. After that, the next manual gate is one bounded live Golden Path task; RWE and Architecture Convergence remain blocked until their stated evidence exists.
+**State:** `IN_PROGRESS`
+
+Current provider-free surfaces are #299 and observation support #301. #297/#298 are superseded. Completion requires final accepted provider-free authority plus one bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+
+The live task requires a separate current-session spend authorization and parent-only credential. No repository prompt or fixture result grants that authority.
+
+## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-PRODUCT-GOLDEN-PATH-1
+
+PR #300 may prepare provider-free corpus, authorization, runner, and evidence contracts, but live RWE requires accepted Golden Path terminal evidence plus a separately persisted one-use RWE spend envelope.
+
+The corpus must be real, versioned, hash-bound, replayable, and frozen before Architecture Convergence. Each task binds exact source repository/commit or fixture tree, task definition/reference, allowed mutable surface, verification, expected class, output bounds, timeout/cancel behavior, executor identity, budget, and cleanup.
+
+The baseline records quality/failure class, request/retry/token/latency/cost-source semantics, timeout/cancel/pause/kill/restart/outcome-unknown, SQLite/PostgreSQL parity, approval/output/target-main/Draft-PR/terminal evidence, and the implementation-cost receipt.
+
+## Packet PE7-ARCHITECTURE-CONVERGENCE-1 — compatibility convergence
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-REAL-WORKLOAD-EVIDENCE-1
+
+Implement incrementally:
+
+1. AC1 unified process supervision.
+2. AC2 typed execution boundary.
+3. AC3 Golden Path responsibility split.
+4. AC4 transaction-scoped domain views.
+5. AC5 runtime composition.
+6. AC6 Rust-authoritative API/SDK/Dashboard schema convergence.
+7. AC7 obsolete-abstraction cleanup after all callers and evidence migrate.
+
+Each packet changes one coherent ownership boundary, preserves compatibility and rollback, and records implementation cost. It must not create a second scheduler, store, budget, approval, output, evidence, or rollback owner.
+
+## Packet PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1 — post-convergence comparison
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-ARCHITECTURE-CONVERGENCE-1
+
+Replay the identical frozen corpus. Compare quality/failure classifications, request/retry/token/latency/cost evidence, restart/recovery, approval/output/terminal behavior, implementation cost, maintenance surface, and rollback burden. Do not tune the corpus from convergence results.
+
+## Packet PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1 — bounded multi-generation decision
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1
+
+First record an evidence-backed GO/NO-GO. On GO only, implement a default-off bounded laboratory controller with small fixed generation/candidate/evaluation limits, deterministic global budgets, one selected laboratory parent per generation, restart/lease/concurrency/exactly-once evidence, sealed-evaluator separation, and SQLite/PostgreSQL parity.
+
+It may not modify `main`, merge, deploy, change the active production Harness, rewrite its evaluator, expand its own permissions, or continue across runs without explicit authority.
+
+## Packet PE7-META-IMPROVER-EXPERIMENT-1 — separate unseen-task experiment
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1
+
+Require pre-registered unseen tasks, immutable evaluator/labels, contamination controls, baselines, statistical/effect/error thresholds, seeds, budgets, stop/rollback rules, and immutable active-Harness identity. A NO-GO result is valid completion.
