@@ -1196,7 +1196,7 @@ impl LocalProductStore {
         })
     }
 
-    fn rollback_pg_v32_to_v31_internal(&self, actor: &str, now: &str) -> Result<(), String> {
+    pub(crate) fn rollback_pg_v32_to_v31_internal(&self, actor: &str, now: &str) -> Result<(), String> {
         self.with_pg_conn(|client: &mut postgres::Client| {
             let mut tx = client.transaction().map_err(|error| error.to_string())?;
             let current_version = tx
