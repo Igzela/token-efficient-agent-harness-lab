@@ -1,0 +1,119 @@
+name: closeout-302-accepted-state
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  closeout:
+    if: github.event.pull_request.number == 302 && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out triggering head
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.11"
+      - name: Apply canonical #299 closeout
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if old not in text:
+                  raise SystemExit(f"missing expected block in {path}: {old[:120]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          replace_exact(
+              "docs/ARCHITECTURE_BOOK.md",
+              "Current version: v33 (current tree schema).\nAccepted-main version at this branch base: v31.\n",
+              "Current version: v33.\n",
+          )
+          replace_exact(
+              "docs/ARCHITECTURE_BOOK.md",
+              "Schema acceptance boundary: **v32** (hash-linked decision transition sequence receipts) and **v33** (managed-acceptance spend/lease logical authorization) become accepted architecture only after independent review and merge to `main`; this branch records the current-tree schema separately from that boundary.",
+              "Schema **v32** (hash-linked decision transition sequence receipts) and **v33** (managed-acceptance spend/lease logical authorization) are accepted architecture on `main` through PR #299. This acceptance does not authorize live provider calls, a live Golden Path task, RWE, Level-2, Meta, or Dashboard #225.",
+          )
+
+          replace_exact(
+              "docs/CURRENT_STATUS.md",
+              "Last updated: 2026-07-25.",
+              "Last updated: 2026-07-26.",
+          )
+          replace_exact(
+              "docs/CURRENT_STATUS.md",
+              "- Accepted runtime baseline is merged through PR #296 plus its documentation seal.",
+              "- Accepted runtime baseline is merged through PR #299 at schema v33, including store-owned managed-acceptance authority, one-use spend/attempt leases, durable transition receipts, and PostgreSQL restart repair.",
+          )
+          replace_exact(
+              "docs/CURRENT_STATUS.md",
+              "| #299 | Cumulative Codex residual-admission, risk acknowledgement, one-use spend, owner-derived preflight, and managed-attempt authority | Open; supersedes #297/#298; requires final independent review and exact-head/full CI on its final unchanged head |\n| #300 | Provider-free first-RWE corpus, authorization, runner, and evidence preparation stacked on #299 | Open; must remain blocked until #299 authority is accepted; no live baseline exists |\n| #301 | CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification | Open; observation scope only; does not close #299/#300 authority; requires token-bucket/identity corrections and final CI |\n| #297/#298 | Earlier residual-admission and authority-decision slices | Superseded by #299; do not merge separately |",
+              "| #300 | Provider-free first-RWE corpus, authorization, runner, and evidence preparation | Open; next eligible surface after mechanical restack onto accepted PR #299/main; no live baseline exists |\n| #301 | CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification | Open; mechanical restack required; observation scope only and no authority import |\n| #297/#298 | Earlier residual-admission and authority-decision slices | Superseded by merged PR #299; close without merge |",
+          )
+          replace_exact(
+              "docs/CURRENT_STATUS.md",
+              "Product Golden Path is default-off and `IN_PROGRESS`.",
+              "Product Golden Path authority is accepted through PR #299; the live managed task remains default-off and `IN_PROGRESS`.",
+          )
+          replace_exact(
+              "docs/CURRENT_STATUS.md",
+              "The remaining product proof is one tightly bounded live managed coding task under an accepted authority decision, authenticated non-fixture principal, parent-only provider credential, one-use spend authorization, unchanged target `main`, Draft-PR-only output, and exact terminal evidence.",
+              "The remaining product proof is one tightly bounded live managed coding task under the accepted authority decision, authenticated non-fixture principal, parent-only provider credential, one-use spend authorization, unchanged target `main`, Draft-PR-only output, and exact terminal evidence. Before that live task, PR #300 and PR #301 must be mechanically restacked and independently reconciled against the accepted PR #299 semantics.",
+          )
+          replace_exact(
+              "docs/CURRENT_STATUS.md",
+              "| Golden Path residual seal | `IN_PROGRESS` | Accept the final provider-free authority surface, then complete one bounded live managed task |",
+              "| Golden Path residual seal | `AUTHORITY_ACCEPTED_LIVE_E2E_PENDING` | Restack/reconcile #300 and #301, then separately authorize one bounded live managed task |",
+          )
+          replace_exact(
+              "docs/CURRENT_STATUS.md",
+              "- Provider-free Golden Path authority: #299, open and under final independent review.\n- Provider-free RWE preparation: #300, stacked and blocked on accepted #299 authority.\n- Observation adaptation: #301, open and limited to evidence parsing/normalization.",
+              "- Provider-free Golden Path authority: PR #299 merged and accepted at schema v33.\n- Provider-free RWE preparation: PR #300 is the next eligible mechanical-restack and independent-review surface.\n- Observation adaptation: PR #301 remains observation-only and requires mechanical restack after #300 reconciliation.",
+          )
+          replace_exact(
+              "docs/CURRENT_STATUS.md",
+              "PRs #297/#298 are superseded by #299 and must not merge separately. #300 must be updated onto the final accepted #299 semantics. #301 may remain an independent observation-only layer but must not introduce a second budget, proxy, credential, store, or authorization owner. PR #225 remains presentation-only and last.",
+              "PRs #297/#298 are superseded by merged PR #299 and should close without merge. PR #300 must be mechanically restacked onto accepted `main` and independently reviewed before any live Golden Path task. PR #301 follows as an observation-only restack and must not introduce a second budget, proxy, credential, store, or authorization owner. PR #225 remains presentation-only and last.",
+          )
+
+          replace_exact(
+              "docs/NEXT_DECISION.md",
+              "Last updated: 2026-07-25.",
+              "Last updated: 2026-07-26.",
+          )
+          replace_exact(
+              "docs/NEXT_DECISION.md",
+              "- PR #299 is the cumulative Golden Path authority review surface and supersedes #297/#298.\n- PR #300 is provider-free RWE preparation stacked on #299; it cannot establish a live baseline.\n- PR #301 is observation-only CC Switch adaptation; it does not close #299/#300 authority.\n- PR #225 is presentation-only and remains last.\n\nThe immediate engineering task is to finish the final heads of #299/#300/#301 without overwriting the main documentation convergence, obtain complete CI and independent review, and merge only accepted surfaces in dependency order.",
+              "- PR #299 is merged and accepted; it supersedes #297/#298, which should close without merge.\n- PR #300 is the next eligible provider-free surface and must be mechanically restacked onto accepted `main` before independent review; it cannot establish a live baseline.\n- PR #301 follows as observation-only CC Switch adaptation and must be mechanically restacked without importing authority.\n- PR #225 is presentation-only and remains last.\n\nThe immediate engineering task is to restack and independently accept #300, then mechanically restack and accept #301, before any separately authorized live Golden Path task. Do not begin live RWE or later stages.",
+          )
+          replace_exact(
+              "docs/NEXT_DECISION.md",
+              "## Packet PE7-PRODUCT-GOLDEN-PATH-1 — authority board and live residual seal\n\n**State:** `IN_PROGRESS`\n\nCurrent provider-free surfaces are #299 and observation support #301. #297/#298 are superseded. Completion requires final accepted provider-free authority plus one bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.\n\nThe live task requires a separate current-session spend authorization and parent-only credential. No repository prompt or fixture result grants that authority.",
+              "## Packet PE7-PRODUCT-GOLDEN-PATH-1 — accepted authority and live residual seal\n\n**State:** `IN_PROGRESS`\n\n**Owned PR:** #300\n\nThe provider-free authority foundation from PR #299 is merged and accepted. The current eligible work is a mechanical restack and independent review of provider-free PR #300, followed by the observation-only PR #301 restack. Completion still requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.\n\nThe live task requires a separate current-session spend authorization and parent-only credential. No repository prompt, fixture result, or merged authority code grants that live authority.",
+          )
+
+          Path(".github/workflows/closeout-302.yml").unlink()
+          PY
+          git diff --check
+          python3 scripts/check_agent_handoff.py
+          git config user.name "token-efficiency-maintainer"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/ARCHITECTURE_BOOK.md docs/CURRENT_STATUS.md docs/NEXT_DECISION.md .github/workflows/closeout-302.yml
+          git commit -m "docs: close accepted #299 state"
+          git push --force-with-lease="refs/heads/$HEAD_REF:$EVENT_HEAD" origin "HEAD:refs/heads/$HEAD_REF"
