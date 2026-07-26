@@ -1053,30 +1053,6 @@ impl LocalProductStore {
         }
     }
 
-    /// Store-owned proof for the legacy supervised-repair seam.  Callers do
-    /// not interpret a JSON projection as authority: the store reloads the
-    /// persisted row and returns only the exact consumed/tool binding result.
-    pub(crate) fn has_consumed_tool_execution_authorization(
-        &self,
-        run_id: &str,
-        node_id: &str,
-        tool_name: &str,
-    ) -> Result<bool, String> {
-        let Some(authorization) = self.inspect_tool_execution_authorization(run_id, node_id)?
-        else {
-            return Ok(false);
-        };
-        let persisted_tool = authorization
-            .get("tool_name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "tool execution authorization tool_name is unreadable".to_string())?;
-        let status = authorization
-            .get("status")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "tool execution authorization status is unreadable".to_string())?;
-        Ok(persisted_tool == tool_name && status == "consumed")
-    }
-
     pub fn tool_execution_approval_requires_execute_scope(
         &self,
         run_id: &str,

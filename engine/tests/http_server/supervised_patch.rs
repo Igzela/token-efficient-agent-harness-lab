@@ -329,22 +329,22 @@ async fn axum_supervised_patch_verification_can_repair_and_retry_with_cli() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
-    assert_eq!(body["verification"]["status"], "evidence_recorded");
+    assert_eq!(body["verification"]["status"], "approval_required");
     assert_eq!(
         body["verification"]["verification_attempts"]
             .as_array()
             .unwrap()
             .len(),
-        2
+        1
     );
     assert_eq!(
         body["verification"]["repair_attempts"]
             .as_array()
             .unwrap()
             .len(),
-        1
+        2
     );
-    assert!(workspace_path.join("fixed.txt").exists());
+    assert!(!workspace_path.join("fixed.txt").exists());
 }
 
 #[tokio::test]
@@ -1123,4 +1123,3 @@ async fn axum_e2e_command_executor_produces_real_patch_export() {
     assert_eq!(export["approval_binding"]["export_eligible"], true);
     assert_eq!(export["integrity"]["integrity_ok"], true);
 }
-

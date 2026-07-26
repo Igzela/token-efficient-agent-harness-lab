@@ -137,8 +137,9 @@ impl CliNodeExecutor {
     }
 
     /// Attach the sole persistence owner used by ProductTask Codex admission.
-    /// A non-ProductTask Codex invocation is accepted only when the same store
-    /// exposes a consumed ToolPolicy authorization for the exact run/node.
+    /// A store-attached Codex invocation without a durable ProductTask owner is
+    /// always rejected; ToolPolicy receipts are an additional prerequisite and
+    /// never an execution or spend authority.
     pub fn with_managed_acceptance_store(mut self, store: Arc<LocalProductStore>) -> Self {
         self.managed_acceptance_store = Some(store);
         self
@@ -344,26 +345,6 @@ impl NodeExecutor for CliNodeExecutor {
                 },
                 None => None,
             };
-            let tool_policy_owned = match self.managed_acceptance_store.as_deref() {
-                Some(store) if store_owned_product_task.is_none() => {
-                    match store.has_consumed_tool_execution_authorization(
-                        &input.run_id,
-                        &input.node_id,
-                        effective_type,
-                    ) {
-                        Ok(authorized) => authorized,
-                        Err(error) => {
-                            return failed_without_process(
-                                "codex_cli",
-                                "cli_execution_authority_invalid",
-                                format!("Codex tool-policy authority lookup failed: {error}"),
-                                start.elapsed().as_millis() as i64,
-                            );
-                        }
-                    }
-                }
-                _ => false,
-            };
             match (
                 self.managed_acceptance_store.is_some(),
                 store_owned_product_task,
@@ -373,11 +354,11 @@ impl NodeExecutor for CliNodeExecutor {
                         self, input, &bin_path, &cwd, &prompt, start,
                     );
                 }
-                (true, None) if !tool_policy_owned && !self.unmanaged_codex_test_seam => {
+                (true, None) => {
                     return failed_without_process(
                         "codex_cli",
                         "cli_execution_authority_invalid",
-                        "Codex run is not owned by a persisted ProductTask or consumed tool-policy receipt"
+                        "Codex run is not owned by a persisted ProductTask; ToolPolicy cannot substitute for managed spend, attempt admission, lease, gateway, or runtime attestation"
                             .to_string(),
                         start.elapsed().as_millis() as i64,
                     );
