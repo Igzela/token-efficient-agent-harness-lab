@@ -2635,9 +2635,8 @@ fn pg_managed_acceptance_transition_restart_uses_hash_chain_when_timestamps_tie(
     };
     let fixed_clock = || "2026-07-26T00:00:00Z".to_string();
     let store = LocalProductStore::new_postgres(&database_url, fixed_clock).unwrap();
-    let tag = uuid_tag();
-    let (principal, risk, request) =
-        pg_seed_managed_acceptance(&store, &tag, "same-second-restart");
+    let tag = "same-second-restart-00";
+    let (principal, risk, request) = pg_seed_managed_acceptance(&store, tag, "same-second-restart");
     store
         .issue_managed_acceptance_spend_authorization(&principal, &request)
         .unwrap();
