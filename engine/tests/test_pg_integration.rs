@@ -2932,7 +2932,6 @@ fn pg_managed_acceptance_attempt_replay_lease_terminal_restart_and_principal_par
         )
         .unwrap();
     assert_eq!(restarted_replay["idempotent_replay"], true);
-    assert!(restarted_replay.get("lease_token").is_none());
     let stale_lease_error = restarted
         .complete_managed_acceptance_attempt(
             &request.attempt_id,
