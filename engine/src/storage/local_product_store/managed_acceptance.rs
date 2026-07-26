@@ -395,11 +395,11 @@ fn is_forbidden_role(role: &str) -> bool {
     )
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-fn canonical_json(value: &Value) -> Result<String, String> {
+pub(super) fn canonical_json(value: &Value) -> Result<String, String> {
     Ok(sort_value(value).to_string())
 }
 
@@ -2145,6 +2145,7 @@ impl LocalProductStore {
         let risk = self
             .get_active_managed_acceptance_authorization(&risk_id)?
             .ok_or_else(|| "managed Codex active risk authorization is missing".to_string())?;
+        validate_spend_risk_owner(&spend, &risk)?;
         if risk.get("tenant_id").and_then(Value::as_str) != Some(tenant_id.as_str())
             || risk.get("principal_id").and_then(Value::as_str) != Some(principal_id.as_str())
             || risk.get("principal_kind").and_then(Value::as_str) != Some(principal_kind.as_str())
@@ -2160,6 +2161,7 @@ impl LocalProductStore {
         let decision = self
             .get_managed_acceptance_decision(&decision_id)?
             .ok_or_else(|| "managed Codex decision owner is missing".to_string())?;
+        validate_risk_decision_owner(&risk, &decision)?;
         if decision.get("tenant_id").and_then(Value::as_str) != Some(tenant_id.as_str())
             || decision.get("principal_id").and_then(Value::as_str) != Some(principal_id.as_str())
             || decision.get("principal_kind").and_then(Value::as_str)
@@ -3390,7 +3392,7 @@ fn eq_value_field(trial: &Value, key: &str, observed: &Value) -> Result<(), Stri
 /// Stable authorization identity for one logical spend request. Receipt IDs and
 /// timestamps deliberately do not participate, so a retry cannot mint a second
 /// active one-use grant for the same attempt.
-fn stable_spend_authorization_identity(body: &Value) -> Result<String, String> {
+pub(super) fn stable_spend_authorization_identity(body: &Value) -> Result<String, String> {
     let mut identity = body.clone();
     let object = identity
         .as_object_mut()
@@ -3637,6 +3639,18 @@ fn admit_sqlite(
     let spend = load_spend_sqlite(tx, spend_authorization_id)?;
     validate_spend_for_admit(&spend, principal, allow_fixture_dry_run, now)?;
     validate_attempt_body_matches_spend(attempt_id, body, &spend)?;
+    let risk_authorization_id = spend
+        .get("risk_authorization_id")
+        .and_then(Value::as_str)
+        .ok_or("spend missing risk_authorization_id")?;
+    let risk = load_authorization_sqlite(tx, risk_authorization_id)?;
+    validate_spend_risk_owner(&spend, &risk)?;
+    let decision_id = spend
+        .get("decision_id")
+        .and_then(Value::as_str)
+        .ok_or("spend missing decision_id")?;
+    let decision = load_decision_sqlite(tx, decision_id)?;
+    validate_risk_decision_owner(&risk, &decision)?;
     // Consume one-use spend atomically only after identity match.
     let updated = tx
         .execute(
@@ -3649,19 +3663,10 @@ fn admit_sqlite(
     if updated != 1 {
         return Err("spend authorization not active or already consumed".into());
     }
-    let risk_authorization_id = spend
-        .get("risk_authorization_id")
-        .and_then(Value::as_str)
-        .ok_or("spend missing risk_authorization_id")?;
-    let risk = load_authorization_sqlite(tx, risk_authorization_id)?;
     if risk.get("execution_granted").and_then(Value::as_bool) != Some(false) {
         return Err("risk ack execution_granted must be a persisted false boolean".into());
     }
-    let decision_id = spend
-        .get("decision_id")
-        .and_then(Value::as_str)
-        .ok_or("spend missing decision_id")?
-        .to_string();
+    let decision_id = decision_id.to_string();
     let manifest_sha256 = body
         .get("manifest_sha256")
         .and_then(Value::as_str)
@@ -3765,6 +3770,13 @@ fn admit_pg(
         .ok_or("spend missing risk_authorization_id")?
         .to_string();
     let risk = load_authorization_pg(tx, &risk_authorization_id)?;
+    validate_spend_risk_owner(&spend, &risk)?;
+    let decision_id = spend
+        .get("decision_id")
+        .and_then(Value::as_str)
+        .ok_or("spend missing decision_id")?;
+    let decision = load_decision_pg(tx, decision_id)?;
+    validate_risk_decision_owner(&risk, &decision)?;
     if risk.get("execution_granted").and_then(Value::as_bool) != Some(false) {
         return Err("risk ack execution_granted must be a persisted false boolean".into());
     }
@@ -3779,11 +3791,7 @@ fn admit_pg(
     if updated != 1 {
         return Err("spend authorization not active or already consumed".into());
     }
-    let decision_id = spend
-        .get("decision_id")
-        .and_then(Value::as_str)
-        .ok_or("spend missing decision_id")?
-        .to_string();
+    let decision_id = decision_id.to_string();
     let manifest_sha256 = body
         .get("manifest_sha256")
         .and_then(Value::as_str)
@@ -3868,6 +3876,47 @@ fn validate_spend_for_admit(
         }
     } else if !principal.may_authorize_production_live_start() {
         return Err("principal cannot admit production live attempt".into());
+    }
+    Ok(())
+}
+
+fn validate_spend_risk_owner(spend: &Value, risk: &Value) -> Result<(), String> {
+    for (spend_field, risk_field) in [
+        ("risk_authorization_id", "authorization_id"),
+        ("risk_authorization_sha256", "authorization_sha256"),
+        ("decision_id", "decision_id"),
+        ("tenant_id", "tenant_id"),
+        ("principal_kind", "principal_kind"),
+        ("principal_id", "principal_id"),
+        ("decision_body_sha256", "decision_body_sha256"),
+        ("residual_finding_sha256", "residual_finding_sha256"),
+    ] {
+        if required_str(spend, spend_field)? != required_str(risk, risk_field)? {
+            return Err(format!(
+                "spend {spend_field} does not match its risk authorization owner"
+            ));
+        }
+    }
+    if risk.get("execution_granted").and_then(Value::as_bool) != Some(false) {
+        return Err(
+            "risk authorization execution_granted must be a persisted false boolean".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_risk_decision_owner(risk: &Value, decision: &Value) -> Result<(), String> {
+    for (risk_field, decision_field) in [
+        ("decision_id", "decision_id"),
+        ("tenant_id", "tenant_id"),
+        ("decision_body_sha256", "decision_body_sha256"),
+        ("residual_finding_sha256", "residual_finding_sha256"),
+    ] {
+        if required_str(risk, risk_field)? != required_str(decision, decision_field)? {
+            return Err(format!(
+                "risk {risk_field} does not match its decision owner"
+            ));
+        }
     }
     Ok(())
 }
@@ -4031,6 +4080,189 @@ fn strict_managed_acceptance_pg_bool(value: i32, owner: &str) -> Result<bool, St
     }
 }
 
+fn persisted_body_field(body: &Value, owner: &str, field: &str) -> Result<Value, String> {
+    body.get(field)
+        .cloned()
+        .ok_or_else(|| format!("{owner} body_json missing {field}"))
+}
+
+fn persisted_body_str(body: &Value, owner: &str, field: &str) -> Result<String, String> {
+    persisted_body_field(body, owner, field)?
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("{owner} body_json {field} must be a non-empty string"))
+}
+
+fn validate_decision_owner_integrity(decision: &Value) -> Result<(), String> {
+    let owner = "managed acceptance decision";
+    let body = decision
+        .get("body_json")
+        .ok_or_else(|| format!("{owner} body_json is missing"))?;
+    let decision_id = required_str(decision, "decision_id")?;
+    if persisted_body_str(body, owner, "decision_id")? != decision_id {
+        return Err(format!(
+            "{owner} body decision_id does not match the owner row"
+        ));
+    }
+    if persisted_body_str(body, owner, "status")? != "draft_pending_operator" {
+        return Err(format!(
+            "{owner} body status is not the immutable draft status"
+        ));
+    }
+    let residual = required_str(decision, "residual_finding_sha256")?;
+    let expires_at = required_str(decision, "expires_at")?;
+    let invalidation_state = match body.get("invalidation_state") {
+        None => "none",
+        Some(Value::String(value)) => value.as_str(),
+        Some(_) => return Err(format!("{owner} body invalidation_state must be a string")),
+    };
+    let recomputed =
+        canonical_decision_authority_hash(body, &residual, &expires_at, invalidation_state)?;
+    if required_str(decision, "decision_body_sha256")? != recomputed {
+        return Err(format!(
+            "{owner} decision_body_sha256 does not match body_json"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_authorization_owner_integrity(authorization: &Value) -> Result<(), String> {
+    let owner = "managed acceptance authorization";
+    let body = authorization
+        .get("body_json")
+        .ok_or_else(|| format!("{owner} body_json is missing"))?;
+    for field in [
+        "authorization_id",
+        "decision_id",
+        "tenant_id",
+        "principal_kind",
+        "principal_id",
+        "decision_body_sha256",
+        "residual_finding_sha256",
+        "mutation_authority",
+        "expires_at",
+    ] {
+        if persisted_body_str(body, owner, field)? != required_str(authorization, field)? {
+            return Err(format!(
+                "{owner} body_json {field} does not match the owner row"
+            ));
+        }
+    }
+    let principal_kind = PrincipalKind::parse(&required_str(authorization, "principal_kind")?)?;
+    let body_scope = persisted_body_field(body, owner, "scope")?;
+    if sort_value(&body_scope)
+        != sort_value(
+            authorization
+                .get("scope")
+                .ok_or_else(|| format!("{owner} scope is missing"))?,
+        )
+    {
+        return Err(format!("{owner} scope does not match body_json"));
+    }
+    let body_execution_granted = persisted_body_field(body, owner, "execution_granted")?
+        .as_bool()
+        .ok_or_else(|| format!("{owner} body execution_granted must be a boolean"))?;
+    if authorization
+        .get("execution_granted")
+        .and_then(Value::as_bool)
+        != Some(body_execution_granted)
+    {
+        return Err(format!(
+            "{owner} execution_granted is not a persisted boolean match"
+        ));
+    }
+    let body_fixture_only = persisted_body_field(body, owner, "fixture_only")?
+        .as_bool()
+        .ok_or_else(|| format!("{owner} body fixture_only must be a boolean"))?;
+    if authorization.get("fixture_only").and_then(Value::as_bool) != Some(body_fixture_only)
+        || body_fixture_only != (principal_kind == PrincipalKind::FixturePrincipal)
+    {
+        return Err(format!(
+            "{owner} fixture_only is not a persisted boolean match"
+        ));
+    }
+    let body_sha = sha256_hex(canonical_json(body)?.as_bytes());
+    if required_str(authorization, "authorization_sha256")? != body_sha {
+        return Err(format!(
+            "{owner} authorization_sha256 does not match body_json"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_spend_owner_integrity(spend: &Value) -> Result<(), String> {
+    let owner = "managed acceptance spend authorization";
+    let body = spend
+        .get("body_json")
+        .ok_or_else(|| format!("{owner} body_json is missing"))?;
+    for field in [
+        "spend_authorization_id",
+        "decision_id",
+        "risk_authorization_id",
+        "tenant_id",
+        "principal_kind",
+        "principal_id",
+        "risk_authorization_sha256",
+        "decision_body_sha256",
+        "residual_finding_sha256",
+        "expires_at",
+    ] {
+        if persisted_body_str(body, owner, field)? != required_str(spend, field)? {
+            return Err(format!(
+                "{owner} body_json {field} does not match the owner row"
+            ));
+        }
+    }
+    let principal_kind = PrincipalKind::parse(&required_str(spend, "principal_kind")?)?;
+    let body_fixture_only = persisted_body_field(body, owner, "fixture_only")?
+        .as_bool()
+        .ok_or_else(|| format!("{owner} body fixture_only must be a boolean"))?;
+    if spend.get("fixture_only").and_then(Value::as_bool) != Some(body_fixture_only)
+        || body_fixture_only != (principal_kind == PrincipalKind::FixturePrincipal)
+    {
+        return Err(format!(
+            "{owner} fixture_only is not a persisted boolean match"
+        ));
+    }
+    if persisted_body_field(body, owner, "one_use")?.as_bool() != Some(true) {
+        return Err(format!(
+            "{owner} body one_use must be the persisted true boolean"
+        ));
+    }
+    let body_sha = sha256_hex(canonical_json(body)?.as_bytes());
+    if required_str(spend, "spend_body_sha256")? != body_sha {
+        return Err(format!(
+            "{owner} spend_body_sha256 does not match body_json"
+        ));
+    }
+    if let Some(logical) = spend.get("logical_authorization_sha256") {
+        let logical = logical
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("{owner} logical_authorization_sha256 is invalid"))?;
+        if body
+            .get("logical_authorization_sha256")
+            .and_then(Value::as_str)
+            != Some(logical)
+        {
+            return Err(format!(
+                "{owner} logical_authorization_sha256 does not match body_json"
+            ));
+        }
+        if stable_spend_authorization_identity(body)? != logical {
+            return Err(format!(
+                "{owner} logical_authorization_sha256 does not match the stable body identity"
+            ));
+        }
+    } else if spend.get("status").and_then(Value::as_str) == Some("active") {
+        return Err(format!(
+            "{owner} active row is missing logical_authorization_sha256"
+        ));
+    }
+    Ok(())
+}
+
 fn load_decision_sqlite(conn: &rusqlite::Connection, decision_id: &str) -> Result<Value, String> {
     conn.query_row(
         "SELECT decision_id, tenant_id, decision_body_sha256, residual_finding_sha256, status,
@@ -4038,7 +4270,7 @@ fn load_decision_sqlite(conn: &rusqlite::Connection, decision_id: &str) -> Resul
          FROM managed_acceptance_decisions WHERE decision_id=?1",
         params![decision_id],
         |row| {
-            Ok(json!({
+            let decision = json!({
                 "schema_version": "managed_acceptance_decision.v1",
                 "decision_id": row.get::<_, String>(0)?,
                 "tenant_id": row.get::<_, String>(1)?,
@@ -4056,7 +4288,10 @@ fn load_decision_sqlite(conn: &rusqlite::Connection, decision_id: &str) -> Resul
                 "updated_at": row.get::<_, String>(9)?,
                 "expires_at": row.get::<_, Option<String>>(10)?,
                 "revoked_at": row.get::<_, Option<String>>(11)?,
-            }))
+            });
+            validate_decision_owner_integrity(&decision)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error))))?;
+            Ok(decision)
         },
     )
     .map_err(|e| e.to_string())
@@ -4077,7 +4312,7 @@ fn load_decision_pg(
         .map_err(|e| e.to_string())?;
     let body_s: String = row.get(7);
     let body = parse_managed_acceptance_json(&body_s, "decision body_json")?;
-    Ok(json!({
+    let decision = json!({
         "schema_version": "managed_acceptance_decision.v1",
         "decision_id": row.get::<_, String>(0),
         "tenant_id": row.get::<_, String>(1),
@@ -4091,7 +4326,9 @@ fn load_decision_pg(
         "updated_at": row.get::<_, String>(9),
         "expires_at": row.get::<_, Option<String>>(10),
         "revoked_at": row.get::<_, Option<String>>(11),
-    }))
+    });
+    validate_decision_owner_integrity(&decision)?;
+    Ok(decision)
 }
 
 fn load_authorization_sqlite(
@@ -4114,7 +4351,7 @@ fn load_authorization_sqlite(
                 "authorization scope_json",
                 8,
             )?;
-            Ok(json!({
+            let authorization = json!({
                 "schema_version": "managed_acceptance_authorization.v1",
                 "authorization_id": row.get::<_, String>(0)?,
                 "decision_id": row.get::<_, String>(1)?,
@@ -4138,7 +4375,15 @@ fn load_authorization_sqlite(
                 "updated_at": row.get::<_, String>(14)?,
                 "expires_at": row.get::<_, String>(15)?,
                 "revoked_at": row.get::<_, Option<String>>(16)?,
-            }))
+            });
+            validate_authorization_owner_integrity(&authorization).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    12,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::other(error)),
+                )
+            })?;
+            Ok(authorization)
         },
     )
     .map_err(|e| e.to_string())
@@ -4166,7 +4411,7 @@ fn load_authorization_pg(
     let exec: i32 = row.get(11);
     let execution_granted =
         strict_managed_acceptance_pg_bool(exec, "authorization execution_granted")?;
-    Ok(json!({
+    let authorization = json!({
         "schema_version": "managed_acceptance_authorization.v1",
         "authorization_id": row.get::<_, String>(0),
         "decision_id": row.get::<_, String>(1),
@@ -4186,7 +4431,9 @@ fn load_authorization_pg(
         "updated_at": row.get::<_, String>(14),
         "expires_at": row.get::<_, String>(15),
         "revoked_at": row.get::<_, Option<String>>(16),
-    }))
+    });
+    validate_authorization_owner_integrity(&authorization)?;
+    Ok(authorization)
 }
 
 fn load_spend_sqlite(conn: &rusqlite::Connection, spend_id: &str) -> Result<Value, String> {
@@ -4201,7 +4448,7 @@ fn load_spend_sqlite(conn: &rusqlite::Connection, spend_id: &str) -> Result<Valu
         |row| {
             let body_s: String = row.get(13)?;
             let body = parse_managed_acceptance_sqlite_json(&body_s, "spend body_json", 13)?;
-            Ok(json!({
+            let spend = json!({
                 "schema_version": "managed_acceptance_spend_authorization.v1",
                 "spend_authorization_id": row.get::<_, String>(0)?,
                 "decision_id": row.get::<_, String>(1)?,
@@ -4227,7 +4474,15 @@ fn load_spend_sqlite(conn: &rusqlite::Connection, spend_id: &str) -> Result<Valu
                 "consumed_at": row.get::<_, Option<String>>(17)?,
                 "consumed_by_attempt_id": row.get::<_, Option<String>>(18)?,
                 "revoked_at": row.get::<_, Option<String>>(19)?,
-            }))
+            });
+            validate_spend_owner_integrity(&spend).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    13,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::other(error)),
+                )
+            })?;
+            Ok(spend)
         },
     )
     .map_err(|e| e.to_string())
@@ -4253,7 +4508,7 @@ fn load_spend_pg(
     let body = parse_managed_acceptance_json(&body_s, "spend body_json")?;
     let fixture_only =
         strict_managed_acceptance_pg_bool(row.get::<_, i32>(11), "spend fixture_only")?;
-    Ok(json!({
+    let spend = json!({
         "schema_version": "managed_acceptance_spend_authorization.v1",
         "spend_authorization_id": row.get::<_, String>(0),
         "decision_id": row.get::<_, String>(1),
@@ -4275,7 +4530,9 @@ fn load_spend_pg(
         "consumed_at": row.get::<_, Option<String>>(17),
         "consumed_by_attempt_id": row.get::<_, Option<String>>(18),
         "revoked_at": row.get::<_, Option<String>>(19),
-    }))
+    });
+    validate_spend_owner_integrity(&spend)?;
+    Ok(spend)
 }
 
 fn load_attempt_sqlite(conn: &rusqlite::Connection, attempt_id: &str) -> Result<Value, String> {
@@ -5041,14 +5298,16 @@ mod tests {
                 true,
             )
             .expect_err("principal-kind tampering must not consume a spend");
-        assert!(error.contains("spend principal kind mismatch"), "{error}");
-        assert_eq!(
+        assert!(
+            error.contains("spend principal kind mismatch")
+                || error.contains("body_json principal_kind"),
+            "{error}"
+        );
+        assert!(
             store
                 .get_managed_acceptance_spend_authorization(&spend_id)
-                .unwrap()
-                .unwrap()["status"],
-            "active",
-            "rejected spend must remain active"
+                .is_err(),
+            "tampered spend owner reads must fail closed"
         );
     }
 
@@ -5125,6 +5384,22 @@ mod tests {
             })
             .unwrap();
         assert!(store.get_managed_acceptance_decision(decision_id).is_err());
+        let mut tampered_decision: Value = serde_json::from_str(&original_decision).unwrap();
+        tampered_decision["trial_envelope"]["max_retries"] = json!(99);
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_decisions SET body_json=?1 WHERE decision_id=?2",
+                    params![tampered_decision.to_string(), decision_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            store.get_managed_acceptance_decision(decision_id).is_err(),
+            "a valid but hash-inconsistent decision body must fail closed"
+        );
         store
             .with_conn(|conn| {
                 conn.execute(
@@ -5159,6 +5434,24 @@ mod tests {
         assert!(store
             .get_active_managed_acceptance_authorization(&risk_id)
             .is_err());
+        let mut tampered_risk: Value = serde_json::from_str(&original_risk).unwrap();
+        tampered_risk["scope"]["decision_id"] = json!("other-decision");
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_authorizations SET body_json=?1 WHERE authorization_id=?2",
+                    params![tampered_risk.to_string(), risk_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            store
+                .get_active_managed_acceptance_authorization(&risk_id)
+                .is_err(),
+            "a valid but hash-inconsistent risk body must fail closed"
+        );
         store
             .with_conn(|conn| {
                 conn.execute(
@@ -5193,6 +5486,24 @@ mod tests {
         assert!(store
             .get_managed_acceptance_spend_authorization(&spend_id)
             .is_err());
+        let mut tampered_spend: Value = serde_json::from_str(&original_spend).unwrap();
+        tampered_spend["model"] = json!("different-model");
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_spend_authorizations SET body_json=?1 WHERE spend_authorization_id=?2",
+                    params![tampered_spend.to_string(), spend_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            store
+                .get_managed_acceptance_spend_authorization(&spend_id)
+                .is_err(),
+            "a valid but hash-inconsistent spend body must fail closed"
+        );
         store
             .with_conn(|conn| {
                 conn.execute(
@@ -5560,7 +5871,9 @@ mod tests {
             )
             .expect_err("missing persisted risk boolean must fail closed");
         assert!(
-            error.contains("fixture_only must be a persisted boolean"),
+            error.contains("fixture_only must be a persisted boolean")
+                || error.contains("body fixture_only must be a boolean")
+                || error.contains("body_json missing fixture_only"),
             "{error}"
         );
     }

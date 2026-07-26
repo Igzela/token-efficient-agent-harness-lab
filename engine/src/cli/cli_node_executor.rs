@@ -52,6 +52,10 @@ pub struct CliNodeExecutor {
     /// Present for every production constructor.  A missing store is fail
     /// closed for ProductTask Codex work rather than falling back to metadata.
     managed_acceptance_store: Option<Arc<LocalProductStore>>,
+    /// Explicit provider-free seam for unit tests that exercise the legacy
+    /// non-ProductTask Codex command path. Production callers cannot enable
+    /// this crate-private flag and therefore require the store boundary.
+    unmanaged_codex_test_seam: bool,
 }
 
 impl CliNodeExecutor {
@@ -71,6 +75,7 @@ impl CliNodeExecutor {
             claude_admission: None,
             codex_admission: None,
             managed_acceptance_store: None,
+            unmanaged_codex_test_seam: false,
         }
     }
 
@@ -83,6 +88,7 @@ impl CliNodeExecutor {
             claude_admission: Some(admission),
             codex_admission: None,
             managed_acceptance_store: None,
+            unmanaged_codex_test_seam: false,
         }
     }
 
@@ -99,6 +105,7 @@ impl CliNodeExecutor {
             claude_admission: None,
             codex_admission: Some(admission),
             managed_acceptance_store: None,
+            unmanaged_codex_test_seam: false,
         }
     }
 
@@ -130,9 +137,16 @@ impl CliNodeExecutor {
     }
 
     /// Attach the sole persistence owner used by ProductTask Codex admission.
-    /// Non-product CLI nodes retain their existing executor behavior.
+    /// A non-ProductTask Codex invocation is accepted only when the same store
+    /// exposes a consumed ToolPolicy authorization for the exact run/node.
     pub fn with_managed_acceptance_store(mut self, store: Arc<LocalProductStore>) -> Self {
         self.managed_acceptance_store = Some(store);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_unmanaged_codex_for_test(mut self) -> Self {
+        self.unmanaged_codex_test_seam = true;
         self
     }
 
@@ -307,6 +321,15 @@ impl NodeExecutor for CliNodeExecutor {
         // run owner wins, so stripping/changing metadata cannot fall through to
         // the generic direct Command::spawn path.
         if effective_type == "codex_cli" {
+            if self.managed_acceptance_store.is_none() && !self.unmanaged_codex_test_seam {
+                return failed_without_process(
+                    "codex_cli",
+                    "cli_execution_authority_invalid",
+                    "Codex execution requires the store-owned ProductTask authority boundary"
+                        .to_string(),
+                    start.elapsed().as_millis() as i64,
+                );
+            }
             let store_owned_product_task = match self.managed_acceptance_store.as_deref() {
                 Some(store) => match store.product_task_id_for_run(&input.run_id) {
                     Ok(task_id) => task_id,
@@ -321,10 +344,45 @@ impl NodeExecutor for CliNodeExecutor {
                 },
                 None => None,
             };
-            if store_owned_product_task.is_some() || is_product_apply(input) {
-                return execute_product_codex_with_budget_gateway(
-                    self, input, &bin_path, &cwd, &prompt, start,
-                );
+            let tool_policy_owned = match self.managed_acceptance_store.as_deref() {
+                Some(store) if store_owned_product_task.is_none() => {
+                    match store.has_consumed_tool_execution_authorization(
+                        &input.run_id,
+                        &input.node_id,
+                        effective_type,
+                    ) {
+                        Ok(authorized) => authorized,
+                        Err(error) => {
+                            return failed_without_process(
+                                "codex_cli",
+                                "cli_execution_authority_invalid",
+                                format!("Codex tool-policy authority lookup failed: {error}"),
+                                start.elapsed().as_millis() as i64,
+                            );
+                        }
+                    }
+                }
+                _ => false,
+            };
+            match (
+                self.managed_acceptance_store.is_some(),
+                store_owned_product_task,
+            ) {
+                (true, Some(_)) => {
+                    return execute_product_codex_with_budget_gateway(
+                        self, input, &bin_path, &cwd, &prompt, start,
+                    );
+                }
+                (true, None) if !tool_policy_owned && !self.unmanaged_codex_test_seam => {
+                    return failed_without_process(
+                        "codex_cli",
+                        "cli_execution_authority_invalid",
+                        "Codex run is not owned by a persisted ProductTask or consumed tool-policy receipt"
+                            .to_string(),
+                        start.elapsed().as_millis() as i64,
+                    );
+                }
+                _ => {}
             }
         }
 
@@ -943,16 +1001,6 @@ fn product_execution_prompt(input: &NodeExecutionInput, objective: &str) -> Resu
     Ok(format!(
         "The control plane has already authorized this bounded workspace-apply execution for product task {task_id}. Do not request or wait for another execution approval, and do not stop after proposing a plan. Implement the objective immediately inside the bound workspace, using only the allowed paths below. This authorization covers only those edits. It does not approve the artifact, confirm target output, authorize a branch push, or authorize pull-request creation. After the files change, verify the requested change and stop. Do not modify any other path.\n\nAllowed paths:\n- {allowed_paths}\n\nObjective:\n{objective}"
     ))
-}
-
-fn is_product_apply(input: &NodeExecutionInput) -> bool {
-    input
-        .node_metadata
-        .get("managed_supervised_patch")
-        .and_then(Value::as_object)
-        .and_then(|binding| binding.get("operation"))
-        .and_then(Value::as_str)
-        == Some("product_apply")
 }
 
 fn codex_invocation_args(
@@ -2440,6 +2488,34 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn codex_without_persisted_product_task_owner_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(LocalProductStore::new(root.path().join("store.db")).unwrap());
+        let marker = root.path().join("unowned-codex-child-spawned");
+        let binary = fake_codex(
+            root.path(),
+            &format!("printf child-spawned > {}", marker.to_string_lossy()),
+        );
+        let executor =
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 5_000)
+                .with_managed_acceptance_store(store);
+        let output = executor.execute_node(&make_input(json!({
+            "executor": "codex_cli",
+            "prompt": "unowned codex",
+            "workspace_path": root.path(),
+        })));
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("cli_execution_authority_invalid")
+        );
+        assert!(
+            !marker.exists(),
+            "unowned Codex must never reach Command::spawn"
+        );
+    }
+
     #[test]
     fn managed_codex_terminal_state_covers_every_process_outcome_class() {
         let cases = [
@@ -2791,7 +2867,8 @@ mod tests {
             "printf '%s\\n' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}'",
         );
         let executor =
-            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 30_000);
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 30_000)
+                .with_unmanaged_codex_for_test();
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded fixture",
@@ -2808,7 +2885,8 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let binary = fake_codex(workspace.path(), "printf 'bounded failure' >&2\nexit 7");
         let executor =
-            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 5_000);
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 5_000)
+                .with_unmanaged_codex_for_test();
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded fixture",
@@ -2824,7 +2902,8 @@ mod tests {
     fn managed_cli_timeout_has_no_fabricated_exit_code() {
         let workspace = tempfile::tempdir().unwrap();
         let binary = fake_codex(workspace.path(), "sleep 5");
-        let executor = CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 50);
+        let executor = CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 50)
+            .with_unmanaged_codex_for_test();
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded fixture",
@@ -2845,7 +2924,8 @@ mod tests {
             "dd if=/dev/zero bs=1024 count=4097 status=none",
         );
         let executor =
-            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 30_000);
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 30_000)
+                .with_unmanaged_codex_for_test();
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded flood",
@@ -2878,7 +2958,8 @@ mod tests {
                     .into_owned(),
             ),
             5_000,
-        );
+        )
+        .with_unmanaged_codex_for_test();
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded fixture",

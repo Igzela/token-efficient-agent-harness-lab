@@ -3010,6 +3010,18 @@ fn pg_managed_acceptance_owner_json_read_errors_fail_closed() {
         )
         .unwrap();
     assert!(store.get_managed_acceptance_decision(&decision_id).is_err());
+    let mut tampered_decision: Value = serde_json::from_str(&original_decision).unwrap();
+    tampered_decision["trial_envelope"]["max_retries"] = json!(99);
+    client
+        .execute(
+            "UPDATE managed_acceptance_decisions SET body_json=$1 WHERE decision_id=$2",
+            &[&tampered_decision.to_string(), &decision_id],
+        )
+        .unwrap();
+    assert!(
+        store.get_managed_acceptance_decision(&decision_id).is_err(),
+        "a valid but hash-inconsistent decision body must fail closed"
+    );
     client
         .execute(
             "UPDATE managed_acceptance_decisions SET body_json=$1 WHERE decision_id=$2",
@@ -3033,6 +3045,20 @@ fn pg_managed_acceptance_owner_json_read_errors_fail_closed() {
     assert!(store
         .get_active_managed_acceptance_authorization(&risk_id)
         .is_err());
+    let mut tampered_risk: Value = serde_json::from_str(&original_risk).unwrap();
+    tampered_risk["scope"]["decision_id"] = json!("other-decision");
+    client
+        .execute(
+            "UPDATE managed_acceptance_authorizations SET body_json=$1 WHERE authorization_id=$2",
+            &[&tampered_risk.to_string(), &risk_id],
+        )
+        .unwrap();
+    assert!(
+        store
+            .get_active_managed_acceptance_authorization(&risk_id)
+            .is_err(),
+        "a valid but hash-inconsistent risk body must fail closed"
+    );
     client
         .execute(
             "UPDATE managed_acceptance_authorizations SET body_json=$1 WHERE authorization_id=$2",
@@ -3056,6 +3082,20 @@ fn pg_managed_acceptance_owner_json_read_errors_fail_closed() {
     assert!(store
         .get_managed_acceptance_spend_authorization(&spend_id)
         .is_err());
+    let mut tampered_spend: Value = serde_json::from_str(&original_spend).unwrap();
+    tampered_spend["model"] = json!("different-model");
+    client
+        .execute(
+            "UPDATE managed_acceptance_spend_authorizations SET body_json=$1 WHERE spend_authorization_id=$2",
+            &[&tampered_spend.to_string(), &spend_id],
+        )
+        .unwrap();
+    assert!(
+        store
+            .get_managed_acceptance_spend_authorization(&spend_id)
+            .is_err(),
+        "a valid but hash-inconsistent spend body must fail closed"
+    );
     client
         .execute(
             "UPDATE managed_acceptance_spend_authorizations SET body_json=$1 WHERE spend_authorization_id=$2",

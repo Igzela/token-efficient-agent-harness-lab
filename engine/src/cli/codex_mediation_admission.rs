@@ -61,6 +61,7 @@ pub struct ManagedCodexRuntimeAttestation {
 /// inspection, but it is deliberately insufficient to produce runtime proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GatewayLaunchBinding {
+    #[cfg(test)]
     DeclaredOnly,
     RuntimeOwner {
         local_addr: SocketAddr,
@@ -447,6 +448,7 @@ impl MediatedCodexLaunchPlan {
             GatewayLaunchBinding::RuntimeOwner { .. } => Err(
                 "managed child gateway session capability does not match runtime owner".to_string(),
             ),
+            #[cfg(test)]
             GatewayLaunchBinding::DeclaredOnly => Err(
                 "managed child launch was not constructed from the runtime gateway owner"
                     .to_string(),
@@ -478,7 +480,7 @@ impl MediatedCodexLaunchPlan {
         })
     }
 
-    pub fn to_command(&self) -> Command {
+    pub(crate) fn to_command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args)
             .current_dir(&self.current_dir)
@@ -496,7 +498,8 @@ impl MediatedCodexLaunchPlan {
 }
 
 /// Build a one-shot mediated launch plan. Full product admission requires bwrap.
-pub fn plan_mediated_codex_launch(
+#[cfg(test)]
+fn plan_mediated_codex_launch(
     authority: &CodexBudgetAuthority,
     host_binary: &Path,
     host_ephemeral_home: &Path,
@@ -569,6 +572,7 @@ fn build_mediated_codex_launch_plan(
                 );
             }
         }
+        #[cfg(test)]
         GatewayLaunchBinding::DeclaredOnly => {
             // This constructor exists for provider-free plan inspection only;
             // it cannot derive a runtime attestation or reach Command::spawn.
@@ -718,6 +722,7 @@ fn build_mediated_codex_launch_plan(
 
 /// Declared-only plan validation for provider-free tests. Production plan
 /// construction instead uses `GatewayLaunchBinding::RuntimeOwner` above.
+#[cfg(test)]
 fn declared_test_gateway_is_loopback(base_url: &str) -> bool {
     let Some(authority_and_path) = base_url.strip_prefix("http://") else {
         return false;

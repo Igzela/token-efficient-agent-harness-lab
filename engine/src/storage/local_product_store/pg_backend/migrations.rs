@@ -1,4 +1,5 @@
 use super::super::{schema, LocalProductStore};
+use serde_json::Value;
 
 #[cfg(test)]
 pub(super) const CURRENT_PG_VERSION: i64 = schema::CURRENT_POSTGRES_SCHEMA_VERSION;
@@ -552,12 +553,15 @@ fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map(|row| row.get::<_, i64>(0))
         .map_err(|error| format!("failed to re-read version for migration 33: {error}"))?;
     if current_version >= version {
+        repair_pg_v33_spend_schema(&mut tx)?;
         tx.commit()
-            .map_err(|error| format!("failed to finish migration 33 no-op: {error}"))?;
+            .map_err(|error| format!("failed to finish migration 33 repair: {error}"))?;
         return Ok(());
     }
-    tx.batch_execute(schema::V33_DDL)
-        .map_err(|error| format!("migration 33 failed: {error}"))?;
+    if !pg_table_present(&mut tx, "managed_acceptance_spend_authorizations")? {
+        tx.batch_execute(schema::V33_DDL)
+            .map_err(|error| format!("migration 33 failed: {error}"))?;
+    }
     for (col, decl) in [
         ("spend_authorization_id", "TEXT"),
         ("lease_token", "TEXT"),
@@ -581,6 +585,7 @@ fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
         )
         .map_err(|error| format!("migration 33 spend logical identity column: {error}"))?;
     }
+    repair_pg_v33_spend_schema(&mut tx)?;
     tx.execute(
         "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
         &[&version],
@@ -588,6 +593,135 @@ fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
     .map_err(|error| format!("failed to record migration {version}: {error}"))?;
     tx.commit()
         .map_err(|error| format!("failed to commit migration 33: {error}"))
+}
+
+fn repair_pg_v33_spend_schema(tx: &mut postgres::Transaction<'_>) -> Result<(), String> {
+    if !pg_column_exists(
+        tx,
+        "managed_acceptance_spend_authorizations",
+        "logical_authorization_sha256",
+    )? {
+        tx.batch_execute(
+            "ALTER TABLE managed_acceptance_spend_authorizations
+             ADD COLUMN logical_authorization_sha256 TEXT",
+        )
+        .map_err(|error| format!("v33 spend logical identity column repair: {error}"))?;
+    }
+    let rows = tx
+        .query(
+            "SELECT spend_authorization_id, body_json, spend_body_sha256,
+                    logical_authorization_sha256
+             FROM managed_acceptance_spend_authorizations
+             FOR UPDATE",
+            &[],
+        )
+        .map_err(|error| format!("v33 spend body scan failed: {error}"))?;
+    for row in rows {
+        let spend_id: String = row.get(0);
+        let raw_body: String = row.get(1);
+        let stored_body_sha: String = row.get(2);
+        let stored_logical: Option<String> = row.get(3);
+        let mut body: Value = serde_json::from_str(&raw_body)
+            .map_err(|error| format!("v33 spend {spend_id} body_json is invalid: {error}"))?;
+        let original_sha = super::super::managed_acceptance::sha256_hex(
+            super::super::managed_acceptance::canonical_json(&body)?.as_bytes(),
+        );
+        if original_sha != stored_body_sha {
+            return Err(format!(
+                "v33 spend {spend_id} body hash does not match its persisted body"
+            ));
+        }
+        let logical = super::super::managed_acceptance::stable_spend_authorization_identity(&body)?;
+        if let Some(stored) = stored_logical.as_deref() {
+            if stored != logical {
+                return Err(format!(
+                    "v33 spend {spend_id} logical authorization hash is inconsistent"
+                ));
+            }
+        }
+        body.as_object_mut()
+            .ok_or_else(|| format!("v33 spend {spend_id} body_json must be an object"))?
+            .insert(
+                "logical_authorization_sha256".to_string(),
+                Value::String(logical.clone()),
+            );
+        let body_sha = super::super::managed_acceptance::sha256_hex(
+            super::super::managed_acceptance::canonical_json(&body)?.as_bytes(),
+        );
+        tx.execute(
+            "UPDATE managed_acceptance_spend_authorizations
+             SET logical_authorization_sha256=$1, body_json=$2, spend_body_sha256=$3
+             WHERE spend_authorization_id=$4",
+            &[&logical, &body.to_string(), &body_sha, &spend_id],
+        )
+        .map_err(|error| format!("v33 spend {spend_id} backfill failed: {error}"))?;
+    }
+
+    let valid_check = tx
+        .query(
+            "SELECT pg_get_constraintdef(oid)
+             FROM pg_constraint
+             WHERE conrelid='managed_acceptance_spend_authorizations'::regclass
+               AND contype='c'",
+            &[],
+        )
+        .map_err(|error| format!("v33 spend constraint check failed: {error}"))?
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .any(|definition| {
+            let normalized = definition
+                .to_ascii_lowercase()
+                .replace("::text", "")
+                .replace("::character varying", "")
+                .replace([' ', '\n', '\t', '(', ')', '\'', '"'], "");
+            normalized.contains("status<>active")
+                && normalized.contains("logical_authorization_sha256isnotnull")
+        });
+    if !valid_check {
+        tx.batch_execute(
+            "ALTER TABLE managed_acceptance_spend_authorizations
+             ADD CONSTRAINT managed_acceptance_spend_active_logical_check
+             CHECK (status <> 'active' OR logical_authorization_sha256 IS NOT NULL)",
+        )
+        .map_err(|error| format!("v33 spend active identity constraint repair: {error}"))?;
+    }
+    let index_definition: Option<String> = tx
+        .query_opt(
+            "SELECT indexdef FROM pg_indexes
+             WHERE schemaname=current_schema()
+               AND indexname='idx_managed_acceptance_spend_active_logical'",
+            &[],
+        )
+        .map(|row| row.map(|row| row.get(0)))
+        .map_err(|error| format!("v33 spend index lookup failed: {error}"))?;
+    let index_ok = index_definition.as_deref().is_some_and(|definition| {
+        let normalized = definition
+            .to_ascii_lowercase()
+            .replace("::text", "")
+            .replace("::character varying", "")
+            .replace([' ', '\n', '\t', '(', ')'], "");
+        normalized.contains("createuniqueindex")
+            && normalized.contains("tenant_id,logical_authorization_sha256")
+            && normalized.contains("wherestatus='active'")
+    });
+    if !index_ok {
+        if index_definition.is_some() {
+            tx.batch_execute("DROP INDEX idx_managed_acceptance_spend_active_logical")
+                .map_err(|error| format!("v33 spend index replacement failed: {error}"))?;
+        }
+        tx.batch_execute(
+            "CREATE UNIQUE INDEX idx_managed_acceptance_spend_active_logical
+             ON managed_acceptance_spend_authorizations(tenant_id, logical_authorization_sha256)
+             WHERE status = 'active'",
+        )
+        .map_err(|error| format!("v33 spend active identity index repair: {error}"))?;
+    }
+    tx.batch_execute(
+        "CREATE INDEX IF NOT EXISTS idx_managed_acceptance_spend_tenant
+         ON managed_acceptance_spend_authorizations(tenant_id, status, expires_at)",
+    )
+    .map_err(|error| format!("v33 spend tenant index repair failed: {error}"))?;
+    Ok(())
 }
 
 fn validate_pg_v33_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
@@ -2635,6 +2769,18 @@ mod tests {
             })
             .unwrap();
 
+        store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "DROP INDEX IF EXISTS idx_managed_acceptance_spend_active_logical;
+                         ALTER TABLE managed_acceptance_spend_authorizations
+                             DROP COLUMN IF EXISTS logical_authorization_sha256 CASCADE;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        store.run_pg_migrations_internal().unwrap();
         store.run_pg_migrations_internal().unwrap();
         assert_eq!(store.schema_version().unwrap(), 33);
 
