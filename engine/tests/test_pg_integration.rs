@@ -2629,6 +2629,48 @@ fn pg_managed_acceptance_transition_receipts_and_exact_envelope_bindings() {
 
 #[test]
 #[cfg(feature = "pg-tests")]
+fn pg_managed_acceptance_transition_restart_uses_hash_chain_when_timestamps_tie() {
+    let Ok(database_url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        return;
+    };
+    let fixed_clock = || "2026-07-26T00:00:00Z".to_string();
+    let store = LocalProductStore::new_postgres(&database_url, fixed_clock).unwrap();
+    let tag = uuid_tag();
+    let (principal, risk, request) =
+        pg_seed_managed_acceptance(&store, &tag, "same-second-restart");
+    store
+        .issue_managed_acceptance_spend_authorization(&principal, &request)
+        .unwrap();
+    store
+        .revoke_managed_acceptance_authorization(
+            &principal,
+            risk["authorization_id"].as_str().unwrap(),
+        )
+        .unwrap();
+    let decision_id = risk["decision_id"].as_str().unwrap().to_string();
+    let before = store
+        .list_managed_acceptance_decision_transition_receipts(&decision_id)
+        .unwrap();
+    assert_eq!(before.len(), 2);
+    assert_eq!(before[0]["sequence"], 1);
+    assert!(before[0]["previous_transition_sequence"].is_null());
+    assert_eq!(before[1]["sequence"], 2);
+    assert_eq!(before[1]["previous_transition_sequence"], 1);
+    assert_eq!(
+        before[1]["previous_transition_sha256"],
+        before[0]["transition_sha256"]
+    );
+    drop(store);
+
+    let restarted = LocalProductStore::new_postgres(&database_url, fixed_clock).unwrap();
+    let after = restarted
+        .list_managed_acceptance_decision_transition_receipts(&decision_id)
+        .unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
 fn pg_managed_acceptance_transition_receipt_content_tampering_fails_closed_on_read() {
     let Some(store) = test_store() else { return };
     let tag = uuid_tag();

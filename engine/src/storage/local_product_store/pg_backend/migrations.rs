@@ -598,42 +598,127 @@ fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
 }
 
 fn repair_pg_v32_transition_schema(tx: &mut postgres::Transaction<'_>) -> Result<(), String> {
-    if !pg_table_present(tx, "managed_acceptance_decision_transition_receipts")? {
+    const TABLE: &str = "managed_acceptance_decision_transition_receipts";
+    if !pg_table_present(tx, TABLE)? {
         return Ok(());
     }
-    if !pg_column_exists(
-        tx,
-        "managed_acceptance_decision_transition_receipts",
-        "sequence",
-    )? {
-        tx.batch_execute("ALTER TABLE managed_acceptance_decision_transition_receipts ADD COLUMN sequence BIGINT NOT NULL DEFAULT 1")
-            .map_err(|error| error.to_string())?;
+    if !pg_column_exists(tx, TABLE, "sequence")? {
+        tx.batch_execute(
+            "ALTER TABLE managed_acceptance_decision_transition_receipts
+             ADD COLUMN sequence BIGINT",
+        )
+        .map_err(|error| error.to_string())?;
     }
-    if !pg_column_exists(
-        tx,
-        "managed_acceptance_decision_transition_receipts",
-        "previous_transition_sequence",
-    )? {
-        tx.batch_execute("ALTER TABLE managed_acceptance_decision_transition_receipts ADD COLUMN previous_transition_sequence BIGINT")
-            .map_err(|error| error.to_string())?;
+    if !pg_column_exists(tx, TABLE, "previous_transition_sequence")? {
+        tx.batch_execute(
+            "ALTER TABLE managed_acceptance_decision_transition_receipts
+             ADD COLUMN previous_transition_sequence BIGINT",
+        )
+        .map_err(|error| error.to_string())?;
     }
+
+    let invalid_genesis_count: i64 = tx
+        .query_one(
+            "SELECT COUNT(*) FROM (
+                 SELECT decision_id
+                 FROM managed_acceptance_decision_transition_receipts
+                 GROUP BY decision_id
+                 HAVING COUNT(*) FILTER (WHERE previous_transition_sha256 IS NULL) <> 1
+             ) invalid",
+            &[],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| format!("v32 transition genesis scan failed: {error}"))?;
+    if invalid_genesis_count != 0 {
+        return Err(format!(
+            "v32 transition repair found {invalid_genesis_count} decision chain(s) without exactly one genesis"
+        ));
+    }
+
+    let fork_count: i64 = tx
+        .query_one(
+            "SELECT COUNT(*) FROM (
+                 SELECT decision_id, previous_transition_sha256
+                 FROM managed_acceptance_decision_transition_receipts
+                 WHERE previous_transition_sha256 IS NOT NULL
+                 GROUP BY decision_id, previous_transition_sha256
+                 HAVING COUNT(*) > 1
+             ) invalid",
+            &[],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| format!("v32 transition fork scan failed: {error}"))?;
+    if fork_count != 0 {
+        return Err(format!(
+            "v32 transition repair found {fork_count} forked predecessor hash(es)"
+        ));
+    }
+
+    let total_count: i64 = tx
+        .query_one(
+            "SELECT COUNT(*) FROM managed_acceptance_decision_transition_receipts",
+            &[],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| format!("v32 transition row count failed: {error}"))?;
+    let chained_count: i64 = tx
+        .query_one(
+            "WITH RECURSIVE chain AS (
+                 SELECT transition_receipt_id, decision_id, transition_sha256
+                 FROM managed_acceptance_decision_transition_receipts
+                 WHERE previous_transition_sha256 IS NULL
+                 UNION ALL
+                 SELECT child.transition_receipt_id, child.decision_id, child.transition_sha256
+                 FROM managed_acceptance_decision_transition_receipts child
+                 JOIN chain parent
+                   ON child.decision_id = parent.decision_id
+                  AND child.previous_transition_sha256 = parent.transition_sha256
+             )
+             SELECT COUNT(*) FROM chain",
+            &[],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| format!("v32 transition hash-chain traversal failed: {error}"))?;
+    if chained_count != total_count {
+        return Err(format!(
+            "v32 transition repair found incomplete, orphaned, or cyclic hash chains: chained {chained_count} of {total_count} receipts"
+        ));
+    }
+
     tx.batch_execute(
-        "WITH numbered AS (
-             SELECT transition_receipt_id,
-                    row_number() OVER (PARTITION BY decision_id ORDER BY created_at, transition_receipt_id) AS sequence
-             FROM managed_acceptance_decision_transition_receipts
-         )
-         UPDATE managed_acceptance_decision_transition_receipts receipt
-         SET sequence = numbered.sequence,
-             previous_transition_sequence = CASE WHEN receipt.previous_transition_sha256 IS NULL THEN NULL ELSE numbered.sequence - 1 END
-         FROM numbered
-         WHERE receipt.transition_receipt_id = numbered.transition_receipt_id;
+        "DROP INDEX IF EXISTS idx_managed_acceptance_transition_sequence;
          ALTER TABLE managed_acceptance_decision_transition_receipts
            DROP CONSTRAINT IF EXISTS managed_acceptance_decision_transition_receipts_decision_id_sequence_key;
-         CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_sequence
-         ON managed_acceptance_decision_transition_receipts(decision_id, sequence);",
+         WITH RECURSIVE chain AS (
+             SELECT transition_receipt_id, decision_id, transition_sha256,
+                    1::BIGINT AS sequence,
+                    NULL::BIGINT AS previous_transition_sequence
+             FROM managed_acceptance_decision_transition_receipts
+             WHERE previous_transition_sha256 IS NULL
+             UNION ALL
+             SELECT child.transition_receipt_id, child.decision_id, child.transition_sha256,
+                    parent.sequence + 1,
+                    parent.sequence
+             FROM managed_acceptance_decision_transition_receipts child
+             JOIN chain parent
+               ON child.decision_id = parent.decision_id
+              AND child.previous_transition_sha256 = parent.transition_sha256
+         )
+         UPDATE managed_acceptance_decision_transition_receipts receipt
+         SET sequence = chain.sequence,
+             previous_transition_sequence = chain.previous_transition_sequence
+         FROM chain
+         WHERE receipt.transition_receipt_id = chain.transition_receipt_id
+           AND (
+               receipt.sequence IS DISTINCT FROM chain.sequence OR
+               receipt.previous_transition_sequence IS DISTINCT FROM chain.previous_transition_sequence
+           );
+         ALTER TABLE managed_acceptance_decision_transition_receipts
+           ALTER COLUMN sequence SET NOT NULL;
+         CREATE UNIQUE INDEX idx_managed_acceptance_transition_sequence
+           ON managed_acceptance_decision_transition_receipts(decision_id, sequence);",
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| format!("v32 transition hash-chain repair failed: {error}"))
 }
 
 fn repair_pg_v33_spend_schema(tx: &mut postgres::Transaction<'_>) -> Result<(), String> {
