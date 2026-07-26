@@ -29,12 +29,14 @@ Do not skip RWE and begin Architecture Convergence or Level-2 early. Provider-fr
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS`.
-2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-RWE-AUTHORITY-RESTACK-1` — `IN_PROGRESS`.
+2. `PE7-OBSERVATION-RESTACK-1` — `BLOCKED_PREREQUISITE`.
+3. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+8. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
 ## Packet States
 
@@ -128,15 +130,33 @@ Stop before any of the following:
 - unreviewed schema migration or SQLite/PostgreSQL semantic divergence;
 - performance, cost, or learning claim without comparable evidence.
 
-## Packet PE7-PRODUCT-GOLDEN-PATH-1 — accepted authority and live residual seal
+## Packet PE7-RWE-AUTHORITY-RESTACK-1 — provider-free PR #300 reconciliation
 
 **State:** `IN_PROGRESS`
 
 **Owned PR:** #300
 
-The provider-free authority foundation from PR #299 is merged and accepted. The current eligible work is a mechanical restack and independent review of provider-free PR #300, followed by the observation-only PR #301 restack. Completion still requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+PR #299 is the accepted authority foundation. Mechanically restack PR #300 onto accepted `main`, reconcile it against the final v33 store/spend/lease semantics, remove stale duplicated assumptions, run complete exact-head CI and independent review, and stop. This packet is provider-free and cannot establish a live RWE baseline or authorize a provider call.
 
-The live task requires a separate current-session spend authorization and parent-only credential. No repository prompt, fixture result, or merged authority code grants that live authority.
+## Packet PE7-OBSERVATION-RESTACK-1 — observation-only PR #301 reconciliation
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-RWE-AUTHORITY-RESTACK-1
+
+**Owned PR:** #301
+
+After PR #300 is accepted, mechanically restack PR #301 as an observation-only layer. It may normalize usage and pricing observations but must not import authority, credentials, proxy ownership, budget ownership, or live execution.
+
+## Packet PE7-PRODUCT-GOLDEN-PATH-1 — accepted authority and live residual seal
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-OBSERVATION-RESTACK-1
+
+The provider-free authority foundation from PR #299 is merged and accepted. This live packet becomes eligible only after PR #300 and PR #301 are independently reconciled and accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+
+The live task requires a separate current-session spend authorization and parent-only credential. No repository prompt, fixture result, merged authority code, or prior test run grants that live authority.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 
