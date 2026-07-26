@@ -82,8 +82,8 @@ impl AuthenticatedPrincipal {
         &self.role
     }
 
-    /// Explicit fixture principal for provider-free tests and dry-run only.
-    pub fn fixture_for_tests(tenant_id: &str, fixture_id: &str) -> Result<Self, String> {
+    /// Internal fixture principal for provider-free dry-run support.
+    pub(crate) fn fixture_for_dry_run(tenant_id: &str, fixture_id: &str) -> Result<Self, String> {
         let fixture_id = fixture_id.trim();
         if !fixture_id.starts_with("fixture-principal-") {
             return Err("fixture principal id must use fixture-principal- prefix".into());
@@ -99,6 +99,13 @@ impl AuthenticatedPrincipal {
             user_id: "fixture-user".into(),
             role: "fixture".into(),
         })
+    }
+
+    /// Test-feature-only fixture constructor for external PostgreSQL tests.
+    #[cfg(any(test, feature = "pg-tests"))]
+    #[doc(hidden)]
+    pub fn fixture_for_tests(tenant_id: &str, fixture_id: &str) -> Result<Self, String> {
+        Self::fixture_for_dry_run(tenant_id, fixture_id)
     }
 
     pub fn may_authorize_production_live_start(&self) -> bool {
@@ -1583,15 +1590,17 @@ impl LocalProductStore {
         attempt_id: &str,
         attempt_body: &Value,
         spend_authorization_id: &str,
-        allow_fixture_dry_run: bool,
     ) -> Result<Value, String> {
+        if matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal) {
+            return Err("fixture principal cannot use production admission API".into());
+        }
         principal.require_scope(SCOPE_ATTEMPT_ADMIT)?;
         let row = self.admit_managed_acceptance_attempt_internal(
             principal,
             attempt_id,
             attempt_body,
             spend_authorization_id,
-            allow_fixture_dry_run,
+            false,
         )?;
         if let Value::Object(mut object) = row {
             object.remove("lease_token");
@@ -1600,11 +1609,11 @@ impl LocalProductStore {
         Ok(row)
     }
 
-    /// Explicit provider-free test seam. The lease is intentionally available
-    /// only through this named fixture API; production/general reads are
-    /// redacted and the managed executor receives it only as an opaque lease.
+    /// Crate-internal provider-free test seam. The lease is intentionally
+    /// available only through this named fixture API; production/general reads
+    /// are redacted and the managed executor receives it only as an opaque lease.
     #[doc(hidden)]
-    pub fn admit_managed_acceptance_attempt_for_test(
+    pub(crate) fn admit_managed_acceptance_attempt_for_test(
         &self,
         principal: &AuthenticatedPrincipal,
         attempt_id: &str,
@@ -1613,6 +1622,26 @@ impl LocalProductStore {
         allow_fixture_dry_run: bool,
     ) -> Result<Value, String> {
         self.admit_managed_acceptance_attempt_internal(
+            principal,
+            attempt_id,
+            attempt_body,
+            spend_authorization_id,
+            allow_fixture_dry_run,
+        )
+    }
+
+    /// PostgreSQL integration support is exposed only under its test feature.
+    #[cfg(feature = "pg-tests")]
+    #[doc(hidden)]
+    pub fn admit_managed_acceptance_attempt_for_pg_tests(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        attempt_id: &str,
+        attempt_body: &Value,
+        spend_authorization_id: &str,
+        allow_fixture_dry_run: bool,
+    ) -> Result<Value, String> {
+        self.admit_managed_acceptance_attempt_for_test(
             principal,
             attempt_id,
             attempt_body,
@@ -2086,6 +2115,7 @@ impl LocalProductStore {
 
     /// Provider-free test seam.  Production callers must use
     /// [`Self::admit_managed_codex_spawn`], which rejects fixture principals.
+    #[cfg(any(test, feature = "pg-tests"))]
     #[doc(hidden)]
     pub fn admit_managed_codex_spawn_for_test(
         &self,
@@ -2281,7 +2311,7 @@ impl LocalProductStore {
                 authenticated
             }
             PrincipalKind::FixturePrincipal if allow_fixture_dry_run => {
-                AuthenticatedPrincipal::fixture_for_tests(&tenant_id, &principal_id)?
+                AuthenticatedPrincipal::fixture_for_dry_run(&tenant_id, &principal_id)?
             }
             PrincipalKind::FixturePrincipal => {
                 return Err(
@@ -5083,7 +5113,7 @@ mod tests {
             AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-mallory")
                 .unwrap();
         let unauthorized_error = store
-            .admit_managed_acceptance_attempt(
+            .admit_managed_acceptance_attempt_for_test(
                 &unauthorized,
                 "attempt-1",
                 &attempt_body,
@@ -5102,16 +5132,17 @@ mod tests {
                 .unwrap()["status"],
             "active"
         );
-        let public_admission = store
-            .admit_managed_acceptance_attempt(
-                &principal,
-                "attempt-1",
-                &attempt_body,
-                &spend_id,
-                true,
-            )
-            .unwrap();
-        assert!(public_admission.get("lease_token").is_none());
+        let production_fixture_error = store
+            .admit_managed_acceptance_attempt(&principal, "attempt-1", &attempt_body, &spend_id)
+            .expect_err("production admission must reject fixture authority");
+        assert!(production_fixture_error.contains("fixture principal"));
+        assert_eq!(
+            store
+                .get_managed_acceptance_spend_authorization(&spend_id)
+                .unwrap()
+                .unwrap()["status"],
+            "active"
+        );
         let a1 = store
             .admit_managed_acceptance_attempt_for_test(
                 &principal,
@@ -5126,7 +5157,7 @@ mod tests {
         let lease = a1["lease_token"].as_str().unwrap().to_string();
 
         let a2 = store
-            .admit_managed_acceptance_attempt(
+            .admit_managed_acceptance_attempt_for_test(
                 &principal,
                 "attempt-1",
                 &attempt_body,
@@ -5140,7 +5171,7 @@ mod tests {
         })
         .unwrap();
         let restarted_replay = restarted
-            .admit_managed_acceptance_attempt(
+            .admit_managed_acceptance_attempt_for_test(
                 &principal,
                 "attempt-1",
                 &attempt_body,
@@ -5149,7 +5180,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(restarted_replay["idempotent_replay"], true);
-        assert!(restarted_replay.get("lease_token").is_none());
 
         // spend consumed — cannot re-admit different attempt
         let spend_row = store
@@ -5163,7 +5193,7 @@ mod tests {
         if let Some(manifest) = conflict_body.get_mut("manifest") {
             manifest["model"] = json!("conflict-model");
         }
-        let conflict = store.admit_managed_acceptance_attempt(
+        let conflict = store.admit_managed_acceptance_attempt_for_test(
             &principal,
             "attempt-1",
             &conflict_body,
@@ -5396,7 +5426,7 @@ mod tests {
             .unwrap();
 
         let error = store
-            .admit_managed_acceptance_attempt(
+            .admit_managed_acceptance_attempt_for_test(
                 &principal,
                 "spend-boolean-attempt",
                 &attempt_body_for(&request),
@@ -5481,7 +5511,7 @@ mod tests {
             .unwrap();
 
         let error = store
-            .admit_managed_acceptance_attempt(
+            .admit_managed_acceptance_attempt_for_test(
                 &principal,
                 "spend-principal-kind-attempt",
                 &attempt_body_for(&request),
@@ -5545,7 +5575,7 @@ mod tests {
             .unwrap()
             .to_string();
         store
-            .admit_managed_acceptance_attempt(
+            .admit_managed_acceptance_attempt_for_test(
                 &principal,
                 "owner-json-attempt",
                 &attempt_body_for(&request),
@@ -6409,7 +6439,7 @@ mod tests {
             let p = AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-race")
                 .unwrap();
             b1.wait();
-            s.admit_managed_acceptance_attempt(&p, "race-1", &body_a, &spend_a, true)
+            s.admit_managed_acceptance_attempt_for_test(&p, "race-1", &body_a, &spend_a, true)
         });
         let path3 = path.clone();
         let h2 = thread::spawn(move || {
@@ -6419,7 +6449,7 @@ mod tests {
             let p = AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-race")
                 .unwrap();
             b2.wait();
-            s.admit_managed_acceptance_attempt(&p, "race-1", &body_b, &spend_b, true)
+            s.admit_managed_acceptance_attempt_for_test(&p, "race-1", &body_b, &spend_b, true)
         });
         let r1 = h1.join().unwrap();
         let r2 = h2.join().unwrap();
@@ -6630,7 +6660,13 @@ mod tests {
         let mut body = attempt_body_for(&req);
         body["model"] = json!("wrong-model");
         let err = store
-            .admit_managed_acceptance_attempt(&principal, "mismatch-1", &body, &spend_id, true)
+            .admit_managed_acceptance_attempt_for_test(
+                &principal,
+                "mismatch-1",
+                &body,
+                &spend_id,
+                true,
+            )
             .unwrap_err();
         assert!(err.contains("mismatch") || err.contains("model"), "{err}");
         // Spend must remain active (not consumed on mismatch).

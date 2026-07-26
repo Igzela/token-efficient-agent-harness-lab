@@ -2841,7 +2841,7 @@ fn pg_attempt_admission_rejects_persisted_spend_principal_kind_tampering() {
         .unwrap();
 
     let error = store
-        .admit_managed_acceptance_attempt(
+        .admit_managed_acceptance_attempt_for_pg_tests(
             &principal,
             &request.attempt_id,
             &pg_attempt_body_from_spend(&spend),
@@ -2886,7 +2886,7 @@ fn pg_managed_acceptance_attempt_replay_lease_terminal_restart_and_principal_par
     )
     .unwrap();
     let unauthorized_error = store
-        .admit_managed_acceptance_attempt(
+        .admit_managed_acceptance_attempt_for_pg_tests(
             &unauthorized,
             &request.attempt_id,
             &attempt_body,
@@ -2900,7 +2900,7 @@ fn pg_managed_acceptance_attempt_replay_lease_terminal_restart_and_principal_par
     );
 
     let admitted = store
-        .admit_managed_acceptance_attempt_for_test(
+        .admit_managed_acceptance_attempt_for_pg_tests(
             &principal,
             &request.attempt_id,
             &attempt_body,
@@ -2910,7 +2910,7 @@ fn pg_managed_acceptance_attempt_replay_lease_terminal_restart_and_principal_par
         .unwrap();
     let lease = admitted["lease_token"].as_str().unwrap().to_string();
     let replay = store
-        .admit_managed_acceptance_attempt(
+        .admit_managed_acceptance_attempt_for_pg_tests(
             &principal,
             &request.attempt_id,
             &attempt_body,
@@ -2923,7 +2923,7 @@ fn pg_managed_acceptance_attempt_replay_lease_terminal_restart_and_principal_par
     let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
     let restarted = LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
     let restarted_replay = restarted
-        .admit_managed_acceptance_attempt(
+        .admit_managed_acceptance_attempt_for_pg_tests(
             &principal,
             &request.attempt_id,
             &attempt_body,
@@ -2988,7 +2988,7 @@ fn pg_managed_acceptance_owner_json_read_errors_fail_closed() {
         .unwrap()
         .to_string();
     store
-        .admit_managed_acceptance_attempt(
+        .admit_managed_acceptance_attempt_for_pg_tests(
             &principal,
             &request.attempt_id,
             &pg_attempt_body_from_spend(&spend),

@@ -572,7 +572,7 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
     let mut authority_status = persisted["status"].as_str().unwrap_or("draft").to_string();
     let mut authorization_id = String::new();
     let fixture_principal =
-        AuthenticatedPrincipal::fixture_for_tests("tenant-dry-run", "fixture-principal-dry-run")
+        AuthenticatedPrincipal::fixture_for_dry_run("tenant-dry-run", "fixture-principal-dry-run")
             .map_err(|e| format!("fixture principal: {e}"))?;
     let mut spend_authorization_id = String::new();
     let mut issued_spend_request: Option<SpendAuthorizationRequest> = None;

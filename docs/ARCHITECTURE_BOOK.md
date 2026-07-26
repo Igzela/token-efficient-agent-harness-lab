@@ -1,13 +1,13 @@
 # Architecture Book
 
-Last updated: 2026-07-25.
+Last updated: 2026-07-26.
 
-Current version: v33 (proposed open-PR schema; not accepted).
-Current accepted version: v31.
+Current version: v33 (current tree schema).
+Accepted-main version at this branch base: v31.
 
 This is the durable architecture and safety baseline for the Token-Efficient Agent Harness Lab. Current facts live in `docs/CURRENT_STATUS.md`; routing and gates live in `docs/NEXT_DECISION.md`; concrete owners live in `docs/MODULE_MAP.md`. Historical packet details remain available in git history.
 
-Open PR #299 proposes schema **v32** (hash-linked decision transition sequence receipts) and **v33** (managed-acceptance spend/lease logical authorization). Those versions are **not accepted architecture** until independent review and merge; accepted `main` remains schema v31 (see Storage).
+Schema acceptance boundary: **v32** (hash-linked decision transition sequence receipts) and **v33** (managed-acceptance spend/lease logical authorization) become accepted architecture only after independent review and merge to `main`; this branch records the current-tree schema separately from that boundary.
 
 ## Mission
 
@@ -204,7 +204,7 @@ This evidence informs RWE replay and Level-2 decisions. It does not create a sec
 - SQLite is default and uses existing transactional, integrity, backup, and restore owners.
 - PostgreSQL must preserve equivalent validation, locking, idempotency, audit, restart, concurrency, and rollback behavior.
 - Schema migrations are additive unless separately reviewed destructive rollback is explicitly authorized.
-- Accepted `main` is currently schema v31. Higher managed-acceptance/RWE schema versions proposed on open PR branches are not current architecture until final acceptance and merge.
+- The accepted-main schema marker changes only after independent review and merge; this branch base records v31 while the current tree carries v33.
 
 ## Real Workload Evidence
 
