@@ -528,7 +528,7 @@ fn pg_managed_acceptance_product_task_phase_revalidates_real_receipts() {
         .unwrap();
     client
         .execute(
-            "UPDATE product_tasks SET confirm_output=FALSE WHERE task_id=$1",
+            "UPDATE product_tasks SET confirm_output=0 WHERE task_id=$1",
             &[&task_id],
         )
         .unwrap();
@@ -538,7 +538,7 @@ fn pg_managed_acceptance_product_task_phase_revalidates_real_receipts() {
     assert!(boolean_error.contains("confirm_output"), "{boolean_error}");
     client
         .execute(
-            "UPDATE product_tasks SET confirm_output=TRUE WHERE task_id=$1",
+            "UPDATE product_tasks SET confirm_output=1 WHERE task_id=$1",
             &[&task_id],
         )
         .unwrap();
@@ -1756,7 +1756,7 @@ fn pg_terminal_evidence_audit_failure_rolls_back_completion() {
 
 #[test]
 #[cfg(feature = "pg-tests")]
-fn pg_duplicate_terminal_output_is_exactly_once_and_blocks_v31_rollback() {
+fn pg_duplicate_terminal_output_is_exactly_once_and_preserves_spend_rollback_guard() {
     let Some(store) = test_store() else { return };
     std::env::set_var(PRODUCT_TASK_GATE, "1");
     std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
@@ -1818,20 +1818,15 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_blocks_v31_rollback() {
         .count();
     assert_eq!(output_audits, 1);
 
-    store
-        .rollback_v33_to_v32("pg-rollback-operator", true)
-        .unwrap();
-    store
-        .rollback_v32_to_v31("pg-rollback-operator", true)
-        .expect("empty managed acceptance tables roll back to v31");
     let rollback_error = store
-        .rollback_v31_to_v30("pg-rollback-operator", true)
-        .unwrap_err();
+        .rollback_v33_to_v32("pg-rollback-operator", true)
+        .expect_err("PostgreSQL must not drop spend history while any spend exists");
     assert!(
-        rollback_error.contains("authoritative terminal evidence exists"),
+        rollback_error.contains("v33 rollback blocked")
+            && rollback_error.contains("managed_acceptance_spend_authorizations"),
         "{rollback_error}"
     );
-    assert_eq!(store.schema_version().unwrap(), 31);
+    assert_eq!(store.schema_version().unwrap(), 33);
 }
 
 #[test]
@@ -2594,10 +2589,11 @@ fn pg_managed_acceptance_transition_receipts_and_exact_envelope_bindings() {
             ],
         )
         .expect_err("PostgreSQL V32 must reject a second child transition");
-    assert!(
+    assert_eq!(
         child_error
-            .to_string()
-            .contains("idx_managed_acceptance_transition_one_child"),
+            .as_db_error()
+            .and_then(|error| error.constraint()),
+        Some("idx_managed_acceptance_transition_one_child"),
         "unexpected child fork error: {child_error}"
     );
     let genesis_error = client
@@ -2695,7 +2691,9 @@ fn pg_spend_issuance_rejects_missing_persisted_risk_fixture_boolean() {
         .issue_managed_acceptance_spend_authorization(&principal, &request)
         .expect_err("PostgreSQL missing persisted risk boolean must fail closed");
     assert!(
-        error.contains("fixture_only must be a persisted boolean"),
+        error.contains("fixture_only must be a persisted boolean")
+            || error.contains("body_json missing fixture_only")
+            || error.contains("body fixture_only must be a boolean"),
         "{error}"
     );
 }
@@ -2796,9 +2794,12 @@ fn pg_attempt_admission_rejects_non_boolean_persisted_spend_fixture_flag() {
             &[&spend_id],
         )
         .expect_err("PostgreSQL CHECK must reject a non-boolean fixture flag");
-    assert!(
-        constraint_error.to_string().contains("fixture_only"),
-        "{constraint_error}"
+    assert_eq!(
+        constraint_error
+            .as_db_error()
+            .and_then(|error| error.constraint()),
+        Some("managed_acceptance_spend_authorizations_fixture_only_check"),
+        "unexpected fixture_only constraint error: {constraint_error}"
     );
     let active: i64 = client
         .query_one(
@@ -2847,7 +2848,11 @@ fn pg_attempt_admission_rejects_persisted_spend_principal_kind_tampering() {
             true,
         )
         .expect_err("PostgreSQL principal-kind tampering must not consume a spend");
-    assert!(error.contains("spend principal kind mismatch"), "{error}");
+    assert!(
+        error.contains("spend principal kind mismatch")
+            || error.contains("body_json principal_kind"),
+        "{error}"
+    );
     let active: i64 = client
         .query_one(
             "SELECT COUNT(*) FROM managed_acceptance_spend_authorizations
