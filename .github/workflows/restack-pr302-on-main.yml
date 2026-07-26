@@ -1,0 +1,39 @@
+name: restack-pr302-on-current-main
+
+on:
+  push:
+    branches:
+      - docs-unified-entrypoint-1
+
+permissions:
+  contents: write
+
+concurrency:
+  group: restack-pr302-on-current-main
+  cancel-in-progress: false
+
+jobs:
+  restack:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: docs-unified-entrypoint-1
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Rebase on accepted main and remove temporary workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch --no-tags origin main
+          git rebase origin/main
+          git rm -f .github/workflows/restack-pr302-on-main.yml
+          if test -f .github/workflows/diagnose-pr302-pg.yml; then
+            git rm -f .github/workflows/diagnose-pr302-pg.yml
+          fi
+          git commit -m "chore: finalize PR 302 restack"
+          git push --force-with-lease origin HEAD:docs-unified-entrypoint-1
