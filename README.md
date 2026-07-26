@@ -31,7 +31,7 @@ A green CI check is not enough if it belongs to an older PR head. This lab binds
 
 > **Boundary:** local / small-team research tool — not multi-tenant SaaS, not a free provider proxy, no container/VM isolation claim. Provider and adaptive paths use the fail-closed IAE trusted-local profile (legacy explicit gates remain for compatibility).
 
-Architecture: [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) · forward plan: [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) · maintainer ops: [`AGENTS.md`](AGENTS.md) · support: [`SUPPORT.md`](SUPPORT.md).
+Maintainer and Agent entry: [`START_HERE.md`](START_HERE.md) · architecture: [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) · forward plan: [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) · implementation rules: [`AGENTS.md`](AGENTS.md) · support: [`SUPPORT.md`](SUPPORT.md).
 
 ## Quick Start
 
