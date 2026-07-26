@@ -1329,7 +1329,7 @@ impl LocalProductStore {
                     .prepare(
                         "SELECT receipt_json FROM managed_acceptance_decision_transition_receipts
                          WHERE decision_id=?1
-                         ORDER BY created_at ASC, transition_receipt_id ASC",
+                         ORDER BY sequence ASC, transition_receipt_id ASC",
                     )
                     .map_err(|error| error.to_string())?;
                 let rows = statement
@@ -1356,7 +1356,7 @@ impl LocalProductStore {
                     .query(
                         "SELECT receipt_json FROM managed_acceptance_decision_transition_receipts
                          WHERE decision_id=$1
-                         ORDER BY created_at ASC, transition_receipt_id ASC",
+                         ORDER BY sequence ASC, transition_receipt_id ASC",
                         &[&decision_id],
                     )
                     .map_err(|error| error.to_string())?
@@ -6160,6 +6160,60 @@ mod tests {
         );
         assert_eq!(accepted["transition_sha256"].as_str().unwrap().len(), 64);
         assert_eq!(revoked["transition_sha256"].as_str().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn decision_transition_receipts_order_by_sequence_for_equal_timestamps() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("transition-order.db");
+        let store = LocalProductStore::new_with_clock(&path, || "2026-07-26T00:00:00Z".to_string())
+            .unwrap();
+        let principal = AuthenticatedPrincipal::fixture_for_tests(
+            "tenant-a",
+            "fixture-principal-transition-order",
+        )
+        .unwrap();
+        let decision_id = "mad-transition-sequence-order-02";
+        let residual = "8b".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body(decision_id),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-27T00:00:00Z"),
+            )
+            .unwrap();
+        let authorization = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: decision_id.to_string(),
+                    expected_decision_body_sha256: decision["decision_body_sha256"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        store
+            .revoke_managed_acceptance_authorization(
+                &principal,
+                authorization["authorization_id"].as_str().unwrap(),
+            )
+            .unwrap();
+
+        let before = store
+            .list_managed_acceptance_decision_transition_receipts(decision_id)
+            .unwrap();
+        assert_eq!(before.len(), 2);
+        assert_eq!(before[0]["sequence"], 1);
+        assert_eq!(before[1]["sequence"], 2);
+        assert_eq!(before[1]["previous_transition_sequence"], 1);
     }
 
     #[test]
