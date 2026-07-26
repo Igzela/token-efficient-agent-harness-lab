@@ -3084,26 +3084,22 @@ async fn axum_supervised_patch_verification_can_repair_and_retry_with_cli() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
-    assert_eq!(body["verification"]["status"], "evidence_recorded");
+    assert_eq!(body["verification"]["status"], "approval_required");
     assert_eq!(
         body["verification"]["verification_attempts"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        body["verification"]["repair_attempts"]
             .as_array()
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
-        body["verification"]["repair_attempts"][0]["executor_type"],
-        "codex_cli"
+        body["verification"]["repair_attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
     );
-    assert!(workspace_path.join("fixed.txt").exists());
+    assert!(!workspace_path.join("fixed.txt").exists());
 }
 
 #[tokio::test]

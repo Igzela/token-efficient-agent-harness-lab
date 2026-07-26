@@ -908,7 +908,17 @@ impl LocalProductStore {
                     let sequence =
                         next_sequence(conn, "supervised_patch_artifacts", "artifact_sequence")?;
                     let artifact_id = format!("patch-artifact-{sequence:04}");
-                    let artifact = prepared.artifact(sequence, &artifact_id, &now);
+                    let mut artifact = prepared.artifact(sequence, &artifact_id, &now);
+                    artifact
+                        .as_object_mut()
+                        .ok_or_else(|| "prepared product artifact must be an object".to_string())?
+                        .extend([
+                            ("product_task_id".to_string(), json!(task_id)),
+                            (
+                                "verification_task_version".to_string(),
+                                json!(expected_task_version),
+                            ),
+                        ]);
                     conn.execute(
                         "INSERT INTO supervised_patch_artifacts
                          (artifact_sequence, artifact_id, workspace_id, run_id, plan_id, target_id,
@@ -1048,7 +1058,17 @@ impl LocalProductStore {
                 let sequence =
                     pg_next_sequence(&mut tx, "supervised_patch_artifacts", "artifact_sequence")?;
                 let artifact_id = format!("patch-artifact-{sequence:04}");
-                let artifact = prepared.artifact(sequence, &artifact_id, &now);
+                let mut artifact = prepared.artifact(sequence, &artifact_id, &now);
+                artifact
+                    .as_object_mut()
+                    .ok_or_else(|| "prepared product artifact must be an object".to_string())?
+                    .extend([
+                        ("product_task_id".to_string(), json!(task_id)),
+                        (
+                            "verification_task_version".to_string(),
+                            json!(expected_task_version),
+                        ),
+                    ]);
                 tx.execute(
                     "INSERT INTO supervised_patch_artifacts
                      (artifact_sequence, artifact_id, workspace_id, run_id, plan_id, target_id,
@@ -2404,6 +2424,10 @@ impl LocalProductStore {
                     if existing.get("request_sha256").and_then(Value::as_str)
                         != Some(request_sha256)
                         || existing.get("request") != Some(request)
+                        || existing
+                            .get("expected_task_version")
+                            .and_then(Value::as_u64)
+                            != Some(expected_task_version)
                     {
                         return Err(
                             "product output request does not match durable operation".to_string()
@@ -2479,6 +2503,7 @@ impl LocalProductStore {
                     "product_task_id": request.get("product_task_id"),
                     "artifact_id": artifact_id,
                     "approval_id": request.get("approval_id"),
+                    "expected_task_version": expected_task_version,
                     "request_sha256": request_sha256,
                     "request": request,
                     "target_repository": request.get("target_repository"),
@@ -2559,6 +2584,7 @@ impl LocalProductStore {
                     artifact_id,
                     approval_id,
                     output_intent,
+                    expected_task_version,
                     output,
                     actor,
                     now,
@@ -2624,6 +2650,7 @@ impl LocalProductStore {
                     artifact_id,
                     approval_id,
                     output_intent,
+                    expected_task_version,
                     output,
                     "canonical-replay",
                     now,
@@ -4950,6 +4977,7 @@ fn record_or_reuse_nonnetwork_output_receipt(
     artifact_id: &str,
     approval_id: &str,
     output_intent: &str,
+    expected_task_version: u64,
     output: &Value,
     actor: &str,
     now: &str,
@@ -4977,6 +5005,7 @@ fn record_or_reuse_nonnetwork_output_receipt(
         "artifact_id": artifact_id,
         "approval_id": approval_id,
         "output_intent": output_intent,
+        "expected_task_version": expected_task_version,
         "source_revision": artifact.get("source_revision"),
         "patch_hash": artifact.get("patch_hash"),
     });
@@ -5008,6 +5037,7 @@ fn record_or_reuse_nonnetwork_output_receipt(
         "artifact_id": artifact_id,
         "approval_id": approval_id,
         "output_intent": output_intent,
+        "expected_task_version": expected_task_version,
         "source_revision": artifact.get("source_revision"),
         "patch_hash": artifact.get("patch_hash"),
         "request": request,
@@ -5173,10 +5203,14 @@ fn validate_terminal_product_output_record(
             || operation.get("product_task_id") != authority_request.get("product_task_id")
             || operation.get("artifact_id") != authority_request.get("artifact_id")
             || operation.get("approval_id") != authority_request.get("approval_id")
+            || operation.get("expected_task_version")
+                != authority_request.get("expected_task_version")
             || operation
                 .pointer("/request/output_intent")
                 .and_then(Value::as_str)
                 != Some("draft_pr")
+            || operation.pointer("/request/expected_task_version")
+                != authority_request.get("expected_task_version")
             || operation
                 .pointer("/branch_push/status")
                 .and_then(Value::as_str)
@@ -5204,6 +5238,7 @@ fn validate_terminal_product_output_record(
         || receipt.get("artifact_id") != authority_request.get("artifact_id")
         || receipt.get("approval_id") != authority_request.get("approval_id")
         || receipt.get("output_intent").and_then(Value::as_str) != Some(output_intent)
+        || receipt.get("expected_task_version") != authority_request.get("expected_task_version")
         || receipt.get("source_revision") != artifact.get("source_revision")
         || receipt.get("patch_hash") != artifact.get("patch_hash")
     {
@@ -5215,7 +5250,8 @@ fn validate_terminal_product_output_record(
     let output = receipt
         .get("output")
         .ok_or_else(|| "nonnetwork output result missing at terminal CAS".to_string())?;
-    if target_output_json_sha256(request)? != required_str(receipt, "request_sha256")?
+    if request.get("expected_task_version") != authority_request.get("expected_task_version")
+        || target_output_json_sha256(request)? != required_str(receipt, "request_sha256")?
         || target_output_json_sha256(output)? != required_str(receipt, "output_sha256")?
     {
         return Err("nonnetwork output receipt hash changed at terminal CAS".to_string());
@@ -5304,6 +5340,13 @@ fn validate_product_output_operation_request(
     {
         return Err("product Draft PR request schema or artifact binding is invalid".to_string());
     }
+    if request
+        .get("expected_task_version")
+        .and_then(Value::as_u64)
+        .is_none()
+    {
+        return Err("product Draft PR request expected task version is missing".to_string());
+    }
     for field in [
         "workspace_id",
         "run_id",
@@ -5379,6 +5422,7 @@ fn validate_product_output_operation(artifact: &Value, operation: &Value) -> Res
     )?;
     if operation.get("product_task_id") != request.get("product_task_id")
         || operation.get("approval_id") != request.get("approval_id")
+        || operation.get("expected_task_version") != request.get("expected_task_version")
         || operation.get("target_repository") != request.get("target_repository")
         || operation.get("base_branch") != request.get("base_branch")
         || operation.get("head_branch") != request.get("head_branch")

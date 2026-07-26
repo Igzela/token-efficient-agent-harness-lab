@@ -22,6 +22,7 @@ mod harness_evolution;
 mod heartbeat;
 mod integrity;
 mod keys;
+mod managed_acceptance;
 mod migrations;
 mod native_scorecard_artifacts;
 mod offline_replay_artifacts;
@@ -90,6 +91,12 @@ pub use external_runtime::{
     MEMORY_STRATEGIES,
 };
 pub use integrity::{IntegrityReport, TableIntegrity};
+pub use managed_acceptance::{
+    build_attempt_authority_manifest, AuthenticatedPrincipal, CostAuthority,
+    ManagedCodexLaunchFacts, ManagedCodexSpawnLease, PrincipalKind, RiskAcknowledgementRequest,
+    SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_REVOKE,
+    SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
+};
 pub use policy_replay_producer::{
     EvidenceChainPromotionRequest, ReplayProductionProfile, ReplayProductionRequest,
     REPLAY_PRODUCER_SCHEMA_VERSION,
@@ -166,6 +173,42 @@ impl LocalProductStore {
         }
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(|e| e.to_string())?;
+        // The current full DDL creates the v33 logical-spend index. An
+        // existing legacy spend table can predate that column (regardless of
+        // its migration marker), so add the nullable compatibility column
+        // before replaying the DDL; the v33 repair then backfills, constrains,
+        // and validates it.
+        let spend_table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_master
+                     WHERE type='table' AND name='managed_acceptance_spend_authorizations'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let logical_column_exists: bool = conn
+            .prepare("PRAGMA table_info(managed_acceptance_spend_authorizations)")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map(|columns: Vec<String>| {
+                columns
+                    .iter()
+                    .any(|column| column == "logical_authorization_sha256")
+            })
+            .map_err(|e| e.to_string())?;
+        if spend_table_exists && !logical_column_exists {
+            conn.execute(
+                "ALTER TABLE managed_acceptance_spend_authorizations
+                 ADD COLUMN logical_authorization_sha256 TEXT",
+                [],
+            )
+            .map_err(|e| format!("legacy v33 logical spend column repair failed: {e}"))?;
+        }
         conn.execute_batch(schema::ddl_for(schema::Dialect::Sqlite))
             .map_err(|e| e.to_string())?;
         let store = Self {
@@ -332,6 +375,35 @@ impl LocalProductStore {
             .map_err(|e| format!("r2d2 pool creation failed: {e}"))?;
         {
             let mut client = pool.get().map_err(|e| format!("PG pool get failed: {e}"))?;
+            let spend_table_exists: bool = client
+                .query_one(
+                    "SELECT to_regclass('managed_acceptance_spend_authorizations') IS NOT NULL",
+                    &[],
+                )
+                .map_err(|e| format!("PG legacy v33 table probe failed: {e}"))?
+                .get(0);
+            let logical_column_exists: bool = client
+                .query_one(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM information_schema.columns
+                         WHERE table_schema=current_schema()
+                           AND table_name='managed_acceptance_spend_authorizations'
+                           AND column_name='logical_authorization_sha256'
+                     )",
+                    &[],
+                )
+                .map_err(|e| format!("PG legacy v33 column probe failed: {e}"))?
+                .get(0);
+            if spend_table_exists && !logical_column_exists {
+                client
+                    .batch_execute(
+                        "ALTER TABLE managed_acceptance_spend_authorizations
+                         ADD COLUMN logical_authorization_sha256 TEXT",
+                    )
+                    .map_err(|e| {
+                        format!("PG legacy v33 logical spend column repair failed: {e}")
+                    })?;
+            }
             client
                 .batch_execute(schema::ddl_for(schema::Dialect::Postgres))
                 .map_err(|e| format!("PG DDL execution failed: {e}"))?;

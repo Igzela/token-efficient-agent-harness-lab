@@ -266,6 +266,12 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
         assert_eq!(again, serde_json::Value::Object(evidence.clone()));
         assert_eq!(emitted_again, again);
         assert_eq!(store.audit_events(10_000).unwrap(), audit_before_reads);
+        store
+            .rollback_v33_to_v32("rollback-operator", true)
+            .unwrap();
+        store
+            .rollback_v32_to_v31("rollback-operator", true)
+            .expect("empty managed acceptance tables roll back to v31");
         let rollback_error = store
             .rollback_v31_to_v30("rollback-operator", true)
             .unwrap_err();
@@ -1029,6 +1035,7 @@ fn progressive_output_operation_survives_restart_and_retries_only_pr_phase() {
             "artifact_id": artifact_id,
             "approval_id": approval["approval_id"],
             "output_intent": "draft_pr",
+            "expected_task_version": task_version,
             "workspace_id": artifact["workspace_id"],
             "run_id": artifact["run_id"],
             "target_id": artifact["target_id"],
@@ -1310,6 +1317,7 @@ fn terminal_completion_revalidates_workspace_verification_atomically() {
             "artifact_id": artifact_id,
             "approval_id": approval["approval_id"],
             "output_intent": "draft_pr",
+            "expected_task_version": pending_version,
             "workspace_id": artifact["workspace_id"],
             "run_id": artifact["run_id"],
             "target_id": artifact["target_id"],

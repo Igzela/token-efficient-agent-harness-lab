@@ -67,6 +67,640 @@ struct ProductVerificationNodeAuthority {
 }
 
 impl LocalProductStore {
+    /// Resolve ProductTask ownership from the durable run owner before a CLI
+    /// executor decides whether a Codex process may use the generic path.  The
+    /// scheduler node's metadata is not authority: any run owned by a
+    /// ProductTask must enter the store-owned managed-Codex boundary.
+    pub(crate) fn product_task_id_for_run(&self, run_id: &str) -> Result<Option<String>, String> {
+        let run_id = run_id.trim();
+        if run_id.is_empty() {
+            return Err("ProductTask run_id is missing".to_string());
+        }
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut statement = conn
+                    .prepare(
+                        "SELECT task_id FROM product_tasks WHERE run_id=?1 ORDER BY task_id ASC",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let ids = statement
+                    .query_map([run_id], |row| row.get::<_, String>(0))
+                    .map_err(|error| error.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?;
+                match ids.as_slice() {
+                    [] => Ok(None),
+                    [task_id] => Ok(Some(task_id.clone())),
+                    _ => Err("multiple ProductTasks claim one workflow run".to_string()),
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let ids = client
+                    .query(
+                        "SELECT task_id FROM product_tasks WHERE run_id=$1 ORDER BY task_id ASC",
+                        &[&run_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(|row| row.get::<_, String>(0))
+                    .collect::<Vec<_>>();
+                match ids.as_slice() {
+                    [] => Ok(None),
+                    [task_id] => Ok(Some(task_id.clone())),
+                    _ => Err("multiple ProductTasks claim one workflow run".to_string()),
+                }
+            }),
+        }
+    }
+
+    /// Prove that the authoritative ProductTask receipt owners are readable.
+    /// This is deliberately a real read path (not a schema-name or field
+    /// existence check), and every backend/read error propagates to the caller.
+    pub fn probe_managed_acceptance_product_receipt_owners(&self) -> Result<(), String> {
+        const OWNER_TABLES: &[&str] = &[
+            "product_task_terminal_evidence",
+            "supervised_patch_workspaces",
+            "supervised_patch_artifacts",
+            "workflow_run_approvals",
+            "workflow_runs",
+        ];
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                for table in OWNER_TABLES {
+                    // Read a result from each owner rather than merely preparing
+                    // an empty query. SQLite can defer schema errors until a
+                    // statement steps, which would otherwise turn an unreadable
+                    // owner into a false positive.
+                    let _: i64 = conn
+                        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                            row.get(0)
+                        })
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                for table in OWNER_TABLES {
+                    client
+                        .query_one(&format!("SELECT COUNT(*) FROM {table}"), &[])
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            }),
+        }
+    }
+
+    /// Read the ProductTask run and its exact task node without passing through
+    /// the compatibility workflow projection.  That projection intentionally
+    /// tolerates historical malformed records for observability; authority
+    /// admission must instead reject an unreadable owner at the read boundary.
+    fn managed_acceptance_product_run_node_owner(
+        &self,
+        run_id: &str,
+        product_task_id: &str,
+    ) -> Result<(Value, Value), String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let (workflow_id, run_json, boundaries_json): (String, String, String) = conn
+                    .query_row(
+                        "SELECT workflow_id, run_json, boundaries_json
+                         FROM workflow_runs WHERE run_id=?1",
+                        params![run_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "ProductTask workflow run owner missing".to_string())?;
+                let mut run = managed_acceptance_owner_json_object(&run_json, "workflow run")?;
+                let boundaries =
+                    managed_acceptance_owner_json_object(&boundaries_json, "workflow boundaries")?;
+                let mut statement = conn
+                    .prepare(
+                        "SELECT node_json FROM workflow_run_nodes
+                         WHERE run_id=?1 ORDER BY rowid ASC",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let node_jsons = statement
+                    .query_map(params![run_id], |row| row.get::<_, String>(0))
+                    .map_err(|error| error.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?;
+                let nodes = node_jsons
+                    .into_iter()
+                    .map(|encoded| managed_acceptance_owner_json_object(&encoded, "workflow node"))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let matching = nodes
+                    .iter()
+                    .filter(|node| {
+                        node.get("product_task_id").and_then(Value::as_str) == Some(product_task_id)
+                    })
+                    .collect::<Vec<_>>();
+                let node = match matching.as_slice() {
+                    [node] => (*node).clone(),
+                    [] => return Err("ProductTask workflow node owner missing".to_string()),
+                    _ => {
+                        return Err(
+                            "multiple workflow nodes claim one ProductTask owner".to_string()
+                        )
+                    }
+                };
+                let run_object = run
+                    .as_object_mut()
+                    .expect("managed_acceptance_owner_json_object returns an object");
+                run_object.insert("run_id".to_string(), json!(run_id));
+                run_object.insert("workflow_id".to_string(), json!(workflow_id));
+                run_object.insert("boundaries".to_string(), boundaries);
+                run_object.insert("nodes".to_string(), Value::Array(nodes));
+                Ok((run, node))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let row = client
+                    .query_opt(
+                        "SELECT workflow_id, run_json, boundaries_json
+                         FROM workflow_runs WHERE run_id=$1",
+                        &[&run_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "ProductTask workflow run owner missing".to_string())?;
+                let workflow_id: String = row.get(0);
+                let run_json: String = row.get(1);
+                let boundaries_json: String = row.get(2);
+                let mut run = managed_acceptance_owner_json_object(&run_json, "workflow run")?;
+                let boundaries =
+                    managed_acceptance_owner_json_object(&boundaries_json, "workflow boundaries")?;
+                let node_rows = client
+                    .query(
+                        "SELECT node_json FROM workflow_run_nodes
+                         WHERE run_id=$1 ORDER BY ctid ASC",
+                        &[&run_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let nodes = node_rows
+                    .iter()
+                    .map(|row| {
+                        let encoded: String = row.get(0);
+                        managed_acceptance_owner_json_object(&encoded, "workflow node")
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let matching = nodes
+                    .iter()
+                    .filter(|node| {
+                        node.get("product_task_id").and_then(Value::as_str) == Some(product_task_id)
+                    })
+                    .collect::<Vec<_>>();
+                let node = match matching.as_slice() {
+                    [node] => (*node).clone(),
+                    [] => return Err("ProductTask workflow node owner missing".to_string()),
+                    _ => {
+                        return Err(
+                            "multiple workflow nodes claim one ProductTask owner".to_string()
+                        )
+                    }
+                };
+                let run_object = run
+                    .as_object_mut()
+                    .expect("managed_acceptance_owner_json_object returns an object");
+                run_object.insert("run_id".to_string(), json!(run_id));
+                run_object.insert("workflow_id".to_string(), json!(workflow_id));
+                run_object.insert("boundaries".to_string(), boundaries);
+                run_object.insert("nodes".to_string(), Value::Array(nodes));
+                Ok((run, node))
+            }),
+        }
+    }
+
+    /// Strictly reload the workspace evidence owner used by managed Codex
+    /// admission.  A malformed workspace or boundary receipt is not converted
+    /// into a null compatibility value.
+    pub(crate) fn managed_acceptance_workspace_owner(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Value, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                            target_repo_path, target_repo_canonical_path, workspace_path,
+                            workspace_canonical_path, source_revision, source_tree_hash, status,
+                            created_at, updated_at, boundary_json, workspace_json
+                     FROM supervised_patch_workspaces
+                     WHERE workspace_id=?1",
+                    params![workspace_id],
+                    managed_acceptance_workspace_row_sqlite,
+                )
+                .optional()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "ProductTask workspace owner missing".to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let row = client
+                    .query_opt(
+                        "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                                target_repo_path, target_repo_canonical_path, workspace_path,
+                                workspace_canonical_path, source_revision, source_tree_hash, status,
+                                created_at, updated_at, boundary_json, workspace_json
+                         FROM supervised_patch_workspaces
+                         WHERE workspace_id=$1",
+                        &[&workspace_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "ProductTask workspace owner missing".to_string())?;
+                managed_acceptance_workspace_row_pg(&row)
+            }),
+        }
+    }
+
+    /// Validate the ProductTask side of a managed-acceptance attempt against
+    /// the actual store owners. Before first live execution only enabled
+    /// requirements and owner readability are required. Once the task's state
+    /// has crossed a phase boundary, every claimed verification, approval,
+    /// output, and terminal receipt must be current and exactly bound.
+    pub fn validate_managed_acceptance_product_task_phase(
+        &self,
+        tenant_id: &str,
+        product_task_id: &str,
+        spend_target_id: &str,
+        spend_target_main_sha: &str,
+    ) -> Result<Value, String> {
+        self.probe_managed_acceptance_product_receipt_owners()?;
+        let task = self
+            .get_product_task(product_task_id)?
+            .ok_or_else(|| format!("ProductTask owner {product_task_id} required"))?;
+        if task.get("tenant_id").and_then(Value::as_str) != Some(tenant_id) {
+            return Err("ProductTask tenant mismatch".to_string());
+        }
+        for requirement in ["approval_required", "confirm_execution", "confirm_output"] {
+            if task.get(requirement).and_then(Value::as_bool) != Some(true) {
+                return Err(format!(
+                    "ProductTask {requirement} must be persisted true for managed acceptance"
+                ));
+            }
+        }
+        // `target_id` is the ProductTask's durable logical target identity;
+        // target_repo_path is a local filesystem owner and is intentionally not
+        // used as a lossy fallback for an external target identity.
+        if task.get("target_id").and_then(Value::as_str) != Some(spend_target_id) {
+            return Err("ProductTask target_id mismatches spend target_repo".to_string());
+        }
+        if task.get("source_revision").and_then(Value::as_str) != Some(spend_target_main_sha) {
+            return Err("ProductTask source_revision mismatches spend target_main_sha".to_string());
+        }
+        if task
+            .get("target_repo_path")
+            .and_then(Value::as_str)
+            .is_none_or(|path| path.trim().is_empty())
+        {
+            return Err("ProductTask target_repo_path owner is missing".to_string());
+        }
+
+        let status = ProductTaskStatus::parse(
+            task.get("status")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "ProductTask status missing".to_string())?,
+        )?;
+        if matches!(
+            status,
+            ProductTaskStatus::Admitted
+                | ProductTaskStatus::WorkspacePreparing
+                | ProductTaskStatus::WorkspaceBound
+                | ProductTaskStatus::GraphReady
+                | ProductTaskStatus::Running
+        ) {
+            return Ok(json!({
+                "stage": "pre_execution_admission",
+                "task": task,
+                "verification_receipt_required": false,
+                "approval_receipt_required": false,
+                "output_receipt_required": false,
+            }));
+        }
+        if !matches!(
+            status,
+            ProductTaskStatus::Verifying
+                | ProductTaskStatus::RepairPending
+                | ProductTaskStatus::AwaitingApproval
+                | ProductTaskStatus::OutputPending
+                | ProductTaskStatus::Completed
+                | ProductTaskStatus::OutcomeUnknown
+        ) {
+            return Err(format!(
+                "ProductTask status {} is not admissible for managed acceptance",
+                status.as_str()
+            ));
+        }
+
+        let task_version = task
+            .get("version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "ProductTask version missing".to_string())?;
+        let run_id = required_product_task_string(&task, "run_id")?;
+        let workspace_record_id = required_product_task_string(&task, "workspace_record_id")?;
+        let (run, node) =
+            self.managed_acceptance_product_run_node_owner(&run_id, product_task_id)?;
+        let node_id = required_product_task_string(&node, "node_id")?;
+        let workspace = self.managed_acceptance_workspace_owner(&workspace_record_id)?;
+        if workspace.get("workspace_id").and_then(Value::as_str) != Some(&workspace_record_id)
+            || workspace.get("run_id").and_then(Value::as_str) != Some(&run_id)
+            || workspace.get("source_revision").and_then(Value::as_str)
+                != task.get("source_revision").and_then(Value::as_str)
+        {
+            return Err("ProductTask workspace binding is stale".to_string());
+        }
+        let verification = workspace
+            .get("verification")
+            .filter(|value| value.is_object())
+            .ok_or_else(|| "ProductTask verification receipt missing".to_string())?;
+        if verification.get("schema_version").and_then(Value::as_str)
+            != Some("workspace_verification.v1")
+            || verification.get("status").and_then(Value::as_str) != Some("evidence_recorded")
+            || verification.get("result_status").and_then(Value::as_str) != Some("completed")
+            || verification.get("trustworthy").and_then(Value::as_bool) != Some(true)
+        {
+            return Err(
+                "ProductTask verification receipt is not accepted and trustworthy".to_string(),
+            );
+        }
+        for (field, expected) in [
+            ("product_task_id", product_task_id),
+            ("tenant_id", tenant_id),
+            ("run_id", run_id.as_str()),
+            ("workspace_record_id", workspace_record_id.as_str()),
+        ] {
+            if verification.get(field).and_then(Value::as_str) != Some(expected) {
+                return Err(format!("ProductTask verification receipt {field} mismatch"));
+            }
+        }
+        let verification_version = verification
+            .get("expected_task_version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "ProductTask verification receipt version missing".to_string())?;
+        match status {
+            // A verification receipt is written while the ProductTask is in
+            // `verifying`; a trustworthy receipt in either of these states
+            // must therefore be for this exact version, not merely any older
+            // version that happens to be present on the workspace.
+            ProductTaskStatus::Verifying | ProductTaskStatus::RepairPending
+                if verification_version != task_version =>
+            {
+                return Err(
+                    "ProductTask verification receipt is not bound to the current task version"
+                        .to_string(),
+                );
+            }
+            // Capturing the artifact atomically advances the task exactly once
+            // from verifying@V to awaiting_approval@(V+1).
+            ProductTaskStatus::AwaitingApproval
+                if verification_version.checked_add(1) != Some(task_version) =>
+            {
+                return Err(
+                    "ProductTask verification receipt is not bound to the immediately preceding task version"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
+        let verification_receipts = verification
+            .get("verification_attempts")
+            .and_then(Value::as_array)
+            .filter(|receipts| !receipts.is_empty())
+            .ok_or_else(|| "ProductTask verification receipt set is empty".to_string())?;
+        for receipt in verification_receipts {
+            if receipt.get("product_task_id").and_then(Value::as_str) != Some(product_task_id)
+                || receipt.get("run_id").and_then(Value::as_str) != Some(run_id.as_str())
+                || receipt.get("node_id").and_then(Value::as_str) != Some(node_id.as_str())
+                || receipt.get("workspace_record_id").and_then(Value::as_str)
+                    != Some(workspace_record_id.as_str())
+                || receipt.get("expected_task_version").and_then(Value::as_u64)
+                    != Some(verification_version)
+                || receipt.get("trustworthy").and_then(Value::as_bool) != Some(true)
+                || receipt.get("result_status").and_then(Value::as_str) != Some("completed")
+            {
+                return Err("ProductTask verification attempt binding is stale".to_string());
+            }
+        }
+        let source_revision = required_product_task_string(&task, "source_revision")?;
+        let artifact = self.current_product_task_artifact(
+            product_task_id,
+            &run_id,
+            &workspace_record_id,
+            &source_revision,
+        )?;
+        let artifact_id = required_product_task_string(&artifact, "artifact_id")?;
+        if artifact.get("product_task_id").and_then(Value::as_str) != Some(product_task_id)
+            || artifact.get("run_id").and_then(Value::as_str) != Some(run_id.as_str())
+            || artifact.get("workspace_id").and_then(Value::as_str)
+                != Some(workspace_record_id.as_str())
+            || artifact.get("source_revision").and_then(Value::as_str)
+                != Some(source_revision.as_str())
+            || artifact
+                .get("verification_task_version")
+                .and_then(Value::as_u64)
+                != Some(verification_version)
+            || artifact.get("target_id").and_then(Value::as_str) != Some(spend_target_id)
+        {
+            return Err("ProductTask artifact target binding is stale".to_string());
+        }
+        let verification_sha256 = product_json_sha256(verification)?;
+
+        if matches!(
+            status,
+            ProductTaskStatus::Verifying | ProductTaskStatus::RepairPending
+        ) {
+            return Ok(json!({
+                "stage": "verification",
+                "task": task,
+                "run": run,
+                "workspace": workspace,
+                "verification": verification,
+                "artifact": artifact,
+                "verification_sha256": verification_sha256,
+            }));
+        }
+        if status == ProductTaskStatus::AwaitingApproval {
+            return Ok(json!({
+                "stage": "awaiting_approval",
+                "task": task,
+                "run": run,
+                "workspace": workspace,
+                "verification": verification,
+                "artifact": artifact,
+                "verification_sha256": verification_sha256,
+            }));
+        }
+
+        let output_record = if task.get("output_intent").and_then(Value::as_str) == Some("draft_pr")
+        {
+            artifact
+                .get("product_output_operation")
+                .ok_or_else(|| "ProductTask output operation missing".to_string())?
+        } else {
+            artifact
+                .get("product_output_receipt")
+                .ok_or_else(|| "ProductTask output receipt missing".to_string())?
+        };
+        if output_record.get("product_task_id").and_then(Value::as_str) != Some(product_task_id)
+            || output_record.get("artifact_id").and_then(Value::as_str)
+                != Some(artifact_id.as_str())
+        {
+            return Err("ProductTask output receipt/operation binding is stale".to_string());
+        }
+        let output_version = output_record
+            .get("expected_task_version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "ProductTask output receipt/operation version missing".to_string())?;
+        let output_request = output_record
+            .get("request")
+            .ok_or_else(|| "ProductTask output receipt/operation request missing".to_string())?;
+        let output_request_sha256 = required_product_task_string(output_record, "request_sha256")?;
+        if product_json_sha256(output_request)? != output_request_sha256
+            || output_request
+                .get("expected_task_version")
+                .and_then(Value::as_u64)
+                != Some(output_version)
+            || output_record.get("source_revision").and_then(Value::as_str)
+                != Some(source_revision.as_str())
+        {
+            return Err(
+                "ProductTask output receipt/operation content binding is stale".to_string(),
+            );
+        }
+        match task.get("output_intent").and_then(Value::as_str) {
+            Some("draft_pr")
+                if output_record.get("schema_version").and_then(Value::as_str)
+                    == Some("product_output_operation.v1")
+                    && matches!(
+                        output_record.get("state").and_then(Value::as_str),
+                        Some("active" | "completed")
+                    ) => {}
+            Some("artifact_only" | "export_patch")
+                if output_record.get("schema_version").and_then(Value::as_str)
+                    == Some("product_output_receipt.v1")
+                    && output_record.get("state").and_then(Value::as_str) == Some("completed")
+                    && output_record.get("output_intent").and_then(Value::as_str)
+                        == task.get("output_intent").and_then(Value::as_str) => {}
+            _ => {
+                return Err("ProductTask output receipt/operation is not current".to_string());
+            }
+        }
+        let approval_id = required_product_task_string(output_record, "approval_id")?;
+        let approvals = self.workflow_run_approvals(&run_id, 1_000)?;
+        let approval = approvals
+            .into_iter()
+            .find(|candidate| {
+                candidate.get("approval_id").and_then(Value::as_str) == Some(&approval_id)
+            })
+            .ok_or_else(|| "ProductTask current approval receipt missing".to_string())?;
+        validate_current_product_output_approval(
+            &approval,
+            &task,
+            product_task_id,
+            &run_id,
+            &workspace_record_id,
+            task_version,
+        )?;
+        if approval.get("node_id").and_then(Value::as_str) != Some(node_id.as_str())
+            || approval.get("artifact_id").and_then(Value::as_str) != Some(artifact_id.as_str())
+            || approval.get("verification_sha256").and_then(Value::as_str)
+                != Some(verification_sha256.as_str())
+            || approval
+                .get("expected_task_version")
+                .and_then(Value::as_u64)
+                != verification_version.checked_add(1)
+            || output_version
+                != approval
+                    .get("expected_task_version")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default()
+            || output_version.checked_add(1) != Some(task_version)
+        {
+            return Err(
+                "ProductTask approval receipt is not current for verification/artifact/version"
+                    .to_string(),
+            );
+        }
+
+        if status != ProductTaskStatus::Completed {
+            return Ok(json!({
+                "stage": "output",
+                "task": task,
+                "run": run,
+                "workspace": workspace,
+                "verification": verification,
+                "artifact": artifact,
+                "approval": approval,
+                "output_record": output_record,
+            }));
+        }
+
+        let completed_output =
+            validate_completed_product_output_binding(&task, &artifact, &approval)?;
+        let terminal_evidence = self.get_product_task_terminal_evidence(product_task_id)?;
+        if terminal_evidence
+            .get("product_task_id")
+            .and_then(Value::as_str)
+            != Some(product_task_id)
+            || terminal_evidence.get("tenant_id").and_then(Value::as_str) != Some(tenant_id)
+            || terminal_evidence
+                .get("task_version")
+                .and_then(Value::as_u64)
+                != Some(task_version)
+            || terminal_evidence
+                .get("creation_version")
+                .and_then(Value::as_u64)
+                != Some(task_version)
+            || terminal_evidence.get("run_id").and_then(Value::as_str) != Some(run_id.as_str())
+            || terminal_evidence
+                .pointer("/node/node_id")
+                .and_then(Value::as_str)
+                != Some(node_id.as_str())
+            || terminal_evidence
+                .get("workspace_record_id")
+                .and_then(Value::as_str)
+                != Some(workspace_record_id.as_str())
+            || terminal_evidence
+                .pointer("/artifact/artifact_id")
+                .and_then(Value::as_str)
+                != Some(artifact_id.as_str())
+            || terminal_evidence
+                .pointer("/approval/approval_id")
+                .and_then(Value::as_str)
+                != Some(approval_id.as_str())
+            || terminal_evidence
+                .pointer("/verification/verification_sha256")
+                .and_then(Value::as_str)
+                != Some(verification_sha256.as_str())
+            || (task.get("output_intent").and_then(Value::as_str) == Some("draft_pr")
+                && terminal_evidence
+                    .pointer("/output/operation_id")
+                    .and_then(Value::as_str)
+                    != output_record.get("operation_id").and_then(Value::as_str))
+            || (matches!(
+                task.get("output_intent").and_then(Value::as_str),
+                Some("artifact_only" | "export_patch")
+            ) && terminal_evidence
+                .pointer("/output/receipt_id")
+                .and_then(Value::as_str)
+                != output_record.get("receipt_id").and_then(Value::as_str))
+        {
+            return Err("ProductTask terminal evidence binding is stale".to_string());
+        }
+        Ok(json!({
+            "stage": "terminal",
+            "task": task,
+            "run": run,
+            "workspace": workspace,
+            "verification": verification,
+            "artifact": artifact,
+            "approval": approval,
+            "output": completed_output,
+            "terminal_evidence": terminal_evidence,
+        }))
+    }
+
     /// Authenticated intake: reserve canonical task under idempotency, prepare controlled
     /// worktree, verify bindings, and finalize to `workspace_bound` without admitting execution.
     ///
@@ -217,7 +851,7 @@ impl LocalProductStore {
                         &[&task_id],
                     )
                     .map_err(|e| e.to_string())?;
-                Ok(row.map(|r| product_task_row_to_json_pg(&r)))
+                row.map(|r| product_task_row_to_json_pg(&r)).transpose()
             }),
         }
     }
@@ -252,7 +886,7 @@ impl LocalProductStore {
                         &[&tenant_id, &workspace_id, &idempotency_key],
                     )
                     .map_err(|e| e.to_string())?;
-                Ok(row.map(|r| product_task_row_to_json_pg(&r)))
+                row.map(|r| product_task_row_to_json_pg(&r)).transpose()
             }),
         }
     }
@@ -3243,7 +3877,8 @@ impl LocalProductStore {
             })?,
         }
         .ok_or_else(|| "product task terminal evidence is not committed".to_string())?;
-        let evidence: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+        let evidence: Value = serde_json::from_str(&raw)
+            .map_err(|error| format!("product task terminal evidence is invalid JSON: {error}"))?;
         validate_product_terminal_evidence_content_hash(&evidence)?;
         Ok(evidence)
     }
@@ -3400,6 +4035,7 @@ impl LocalProductStore {
             "artifact_id": artifact_id,
             "approval_id": approval_binding.get("approval_id"),
             "output_intent": "draft_pr",
+            "expected_task_version": expected_task_version,
             "workspace_id": artifact.get("workspace_id"),
             "run_id": artifact.get("run_id"),
             "target_id": artifact.get("target_id"),
@@ -3642,16 +4278,55 @@ impl LocalProductStore {
 
     fn current_product_task_artifact(
         &self,
-        _task_id: &str,
+        task_id: &str,
         run_id: &str,
         workspace_record_id: &str,
         source_revision: &str,
     ) -> Result<Value, String> {
-        let matches = self
-            .supervised_patch_artifacts(1_000)?
+        let artifacts = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut statement = conn
+                    .prepare(
+                        "SELECT artifact_sequence, artifact_id, workspace_id, run_id, plan_id,
+                                target_id, source_revision, artifact_type, patch_hash,
+                                changed_files_json, redaction_status, created_at, artifact_json
+                         FROM supervised_patch_artifacts
+                         WHERE run_id=?1 AND workspace_id=?2 AND source_revision=?3
+                         ORDER BY artifact_sequence DESC",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let rows = statement
+                    .query_map(
+                        params![run_id, workspace_record_id, source_revision],
+                        managed_acceptance_artifact_row_sqlite,
+                    )
+                    .map_err(|error| error.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT artifact_sequence, artifact_id, workspace_id, run_id, plan_id,
+                                target_id, source_revision, artifact_type, patch_hash,
+                                changed_files_json, redaction_status, created_at, artifact_json
+                         FROM supervised_patch_artifacts
+                         WHERE run_id=$1 AND workspace_id=$2 AND source_revision=$3
+                         ORDER BY artifact_sequence DESC",
+                        &[&run_id, &workspace_record_id, &source_revision],
+                    )
+                    .map_err(|error| error.to_string())?;
+                rows.iter()
+                    .map(managed_acceptance_artifact_row_pg)
+                    .collect::<Result<Vec<_>, _>>()
+            })?,
+        };
+        let matches = artifacts
             .into_iter()
             .filter(|artifact| {
-                artifact.get("run_id").and_then(Value::as_str) == Some(run_id)
+                artifact.get("product_task_id").and_then(Value::as_str) == Some(task_id)
+                    && artifact.get("run_id").and_then(Value::as_str) == Some(run_id)
                     && artifact.get("workspace_id").and_then(Value::as_str)
                         == Some(workspace_record_id)
                     && artifact.get("source_revision").and_then(Value::as_str)
@@ -4159,10 +4834,26 @@ fn validate_product_artifact_against_approval(
     artifact: &Value,
     approval: &Value,
 ) -> Result<(), String> {
-    for field in ["artifact_id", "run_id", "source_revision", "patch_hash"] {
+    for field in [
+        "product_task_id",
+        "artifact_id",
+        "run_id",
+        "source_revision",
+        "patch_hash",
+    ] {
         if artifact.get(field) != approval.get(field) {
             return Err(format!("stale approval: artifact {field} mismatch"));
         }
+    }
+    if artifact
+        .get("verification_task_version")
+        .and_then(Value::as_u64)
+        .and_then(|version| version.checked_add(1))
+        != approval
+            .get("expected_task_version")
+            .and_then(Value::as_u64)
+    {
+        return Err("stale approval: artifact verification version mismatch".to_string());
     }
     if artifact.get("workspace_id") != approval.get("workspace_record_id") {
         return Err("stale approval: artifact workspace mismatch".to_string());
@@ -4208,6 +4899,10 @@ fn validate_completed_product_output_binding(
     let output_intent = required_product_task_string(task, "output_intent")?;
     let source_revision = required_product_task_string(artifact, "source_revision")?;
     let patch_hash = required_product_task_string(artifact, "patch_hash")?;
+    let task_version = task
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "completed task version missing".to_string())?;
     if output_intent == "draft_pr" {
         let operation = artifact
             .get("product_output_operation")
@@ -4230,6 +4925,13 @@ fn validate_completed_product_output_binding(
                 .pointer("/pr_create/draft")
                 .and_then(Value::as_bool)
                 != Some(true)
+            || operation
+                .get("expected_task_version")
+                .and_then(Value::as_u64)
+                .and_then(|version| version.checked_add(1))
+                != Some(task_version)
+            || operation.pointer("/request/expected_task_version")
+                != operation.get("expected_task_version")
         {
             return Err("completed Draft PR operation binding is stale".to_string());
         }
@@ -4257,6 +4959,11 @@ fn validate_completed_product_output_binding(
         || receipt.get("output_intent").and_then(Value::as_str) != Some(output_intent.as_str())
         || receipt.get("source_revision").and_then(Value::as_str) != Some(source_revision.as_str())
         || receipt.get("patch_hash").and_then(Value::as_str) != Some(patch_hash.as_str())
+        || receipt
+            .get("expected_task_version")
+            .and_then(Value::as_u64)
+            .and_then(|version| version.checked_add(1))
+            != Some(task_version)
     {
         return Err("completed nonnetwork output receipt binding is stale".to_string());
     }
@@ -4266,7 +4973,8 @@ fn validate_completed_product_output_binding(
     let output = receipt
         .get("output")
         .ok_or_else(|| "completed output receipt result missing".to_string())?;
-    if product_json_sha256(request)? != required_product_task_string(receipt, "request_sha256")?
+    if request.get("expected_task_version") != receipt.get("expected_task_version")
+        || product_json_sha256(request)? != required_product_task_string(receipt, "request_sha256")?
         || product_json_sha256(output)? != required_product_task_string(receipt, "output_sha256")?
     {
         return Err("completed output receipt content hash changed".to_string());
@@ -4285,29 +4993,40 @@ fn persisted_product_intake_json(intake: &ValidatedProductTaskIntake) -> Value {
     persisted
 }
 
-fn public_product_intake_json(encoded: &str) -> Value {
-    let mut intake: Value = serde_json::from_str(encoded).unwrap_or(Value::Null);
+fn public_product_intake_json(encoded: &str) -> Result<Value, String> {
+    let mut intake: Value = serde_json::from_str(encoded)
+        .map_err(|error| format!("ProductTask intake_json is invalid JSON: {error}"))?;
     if let Some(object) = intake.as_object_mut() {
         object.remove("_execution_objective_v1");
     }
-    intake
+    Ok(intake)
 }
 
 fn map_product_task_row(row: &Row<'_>) -> rusqlite::Result<Value> {
     let intake_json: String = row.get("intake_json")?;
     let binding_json: Option<String> = row.get("workspace_binding_json")?;
-    let intake = public_product_intake_json(&intake_json);
-    let binding = binding_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str::<Value>(s).ok())
-        .unwrap_or(Value::Null);
+    let intake =
+        public_product_intake_json(&intake_json).map_err(product_task_sqlite_read_error)?;
+    let binding = match binding_json.as_deref() {
+        Some(encoded) => serde_json::from_str::<Value>(encoded).map_err(|error| {
+            product_task_sqlite_read_error(format!(
+                "ProductTask workspace_binding_json is invalid JSON: {error}"
+            ))
+        })?,
+        None => Value::Null,
+    };
     let approval_required: i64 = row.get("approval_required")?;
     let confirm_execution: i64 = row.get("confirm_execution")?;
     let confirm_output: i64 = row.get("confirm_output")?;
     let status: String = row.get("status")?;
     let admits = ProductTaskStatus::parse(&status)
-        .map(|s| s.admits_execution())
-        .unwrap_or(false);
+        .map_err(product_task_sqlite_read_error)?
+        .admits_execution();
+    let approval_required =
+        strict_product_task_bool_sqlite(approval_required, "approval_required")?;
+    let confirm_execution =
+        strict_product_task_bool_sqlite(confirm_execution, "confirm_execution")?;
+    let confirm_output = strict_product_task_bool_sqlite(confirm_output, "confirm_output")?;
     Ok(json!({
         "schema_version": row.get::<_, String>("schema_version")?,
         "task_id": row.get::<_, String>("task_id")?,
@@ -4323,9 +5042,9 @@ fn map_product_task_row(row: &Row<'_>) -> rusqlite::Result<Value> {
         "source_tree_hash": row.get::<_, Option<String>>("source_tree_hash")?,
         "output_intent": row.get::<_, String>("output_intent")?,
         "risk_class": row.get::<_, String>("risk_class")?,
-        "approval_required": approval_required != 0,
-        "confirm_execution": confirm_execution != 0,
-        "confirm_output": confirm_output != 0,
+        "approval_required": approval_required,
+        "confirm_execution": confirm_execution,
+        "confirm_output": confirm_output,
         "intake_contract_sha256": row.get::<_, String>("intake_contract_sha256")?,
         "intake": intake,
         "workspace_binding": binding,
@@ -4530,23 +5249,262 @@ fn reconstruct_intake_from_task(
     })
 }
 
+fn product_task_sqlite_read_error(message: String) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            message,
+        )),
+    )
+}
+
+fn managed_acceptance_owner_json_object(encoded: &str, owner: &str) -> Result<Value, String> {
+    let value: Value = serde_json::from_str(encoded)
+        .map_err(|error| format!("managed acceptance {owner} owner is invalid JSON: {error}"))?;
+    if !value.is_object() {
+        return Err(format!(
+            "managed acceptance {owner} owner must be a JSON object"
+        ));
+    }
+    Ok(value)
+}
+
+fn managed_acceptance_owner_json_array(encoded: &str, owner: &str) -> Result<Value, String> {
+    let value: Value = serde_json::from_str(encoded)
+        .map_err(|error| format!("managed acceptance {owner} owner is invalid JSON: {error}"))?;
+    if !value.is_array() {
+        return Err(format!(
+            "managed acceptance {owner} owner must be a JSON array"
+        ));
+    }
+    Ok(value)
+}
+
+fn managed_acceptance_workspace_row_sqlite(row: &Row<'_>) -> rusqlite::Result<Value> {
+    let boundary_text: String = row.get(14)?;
+    let workspace_text: String = row.get(15)?;
+    let boundary = managed_acceptance_owner_json_object(&boundary_text, "workspace boundary")
+        .map_err(product_task_sqlite_read_error)?;
+    let mut workspace = managed_acceptance_owner_json_object(&workspace_text, "workspace")
+        .map_err(product_task_sqlite_read_error)?;
+    let object = workspace
+        .as_object_mut()
+        .expect("managed_acceptance_owner_json_object returns an object");
+    object.insert(
+        "workspace_sequence".to_string(),
+        json!(row.get::<_, i64>(0)?),
+    );
+    object.insert("workspace_id".to_string(), json!(row.get::<_, String>(1)?));
+    object.insert(
+        "plan_id".to_string(),
+        json!(row.get::<_, Option<String>>(2)?),
+    );
+    object.insert("run_id".to_string(), json!(row.get::<_, String>(3)?));
+    object.insert("target_id".to_string(), json!(row.get::<_, String>(4)?));
+    object.insert(
+        "target_repo_path".to_string(),
+        json!(row.get::<_, String>(5)?),
+    );
+    object.insert(
+        "target_repo_canonical_path".to_string(),
+        json!(row.get::<_, String>(6)?),
+    );
+    object.insert(
+        "workspace_path".to_string(),
+        json!(row.get::<_, String>(7)?),
+    );
+    object.insert(
+        "workspace_canonical_path".to_string(),
+        json!(row.get::<_, String>(8)?),
+    );
+    object.insert(
+        "source_revision".to_string(),
+        json!(row.get::<_, String>(9)?),
+    );
+    object.insert(
+        "source_tree_hash".to_string(),
+        json!(row.get::<_, Option<String>>(10)?),
+    );
+    object.insert("status".to_string(), json!(row.get::<_, String>(11)?));
+    object.insert("created_at".to_string(), json!(row.get::<_, String>(12)?));
+    object.insert("updated_at".to_string(), json!(row.get::<_, String>(13)?));
+    object.insert("boundary".to_string(), boundary);
+    object.insert("metadata_only".to_string(), json!(true));
+    object.insert("execution_authority".to_string(), json!("disabled"));
+    Ok(workspace)
+}
+
 #[cfg(feature = "pg")]
-fn product_task_row_to_json_pg(row: &postgres::Row) -> Value {
+fn managed_acceptance_workspace_row_pg(row: &postgres::Row) -> Result<Value, String> {
+    let boundary_text: String = row.get(14);
+    let workspace_text: String = row.get(15);
+    let boundary = managed_acceptance_owner_json_object(&boundary_text, "workspace boundary")?;
+    let mut workspace = managed_acceptance_owner_json_object(&workspace_text, "workspace")?;
+    let object = workspace
+        .as_object_mut()
+        .expect("managed_acceptance_owner_json_object returns an object");
+    object.insert(
+        "workspace_sequence".to_string(),
+        json!(row.get::<_, i64>(0)),
+    );
+    object.insert("workspace_id".to_string(), json!(row.get::<_, String>(1)));
+    object.insert(
+        "plan_id".to_string(),
+        json!(row.get::<_, Option<String>>(2)),
+    );
+    object.insert("run_id".to_string(), json!(row.get::<_, String>(3)));
+    object.insert("target_id".to_string(), json!(row.get::<_, String>(4)));
+    object.insert(
+        "target_repo_path".to_string(),
+        json!(row.get::<_, String>(5)),
+    );
+    object.insert(
+        "target_repo_canonical_path".to_string(),
+        json!(row.get::<_, String>(6)),
+    );
+    object.insert("workspace_path".to_string(), json!(row.get::<_, String>(7)));
+    object.insert(
+        "workspace_canonical_path".to_string(),
+        json!(row.get::<_, String>(8)),
+    );
+    object.insert(
+        "source_revision".to_string(),
+        json!(row.get::<_, String>(9)),
+    );
+    object.insert(
+        "source_tree_hash".to_string(),
+        json!(row.get::<_, Option<String>>(10)),
+    );
+    object.insert("status".to_string(), json!(row.get::<_, String>(11)));
+    object.insert("created_at".to_string(), json!(row.get::<_, String>(12)));
+    object.insert("updated_at".to_string(), json!(row.get::<_, String>(13)));
+    object.insert("boundary".to_string(), boundary);
+    object.insert("metadata_only".to_string(), json!(true));
+    object.insert("execution_authority".to_string(), json!("disabled"));
+    Ok(workspace)
+}
+
+fn managed_acceptance_artifact_row_sqlite(row: &Row<'_>) -> rusqlite::Result<Value> {
+    let changed_files_text: String = row.get(9)?;
+    let artifact_text: String = row.get(12)?;
+    let changed_files =
+        managed_acceptance_owner_json_array(&changed_files_text, "artifact changed-files")
+            .map_err(product_task_sqlite_read_error)?;
+    let mut artifact = managed_acceptance_owner_json_object(&artifact_text, "artifact")
+        .map_err(product_task_sqlite_read_error)?;
+    let object = artifact
+        .as_object_mut()
+        .expect("managed_acceptance_owner_json_object returns an object");
+    object.insert(
+        "artifact_sequence".to_string(),
+        json!(row.get::<_, i64>(0)?),
+    );
+    object.insert("artifact_id".to_string(), json!(row.get::<_, String>(1)?));
+    object.insert("workspace_id".to_string(), json!(row.get::<_, String>(2)?));
+    object.insert("run_id".to_string(), json!(row.get::<_, String>(3)?));
+    object.insert(
+        "plan_id".to_string(),
+        json!(row.get::<_, Option<String>>(4)?),
+    );
+    object.insert("target_id".to_string(), json!(row.get::<_, String>(5)?));
+    object.insert(
+        "source_revision".to_string(),
+        json!(row.get::<_, String>(6)?),
+    );
+    object.insert("artifact_type".to_string(), json!(row.get::<_, String>(7)?));
+    object.insert("patch_hash".to_string(), json!(row.get::<_, String>(8)?));
+    object.insert("changed_files".to_string(), changed_files);
+    object.insert(
+        "redaction_status".to_string(),
+        json!(row.get::<_, String>(10)?),
+    );
+    object.insert("created_at".to_string(), json!(row.get::<_, String>(11)?));
+    object.insert("metadata_only".to_string(), json!(true));
+    object.insert("execution_authority".to_string(), json!("disabled"));
+    object.insert("patch_apply_authority".to_string(), json!("disabled"));
+    Ok(artifact)
+}
+
+#[cfg(feature = "pg")]
+fn managed_acceptance_artifact_row_pg(row: &postgres::Row) -> Result<Value, String> {
+    let changed_files_text: String = row.get(9);
+    let artifact_text: String = row.get(12);
+    let changed_files =
+        managed_acceptance_owner_json_array(&changed_files_text, "artifact changed-files")?;
+    let mut artifact = managed_acceptance_owner_json_object(&artifact_text, "artifact")?;
+    let object = artifact
+        .as_object_mut()
+        .expect("managed_acceptance_owner_json_object returns an object");
+    object.insert("artifact_sequence".to_string(), json!(row.get::<_, i64>(0)));
+    object.insert("artifact_id".to_string(), json!(row.get::<_, String>(1)));
+    object.insert("workspace_id".to_string(), json!(row.get::<_, String>(2)));
+    object.insert("run_id".to_string(), json!(row.get::<_, String>(3)));
+    object.insert(
+        "plan_id".to_string(),
+        json!(row.get::<_, Option<String>>(4)),
+    );
+    object.insert("target_id".to_string(), json!(row.get::<_, String>(5)));
+    object.insert(
+        "source_revision".to_string(),
+        json!(row.get::<_, String>(6)),
+    );
+    object.insert("artifact_type".to_string(), json!(row.get::<_, String>(7)));
+    object.insert("patch_hash".to_string(), json!(row.get::<_, String>(8)));
+    object.insert("changed_files".to_string(), changed_files);
+    object.insert(
+        "redaction_status".to_string(),
+        json!(row.get::<_, String>(10)),
+    );
+    object.insert("created_at".to_string(), json!(row.get::<_, String>(11)));
+    object.insert("metadata_only".to_string(), json!(true));
+    object.insert("execution_authority".to_string(), json!("disabled"));
+    object.insert("patch_apply_authority".to_string(), json!("disabled"));
+    Ok(artifact)
+}
+
+fn strict_product_task_bool_sqlite(value: i64, field: &str) -> rusqlite::Result<bool> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        other => Err(product_task_sqlite_read_error(format!(
+            "ProductTask {field} is not a persisted boolean (expected 0 or 1, got {other})"
+        ))),
+    }
+}
+
+#[cfg(feature = "pg")]
+fn strict_product_task_bool_pg(value: i32, field: &str) -> Result<bool, String> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        other => Err(format!(
+            "ProductTask {field} is not a persisted boolean (expected 0 or 1, got {other})"
+        )),
+    }
+}
+
+#[cfg(feature = "pg")]
+fn product_task_row_to_json_pg(row: &postgres::Row) -> Result<Value, String> {
     let intake_json: String = row.get("intake_json");
     let binding_json: Option<String> = row.get("workspace_binding_json");
-    let intake = public_product_intake_json(&intake_json);
-    let binding: Value = binding_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or(Value::Null);
+    let intake = public_product_intake_json(&intake_json)?;
+    let binding: Value = match binding_json.as_deref() {
+        Some(encoded) => serde_json::from_str(encoded).map_err(|error| {
+            format!("ProductTask workspace_binding_json is invalid JSON: {error}")
+        })?,
+        None => Value::Null,
+    };
     let approval_required: i32 = row.get("approval_required");
     let confirm_execution: i32 = row.get("confirm_execution");
     let confirm_output: i32 = row.get("confirm_output");
     let status: String = row.get("status");
-    let admits = ProductTaskStatus::parse(&status)
-        .map(|s| s.admits_execution())
-        .unwrap_or(false);
-    json!({
+    let admits = ProductTaskStatus::parse(&status)?.admits_execution();
+    let approval_required = strict_product_task_bool_pg(approval_required, "approval_required")?;
+    let confirm_execution = strict_product_task_bool_pg(confirm_execution, "confirm_execution")?;
+    let confirm_output = strict_product_task_bool_pg(confirm_output, "confirm_output")?;
+    Ok(json!({
         "schema_version": row.get::<_, String>("schema_version"),
         "task_id": row.get::<_, String>("task_id"),
         "tenant_id": row.get::<_, String>("tenant_id"),
@@ -4561,9 +5519,9 @@ fn product_task_row_to_json_pg(row: &postgres::Row) -> Value {
         "source_tree_hash": row.get::<_, Option<String>>("source_tree_hash"),
         "output_intent": row.get::<_, String>("output_intent"),
         "risk_class": row.get::<_, String>("risk_class"),
-        "approval_required": approval_required != 0,
-        "confirm_execution": confirm_execution != 0,
-        "confirm_output": confirm_output != 0,
+        "approval_required": approval_required,
+        "confirm_execution": confirm_execution,
+        "confirm_output": confirm_output,
         "intake_contract_sha256": row.get::<_, String>("intake_contract_sha256"),
         "intake": intake,
         "workspace_binding": binding,
@@ -4576,7 +5534,7 @@ fn product_task_row_to_json_pg(row: &postgres::Row) -> Value {
         "updated_at": row.get::<_, String>("updated_at"),
         "created_by": row.get::<_, String>("created_by"),
         "execution_admitted": admits,
-    })
+    }))
 }
 
 #[cfg(test)]

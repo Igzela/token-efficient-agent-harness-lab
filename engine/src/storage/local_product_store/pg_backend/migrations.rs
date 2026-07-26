@@ -1,4 +1,5 @@
 use super::super::{schema, LocalProductStore};
+use serde_json::Value;
 
 #[cfg(test)]
 pub(super) const CURRENT_PG_VERSION: i64 = schema::CURRENT_POSTGRES_SCHEMA_VERSION;
@@ -497,6 +498,556 @@ fn apply_pg_v31_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|error| format!("failed to commit migration 31: {error}"))
 }
 
+fn apply_pg_v32_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V32_SCHEMA_VERSION;
+    let mut tx = client
+        .transaction()
+        .map_err(|error| format!("failed to start migration 32 transaction: {error}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(
+             hashtext(current_database()), hashtext(current_schema())
+         )",
+        &[],
+    )
+    .map_err(|error| format!("failed to lock migration 32: {error}"))?;
+    let current_version = tx
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map(|row| row.get::<_, i64>(0))
+        .map_err(|error| format!("failed to re-read version for migration 32: {error}"))?;
+    if current_version >= version {
+        tx.commit()
+            .map_err(|error| format!("failed to finish migration 32 no-op: {error}"))?;
+        return Ok(());
+    }
+    tx.batch_execute(schema::V32_DDL)
+        .map_err(|error| format!("migration 32 failed: {error}"))?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|error| format!("failed to record migration {version}: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("failed to commit migration 32: {error}"))
+}
+
+fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V33_SCHEMA_VERSION;
+    let mut tx = client
+        .transaction()
+        .map_err(|error| format!("failed to start migration 33 transaction: {error}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(
+             hashtext(current_database()), hashtext(current_schema())
+         )",
+        &[],
+    )
+    .map_err(|error| format!("failed to lock migration 33: {error}"))?;
+    let current_version = tx
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map(|row| row.get::<_, i64>(0))
+        .map_err(|error| format!("failed to re-read version for migration 33: {error}"))?;
+    if current_version >= version {
+        repair_pg_v32_transition_schema(&mut tx)?;
+        repair_pg_v33_spend_schema(&mut tx)?;
+        tx.commit()
+            .map_err(|error| format!("failed to finish migration 33 repair: {error}"))?;
+        return Ok(());
+    }
+    if !pg_table_present(&mut tx, "managed_acceptance_spend_authorizations")? {
+        tx.batch_execute(schema::V33_DDL)
+            .map_err(|error| format!("migration 33 failed: {error}"))?;
+    }
+    repair_pg_v32_transition_schema(&mut tx)?;
+    for (col, decl) in [
+        ("spend_authorization_id", "TEXT"),
+        ("lease_token", "TEXT"),
+        ("receipt_sha256", "TEXT"),
+    ] {
+        if !pg_column_exists(&mut tx, "managed_acceptance_attempts", col)? {
+            tx.batch_execute(&format!(
+                "ALTER TABLE managed_acceptance_attempts ADD COLUMN {col} {decl};"
+            ))
+            .map_err(|error| format!("migration 33 column {col}: {error}"))?;
+        }
+    }
+    if !pg_column_exists(
+        &mut tx,
+        "managed_acceptance_spend_authorizations",
+        "logical_authorization_sha256",
+    )? {
+        tx.batch_execute(
+            "ALTER TABLE managed_acceptance_spend_authorizations
+             ADD COLUMN logical_authorization_sha256 TEXT;",
+        )
+        .map_err(|error| format!("migration 33 spend logical identity column: {error}"))?;
+    }
+    repair_pg_v33_spend_schema(&mut tx)?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|error| format!("failed to record migration {version}: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("failed to commit migration 33: {error}"))
+}
+
+fn repair_pg_v32_transition_schema(tx: &mut postgres::Transaction<'_>) -> Result<(), String> {
+    const TABLE: &str = "managed_acceptance_decision_transition_receipts";
+    if !pg_table_present(tx, TABLE)? {
+        return Ok(());
+    }
+    if !pg_column_exists(tx, TABLE, "sequence")? {
+        tx.batch_execute(
+            "ALTER TABLE managed_acceptance_decision_transition_receipts
+             ADD COLUMN sequence BIGINT",
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    if !pg_column_exists(tx, TABLE, "previous_transition_sequence")? {
+        tx.batch_execute(
+            "ALTER TABLE managed_acceptance_decision_transition_receipts
+             ADD COLUMN previous_transition_sequence BIGINT",
+        )
+        .map_err(|error| error.to_string())?;
+    }
+
+    let invalid_genesis_count: i64 = tx
+        .query_one(
+            "SELECT COUNT(*) FROM (
+                 SELECT decision_id
+                 FROM managed_acceptance_decision_transition_receipts
+                 GROUP BY decision_id
+                 HAVING COUNT(*) FILTER (WHERE previous_transition_sha256 IS NULL) <> 1
+             ) invalid",
+            &[],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| format!("v32 transition genesis scan failed: {error}"))?;
+    if invalid_genesis_count != 0 {
+        return Err(format!(
+            "v32 transition repair found {invalid_genesis_count} decision chain(s) without exactly one genesis"
+        ));
+    }
+
+    let fork_count: i64 = tx
+        .query_one(
+            "SELECT COUNT(*) FROM (
+                 SELECT decision_id, previous_transition_sha256
+                 FROM managed_acceptance_decision_transition_receipts
+                 WHERE previous_transition_sha256 IS NOT NULL
+                 GROUP BY decision_id, previous_transition_sha256
+                 HAVING COUNT(*) > 1
+             ) invalid",
+            &[],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| format!("v32 transition fork scan failed: {error}"))?;
+    if fork_count != 0 {
+        return Err(format!(
+            "v32 transition repair found {fork_count} forked predecessor hash(es)"
+        ));
+    }
+
+    let total_count: i64 = tx
+        .query_one(
+            "SELECT COUNT(*) FROM managed_acceptance_decision_transition_receipts",
+            &[],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| format!("v32 transition row count failed: {error}"))?;
+    let chained_count: i64 = tx
+        .query_one(
+            "WITH RECURSIVE chain AS (
+                 SELECT transition_receipt_id, decision_id, transition_sha256
+                 FROM managed_acceptance_decision_transition_receipts
+                 WHERE previous_transition_sha256 IS NULL
+                 UNION ALL
+                 SELECT child.transition_receipt_id, child.decision_id, child.transition_sha256
+                 FROM managed_acceptance_decision_transition_receipts child
+                 JOIN chain parent
+                   ON child.decision_id = parent.decision_id
+                  AND child.previous_transition_sha256 = parent.transition_sha256
+             )
+             SELECT COUNT(*) FROM chain",
+            &[],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| format!("v32 transition hash-chain traversal failed: {error}"))?;
+    if chained_count != total_count {
+        return Err(format!(
+            "v32 transition repair found incomplete, orphaned, or cyclic hash chains: chained {chained_count} of {total_count} receipts"
+        ));
+    }
+
+    tx.batch_execute(
+        "DROP INDEX IF EXISTS idx_managed_acceptance_transition_sequence;
+         ALTER TABLE managed_acceptance_decision_transition_receipts
+           DROP CONSTRAINT IF EXISTS managed_acceptance_decision_transition_receipts_decision_id_sequence_key;
+         WITH RECURSIVE chain AS (
+             SELECT transition_receipt_id, decision_id, transition_sha256,
+                    1::BIGINT AS sequence,
+                    NULL::BIGINT AS previous_transition_sequence
+             FROM managed_acceptance_decision_transition_receipts
+             WHERE previous_transition_sha256 IS NULL
+             UNION ALL
+             SELECT child.transition_receipt_id, child.decision_id, child.transition_sha256,
+                    parent.sequence + 1,
+                    parent.sequence
+             FROM managed_acceptance_decision_transition_receipts child
+             JOIN chain parent
+               ON child.decision_id = parent.decision_id
+              AND child.previous_transition_sha256 = parent.transition_sha256
+         )
+         UPDATE managed_acceptance_decision_transition_receipts receipt
+         SET sequence = chain.sequence,
+             previous_transition_sequence = chain.previous_transition_sequence
+         FROM chain
+         WHERE receipt.transition_receipt_id = chain.transition_receipt_id
+           AND (
+               receipt.sequence IS DISTINCT FROM chain.sequence OR
+               receipt.previous_transition_sequence IS DISTINCT FROM chain.previous_transition_sequence
+           );
+         ALTER TABLE managed_acceptance_decision_transition_receipts
+           ALTER COLUMN sequence SET NOT NULL;
+         CREATE UNIQUE INDEX idx_managed_acceptance_transition_sequence
+           ON managed_acceptance_decision_transition_receipts(decision_id, sequence);",
+    )
+    .map_err(|error| format!("v32 transition hash-chain repair failed: {error}"))
+}
+
+fn repair_pg_v33_spend_schema(tx: &mut postgres::Transaction<'_>) -> Result<(), String> {
+    if !pg_column_exists(
+        tx,
+        "managed_acceptance_spend_authorizations",
+        "logical_authorization_sha256",
+    )? {
+        tx.batch_execute(
+            "ALTER TABLE managed_acceptance_spend_authorizations
+             ADD COLUMN logical_authorization_sha256 TEXT",
+        )
+        .map_err(|error| format!("v33 spend logical identity column repair: {error}"))?;
+    }
+    let rows = tx
+        .query(
+            "SELECT spend_authorization_id, body_json, spend_body_sha256,
+                    logical_authorization_sha256
+             FROM managed_acceptance_spend_authorizations
+             FOR UPDATE",
+            &[],
+        )
+        .map_err(|error| format!("v33 spend body scan failed: {error}"))?;
+    for row in rows {
+        let spend_id: String = row.get(0);
+        let raw_body: String = row.get(1);
+        let stored_body_sha: String = row.get(2);
+        let stored_logical: Option<String> = row.get(3);
+        let mut body: Value = serde_json::from_str(&raw_body)
+            .map_err(|error| format!("v33 spend {spend_id} body_json is invalid: {error}"))?;
+        let original_sha = super::super::managed_acceptance::sha256_hex(
+            super::super::managed_acceptance::canonical_json(&body)?.as_bytes(),
+        );
+        if original_sha != stored_body_sha {
+            return Err(format!(
+                "v33 spend {spend_id} body hash does not match its persisted body"
+            ));
+        }
+        let logical = super::super::managed_acceptance::stable_spend_authorization_identity(&body)?;
+        if let Some(stored) = stored_logical.as_deref() {
+            if stored != logical {
+                return Err(format!(
+                    "v33 spend {spend_id} logical authorization hash is inconsistent"
+                ));
+            }
+        }
+        body.as_object_mut()
+            .ok_or_else(|| format!("v33 spend {spend_id} body_json must be an object"))?
+            .insert(
+                "logical_authorization_sha256".to_string(),
+                Value::String(logical.clone()),
+            );
+        let body_sha = super::super::managed_acceptance::sha256_hex(
+            super::super::managed_acceptance::canonical_json(&body)?.as_bytes(),
+        );
+        tx.execute(
+            "UPDATE managed_acceptance_spend_authorizations
+             SET logical_authorization_sha256=$1, body_json=$2, spend_body_sha256=$3
+             WHERE spend_authorization_id=$4",
+            &[&logical, &body.to_string(), &body_sha, &spend_id],
+        )
+        .map_err(|error| format!("v33 spend {spend_id} backfill failed: {error}"))?;
+    }
+
+    let valid_check = tx
+        .query(
+            "SELECT pg_get_constraintdef(oid)
+             FROM pg_constraint
+             WHERE conrelid='managed_acceptance_spend_authorizations'::regclass
+               AND contype='c'",
+            &[],
+        )
+        .map_err(|error| format!("v33 spend constraint check failed: {error}"))?
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .any(|definition| {
+            let normalized = definition
+                .to_ascii_lowercase()
+                .replace("::text", "")
+                .replace("::character varying", "")
+                .replace([' ', '\n', '\t', '(', ')', '\'', '"'], "");
+            normalized.contains("status<>active")
+                && normalized.contains("logical_authorization_sha256isnotnull")
+        });
+    if !valid_check {
+        tx.batch_execute(
+            "ALTER TABLE managed_acceptance_spend_authorizations
+             ADD CONSTRAINT managed_acceptance_spend_active_logical_check
+             CHECK (status <> 'active' OR logical_authorization_sha256 IS NOT NULL)",
+        )
+        .map_err(|error| format!("v33 spend active identity constraint repair: {error}"))?;
+    }
+    let index_definition: Option<String> = tx
+        .query_opt(
+            "SELECT indexdef FROM pg_indexes
+             WHERE schemaname=current_schema()
+               AND indexname='idx_managed_acceptance_spend_active_logical'",
+            &[],
+        )
+        .map(|row| row.map(|row| row.get(0)))
+        .map_err(|error| format!("v33 spend index lookup failed: {error}"))?;
+    let index_ok = index_definition.as_deref().is_some_and(|definition| {
+        let normalized = definition
+            .to_ascii_lowercase()
+            .replace("::text", "")
+            .replace("::character varying", "")
+            .replace([' ', '\n', '\t', '(', ')'], "");
+        normalized.contains("createuniqueindex")
+            && normalized.contains("tenant_id,logical_authorization_sha256")
+            && normalized.contains("wherestatus='active'")
+    });
+    if !index_ok {
+        if index_definition.is_some() {
+            tx.batch_execute("DROP INDEX idx_managed_acceptance_spend_active_logical")
+                .map_err(|error| format!("v33 spend index replacement failed: {error}"))?;
+        }
+        tx.batch_execute(
+            "CREATE UNIQUE INDEX idx_managed_acceptance_spend_active_logical
+             ON managed_acceptance_spend_authorizations(tenant_id, logical_authorization_sha256)
+             WHERE status = 'active'",
+        )
+        .map_err(|error| format!("v33 spend active identity index repair: {error}"))?;
+    }
+    tx.batch_execute(
+        "CREATE INDEX IF NOT EXISTS idx_managed_acceptance_spend_tenant
+         ON managed_acceptance_spend_authorizations(tenant_id, status, expires_at)",
+    )
+    .map_err(|error| format!("v33 spend tenant index repair failed: {error}"))?;
+    Ok(())
+}
+
+fn validate_pg_v33_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    let version = client
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get::<_, i64>(0);
+    if version != super::super::migrations::V33_SCHEMA_VERSION {
+        return Err(format!("PostgreSQL v33 schema version mismatch: {version}"));
+    }
+    for table in super::super::migrations::V33_TABLES {
+        if !pg_table_present(client, table)? {
+            return Err(format!("PostgreSQL v33 schema missing table {table}"));
+        }
+    }
+    if !pg_column_exists(
+        client,
+        "managed_acceptance_spend_authorizations",
+        "logical_authorization_sha256",
+    )? {
+        return Err("PostgreSQL v33 spend logical authorization identity is missing".to_string());
+    }
+    let active_identity_constraint_ok = client
+        .query(
+            "SELECT pg_get_constraintdef(constraint_meta.oid)
+             FROM pg_constraint constraint_meta
+             JOIN pg_class table_class ON table_class.oid=constraint_meta.conrelid
+             JOIN pg_namespace namespace ON namespace.oid=table_class.relnamespace
+             WHERE namespace.oid=current_schema()::regnamespace
+               AND table_class.relname='managed_acceptance_spend_authorizations'
+               AND constraint_meta.contype='c'",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|row| {
+            row.get::<_, String>(0)
+                .to_ascii_lowercase()
+                .replace('"', "")
+        })
+        .any(|definition| {
+            definition.contains("logical_authorization_sha256 is not null")
+                && definition.contains("status <>")
+        });
+    if !active_identity_constraint_ok {
+        return Err(
+            "PostgreSQL v33 active spend rows may omit logical authorization identity".to_string(),
+        );
+    }
+    let index = client
+        .query_opt(
+            "SELECT index_meta.indisunique,
+                    pg_get_expr(index_meta.indpred, index_meta.indrelid),
+                    array_agg(attribute.attname ORDER BY key.ordinality)
+             FROM pg_class index_class
+             JOIN pg_namespace namespace ON namespace.oid=index_class.relnamespace
+             JOIN pg_index index_meta ON index_meta.indexrelid=index_class.oid
+             JOIN pg_class table_class ON table_class.oid=index_meta.indrelid
+             JOIN LATERAL unnest(index_meta.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+               ON TRUE
+             JOIN pg_attribute attribute
+               ON attribute.attrelid=table_class.oid AND attribute.attnum=key.attnum
+             WHERE namespace.oid=current_schema()::regnamespace
+               AND index_class.relname='idx_managed_acceptance_spend_active_logical'
+               AND table_class.relname='managed_acceptance_spend_authorizations'
+             GROUP BY index_meta.indisunique, index_meta.indpred, index_meta.indrelid",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .map(|row| {
+            (
+                row.get::<_, bool>(0),
+                row.get::<_, Option<String>>(1),
+                row.get::<_, Vec<String>>(2),
+            )
+        });
+    let predicate_ok = index.as_ref().is_some_and(|(_, predicate, _)| {
+        predicate.as_ref().is_some_and(|predicate| {
+            let normalized = predicate.to_ascii_lowercase();
+            normalized.contains("status = 'active'")
+                && !normalized.contains("logical_authorization_sha256 is not null")
+        })
+    });
+    let expected_columns = vec![
+        "tenant_id".to_string(),
+        "logical_authorization_sha256".to_string(),
+    ];
+    let index_ok = matches!(
+        index.as_ref(),
+        Some((true, Some(_), columns)) if *columns == expected_columns
+    );
+    if !index_ok || !predicate_ok {
+        return Err(
+            "PostgreSQL v33 active logical spend index is missing or malformed".to_string(),
+        );
+    }
+    validate_pg_v32_schema(client)
+}
+
+fn validate_pg_v32_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    let version = client
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .get::<_, i64>(0);
+    if version == super::super::migrations::V32_SCHEMA_VERSION {
+        for table in super::super::migrations::V32_TABLES {
+            if !pg_table_present(client, table)? {
+                return Err(format!("PostgreSQL v32 schema missing table {table}"));
+            }
+        }
+    } else if version < super::super::migrations::V32_SCHEMA_VERSION {
+        return Err(format!("PostgreSQL v32 schema version mismatch: {version}"));
+    } else {
+        for table in super::super::migrations::V32_TABLES {
+            if !pg_table_present(client, table)? {
+                return Err(format!("PostgreSQL schema missing table {table}"));
+            }
+        }
+    }
+    for (index, expected_columns, predicate) in [
+        (
+            "idx_managed_acceptance_transition_one_child",
+            vec!["decision_id", "previous_transition_sha256"],
+            "previous_transition_sha256 is not null",
+        ),
+        (
+            "idx_managed_acceptance_transition_one_genesis",
+            vec!["decision_id"],
+            "previous_transition_sha256 is null",
+        ),
+    ] {
+        if !pg_partial_unique_index_matches(
+            client,
+            "managed_acceptance_decision_transition_receipts",
+            index,
+            &expected_columns,
+            predicate,
+        )? {
+            return Err(format!(
+                "PostgreSQL v32 transition index {index} is missing or malformed"
+            ));
+        }
+    }
+    validate_pg_v31_schema(client)
+}
+
+fn pg_partial_unique_index_matches(
+    client: &mut impl postgres::GenericClient,
+    table: &str,
+    index: &str,
+    expected_columns: &[&str],
+    expected_predicate: &str,
+) -> Result<bool, String> {
+    let metadata = client
+        .query_opt(
+            "SELECT index_meta.indisunique,
+                    pg_get_expr(index_meta.indpred, index_meta.indrelid),
+                    array_agg(attribute.attname ORDER BY key.ordinality)
+             FROM pg_class index_class
+             JOIN pg_namespace namespace ON namespace.oid=index_class.relnamespace
+             JOIN pg_index index_meta ON index_meta.indexrelid=index_class.oid
+             JOIN pg_class table_class ON table_class.oid=index_meta.indrelid
+             JOIN LATERAL unnest(index_meta.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+               ON TRUE
+             JOIN pg_attribute attribute
+               ON attribute.attrelid=table_class.oid AND attribute.attnum=key.attnum
+             WHERE namespace.oid=current_schema()::regnamespace
+               AND index_class.relname=$1
+               AND table_class.relname=$2
+             GROUP BY index_meta.indisunique, index_meta.indpred, index_meta.indrelid",
+            &[&index, &table],
+        )
+        .map_err(|error| error.to_string())?
+        .map(|row| {
+            (
+                row.get::<_, bool>(0),
+                row.get::<_, Option<String>>(1),
+                row.get::<_, Vec<String>>(2),
+            )
+        });
+    let expected_columns = expected_columns
+        .iter()
+        .map(|column| (*column).to_string())
+        .collect::<Vec<_>>();
+    Ok(matches!(
+        metadata,
+        Some((true, Some(predicate), columns))
+            if columns == expected_columns
+                && predicate
+                    .to_ascii_lowercase()
+                    .contains(expected_predicate)
+    ))
+}
+
 fn validate_pg_v31_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     let version = client
         .query_one(
@@ -505,12 +1056,20 @@ fn validate_pg_v31_schema(client: &mut impl postgres::GenericClient) -> Result<(
         )
         .map_err(|error| error.to_string())?
         .get::<_, i64>(0);
-    if version != super::super::migrations::V31_SCHEMA_VERSION {
+    // Intermediate v31 validation only when head is still 31.
+    if version == super::super::migrations::V31_SCHEMA_VERSION {
+        for table in super::super::migrations::V31_TABLES {
+            if !pg_table_present(client, table)? {
+                return Err(format!("PostgreSQL v31 schema missing table {table}"));
+            }
+        }
+    } else if version < super::super::migrations::V31_SCHEMA_VERSION {
         return Err(format!("PostgreSQL v31 schema version mismatch: {version}"));
-    }
-    for table in super::super::migrations::V31_TABLES {
-        if !pg_table_present(client, table)? {
-            return Err(format!("PostgreSQL v31 schema missing table {table}"));
+    } else {
+        for table in super::super::migrations::V31_TABLES {
+            if !pg_table_present(client, table)? {
+                return Err(format!("PostgreSQL schema missing table {table}"));
+            }
         }
     }
     validate_pg_v30_tables(client)
@@ -1008,6 +1567,121 @@ fn pg_v25_operation_schema_valid(
 }
 
 impl LocalProductStore {
+    pub(crate) fn rollback_pg_v33_to_v32_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.with_pg_conn(|client| {
+            let mut tx = client.transaction().map_err(|e| e.to_string())?;
+            let version = tx
+                .query_one(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                    &[],
+                )
+                .map_err(|e| e.to_string())?
+                .get::<_, i64>(0);
+            if version != super::super::migrations::V33_SCHEMA_VERSION {
+                return Err(format!(
+                    "v33 rollback requires current schema version 33; found {version}"
+                ));
+            }
+            for table in super::super::migrations::V33_TABLES {
+                let count: i64 = tx
+                    .query_one(&format!("SELECT COUNT(*) FROM {table}"), &[])
+                    .map_err(|e| e.to_string())?
+                    .get(0);
+                if count > 0 {
+                    return Err(format!(
+                        "v33 rollback blocked: managed acceptance spend exists in {table}"
+                    ));
+                }
+            }
+            tx.batch_execute("DROP TABLE IF EXISTS managed_acceptance_spend_authorizations;")
+                .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version=$1",
+                &[&super::super::migrations::V33_SCHEMA_VERSION],
+            )
+            .map_err(|e| e.to_string())?;
+            let details = serde_json::json!({
+                "from_version": super::super::migrations::V33_SCHEMA_VERSION,
+                "to_version": super::super::migrations::V32_SCHEMA_VERSION,
+                "tables": super::super::migrations::V33_TABLES,
+            })
+            .to_string();
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1, $2, 'schema.rollback.v33_to_v32', 'local_product_store', $3)",
+                &[&now, &actor, &details],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())
+        })
+    }
+
+    pub(crate) fn rollback_pg_v32_to_v31_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.with_pg_conn(|client: &mut postgres::Client| {
+            let mut tx = client.transaction().map_err(|error| error.to_string())?;
+            let current_version = tx
+                .query_one(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                    &[],
+                )
+                .map(|row| row.get::<_, i64>(0))
+                .map_err(|error| error.to_string())?;
+            super::super::migrations::require_v32_rollback_source(current_version)?;
+            for table in super::super::migrations::V32_TABLES {
+                tx.batch_execute(&format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"))
+                    .map_err(|error| error.to_string())?;
+                let occupied = tx
+                    .query_one(
+                        &format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)"),
+                        &[],
+                    )
+                    .map(|row| row.get::<_, bool>(0))
+                    .map_err(|error| error.to_string())?;
+                if occupied {
+                    return Err(format!(
+                        "v32 rollback blocked: managed acceptance authority exists in {table}"
+                    ));
+                }
+            }
+            tx.batch_execute(
+                "DROP TABLE managed_acceptance_decision_transition_receipts;
+                 DROP TABLE managed_acceptance_attempts;
+                 DROP TABLE managed_acceptance_authorizations;
+                 DROP TABLE managed_acceptance_decisions;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1,$2,'schema.rollback.v32_to_v31','local_product_store',$3)",
+                &[
+                    &now,
+                    &actor,
+                    &serde_json::json!({
+                        "from_version": super::super::migrations::V32_SCHEMA_VERSION,
+                        "to_version": super::super::migrations::V31_SCHEMA_VERSION,
+                        "tables": super::super::migrations::V32_TABLES,
+                    })
+                    .to_string(),
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version=$1",
+                &[&super::super::migrations::V32_SCHEMA_VERSION],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
+
     pub(in crate::storage::local_product_store) fn rollback_pg_v31_to_v30_internal(
         &self,
         actor: &str,
@@ -1391,6 +2065,14 @@ impl LocalProductStore {
                     apply_pg_v31_migration(client)?;
                     continue;
                 }
+                if migration.version == 32 {
+                    apply_pg_v32_migration(client)?;
+                    continue;
+                }
+                if migration.version == 33 {
+                    apply_pg_v33_migration(client)?;
+                    continue;
+                }
                 if migration.version <= current {
                     continue;
                 }
@@ -1499,7 +2181,7 @@ impl LocalProductStore {
                 }
             }
 
-            validate_pg_v31_schema(client)?;
+            validate_pg_v33_schema(client)?;
 
             // Seed the scheduler_heartbeat singleton row.
             client
@@ -1940,6 +2622,14 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
+        assert_eq!(store.schema_version().unwrap(), 33);
+        store
+            .rollback_v33_to_v32("migration-test-setup", true)
+            .unwrap();
+        assert_eq!(store.schema_version().unwrap(), 32);
+        store
+            .rollback_v32_to_v31("migration-test-setup", true)
+            .unwrap();
         assert_eq!(store.schema_version().unwrap(), 31);
         store
             .rollback_v31_to_v30("migration-test-setup", true)
@@ -2001,7 +2691,7 @@ mod tests {
             error.contains("missing primary key for recursive_execution_nodes"),
             "unexpected error: {error}"
         );
-        assert_eq!(fixture.store.schema_version().expect("version"), 31);
+        assert_eq!(fixture.store.schema_version().expect("version"), 33);
     }
 
     #[test]
@@ -2031,7 +2721,7 @@ mod tests {
             ),
             "unexpected error: {error}"
         );
-        assert_eq!(fixture.store.schema_version().expect("version"), 31);
+        assert_eq!(fixture.store.schema_version().expect("version"), 33);
     }
 
     #[test]
@@ -2081,7 +2771,7 @@ mod tests {
                 .run_pg_migrations_internal()
                 .expect_err("weakened v26 schema must fail closed");
             assert!(error.contains(expected), "unexpected error: {error}");
-            assert_eq!(fixture.store.schema_version().expect("version"), 31);
+            assert_eq!(fixture.store.schema_version().expect("version"), 33);
         }
     }
 
@@ -2180,7 +2870,7 @@ mod tests {
         left.unwrap();
         right.unwrap();
 
-        assert_eq!(store.schema_version().unwrap(), 31);
+        assert_eq!(store.schema_version().unwrap(), 33);
         store
             .with_pg_conn(|client| {
                 assert!(pg_column_exists(
@@ -2205,8 +2895,20 @@ mod tests {
             })
             .unwrap();
 
+        store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "DROP INDEX IF EXISTS idx_managed_acceptance_spend_active_logical;
+                         ALTER TABLE managed_acceptance_spend_authorizations
+                             DROP COLUMN IF EXISTS logical_authorization_sha256 CASCADE;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 31);
+        store.run_pg_migrations_internal().unwrap();
+        assert_eq!(store.schema_version().unwrap(), 33);
 
         store
             .with_pg_conn(|client| {
@@ -2231,7 +2933,7 @@ mod tests {
         );
         // The refusal is atomic: deleting only the v25 marker does not move or
         // silently rewrite the existing v26 marker.
-        assert_eq!(store.schema_version().unwrap(), 31);
+        assert_eq!(store.schema_version().unwrap(), 33);
     }
 
     #[test]
@@ -2328,7 +3030,7 @@ mod tests {
             })
         );
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 31);
+        assert_eq!(store.schema_version().unwrap(), 33);
         for table in super::super::super::migrations::V24_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -2378,7 +3080,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 31);
+        assert_eq!(store.schema_version().unwrap(), 33);
         for table in super::super::super::migrations::V23_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -2487,7 +3189,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 31);
+        assert_eq!(store.schema_version().unwrap(), 33);
         for table in super::super::super::migrations::V22_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }

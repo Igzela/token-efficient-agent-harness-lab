@@ -1,16 +1,18 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
-use serde_json::Value;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use super::codex_budget_authority::{
-    authority_from_product_metadata, write_ephemeral_codex_home, CodexBudgetAuthority,
-    CodexBudgetGateway, CodexExecutableIdentity,
+    write_ephemeral_codex_home, CodexBudgetAuthority, CodexBudgetGateway, CodexExecutableIdentity,
+    CodexProviderIdentity, CODEX_BUDGET_AUTHORITY_SCHEMA,
 };
 use super::codex_mediation_admission::{
-    plan_mediated_codex_launch, reconcile_gateway_and_session_usage, CodexMediatedCapabilityReport,
-    IsolationMode, UsageReconcileResult,
+    plan_mediated_codex_launch_for_gateway, reconcile_gateway_and_session_usage,
+    CodexMediatedCapabilityReport, IsolationMode, UsageReconcileResult,
 };
 use super::codex_session_usage::{
     discover_rollout_files, import_managed_codex_home, rollup_to_product_evidence,
@@ -26,6 +28,9 @@ use crate::node_executor::{
     NodeExecutor, ProcessOutcome,
 };
 use crate::provider::redaction::redact_sensitive_patterns;
+use crate::storage::local_product_store::{
+    CostAuthority, LocalProductStore, ManagedCodexLaunchFacts, ManagedCodexSpawnLease,
+};
 
 /// CLI-backed NodeExecutor for admitted managed coding CLI processes.
 ///
@@ -44,6 +49,13 @@ pub struct CliNodeExecutor {
     pub default_executor: String,
     pub claude_admission: Option<ClaudeCodeAdmission>,
     pub codex_admission: Option<CodexAdmission>,
+    /// Present for every production constructor.  A missing store is fail
+    /// closed for ProductTask Codex work rather than falling back to metadata.
+    managed_acceptance_store: Option<Arc<LocalProductStore>>,
+    /// Explicit provider-free seam for unit tests that exercise the legacy
+    /// non-ProductTask Codex command path. Production callers cannot enable
+    /// this crate-private flag and therefore require the store boundary.
+    unmanaged_codex_test_seam: bool,
 }
 
 impl CliNodeExecutor {
@@ -62,6 +74,8 @@ impl CliNodeExecutor {
             default_executor,
             claude_admission: None,
             codex_admission: None,
+            managed_acceptance_store: None,
+            unmanaged_codex_test_seam: false,
         }
     }
 
@@ -73,6 +87,8 @@ impl CliNodeExecutor {
             default_executor: "claude_code_cli".to_string(),
             claude_admission: Some(admission),
             codex_admission: None,
+            managed_acceptance_store: None,
+            unmanaged_codex_test_seam: false,
         }
     }
 
@@ -88,6 +104,8 @@ impl CliNodeExecutor {
             default_executor: "codex_cli".to_string(),
             claude_admission: None,
             codex_admission: Some(admission),
+            managed_acceptance_store: None,
+            unmanaged_codex_test_seam: false,
         }
     }
 
@@ -116,6 +134,21 @@ impl CliNodeExecutor {
             }
             _ => None,
         }
+    }
+
+    /// Attach the sole persistence owner used by ProductTask Codex admission.
+    /// A store-attached Codex invocation without a durable ProductTask owner is
+    /// always rejected; ToolPolicy receipts are an additional prerequisite and
+    /// never an execution or spend authority.
+    pub fn with_managed_acceptance_store(mut self, store: Arc<LocalProductStore>) -> Self {
+        self.managed_acceptance_store = Some(store);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_unmanaged_codex_for_test(mut self) -> Self {
+        self.unmanaged_codex_test_seam = true;
+        self
     }
 
     pub fn resolve_executor(&self, input: &NodeExecutionInput) -> String {
@@ -284,12 +317,54 @@ impl NodeExecutor for CliNodeExecutor {
             }
         };
 
-        // Product-managed Codex must use the loopback budget gateway. Non-product
-        // codex_cli paths retain the existing workspace-write adapter.
-        if effective_type == "codex_cli" && is_product_apply(input) {
-            return execute_product_codex_with_budget_gateway(
-                self, input, &bin_path, &cwd, &prompt, start,
-            );
+        // Product-managed Codex must use the store-owned lease boundary.  Do
+        // not trust a node metadata flag to decide this: the durable ProductTask
+        // run owner wins, so stripping/changing metadata cannot fall through to
+        // the generic direct Command::spawn path.
+        if effective_type == "codex_cli" {
+            if self.managed_acceptance_store.is_none() && !self.unmanaged_codex_test_seam {
+                return failed_without_process(
+                    "codex_cli",
+                    "cli_execution_authority_invalid",
+                    "Codex execution requires the store-owned ProductTask authority boundary"
+                        .to_string(),
+                    start.elapsed().as_millis() as i64,
+                );
+            }
+            let store_owned_product_task = match self.managed_acceptance_store.as_deref() {
+                Some(store) => match store.product_task_id_for_run(&input.run_id) {
+                    Ok(task_id) => task_id,
+                    Err(error) => {
+                        return failed_without_process(
+                            "codex_cli",
+                            "cli_execution_authority_invalid",
+                            format!("managed Codex ProductTask run-owner lookup failed: {error}"),
+                            start.elapsed().as_millis() as i64,
+                        );
+                    }
+                },
+                None => None,
+            };
+            match (
+                self.managed_acceptance_store.is_some(),
+                store_owned_product_task,
+            ) {
+                (true, Some(_)) => {
+                    return execute_product_codex_with_budget_gateway(
+                        self, input, &bin_path, &cwd, &prompt, start,
+                    );
+                }
+                (true, None) => {
+                    return failed_without_process(
+                        "codex_cli",
+                        "cli_execution_authority_invalid",
+                        "Codex run is not owned by a persisted ProductTask; ToolPolicy cannot substitute for managed spend, attempt admission, lease, gateway, or runtime attestation"
+                            .to_string(),
+                        start.elapsed().as_millis() as i64,
+                    );
+                }
+                _ => {}
+            }
         }
 
         let mut cmd = Command::new(&bin_path);
@@ -909,16 +984,6 @@ fn product_execution_prompt(input: &NodeExecutionInput, objective: &str) -> Resu
     ))
 }
 
-fn is_product_apply(input: &NodeExecutionInput) -> bool {
-    input
-        .node_metadata
-        .get("managed_supervised_patch")
-        .and_then(Value::as_object)
-        .and_then(|binding| binding.get("operation"))
-        .and_then(Value::as_str)
-        == Some("product_apply")
-}
-
 fn codex_invocation_args(
     cwd: &Path,
     prompt: &str,
@@ -957,6 +1022,7 @@ fn codex_invocation_args(
     args
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_product_codex_with_budget_gateway(
     executor: &CliNodeExecutor,
     input: &NodeExecutionInput,
@@ -992,7 +1058,71 @@ fn execute_product_codex_with_budget_gateway(
             start.elapsed().as_millis() as i64,
         );
     }
+    let store = match executor.managed_acceptance_store.as_deref() {
+        Some(store) => store,
+        None => {
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                "product-managed Codex requires the store-owned spawn authority".to_string(),
+                start.elapsed().as_millis() as i64,
+            );
+        }
+    };
+    let facts = ManagedCodexLaunchFacts {
+        run_id: input.run_id.clone(),
+        workflow_id: input.workflow_id.clone(),
+        node_id: input.node_id.clone(),
+        workspace_path: cwd.to_path_buf(),
+        executable_path: executable.binary_path,
+        executable_version: executable.binary_version,
+        executable_sha256: executable.binary_sha256,
+        model: admission.model.clone(),
+    };
+    let lease = match store.admit_managed_codex_spawn(&facts) {
+        Ok(lease) => lease,
+        Err(error) => {
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                format!("managed Codex store admission rejected: {error}"),
+                start.elapsed().as_millis() as i64,
+            );
+        }
+    };
+    let output = match authority_from_managed_codex_spawn_lease(&lease) {
+        Ok(authority) => execute_product_codex_after_store_admission(
+            bin_path, cwd, prompt, start, admission, store, &lease, authority,
+        ),
+        Err(error) => failed_without_process(
+            "codex_cli",
+            "cli_execution_authority_invalid",
+            format!("managed Codex store-issued authority is invalid: {error}"),
+            start.elapsed().as_millis() as i64,
+        ),
+    };
+    if let Err(error) = terminalize_managed_codex_spawn_output(store, &lease, &output) {
+        return failed_without_process(
+            "codex_cli",
+            "cli_execution_authority_invalid",
+            format!("managed Codex attempt lease terminalization failed: {error}"),
+            start.elapsed().as_millis() as i64,
+        );
+    }
+    output
+}
 
+#[allow(clippy::too_many_arguments)]
+fn execute_product_codex_after_store_admission(
+    bin_path: &str,
+    cwd: &Path,
+    prompt: &str,
+    start: std::time::Instant,
+    admission: &CodexAdmission,
+    store: &LocalProductStore,
+    lease: &ManagedCodexSpawnLease,
+    authority: CodexBudgetAuthority,
+) -> NodeExecutionOutput {
     let upstream_key = std::env::var("ACP_CODEX_UPSTREAM_API_KEY")
         .or_else(|_| std::env::var("OPENAI_API_KEY"))
         .ok()
@@ -1005,28 +1135,10 @@ fn execute_product_codex_with_budget_gateway(
             start.elapsed().as_millis() as i64,
         );
     };
-    let upstream_base = std::env::var("ACP_CODEX_UPSTREAM_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-
-    // Bind provider identity into authority before gateway start so environment
-    // substitution of base URL after binding is rejected.
-    let authority = match authority_from_product_metadata(
-        executable,
-        &input.node_metadata,
-        &admission.model,
-        executor.timeout_ms,
-        &upstream_base,
-    ) {
-        Ok(authority) => authority,
-        Err(error) => {
-            return failed_without_process(
-                "codex_cli",
-                "cli_execution_authority_invalid",
-                error,
-                start.elapsed().as_millis() as i64,
-            );
-        }
-    };
+    // Provider identity is copied only from the consumed spend body.  The
+    // parent credential can be supplied through process configuration, but its
+    // presence never proves authority and cannot select an upstream endpoint.
+    let upstream_base = authority.provider.base_url.clone();
 
     // Mediated product launch requires bubblewrap filesystem+PID isolation.
     // Full live Golden Path admission is still partial (retry/network blockers).
@@ -1055,6 +1167,7 @@ fn execute_product_codex_with_budget_gateway(
     let journal_path =
         super::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
     let gateway = match CodexBudgetGateway::start(
+        lease.gateway_start_permit(),
         authority,
         &upstream_base,
         &upstream_key,
@@ -1096,12 +1209,11 @@ fn execute_product_codex_with_budget_gateway(
         Some(gateway.authority().model.as_str()),
         true, // persist sessions into controlled CODEX_HOME for exact usage import
     );
-    let launch_plan = match plan_mediated_codex_launch(
+    let launch_plan = match plan_mediated_codex_launch_for_gateway(
         gateway.authority(),
         Path::new(bin_path),
         &ephemeral_home,
-        &gateway.base_url(),
-        gateway.session_token(),
+        &gateway,
         &codex_args,
     ) {
         Ok(plan) => plan,
@@ -1116,7 +1228,21 @@ fn execute_product_codex_with_budget_gateway(
             );
         }
     };
-    if let Err(error) = launch_plan.assert_no_upstream_credential_env() {
+    let runtime_attestation = match launch_plan.derive_runtime_attestation(&gateway) {
+        Ok(attestation) => attestation,
+        Err(error) => {
+            let _ = gateway.shutdown();
+            let _ = std::fs::remove_dir_all(&ephemeral_home);
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                format!("managed Codex runtime ownership attestation failed: {error}"),
+                start.elapsed().as_millis() as i64,
+            );
+        }
+    };
+    if let Err(error) = store.confirm_managed_codex_spawn_before_child(lease, &runtime_attestation)
+    {
         let _ = gateway.shutdown();
         let _ = std::fs::remove_dir_all(&ephemeral_home);
         return failed_without_process(
@@ -1129,9 +1255,18 @@ fn execute_product_codex_with_budget_gateway(
 
     let mut cmd = launch_plan.to_command();
     let authority_snapshot = gateway.authority().clone();
-    let output = spawn_with_timeout(&mut cmd, executor.timeout_ms);
+    let output = spawn_with_timeout(&mut cmd, authority_snapshot.timeout_ms);
     let elapsed_ms = start.elapsed().as_millis() as i64;
     let usage = gateway.shutdown();
+    // This is a typed gateway/journal outcome, not an inference from output
+    // strings.  Once a forwarded request has an unknown effect, the attempt
+    // terminal state must preserve that uncertainty and the consumed spend is
+    // never reactivated.
+    let gateway_outcome_unknown = usage.journal_halted
+        || usage
+            .last_reject_class
+            .as_deref()
+            .is_some_and(|class| class == "outcome_unknown");
 
     // Exact session-log usage evidence (corroborating only). Gateway is the cross-call gate.
     let session_evidence =
@@ -1201,7 +1336,14 @@ fn execute_product_codex_with_budget_gateway(
                     } else {
                         Some(stdout)
                     },
-                    error_domain: Some("cli_execution_error".to_string()),
+                    error_domain: Some(
+                        if gateway_outcome_unknown {
+                            "cli_outcome_unknown"
+                        } else {
+                            "cli_execution_error"
+                        }
+                        .to_string(),
+                    ),
                     error_message: Some(msg),
                     input_tokens: in_tok,
                     output_tokens: out_tok,
@@ -1214,7 +1356,14 @@ fn execute_product_codex_with_budget_gateway(
             let mut parsed = parse_cli_output(&stdout, "codex_cli", elapsed_ms, process_outcome);
             if let Some(detail) = evidence_conflict.as_ref() {
                 parsed.status = "failed".to_string();
-                parsed.error_domain = Some("cli_execution_authority_invalid".to_string());
+                parsed.error_domain = Some(
+                    if gateway_outcome_unknown {
+                        "cli_outcome_unknown"
+                    } else {
+                        "cli_execution_authority_invalid"
+                    }
+                    .to_string(),
+                );
                 parsed.error_message = Some(format!(
                     "product-managed Codex execution_usage_event.v1 reconcile failed closed: {detail}"
                 ));
@@ -1222,6 +1371,14 @@ fn execute_product_codex_with_budget_gateway(
                 parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
                 parsed.resolved_model = Some(admission.model.clone());
                 return parsed;
+            }
+            if gateway_outcome_unknown {
+                parsed.status = "failed".to_string();
+                parsed.error_domain = Some("cli_outcome_unknown".to_string());
+                parsed.error_message =
+                    Some("gateway journal recorded an outcome-unknown provider effect".to_string());
+                parsed.input_tokens = Some(usage.cumulative_input_tokens as i64);
+                parsed.output_tokens = Some(usage.cumulative_output_tokens as i64);
             }
             match &reconciled {
                 UsageReconcileResult::PreferGateway {
@@ -1303,6 +1460,173 @@ fn execute_product_codex_with_budget_gateway(
                 resolved_model: Some(admission.model.clone()),
             }
         }
+    }
+}
+
+/// Construct gateway authority exclusively from the store-issued lease.  This
+/// deliberately has no metadata/environment parameters: those sources cannot
+/// select a model, provider, budget, target, or execution identity.
+fn authority_from_managed_codex_spawn_lease(
+    lease: &ManagedCodexSpawnLease,
+) -> Result<CodexBudgetAuthority, String> {
+    let spend = lease.spend_body();
+    let required_string = |field: &str| -> Result<String, String> {
+        spend
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| format!("managed Codex spend {field} is missing"))
+    };
+    let required_u64 = |field: &str| -> Result<u64, String> {
+        spend
+            .get(field)
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .ok_or_else(|| format!("managed Codex spend {field} must be a positive integer"))
+    };
+    let provider_kind = required_string("provider_kind")?;
+    let provider_base_url = required_string("provider_base_url")?;
+    let provider_host = required_string("provider_host")?;
+    let endpoint_paths = spend
+        .get("admitted_endpoint_paths")
+        .and_then(Value::as_array)
+        .filter(|paths| !paths.is_empty())
+        .ok_or_else(|| "managed Codex spend admitted_endpoint_paths is missing".to_string())?
+        .iter()
+        .map(|path| {
+            path.as_str()
+                .filter(|path| path.starts_with('/') && !path.contains("//"))
+                .map(str::to_string)
+                .ok_or_else(|| "managed Codex spend endpoint path is invalid".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut provider = CodexProviderIdentity::openai_compatible(&provider_base_url)?;
+    if provider_kind != provider.provider_kind || provider_host != provider.host {
+        return Err("managed Codex spend provider identity is inconsistent".to_string());
+    }
+    provider.admitted_endpoint_paths = endpoint_paths;
+
+    let cost_authority = CostAuthority::from_json(
+        spend
+            .get("cost_authority")
+            .ok_or_else(|| "managed Codex spend cost authority is missing".to_string())?,
+    )?;
+    let max_cost_usd = match cost_authority {
+        CostAuthority::ProviderReported { max_cost, .. }
+        | CostAuthority::LocalEstimate { max_cost, .. } => Some(max_cost),
+        CostAuthority::CostUnavailable => None,
+    };
+    let expires_at = required_string("expires_at")?;
+    let expires_unix_ms = chrono::DateTime::parse_from_rfc3339(&expires_at)
+        .map_err(|_| "managed Codex spend expiry is invalid".to_string())?
+        .timestamp_millis()
+        .try_into()
+        .map_err(|_| "managed Codex spend expiry predates Unix epoch".to_string())?;
+
+    CodexBudgetAuthority {
+        schema_version: CODEX_BUDGET_AUTHORITY_SCHEMA.to_string(),
+        task_id: lease.product_task_id().to_string(),
+        workflow_node_id: lease.facts().node_id.clone(),
+        execution_id: lease.execution_id().to_string(),
+        executable: CodexExecutableIdentity {
+            binary_path: lease.facts().executable_path.clone(),
+            binary_version: lease.facts().executable_version.clone(),
+            binary_sha256: lease.facts().executable_sha256.clone(),
+        },
+        provider,
+        model: lease.facts().model.clone(),
+        max_provider_requests: required_u64("max_provider_requests")?,
+        max_retries: spend
+            .get("max_retries")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "managed Codex spend max_retries is missing".to_string())?,
+        max_input_tokens_per_request: required_u64("max_input_tokens")?,
+        max_output_tokens_per_request: required_u64("max_output_tokens")?,
+        max_cumulative_tokens: required_u64("max_total_tokens")?,
+        max_cost_usd,
+        timeout_ms: required_u64("max_wall_time_ms")?,
+        worktree: lease.facts().workspace_path.clone(),
+        expires_unix_ms,
+    }
+    .validate_new()
+}
+
+/// Every admitted attempt has exactly one durable terminal receipt.  The
+/// receipt intentionally contains only identity, structured process outcome,
+/// bounded counters, and hashes of redacted error text—never prompts, output,
+/// credentials, transcript data, or workspace paths.
+fn terminalize_managed_codex_spawn_output(
+    store: &LocalProductStore,
+    lease: &ManagedCodexSpawnLease,
+    output: &NodeExecutionOutput,
+) -> Result<(), String> {
+    let (status, terminal_class) = managed_codex_terminal_state(output);
+    let error_domain = output.error_domain.as_deref().unwrap_or("none");
+    let process_outcome = output.process_outcome.as_ref().map(|outcome| {
+        json!({
+            "schema_version": outcome.schema_version,
+            "state": outcome.state,
+            "exit_code": outcome.exit_code,
+            "signal": outcome.signal,
+            "unavailable_reason_sha256": outcome
+                .unavailable_reason
+                .as_deref()
+                .map(|value| hex::encode(Sha256::digest(value.as_bytes()))),
+        })
+    });
+    let receipt = json!({
+        "schema_version": "managed_codex_attempt_terminal.v1",
+        "product_task_id": lease.product_task_id(),
+        "product_task_version": lease.product_task_version(),
+        "tenant_id": lease.tenant_id(),
+        "principal_id": lease.principal_id(),
+        "principal_kind": lease.principal_kind().as_str(),
+        "spend_authorization_id": lease.spend_authorization_id(),
+        "attempt_id": lease.attempt_id(),
+        "execution_id": lease.execution_id(),
+        "status": status,
+        "terminal_class": terminal_class,
+        "error_domain": error_domain,
+        "error_message_sha256": output
+            .error_message
+            .as_deref()
+            .map(|value| hex::encode(Sha256::digest(value.as_bytes()))),
+        "process_outcome": process_outcome,
+        "input_tokens": output.input_tokens,
+        "output_tokens": output.output_tokens,
+        "content_excluded": true,
+    });
+    store.terminalize_managed_codex_spawn(lease, status, terminal_class, &receipt)?;
+    Ok(())
+}
+
+/// Map every gateway/process completion into one durable attempt terminal
+/// state. The caller performs the store-owned current-lease check and writes
+/// the receipt exactly once after applying this classification.
+fn managed_codex_terminal_state(output: &NodeExecutionOutput) -> (&'static str, &'static str) {
+    let error_domain = output.error_domain.as_deref().unwrap_or("none");
+    let process_state = output
+        .process_outcome
+        .as_ref()
+        .map(|outcome| outcome.state.as_str())
+        .unwrap_or("unavailable");
+    if output.status == "completed" {
+        ("succeeded", "process_succeeded")
+    } else if error_domain.contains("cancel") || process_state == "cancelled" {
+        ("cancelled", "cancelled")
+    } else if error_domain.contains("outcome_unknown") || process_state == "outcome_unknown" {
+        ("outcome_unknown", "outcome_unknown")
+    } else if error_domain.contains("budget") || error_domain.contains("output_limit") {
+        ("failed", "budget_exhausted")
+    } else if error_domain.contains("timeout") || process_state == "timed_out" {
+        ("failed", "timeout")
+    } else if error_domain.contains("spawn") {
+        ("failed", "spawn_failed")
+    } else if error_domain.contains("gateway") {
+        ("failed", "gateway_failed")
+    } else {
+        ("failed", "execution_failed")
     }
 }
 
@@ -1589,12 +1913,67 @@ fn parse_codex_jsonl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::codex_partial_mediation_authority_decision::OPERATOR_RISK_ACCEPTANCE_PHRASE;
+    use crate::product_golden_path::{
+        validate_intake, ProductExecutorPolicy, ProductTaskBudget, ProductTaskIntakeRequest,
+        ProductVerificationCommand, PRODUCT_TASK_GATE,
+    };
+    use crate::storage::local_product_store::{
+        CostAuthority, RiskAcknowledgementRequest, SpendAuthorizationRequest,
+        ALL_MANAGED_ACCEPTANCE_SCOPES,
+    };
     use serde_json::json;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[cfg(unix)]
+    struct ProductTaskOutputEnvGuard {
+        product_task_gate: Option<std::ffi::OsString>,
+        target_output_enabled: Option<std::ffi::OsString>,
+        target_output_kill_switch: Option<std::ffi::OsString>,
+    }
+
+    #[cfg(unix)]
+    impl ProductTaskOutputEnvGuard {
+        fn enable() -> Self {
+            let guard = Self {
+                product_task_gate: std::env::var_os(PRODUCT_TASK_GATE),
+                target_output_enabled: std::env::var_os("ACP_ENABLE_TARGET_REPO_OUTPUT"),
+                target_output_kill_switch: std::env::var_os("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH"),
+            };
+            std::env::set_var(PRODUCT_TASK_GATE, "1");
+            std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+            std::env::set_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH", "0");
+            guard
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ProductTaskOutputEnvGuard {
+        fn drop(&mut self) {
+            restore_test_env(PRODUCT_TASK_GATE, self.product_task_gate.take());
+            restore_test_env(
+                "ACP_ENABLE_TARGET_REPO_OUTPUT",
+                self.target_output_enabled.take(),
+            );
+            restore_test_env(
+                "ACP_TARGET_REPO_OUTPUT_KILL_SWITCH",
+                self.target_output_kill_switch.take(),
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn restore_test_env(name: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
     }
 
     #[cfg(unix)]
@@ -1686,6 +2065,490 @@ mod tests {
         permissions.set_mode(0o700);
         std::fs::set_permissions(&binary, permissions).unwrap();
         binary
+    }
+
+    #[cfg(unix)]
+    fn init_product_repo(root: &Path) -> String {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join("README.md"), "fixture\n").unwrap();
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.email", "executor-test@example.invalid"][..],
+            &["config", "user.name", "Executor Test"][..],
+            &["add", "README.md"][..],
+            &["commit", "-m", "fixture"][..],
+        ] {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        }
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    #[cfg(unix)]
+    fn admitted_fake_codex_with_child_marker(root: &Path, marker: &Path) -> CodexAdmission {
+        use std::os::unix::fs::PermissionsExt;
+
+        let binary = root.join("codex-managed-spawn-fixture");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.145.0\\n'; exit 0; fi\nprintf child-spawned > {}\nexit 0\n",
+                marker.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let digest = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+        CodexAdmission::validate(&binary, "0.145.0", &digest, "gpt-5.6-luna").unwrap()
+    }
+
+    #[cfg(unix)]
+    fn managed_codex_decision_body(
+        decision_id: &str,
+        task_id: &str,
+        workflow_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        target_main_sha: &str,
+        admission: &CodexAdmission,
+    ) -> Value {
+        json!({
+            "decision_id": decision_id,
+            "schema_version": "codex_partial_mediation_authority_decision.v2",
+            "status": "draft_pending_operator",
+            "invalidation_state": "none",
+            "acknowledgement": {"required_phrase": OPERATOR_RISK_ACCEPTANCE_PHRASE},
+            "trial_envelope": {
+                "max_retries": 0,
+                "max_provider_requests": 1,
+                "draft_pr_only": true,
+                "max_input_tokens": 8_000,
+                "max_output_tokens": 4_000,
+                "max_total_tokens": 12_000,
+                "max_wall_time_ms": 300_000,
+                "exact_codex_version": admission.binary_version,
+                "exact_codex_sha_required": true,
+                "provider_kind": "openai_compatible",
+                "provider_host": "api.openai.com",
+                "provider_base_url": "https://api.openai.com/v1",
+                "admitted_endpoint_paths": ["/v1/responses"],
+                "model": admission.model,
+                "product_task_id": task_id,
+                "workflow_id": workflow_id,
+                "workflow_node_id": node_id,
+                "execution_id": format!("codex-attempt-{attempt_id}"),
+                "attempt_id": attempt_id,
+                "target_repo": "managed-codex-target",
+                "target_main_sha": target_main_sha,
+                "exact_codex_path": admission.binary_path,
+                "exact_codex_sha256": admission.binary_sha256,
+                "cancellation_identity": "cancel-managed-codex",
+                "rollback_identity": "rollback-managed-codex",
+                "output_branch_prefix": "acp/",
+                "cost_authority": {
+                    "kind": "cost_unavailable",
+                    "monetary_ceiling_enforced": false,
+                    "note": "rely on request/token/time caps; no monetary ceiling claimed",
+                },
+                "auto_merge_disabled": true,
+            },
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn product_scheduler_executor_uses_store_lease_before_gateway_or_child_spawn() {
+        let _guard = env_lock().lock().unwrap();
+        let _env = ProductTaskOutputEnvGuard::enable();
+
+        {
+            let root = tempfile::tempdir().unwrap();
+            let repo = root.path().join("target");
+            let revision = init_product_repo(&repo);
+            let store = Arc::new(LocalProductStore::new(root.path().join("store.db")).unwrap());
+            let marker = root.path().join("codex-child-spawned");
+            let admission = admitted_fake_codex_with_child_marker(root.path(), &marker);
+
+            let intake = ProductTaskIntakeRequest {
+                objective: "managed Codex executor authority fixture".to_string(),
+                target_id: "managed-codex-target".to_string(),
+                target_repo_path: repo.to_string_lossy().into_owned(),
+                source_revision: revision.clone(),
+                source_tree_hash: None,
+                allowed_paths: vec!["docs/managed.md".to_string()],
+                verification_commands: vec![ProductVerificationCommand {
+                    command: "test -f README.md".to_string(),
+                    timeout_ms: 5_000,
+                }],
+                output_intent: "artifact_only".to_string(),
+                executor_policy: ProductExecutorPolicy {
+                    allowed_executors: vec!["codex_cli".to_string()],
+                    prefer: Some("codex_cli".to_string()),
+                },
+                budget: Some(ProductTaskBudget {
+                    total_tokens: Some(12_000),
+                    total_calls: Some(1),
+                    total_elapsed_ms: Some(300_000),
+                    max_retries: Some(0),
+                    max_repairs: Some(0),
+                    max_concurrency: Some(1),
+                    stage_budgets: None,
+                }),
+                risk_class: "low".to_string(),
+                approval_required: true,
+                confirm_execution: Some(true),
+                confirm_output: Some(true),
+                idempotency_key: "managed-codex-executor-authority".to_string(),
+                expected_version: None,
+                tenant_id: Some("managed-codex-tenant".to_string()),
+                workspace_id: Some("managed-codex-workspace".to_string()),
+                workspace_mode: Some("git_worktree".to_string()),
+            };
+            let validated =
+                validate_intake(&intake, "managed-codex-tenant", "managed-codex-workspace")
+                    .unwrap();
+            let task = store.admit_product_task(&validated, "operator").unwrap();
+            let task_id = task["task_id"].as_str().unwrap().to_string();
+            let compiled = store
+                .compile_and_schedule_product_task(&task_id, "operator", &["codex_cli".to_string()])
+                .unwrap();
+            let run_id = compiled["task"]["run_id"].as_str().unwrap().to_string();
+            let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+            let node = run["nodes"][0].clone();
+            let workflow_id = run["workflow_id"].as_str().unwrap().to_string();
+            let node_id = node["node_id"].as_str().unwrap().to_string();
+
+            let key_id = "operator-key-managed-codex";
+            let scopes = ALL_MANAGED_ACCEPTANCE_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>();
+            store
+                .record_api_key_metadata(
+                    key_id,
+                    "operator-user-managed-codex",
+                    "operator",
+                    &scopes,
+                    "test",
+                )
+                .unwrap();
+            let principal = store
+                .authenticate_managed_acceptance_principal("managed-codex-tenant", key_id, None)
+                .unwrap();
+            let attempt_id = "managed-codex-attempt";
+            let decision_id = "managed-codex-decision";
+            let residual = "ab".repeat(32);
+            let expires_at = (chrono::Utc::now() + chrono::Duration::hours(1))
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            let decision = store
+                .upsert_managed_acceptance_decision(
+                    "managed-codex-tenant",
+                    &managed_codex_decision_body(
+                        decision_id,
+                        &task_id,
+                        &workflow_id,
+                        &node_id,
+                        attempt_id,
+                        &revision,
+                        &admission,
+                    ),
+                    &residual,
+                    "draft_pending_operator",
+                    None,
+                    Some(&expires_at),
+                )
+                .unwrap();
+            let risk = store
+                .accept_managed_acceptance_decision(
+                    &principal,
+                    &RiskAcknowledgementRequest {
+                        decision_id: decision_id.to_string(),
+                        expected_decision_body_sha256: decision["decision_body_sha256"]
+                            .as_str()
+                            .unwrap()
+                            .to_string(),
+                        expected_residual_finding_sha256: residual,
+                        submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.to_string(),
+                        explicit_go: true,
+                    },
+                )
+                .unwrap();
+            let spend = store
+                .issue_managed_acceptance_spend_authorization(
+                    &principal,
+                    &SpendAuthorizationRequest {
+                        risk_authorization_id: risk["authorization_id"]
+                            .as_str()
+                            .unwrap()
+                            .to_string(),
+                        product_task_id: task_id.clone(),
+                        workflow_id: Some(workflow_id.clone()),
+                        workflow_node_id: Some(node_id.clone()),
+                        execution_id: format!("codex-attempt-{attempt_id}"),
+                        attempt_id: attempt_id.to_string(),
+                        binary_path: admission.binary_path.to_string_lossy().into_owned(),
+                        binary_version: admission.binary_version.clone(),
+                        binary_sha256: admission.binary_sha256.clone(),
+                        provider_kind: "openai_compatible".to_string(),
+                        provider_host: "api.openai.com".to_string(),
+                        provider_base_url: "https://api.openai.com/v1".to_string(),
+                        admitted_endpoint_paths: vec!["/v1/responses".to_string()],
+                        model: admission.model.clone(),
+                        target_repo: "managed-codex-target".to_string(),
+                        target_main_sha: revision.clone(),
+                        output_branch_prefix: "acp/".to_string(),
+                        draft_pr_only: true,
+                        max_provider_requests: 1,
+                        max_retries: 0,
+                        max_input_tokens: 8_000,
+                        max_output_tokens: 4_000,
+                        max_total_tokens: 12_000,
+                        max_wall_time_ms: 300_000,
+                        cost_authority: CostAuthority::CostUnavailable,
+                        cancellation_identity: "cancel-managed-codex".to_string(),
+                        rollback_identity: "rollback-managed-codex".to_string(),
+                    },
+                )
+                .unwrap();
+            store
+                .bind_managed_codex_spend_to_product_node(
+                    &principal,
+                    spend["spend_authorization_id"].as_str().unwrap(),
+                )
+                .unwrap();
+
+            let executor = CliNodeExecutor::admitted_codex(
+                admission.clone(),
+                Some(admission.binary_path.to_string_lossy().into_owned()),
+                300_000,
+            )
+            .with_managed_acceptance_store(Arc::clone(&store));
+            let tick = store
+                .tick_with_executor(&run_id, "scheduler", 1, &executor)
+                .expect("scheduler must reach the real CliNodeExecutor authority seam");
+            assert_eq!(tick["result"]["executor_type"], "codex_cli");
+            assert!(
+                !marker.exists(),
+                "child Codex must not spawn without a proved runtime lease path"
+            );
+
+            let attempt = store
+                .get_managed_acceptance_attempt(attempt_id)
+                .unwrap()
+                .expect("store admission must create one attempt lease");
+            assert_eq!(attempt["status"], "failed");
+            assert!(attempt["terminal_class"].as_str().is_some());
+            assert_eq!(attempt["receipt_json"]["content_excluded"], true);
+            assert!(attempt["receipt_json"].get("lease_token").is_none());
+            let consumed = store
+                .get_managed_acceptance_spend_authorization(
+                    spend["spend_authorization_id"].as_str().unwrap(),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(consumed["status"], "consumed");
+            assert_eq!(consumed["consumed_by_attempt_id"], attempt_id);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn product_run_owner_cannot_be_downgraded_by_stripped_node_metadata() {
+        let _guard = env_lock().lock().unwrap();
+        let _env = ProductTaskOutputEnvGuard::enable();
+
+        {
+            let root = tempfile::tempdir().unwrap();
+            let repo = root.path().join("target");
+            let revision = init_product_repo(&repo);
+            let database_path = root.path().join("store.db");
+            let store = Arc::new(LocalProductStore::new(&database_path).unwrap());
+            let marker = root.path().join("generic-codex-child-spawned");
+            let binary = fake_codex(
+                root.path(),
+                &format!("printf child-spawned > {}", marker.to_string_lossy()),
+            );
+            let intake = ProductTaskIntakeRequest {
+                objective: "ProductTask run-owner routing regression".to_string(),
+                target_id: "managed-codex-target".to_string(),
+                target_repo_path: repo.to_string_lossy().into_owned(),
+                source_revision: revision,
+                source_tree_hash: None,
+                allowed_paths: vec!["docs/managed.md".to_string()],
+                verification_commands: vec![ProductVerificationCommand {
+                    command: "test -f README.md".to_string(),
+                    timeout_ms: 5_000,
+                }],
+                output_intent: "artifact_only".to_string(),
+                executor_policy: ProductExecutorPolicy {
+                    allowed_executors: vec!["codex_cli".to_string()],
+                    prefer: Some("codex_cli".to_string()),
+                },
+                budget: Some(ProductTaskBudget {
+                    total_tokens: Some(12_000),
+                    total_calls: Some(1),
+                    total_elapsed_ms: Some(300_000),
+                    max_retries: Some(0),
+                    max_repairs: Some(0),
+                    max_concurrency: Some(1),
+                    stage_budgets: None,
+                }),
+                risk_class: "low".to_string(),
+                approval_required: true,
+                confirm_execution: Some(true),
+                confirm_output: Some(true),
+                idempotency_key: "managed-codex-run-owner-routing".to_string(),
+                expected_version: None,
+                tenant_id: Some("managed-codex-tenant".to_string()),
+                workspace_id: Some("managed-codex-workspace".to_string()),
+                workspace_mode: Some("git_worktree".to_string()),
+            };
+            let validated =
+                validate_intake(&intake, "managed-codex-tenant", "managed-codex-workspace")
+                    .unwrap();
+            let task = store.admit_product_task(&validated, "operator").unwrap();
+            let task_id = task["task_id"].as_str().unwrap();
+            let compiled = store
+                .compile_and_schedule_product_task(task_id, "operator", &["codex_cli".to_string()])
+                .unwrap();
+            let run_id = compiled["task"]["run_id"].as_str().unwrap().to_string();
+            let node_id = store.get_workflow_run(&run_id).unwrap().unwrap()["nodes"][0]["node_id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+
+            // Simulate an untrusted scheduler metadata mutation.  The durable
+            // ProductTask row still owns this run, so executor routing must not
+            // fall through to direct `Command::spawn`.
+            let connection = rusqlite::Connection::open(&database_path).unwrap();
+            let encoded: String = connection
+                .query_row(
+                    "SELECT node_json FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2",
+                    [&run_id, &node_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut node: Value = serde_json::from_str(&encoded).unwrap();
+            node.as_object_mut()
+                .unwrap()
+                .remove("managed_supervised_patch");
+            node.as_object_mut().unwrap().remove("product_task_id");
+            connection
+                .execute(
+                    "UPDATE workflow_run_nodes SET node_json=?1 WHERE run_id=?2 AND node_id=?3",
+                    rusqlite::params![node.to_string(), run_id, node_id],
+                )
+                .unwrap();
+
+            let executor =
+                CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 5_000)
+                    .with_managed_acceptance_store(Arc::clone(&store));
+            let tick = store
+                .tick_with_executor(&run_id, "scheduler", 1, &executor)
+                .expect("scheduler must reach the real run-owner executor seam");
+            assert_eq!(
+                tick.pointer("/result/error_domain").and_then(Value::as_str),
+                Some("cli_execution_authority_invalid"),
+                "durable run ownership must route to the store boundary"
+            );
+            assert!(
+                !marker.exists(),
+                "stripped node metadata must never permit generic Codex child spawn"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_without_persisted_product_task_owner_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(LocalProductStore::new(root.path().join("store.db")).unwrap());
+        let marker = root.path().join("unowned-codex-child-spawned");
+        let binary = fake_codex(
+            root.path(),
+            &format!("printf child-spawned > {}", marker.to_string_lossy()),
+        );
+        let executor =
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 5_000)
+                .with_managed_acceptance_store(store);
+        let output = executor.execute_node(&make_input(json!({
+            "executor": "codex_cli",
+            "prompt": "unowned codex",
+            "workspace_path": root.path(),
+        })));
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("cli_execution_authority_invalid")
+        );
+        assert!(
+            !marker.exists(),
+            "unowned Codex must never reach Command::spawn"
+        );
+    }
+
+    #[test]
+    fn managed_codex_terminal_state_covers_every_process_outcome_class() {
+        let cases = [
+            ("completed", None, ("succeeded", "process_succeeded")),
+            ("failed", Some("cli_cancelled"), ("cancelled", "cancelled")),
+            (
+                "failed",
+                Some("cli_outcome_unknown"),
+                ("outcome_unknown", "outcome_unknown"),
+            ),
+            (
+                "failed",
+                Some("cli_output_limit_exceeded"),
+                ("failed", "budget_exhausted"),
+            ),
+            ("failed", Some("cli_timeout"), ("failed", "timeout")),
+            (
+                "failed",
+                Some("cli_spawn_error"),
+                ("failed", "spawn_failed"),
+            ),
+            (
+                "failed",
+                Some("cli_gateway_error"),
+                ("failed", "gateway_failed"),
+            ),
+            (
+                "failed",
+                Some("cli_execution_authority_invalid"),
+                ("failed", "execution_failed"),
+            ),
+        ];
+        for (status, error_domain, expected) in cases {
+            let output = NodeExecutionOutput {
+                status: status.to_string(),
+                executor_type: "codex_cli".to_string(),
+                output: None,
+                error_domain: error_domain.map(str::to_string),
+                error_message: Some("redacted fixture failure".to_string()),
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+                process_outcome: None,
+                resolved_model: None,
+            };
+            assert_eq!(
+                managed_codex_terminal_state(&output),
+                expected,
+                "{error_domain:?}"
+            );
+        }
     }
 
     #[test]
@@ -1985,7 +2848,8 @@ mod tests {
             "printf '%s\\n' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}'",
         );
         let executor =
-            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 30_000);
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 30_000)
+                .with_unmanaged_codex_for_test();
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded fixture",
@@ -2002,7 +2866,8 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let binary = fake_codex(workspace.path(), "printf 'bounded failure' >&2\nexit 7");
         let executor =
-            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 5_000);
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 5_000)
+                .with_unmanaged_codex_for_test();
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded fixture",
@@ -2018,7 +2883,8 @@ mod tests {
     fn managed_cli_timeout_has_no_fabricated_exit_code() {
         let workspace = tempfile::tempdir().unwrap();
         let binary = fake_codex(workspace.path(), "sleep 5");
-        let executor = CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 50);
+        let executor = CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 50)
+            .with_unmanaged_codex_for_test();
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded fixture",
@@ -2039,7 +2905,8 @@ mod tests {
             "dd if=/dev/zero bs=1024 count=4097 status=none",
         );
         let executor =
-            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 30_000);
+            CliNodeExecutor::new(None, Some(binary.to_string_lossy().into_owned()), 30_000)
+                .with_unmanaged_codex_for_test();
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded flood",
@@ -2072,7 +2939,8 @@ mod tests {
                     .into_owned(),
             ),
             5_000,
-        );
+        )
+        .with_unmanaged_codex_for_test();
         let output = executor.execute_node(&make_input(json!({
             "executor": "codex_cli",
             "prompt": "bounded fixture",

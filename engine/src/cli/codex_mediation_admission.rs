@@ -8,6 +8,7 @@
 //! Official ChatGPT-auth Codex (child holds reusable OAuth) remains excluded.
 
 use std::ffi::OsString;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -15,7 +16,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::codex_budget_authority::{
-    BudgetGatewayUsage, CodexBudgetAuthority, CODEX_BUDGET_AUTHORITY_SCHEMA,
+    BudgetGatewayUsage, CodexBudgetAuthority, CodexBudgetGateway, CODEX_BUDGET_AUTHORITY_SCHEMA,
     CODEX_SESSION_TOKEN_PREFIX, DEFAULT_CODEX_MAX_OUTPUT_TOKENS_PER_REQUEST,
     DEFAULT_CODEX_MAX_PROVIDER_REQUESTS,
 };
@@ -26,6 +27,110 @@ pub const BUBBLEWRAP_BIN: &str = "/usr/bin/bwrap";
 pub const SANDBOX_CODEX_BIN: &str = "/opt/acp/managed-codex";
 /// Fixed in-sandbox path for the task-scoped CODEX_HOME.
 pub const SANDBOX_CODEX_HOME: &str = "/opt/acp/codex-home";
+
+/// Typed fact about the child network namespace. The currently wired launch
+/// shares the host network; a loopback gateway alone is not network confinement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedCodexNetworkBoundary {
+    HostNetworkShared,
+    LoopbackOnlyEnforced,
+}
+
+impl ManagedCodexNetworkBoundary {
+    pub fn loopback_only_enforced(self) -> bool {
+        matches!(self, Self::LoopbackOnlyEnforced)
+    }
+}
+
+/// Redacted facts sampled from the real launch-plan, gateway and journal owners.
+/// No field is sourced from an environment declaration or string heuristic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedCodexRuntimeAttestation {
+    parent_credential_owner_present: bool,
+    child_credential_clearance: bool,
+    mediation_gateway_configured: bool,
+    gateway_is_loopback: bool,
+    gateway_exactly_bound_to_plan: bool,
+    network_boundary: ManagedCodexNetworkBoundary,
+    journal_path_parent_owned: bool,
+    journal_durable: bool,
+}
+
+/// The launcher-owned binding between a child launch and the exact gateway that
+/// issued its scoped session capability.  A declared URL is useful for plan
+/// inspection, but it is deliberately insufficient to produce runtime proof.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GatewayLaunchBinding {
+    #[cfg(test)]
+    DeclaredOnly,
+    RuntimeOwner {
+        local_addr: SocketAddr,
+        session_token_sha256: String,
+    },
+}
+
+/// Facts fixed by the launcher when it constructs the child process.  These
+/// are private so callers cannot mutate an inspected launch plan and retain a
+/// previously-derived clearance result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagedCodexChildLaunchOwner {
+    clear_parent_environment: bool,
+    isolation_mode: IsolationMode,
+    sandbox_codex_home: PathBuf,
+    gateway_binding: GatewayLaunchBinding,
+}
+
+impl ManagedCodexRuntimeAttestation {
+    pub fn parent_credential_owner_present(&self) -> bool {
+        self.parent_credential_owner_present
+    }
+
+    pub fn child_credential_clearance(&self) -> bool {
+        self.child_credential_clearance
+    }
+
+    pub fn mediation_gateway_configured(&self) -> bool {
+        self.mediation_gateway_configured
+    }
+
+    pub fn gateway_is_loopback(&self) -> bool {
+        self.gateway_is_loopback
+    }
+
+    pub fn network_confinement_enforced(&self) -> bool {
+        self.network_boundary.loopback_only_enforced()
+    }
+
+    pub fn journal_path_parent_owned(&self) -> bool {
+        self.journal_path_parent_owned
+    }
+
+    pub fn journal_durable(&self) -> bool {
+        self.journal_durable
+    }
+
+    /// Require every currently enforceable ownership fact. Network confinement is
+    /// intentionally reported separately: host-network sharing is a residual
+    /// blocker and must not be mislabeled as a successful loopback-only proof.
+    pub fn assert_required_mediation_owners(&self) -> Result<(), String> {
+        if !self.parent_credential_owner_present {
+            return Err("gateway parent credential owner is unavailable".to_string());
+        }
+        if !self.child_credential_clearance {
+            return Err("launch plan child credential clearance failed".to_string());
+        }
+        if !self.mediation_gateway_configured
+            || !self.gateway_is_loopback
+            || !self.gateway_exactly_bound_to_plan
+        {
+            return Err("launch plan is not bound to its actual loopback gateway".to_string());
+        }
+        if !self.journal_path_parent_owned || !self.journal_durable {
+            return Err("gateway parent-owned journal is unavailable or not durable".to_string());
+        }
+        Ok(())
+    }
+}
 
 /// True when bwrap can create an unprivileged user+pid namespace (not true on all
 /// CI hosts that still provide FS isolation via bwrap bind/tmpfs mounts).
@@ -149,15 +254,18 @@ pub struct CodexMediatedCapabilityReport {
 }
 
 impl CodexMediatedCapabilityReport {
-    /// Honest classification after PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1.
+    /// Honest classification after PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1
+    /// and PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1.
     ///
-    /// Does **not** claim full live Golden Path admission: Codex does not label
-    /// internal retries on the HTTP wire, and host-loopback-preserving network
-    /// isolation is unproved on this unprivileged profile.
+    /// Does **not** claim full live Golden Path admission. Residual axes are
+    /// investigated by `codex_residual_admission` (`residual_admission_no_go`
+    /// until every axis is proved). Product launch still uses shared host
+    /// network (credential non-bypass only); loopback-only is design-proved
+    /// on capable hosts but not product-enforced.
     pub fn evaluate(isolation: IsolationMode, bwrap_present: bool) -> Self {
         let fs_ok = matches!(isolation, IsolationMode::BubblewrapFilesystem) && bwrap_present;
         let network_confinement = if fs_ok {
-            "shared_host_network_credential_non_bypass_only;loopback_only_netns_unproved"
+            "shared_host_network_credential_non_bypass_only;loopback_only_design_proved_not_product_enforced"
                 .to_string()
         } else {
             "unavailable".to_string()
@@ -169,7 +277,7 @@ impl CodexMediatedCapabilityReport {
             )
         } else {
             Some(
-                "remaining full-admission blockers: (1) Codex internal retries are not wire-labeled so retry axis is only a subsequent-POST cap, not true retry identity; (2) process-level network isolation that reaches only the loopback gateway (not arbitrary egress) is unproved without elevated privileges; (3) unprivileged user-namespace/PID isolation is host-dependent (uid_map may be denied); (4) live operator credential+authorization still required for managed acceptance"
+                "residual_admission_no_go: (1) Codex 0.145.0 internal retries are not wire-labeled (true retry identity unavailable; max_retries is subsequent-POST cap only); (2) product launch does not enforce loopback-only network confinement (unshare-net+unix-bridge design is host-proved where available, not product-wired); (3) unprivileged user-namespace/PID isolation is host-dependent (uid_map may be denied); (4) live operator credential+authorization still required for managed acceptance. See codex_residual_admission_finding.v1."
                     .to_string(),
             )
         };
@@ -202,6 +310,8 @@ impl CodexMediatedCapabilityReport {
             remaining_blocker: remaining,
             notes: vec![
                 "PR #295 was a partial foundation; full admission is not claimed.".into(),
+                "PR #296 repaired authority gaps; class remains mediation_hardened_partial.".into(),
+                "PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1 records residual_admission_no_go.".into(),
                 "Official ChatGPT-auth Codex path remains excluded from Product Golden Path.".into(),
                 "Session JSONL importer is corroborating evidence only; gateway is the cross-call gate.".into(),
                 "ProductTask budget remains the sole durable budget authority.".into(),
@@ -237,17 +347,18 @@ impl CodexMediatedCapabilityReport {
 /// Planned mediated child launch (program + args + env). Does not spawn.
 #[derive(Debug, Clone)]
 pub struct MediatedCodexLaunchPlan {
-    pub isolation_mode: IsolationMode,
-    pub program: PathBuf,
-    pub args: Vec<OsString>,
-    pub clear_env: bool,
-    pub env: Vec<(OsString, OsString)>,
-    pub current_dir: PathBuf,
-    pub sandbox_codex_bin: PathBuf,
-    pub sandbox_codex_home: PathBuf,
-    pub host_ephemeral_home: PathBuf,
-    pub host_binary: PathBuf,
-    pub capability: CodexMediatedCapabilityReport,
+    isolation_mode: IsolationMode,
+    program: PathBuf,
+    args: Vec<OsString>,
+    clear_env: bool,
+    env: Vec<(OsString, OsString)>,
+    current_dir: PathBuf,
+    sandbox_codex_bin: PathBuf,
+    sandbox_codex_home: PathBuf,
+    host_ephemeral_home: PathBuf,
+    capability: CodexMediatedCapabilityReport,
+    network_boundary: ManagedCodexNetworkBoundary,
+    child_launch_owner: ManagedCodexChildLaunchOwner,
 }
 
 impl MediatedCodexLaunchPlan {
@@ -299,7 +410,77 @@ impl MediatedCodexLaunchPlan {
         Ok(())
     }
 
-    pub fn to_command(&self) -> Command {
+    /// Prove child credential clearance from the immutable launcher owner and
+    /// the currently running gateway.  This is intentionally not derived from
+    /// process environment declarations or credential-shaped string scans.
+    fn assert_runtime_child_credential_clearance(
+        &self,
+        gateway: &CodexBudgetGateway,
+    ) -> Result<(), String> {
+        let owner = &self.child_launch_owner;
+        if !owner.clear_parent_environment || !self.clear_env {
+            return Err("managed child does not clear the parent environment".to_string());
+        }
+        if owner.isolation_mode != IsolationMode::BubblewrapFilesystem
+            || self.isolation_mode != IsolationMode::BubblewrapFilesystem
+        {
+            return Err("managed child launcher isolation owner is unavailable".to_string());
+        }
+        if owner.sandbox_codex_home != self.sandbox_codex_home
+            || !self.sandbox_codex_home.is_absolute()
+        {
+            return Err(
+                "managed child CODEX_HOME is not the launcher-owned sandbox home".to_string(),
+            );
+        }
+        if !self.host_ephemeral_home.is_dir() {
+            return Err("managed child ephemeral CODEX_HOME owner is unavailable".to_string());
+        }
+        match &owner.gateway_binding {
+            GatewayLaunchBinding::RuntimeOwner {
+                local_addr,
+                session_token_sha256,
+            } if *local_addr == gateway.local_addr()
+                && *session_token_sha256 == session_token_fingerprint(gateway.session_token()) =>
+            {
+                Ok(())
+            }
+            GatewayLaunchBinding::RuntimeOwner { .. } => Err(
+                "managed child gateway session capability does not match runtime owner".to_string(),
+            ),
+            #[cfg(test)]
+            GatewayLaunchBinding::DeclaredOnly => Err(
+                "managed child launch was not constructed from the runtime gateway owner"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// Derive redacted runtime facts from the actual launcher, gateway and
+    /// parent-owned journal. Any failed owner read is an error, never a default.
+    pub fn derive_runtime_attestation(
+        &self,
+        gateway: &CodexBudgetGateway,
+    ) -> Result<ManagedCodexRuntimeAttestation, String> {
+        self.assert_runtime_child_credential_clearance(gateway)?;
+        let journal = gateway.journal_ownership_facts()?;
+        let gateway_exactly_bound_to_plan = matches!(
+            self.child_launch_owner.gateway_binding,
+            GatewayLaunchBinding::RuntimeOwner { local_addr, .. } if local_addr == gateway.local_addr()
+        );
+        Ok(ManagedCodexRuntimeAttestation {
+            parent_credential_owner_present: gateway.parent_credential_owner_present(),
+            child_credential_clearance: true,
+            mediation_gateway_configured: gateway_exactly_bound_to_plan,
+            gateway_is_loopback: gateway.local_addr().ip().is_loopback(),
+            gateway_exactly_bound_to_plan,
+            network_boundary: self.network_boundary,
+            journal_path_parent_owned: journal.parent_owned_for_attempt,
+            journal_durable: journal.durable_and_current,
+        })
+    }
+
+    pub(crate) fn to_command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args)
             .current_dir(&self.current_dir)
@@ -317,7 +498,8 @@ impl MediatedCodexLaunchPlan {
 }
 
 /// Build a one-shot mediated launch plan. Full product admission requires bwrap.
-pub fn plan_mediated_codex_launch(
+#[cfg(test)]
+fn plan_mediated_codex_launch(
     authority: &CodexBudgetAuthority,
     host_binary: &Path,
     host_ephemeral_home: &Path,
@@ -325,16 +507,85 @@ pub fn plan_mediated_codex_launch(
     session_token: &str,
     codex_args: &[OsString],
 ) -> Result<MediatedCodexLaunchPlan, String> {
+    build_mediated_codex_launch_plan(
+        authority,
+        host_binary,
+        host_ephemeral_home,
+        gateway_base_url,
+        session_token,
+        codex_args,
+        GatewayLaunchBinding::DeclaredOnly,
+    )
+}
+
+/// Build a production plan from the actual gateway owner.  This is the only
+/// constructor whose plan can produce a runtime attestation for preflight or
+/// execution admission.
+pub fn plan_mediated_codex_launch_for_gateway(
+    authority: &CodexBudgetAuthority,
+    host_binary: &Path,
+    host_ephemeral_home: &Path,
+    gateway: &CodexBudgetGateway,
+    codex_args: &[OsString],
+) -> Result<MediatedCodexLaunchPlan, String> {
+    build_mediated_codex_launch_plan(
+        authority,
+        host_binary,
+        host_ephemeral_home,
+        &gateway.base_url(),
+        gateway.session_token(),
+        codex_args,
+        GatewayLaunchBinding::RuntimeOwner {
+            local_addr: gateway.local_addr(),
+            session_token_sha256: session_token_fingerprint(gateway.session_token()),
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_mediated_codex_launch_plan(
+    authority: &CodexBudgetAuthority,
+    host_binary: &Path,
+    host_ephemeral_home: &Path,
+    gateway_base_url: &str,
+    session_token: &str,
+    codex_args: &[OsString],
+    gateway_binding: GatewayLaunchBinding,
+) -> Result<MediatedCodexLaunchPlan, String> {
     if authority.schema_version != CODEX_BUDGET_AUTHORITY_SCHEMA {
         return Err("codex budget authority schema version is unsupported".to_string());
     }
-    if !session_token.starts_with(CODEX_SESSION_TOKEN_PREFIX) {
-        return Err("session token is not an ACP codex budget token".to_string());
-    }
-    if !gateway_base_url.starts_with("http://127.0.0.1:")
-        && !gateway_base_url.starts_with("http://localhost:")
-    {
-        return Err("gateway base URL must be loopback HTTP for mediated Codex".to_string());
+    match &gateway_binding {
+        GatewayLaunchBinding::RuntimeOwner {
+            local_addr,
+            session_token_sha256,
+        } => {
+            // Production evidence comes from the live listener and its scoped
+            // capability, not a configured URL/token string.
+            if !local_addr.ip().is_loopback() {
+                return Err("runtime gateway listener is not loopback".to_string());
+            }
+            if session_token_fingerprint(session_token) != *session_token_sha256 {
+                return Err(
+                    "runtime gateway session capability changed during plan construction"
+                        .to_string(),
+                );
+            }
+        }
+        #[cfg(test)]
+        GatewayLaunchBinding::DeclaredOnly => {
+            // This constructor exists for provider-free plan inspection only;
+            // it cannot derive a runtime attestation or reach Command::spawn.
+            if !session_token.starts_with(CODEX_SESSION_TOKEN_PREFIX) {
+                return Err(
+                    "declared test session token is not an ACP codex budget token".to_string(),
+                );
+            }
+            let declared_loopback = declared_test_gateway_is_loopback(gateway_base_url);
+            if !declared_loopback {
+                return Err("declared gateway base URL must be loopback HTTP".to_string());
+            }
+        }
     }
     let host_binary = std::fs::canonicalize(host_binary)
         .map_err(|error| format!("Codex binary is unavailable: {error}"))?;
@@ -455,11 +706,38 @@ pub fn plan_mediated_codex_launch(
         sandbox_codex_bin: PathBuf::from(SANDBOX_CODEX_BIN),
         sandbox_codex_home: PathBuf::from(SANDBOX_CODEX_HOME),
         host_ephemeral_home: host_ephemeral_home.to_path_buf(),
-        host_binary,
         capability,
+        // The current bwrap plan deliberately keeps host networking so it can
+        // reach the TCP loopback gateway. Do not claim this is confinement.
+        network_boundary: ManagedCodexNetworkBoundary::HostNetworkShared,
+        child_launch_owner: ManagedCodexChildLaunchOwner {
+            clear_parent_environment: true,
+            isolation_mode: IsolationMode::BubblewrapFilesystem,
+            sandbox_codex_home: PathBuf::from(SANDBOX_CODEX_HOME),
+            gateway_binding,
+        },
     };
-    plan.assert_no_upstream_credential_env()?;
     Ok(plan)
+}
+
+/// Declared-only plan validation for provider-free tests. Production plan
+/// construction instead uses `GatewayLaunchBinding::RuntimeOwner` above.
+#[cfg(test)]
+fn declared_test_gateway_is_loopback(base_url: &str) -> bool {
+    let Some(authority_and_path) = base_url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = authority_and_path.split('/').next().unwrap_or_default();
+    if let Ok(address) = authority.parse::<std::net::SocketAddr>() {
+        return address.ip().is_loopback();
+    }
+    authority
+        .strip_prefix("localhost:")
+        .is_some_and(|port| port.parse::<u16>().is_ok())
+}
+
+fn session_token_fingerprint(session_token: &str) -> String {
+    hex::encode(Sha256::digest(session_token.as_bytes()))
 }
 
 /// Provider-free probe: under the planned sandbox, the real operator auth path is unreadable.
@@ -815,6 +1093,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&eph);
         let _ = std::fs::remove_file(&authority.executable.binary_path);
+    }
+
+    #[test]
+    fn runtime_attestation_uses_actual_gateway_and_parent_journal_owners() {
+        require_bwrap();
+        let worktree =
+            std::env::temp_dir().join(format!("codex-owner-wt-{}", uuid::Uuid::new_v4()));
+        let ephemeral_home =
+            std::env::temp_dir().join(format!("codex-owner-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&worktree).unwrap();
+        let authority = sample_authority(worktree.clone());
+        let journal_path =
+            crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
+        let _ = std::fs::remove_file(&journal_path);
+        let gateway = CodexBudgetGateway::start(
+            crate::cli::codex_budget_authority::CodexGatewayStartPermit::provider_free_fixture(
+                &authority.execution_id,
+            ),
+            authority.clone(),
+            &authority.provider.base_url,
+            "provider-fixture-key",
+            journal_path.clone(),
+        )
+        .unwrap();
+        write_ephemeral_codex_home(&ephemeral_home, &authority.model, &gateway.base_url()).unwrap();
+
+        let plan = plan_mediated_codex_launch_for_gateway(
+            &authority,
+            &authority.executable.binary_path,
+            &ephemeral_home,
+            &gateway,
+            &[],
+        )
+        .unwrap();
+        let attestation = plan.derive_runtime_attestation(&gateway).unwrap();
+        attestation.assert_required_mediation_owners().unwrap();
+        assert!(attestation.parent_credential_owner_present());
+        assert!(attestation.child_credential_clearance());
+        assert!(attestation.mediation_gateway_configured());
+        assert!(attestation.gateway_is_loopback());
+        assert!(attestation.journal_path_parent_owned());
+        assert!(attestation.journal_durable());
+        assert!(
+            !attestation.network_confinement_enforced(),
+            "the current launcher must not claim host-network sharing is confinement"
+        );
+
+        let declared_only = plan_mediated_codex_launch(
+            &authority,
+            &authority.executable.binary_path,
+            &ephemeral_home,
+            &gateway.base_url(),
+            gateway.session_token(),
+            &[],
+        )
+        .unwrap();
+        assert!(
+            declared_only.derive_runtime_attestation(&gateway).is_err(),
+            "a URL/token declaration is not a runtime-owner proof"
+        );
+        std::fs::write(&journal_path, "not-json").unwrap();
+        assert!(
+            plan.derive_runtime_attestation(&gateway).is_err(),
+            "an unreadable parent journal must fail closed rather than preserve prior runtime facts"
+        );
+
+        let _ = gateway.shutdown();
+        let _ = std::fs::remove_file(journal_path);
+        let _ = std::fs::remove_dir_all(worktree);
+        let _ = std::fs::remove_dir_all(ephemeral_home);
+        let _ = std::fs::remove_file(authority.executable.binary_path);
     }
 
     #[test]

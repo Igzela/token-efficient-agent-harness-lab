@@ -13,6 +13,8 @@ use engine::budget_manager::{
     BudgetEvidenceReference, BudgetEvidenceScope, BudgetEvidenceWindow,
 };
 #[cfg(feature = "pg-tests")]
+use engine::cli::codex_partial_mediation_authority_decision::OPERATOR_RISK_ACCEPTANCE_PHRASE;
+#[cfg(feature = "pg-tests")]
 use engine::event_schema::canonical_event_json;
 #[cfg(feature = "pg-tests")]
 use engine::feedback::{
@@ -44,9 +46,10 @@ use engine::provider::transport::{HttpError, HttpRequest, HttpResponse, HttpTran
 use engine::storage::local_product_store::BudgetAutoPausePolicy;
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::{
-    DurableMemoryCreate, DurableMemoryRevision, ExternalRuntimeInvocationClaim,
-    ExternalRuntimeScope, LocalProductStore, MemoryRetrievalRequest, MemoryScope,
-    ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
+    AuthenticatedPrincipal, CostAuthority, DurableMemoryCreate, DurableMemoryRevision,
+    ExternalRuntimeInvocationClaim, ExternalRuntimeScope, LocalProductStore,
+    MemoryRetrievalRequest, MemoryScope, ProviderEmbeddingResolutionAction,
+    ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, SpendAuthorizationRequest,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -175,6 +178,145 @@ fn uuid_tag() -> String {
 }
 
 #[cfg(feature = "pg-tests")]
+fn pg_managed_acceptance_decision_body(decision_id: &str, attempt_id: &str) -> Value {
+    json!({
+        "decision_id": decision_id,
+        "schema_version": "codex_partial_mediation_authority_decision.v2",
+        "status": "draft_pending_operator",
+        "invalidation_state": "none",
+        "acknowledgement": {
+            "required_phrase": OPERATOR_RISK_ACCEPTANCE_PHRASE,
+        },
+        "trial_envelope": {
+            "max_retries": 0,
+            "max_provider_requests": 1,
+            "draft_pr_only": true,
+            "max_input_tokens": 8000,
+            "max_output_tokens": 4000,
+            "max_total_tokens": 12000,
+            "max_wall_time_ms": 300000,
+            "exact_codex_version": "0.145.0",
+            "exact_codex_sha_required": true,
+            "provider_kind": "openai_compatible",
+            "provider_host": "api.openai.com",
+            "provider_base_url": "https://api.openai.com/v1",
+            "admitted_endpoint_paths": ["/v1/responses"],
+            "model": "gpt-5.6-luna",
+            "product_task_id": "ptask-1",
+            "workflow_id": "wf-1",
+            "workflow_node_id": "node-1",
+            "execution_id": format!("codex-attempt-{attempt_id}"),
+            "attempt_id": attempt_id,
+            "target_repo": "org/disposable-trial",
+            "target_main_sha": "a".repeat(40),
+            "exact_codex_path": "/usr/bin/codex",
+            "exact_codex_sha256": "ab".repeat(32),
+            "cancellation_identity": "cancel-1",
+            "rollback_identity": "rollback-1",
+            "output_branch_prefix": "acp/",
+            "cost_authority": {
+                "kind": "cost_unavailable",
+                "monetary_ceiling_enforced": false,
+                "note": "rely on request/token/time caps; no monetary ceiling claimed",
+            },
+            "auto_merge_disabled": true,
+        },
+    })
+}
+
+#[cfg(feature = "pg-tests")]
+fn pg_managed_acceptance_spend_request(
+    risk_authorization_id: &str,
+    attempt_id: &str,
+) -> SpendAuthorizationRequest {
+    SpendAuthorizationRequest {
+        risk_authorization_id: risk_authorization_id.to_string(),
+        product_task_id: "ptask-1".to_string(),
+        workflow_id: Some("wf-1".to_string()),
+        workflow_node_id: Some("node-1".to_string()),
+        execution_id: format!("codex-attempt-{attempt_id}"),
+        attempt_id: attempt_id.to_string(),
+        binary_path: "/usr/bin/codex".to_string(),
+        binary_version: "0.145.0".to_string(),
+        binary_sha256: "ab".repeat(32),
+        provider_kind: "openai_compatible".to_string(),
+        provider_host: "api.openai.com".to_string(),
+        provider_base_url: "https://api.openai.com/v1".to_string(),
+        admitted_endpoint_paths: vec!["/v1/responses".to_string()],
+        model: "gpt-5.6-luna".to_string(),
+        target_repo: "org/disposable-trial".to_string(),
+        target_main_sha: "a".repeat(40),
+        output_branch_prefix: "acp/".to_string(),
+        draft_pr_only: true,
+        max_provider_requests: 1,
+        max_retries: 0,
+        max_input_tokens: 8000,
+        max_output_tokens: 4000,
+        max_total_tokens: 12000,
+        max_wall_time_ms: 300000,
+        cost_authority: CostAuthority::CostUnavailable,
+        cancellation_identity: "cancel-1".to_string(),
+        rollback_identity: "rollback-1".to_string(),
+    }
+}
+
+#[cfg(feature = "pg-tests")]
+fn pg_seed_managed_acceptance(
+    store: &LocalProductStore,
+    tag: &str,
+    attempt_id: &str,
+) -> (AuthenticatedPrincipal, Value, SpendAuthorizationRequest) {
+    let decision_id = format!("mad-pg-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(
+        "tenant-pg-managed-acceptance",
+        &format!("fixture-principal-pg-managed-{tag}"),
+    )
+    .unwrap();
+    let residual = "7b".repeat(32);
+    let expires_at = (chrono::Utc::now() + chrono::Duration::hours(1))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let decision = store
+        .upsert_managed_acceptance_decision(
+            "tenant-pg-managed-acceptance",
+            &pg_managed_acceptance_decision_body(&decision_id, attempt_id),
+            &residual,
+            "draft_pending_operator",
+            None,
+            Some(&expires_at),
+        )
+        .unwrap();
+    let risk = store
+        .accept_managed_acceptance_decision(
+            &principal,
+            &RiskAcknowledgementRequest {
+                decision_id,
+                expected_decision_body_sha256: decision["decision_body_sha256"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                expected_residual_finding_sha256: residual,
+                submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.to_string(),
+                explicit_go: true,
+            },
+        )
+        .unwrap();
+    let request =
+        pg_managed_acceptance_spend_request(risk["authorization_id"].as_str().unwrap(), attempt_id);
+    (principal, risk, request)
+}
+
+#[cfg(feature = "pg-tests")]
+fn pg_attempt_body_from_spend(spend: &Value) -> Value {
+    let mut body = spend["body_json"].clone();
+    let manifest = engine::storage::local_product_store::build_attempt_authority_manifest(&body)
+        .expect("spend body has a complete attempt manifest");
+    body["manifest_sha256"] = manifest["manifest_sha256"].clone();
+    body["manifest"] = manifest;
+    body
+}
+
+#[cfg(feature = "pg-tests")]
 fn tool_policy_pass_count(store: &LocalProductStore) -> usize {
     store
         .audit_events(100_000)
@@ -276,6 +418,509 @@ fn pg_product_task_to_approval(
         "PostgreSQL product artifacts must exclude fixture control files"
     );
     (task, approval, artifact)
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_managed_acceptance_product_task_phase_revalidates_real_receipts() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg managed acceptance receipt phase");
+    let tag = uuid_tag();
+    let (task, approval, artifact) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &tag, "artifact_only");
+    let task_id = task["task_id"].as_str().unwrap().to_string();
+    let target_id = task["target_id"].as_str().unwrap().to_string();
+    let task_version = task["version"].as_u64().unwrap();
+    let awaiting = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect("PostgreSQL verification receipt owner path");
+    assert_eq!(awaiting["stage"], "awaiting_approval");
+    let target_error = store
+        .validate_managed_acceptance_product_task_phase(
+            "local",
+            &task_id,
+            "other-target",
+            &revision,
+        )
+        .expect_err("PostgreSQL ProductTask target must exactly bind spend target");
+    assert!(target_error.contains("target_id"), "{target_error}");
+    let revision_error = store
+        .validate_managed_acceptance_product_task_phase(
+            "local",
+            &task_id,
+            &target_id,
+            &"f".repeat(40),
+        )
+        .expect_err("PostgreSQL ProductTask revision must exactly bind spend SHA");
+    assert!(
+        revision_error.contains("source_revision"),
+        "{revision_error}"
+    );
+
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+    let workspace_id = task["workspace_record_id"].as_str().unwrap();
+    let original_workspace_json: String = client
+        .query_one(
+            "SELECT workspace_json FROM supervised_patch_workspaces WHERE workspace_id=$1",
+            &[&workspace_id],
+        )
+        .unwrap()
+        .get(0);
+    let mut stale_version_workspace: Value =
+        serde_json::from_str(&original_workspace_json).unwrap();
+    stale_version_workspace["verification"]["expected_task_version"] = json!(0);
+    for receipt in stale_version_workspace["verification"]["verification_attempts"]
+        .as_array_mut()
+        .unwrap()
+    {
+        receipt["expected_task_version"] = json!(0);
+    }
+    client
+        .execute(
+            "UPDATE supervised_patch_workspaces SET workspace_json=$1 WHERE workspace_id=$2",
+            &[&stale_version_workspace.to_string(), &workspace_id],
+        )
+        .unwrap();
+    let stale_version_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("PostgreSQL stale verification version must fail closed");
+    assert!(
+        stale_version_error.contains("immediately preceding task version"),
+        "{stale_version_error}"
+    );
+    client
+        .execute(
+            "UPDATE supervised_patch_workspaces SET workspace_json=$1 WHERE workspace_id=$2",
+            &[&original_workspace_json, &workspace_id],
+        )
+        .unwrap();
+    let original_boundary_json: String = client
+        .query_one(
+            "SELECT boundary_json FROM supervised_patch_workspaces WHERE workspace_id=$1",
+            &[&workspace_id],
+        )
+        .unwrap()
+        .get(0);
+    client
+        .execute(
+            "UPDATE supervised_patch_workspaces SET boundary_json='not-json' WHERE workspace_id=$1",
+            &[&workspace_id],
+        )
+        .unwrap();
+    let boundary_owner_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("corrupt PostgreSQL workspace boundary owner must fail closed");
+    assert!(
+        boundary_owner_error
+            .contains("managed acceptance workspace boundary owner is invalid JSON"),
+        "{boundary_owner_error}"
+    );
+    client
+        .execute(
+            "UPDATE supervised_patch_workspaces SET boundary_json=$1 WHERE workspace_id=$2",
+            &[&original_boundary_json, &workspace_id],
+        )
+        .unwrap();
+    client
+        .execute(
+            "UPDATE product_tasks SET confirm_output=0 WHERE task_id=$1",
+            &[&task_id],
+        )
+        .unwrap();
+    let boolean_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("PostgreSQL persisted false confirmation must fail closed");
+    assert!(boolean_error.contains("confirm_output"), "{boolean_error}");
+    client
+        .execute(
+            "UPDATE product_tasks SET confirm_output=1 WHERE task_id=$1",
+            &[&task_id],
+        )
+        .unwrap();
+    client
+        .execute(
+            "UPDATE product_tasks SET confirm_output=-1 WHERE task_id=$1",
+            &[&task_id],
+        )
+        .unwrap();
+    let malformed_boolean_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("PostgreSQL non-boolean confirmation storage must fail closed");
+    assert!(
+        malformed_boolean_error.contains("confirm_output is not a persisted boolean"),
+        "{malformed_boolean_error}"
+    );
+    client
+        .execute(
+            "UPDATE product_tasks SET confirm_output=1 WHERE task_id=$1",
+            &[&task_id],
+        )
+        .unwrap();
+
+    store
+        .output_product_task(
+            &task_id,
+            "pg-managed-acceptance-output",
+            task_version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    let terminal = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect("PostgreSQL terminal evidence owner path");
+    assert_eq!(terminal["stage"], "terminal");
+
+    let mut tampered_workspace: Value = serde_json::from_str(&original_workspace_json).unwrap();
+    tampered_workspace["verification"]["trustworthy"] = json!(false);
+    client
+        .execute(
+            "UPDATE supervised_patch_workspaces SET workspace_json=$1 WHERE workspace_id=$2",
+            &[&tampered_workspace.to_string(), &workspace_id],
+        )
+        .unwrap();
+    let verification_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("PostgreSQL untrustworthy verification must fail closed");
+    assert!(
+        verification_error.contains("verification receipt is not accepted and trustworthy"),
+        "{verification_error}"
+    );
+    client
+        .execute(
+            "UPDATE supervised_patch_workspaces SET workspace_json=$1 WHERE workspace_id=$2",
+            &[&original_workspace_json, &workspace_id],
+        )
+        .unwrap();
+    client
+        .execute(
+            "UPDATE supervised_patch_workspaces SET workspace_json='not-json' WHERE workspace_id=$1",
+            &[&workspace_id],
+        )
+        .unwrap();
+    let owner_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("corrupt PostgreSQL evidence owner data must fail closed");
+    assert!(
+        owner_error.contains("workspace") || owner_error.contains("verification"),
+        "{owner_error}"
+    );
+    client
+        .execute(
+            "UPDATE supervised_patch_workspaces SET workspace_json=$1 WHERE workspace_id=$2",
+            &[&original_workspace_json, &workspace_id],
+        )
+        .unwrap();
+
+    let artifact_id = artifact["artifact_id"].as_str().unwrap();
+    let original_artifact_json: String = client
+        .query_one(
+            "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id=$1",
+            &[&artifact_id],
+        )
+        .unwrap()
+        .get(0);
+    let mut tampered_artifact: Value = serde_json::from_str(&original_artifact_json).unwrap();
+    tampered_artifact["product_output_receipt"]["expected_task_version"] = json!(0);
+    client
+        .execute(
+            "UPDATE supervised_patch_artifacts SET artifact_json=$1 WHERE artifact_id=$2",
+            &[&tampered_artifact.to_string(), &artifact_id],
+        )
+        .unwrap();
+    let output_version_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("PostgreSQL stale output version must fail closed");
+    assert!(
+        output_version_error.contains("output receipt/operation content binding"),
+        "{output_version_error}"
+    );
+    client
+        .execute(
+            "UPDATE supervised_patch_artifacts SET artifact_json=$1 WHERE artifact_id=$2",
+            &[&original_artifact_json, &artifact_id],
+        )
+        .unwrap();
+    let original_changed_files_json: String = client
+        .query_one(
+            "SELECT changed_files_json FROM supervised_patch_artifacts WHERE artifact_id=$1",
+            &[&artifact_id],
+        )
+        .unwrap()
+        .get(0);
+    client
+        .execute(
+            "UPDATE supervised_patch_artifacts SET changed_files_json='not-json' WHERE artifact_id=$1",
+            &[&artifact_id],
+        )
+        .unwrap();
+    let changed_files_owner_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("corrupt PostgreSQL artifact changed-files owner must fail closed");
+    assert!(
+        changed_files_owner_error
+            .contains("managed acceptance artifact changed-files owner is invalid JSON"),
+        "{changed_files_owner_error}"
+    );
+    client
+        .execute(
+            "UPDATE supervised_patch_artifacts SET changed_files_json=$1 WHERE artifact_id=$2",
+            &[&original_changed_files_json, &artifact_id],
+        )
+        .unwrap();
+
+    client
+        .execute(
+            "UPDATE supervised_patch_artifacts SET artifact_json='not-json' WHERE artifact_id=$1",
+            &[&artifact_id],
+        )
+        .unwrap();
+    let artifact_json_owner_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("corrupt PostgreSQL artifact owner must fail closed");
+    assert!(
+        artifact_json_owner_error.contains("managed acceptance artifact owner is invalid JSON"),
+        "{artifact_json_owner_error}"
+    );
+    client
+        .execute(
+            "UPDATE supervised_patch_artifacts SET artifact_json=$1 WHERE artifact_id=$2",
+            &[&original_artifact_json, &artifact_id],
+        )
+        .unwrap();
+
+    let mut tampered_artifact: Value = serde_json::from_str(&original_artifact_json).unwrap();
+    tampered_artifact["product_task_id"] = json!("other-product-task");
+    client
+        .execute(
+            "UPDATE supervised_patch_artifacts SET artifact_json=$1 WHERE artifact_id=$2",
+            &[&tampered_artifact.to_string(), &artifact_id],
+        )
+        .unwrap();
+    let artifact_owner_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("PostgreSQL artifact from another ProductTask must fail closed");
+    assert!(
+        artifact_owner_error.contains("no exact artifact")
+            || artifact_owner_error.contains("artifact target binding"),
+        "{artifact_owner_error}"
+    );
+    client
+        .execute(
+            "UPDATE supervised_patch_artifacts SET artifact_json=$1 WHERE artifact_id=$2",
+            &[&original_artifact_json, &artifact_id],
+        )
+        .unwrap();
+
+    let mut tampered_artifact: Value = serde_json::from_str(&original_artifact_json).unwrap();
+    tampered_artifact["product_output_receipt"]["approval_id"] = json!("stale-approval-id");
+    client
+        .execute(
+            "UPDATE supervised_patch_artifacts SET artifact_json=$1 WHERE artifact_id=$2",
+            &[&tampered_artifact.to_string(), &artifact_id],
+        )
+        .unwrap();
+    let approval_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("PostgreSQL output receipt must bind current approval");
+    assert!(
+        approval_error.contains("approval receipt") || approval_error.contains("output receipt"),
+        "{approval_error}"
+    );
+    client
+        .execute(
+            "UPDATE supervised_patch_artifacts SET artifact_json=$1 WHERE artifact_id=$2",
+            &[&original_artifact_json, &artifact_id],
+        )
+        .unwrap();
+
+    let original_artifact: Value = serde_json::from_str(&original_artifact_json).unwrap();
+    let approval_id = original_artifact["product_output_receipt"]["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let original_approval_json: String = client
+        .query_one(
+            "SELECT approval_json FROM workflow_run_approvals WHERE approval_id=$1",
+            &[&approval_id],
+        )
+        .unwrap()
+        .get(0);
+    client
+        .execute(
+            "UPDATE workflow_run_approvals SET approval_json='not-json' WHERE approval_id=$1",
+            &[&approval_id],
+        )
+        .unwrap();
+    let approval_owner_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("corrupt PostgreSQL approval owner JSON must fail closed");
+    assert!(
+        approval_owner_error.contains("workflow run approval receipt is invalid JSON"),
+        "{approval_owner_error}"
+    );
+    client
+        .execute(
+            "UPDATE workflow_run_approvals SET approval_json=$1 WHERE approval_id=$2",
+            &[&original_approval_json, &approval_id],
+        )
+        .unwrap();
+
+    let run_id = task["run_id"].as_str().unwrap();
+    let row = client
+        .query_one(
+            "SELECT node_id, node_json FROM workflow_run_nodes WHERE run_id=$1 LIMIT 1",
+            &[&run_id],
+        )
+        .unwrap();
+    let node_id: String = row.get(0);
+    let original_node_json: String = row.get(1);
+    let original_run_json: String = client
+        .query_one(
+            "SELECT run_json FROM workflow_runs WHERE run_id=$1",
+            &[&run_id],
+        )
+        .unwrap()
+        .get(0);
+    client
+        .execute(
+            "UPDATE workflow_runs SET run_json='not-json' WHERE run_id=$1",
+            &[&run_id],
+        )
+        .unwrap();
+    let run_owner_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("corrupt PostgreSQL workflow run owner must fail closed");
+    assert!(
+        run_owner_error.contains("managed acceptance workflow run owner is invalid JSON"),
+        "{run_owner_error}"
+    );
+    client
+        .execute(
+            "UPDATE workflow_runs SET run_json=$1 WHERE run_id=$2",
+            &[&original_run_json, &run_id],
+        )
+        .unwrap();
+    let original_workflow_boundaries_json: String = client
+        .query_one(
+            "SELECT boundaries_json FROM workflow_runs WHERE run_id=$1",
+            &[&run_id],
+        )
+        .unwrap()
+        .get(0);
+    client
+        .execute(
+            "UPDATE workflow_runs SET boundaries_json='not-json' WHERE run_id=$1",
+            &[&run_id],
+        )
+        .unwrap();
+    let workflow_boundaries_owner_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("corrupt PostgreSQL workflow boundaries owner must fail closed");
+    assert!(
+        workflow_boundaries_owner_error
+            .contains("managed acceptance workflow boundaries owner is invalid JSON"),
+        "{workflow_boundaries_owner_error}"
+    );
+    client
+        .execute(
+            "UPDATE workflow_runs SET boundaries_json=$1 WHERE run_id=$2",
+            &[&original_workflow_boundaries_json, &run_id],
+        )
+        .unwrap();
+    client
+        .execute(
+            "UPDATE workflow_run_nodes SET node_json='not-json' WHERE run_id=$1 AND node_id=$2",
+            &[&run_id, &node_id],
+        )
+        .unwrap();
+    let node_owner_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("corrupt PostgreSQL workflow node owner must fail closed");
+    assert!(
+        node_owner_error.contains("managed acceptance workflow node owner is invalid JSON"),
+        "{node_owner_error}"
+    );
+    client
+        .execute(
+            "UPDATE workflow_run_nodes SET node_json=$1 WHERE run_id=$2 AND node_id=$3",
+            &[&original_node_json, &run_id, &node_id],
+        )
+        .unwrap();
+    let duplicate_node_id = format!("{node_id}-duplicate-owner");
+    let mut duplicate_node: Value = serde_json::from_str(&original_node_json).unwrap();
+    duplicate_node["node_id"] = json!(duplicate_node_id);
+    client
+        .execute(
+            "INSERT INTO workflow_run_nodes
+             (run_id, node_id, task_type, status, node_json, attempt_count)
+             VALUES ($1, $2, 'product_apply', 'completed', $3, 0)",
+            &[&run_id, &duplicate_node_id, &duplicate_node.to_string()],
+        )
+        .unwrap();
+    let duplicate_node_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("multiple PostgreSQL nodes claiming one ProductTask must fail closed");
+    assert!(
+        duplicate_node_error.contains("multiple workflow nodes claim one ProductTask owner"),
+        "{duplicate_node_error}"
+    );
+    client
+        .execute(
+            "DELETE FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2",
+            &[&run_id, &duplicate_node_id],
+        )
+        .unwrap();
+
+    let original_terminal_evidence_json: String = client
+        .query_one(
+            "SELECT evidence_json FROM product_task_terminal_evidence WHERE product_task_id=$1",
+            &[&task_id],
+        )
+        .unwrap()
+        .get(0);
+    client
+        .execute(
+            "UPDATE product_task_terminal_evidence SET evidence_json='not-json' WHERE product_task_id=$1",
+            &[&task_id],
+        )
+        .unwrap();
+    let terminal_owner_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("corrupt PostgreSQL terminal evidence owner must fail closed");
+    assert!(
+        terminal_owner_error.contains("product task terminal evidence is invalid JSON"),
+        "{terminal_owner_error}"
+    );
+    client
+        .execute(
+            "UPDATE product_task_terminal_evidence SET evidence_json=$1 WHERE product_task_id=$2",
+            &[&original_terminal_evidence_json, &task_id],
+        )
+        .unwrap();
+
+    client
+        .execute(
+            "DELETE FROM product_task_terminal_evidence WHERE product_task_id=$1",
+            &[&task_id],
+        )
+        .unwrap();
+    let terminal_error = store
+        .validate_managed_acceptance_product_task_phase("local", &task_id, &target_id, &revision)
+        .expect_err("PostgreSQL completed claim without terminal evidence must fail closed");
+    assert!(
+        terminal_error.contains("terminal evidence"),
+        "{terminal_error}"
+    );
+
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
 }
 
 #[test]
@@ -1111,7 +1756,7 @@ fn pg_terminal_evidence_audit_failure_rolls_back_completion() {
 
 #[test]
 #[cfg(feature = "pg-tests")]
-fn pg_duplicate_terminal_output_is_exactly_once_and_blocks_v31_rollback() {
+fn pg_duplicate_terminal_output_is_exactly_once_and_preserves_spend_rollback_guard() {
     let Some(store) = test_store() else { return };
     std::env::set_var(PRODUCT_TASK_GATE, "1");
     std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
@@ -1174,13 +1819,14 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_blocks_v31_rollback() {
     assert_eq!(output_audits, 1);
 
     let rollback_error = store
-        .rollback_v31_to_v30("pg-rollback-operator", true)
-        .unwrap_err();
+        .rollback_v33_to_v32("pg-rollback-operator", true)
+        .expect_err("PostgreSQL must not drop spend history while any spend exists");
     assert!(
-        rollback_error.contains("authoritative terminal evidence exists"),
+        rollback_error.contains("v33 rollback blocked")
+            && rollback_error.contains("managed_acceptance_spend_authorizations"),
         "{rollback_error}"
     );
-    assert_eq!(store.schema_version().unwrap(), 31);
+    assert_eq!(store.schema_version().unwrap(), 33);
 }
 
 #[test]
@@ -1309,6 +1955,7 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         "artifact_id": artifact["artifact_id"],
         "approval_id": approval["approval_id"],
         "output_intent": "draft_pr",
+        "expected_task_version": pending_version,
         "workspace_id": artifact["workspace_id"],
         "run_id": artifact["run_id"],
         "target_id": artifact["target_id"],
@@ -1532,6 +2179,7 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         "artifact_id": export_artifact_id,
         "approval_id": export_approval["approval_id"],
         "output_intent": "draft_pr",
+        "expected_task_version": export_task["version"],
         "workspace_id": export_artifact["workspace_id"],
         "run_id": export_artifact["run_id"],
         "target_id": export_artifact["target_id"],
@@ -1766,6 +2414,797 @@ fn pg_ddl_and_migration() {
     assert!(
         snap.get(&key).is_some(),
         "config key written after DDL should be readable"
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_decision_creation_rejects_non_draft_status_without_transition_receipt() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let decision_id = format!("mad-pg-non-draft-{tag}");
+    let residual = "a9".repeat(32);
+    let parameter_error = store
+        .upsert_managed_acceptance_decision(
+            "tenant-pg-managed-acceptance",
+            &pg_managed_acceptance_decision_body(&decision_id, "non-draft-parameter"),
+            &residual,
+            "operator_accepted",
+            None,
+            Some(
+                &(chrono::Utc::now() + chrono::Duration::hours(1))
+                    .format("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string(),
+            ),
+        )
+        .expect_err("PostgreSQL decision cannot be created accepted");
+    assert!(parameter_error.contains("transitions are receipt-owned"));
+
+    let mut self_declared = pg_managed_acceptance_decision_body(
+        &format!("mad-pg-non-draft-body-{tag}"),
+        "non-draft-body",
+    );
+    self_declared["status"] = json!("operator_accepted");
+    let body_error = store
+        .upsert_managed_acceptance_decision(
+            "tenant-pg-managed-acceptance",
+            &self_declared,
+            &residual,
+            "draft_pending_operator",
+            None,
+            Some(
+                &(chrono::Utc::now() + chrono::Duration::hours(1))
+                    .format("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string(),
+            ),
+        )
+        .expect_err("PostgreSQL decision body cannot self-declare accepted");
+    assert!(body_error.contains("is not transition evidence"));
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_managed_acceptance_transition_receipts_and_exact_envelope_bindings() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let (principal, risk, base) = pg_seed_managed_acceptance(&store, &tag, "bound-attempt");
+    let mut cases = Vec::new();
+    let mut changed = base.clone();
+    changed.product_task_id = "other-product-task".into();
+    cases.push(("product_task_id", changed));
+    let mut changed = base.clone();
+    changed.workflow_id = Some("other-workflow".into());
+    cases.push(("workflow_id", changed));
+    let mut changed = base.clone();
+    changed.workflow_node_id = Some("other-node".into());
+    cases.push(("workflow_node_id", changed));
+    let mut changed = base.clone();
+    changed.execution_id = "other-execution".into();
+    cases.push(("execution_id", changed));
+    let mut changed = base.clone();
+    changed.attempt_id = "other-attempt".into();
+    cases.push(("attempt_id", changed));
+    let mut changed = base.clone();
+    changed.target_repo = "org/other-target".into();
+    cases.push(("target_repo", changed));
+    let mut changed = base.clone();
+    changed.target_main_sha = "b".repeat(40);
+    cases.push(("target_main_sha", changed));
+    let mut changed = base.clone();
+    changed.binary_path = "/opt/other-codex".into();
+    cases.push(("binary_path", changed));
+    let mut changed = base.clone();
+    changed.binary_sha256 = "cd".repeat(32);
+    cases.push(("binary_sha256", changed));
+    let mut changed = base.clone();
+    changed.cancellation_identity = "other-cancel".into();
+    cases.push(("cancellation_identity", changed));
+    let mut changed = base.clone();
+    changed.rollback_identity = "other-rollback".into();
+    cases.push(("rollback_identity", changed));
+    let mut changed = base.clone();
+    changed.output_branch_prefix = "other/".into();
+    cases.push(("output_branch_prefix", changed));
+    let mut changed = base.clone();
+    changed.draft_pr_only = false;
+    cases.push(("draft_pr_only", changed));
+    let mut changed = base.clone();
+    changed.cost_authority = CostAuthority::ProviderReported {
+        max_cost: 1.0,
+        currency: "USD".into(),
+    };
+    cases.push(("cost_authority", changed));
+
+    for (field, request) in cases {
+        let error = store
+            .issue_managed_acceptance_spend_authorization(&principal, &request)
+            .expect_err(&format!(
+                "{field} mutation must not issue a PostgreSQL spend"
+            ));
+        assert!(
+            error.contains("mismatches decision trial envelope"),
+            "{field}: unexpected error {error}"
+        );
+    }
+
+    let first = store
+        .issue_managed_acceptance_spend_authorization(&principal, &base)
+        .unwrap();
+    let replay = store
+        .issue_managed_acceptance_spend_authorization(&principal, &base)
+        .unwrap();
+    assert_eq!(
+        first["spend_authorization_id"],
+        replay["spend_authorization_id"]
+    );
+    store
+        .revoke_managed_acceptance_authorization(
+            &principal,
+            risk["authorization_id"].as_str().unwrap(),
+        )
+        .unwrap();
+    let receipts = store
+        .list_managed_acceptance_decision_transition_receipts(risk["decision_id"].as_str().unwrap())
+        .unwrap();
+    let accepted = receipts
+        .iter()
+        .find(|receipt| receipt["to_status"] == "operator_accepted")
+        .expect("accepted transition receipt");
+    let revoked = receipts
+        .iter()
+        .find(|receipt| receipt["to_status"] == "revoked")
+        .expect("revoked transition receipt");
+    assert_eq!(accepted["transition_sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(revoked["transition_sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(
+        revoked["previous_transition_sha256"], accepted["transition_sha256"],
+        "PostgreSQL transition receipt chain must equal the SQLite contract"
+    );
+
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+    let decision_id = risk["decision_id"].as_str().unwrap();
+    let decision_body_sha256 = risk["decision_body_sha256"].as_str().unwrap();
+    let accepted_sha = accepted["transition_sha256"].as_str().unwrap();
+    let child_error = client
+        .execute(
+            "INSERT INTO managed_acceptance_decision_transition_receipts (
+                transition_receipt_id, decision_id, tenant_id, decision_body_sha256,
+                previous_transition_sha256, transition_sha256, from_status, to_status,
+                actor_principal_kind, actor_principal_id, receipt_json, created_at
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+            &[
+                &format!("matr-pg-fork-child-{tag}"),
+                &decision_id,
+                &"tenant-pg-managed-acceptance",
+                &decision_body_sha256,
+                &accepted_sha,
+                &"c1".repeat(32),
+                &"operator_accepted",
+                &"revoked",
+                &"fixture_principal",
+                &"forged-fork",
+                &"{}",
+                &utc_now_string(),
+            ],
+        )
+        .expect_err("PostgreSQL V32 must reject a second child transition");
+    assert_eq!(
+        child_error
+            .as_db_error()
+            .and_then(|error| error.constraint()),
+        Some("idx_managed_acceptance_transition_one_child"),
+        "unexpected child fork error: {child_error}"
+    );
+    let genesis_error = client
+        .execute(
+            "INSERT INTO managed_acceptance_decision_transition_receipts (
+                transition_receipt_id, decision_id, tenant_id, decision_body_sha256,
+                previous_transition_sha256, transition_sha256, from_status, to_status,
+                actor_principal_kind, actor_principal_id, receipt_json, created_at
+             ) VALUES ($1,$2,$3,$4,NULL,$5,$6,$7,$8,$9,$10,$11)",
+            &[
+                &format!("matr-pg-fork-genesis-{tag}"),
+                &decision_id,
+                &"tenant-pg-managed-acceptance",
+                &decision_body_sha256,
+                &"c2".repeat(32),
+                &"draft_pending_operator",
+                &"operator_accepted",
+                &"fixture_principal",
+                &"forged-genesis",
+                &"{}",
+                &utc_now_string(),
+            ],
+        )
+        .expect_err("PostgreSQL V32 must reject a second genesis transition");
+    assert_eq!(
+        genesis_error
+            .as_db_error()
+            .and_then(|error| error.constraint()),
+        Some("idx_managed_acceptance_transition_one_genesis"),
+        "unexpected genesis fork error: {genesis_error}"
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_managed_acceptance_transition_restart_uses_hash_chain_when_timestamps_tie() {
+    let Ok(database_url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        return;
+    };
+    let fixed_clock = || "2026-07-26T00:00:00Z".to_string();
+    let store = LocalProductStore::new_postgres(&database_url, fixed_clock).unwrap();
+    let tag = uuid_tag();
+    let (principal, risk, request) =
+        pg_seed_managed_acceptance(&store, &tag, "same-second-restart");
+    store
+        .issue_managed_acceptance_spend_authorization(&principal, &request)
+        .unwrap();
+    store
+        .revoke_managed_acceptance_authorization(
+            &principal,
+            risk["authorization_id"].as_str().unwrap(),
+        )
+        .unwrap();
+    let decision_id = risk["decision_id"].as_str().unwrap().to_string();
+    let before = store
+        .list_managed_acceptance_decision_transition_receipts(&decision_id)
+        .unwrap();
+    assert_eq!(before.len(), 2);
+    assert_eq!(before[0]["sequence"], 1);
+    assert!(before[0]["previous_transition_sequence"].is_null());
+    assert_eq!(before[1]["sequence"], 2);
+    assert_eq!(before[1]["previous_transition_sequence"], 1);
+    assert_eq!(
+        before[1]["previous_transition_sha256"],
+        before[0]["transition_sha256"]
+    );
+    drop(store);
+
+    let restarted = LocalProductStore::new_postgres(&database_url, fixed_clock).unwrap();
+    let after = restarted
+        .list_managed_acceptance_decision_transition_receipts(&decision_id)
+        .unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_managed_acceptance_transition_receipt_content_tampering_fails_closed_on_read() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let (_principal, risk, _request) =
+        pg_seed_managed_acceptance(&store, &tag, "transition-tamper-attempt");
+    let decision_id = risk["decision_id"].as_str().unwrap().to_string();
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+    let row = client
+        .query_one(
+            "SELECT transition_receipt_id, receipt_json
+             FROM managed_acceptance_decision_transition_receipts
+             WHERE decision_id=$1",
+            &[&decision_id],
+        )
+        .unwrap();
+    let receipt_id: String = row.get(0);
+    let encoded: String = row.get(1);
+    let mut receipt: Value = serde_json::from_str(&encoded).unwrap();
+    receipt["reason"] = json!("tampered_after_persistence");
+    client
+        .execute(
+            "UPDATE managed_acceptance_decision_transition_receipts
+             SET receipt_json=$1 WHERE transition_receipt_id=$2",
+            &[&receipt.to_string(), &receipt_id],
+        )
+        .unwrap();
+
+    let error = store
+        .list_managed_acceptance_decision_transition_receipts(&decision_id)
+        .expect_err("tampered PostgreSQL transition content must fail closed");
+    assert!(error.contains("hash does not match content"), "{error}");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_spend_issuance_rejects_missing_persisted_risk_fixture_boolean() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let (principal, risk, request) =
+        pg_seed_managed_acceptance(&store, &tag, "risk-boolean-attempt");
+    let risk_id = risk["authorization_id"].as_str().unwrap().to_string();
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+    let raw: String = client
+        .query_one(
+            "SELECT body_json FROM managed_acceptance_authorizations WHERE authorization_id=$1",
+            &[&risk_id],
+        )
+        .unwrap()
+        .get(0);
+    let mut body: Value = serde_json::from_str(&raw).unwrap();
+    body.as_object_mut().unwrap().remove("fixture_only");
+    client
+        .execute(
+            "UPDATE managed_acceptance_authorizations SET body_json=$1 WHERE authorization_id=$2",
+            &[&body.to_string(), &risk_id],
+        )
+        .unwrap();
+    let error = store
+        .issue_managed_acceptance_spend_authorization(&principal, &request)
+        .expect_err("PostgreSQL missing persisted risk boolean must fail closed");
+    assert!(
+        error.contains("fixture_only must be a persisted boolean")
+            || error.contains("body_json missing fixture_only")
+            || error.contains("body fixture_only must be a boolean"),
+        "{error}"
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_active_spend_logical_identity_constraints_reject_null_and_duplicate_writes() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let (principal, _risk, request) =
+        pg_seed_managed_acceptance(&store, &tag, "logical-constraint-attempt");
+    let first = store
+        .issue_managed_acceptance_spend_authorization(&principal, &request)
+        .unwrap();
+    let first_id = first["spend_authorization_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+
+    let null_error = client
+        .execute(
+            "UPDATE managed_acceptance_spend_authorizations
+             SET logical_authorization_sha256=NULL WHERE spend_authorization_id=$1",
+            &[&first_id],
+        )
+        .expect_err("PostgreSQL V33 must reject an active spend with no logical identity");
+    assert!(
+        null_error.as_db_error().is_some(),
+        "expected PostgreSQL check failure, got: {null_error}"
+    );
+
+    let duplicate_id = format!("mas-pg-logical-duplicate-{tag}");
+    let duplicate_body_sha256 = "d3".repeat(32);
+    let mut duplicate_body = first["body_json"].clone();
+    duplicate_body["spend_authorization_id"] = json!(duplicate_id);
+    duplicate_body["created_at"] = json!("2026-07-25T12:00:01Z");
+    let duplicate_body = duplicate_body.to_string();
+    let duplicate_error = client
+        .execute(
+            "INSERT INTO managed_acceptance_spend_authorizations (
+                spend_authorization_id, decision_id, risk_authorization_id, tenant_id,
+                principal_kind, principal_id, spend_body_sha256, risk_authorization_sha256,
+                logical_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+                fixture_only, status, body_json, created_at, updated_at, expires_at,
+                consumed_at, consumed_by_attempt_id, revoked_at
+             ) SELECT $1, decision_id, risk_authorization_id, tenant_id,
+                principal_kind, principal_id, $2, risk_authorization_sha256,
+                logical_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+                fixture_only, 'active', $3, created_at, updated_at, expires_at,
+                NULL, NULL, NULL
+             FROM managed_acceptance_spend_authorizations WHERE spend_authorization_id=$4",
+            &[
+                &duplicate_id,
+                &duplicate_body_sha256,
+                &duplicate_body,
+                &first_id,
+            ],
+        )
+        .expect_err("PostgreSQL V33 must reject a duplicate active logical spend");
+    assert_eq!(
+        duplicate_error
+            .as_db_error()
+            .and_then(|error| error.constraint()),
+        Some("idx_managed_acceptance_spend_active_logical"),
+        "unexpected duplicate logical-spend error: {duplicate_error}"
+    );
+    let replay = store
+        .issue_managed_acceptance_spend_authorization(&principal, &request)
+        .expect("rejected raw writes must leave the original PostgreSQL spend reusable");
+    assert_eq!(
+        replay["spend_authorization_id"],
+        first["spend_authorization_id"]
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_attempt_admission_rejects_non_boolean_persisted_spend_fixture_flag() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let (principal, _risk, request) =
+        pg_seed_managed_acceptance(&store, &tag, "spend-boolean-attempt");
+    let spend = store
+        .issue_managed_acceptance_spend_authorization(&principal, &request)
+        .unwrap();
+    let spend_id = spend["spend_authorization_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+    let constraint_error = client
+        .execute(
+            "UPDATE managed_acceptance_spend_authorizations
+             SET fixture_only=-1 WHERE spend_authorization_id=$1",
+            &[&spend_id],
+        )
+        .expect_err("PostgreSQL CHECK must reject a non-boolean fixture flag");
+    assert_eq!(
+        constraint_error
+            .as_db_error()
+            .and_then(|error| error.constraint()),
+        Some("managed_acceptance_spend_authorizations_fixture_only_check"),
+        "unexpected fixture_only constraint error: {constraint_error}"
+    );
+    let active: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM managed_acceptance_spend_authorizations
+             WHERE spend_authorization_id=$1 AND status='active'",
+            &[&spend_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        active, 1,
+        "rejected PostgreSQL spend must never be consumed"
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_attempt_admission_rejects_persisted_spend_principal_kind_tampering() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let (principal, _risk, request) =
+        pg_seed_managed_acceptance(&store, &tag, "spend-principal-kind-attempt");
+    let spend = store
+        .issue_managed_acceptance_spend_authorization(&principal, &request)
+        .unwrap();
+    let spend_id = spend["spend_authorization_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+    client
+        .execute(
+            "UPDATE managed_acceptance_spend_authorizations
+             SET principal_kind='operator_api_key' WHERE spend_authorization_id=$1",
+            &[&spend_id],
+        )
+        .unwrap();
+
+    let error = store
+        .admit_managed_acceptance_attempt_for_pg_tests(
+            &principal,
+            &request.attempt_id,
+            &pg_attempt_body_from_spend(&spend),
+            &spend_id,
+            true,
+        )
+        .expect_err("PostgreSQL principal-kind tampering must not consume a spend");
+    assert!(
+        error.contains("spend principal kind mismatch")
+            || error.contains("body_json principal_kind"),
+        "{error}"
+    );
+    let active: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM managed_acceptance_spend_authorizations
+             WHERE spend_authorization_id=$1 AND status='active'",
+            &[&spend_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(active, 1, "rejected PostgreSQL spend must remain active");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_managed_acceptance_attempt_replay_lease_terminal_restart_and_principal_parity() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let (principal, _risk, request) =
+        pg_seed_managed_acceptance(&store, &tag, "attempt-replay-parity");
+    let spend = store
+        .issue_managed_acceptance_spend_authorization(&principal, &request)
+        .unwrap();
+    let spend_id = spend["spend_authorization_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let attempt_body = pg_attempt_body_from_spend(&spend);
+    let unauthorized = AuthenticatedPrincipal::fixture_for_tests(
+        "tenant-pg-managed-acceptance",
+        &format!("fixture-principal-pg-unauthorized-{tag}"),
+    )
+    .unwrap();
+    let unauthorized_error = store
+        .admit_managed_acceptance_attempt_for_pg_tests(
+            &unauthorized,
+            &request.attempt_id,
+            &attempt_body,
+            &spend_id,
+            true,
+        )
+        .expect_err("another PostgreSQL principal must not consume this spend");
+    assert!(
+        unauthorized_error.contains("spend principal mismatch"),
+        "{unauthorized_error}"
+    );
+
+    let admitted = store
+        .admit_managed_acceptance_attempt_for_pg_tests(
+            &principal,
+            &request.attempt_id,
+            &attempt_body,
+            &spend_id,
+            true,
+        )
+        .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+    let replay = store
+        .admit_managed_acceptance_attempt_for_pg_tests(
+            &principal,
+            &request.attempt_id,
+            &attempt_body,
+            &spend_id,
+            true,
+        )
+        .unwrap();
+    assert_eq!(replay["idempotent_replay"], true);
+
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let restarted = LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
+    let restarted_replay = restarted
+        .admit_managed_acceptance_attempt_for_pg_tests(
+            &principal,
+            &request.attempt_id,
+            &attempt_body,
+            &spend_id,
+            true,
+        )
+        .unwrap();
+    assert_eq!(restarted_replay["idempotent_replay"], true);
+    let stale_lease_error = restarted
+        .complete_managed_acceptance_attempt(
+            &request.attempt_id,
+            "wrong-lease",
+            "outcome_unknown",
+            "gateway_outcome_unknown",
+            &json!({"content_excluded": true}),
+        )
+        .expect_err("only the current lease may terminalize an admitted PostgreSQL attempt");
+    assert!(stale_lease_error.contains("lease_token mismatch"));
+    let terminal = restarted
+        .complete_managed_acceptance_attempt(
+            &request.attempt_id,
+            &lease,
+            "outcome_unknown",
+            "gateway_outcome_unknown",
+            &json!({"content_excluded": true}),
+        )
+        .unwrap();
+    assert_eq!(terminal["status"], "outcome_unknown");
+
+    let resumed = LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
+    assert_eq!(
+        resumed
+            .get_managed_acceptance_attempt(&request.attempt_id)
+            .unwrap()
+            .unwrap()["status"],
+        "outcome_unknown"
+    );
+    assert_eq!(
+        resumed
+            .get_managed_acceptance_spend_authorization(&spend_id)
+            .unwrap()
+            .unwrap()["status"],
+        "consumed",
+        "terminal PostgreSQL attempts must never reactivate a spend"
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_managed_acceptance_owner_json_read_errors_fail_closed() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let (principal, risk, request) = pg_seed_managed_acceptance(&store, &tag, "owner-json-attempt");
+    let decision_id = risk["decision_id"].as_str().unwrap().to_string();
+    let risk_id = risk["authorization_id"].as_str().unwrap().to_string();
+    let spend = store
+        .issue_managed_acceptance_spend_authorization(&principal, &request)
+        .unwrap();
+    let spend_id = spend["spend_authorization_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    store
+        .admit_managed_acceptance_attempt_for_pg_tests(
+            &principal,
+            &request.attempt_id,
+            &pg_attempt_body_from_spend(&spend),
+            &spend_id,
+            true,
+        )
+        .unwrap();
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let mut client = postgres::Client::connect(&database_url, postgres::NoTls).unwrap();
+
+    let original_decision: String = client
+        .query_one(
+            "SELECT body_json FROM managed_acceptance_decisions WHERE decision_id=$1",
+            &[&decision_id],
+        )
+        .unwrap()
+        .get(0);
+    client
+        .execute(
+            "UPDATE managed_acceptance_decisions SET body_json='not-json' WHERE decision_id=$1",
+            &[&decision_id],
+        )
+        .unwrap();
+    assert!(store.get_managed_acceptance_decision(&decision_id).is_err());
+    let mut tampered_decision: Value = serde_json::from_str(&original_decision).unwrap();
+    tampered_decision["trial_envelope"]["max_retries"] = json!(99);
+    client
+        .execute(
+            "UPDATE managed_acceptance_decisions SET body_json=$1 WHERE decision_id=$2",
+            &[&tampered_decision.to_string(), &decision_id],
+        )
+        .unwrap();
+    assert!(
+        store.get_managed_acceptance_decision(&decision_id).is_err(),
+        "a valid but hash-inconsistent decision body must fail closed"
+    );
+    client
+        .execute(
+            "UPDATE managed_acceptance_decisions SET body_json=$1 WHERE decision_id=$2",
+            &[&original_decision, &decision_id],
+        )
+        .unwrap();
+
+    let original_risk: String = client
+        .query_one(
+            "SELECT body_json FROM managed_acceptance_authorizations WHERE authorization_id=$1",
+            &[&risk_id],
+        )
+        .unwrap()
+        .get(0);
+    client
+        .execute(
+            "UPDATE managed_acceptance_authorizations SET body_json='not-json' WHERE authorization_id=$1",
+            &[&risk_id],
+        )
+        .unwrap();
+    assert!(store
+        .get_active_managed_acceptance_authorization(&risk_id)
+        .is_err());
+    let mut tampered_risk: Value = serde_json::from_str(&original_risk).unwrap();
+    tampered_risk["scope"]["decision_id"] = json!("other-decision");
+    client
+        .execute(
+            "UPDATE managed_acceptance_authorizations SET body_json=$1 WHERE authorization_id=$2",
+            &[&tampered_risk.to_string(), &risk_id],
+        )
+        .unwrap();
+    assert!(
+        store
+            .get_active_managed_acceptance_authorization(&risk_id)
+            .is_err(),
+        "a valid but hash-inconsistent risk body must fail closed"
+    );
+    client
+        .execute(
+            "UPDATE managed_acceptance_authorizations SET body_json=$1 WHERE authorization_id=$2",
+            &[&original_risk, &risk_id],
+        )
+        .unwrap();
+
+    let original_spend: String = client
+        .query_one(
+            "SELECT body_json FROM managed_acceptance_spend_authorizations WHERE spend_authorization_id=$1",
+            &[&spend_id],
+        )
+        .unwrap()
+        .get(0);
+    client
+        .execute(
+            "UPDATE managed_acceptance_spend_authorizations SET body_json='not-json' WHERE spend_authorization_id=$1",
+            &[&spend_id],
+        )
+        .unwrap();
+    assert!(store
+        .get_managed_acceptance_spend_authorization(&spend_id)
+        .is_err());
+    let mut tampered_spend: Value = serde_json::from_str(&original_spend).unwrap();
+    tampered_spend["model"] = json!("different-model");
+    client
+        .execute(
+            "UPDATE managed_acceptance_spend_authorizations SET body_json=$1 WHERE spend_authorization_id=$2",
+            &[&tampered_spend.to_string(), &spend_id],
+        )
+        .unwrap();
+    assert!(
+        store
+            .get_managed_acceptance_spend_authorization(&spend_id)
+            .is_err(),
+        "a valid but hash-inconsistent spend body must fail closed"
+    );
+    client
+        .execute(
+            "UPDATE managed_acceptance_spend_authorizations SET body_json=$1 WHERE spend_authorization_id=$2",
+            &[&original_spend, &spend_id],
+        )
+        .unwrap();
+
+    client
+        .execute(
+            "UPDATE managed_acceptance_attempts SET receipt_json='not-json' WHERE attempt_id=$1",
+            &[&request.attempt_id],
+        )
+        .unwrap();
+    assert!(store
+        .get_managed_acceptance_attempt(&request.attempt_id)
+        .is_err());
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_concurrent_spend_issue_reuses_one_active_logical_receipt() {
+    use std::sync::Barrier;
+
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let (principal, risk, request) =
+        pg_seed_managed_acceptance(&store, &tag, "concurrent-logical-attempt");
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let decision_id = risk["decision_id"].as_str().unwrap().to_string();
+    let barrier = Arc::new(Barrier::new(3));
+    let mut joins = Vec::new();
+    for _ in 0..2 {
+        let database_url = database_url.clone();
+        let barrier = Arc::clone(&barrier);
+        let principal = principal.clone();
+        let request = request.clone();
+        joins.push(thread::spawn(move || {
+            let concurrent = LocalProductStore::new_postgres(&database_url, utc_now_string)
+                .expect("concurrent PostgreSQL store");
+            barrier.wait();
+            concurrent.issue_managed_acceptance_spend_authorization(&principal, &request)
+        }));
+    }
+    barrier.wait();
+    let spends = joins
+        .into_iter()
+        .map(|join| join.join().unwrap().expect("concurrent spend issuance"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        spends[0]["spend_authorization_id"], spends[1]["spend_authorization_id"],
+        "PostgreSQL retries must reuse one logical spend before receipt IDs/timestamps"
+    );
+    let mut client =
+        postgres::Client::connect(&database_url, postgres::NoTls).expect("raw PostgreSQL client");
+    let active: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM managed_acceptance_spend_authorizations
+             WHERE decision_id=$1 AND status='active'",
+            &[&decision_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        active, 1,
+        "only one active logical PostgreSQL spend may persist"
     );
 }
 

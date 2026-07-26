@@ -1,4 +1,5 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
+use serde_json::Value;
 
 use super::{schema, DatabaseConnection, LocalProductStore};
 
@@ -12,6 +13,8 @@ pub(super) const V28_SCHEMA_VERSION: i64 = 28;
 pub(super) const V29_SCHEMA_VERSION: i64 = 29;
 pub(super) const V30_SCHEMA_VERSION: i64 = 30;
 pub(super) const V31_SCHEMA_VERSION: i64 = 31;
+pub(super) const V32_SCHEMA_VERSION: i64 = 32;
+pub(super) const V33_SCHEMA_VERSION: i64 = 33;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -49,6 +52,13 @@ pub(super) const V29_TABLES: [&str; 2] = [
 ];
 pub(super) const V30_TABLES: [&str; 1] = ["product_tasks"];
 pub(super) const V31_TABLES: [&str; 1] = ["product_task_terminal_evidence"];
+pub(super) const V32_TABLES: [&str; 4] = [
+    "managed_acceptance_decisions",
+    "managed_acceptance_authorizations",
+    "managed_acceptance_attempts",
+    "managed_acceptance_decision_transition_receipts",
+];
+pub(super) const V33_TABLES: [&str; 1] = ["managed_acceptance_spend_authorizations"];
 
 #[allow(dead_code)]
 pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
@@ -105,6 +115,8 @@ impl LocalProductStore {
                     }
                     V30_SCHEMA_VERSION => Self::migrate_v30_add_product_tasks(conn)?,
                     V31_SCHEMA_VERSION => Self::migrate_v31_add_product_terminal_evidence(conn)?,
+                    V32_SCHEMA_VERSION => Self::migrate_v32_add_managed_acceptance(conn)?,
+                    V33_SCHEMA_VERSION => Self::migrate_v33_add_managed_acceptance_spend(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -113,7 +125,15 @@ impl LocalProductStore {
             let final_version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if final_version == V31_SCHEMA_VERSION {
+            if final_version == V33_SCHEMA_VERSION {
+                // V33 is intentionally repaired in place as well as migrated
+                // from v32. Older v33 databases predate the logical identity
+                // column/check/index and must not be accepted by the validator.
+                repair_sqlite_v33_spend_schema(conn)?;
+                validate_sqlite_v33_schema(conn)?;
+            } else if final_version == V32_SCHEMA_VERSION {
+                validate_sqlite_v32_schema(conn)?;
+            } else if final_version == V31_SCHEMA_VERSION {
                 validate_sqlite_v31_schema(conn)?;
             } else if final_version == V30_SCHEMA_VERSION {
                 validate_sqlite_v30_schema(conn)?;
@@ -624,7 +644,51 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
         }
     }
 
-    /// Roll back canonical terminal evidence only when no evidence rows exist.
+    /// Roll back v33 managed-acceptance spend storage only when it is empty.
+    pub fn rollback_v33_to_v32(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v33 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v33 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v33_to_v32(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v33_to_v32_internal(actor, &now),
+        }
+    }
+
+    pub fn rollback_v32_to_v31(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v32 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v32 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v32_to_v31(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v32_to_v31_internal(actor, &now),
+        }
+    }
+
     pub fn rollback_v31_to_v30(
         &self,
         actor: &str,
@@ -668,6 +732,92 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.rollback_pg_v30_to_v29_internal(actor, &now),
         }
+    }
+
+    fn rollback_sqlite_v33_to_v32(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            if current_version != V33_SCHEMA_VERSION {
+                return Err(format!(
+                    "v33 rollback requires current schema version 33; found {current_version}"
+                ));
+            }
+            let occupied = occupied_sqlite_tables(&tx, &V33_TABLES)?;
+            if !occupied.is_empty() {
+                return Err(format!(
+                    "v33 rollback blocked: managed acceptance spend exists in {}",
+                    occupied.join(", ")
+                ));
+            }
+            tx.execute_batch("DROP TABLE IF EXISTS managed_acceptance_spend_authorizations;")
+                .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v33_to_v32', 'local_product_store', ?3)",
+                rusqlite::params![
+                    now,
+                    actor,
+                    serde_json::json!({
+                        "from_version": V33_SCHEMA_VERSION,
+                        "to_version": V32_SCHEMA_VERSION,
+                        "tables": V33_TABLES,
+                    })
+                    .to_string()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V32_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())?;
+            Ok(())
+        })
+    }
+
+    fn rollback_sqlite_v32_to_v31(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            require_v32_rollback_source(current_version)?;
+            let occupied = occupied_sqlite_tables(&tx, &V32_TABLES)?;
+            if !occupied.is_empty() {
+                return Err(format!(
+                    "v32 rollback blocked: managed acceptance authority exists in {}",
+                    occupied.join(", ")
+                ));
+            }
+            tx.execute_batch(
+                "DROP TABLE managed_acceptance_decision_transition_receipts;
+                 DROP TABLE managed_acceptance_attempts;
+                 DROP TABLE managed_acceptance_authorizations;
+                 DROP TABLE managed_acceptance_decisions;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v32_to_v31', 'local_product_store', ?3)",
+                rusqlite::params![
+                    now,
+                    actor,
+                    serde_json::json!({
+                        "from_version": V32_SCHEMA_VERSION,
+                        "to_version": V31_SCHEMA_VERSION,
+                        "tables": V32_TABLES,
+                    })
+                    .to_string()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V31_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
     }
 
     fn rollback_sqlite_v31_to_v30(&self, actor: &str, now: &str) -> Result<(), String> {
@@ -1598,6 +1748,382 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         conn.execute_batch(schema::V31_DDL)
             .map_err(|error| error.to_string())
     }
+
+    fn migrate_v32_add_managed_acceptance(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(schema::V32_DDL)
+            .map_err(|error| error.to_string())
+    }
+
+    fn migrate_v33_add_managed_acceptance_spend(conn: &Connection) -> Result<(), String> {
+        repair_sqlite_v32_transition_schema(conn)?;
+        let spend_table_exists =
+            sqlite_table_exists(conn, "managed_acceptance_spend_authorizations")?;
+        if !spend_table_exists {
+            conn.execute_batch(schema::V33_DDL)
+                .map_err(|error| error.to_string())?;
+        }
+        repair_sqlite_v33_spend_schema(conn)?;
+        Ok(())
+    }
+}
+
+fn repair_sqlite_v32_transition_schema(conn: &Connection) -> Result<(), String> {
+    if !sqlite_table_exists(conn, "managed_acceptance_decision_transition_receipts")? {
+        return Ok(());
+    }
+    let columns = conn
+        .prepare("PRAGMA table_info(managed_acceptance_decision_transition_receipts)")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| error.to_string())?;
+    if !columns.iter().any(|column| column == "sequence") {
+        conn.execute("ALTER TABLE managed_acceptance_decision_transition_receipts ADD COLUMN sequence INTEGER NOT NULL DEFAULT 1", [])
+            .map_err(|error| error.to_string())?;
+    }
+    if !columns
+        .iter()
+        .any(|column| column == "previous_transition_sequence")
+    {
+        conn.execute("ALTER TABLE managed_acceptance_decision_transition_receipts ADD COLUMN previous_transition_sequence INTEGER", [])
+            .map_err(|error| error.to_string())?;
+    }
+    conn.execute_batch(
+        "UPDATE managed_acceptance_decision_transition_receipts
+         SET sequence = (SELECT COUNT(*) FROM managed_acceptance_decision_transition_receipts newer
+                         WHERE newer.decision_id = managed_acceptance_decision_transition_receipts.decision_id
+                           AND (newer.created_at < managed_acceptance_decision_transition_receipts.created_at
+                                OR (newer.created_at = managed_acceptance_decision_transition_receipts.created_at
+                                    AND newer.transition_receipt_id <= managed_acceptance_decision_transition_receipts.transition_receipt_id)));
+         UPDATE managed_acceptance_decision_transition_receipts
+         SET previous_transition_sequence = CASE WHEN previous_transition_sha256 IS NULL THEN NULL ELSE sequence - 1 END;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_sequence
+         ON managed_acceptance_decision_transition_receipts(decision_id, sequence);",
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn sqlite_table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1
+         )",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
+    .map_err(|error| error.to_string())
+}
+
+fn repair_sqlite_v33_spend_schema(conn: &Connection) -> Result<(), String> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    // Columns may already exist when the full current DDL bootstrapped the
+    // database. Keep repairs and legacy upgrades in the same transaction so a
+    // failed v33 repair cannot leave a partial marker/schema.
+    for (table, col, decl) in [
+        (
+            "managed_acceptance_attempts",
+            "spend_authorization_id",
+            "TEXT",
+        ),
+        ("managed_acceptance_attempts", "lease_token", "TEXT"),
+        ("managed_acceptance_attempts", "receipt_sha256", "TEXT"),
+    ] {
+        if !column_exists(&tx, table, col)? {
+            tx.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), [])
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    if !column_exists(
+        &tx,
+        "managed_acceptance_spend_authorizations",
+        "logical_authorization_sha256",
+    )? {
+        tx.execute(
+            "ALTER TABLE managed_acceptance_spend_authorizations
+             ADD COLUMN logical_authorization_sha256 TEXT",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    let rows = {
+        let mut statement = tx
+            .prepare(
+                "SELECT spend_authorization_id, body_json, spend_body_sha256,
+                        logical_authorization_sha256
+                 FROM managed_acceptance_spend_authorizations",
+            )
+            .map_err(|error| error.to_string())?;
+        let mapped = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    for (spend_id, raw_body, stored_body_sha, stored_logical) in rows {
+        let mut body: Value = serde_json::from_str(&raw_body)
+            .map_err(|error| format!("v33 spend {spend_id} body_json is invalid: {error}"))?;
+        let original_sha = super::managed_acceptance::sha256_hex(
+            super::managed_acceptance::canonical_json(&body)?.as_bytes(),
+        );
+        if original_sha != stored_body_sha {
+            return Err(format!(
+                "v33 spend {spend_id} body hash does not match its persisted body"
+            ));
+        }
+        let logical = super::managed_acceptance::stable_spend_authorization_identity(&body)?;
+        if let Some(stored) = stored_logical.as_deref() {
+            if stored != logical {
+                return Err(format!(
+                    "v33 spend {spend_id} logical authorization hash is inconsistent"
+                ));
+            }
+        }
+        body.as_object_mut()
+            .ok_or_else(|| format!("v33 spend {spend_id} body_json must be an object"))?
+            .insert(
+                "logical_authorization_sha256".to_string(),
+                Value::String(logical.clone()),
+            );
+        let body_sha = super::managed_acceptance::sha256_hex(
+            super::managed_acceptance::canonical_json(&body)?.as_bytes(),
+        );
+        tx.execute(
+            "UPDATE managed_acceptance_spend_authorizations
+             SET logical_authorization_sha256=?1, body_json=?2, spend_body_sha256=?3
+             WHERE spend_authorization_id=?4",
+            rusqlite::params![logical, body.to_string(), body_sha, spend_id],
+        )
+        .map_err(|error| format!("v33 spend {spend_id} backfill failed: {error}"))?;
+    }
+
+    let definition: String = tx
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='table' AND name='managed_acceptance_spend_authorizations'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let normalized = definition.to_ascii_lowercase().replace(['\n', '\t'], " ");
+    let has_active_identity_check = normalized
+        .contains("check (status <> 'active' or logical_authorization_sha256 is not null)");
+    if !has_active_identity_check {
+        let rebuild_ddl = schema::V33_DDL
+            .replace(
+                "managed_acceptance_spend_authorizations",
+                "managed_acceptance_spend_authorizations_v33_rebuild",
+            )
+            .replace(
+                "idx_managed_acceptance_spend_tenant",
+                "idx_managed_acceptance_spend_tenant_v33_rebuild",
+            )
+            .replace(
+                "idx_managed_acceptance_spend_active_logical",
+                "idx_managed_acceptance_spend_active_logical_v33_rebuild",
+            );
+        tx.execute_batch(&rebuild_ddl)
+            .map_err(|error| format!("v33 spend rebuild create failed: {error}"))?;
+        tx.execute(
+            "INSERT INTO managed_acceptance_spend_authorizations_v33_rebuild (
+                spend_authorization_id, decision_id, risk_authorization_id, tenant_id,
+                principal_kind, principal_id, spend_body_sha256, logical_authorization_sha256,
+                risk_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+                fixture_only, status, body_json, created_at, updated_at, expires_at,
+                consumed_at, consumed_by_attempt_id, revoked_at
+             )
+             SELECT spend_authorization_id, decision_id, risk_authorization_id, tenant_id,
+                    principal_kind, principal_id, spend_body_sha256, logical_authorization_sha256,
+                    risk_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+                    fixture_only, status, body_json, created_at, updated_at, expires_at,
+                    consumed_at, consumed_by_attempt_id, revoked_at
+             FROM managed_acceptance_spend_authorizations",
+            [],
+        )
+        .map_err(|error| format!("v33 spend rebuild copy failed: {error}"))?;
+        tx.execute_batch(
+            "DROP TABLE managed_acceptance_spend_authorizations;
+             ALTER TABLE managed_acceptance_spend_authorizations_v33_rebuild
+                 RENAME TO managed_acceptance_spend_authorizations;
+             DROP INDEX IF EXISTS idx_managed_acceptance_spend_tenant_v33_rebuild;
+             DROP INDEX IF EXISTS idx_managed_acceptance_spend_active_logical_v33_rebuild;
+             CREATE INDEX IF NOT EXISTS idx_managed_acceptance_spend_tenant
+                 ON managed_acceptance_spend_authorizations(tenant_id, status, expires_at);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_spend_active_logical
+                 ON managed_acceptance_spend_authorizations(tenant_id, logical_authorization_sha256)
+                 WHERE status = 'active';",
+        )
+        .map_err(|error| format!("v33 spend rebuild swap failed: {error}"))?;
+    } else {
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_managed_acceptance_spend_tenant
+                 ON managed_acceptance_spend_authorizations(tenant_id, status, expires_at);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_spend_active_logical
+                 ON managed_acceptance_spend_authorizations(tenant_id, logical_authorization_sha256)
+                 WHERE status = 'active';",
+        )
+        .map_err(|error| format!("v33 spend index repair failed: {error}"))?;
+    }
+    tx.commit().map_err(|error| error.to_string())
+}
+
+fn validate_sqlite_v33_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v32_schema(conn)?;
+    for table in V33_TABLES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v33 schema missing table {table}"));
+        }
+    }
+    if !column_exists(
+        conn,
+        "managed_acceptance_spend_authorizations",
+        "logical_authorization_sha256",
+    )? {
+        return Err("SQLite v33 spend logical authorization identity is missing".to_string());
+    }
+    let table_definition: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='table' AND name='managed_acceptance_spend_authorizations'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let active_identity_constraint_ok = table_definition
+        .to_ascii_lowercase()
+        .replace(['\n', '\t'], " ")
+        .contains("check (status <> 'active' or logical_authorization_sha256 is not null)");
+    if !active_identity_constraint_ok {
+        return Err(
+            "SQLite v33 active spend rows may omit logical authorization identity".to_string(),
+        );
+    }
+    let index = "idx_managed_acceptance_spend_active_logical";
+    let properties: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT \"unique\", partial FROM pragma_index_list('managed_acceptance_spend_authorizations')
+             WHERE name=?1",
+            [index],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let columns = conn
+        .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+        .and_then(|mut statement| {
+            statement
+                .query_map([index], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| error.to_string())?;
+    let definition: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+            [index],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let predicate_ok = definition.is_some_and(|sql| {
+        let normalized = sql.to_ascii_lowercase().replace(['\n', '\t'], " ");
+        normalized.contains("where status = 'active'")
+            && !normalized.contains("logical_authorization_sha256 is not null")
+    });
+    let expected_columns = vec![
+        "tenant_id".to_string(),
+        "logical_authorization_sha256".to_string(),
+    ];
+    if properties != Some((1, 1)) || columns != expected_columns || !predicate_ok {
+        return Err("SQLite v33 active logical spend index is missing or malformed".to_string());
+    }
+    Ok(())
+}
+
+fn validate_sqlite_v32_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v31_schema(conn)?;
+    for table in V32_TABLES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v32 schema missing table {table}"));
+        }
+    }
+    for (index, expected_columns, predicate) in [
+        (
+            "idx_managed_acceptance_transition_one_child",
+            vec![
+                "decision_id".to_string(),
+                "previous_transition_sha256".to_string(),
+            ],
+            "where previous_transition_sha256 is not null",
+        ),
+        (
+            "idx_managed_acceptance_transition_one_genesis",
+            vec!["decision_id".to_string()],
+            "where previous_transition_sha256 is null",
+        ),
+    ] {
+        let properties: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT \"unique\", partial
+                 FROM pragma_index_list('managed_acceptance_decision_transition_receipts')
+                 WHERE name=?1",
+                [index],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let columns = conn
+            .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([index], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|error| error.to_string())?;
+        let definition: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                [index],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let predicate_ok = definition.is_some_and(|sql| {
+            sql.to_ascii_lowercase()
+                .replace(['\n', '\t'], " ")
+                .contains(predicate)
+        });
+        if properties != Some((1, 1)) || columns != expected_columns || !predicate_ok {
+            return Err(format!(
+                "SQLite v32 transition index {index} is missing or malformed"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_sqlite_v31_schema(conn: &Connection) -> Result<(), String> {
@@ -2134,6 +2660,16 @@ pub(super) fn require_v30_rollback_source(current_version: i64) -> Result<(), St
     }
 }
 
+pub(super) fn require_v32_rollback_source(current_version: i64) -> Result<(), String> {
+    if current_version == V32_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(format!(
+            "v32 rollback requires current schema version 32; found {current_version}"
+        ))
+    }
+}
+
 pub(super) fn require_v31_rollback_source(current_version: i64) -> Result<(), String> {
     if current_version == V31_SCHEMA_VERSION {
         Ok(())
@@ -2259,6 +2795,8 @@ mod tests {
 
     fn store_at_v25(path: impl AsRef<std::path::Path>) -> LocalProductStore {
         let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v33_to_v32("migration-test", true).unwrap();
+        store.rollback_v32_to_v31("migration-test", true).unwrap();
         store.rollback_v31_to_v30("migration-test", true).unwrap();
         store.rollback_v30_to_v29("migration-test", true).unwrap();
         store.rollback_v29_to_v28("migration-test", true).unwrap();
@@ -2787,6 +3325,145 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn sqlite_v33_existing_marker_repairs_legacy_spend_schema_idempotently() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("v33-legacy-repair.db");
+        let store = LocalProductStore::new(&path).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "DROP TABLE managed_acceptance_spend_authorizations;
+                     CREATE TABLE managed_acceptance_spend_authorizations (
+                        spend_authorization_id TEXT PRIMARY KEY,
+                        decision_id TEXT NOT NULL,
+                        risk_authorization_id TEXT NOT NULL,
+                        tenant_id TEXT NOT NULL,
+                        principal_kind TEXT NOT NULL
+                            CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
+                        principal_id TEXT NOT NULL,
+                        spend_body_sha256 TEXT NOT NULL CHECK (length(spend_body_sha256) = 64),
+                        risk_authorization_sha256 TEXT NOT NULL CHECK (length(risk_authorization_sha256) = 64),
+                        decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+                        residual_finding_sha256 TEXT NOT NULL CHECK (length(residual_finding_sha256) = 64),
+                        fixture_only INTEGER NOT NULL CHECK (fixture_only IN (0,1)),
+                        status TEXT NOT NULL CHECK (status IN ('active','consumed','revoked','expired')),
+                        body_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        consumed_at TEXT,
+                        consumed_by_attempt_id TEXT,
+                        revoked_at TEXT,
+                        UNIQUE (tenant_id, spend_body_sha256),
+                        FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id),
+                        FOREIGN KEY(risk_authorization_id) REFERENCES managed_acceptance_authorizations(authorization_id)
+                     );
+                     CREATE INDEX idx_managed_acceptance_spend_tenant
+                         ON managed_acceptance_spend_authorizations(tenant_id, status, expires_at);
+                     PRAGMA user_version=33;",
+                )
+                .map_err(|error| error.to_string())?;
+                let body = serde_json::json!({
+                    "one_use": true,
+                    "fixture_only": true,
+                });
+                let body_sha = super::super::managed_acceptance::sha256_hex(
+                    super::super::managed_acceptance::canonical_json(&body)
+                        .unwrap()
+                        .as_bytes(),
+                );
+                conn.execute(
+                    "INSERT INTO managed_acceptance_decisions (
+                        decision_id, tenant_id, decision_body_sha256, residual_finding_sha256,
+                        status, principal_kind, principal_id, body_json, created_at, updated_at,
+                        expires_at, revoked_at
+                     ) VALUES ('legacy-decision','legacy-tenant',?1,?2,'draft_pending_operator',
+                               'fixture_principal','legacy-principal','{}',
+                               '2026-07-25T00:00:00Z','2026-07-25T00:00:00Z',
+                               '2026-07-26T00:00:00Z',NULL)",
+                    rusqlite::params!["a".repeat(64), "b".repeat(64)],
+                )
+                .map_err(|error| error.to_string())?;
+                conn.execute(
+                    "INSERT INTO managed_acceptance_authorizations (
+                        authorization_id, decision_id, tenant_id, principal_kind, principal_id,
+                        decision_body_sha256, residual_finding_sha256, authorization_sha256,
+                        scope_json, status, mutation_authority, execution_granted, body_json,
+                        created_at, updated_at, expires_at, revoked_at
+                     ) VALUES ('legacy-risk','legacy-decision','legacy-tenant','fixture_principal',
+                               'legacy-principal',?1,?2,?3,'{}','active',
+                               'authorization_receipt_only',0,'{}',
+                               '2026-07-25T00:00:00Z','2026-07-25T00:00:00Z',
+                               '2026-07-26T00:00:00Z',NULL)",
+                    rusqlite::params![
+                        "a".repeat(64),
+                        "b".repeat(64),
+                        "c".repeat(64)
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                conn.execute(
+                    "INSERT INTO managed_acceptance_spend_authorizations (
+                        spend_authorization_id, decision_id, risk_authorization_id, tenant_id,
+                        principal_kind, principal_id, spend_body_sha256, risk_authorization_sha256,
+                        decision_body_sha256, residual_finding_sha256, fixture_only, status,
+                        body_json, created_at, updated_at, expires_at, consumed_at,
+                        consumed_by_attempt_id, revoked_at
+                     ) VALUES ('legacy-spend','legacy-decision','legacy-risk','legacy-tenant',
+                               'fixture_principal','legacy-principal',?1,?2,?3,?4,1,'active',
+                               ?5,'2026-07-25T00:00:00Z','2026-07-25T00:00:00Z',
+                               '2026-07-26T00:00:00Z',NULL,NULL,NULL)",
+                    rusqlite::params![
+                        body_sha,
+                        "c".repeat(64),
+                        "a".repeat(64),
+                        "b".repeat(64),
+                        body.to_string()
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+
+        let repaired = LocalProductStore::new(&path).unwrap();
+        repaired.with_conn(validate_sqlite_v33_schema).unwrap();
+        repaired
+            .with_conn(|conn| {
+                let (logical, body_json, body_sha): (String, String, String) = conn
+                    .query_row(
+                        "SELECT logical_authorization_sha256, body_json, spend_body_sha256
+                         FROM managed_acceptance_spend_authorizations
+                         WHERE spend_authorization_id='legacy-spend'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let body: Value = serde_json::from_str(&body_json).unwrap();
+                assert_eq!(
+                    logical,
+                    super::super::managed_acceptance::stable_spend_authorization_identity(&body)
+                        .unwrap()
+                );
+                assert_eq!(
+                    body_sha,
+                    super::super::managed_acceptance::sha256_hex(
+                        super::super::managed_acceptance::canonical_json(&body)
+                            .unwrap()
+                            .as_bytes()
+                    )
+                );
+                Ok(())
+            })
+            .unwrap();
+        repaired.run_migrations().unwrap();
+        drop(repaired);
+        let restarted = LocalProductStore::new(&path).unwrap();
+        restarted.with_conn(validate_sqlite_v33_schema).unwrap();
     }
 
     #[test]
