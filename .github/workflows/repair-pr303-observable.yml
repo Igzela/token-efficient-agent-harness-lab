@@ -1,0 +1,85 @@
+name: repair-pr303-observable
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  ACP_TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/testdb
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  repair:
+    if: github.event.pull_request.number == 303 && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U testuser"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Install bubblewrap
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
+      - name: Apply canonical sequence ordering
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("engine/src/storage/local_product_store/managed_acceptance.rs")
+          text = path.read_text()
+          old = "ORDER BY created_at ASC, transition_receipt_id ASC"
+          new = "ORDER BY sequence ASC, transition_receipt_id ASC"
+          count = text.count(old)
+          if count != 2:
+              raise SystemExit(f"expected exactly two transition-list order clauses, found {count}")
+          path.write_text(text.replace(old, new))
+          PY
+          git diff --check
+      - name: Run focused SQLite tests
+        run: cargo test -p engine --lib managed_acceptance -- --test-threads=1
+      - name: Run tied-timestamp PostgreSQL regression
+        run: >-
+          cargo test -p engine --features pg-tests
+          pg_managed_acceptance_transition_restart_uses_hash_chain_when_timestamps_tie
+          -- --test-threads=1
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Commit clean repair under exact-head lease
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/fix-transition-receipt-order.yml
+          rm -f .github/workflows/repair-pr303-observable.yml
+          git diff --check
+          git config user.name "token-efficiency-maintainer"
+          git config user.email "actions@users.noreply.github.com"
+          git add engine/src/storage/local_product_store/managed_acceptance.rs \
+            .github/workflows/fix-transition-receipt-order.yml \
+            .github/workflows/repair-pr303-observable.yml
+          git commit -m "fix(store): order transition receipts by sequence"
+          git push --force-with-lease="refs/heads/$HEAD_REF:$EVENT_HEAD" origin "HEAD:refs/heads/$HEAD_REF"
