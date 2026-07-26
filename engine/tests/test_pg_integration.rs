@@ -557,7 +557,7 @@ fn pg_managed_acceptance_product_task_phase_revalidates_real_receipts() {
     );
     client
         .execute(
-            "UPDATE product_tasks SET confirm_output=TRUE WHERE task_id=$1",
+            "UPDATE product_tasks SET confirm_output=1 WHERE task_id=$1",
             &[&task_id],
         )
         .unwrap();
@@ -2618,10 +2618,11 @@ fn pg_managed_acceptance_transition_receipts_and_exact_envelope_bindings() {
             ],
         )
         .expect_err("PostgreSQL V32 must reject a second genesis transition");
-    assert!(
+    assert_eq!(
         genesis_error
-            .to_string()
-            .contains("idx_managed_acceptance_transition_one_genesis"),
+            .as_db_error()
+            .and_then(|error| error.constraint()),
+        Some("idx_managed_acceptance_transition_one_genesis"),
         "unexpected genesis fork error: {genesis_error}"
     );
 }
