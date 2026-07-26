@@ -2,12 +2,11 @@
 
 Last updated: 2026-07-26.
 
-Current version: v33 (current tree schema).
-Accepted-main version at this branch base: v31.
+Current version: v33.
 
 This is the durable architecture and safety baseline for the Token-Efficient Agent Harness Lab. Current facts live in `docs/CURRENT_STATUS.md`; routing and gates live in `docs/NEXT_DECISION.md`; concrete owners live in `docs/MODULE_MAP.md`. Historical packet details remain available in git history.
 
-Schema acceptance boundary: **v32** (hash-linked decision transition sequence receipts) and **v33** (managed-acceptance spend/lease logical authorization) become accepted architecture only after independent review and merge to `main`; this branch records the current-tree schema separately from that boundary.
+Schema **v32** (hash-linked decision transition sequence receipts) and **v33** (managed-acceptance spend/lease logical authorization) are accepted architecture on `main` through PR #299. This acceptance does not authorize live provider calls, a live Golden Path task, RWE, Level-2, Meta, or Dashboard #225.
 
 ## Mission
 
