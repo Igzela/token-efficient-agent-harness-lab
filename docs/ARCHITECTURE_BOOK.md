@@ -2,7 +2,8 @@
 
 Last updated: 2026-07-25.
 
-Current version: v31 (accepted main).
+Current version: v33 (proposed open-PR schema; not accepted).
+Current accepted version: v31.
 
 This is the durable architecture and safety baseline for the Token-Efficient Agent Harness Lab. Current facts live in `docs/CURRENT_STATUS.md`; routing and gates live in `docs/NEXT_DECISION.md`; concrete owners live in `docs/MODULE_MAP.md`. Historical packet details remain available in git history.
 
