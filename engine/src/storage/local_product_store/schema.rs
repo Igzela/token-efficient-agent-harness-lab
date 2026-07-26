@@ -677,7 +677,6 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
     receipt_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (decision_id, transition_sha256),
-    UNIQUE (decision_id, sequence),
     FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_managed_acceptance_transition_decision
@@ -1822,7 +1821,6 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
     receipt_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (decision_id, transition_sha256),
-    UNIQUE (decision_id, sequence),
     FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_managed_acceptance_transition_decision
@@ -2903,7 +2901,6 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
     receipt_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (decision_id, transition_sha256),
-    UNIQUE (decision_id, sequence),
     FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_managed_acceptance_transition_decision

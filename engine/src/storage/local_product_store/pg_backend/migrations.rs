@@ -628,6 +628,8 @@ fn repair_pg_v32_transition_schema(tx: &mut postgres::Transaction<'_>) -> Result
              previous_transition_sequence = CASE WHEN receipt.previous_transition_sha256 IS NULL THEN NULL ELSE numbered.sequence - 1 END
          FROM numbered
          WHERE receipt.transition_receipt_id = numbered.transition_receipt_id;
+         ALTER TABLE managed_acceptance_decision_transition_receipts
+           DROP CONSTRAINT IF EXISTS managed_acceptance_decision_transition_receipts_decision_id_sequence_key;
          CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_sequence
          ON managed_acceptance_decision_transition_receipts(decision_id, sequence);",
     )
