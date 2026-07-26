@@ -1,0 +1,111 @@
+name: normalize-302-active-routing
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  normalize-routing:
+    if: github.event.pull_request.number == 302 && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out triggering head
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.11"
+      - name: Normalize packet ownership and dependencies
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("docs/NEXT_DECISION.md")
+          text = path.read_text()
+          old_routing = '''## Active Routing
+
+          1. `PE7-PRODUCT-GOLDEN-PATH-1` — `IN_PROGRESS`.
+          2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+          3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+          4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+          5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+          6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+          '''.replace("          ", "")
+          new_routing = '''## Active Routing
+
+          1. `PE7-RWE-AUTHORITY-RESTACK-1` — `IN_PROGRESS`.
+          2. `PE7-OBSERVATION-RESTACK-1` — `BLOCKED_PREREQUISITE`.
+          3. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE`.
+          4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+          5. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+          6. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+          7. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+          8. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+          '''.replace("          ", "")
+          if old_routing not in text:
+              raise SystemExit("active routing block changed unexpectedly")
+          text = text.replace(old_routing, new_routing, 1)
+
+          old_packet = '''## Packet PE7-PRODUCT-GOLDEN-PATH-1 — accepted authority and live residual seal
+
+          **State:** `IN_PROGRESS`
+
+          **Owned PR:** #300
+
+          The provider-free authority foundation from PR #299 is merged and accepted. The current eligible work is a mechanical restack and independent review of provider-free PR #300, followed by the observation-only PR #301 restack. Completion still requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+
+          The live task requires a separate current-session spend authorization and parent-only credential. No repository prompt, fixture result, or merged authority code grants that live authority.
+          '''.replace("          ", "")
+          new_packets = '''## Packet PE7-RWE-AUTHORITY-RESTACK-1 — provider-free PR #300 reconciliation
+
+          **State:** `IN_PROGRESS`
+
+          **Owned PR:** #300
+
+          PR #299 is the accepted authority foundation. Mechanically restack PR #300 onto accepted `main`, reconcile it against the final v33 store/spend/lease semantics, remove stale duplicated assumptions, run complete exact-head CI and independent review, and stop. This packet is provider-free and cannot establish a live RWE baseline or authorize a provider call.
+
+          ## Packet PE7-OBSERVATION-RESTACK-1 — observation-only PR #301 reconciliation
+
+          **State:** `BLOCKED_PREREQUISITE`
+
+          **Prerequisite:** PE7-RWE-AUTHORITY-RESTACK-1
+
+          **Owned PR:** #301
+
+          After PR #300 is accepted, mechanically restack PR #301 as an observation-only layer. It may normalize usage and pricing observations but must not import authority, credentials, proxy ownership, budget ownership, or live execution.
+
+          ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — accepted authority and live residual seal
+
+          **State:** `BLOCKED_PREREQUISITE`
+
+          **Prerequisite:** PE7-OBSERVATION-RESTACK-1
+
+          The provider-free authority foundation from PR #299 is merged and accepted. This live packet becomes eligible only after PR #300 and PR #301 are independently reconciled and accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+
+          The live task requires a separate current-session spend authorization and parent-only credential. No repository prompt, fixture result, merged authority code, or prior test run grants that live authority.
+          '''.replace("          ", "")
+          if old_packet not in text:
+              raise SystemExit("Golden Path packet block changed unexpectedly")
+          path.write_text(text.replace(old_packet, new_packets, 1))
+          Path(".github/workflows/route-302.yml").unlink()
+          PY
+          git diff --check
+          python3 scripts/check_agent_handoff.py
+          git config user.name "token-efficiency-maintainer"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/NEXT_DECISION.md .github/workflows/route-302.yml
+          git commit -m "docs: normalize post-299 active routing"
+          git push --force-with-lease="refs/heads/$HEAD_REF:$EVENT_HEAD" origin "HEAD:refs/heads/$HEAD_REF"
