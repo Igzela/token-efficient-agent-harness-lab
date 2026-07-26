@@ -51,10 +51,11 @@ pub(super) const V29_TABLES: [&str; 2] = [
 ];
 pub(super) const V30_TABLES: [&str; 1] = ["product_tasks"];
 pub(super) const V31_TABLES: [&str; 1] = ["product_task_terminal_evidence"];
-pub(super) const V32_TABLES: [&str; 3] = [
+pub(super) const V32_TABLES: [&str; 4] = [
     "managed_acceptance_decisions",
     "managed_acceptance_authorizations",
     "managed_acceptance_attempts",
+    "managed_acceptance_decision_transition_receipts",
 ];
 pub(super) const V33_TABLES: [&str; 1] = ["managed_acceptance_spend_authorizations"];
 
@@ -638,7 +639,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
         }
     }
 
-    /// Roll back canonical terminal evidence only when no evidence rows exist.
+    /// Roll back v33 managed-acceptance spend storage only when it is empty.
     pub fn rollback_v33_to_v32(
         &self,
         actor: &str,
@@ -787,7 +788,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                 ));
             }
             tx.execute_batch(
-                "DROP TABLE managed_acceptance_attempts;
+                "DROP TABLE managed_acceptance_decision_transition_receipts;
+                 DROP TABLE managed_acceptance_attempts;
                  DROP TABLE managed_acceptance_authorizations;
                  DROP TABLE managed_acceptance_decisions;",
             )
@@ -1755,13 +1757,16 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
             ("spend_authorization_id", "TEXT"),
             ("lease_token", "TEXT"),
             ("receipt_sha256", "TEXT"),
+            ("logical_authorization_sha256", "TEXT"),
         ] {
-            if !column_exists(conn, "managed_acceptance_attempts", col)? {
-                conn.execute(
-                    &format!("ALTER TABLE managed_acceptance_attempts ADD COLUMN {col} {decl}"),
-                    [],
-                )
-                .map_err(|error| error.to_string())?;
+            let table = if col == "logical_authorization_sha256" {
+                "managed_acceptance_spend_authorizations"
+            } else {
+                "managed_acceptance_attempts"
+            };
+            if !column_exists(conn, table, col)? {
+                conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), [])
+                    .map_err(|error| error.to_string())?;
             }
         }
         Ok(())
@@ -1782,6 +1787,68 @@ fn validate_sqlite_v33_schema(conn: &Connection) -> Result<(), String> {
             return Err(format!("SQLite v33 schema missing table {table}"));
         }
     }
+    if !column_exists(
+        conn,
+        "managed_acceptance_spend_authorizations",
+        "logical_authorization_sha256",
+    )? {
+        return Err("SQLite v33 spend logical authorization identity is missing".to_string());
+    }
+    let table_definition: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='table' AND name='managed_acceptance_spend_authorizations'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let active_identity_constraint_ok = table_definition
+        .to_ascii_lowercase()
+        .replace(['\n', '\t'], " ")
+        .contains("check (status <> 'active' or logical_authorization_sha256 is not null)");
+    if !active_identity_constraint_ok {
+        return Err(
+            "SQLite v33 active spend rows may omit logical authorization identity".to_string(),
+        );
+    }
+    let index = "idx_managed_acceptance_spend_active_logical";
+    let properties: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT \"unique\", partial FROM pragma_index_list('managed_acceptance_spend_authorizations')
+             WHERE name=?1",
+            [index],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let columns = conn
+        .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+        .and_then(|mut statement| {
+            statement
+                .query_map([index], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| error.to_string())?;
+    let definition: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+            [index],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let predicate_ok = definition.is_some_and(|sql| {
+        let normalized = sql.to_ascii_lowercase().replace(['\n', '\t'], " ");
+        normalized.contains("where status = 'active'")
+            && !normalized.contains("logical_authorization_sha256 is not null")
+    });
+    let expected_columns = vec![
+        "tenant_id".to_string(),
+        "logical_authorization_sha256".to_string(),
+    ];
+    if properties != Some((1, 1)) || columns != expected_columns || !predicate_ok {
+        return Err("SQLite v33 active logical spend index is missing or malformed".to_string());
+    }
     Ok(())
 }
 
@@ -1797,6 +1864,58 @@ fn validate_sqlite_v32_schema(conn: &Connection) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         if exists != 1 {
             return Err(format!("SQLite v32 schema missing table {table}"));
+        }
+    }
+    for (index, expected_columns, predicate) in [
+        (
+            "idx_managed_acceptance_transition_one_child",
+            vec![
+                "decision_id".to_string(),
+                "previous_transition_sha256".to_string(),
+            ],
+            "where previous_transition_sha256 is not null",
+        ),
+        (
+            "idx_managed_acceptance_transition_one_genesis",
+            vec!["decision_id".to_string()],
+            "where previous_transition_sha256 is null",
+        ),
+    ] {
+        let properties: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT \"unique\", partial
+                 FROM pragma_index_list('managed_acceptance_decision_transition_receipts')
+                 WHERE name=?1",
+                [index],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let columns = conn
+            .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([index], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|error| error.to_string())?;
+        let definition: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                [index],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let predicate_ok = definition.is_some_and(|sql| {
+            sql.to_ascii_lowercase()
+                .replace(['\n', '\t'], " ")
+                .contains(predicate)
+        });
+        if properties != Some((1, 1)) || columns != expected_columns || !predicate_ok {
+            return Err(format!(
+                "SQLite v32 transition index {index} is missing or malformed"
+            ));
         }
     }
     Ok(())

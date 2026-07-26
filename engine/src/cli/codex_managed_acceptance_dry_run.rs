@@ -23,7 +23,8 @@ use uuid::Uuid;
 
 use super::codex_budget_authority::{
     new_codex_attempt_id, CodexBudgetAuthority, CodexBudgetGateway, CodexExecutableIdentity,
-    CodexProviderIdentity, ADMITTED_CODEX_CLI_VERSION, CODEX_BUDGET_AUTHORITY_SCHEMA,
+    CodexGatewayStartPermit, CodexProviderIdentity, ADMITTED_CODEX_CLI_VERSION,
+    CODEX_BUDGET_AUTHORITY_SCHEMA,
 };
 use super::codex_managed_acceptance_preflight::{
     fixture_ready_pending_operator_input, run_managed_acceptance_preflight,
@@ -511,6 +512,40 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
     let draft = draft_partial_mediation_authority_decision();
     let decision_body = draft.to_json();
     let mut decision_body = decision_body;
+    // A generic authority draft is not spend-capable. Bind this fixture-only
+    // provider-free attempt exactly before it enters the store-owned spend API.
+    let trial = decision_body
+        .get_mut("trial_envelope")
+        .and_then(Value::as_object_mut)
+        .ok_or("draft decision trial_envelope missing")?;
+    trial.insert("product_task_id".into(), json!(config.product_task_id));
+    trial.insert("workflow_id".into(), json!("wf-managed-acceptance-dry-run"));
+    trial.insert(
+        "workflow_node_id".into(),
+        json!("node-managed-acceptance-dry-run"),
+    );
+    trial.insert(
+        "execution_id".into(),
+        json!(format!("codex-attempt-{}", config.attempt_id)),
+    );
+    trial.insert("attempt_id".into(), json!(config.attempt_id));
+    trial.insert("target_repo".into(), json!(config.disposable_target_repo));
+    trial.insert("target_main_sha".into(), json!(config.target_main_sha));
+    trial.insert("exact_codex_path".into(), json!("/fixture/codex"));
+    trial.insert("exact_codex_sha256".into(), json!("ab".repeat(32)));
+    trial.insert(
+        "cancellation_identity".into(),
+        json!(format!("cancel-{}", config.attempt_id)),
+    );
+    trial.insert(
+        "rollback_identity".into(),
+        json!(format!("rollback-{}", config.attempt_id)),
+    );
+    trial.insert("output_branch_prefix".into(), json!("acp/"));
+    trial.insert(
+        "cost_authority".into(),
+        CostAuthority::CostUnavailable.to_json(),
+    );
     // Ensure decision_id present for store identity.
     if decision_body.get("decision_id").is_none() {
         decision_body.as_object_mut().unwrap().insert(
@@ -784,9 +819,14 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
 
     // Parent-only fixture key — never logged or written into receipts.
     let parent_key = "fixture-upstream-key";
-    let gateway =
-        CodexBudgetGateway::start(authority.clone(), &upstream, parent_key, journal.clone())
-            .map_err(|e| format!("gateway start: {e}"))?;
+    let gateway = CodexBudgetGateway::start(
+        CodexGatewayStartPermit::provider_free_fixture(&authority.execution_id),
+        authority.clone(),
+        &upstream,
+        parent_key,
+        journal.clone(),
+    )
+    .map_err(|e| format!("gateway start: {e}"))?;
 
     let body = br#"{"model":"gpt-test-model","input":"fixture-ordinary-coding-task"}"#;
     let mut terminal = DryRunTerminalClass::SucceededFixture;
@@ -916,7 +956,13 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
         DryRunScenario::RestartAfterOutcomeUnknown | DryRunScenario::OutcomeUnknown
     ) {
         // New gateway with same attempt must not restore budget freely.
-        match CodexBudgetGateway::start(authority.clone(), &upstream, parent_key, journal.clone()) {
+        match CodexBudgetGateway::start(
+            CodexGatewayStartPermit::provider_free_fixture(&authority.execution_id),
+            authority.clone(),
+            &upstream,
+            parent_key,
+            journal.clone(),
+        ) {
             Ok(g2) => {
                 let resp = post_gateway(g2.local_addr(), g2.session_token(), body);
                 notes.push(format!(
@@ -1239,9 +1285,15 @@ mod tests {
         use crate::storage::local_product_store::LocalProductStore;
 
         let receipt = run_scenario(DryRunScenario::Success);
-        let url = std::env::var("ACP_TEST_DATABASE_URL")
+        let url = match std::env::var("ACP_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
-            .expect("DATABASE_URL for pg-tests");
+        {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("ACP_TEST_DATABASE_URL not set; skipping pg-tests");
+                return;
+            }
+        };
         let store = LocalProductStore::new_postgres(&url, || "2026-07-25T00:00:00Z".to_string())
             .expect("pg store");
         let first = store

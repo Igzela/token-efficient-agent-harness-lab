@@ -1366,8 +1366,11 @@ async fn run_cli_repair(
         "workspace_root": workspace_path,
         "executor_timeout_ms": cli_config.timeout_ms,
     });
-    let executor =
-        ToolPolicyNodeExecutor::cli(std::sync::Arc::new(inner), store.clone(), tool_name);
+    let executor = ToolPolicyNodeExecutor::cli(
+        std::sync::Arc::new(inner.with_managed_acceptance_store(store.clone())),
+        store.clone(),
+        tool_name,
+    );
     run_managed_tool_node(
         store,
         executor,

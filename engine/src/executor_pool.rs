@@ -490,7 +490,7 @@ pub fn register_cli_executors(
         pool.register(ExecutorEntry {
             executor_type: "claude_code_cli".to_string(),
             executor: Arc::new(ToolPolicyNodeExecutor::cli(
-                Arc::new(cli_exec),
+                Arc::new(cli_exec.with_managed_acceptance_store(Arc::clone(&store))),
                 Arc::clone(&store),
                 "claude_code_cli",
             )),
@@ -522,7 +522,7 @@ pub fn register_cli_executors(
         pool.register(ExecutorEntry {
             executor_type: "codex_cli".to_string(),
             executor: Arc::new(ToolPolicyNodeExecutor::cli(
-                Arc::new(cli_exec),
+                Arc::new(cli_exec.with_managed_acceptance_store(Arc::clone(&store))),
                 store,
                 "codex_cli",
             )),

@@ -114,7 +114,7 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     );
     bind_test_workflow(&occupied, &mut tree);
     occupied.save_recursive_tree(&tree).expect("save");
-    // Peel managed acceptance (v32), terminal evidence (v31), product-task (v30), then PR_READY/evolution.
+    // Peel managed acceptance (v33/v32), terminal evidence (v31), product-task (v30), then PR_READY/evolution.
     // so v26 recursive rollback can be attempted.
     occupied
         .rollback_v33_to_v32("test", true)

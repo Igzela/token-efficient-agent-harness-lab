@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::codex_mediation_admission::{
-    unprivileged_user_ns_available, CodexAdmissionClass, BUBBLEWRAP_BIN,
+    unprivileged_user_ns_available, CodexAdmissionClass, ManagedCodexRuntimeAttestation,
+    BUBBLEWRAP_BIN,
 };
 use super::codex_partial_mediation_authority_decision::{
     AuthorityDecisionStatus, PartialMediationAuthorityDecision,
@@ -840,6 +841,7 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     decision_id: &str,
     risk_authorization_id: &str,
     spend_authorization_id: &str,
+    runtime_attestation: &ManagedCodexRuntimeAttestation,
     expected_identities: &ManagedAcceptancePreflightInput,
 ) -> Result<ManagedAcceptancePreflightReport, String> {
     use crate::cli::config::sha256_file;
@@ -880,9 +882,11 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     if risk
         .get("execution_granted")
         .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
+        != Some(false)
     {
-        return Err("risk acknowledgement must not grant execution".into());
+        return Err(
+            "risk acknowledgement execution_granted must be a persisted false boolean".into(),
+        );
     }
 
     // Exact active, unconsumed spend is mandatory (no optional/no-spend production path).
@@ -920,74 +924,31 @@ pub fn run_owner_derived_managed_acceptance_preflight(
         .cloned()
         .unwrap_or_else(|| spend.clone());
 
-    // ProductTask owner is mandatory for production preflight.
+    // ProductTask owner is mandatory for production preflight. Bind its durable
+    // logical target and source revision to the exact spend target; no local-path
+    // fallback or missing-receipt exception is permitted here.
     let product_task_id = spend_body
         .get("product_task_id")
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or("spend missing product_task_id")?;
-    let product_task = store.get_product_task(product_task_id)?.ok_or_else(|| {
-        format!("ProductTask owner {product_task_id} required for production preflight")
-    })?;
-
-    // Target / default-branch owner fields from ProductTask (fail closed if absent).
-    let task_target_repo = product_task
-        .get("target_repo_path")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            product_task
-                .get("target_id")
-                .and_then(serde_json::Value::as_str)
-        })
-        .ok_or("ProductTask missing target/default-branch owner identity")?;
-    let task_main_sha = product_task
-        .get("source_revision")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| !s.is_empty());
     let spend_target = spend_body
         .get("target_repo")
         .and_then(serde_json::Value::as_str)
         .ok_or("spend missing target_repo")?;
-    // Spend binds disposable target identity; ProductTask must supply a real target owner.
-    let _ = task_target_repo;
-    let _ = spend_target;
-
-    // Approval / output / evidence owners from ProductTask + terminal-evidence table.
-    let approval_declared = product_task.get("approval_required").is_some();
-    let output_declared = product_task.get("confirm_output").is_some()
-        || product_task
-            .get("output_intent")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|s| !s.is_empty());
-    let verification_declared = product_task.get("confirm_execution").is_some()
-        || product_task
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .is_some();
-    // Evidence sink owner: terminal-evidence table is queryable (owner exists even if empty).
-    let evidence_sink = match store.get_product_task_terminal_evidence(product_task_id) {
-        Ok(_) => true,
-        Err(e) if e.contains("not committed") => true, // owner present, no row yet
-        Err(e) if e.contains("no such table") || e.contains("does not exist") => {
-            return Err(format!("evidence sink owner unavailable: {e}"));
-        }
-        Err(_) => true, // read path exists; content may be uncommitted
-    };
-    if !approval_declared {
-        return Err("approval owner requirements not declared on ProductTask".into());
-    }
-    if !output_declared {
-        return Err("output-confirmation owner requirements not declared on ProductTask".into());
-    }
-    if !verification_declared {
-        return Err("verification owner requirements not declared on ProductTask".into());
-    }
-    if !evidence_sink {
-        return Err("evidence sink owner not available".into());
-    }
+    let spend_main_sha = spend_body
+        .get("target_main_sha")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("spend missing target_main_sha")?;
+    let product_phase = store.validate_managed_acceptance_product_task_phase(
+        tenant_id,
+        product_task_id,
+        spend_target,
+        spend_main_sha,
+    )?;
 
     // Derive owner facts solely from spend + store + host; never caller proof.
+    runtime_attestation.assert_required_mediation_owners()?;
     let mut input = ManagedAcceptancePreflightInput {
         execution_gate_enabled: true,
         authority_decision_status: Some(
@@ -1056,33 +1017,39 @@ pub fn run_owner_derived_managed_acceptance_preflight(
         auto_merge_disabled: trial
             .get("auto_merge_disabled")
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true),
+            .ok_or("decision trial_envelope missing auto_merge_disabled boolean")?,
         disposable_target_repo: Some(spend_target.to_string()),
-        target_main_sha: spend_body
-            .get("target_main_sha")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-            .or_else(|| task_main_sha.map(str::to_string)),
+        target_main_sha: Some(spend_main_sha.to_string()),
         allowed_output_branch_prefix: spend_body
             .get("output_branch_prefix")
             .and_then(serde_json::Value::as_str)
             .filter(|s| !s.is_empty())
             .ok_or("spend missing output_branch_prefix")?
             .to_string(),
-        verification_commands_declared: verification_declared,
-        approval_requirements_declared: approval_declared,
-        output_confirmation_requirements_declared: output_declared,
-        evidence_sink_available: evidence_sink,
-        // Product policy only from decision body — never caller boolean.
-        product_launch_enforces_loopback_only: decision_body
-            .pointer("/product_policy/product_launch_enforces_loopback_only")
+        verification_commands_declared: product_phase
+            .get("task")
+            .and_then(|task| task.get("confirm_execution"))
             .and_then(serde_json::Value::as_bool)
-            .or_else(|| {
-                trial
-                    .get("product_launch_enforces_loopback_only")
-                    .and_then(serde_json::Value::as_bool)
-            })
-            .unwrap_or(false),
+            == Some(true),
+        approval_requirements_declared: product_phase
+            .get("task")
+            .and_then(|task| task.get("approval_required"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        output_confirmation_requirements_declared: product_phase
+            .get("task")
+            .and_then(|task| task.get("confirm_output"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+        evidence_sink_available: true,
+        parent_credential_present: runtime_attestation.parent_credential_owner_present(),
+        child_env_has_no_reusable_credential: runtime_attestation.child_credential_clearance(),
+        mediation_gateway_configured: runtime_attestation.mediation_gateway_configured(),
+        gateway_is_loopback: runtime_attestation.gateway_is_loopback(),
+        journal_path_parent_owned: runtime_attestation.journal_path_parent_owned(),
+        journal_durable: runtime_attestation.journal_durable(),
+        // Runtime-owned launcher fact, not a persisted declaration.
+        product_launch_enforces_loopback_only: runtime_attestation.network_confinement_enforced(),
         ..ManagedAcceptancePreflightInput::default()
     };
 
@@ -1180,34 +1147,6 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     input.codex_sha256 = Some(actual_sha);
     input.codex_version = Some(probed_version);
 
-    // Credential / gateway / journal: inspect actual environment only — no caller boolean fallback.
-    let parent_key_present = std::env::var_os("OPENAI_API_KEY").is_some()
-        || std::env::var_os("CODEX_API_KEY").is_some()
-        || std::env::var_os("ACP_CODEX_API_KEY").is_some();
-    input.parent_credential_present = parent_key_present;
-    input.child_env_has_no_reusable_credential = !parent_key_present
-        || std::env::var_os("ACP_CODEX_CHILD_CLEARED").as_deref()
-            == Some(std::ffi::OsStr::new("1"));
-    let gateway_sock = std::env::var_os("ACP_CODEX_GATEWAY_SOCK");
-    let gateway_url = std::env::var("ACP_CODEX_GATEWAY_URL").ok();
-    input.mediation_gateway_configured = gateway_sock.is_some() || gateway_url.is_some();
-    input.gateway_is_loopback = if let Some(ref url) = gateway_url {
-        url.contains("127.0.0.1") || url.contains("localhost") || url.contains("[::1]")
-    } else {
-        // Unix domain socket is host-local; treat as loopback-equivalent only when sock is set.
-        gateway_sock.is_some()
-    };
-    if let Ok(journal) = std::env::var("ACP_CODEX_USAGE_JOURNAL") {
-        let journal_path = PathBuf::from(&journal);
-        input.journal_path_parent_owned = journal.contains("acp-codex-parent-journal")
-            || journal_path
-                .parent()
-                .is_some_and(|p| p.ends_with("acp-codex-parent-journal"));
-        input.journal_durable = journal_path.parent().is_some_and(|p| p.is_dir());
-    } else {
-        input.journal_path_parent_owned = false;
-        input.journal_durable = false;
-    }
     input.cancellation_cleanup_rollback_ready = spend_body
         .get("cancellation_identity")
         .and_then(serde_json::Value::as_str)

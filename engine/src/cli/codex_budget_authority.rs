@@ -374,17 +374,85 @@ pub struct CodexBudgetGateway {
     join: Option<JoinHandle<()>>,
 }
 
+/// Non-secret ownership facts read from the gateway's actual parent-owned journal.
+/// These are intentionally derived by the gateway, not reconstructed from an
+/// environment declaration or a path-name convention.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayJournalOwnershipFacts {
+    pub parent_owned_for_attempt: bool,
+    pub durable_and_current: bool,
+}
+
+/// Opaque capability required to start a budget gateway.  Production permits
+/// originate only from a consumed store attempt lease; the provider-free
+/// variant is intentionally explicit so dry-runs/tests cannot be mistaken for
+/// live ProductTask execution authority.
+#[derive(Debug, Clone)]
+pub struct CodexGatewayStartPermit {
+    execution_id: String,
+    kind: CodexGatewayStartPermitKind,
+}
+
+#[derive(Debug, Clone)]
+enum CodexGatewayStartPermitKind {
+    ManagedStoreLease { lease_token_sha256: String },
+    ProviderFreeFixture,
+}
+
+impl CodexGatewayStartPermit {
+    pub(crate) fn managed_store_lease(execution_id: &str, lease_token: &str) -> Self {
+        Self {
+            execution_id: execution_id.to_string(),
+            kind: CodexGatewayStartPermitKind::ManagedStoreLease {
+                lease_token_sha256: hex::encode(Sha256::digest(lease_token.as_bytes())),
+            },
+        }
+    }
+
+    /// This is an intentionally named provider-free seam for the deterministic
+    /// managed-acceptance dry-run and unit tests.  It is not exported as a
+    /// production authorization constructor.
+    pub(crate) fn provider_free_fixture(execution_id: &str) -> Self {
+        Self {
+            execution_id: execution_id.to_string(),
+            kind: CodexGatewayStartPermitKind::ProviderFreeFixture,
+        }
+    }
+
+    fn validate_for(&self, authority: &CodexBudgetAuthority) -> Result<(), String> {
+        if self.execution_id != authority.execution_id {
+            return Err("codex gateway start permit execution identity mismatch".to_string());
+        }
+        match &self.kind {
+            CodexGatewayStartPermitKind::ManagedStoreLease { lease_token_sha256 }
+                if lease_token_sha256.len() == 64
+                    && lease_token_sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit()) =>
+            {
+                Ok(())
+            }
+            CodexGatewayStartPermitKind::ManagedStoreLease { .. } => {
+                Err("codex gateway start permit lease binding is invalid".to_string())
+            }
+            CodexGatewayStartPermitKind::ProviderFreeFixture => Ok(()),
+        }
+    }
+}
+
 impl CodexBudgetGateway {
     /// Start the gateway with a **required** parent-owned journal path.
     ///
     /// `upstream_base_url` must exactly match `authority.provider.base_url` after
     /// normalization — environment substitution of provider identity is rejected.
     pub fn start(
+        permit: CodexGatewayStartPermit,
         authority: CodexBudgetAuthority,
         upstream_base_url: &str,
         upstream_api_key: &str,
         parent_journal_path: PathBuf,
     ) -> Result<Self, String> {
+        permit.validate_for(&authority)?;
         Self::start_with_journal(
             authority,
             upstream_base_url,
@@ -393,7 +461,7 @@ impl CodexBudgetGateway {
         )
     }
 
-    pub fn start_with_journal(
+    fn start_with_journal(
         authority: CodexBudgetAuthority,
         upstream_base_url: &str,
         upstream_api_key: &str,
@@ -498,6 +566,46 @@ impl CodexBudgetGateway {
 
     pub fn authority(&self) -> &CodexBudgetAuthority {
         &self.state.authority
+    }
+
+    /// The gateway can only exist after `start` validated a non-empty upstream
+    /// credential. Expose presence only; never expose its value.
+    pub(crate) fn parent_credential_owner_present(&self) -> bool {
+        !self.state.upstream_api_key.trim().is_empty()
+    }
+
+    /// Re-read the exact journal owned by this gateway and verify it remains
+    /// bound to this attempt. Any lock/read/integrity error is propagated so a
+    /// caller cannot treat an unavailable owner as evidence.
+    pub(crate) fn journal_ownership_facts(&self) -> Result<GatewayJournalOwnershipFacts, String> {
+        let journal = self
+            .state
+            .journal
+            .lock()
+            .map_err(|_| "codex budget gateway journal lock poisoned".to_string())?;
+        let persisted = crate::cli::codex_usage_journal::load_journal(journal.path())?;
+        let current = journal.entry();
+        // The journal lives in the gateway's private parent-owned state, not
+        // in a child environment or a path-name convention.  Bind that actual
+        // owner to the authority before treating its durable record as proof.
+        let parent_owned_for_attempt = current.attempt_id == self.state.authority.execution_id
+            && current.task_id == self.state.authority.task_id
+            && current.provider_kind == self.state.authority.provider.provider_kind
+            && current.provider_host == self.state.authority.provider.host
+            && current.model == self.state.authority.model
+            && current.binary_sha256 == self.state.authority.executable.binary_sha256;
+        let durable_and_current = parent_owned_for_attempt
+            && persisted.attempt_id == current.attempt_id
+            && persisted.task_id == current.task_id
+            && persisted.provider_kind == current.provider_kind
+            && persisted.provider_host == current.provider_host
+            && persisted.model == current.model
+            && persisted.binary_sha256 == current.binary_sha256
+            && persisted.integrity_sha256 == current.integrity_sha256;
+        Ok(GatewayJournalOwnershipFacts {
+            parent_owned_for_attempt,
+            durable_and_current,
+        })
     }
 
     pub fn usage(&self) -> BudgetGatewayUsage {
@@ -1253,90 +1361,6 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Build a one-use authority from product node metadata and exact executable identity.
-///
-/// `provider_base_url` is bound into the authority and must match the gateway
-/// upstream URL at start (no environment substitution after binding).
-pub fn authority_from_product_metadata(
-    executable: CodexExecutableIdentity,
-    metadata: &Value,
-    model: &str,
-    timeout_ms: u64,
-    provider_base_url: &str,
-) -> Result<CodexBudgetAuthority, String> {
-    let task_id = metadata
-        .get("product_task_id")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "product codex budget requires product_task_id".to_string())?
-        .to_string();
-    let workflow_node_id = metadata
-        .get("node_id")
-        .or_else(|| metadata.get("workflow_node_id"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("product-apply")
-        .to_string();
-    let worktree = metadata
-        .get("workspace_path")
-        .or_else(|| metadata.get("workspace_root"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "product codex budget requires workspace_path".to_string())?;
-    let budget = metadata
-        .get("product_budget")
-        .ok_or_else(|| "product codex budget requires product_budget".to_string())?;
-    let max_cumulative_tokens = budget
-        .get("total_tokens")
-        .and_then(Value::as_u64)
-        .filter(|value| *value > 0)
-        .ok_or_else(|| "product_budget.total_tokens must be > 0".to_string())?;
-    let max_provider_requests = budget
-        .get("total_calls")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_CODEX_MAX_PROVIDER_REQUESTS)
-        .max(1);
-    let max_retries = budget
-        .get("max_retries")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_CODEX_MAX_RETRIES);
-    let max_output_tokens_per_request = budget
-        .get("max_output_tokens_per_request")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_CODEX_MAX_OUTPUT_TOKENS_PER_REQUEST)
-        .min(max_cumulative_tokens)
-        .max(1);
-    let max_input_tokens_per_request = budget
-        .get("max_input_tokens_per_request")
-        .and_then(Value::as_u64)
-        .unwrap_or(max_cumulative_tokens)
-        .min(max_cumulative_tokens)
-        .max(1);
-    let provider = CodexProviderIdentity::openai_compatible(provider_base_url)?;
-    // Collision-resistant attempt identity; never derived from weak clocks alone.
-    let execution_id = new_codex_attempt_id();
-    let expires_unix_ms = now_unix_ms().saturating_add(timeout_ms.saturating_add(60_000));
-    CodexBudgetAuthority {
-        schema_version: CODEX_BUDGET_AUTHORITY_SCHEMA.to_string(),
-        task_id,
-        workflow_node_id,
-        execution_id,
-        executable,
-        provider,
-        model: model.trim().to_string(),
-        max_provider_requests,
-        max_retries,
-        max_input_tokens_per_request,
-        max_output_tokens_per_request,
-        max_cumulative_tokens,
-        max_cost_usd: None,
-        timeout_ms,
-        worktree: PathBuf::from(worktree),
-        expires_unix_ms,
-    }
-    .validate_new()
-}
-
 /// Create an ephemeral CODEX_HOME that forces API-key auth through the gateway.
 pub fn write_ephemeral_codex_home(
     root: &Path,
@@ -1433,7 +1457,8 @@ mod tests {
         let journal =
             crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
         let _ = std::fs::remove_file(&journal);
-        CodexBudgetGateway::start(authority, upstream, key, journal).unwrap()
+        let permit = CodexGatewayStartPermit::provider_free_fixture(&authority.execution_id);
+        CodexBudgetGateway::start(permit, authority, upstream, key, journal).unwrap()
     }
 
     fn spawn_fake_upstream(hits: Arc<AtomicUsize>, force_usage: bool) -> (String, JoinHandle<()>) {
@@ -1571,7 +1596,8 @@ mod tests {
         let journal =
             crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
         let _ = std::fs::remove_file(&journal);
-        match CodexBudgetGateway::start(authority, &upstream, "upstream-secret", journal) {
+        let permit = CodexGatewayStartPermit::provider_free_fixture(&authority.execution_id);
+        match CodexBudgetGateway::start(permit, authority, &upstream, "upstream-secret", journal) {
             Ok(_) => panic!("expected provider substitution rejection"),
             Err(err) => assert!(err.contains("provider base URL substitution"), "{err}"),
         }
@@ -1673,6 +1699,7 @@ mod tests {
             crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
         let _ = std::fs::remove_file(&journal);
         let gateway = CodexBudgetGateway::start(
+            CodexGatewayStartPermit::provider_free_fixture(&authority.execution_id),
             authority.clone(),
             &upstream,
             "upstream-secret",
@@ -1696,9 +1723,15 @@ mod tests {
         assert_eq!(usage.provider_requests, 1);
         assert_eq!(usage.cumulative_input_tokens, 10);
 
-        let gateway2 =
-            CodexBudgetGateway::start(authority, &upstream, "upstream-secret", journal.clone())
-                .unwrap();
+        let permit = CodexGatewayStartPermit::provider_free_fixture(&authority.execution_id);
+        let gateway2 = CodexBudgetGateway::start(
+            permit,
+            authority,
+            &upstream,
+            "upstream-secret",
+            journal.clone(),
+        )
+        .unwrap();
         let restored = gateway2.usage();
         assert_eq!(restored.provider_requests, 1);
         assert_eq!(restored.cumulative_input_tokens, 10);
@@ -1720,6 +1753,7 @@ mod tests {
             crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
         let _ = std::fs::remove_file(&journal);
         let gateway = CodexBudgetGateway::start(
+            CodexGatewayStartPermit::provider_free_fixture(&authority.execution_id),
             authority.clone(),
             &upstream,
             "upstream-secret",
@@ -1740,9 +1774,15 @@ mod tests {
         assert!(resp.contains("usage_unavailable"), "{resp}");
         let _ = gateway.shutdown();
 
-        let gateway2 =
-            CodexBudgetGateway::start(authority, &upstream, "upstream-secret", journal.clone())
-                .unwrap();
+        let permit = CodexGatewayStartPermit::provider_free_fixture(&authority.execution_id);
+        let gateway2 = CodexBudgetGateway::start(
+            permit,
+            authority,
+            &upstream,
+            "upstream-secret",
+            journal.clone(),
+        )
+        .unwrap();
         // Restart must block new admits after outcome-unknown charge.
         let mut stream = TcpStream::connect(gateway2.local_addr()).unwrap();
         let body = br#"{"model":"gpt-test-model","input":"again"}"#;

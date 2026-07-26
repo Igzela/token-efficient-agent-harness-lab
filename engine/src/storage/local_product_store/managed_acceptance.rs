@@ -8,6 +8,7 @@
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
@@ -277,6 +278,93 @@ pub struct SpendAuthorizationRequest {
     pub rollback_identity: String,
 }
 
+/// Immutable, runtime-observed inputs presented at the sole managed-Codex
+/// production spawn boundary.  These are not node declarations: the store
+/// reloads the node, ProductTask, workspace, spend, decision and risk owners
+/// and compares each fact before issuing a lease.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedCodexLaunchFacts {
+    pub run_id: String,
+    pub workflow_id: String,
+    pub node_id: String,
+    pub workspace_path: PathBuf,
+    pub executable_path: PathBuf,
+    pub executable_version: String,
+    pub executable_sha256: String,
+    pub model: String,
+}
+
+/// Store-issued, one-use lease for a managed Codex process.  The lease token is
+/// deliberately not serialized into generic replay responses; it stays inside
+/// the executor/store ownership seam and is required for every terminal write.
+#[derive(Debug, Clone)]
+pub struct ManagedCodexSpawnLease {
+    facts: ManagedCodexLaunchFacts,
+    product_task_id: String,
+    product_task_version: u64,
+    tenant_id: String,
+    principal_id: String,
+    principal_kind: PrincipalKind,
+    spend_authorization_id: String,
+    attempt_id: String,
+    execution_id: String,
+    lease_token: String,
+    spend_body: Value,
+}
+
+impl ManagedCodexSpawnLease {
+    pub fn facts(&self) -> &ManagedCodexLaunchFacts {
+        &self.facts
+    }
+
+    pub fn product_task_id(&self) -> &str {
+        &self.product_task_id
+    }
+
+    pub fn product_task_version(&self) -> u64 {
+        self.product_task_version
+    }
+
+    pub fn tenant_id(&self) -> &str {
+        &self.tenant_id
+    }
+
+    pub fn principal_id(&self) -> &str {
+        &self.principal_id
+    }
+
+    pub fn principal_kind(&self) -> &PrincipalKind {
+        &self.principal_kind
+    }
+
+    pub fn spend_authorization_id(&self) -> &str {
+        &self.spend_authorization_id
+    }
+
+    pub fn attempt_id(&self) -> &str {
+        &self.attempt_id
+    }
+
+    pub fn execution_id(&self) -> &str {
+        &self.execution_id
+    }
+
+    pub fn spend_body(&self) -> &Value {
+        &self.spend_body
+    }
+
+    /// The only production constructor for a gateway-start capability.  The
+    /// token itself stays private to this store/executor ownership seam.
+    pub(crate) fn gateway_start_permit(
+        &self,
+    ) -> crate::cli::codex_budget_authority::CodexGatewayStartPermit {
+        crate::cli::codex_budget_authority::CodexGatewayStartPermit::managed_store_lease(
+            &self.execution_id,
+            &self.lease_token,
+        )
+    }
+}
+
 fn is_forbidden_principal_id(id: &str) -> bool {
     let lower = id.to_ascii_lowercase();
     [
@@ -422,30 +510,334 @@ pub fn build_attempt_authority_manifest(spend_body: &Value) -> Result<Value, Str
 /// The decision body authority hash stays stable; status is not mutated under that hash.
 fn decision_status_transition_receipt(
     decision_id: &str,
+    tenant_id: &str,
     decision_body_sha256: &str,
     residual_finding_sha256: &str,
+    previous_transition_sha256: Option<&str>,
     from_status: &str,
     to_status: &str,
-    principal_id: &str,
+    principal: &AuthenticatedPrincipal,
     at: &str,
     reason: &str,
 ) -> Result<Value, String> {
     let body = sort_value(&json!({
-        "schema_version": "managed_acceptance_decision_status_transition.v1",
+        "schema_version": "managed_acceptance_decision_status_transition.v2",
         "decision_id": decision_id,
+        "tenant_id": tenant_id,
         "decision_body_sha256": decision_body_sha256,
         "residual_finding_sha256": residual_finding_sha256,
+        "previous_transition_sha256": previous_transition_sha256,
         "from_status": from_status,
         "to_status": to_status,
-        "principal_id": principal_id,
+        "actor_principal_kind": principal.principal_kind.as_str(),
+        "actor_principal_id": principal.principal_id,
         "at": at,
         "reason": reason,
     }));
     let transition_sha256 = sha256_hex(canonical_json(&body)?.as_bytes());
     let mut receipt = body;
     if let Value::Object(ref mut map) = receipt {
+        map.insert(
+            "transition_receipt_id".into(),
+            json!(format!("matr-{}", &transition_sha256[..24])),
+        );
         map.insert("transition_sha256".into(), json!(transition_sha256));
     }
+    Ok(receipt)
+}
+
+/// Validate the durable decision-status chain before it is used as authority.
+/// A receipt is not evidence merely because it has a hash-shaped field: its
+/// self-hash, immutable decision binding, predecessor link, and current
+/// decision state must all agree.
+fn validate_managed_acceptance_decision_transition_chain(
+    decision: &Value,
+    receipts: &[Value],
+) -> Result<(), String> {
+    let decision_id = required_str(decision, "decision_id")?;
+    let tenant_id = required_str(decision, "tenant_id")?;
+    let decision_body_sha256 = required_str(decision, "decision_body_sha256")?;
+    let residual_finding_sha256 = required_str(decision, "residual_finding_sha256")?;
+    let current_status = required_str(decision, "status")?;
+    if receipts.is_empty() {
+        return Err("managed Codex decision transition receipt set is empty".to_string());
+    }
+
+    struct TransitionRecord {
+        from_status: String,
+        to_status: String,
+        previous_transition_sha256: Option<String>,
+    }
+
+    let mut records = std::collections::BTreeMap::<String, TransitionRecord>::new();
+    for receipt in receipts {
+        if receipt.get("schema_version").and_then(Value::as_str)
+            != Some("managed_acceptance_decision_status_transition.v2")
+        {
+            return Err("managed Codex decision transition receipt schema is invalid".to_string());
+        }
+        for (field, expected) in [
+            ("decision_id", decision_id.as_str()),
+            ("tenant_id", tenant_id.as_str()),
+            ("decision_body_sha256", decision_body_sha256.as_str()),
+            ("residual_finding_sha256", residual_finding_sha256.as_str()),
+        ] {
+            if receipt.get(field).and_then(Value::as_str) != Some(expected) {
+                return Err(format!(
+                    "managed Codex decision transition receipt {field} mismatches its owner"
+                ));
+            }
+        }
+        let transition_sha256 = required_str(receipt, "transition_sha256")?;
+        if transition_sha256.len() != 64
+            || !transition_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err("managed Codex decision transition receipt hash is invalid".to_string());
+        }
+        let receipt_id = required_str(receipt, "transition_receipt_id")?;
+        if receipt_id != format!("matr-{}", &transition_sha256[..24]) {
+            return Err(
+                "managed Codex decision transition receipt identifier is stale".to_string(),
+            );
+        }
+        for field in [
+            "from_status",
+            "to_status",
+            "actor_principal_kind",
+            "actor_principal_id",
+            "at",
+            "reason",
+        ] {
+            required_str(receipt, field)?;
+        }
+        let mut hash_body = receipt.clone();
+        let body = hash_body.as_object_mut().ok_or_else(|| {
+            "managed Codex decision transition receipt must be an object".to_string()
+        })?;
+        body.remove("transition_receipt_id");
+        body.remove("transition_sha256");
+        if sha256_hex(canonical_json(&hash_body)?.as_bytes()) != transition_sha256 {
+            return Err(
+                "managed Codex decision transition receipt hash does not match content".to_string(),
+            );
+        }
+        let from_status = required_str(receipt, "from_status")?;
+        let to_status = required_str(receipt, "to_status")?;
+        let previous_transition_sha256 = match receipt.get("previous_transition_sha256") {
+            Some(Value::Null) | None => None,
+            Some(Value::String(value)) if !value.is_empty() => Some(value.clone()),
+            _ => {
+                return Err("managed Codex decision transition predecessor is malformed".to_string())
+            }
+        };
+        if !matches!(
+            (from_status.as_str(), to_status.as_str()),
+            ("draft_pending_operator", "operator_accepted") | ("operator_accepted", "revoked")
+        ) {
+            return Err("managed Codex decision transition edge is invalid".to_string());
+        }
+        if records
+            .insert(
+                transition_sha256,
+                TransitionRecord {
+                    from_status,
+                    to_status,
+                    previous_transition_sha256,
+                },
+            )
+            .is_some()
+        {
+            return Err("managed Codex decision transition receipt hash is duplicated".to_string());
+        }
+    }
+
+    let genesis = records
+        .iter()
+        .filter_map(|(hash, record)| {
+            record
+                .previous_transition_sha256
+                .is_none()
+                .then_some(hash.clone())
+        })
+        .collect::<Vec<_>>();
+    let [genesis] = genesis.as_slice() else {
+        return Err("managed Codex decision transition chain must have one genesis".to_string());
+    };
+    let mut children = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for (hash, record) in &records {
+        let Some(previous) = record.previous_transition_sha256.as_ref() else {
+            continue;
+        };
+        if !records.contains_key(previous) {
+            return Err("managed Codex decision transition predecessor is missing".to_string());
+        }
+        let next = children.entry(previous.clone()).or_default();
+        next.push(hash.clone());
+        if next.len() > 1 {
+            return Err("managed Codex decision transition chain is forked".to_string());
+        }
+    }
+
+    let mut visited = std::collections::BTreeSet::new();
+    let mut current_hash = genesis.clone();
+    let mut expected_from_status = "draft_pending_operator".to_string();
+    let latest_to_status = loop {
+        let record = records
+            .get(&current_hash)
+            .ok_or_else(|| "managed Codex decision transition chain is malformed".to_string())?;
+        if record.from_status != expected_from_status {
+            return Err("managed Codex decision transition predecessor link is stale".to_string());
+        }
+        if !visited.insert(current_hash.clone()) {
+            return Err("managed Codex decision transition chain contains a cycle".to_string());
+        }
+        let latest = record.to_status.clone();
+        match children.get(&current_hash) {
+            None => break latest,
+            Some(next) if next.len() == 1 => {
+                current_hash = next[0].clone();
+                expected_from_status = latest;
+            }
+            Some(_) => return Err("managed Codex decision transition chain is forked".to_string()),
+        }
+    };
+    if visited.len() != records.len() {
+        return Err("managed Codex decision transition chain is disconnected".to_string());
+    }
+    if latest_to_status != current_status {
+        return Err(
+            "managed Codex current decision status is not backed by the latest transition receipt"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn persist_transition_sqlite(
+    tx: &rusqlite::Transaction<'_>,
+    decision: &Value,
+    from_status: &str,
+    to_status: &str,
+    principal: &AuthenticatedPrincipal,
+    now: &str,
+    reason: &str,
+) -> Result<Value, String> {
+    let decision_id = required_str(decision, "decision_id")?;
+    let tenant_id = required_str(decision, "tenant_id")?;
+    let decision_sha = required_str(decision, "decision_body_sha256")?;
+    let residual_sha = required_str(decision, "residual_finding_sha256")?;
+    let previous = tx
+        .query_row(
+            "SELECT transition_sha256 FROM managed_acceptance_decision_transition_receipts
+             WHERE decision_id=?1 AND to_status=?2
+             ORDER BY created_at DESC, transition_receipt_id DESC LIMIT 1",
+            params![decision_id, from_status],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let receipt = decision_status_transition_receipt(
+        &decision_id,
+        &tenant_id,
+        &decision_sha,
+        &residual_sha,
+        previous.as_deref(),
+        from_status,
+        to_status,
+        principal,
+        now,
+        reason,
+    )?;
+    let receipt_id = required_str(&receipt, "transition_receipt_id")?;
+    let transition_sha = required_str(&receipt, "transition_sha256")?;
+    tx.execute(
+        "INSERT INTO managed_acceptance_decision_transition_receipts (
+            transition_receipt_id, decision_id, tenant_id, decision_body_sha256,
+            previous_transition_sha256, transition_sha256, from_status, to_status,
+            actor_principal_kind, actor_principal_id, receipt_json, created_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+         ON CONFLICT(decision_id, transition_sha256) DO NOTHING",
+        params![
+            receipt_id,
+            decision_id,
+            tenant_id,
+            decision_sha,
+            previous,
+            transition_sha,
+            from_status,
+            to_status,
+            principal.principal_kind.as_str(),
+            principal.principal_id,
+            receipt.to_string(),
+            now,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(receipt)
+}
+
+#[cfg(feature = "pg")]
+fn persist_transition_pg(
+    tx: &mut postgres::Transaction<'_>,
+    decision: &Value,
+    from_status: &str,
+    to_status: &str,
+    principal: &AuthenticatedPrincipal,
+    now: &str,
+    reason: &str,
+) -> Result<Value, String> {
+    let decision_id = required_str(decision, "decision_id")?;
+    let tenant_id = required_str(decision, "tenant_id")?;
+    let decision_sha = required_str(decision, "decision_body_sha256")?;
+    let residual_sha = required_str(decision, "residual_finding_sha256")?;
+    let previous = tx
+        .query_opt(
+            "SELECT transition_sha256 FROM managed_acceptance_decision_transition_receipts
+             WHERE decision_id=$1 AND to_status=$2
+             ORDER BY created_at DESC, transition_receipt_id DESC LIMIT 1 FOR UPDATE",
+            &[&decision_id, &from_status],
+        )
+        .map_err(|error| error.to_string())?
+        .map(|row| row.get::<_, String>(0));
+    let receipt = decision_status_transition_receipt(
+        &decision_id,
+        &tenant_id,
+        &decision_sha,
+        &residual_sha,
+        previous.as_deref(),
+        from_status,
+        to_status,
+        principal,
+        now,
+        reason,
+    )?;
+    let receipt_id = required_str(&receipt, "transition_receipt_id")?;
+    let transition_sha = required_str(&receipt, "transition_sha256")?;
+    tx.execute(
+        "INSERT INTO managed_acceptance_decision_transition_receipts (
+            transition_receipt_id, decision_id, tenant_id, decision_body_sha256,
+            previous_transition_sha256, transition_sha256, from_status, to_status,
+            actor_principal_kind, actor_principal_id, receipt_json, created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ON CONFLICT (decision_id, transition_sha256) DO NOTHING",
+        &[
+            &receipt_id,
+            &decision_id,
+            &tenant_id,
+            &decision_sha,
+            &previous,
+            &transition_sha,
+            &from_status,
+            &to_status,
+            &principal.principal_kind.as_str(),
+            &principal.principal_id,
+            &receipt.to_string(),
+            &now,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
     Ok(receipt)
 }
 
@@ -541,6 +933,12 @@ impl LocalProductStore {
         expires_at: Option<&str>,
     ) -> Result<Value, String> {
         validate_decision_status(status)?;
+        if status != "draft_pending_operator" {
+            return Err(
+                "managed acceptance decisions must be created in draft_pending_operator; transitions are receipt-owned"
+                    .to_string(),
+            );
+        }
         if residual_finding_sha256.len() != 64
             || !residual_finding_sha256
                 .chars()
@@ -550,6 +948,12 @@ impl LocalProductStore {
         }
         let expires_at = require_finite_expiry(expires_at)?;
         let body = sort_value(decision_body);
+        if body.get("status").and_then(Value::as_str) != Some("draft_pending_operator") {
+            return Err(
+                "managed acceptance decision body status must be draft_pending_operator; it is not transition evidence"
+                    .to_string(),
+            );
+        }
         // Require acknowledgement phrase embedded for store-derived accept.
         let _ = body
             .pointer("/acknowledgement/required_phrase")
@@ -827,6 +1231,67 @@ impl LocalProductStore {
         }
     }
 
+    /// Query durable, hash-linked lifecycle transitions for one immutable decision.
+    /// This is receipt evidence only; it grants no authority.
+    pub fn list_managed_acceptance_decision_transition_receipts(
+        &self,
+        decision_id: &str,
+    ) -> Result<Vec<Value>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut statement = conn
+                    .prepare(
+                        "SELECT receipt_json FROM managed_acceptance_decision_transition_receipts
+                         WHERE decision_id=?1
+                         ORDER BY created_at ASC, transition_receipt_id ASC",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let rows = statement
+                    .query_map(params![decision_id], |row| row.get::<_, String>(0))
+                    .map_err(|error| error.to_string())?;
+                let receipts = rows
+                    .map(|row| {
+                        let encoded = row.map_err(|error| error.to_string())?;
+                        serde_json::from_str(&encoded).map_err(|_| {
+                            "managed acceptance transition receipt is invalid JSON".to_string()
+                        })
+                    })
+                    .collect::<Result<Vec<Value>, String>>()?;
+                if receipts.is_empty() {
+                    return Ok(receipts);
+                }
+                let decision = load_decision_sqlite(conn, decision_id)?;
+                validate_managed_acceptance_decision_transition_chain(&decision, &receipts)?;
+                Ok(receipts)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let receipts = client
+                    .query(
+                        "SELECT receipt_json FROM managed_acceptance_decision_transition_receipts
+                         WHERE decision_id=$1
+                         ORDER BY created_at ASC, transition_receipt_id ASC",
+                        &[&decision_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(|row| {
+                        let encoded: String = row.get(0);
+                        serde_json::from_str(&encoded).map_err(|_| {
+                            "managed acceptance transition receipt is invalid JSON".to_string()
+                        })
+                    })
+                    .collect::<Result<Vec<Value>, String>>()?;
+                if receipts.is_empty() {
+                    return Ok(receipts);
+                }
+                let decision = load_decision_pg(client, decision_id)?;
+                validate_managed_acceptance_decision_transition_chain(&decision, &receipts)?;
+                Ok(receipts)
+            }),
+        }
+    }
+
     pub fn get_active_managed_acceptance_authorization(
         &self,
         authorization_id: &str,
@@ -848,7 +1313,7 @@ impl LocalProductStore {
                     return Ok(None);
                 }
                 let now = self.now();
-                if is_at_or_before(&expires_at, &now).unwrap_or(true) {
+                if is_at_or_before(&expires_at, &now)? {
                     return Ok(None);
                 }
                 Ok(Some(load_authorization_sqlite(conn, authorization_id)?))
@@ -866,9 +1331,7 @@ impl LocalProductStore {
                 };
                 let status: String = row.get(0);
                 let expires_at: String = row.get(1);
-                if status != "active"
-                    || is_at_or_before(&expires_at, &self.now()).unwrap_or(true)
-                {
+                if status != "active" || is_at_or_before(&expires_at, &self.now())? {
                     return Ok(None);
                 }
                 Ok(Some(load_authorization_pg(client, authorization_id)?))
@@ -943,21 +1406,11 @@ impl LocalProductStore {
                     .get("decision_id")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let decision_before = load_decision_sqlite(&tx, decision_id).ok();
+                let decision_before = load_decision_sqlite(&tx, decision_id)?;
                 let from_status = decision_before
-                    .as_ref()
-                    .and_then(|d| d.get("status").and_then(Value::as_str))
+                    .get("status")
+                    .and_then(Value::as_str)
                     .unwrap_or("unknown")
-                    .to_string();
-                let dsha = decision_before
-                    .as_ref()
-                    .and_then(|d| d.get("decision_body_sha256").and_then(Value::as_str))
-                    .unwrap_or("")
-                    .to_string();
-                let rsha = decision_before
-                    .as_ref()
-                    .and_then(|d| d.get("residual_finding_sha256").and_then(Value::as_str))
-                    .unwrap_or("")
                     .to_string();
                 tx.execute(
                     "UPDATE managed_acceptance_decisions SET status='revoked', revoked_at=?1, updated_at=?1 WHERE decision_id=?2",
@@ -965,13 +1418,12 @@ impl LocalProductStore {
                 )
                 .map_err(|e| e.to_string())?;
                 // Decision body hash stays immutable; record transition receipt separately.
-                let transition = decision_status_transition_receipt(
-                    decision_id,
-                    &dsha,
-                    &rsha,
+                let transition = persist_transition_sqlite(
+                    &tx,
+                    &decision_before,
                     &from_status,
                     "revoked",
-                    &principal.principal_id,
+                    principal,
                     &now,
                     "risk_authorization_revoked",
                 )?;
@@ -1016,38 +1468,26 @@ impl LocalProductStore {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                let decision_before = load_decision_pg(&mut tx, &decision_id).ok();
+                let decision_before = load_decision_pg(&mut tx, &decision_id)?;
                 let from_status = decision_before
-                    .as_ref()
-                    .and_then(|d| d.get("status").and_then(Value::as_str))
+                    .get("status")
+                    .and_then(Value::as_str)
                     .unwrap_or("unknown")
-                    .to_string();
-                let dsha = decision_before
-                    .as_ref()
-                    .and_then(|d| d.get("decision_body_sha256").and_then(Value::as_str))
-                    .unwrap_or("")
-                    .to_string();
-                let rsha = decision_before
-                    .as_ref()
-                    .and_then(|d| d.get("residual_finding_sha256").and_then(Value::as_str))
-                    .unwrap_or("")
                     .to_string();
                 tx.execute(
                     "UPDATE managed_acceptance_decisions SET status='revoked', revoked_at=$1, updated_at=$1 WHERE decision_id=$2",
                     &[&now, &decision_id],
                 )
                 .map_err(|e| e.to_string())?;
-                let transition = decision_status_transition_receipt(
-                    &decision_id,
-                    &dsha,
-                    &rsha,
+                let transition = persist_transition_pg(
+                    &mut tx,
+                    &decision_before,
                     &from_status,
                     "revoked",
-                    &principal.principal_id,
+                    principal,
                     &now,
                     "risk_authorization_revoked",
                 )?;
-                // PG path parity: record transition via existing audit when available.
                 let _ = transition;
                 let row = load_authorization_pg(&mut tx, authorization_id)?;
                 tx.commit().map_err(|e| e.to_string())?;
@@ -1265,6 +1705,864 @@ impl LocalProductStore {
             }),
         }
     }
+
+    /// Reload the exact runtime node from its two persistence owners.  This is
+    /// intentionally narrower than the generic workflow-run projection: a
+    /// corrupt unrelated edge/event must never be silently normalized while a
+    /// production spawn is making its authority decision.
+    fn load_managed_codex_runtime_node(
+        &self,
+        run_id: &str,
+        node_id: &str,
+    ) -> Result<(String, Value), String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let (workflow_id, node_json): (String, String) = conn
+                    .query_row(
+                        "SELECT workflow_runs.workflow_id, workflow_run_nodes.node_json
+                         FROM workflow_runs
+                         JOIN workflow_run_nodes ON workflow_run_nodes.run_id=workflow_runs.run_id
+                         WHERE workflow_runs.run_id=?1 AND workflow_run_nodes.node_id=?2",
+                        params![run_id, node_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        "managed Codex workflow run/node owner is missing".to_string()
+                    })?;
+                let node: Value = serde_json::from_str(&node_json)
+                    .map_err(|_| "managed Codex workflow node JSON is corrupt".to_string())?;
+                if !node.is_object() {
+                    return Err("managed Codex workflow node must be an object".to_string());
+                }
+                Ok((workflow_id, node))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let row = client
+                    .query_opt(
+                        "SELECT workflow_runs.workflow_id, workflow_run_nodes.node_json
+                         FROM workflow_runs
+                         JOIN workflow_run_nodes ON workflow_run_nodes.run_id=workflow_runs.run_id
+                         WHERE workflow_runs.run_id=$1 AND workflow_run_nodes.node_id=$2",
+                        &[&run_id, &node_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        "managed Codex workflow run/node owner is missing".to_string()
+                    })?;
+                let workflow_id: String = row.get(0);
+                let node_json: String = row.get(1);
+                let node: Value = serde_json::from_str(&node_json)
+                    .map_err(|_| "managed Codex workflow node JSON is corrupt".to_string())?;
+                if !node.is_object() {
+                    return Err("managed Codex workflow node must be an object".to_string());
+                }
+                Ok((workflow_id, node))
+            }),
+        }
+    }
+
+    /// Persist the only scheduler-node binding that may later locate a managed
+    /// Codex spend.  The binding is derived from existing store owners and is
+    /// not an operator-supplied node-metadata assertion.
+    pub fn bind_managed_codex_spend_to_product_node(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        spend_authorization_id: &str,
+    ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_ATTEMPT_ADMIT)?;
+        let spend = self
+            .get_managed_acceptance_spend_authorization(spend_authorization_id)?
+            .ok_or_else(|| "managed Codex spend authorization not found".to_string())?;
+        if spend.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id())
+            || spend.get("principal_id").and_then(Value::as_str) != Some(principal.principal_id())
+            || spend.get("principal_kind").and_then(Value::as_str)
+                != Some(principal.principal_kind().as_str())
+        {
+            return Err("managed Codex spend binding principal mismatch".to_string());
+        }
+        if spend.get("status").and_then(Value::as_str) != Some("active") {
+            return Err("managed Codex spend binding requires an active spend".to_string());
+        }
+        let spend_body = spend
+            .get("body_json")
+            .cloned()
+            .ok_or_else(|| "managed Codex spend body is missing".to_string())?;
+        let task_id = required_str(&spend_body, "product_task_id")?;
+        let workflow_id = required_str(&spend_body, "workflow_id")?;
+        let node_id = required_str(&spend_body, "workflow_node_id")?;
+        let execution_id = required_str(&spend_body, "execution_id")?;
+        let attempt_id = required_str(&spend_body, "attempt_id")?;
+        let task = self
+            .get_product_task(&task_id)?
+            .ok_or_else(|| "managed Codex ProductTask owner is missing".to_string())?;
+        if task.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id()) {
+            return Err("managed Codex ProductTask tenant mismatch".to_string());
+        }
+        let phase = self.validate_managed_acceptance_product_task_phase(
+            principal.tenant_id(),
+            &task_id,
+            &required_str(&spend_body, "target_repo")?,
+            &required_str(&spend_body, "target_main_sha")?,
+        )?;
+        require_managed_codex_pre_execution_phase(&phase)?;
+        let run_id = required_str(&task, "run_id")?;
+        let (persisted_workflow_id, node) =
+            self.load_managed_codex_runtime_node(&run_id, &node_id)?;
+        if persisted_workflow_id != workflow_id {
+            return Err(
+                "managed Codex spend workflow_id does not match ProductTask run".to_string(),
+            );
+        }
+        validate_bindable_managed_codex_node(&node, &task_id, &node_id)?;
+        let binding = managed_codex_spawn_binding(
+            &spend,
+            &spend_body,
+            &task,
+            &run_id,
+            &workflow_id,
+            &node_id,
+            &execution_id,
+            &attempt_id,
+        )?;
+        let binding_sha256 = required_str(&binding, "binding_sha256")?;
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let node_json: String = tx
+                    .query_row(
+                        "SELECT node_json FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2",
+                        params![run_id, node_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|_| "managed Codex workflow node disappeared during binding".to_string())?;
+                let mut current: Value = serde_json::from_str(&node_json)
+                    .map_err(|_| "managed Codex workflow node JSON is corrupt".to_string())?;
+                validate_bindable_managed_codex_node(&current, &task_id, &node_id)?;
+                if let Some(existing) = current.get("managed_codex_spawn_binding") {
+                    if existing != &binding {
+                        return Err("managed Codex node already has a conflicting spend binding".to_string());
+                    }
+                } else {
+                    current
+                        .as_object_mut()
+                        .ok_or_else(|| "managed Codex workflow node must be an object".to_string())?
+                        .insert("managed_codex_spawn_binding".to_string(), binding.clone());
+                    let changed = tx
+                        .execute(
+                            "UPDATE workflow_run_nodes SET node_json=?1 WHERE run_id=?2 AND node_id=?3",
+                            params![current.to_string(), run_id, node_id],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if changed != 1 {
+                        return Err("managed Codex workflow node binding lost ownership".to_string());
+                    }
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(binding.clone())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let row = tx
+                    .query_opt(
+                        "SELECT node_json FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2 FOR UPDATE",
+                        &[&run_id, &node_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "managed Codex workflow node disappeared during binding".to_string())?;
+                let node_json: String = row.get(0);
+                let mut current: Value = serde_json::from_str(&node_json)
+                    .map_err(|_| "managed Codex workflow node JSON is corrupt".to_string())?;
+                validate_bindable_managed_codex_node(&current, &task_id, &node_id)?;
+                if let Some(existing) = current.get("managed_codex_spawn_binding") {
+                    if existing != &binding {
+                        return Err("managed Codex node already has a conflicting spend binding".to_string());
+                    }
+                } else {
+                    current
+                        .as_object_mut()
+                        .ok_or_else(|| "managed Codex workflow node must be an object".to_string())?
+                        .insert("managed_codex_spawn_binding".to_string(), binding.clone());
+                    let changed = tx
+                        .execute(
+                            "UPDATE workflow_run_nodes SET node_json=$1 WHERE run_id=$2 AND node_id=$3",
+                            &[&current.to_string(), &run_id, &node_id],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if changed != 1 {
+                        return Err("managed Codex workflow node binding lost ownership".to_string());
+                    }
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(binding.clone())
+            }),
+        }
+        .and_then(|bound| {
+            self.append_audit(
+                principal.principal_id(),
+                "managed_acceptance.codex_spawn_bound",
+                &run_id,
+                &json!({
+                    "node_id": node_id,
+                    "spend_authorization_id": spend_authorization_id,
+                    "binding_sha256": binding_sha256,
+                    "content_excluded": true,
+                }),
+            )?;
+            Ok(bound)
+        })
+    }
+
+    /// Production admission for the managed Codex spawn boundary.  This path
+    /// never accepts fixture authority.
+    pub fn admit_managed_codex_spawn(
+        &self,
+        facts: &ManagedCodexLaunchFacts,
+    ) -> Result<ManagedCodexSpawnLease, String> {
+        self.admit_managed_codex_spawn_inner(facts, false)
+    }
+
+    /// Provider-free test seam.  Production callers must use
+    /// [`Self::admit_managed_codex_spawn`], which rejects fixture principals.
+    #[doc(hidden)]
+    pub fn admit_managed_codex_spawn_for_test(
+        &self,
+        facts: &ManagedCodexLaunchFacts,
+    ) -> Result<ManagedCodexSpawnLease, String> {
+        self.admit_managed_codex_spawn_inner(facts, true)
+    }
+
+    fn admit_managed_codex_spawn_inner(
+        &self,
+        facts: &ManagedCodexLaunchFacts,
+        allow_fixture_dry_run: bool,
+    ) -> Result<ManagedCodexSpawnLease, String> {
+        let prepared = self.prepare_managed_codex_spawn(facts, allow_fixture_dry_run)?;
+        let attempt = self.admit_managed_acceptance_attempt(
+            &prepared.principal,
+            &prepared.attempt_id,
+            &prepared.attempt_body,
+            &prepared.spend_authorization_id,
+            allow_fixture_dry_run,
+        )?;
+        if attempt.get("idempotent_replay").and_then(Value::as_bool) == Some(true) {
+            return Err(
+                "managed Codex attempt already has a lease; generic replay cannot start or expose it"
+                    .to_string(),
+            );
+        }
+        let lease_token = attempt
+            .get("lease_token")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "managed Codex admission did not create an attempt lease".to_string())?
+            .to_string();
+        Ok(ManagedCodexSpawnLease {
+            facts: facts.clone(),
+            product_task_id: prepared.product_task_id,
+            product_task_version: prepared.product_task_version,
+            tenant_id: prepared.principal.tenant_id().to_string(),
+            principal_id: prepared.principal.principal_id().to_string(),
+            principal_kind: prepared.principal.principal_kind().clone(),
+            spend_authorization_id: prepared.spend_authorization_id,
+            attempt_id: prepared.attempt_id,
+            execution_id: prepared.execution_id,
+            lease_token,
+            spend_body: prepared.spend_body,
+        })
+    }
+
+    /// Revalidate the current store owners and the actual launcher/gateway/
+    /// journal attestation immediately before the child `Command::spawn`.
+    pub fn confirm_managed_codex_spawn_before_child(
+        &self,
+        lease: &ManagedCodexSpawnLease,
+        runtime: &crate::cli::codex_mediation_admission::ManagedCodexRuntimeAttestation,
+    ) -> Result<(), String> {
+        runtime.assert_required_mediation_owners()?;
+        // Host-network sharing is a real runtime fact.  It is a residual
+        // blocker, never a URL/string inference that can be waived by a node.
+        if !runtime.network_confinement_enforced() {
+            return Err(
+                "managed Codex runtime network confinement is not proved by the launcher owner"
+                    .to_string(),
+            );
+        }
+        self.assert_managed_codex_spawn_lease_current(lease)?;
+        let prepared = self.prepare_managed_codex_spawn(&lease.facts, false)?;
+        if prepared.product_task_id != lease.product_task_id
+            || prepared.product_task_version != lease.product_task_version
+            || prepared.spend_authorization_id != lease.spend_authorization_id
+            || prepared.attempt_id != lease.attempt_id
+            || prepared.execution_id != lease.execution_id
+            || prepared.principal.tenant_id() != lease.tenant_id
+            || prepared.principal.principal_id() != lease.principal_id
+            || prepared.principal.principal_kind() != &lease.principal_kind
+        {
+            return Err("managed Codex launch owners changed after lease admission".to_string());
+        }
+        Ok(())
+    }
+
+    /// Persist every process terminal state under the current attempt lease.
+    /// A consumed spend is intentionally never returned to active state.
+    pub fn terminalize_managed_codex_spawn(
+        &self,
+        lease: &ManagedCodexSpawnLease,
+        status: &str,
+        terminal_class: &str,
+        receipt: &Value,
+    ) -> Result<Value, String> {
+        self.assert_managed_codex_spawn_lease_current(lease)?;
+        self.complete_managed_acceptance_attempt(
+            &lease.attempt_id,
+            &lease.lease_token,
+            status,
+            terminal_class,
+            receipt,
+        )
+    }
+
+    fn assert_managed_codex_spawn_lease_current(
+        &self,
+        lease: &ManagedCodexSpawnLease,
+    ) -> Result<(), String> {
+        let attempt = self
+            .get_managed_acceptance_attempt(&lease.attempt_id)?
+            .ok_or_else(|| "managed Codex attempt lease owner is missing".to_string())?;
+        if attempt.get("tenant_id").and_then(Value::as_str) != Some(lease.tenant_id.as_str())
+            || attempt.get("product_task_id").and_then(Value::as_str)
+                != Some(lease.product_task_id.as_str())
+            || attempt.get("execution_id").and_then(Value::as_str)
+                != Some(lease.execution_id.as_str())
+            || attempt
+                .get("spend_authorization_id")
+                .and_then(Value::as_str)
+                != Some(lease.spend_authorization_id.as_str())
+            || attempt.get("status").and_then(Value::as_str) != Some("admitted")
+            || attempt.get("lease_token").and_then(Value::as_str)
+                != Some(lease.lease_token.as_str())
+        {
+            return Err(
+                "managed Codex attempt lease is stale, terminal, or owned by another caller"
+                    .to_string(),
+            );
+        }
+        let spend = self
+            .get_managed_acceptance_spend_authorization(&lease.spend_authorization_id)?
+            .ok_or_else(|| "managed Codex spend owner is missing".to_string())?;
+        if spend.get("status").and_then(Value::as_str) != Some("consumed")
+            || spend.get("consumed_by_attempt_id").and_then(Value::as_str)
+                != Some(lease.attempt_id.as_str())
+        {
+            return Err("managed Codex spend is not consumed by the current lease".to_string());
+        }
+        Ok(())
+    }
+
+    fn prepare_managed_codex_spawn(
+        &self,
+        facts: &ManagedCodexLaunchFacts,
+        allow_fixture_dry_run: bool,
+    ) -> Result<PreparedManagedCodexSpawn, String> {
+        validate_managed_codex_launch_facts(facts)?;
+        let (workflow_id, node) =
+            self.load_managed_codex_runtime_node(&facts.run_id, &facts.node_id)?;
+        if workflow_id != facts.workflow_id {
+            return Err(
+                "managed Codex runtime workflow_id does not match current run owner".to_string(),
+            );
+        }
+        let binding = node
+            .get("managed_codex_spawn_binding")
+            .cloned()
+            .ok_or_else(|| "managed Codex store-owned node spend binding is missing".to_string())?;
+        let spend_authorization_id = required_str(&binding, "spend_authorization_id")?;
+        let spend = self
+            .get_managed_acceptance_spend_authorization(&spend_authorization_id)?
+            .ok_or_else(|| "managed Codex bound spend owner is missing".to_string())?;
+        if spend.get("status").and_then(Value::as_str) != Some("active") {
+            return Err("managed Codex bound spend is not active for lease admission".to_string());
+        }
+        let spend_body = spend
+            .get("body_json")
+            .cloned()
+            .ok_or_else(|| "managed Codex bound spend body is missing".to_string())?;
+        validate_managed_codex_spawn_binding(
+            &binding,
+            &spend,
+            &spend_body,
+            &node,
+            &facts.run_id,
+            facts,
+        )?;
+        let tenant_id = required_str(&spend, "tenant_id")?;
+        let principal_id = required_str(&spend, "principal_id")?;
+        let principal_kind = PrincipalKind::parse(&required_str(&spend, "principal_kind")?)?;
+        let is_fixture_principal = principal_kind == PrincipalKind::FixturePrincipal;
+        let principal = match &principal_kind {
+            PrincipalKind::OperatorApiKey => {
+                let authenticated = self.authenticate_managed_acceptance_principal(
+                    &tenant_id,
+                    &principal_id,
+                    None,
+                )?;
+                if authenticated.principal_kind() != &PrincipalKind::OperatorApiKey {
+                    return Err(
+                        "managed Codex principal kind changed after spend issuance".to_string()
+                    );
+                }
+                authenticated
+            }
+            PrincipalKind::FixturePrincipal if allow_fixture_dry_run => {
+                AuthenticatedPrincipal::fixture_for_tests(&tenant_id, &principal_id)?
+            }
+            PrincipalKind::FixturePrincipal => {
+                return Err(
+                    "fixture principal cannot admit a production managed Codex spawn".to_string(),
+                )
+            }
+        };
+        if spend.get("fixture_only").and_then(Value::as_bool)
+            != Some(matches!(
+                principal.principal_kind(),
+                &PrincipalKind::FixturePrincipal
+            ))
+        {
+            return Err(
+                "managed Codex spend fixture_only boolean is missing or inconsistent".to_string(),
+            );
+        }
+        let logical_authorization_sha256 = required_str(&spend, "logical_authorization_sha256")?;
+        if stable_spend_authorization_identity(&spend_body)? != logical_authorization_sha256 {
+            return Err("managed Codex spend logical authorization hash is stale".to_string());
+        }
+        let risk_id = required_str(&spend, "risk_authorization_id")?;
+        let risk = self
+            .get_active_managed_acceptance_authorization(&risk_id)?
+            .ok_or_else(|| "managed Codex active risk authorization is missing".to_string())?;
+        if risk.get("tenant_id").and_then(Value::as_str) != Some(tenant_id.as_str())
+            || risk.get("principal_id").and_then(Value::as_str) != Some(principal_id.as_str())
+            || risk.get("principal_kind").and_then(Value::as_str) != Some(principal_kind.as_str())
+            || risk.get("execution_granted").and_then(Value::as_bool) != Some(false)
+            || risk
+                .pointer("/body_json/fixture_only")
+                .and_then(Value::as_bool)
+                != Some(is_fixture_principal)
+        {
+            return Err("managed Codex risk authorization is stale or lacks persisted false/fixture booleans".to_string());
+        }
+        let decision_id = required_str(&spend, "decision_id")?;
+        let decision = self
+            .get_managed_acceptance_decision(&decision_id)?
+            .ok_or_else(|| "managed Codex decision owner is missing".to_string())?;
+        if decision.get("tenant_id").and_then(Value::as_str) != Some(tenant_id.as_str())
+            || decision.get("principal_id").and_then(Value::as_str) != Some(principal_id.as_str())
+            || decision.get("principal_kind").and_then(Value::as_str)
+                != Some(principal_kind.as_str())
+            || decision.get("status").and_then(Value::as_str) != Some("operator_accepted")
+            || decision.get("decision_body_sha256").and_then(Value::as_str)
+                != spend.get("decision_body_sha256").and_then(Value::as_str)
+        {
+            return Err("managed Codex decision is stale, unaccepted, or mismatched".to_string());
+        }
+        let transitions =
+            self.list_managed_acceptance_decision_transition_receipts(&decision_id)?;
+        validate_managed_acceptance_decision_transition_chain(&decision, &transitions)?;
+        let product_task_id = required_str(&spend_body, "product_task_id")?;
+        let target_repo = required_str(&spend_body, "target_repo")?;
+        let target_main_sha = required_str(&spend_body, "target_main_sha")?;
+        let phase = self.validate_managed_acceptance_product_task_phase(
+            &tenant_id,
+            &product_task_id,
+            &target_repo,
+            &target_main_sha,
+        )?;
+        require_managed_codex_pre_execution_phase(&phase)?;
+        let task = phase
+            .get("task")
+            .cloned()
+            .ok_or_else(|| "managed Codex ProductTask reload failed".to_string())?;
+        let task_version = task
+            .get("version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "managed Codex ProductTask version is missing".to_string())?;
+        if binding.get("product_task_version").and_then(Value::as_u64) != Some(task_version) {
+            return Err(
+                "managed Codex spawn binding is stale for the current ProductTask version"
+                    .to_string(),
+            );
+        }
+        validate_managed_codex_task_budget(&task, &spend_body)?;
+        let task_run_id = required_str(&task, "run_id")?;
+        if task_run_id != facts.run_id {
+            return Err("managed Codex ProductTask run owner changed".to_string());
+        }
+        let workspace_record_id = required_str(&task, "workspace_record_id")?;
+        let workspace = self
+            .managed_acceptance_workspace_owner(&workspace_record_id)
+            .map_err(|error| format!("managed Codex workspace owner is unreadable: {error}"))?;
+        let workspace_path = workspace
+            .get("workspace_path")
+            .or_else(|| task.pointer("/workspace_binding/workspace_path"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "managed Codex workspace path owner is missing".to_string())?;
+        let canonical_workspace = std::fs::canonicalize(workspace_path)
+            .map_err(|error| format!("managed Codex workspace owner is unreadable: {error}"))?;
+        if workspace.get("workspace_id").and_then(Value::as_str)
+            != Some(workspace_record_id.as_str())
+            || workspace.get("run_id").and_then(Value::as_str) != Some(facts.run_id.as_str())
+            || workspace.get("target_id").and_then(Value::as_str) != Some(target_repo.as_str())
+            || canonical_workspace != facts.workspace_path
+            || workspace.get("source_revision").and_then(Value::as_str)
+                != Some(target_main_sha.as_str())
+        {
+            return Err("managed Codex current workspace/source binding is stale".to_string());
+        }
+        validate_managed_codex_runtime_identity(&spend_body, facts)?;
+        let attempt_id = required_str(&spend_body, "attempt_id")?;
+        let execution_id = required_str(&spend_body, "execution_id")?;
+        let attempt_body = managed_codex_attempt_body(&spend_body)?;
+        Ok(PreparedManagedCodexSpawn {
+            principal,
+            product_task_id,
+            product_task_version: task_version,
+            spend_authorization_id,
+            attempt_id,
+            execution_id,
+            spend_body,
+            attempt_body,
+        })
+    }
+}
+
+struct PreparedManagedCodexSpawn {
+    principal: AuthenticatedPrincipal,
+    product_task_id: String,
+    product_task_version: u64,
+    spend_authorization_id: String,
+    attempt_id: String,
+    execution_id: String,
+    spend_body: Value,
+    attempt_body: Value,
+}
+
+/// Receipt validation remains available for verification, approval, output,
+/// and terminal states, but a new managed-Codex child may only be admitted
+/// before the first live execution.  This separates an auditable read of an
+/// advanced state from authority to consume a fresh spend and spawn a process.
+fn require_managed_codex_pre_execution_phase(phase: &Value) -> Result<(), String> {
+    if phase.get("stage").and_then(Value::as_str) != Some("pre_execution_admission") {
+        return Err(
+            "managed Codex live spawn requires ProductTask pre_execution_admission phase"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Construct the durable scheduler-node binding from store-owned records.  The
+/// node never supplies the spend identity: it merely receives the resulting
+/// immutable receipt for the later executor/store rendezvous.
+fn managed_codex_spawn_binding(
+    spend: &Value,
+    spend_body: &Value,
+    task: &Value,
+    run_id: &str,
+    workflow_id: &str,
+    node_id: &str,
+    execution_id: &str,
+    attempt_id: &str,
+) -> Result<Value, String> {
+    let product_task_id = required_str(task, "task_id")?;
+    let task_version = task
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "managed Codex ProductTask version is missing".to_string())?;
+    let spend_authorization_id = required_str(spend, "spend_authorization_id")?;
+    let spend_body_sha256 = required_str(spend, "spend_body_sha256")?;
+    let logical_authorization_sha256 = required_str(spend, "logical_authorization_sha256")?;
+    let tenant_id = required_str(spend, "tenant_id")?;
+    let principal_id = required_str(spend, "principal_id")?;
+    let principal_kind = required_str(spend, "principal_kind")?;
+
+    for (field, expected) in [
+        ("product_task_id", product_task_id.as_str()),
+        ("workflow_id", workflow_id),
+        ("workflow_node_id", node_id),
+        ("execution_id", execution_id),
+        ("attempt_id", attempt_id),
+    ] {
+        if spend_body.get(field).and_then(Value::as_str) != Some(expected) {
+            return Err(format!(
+                "managed Codex spend {field} does not match the store-owned node binding"
+            ));
+        }
+    }
+
+    let mut binding = sort_value(&json!({
+        "schema_version": "managed_codex_spawn_binding.v1",
+        "spend_authorization_id": spend_authorization_id,
+        "spend_body_sha256": spend_body_sha256,
+        "logical_authorization_sha256": logical_authorization_sha256,
+        "tenant_id": tenant_id,
+        "principal_id": principal_id,
+        "principal_kind": principal_kind,
+        "product_task_id": product_task_id,
+        "product_task_version": task_version,
+        "run_id": run_id,
+        "workflow_id": workflow_id,
+        "node_id": node_id,
+        "execution_id": execution_id,
+        "attempt_id": attempt_id,
+        "target_repo": required_str(spend_body, "target_repo")?,
+        "target_main_sha": required_str(spend_body, "target_main_sha")?,
+    }));
+    let binding_sha256 = managed_codex_spawn_binding_sha256(&binding)?;
+    binding
+        .as_object_mut()
+        .expect("binding is always an object")
+        .insert("binding_sha256".to_string(), Value::String(binding_sha256));
+    Ok(binding)
+}
+
+fn managed_codex_spawn_binding_sha256(binding: &Value) -> Result<String, String> {
+    let mut body = sort_value(binding);
+    let object = body
+        .as_object_mut()
+        .ok_or_else(|| "managed Codex spawn binding must be an object".to_string())?;
+    object.remove("binding_sha256");
+    Ok(sha256_hex(canonical_json(&body)?.as_bytes()))
+}
+
+/// A workflow node is a routing record, never evidence for a security boolean.
+/// This check only proves it is the persisted ProductTask apply node to which a
+/// separately derived store receipt can be attached.
+fn validate_bindable_managed_codex_node(
+    node: &Value,
+    product_task_id: &str,
+    node_id: &str,
+) -> Result<(), String> {
+    if !node.is_object()
+        || node.get("node_id").and_then(Value::as_str) != Some(node_id)
+        || node.get("product_task_id").and_then(Value::as_str) != Some(product_task_id)
+        || node
+            .pointer("/managed_supervised_patch/operation")
+            .and_then(Value::as_str)
+            != Some("product_apply")
+        || node.get("executor").and_then(Value::as_str) != Some("codex_cli")
+    {
+        return Err(
+            "managed Codex workflow node is not the exact persisted ProductTask apply owner"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Validate facts sampled by `CliNodeExecutor` from the actual filesystem and
+/// launch configuration before any gateway or child process is started.
+fn validate_managed_codex_launch_facts(facts: &ManagedCodexLaunchFacts) -> Result<(), String> {
+    for (name, value) in [
+        ("run_id", facts.run_id.as_str()),
+        ("workflow_id", facts.workflow_id.as_str()),
+        ("node_id", facts.node_id.as_str()),
+        ("executable_version", facts.executable_version.as_str()),
+        ("model", facts.model.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("managed Codex runtime {name} is missing"));
+        }
+    }
+    if facts.executable_sha256.len() != 64
+        || !facts
+            .executable_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("managed Codex runtime executable SHA-256 is invalid".to_string());
+    }
+    let canonical_workspace = std::fs::canonicalize(&facts.workspace_path)
+        .map_err(|error| format!("managed Codex runtime workspace is unreadable: {error}"))?;
+    if canonical_workspace != facts.workspace_path || !canonical_workspace.is_dir() {
+        return Err("managed Codex runtime workspace must be a canonical directory".to_string());
+    }
+    let canonical_executable = std::fs::canonicalize(&facts.executable_path)
+        .map_err(|error| format!("managed Codex runtime executable is unreadable: {error}"))?;
+    if canonical_executable != facts.executable_path || !canonical_executable.is_file() {
+        return Err("managed Codex runtime executable must be a canonical file".to_string());
+    }
+    let observed_sha256 =
+        sha256_hex(&std::fs::read(&canonical_executable).map_err(|error| {
+            format!("managed Codex runtime executable cannot be read: {error}")
+        })?);
+    if observed_sha256 != facts.executable_sha256.to_ascii_lowercase() {
+        return Err("managed Codex runtime executable SHA-256 changed".to_string());
+    }
+    Ok(())
+}
+
+/// Verify that the persisted binding is self-authenticating and still points to
+/// the exact current spend and scheduler node.  A mismatch is not repaired at
+/// admission time; it is a fail-closed stale-owner condition.
+fn validate_managed_codex_spawn_binding(
+    binding: &Value,
+    spend: &Value,
+    spend_body: &Value,
+    node: &Value,
+    run_id: &str,
+    facts: &ManagedCodexLaunchFacts,
+) -> Result<(), String> {
+    if binding.get("schema_version").and_then(Value::as_str)
+        != Some("managed_codex_spawn_binding.v1")
+    {
+        return Err("managed Codex spawn binding schema is unsupported".to_string());
+    }
+    let declared_sha256 = required_str(binding, "binding_sha256")?;
+    if declared_sha256 != managed_codex_spawn_binding_sha256(binding)? {
+        return Err("managed Codex spawn binding hash is stale".to_string());
+    }
+    let expected = [
+        (
+            "spend_authorization_id",
+            required_str(spend, "spend_authorization_id")?,
+        ),
+        (
+            "spend_body_sha256",
+            required_str(spend, "spend_body_sha256")?,
+        ),
+        (
+            "logical_authorization_sha256",
+            required_str(spend, "logical_authorization_sha256")?,
+        ),
+        ("tenant_id", required_str(spend, "tenant_id")?),
+        ("principal_id", required_str(spend, "principal_id")?),
+        ("principal_kind", required_str(spend, "principal_kind")?),
+        (
+            "product_task_id",
+            required_str(spend_body, "product_task_id")?,
+        ),
+        ("workflow_id", facts.workflow_id.clone()),
+        ("node_id", facts.node_id.clone()),
+        ("run_id", run_id.to_string()),
+        ("execution_id", required_str(spend_body, "execution_id")?),
+        ("attempt_id", required_str(spend_body, "attempt_id")?),
+        ("target_repo", required_str(spend_body, "target_repo")?),
+        (
+            "target_main_sha",
+            required_str(spend_body, "target_main_sha")?,
+        ),
+    ];
+    for (field, expected) in expected {
+        if binding.get(field).and_then(Value::as_str) != Some(expected.as_str()) {
+            return Err(format!("managed Codex spawn binding {field} is stale"));
+        }
+    }
+    let task_id = required_str(spend_body, "product_task_id")?;
+    validate_bindable_managed_codex_node(node, &task_id, &facts.node_id)
+}
+
+/// Compare the launcher-observed executable/model identity to the spend body.
+/// Provider and budget identity are read exclusively from the spend body and
+/// later used to construct the gateway, never from environment declarations.
+fn validate_managed_codex_runtime_identity(
+    spend_body: &Value,
+    facts: &ManagedCodexLaunchFacts,
+) -> Result<(), String> {
+    if spend_body.get("workflow_id").and_then(Value::as_str) != Some(facts.workflow_id.as_str())
+        || spend_body.get("workflow_node_id").and_then(Value::as_str)
+            != Some(facts.node_id.as_str())
+        || spend_body.get("binary_version").and_then(Value::as_str)
+            != Some(facts.executable_version.as_str())
+        || spend_body.get("binary_sha256").and_then(Value::as_str)
+            != Some(facts.executable_sha256.as_str())
+        || spend_body.get("model").and_then(Value::as_str) != Some(facts.model.as_str())
+    {
+        return Err("managed Codex runtime identity does not match bound spend".to_string());
+    }
+    let bound_binary = required_str(spend_body, "binary_path")?;
+    let canonical_bound_binary = std::fs::canonicalize(bound_binary)
+        .map_err(|error| format!("managed Codex bound binary is unreadable: {error}"))?;
+    if canonical_bound_binary != facts.executable_path {
+        return Err("managed Codex runtime binary path does not match bound spend".to_string());
+    }
+    for field in [
+        "provider_kind",
+        "provider_host",
+        "provider_base_url",
+        "admitted_endpoint_paths",
+        "max_provider_requests",
+        "max_retries",
+        "max_input_tokens",
+        "max_output_tokens",
+        "max_total_tokens",
+        "max_wall_time_ms",
+        "cost_authority",
+    ] {
+        if spend_body.get(field).is_none() || spend_body.get(field) == Some(&Value::Null) {
+            return Err(format!("managed Codex spend {field} owner is missing"));
+        }
+    }
+    Ok(())
+}
+
+/// ProductTask budget is an independent owner from the decision/spend chain.
+/// A decision may narrow it, but no live spend can enlarge the currently
+/// persisted ProductTask limits.
+fn validate_managed_codex_task_budget(task: &Value, spend_body: &Value) -> Result<(), String> {
+    let budget = task
+        .pointer("/intake/budget")
+        .filter(|budget| budget.is_object())
+        .ok_or_else(|| "managed Codex ProductTask budget owner is missing".to_string())?;
+    for (task_field, spend_field) in [
+        ("total_tokens", "max_total_tokens"),
+        ("total_calls", "max_provider_requests"),
+        ("total_elapsed_ms", "max_wall_time_ms"),
+        ("max_retries", "max_retries"),
+    ] {
+        let task_limit = budget
+            .get(task_field)
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0 || task_field == "max_retries")
+            .ok_or_else(|| format!("managed Codex ProductTask budget.{task_field} is missing"))?;
+        let spend_limit = spend_body
+            .get(spend_field)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("managed Codex spend {spend_field} is missing"))?;
+        if spend_limit > task_limit {
+            return Err(format!(
+                "managed Codex spend {spend_field} exceeds current ProductTask budget.{task_field}"
+            ));
+        }
+    }
+    if budget.get("max_concurrency").and_then(Value::as_u64) != Some(1) {
+        return Err(
+            "managed Codex ProductTask budget.max_concurrency must be persisted as one".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Build the attempt request solely from the persisted one-use spend.  The
+/// canonical manifest makes every authority field independently checkable by
+/// the atomic attempt-admission transaction.
+fn managed_codex_attempt_body(spend_body: &Value) -> Result<Value, String> {
+    let manifest = build_attempt_authority_manifest(spend_body)?;
+    let manifest_sha256 = required_str(&manifest, "manifest_sha256")?;
+    let mut body = spend_body.clone();
+    let object = body
+        .as_object_mut()
+        .ok_or_else(|| "managed Codex spend body must be an object".to_string())?;
+    object.insert("manifest".to_string(), manifest);
+    object.insert(
+        "manifest_sha256".to_string(),
+        Value::String(manifest_sha256),
+    );
+    Ok(sort_value(&body))
 }
 
 // --- internal accept helpers ---
@@ -1388,17 +2686,6 @@ fn accept_on_sqlite(
         fixture_only,
     );
     let authorization_sha256 = sha256_hex(canonical_json(&auth_body)?.as_bytes());
-    // Mutable status column changes under a separate transition receipt; body hash stays stable.
-    let transition = decision_status_transition_receipt(
-        &request.decision_id,
-        &request.expected_decision_body_sha256,
-        &request.expected_residual_finding_sha256,
-        "draft_pending_operator",
-        "operator_accepted",
-        &principal.principal_id,
-        now,
-        "risk_acknowledgement_accepted",
-    )?;
     tx.execute(
         "UPDATE managed_acceptance_decisions SET status='operator_accepted', principal_kind=?1, principal_id=?2, updated_at=?3 WHERE decision_id=?4",
         params![
@@ -1432,6 +2719,17 @@ fn accept_on_sqlite(
         ],
     )
     .map_err(|e| e.to_string())?;
+    // Mutable status is represented by a durable receipt; the immutable decision
+    // authority hash is never rewritten.
+    let transition = persist_transition_sqlite(
+        tx,
+        decision,
+        "draft_pending_operator",
+        "operator_accepted",
+        principal,
+        now,
+        "risk_acknowledgement_accepted",
+    )?;
     append_audit_locked(
         tx,
         now,
@@ -1503,17 +2801,6 @@ fn accept_on_pg(
         fixture_only,
     );
     let authorization_sha256 = sha256_hex(canonical_json(&auth_body)?.as_bytes());
-    // Status transition is a separate receipt; decision body hash remains immutable.
-    let _transition = decision_status_transition_receipt(
-        &request.decision_id,
-        &request.expected_decision_body_sha256,
-        &request.expected_residual_finding_sha256,
-        "draft_pending_operator",
-        "operator_accepted",
-        &principal.principal_id,
-        now,
-        "risk_acknowledgement_accepted",
-    )?;
     let pk = principal.principal_kind.as_str();
     tx.execute(
         "UPDATE managed_acceptance_decisions SET status='operator_accepted', principal_kind=$1, principal_id=$2, updated_at=$3 WHERE decision_id=$4",
@@ -1549,6 +2836,15 @@ fn accept_on_pg(
         ],
     )
     .map_err(|e| e.to_string())?;
+    let _transition = persist_transition_pg(
+        tx,
+        decision,
+        "draft_pending_operator",
+        "operator_accepted",
+        principal,
+        now,
+        "risk_acknowledgement_accepted",
+    )?;
     load_authorization_pg(tx, &auth_id)
 }
 
@@ -1587,12 +2883,10 @@ fn issue_spend_sqlite(
     let risk = load_authorization_sqlite(tx, &request.risk_authorization_id)?;
     validate_risk_for_spend(&risk, principal, now, fixture_only)?;
     // Risk ack never grants execution.
-    if risk
-        .get("execution_granted")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return Err("risk acknowledgement must not set execution_granted".into());
+    if risk.get("execution_granted").and_then(Value::as_bool) != Some(false) {
+        return Err(
+            "risk acknowledgement execution_granted must be a persisted false boolean".into(),
+        );
     }
     let decision_id = risk
         .get("decision_id")
@@ -1601,6 +2895,22 @@ fn issue_spend_sqlite(
     let decision = load_decision_sqlite(tx, decision_id)?;
     let decision_body = decision.get("body_json").cloned().unwrap_or(Value::Null);
     validate_spend_against_decision(request, &decision_body)?;
+    let logical_body = build_spend_body(
+        "",
+        principal,
+        request,
+        &risk,
+        decision_id,
+        fixture_only,
+        "",
+        None,
+    )?;
+    let logical_authorization_sha256 = stable_spend_authorization_identity(&logical_body)?;
+    if let Some(existing_id) =
+        find_active_spend_sqlite(tx, &principal.tenant_id, &logical_authorization_sha256)?
+    {
+        return load_spend_sqlite(tx, &existing_id);
+    }
     let spend_id = format!("mas-{}", Uuid::new_v4());
     let body = build_spend_body(
         &spend_id,
@@ -1610,20 +2920,9 @@ fn issue_spend_sqlite(
         decision_id,
         fixture_only,
         now,
+        Some(&logical_authorization_sha256),
     )?;
     let spend_body_sha256 = sha256_hex(canonical_json(&body)?.as_bytes());
-    // Exact body replay
-    if let Some(existing_id) = tx
-        .query_row(
-            "SELECT spend_authorization_id FROM managed_acceptance_spend_authorizations WHERE tenant_id=?1 AND spend_body_sha256=?2",
-            params![principal.tenant_id, spend_body_sha256],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-    {
-        return load_spend_sqlite(tx, &existing_id);
-    }
     let expires_at = risk
         .get("expires_at")
         .and_then(Value::as_str)
@@ -1644,31 +2943,41 @@ fn issue_spend_sqlite(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    tx.execute(
-        "INSERT INTO managed_acceptance_spend_authorizations (
+    let inserted = tx
+        .execute(
+            "INSERT INTO managed_acceptance_spend_authorizations (
             spend_authorization_id, decision_id, risk_authorization_id, tenant_id,
             principal_kind, principal_id, spend_body_sha256, risk_authorization_sha256,
-            decision_body_sha256, residual_finding_sha256, fixture_only, status, body_json,
+            logical_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+            fixture_only, status, body_json,
             created_at, updated_at, expires_at, consumed_at, consumed_by_attempt_id, revoked_at
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'active',?12,?13,?13,?14,NULL,NULL,NULL)",
-        params![
-            spend_id,
-            decision_id,
-            request.risk_authorization_id,
-            principal.tenant_id,
-            principal.principal_kind.as_str(),
-            principal.principal_id,
-            spend_body_sha256,
-            risk_sha,
-            dsha,
-            rsha,
-            if fixture_only { 1 } else { 0 },
-            body.to_string(),
-            now,
-            expires_at,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'active',?13,?14,?14,?15,NULL,NULL,NULL)
+           ON CONFLICT DO NOTHING",
+            params![
+                spend_id,
+                decision_id,
+                request.risk_authorization_id,
+                principal.tenant_id,
+                principal.principal_kind.as_str(),
+                principal.principal_id,
+                spend_body_sha256,
+                risk_sha,
+                logical_authorization_sha256,
+                dsha,
+                rsha,
+                if fixture_only { 1 } else { 0 },
+                body.to_string(),
+                now,
+                expires_at,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    if inserted == 0 {
+        let existing_id =
+            find_active_spend_sqlite(tx, &principal.tenant_id, &logical_authorization_sha256)?
+                .ok_or("spend issuance conflict did not resolve to an active logical receipt")?;
+        return load_spend_sqlite(tx, &existing_id);
+    }
     append_audit_locked(
         tx,
         now,
@@ -1677,6 +2986,7 @@ fn issue_spend_sqlite(
         &spend_id,
         &json!({
             "spend_body_sha256": spend_body_sha256,
+            "logical_authorization_sha256": logical_authorization_sha256,
             "risk_authorization_id": request.risk_authorization_id,
             "fixture_only": fixture_only,
         }),
@@ -1694,6 +3004,11 @@ fn issue_spend_pg(
 ) -> Result<Value, String> {
     let risk = load_authorization_pg(tx, &request.risk_authorization_id)?;
     validate_risk_for_spend(&risk, principal, now, fixture_only)?;
+    if risk.get("execution_granted").and_then(Value::as_bool) != Some(false) {
+        return Err(
+            "risk acknowledgement execution_granted must be a persisted false boolean".into(),
+        );
+    }
     let decision_id = risk
         .get("decision_id")
         .and_then(Value::as_str)
@@ -1702,6 +3017,22 @@ fn issue_spend_pg(
     let decision = load_decision_pg(tx, &decision_id)?;
     let decision_body = decision.get("body_json").cloned().unwrap_or(Value::Null);
     validate_spend_against_decision(request, &decision_body)?;
+    let logical_body = build_spend_body(
+        "",
+        principal,
+        request,
+        &risk,
+        &decision_id,
+        fixture_only,
+        "",
+        None,
+    )?;
+    let logical_authorization_sha256 = stable_spend_authorization_identity(&logical_body)?;
+    if let Some(existing) =
+        find_active_spend_pg(tx, &principal.tenant_id, &logical_authorization_sha256)?
+    {
+        return load_spend_pg(tx, &existing);
+    }
     let spend_id = format!("mas-{}", Uuid::new_v4());
     let body = build_spend_body(
         &spend_id,
@@ -1711,18 +3042,9 @@ fn issue_spend_pg(
         &decision_id,
         fixture_only,
         now,
+        Some(&logical_authorization_sha256),
     )?;
     let spend_body_sha256 = sha256_hex(canonical_json(&body)?.as_bytes());
-    if let Some(row) = tx
-        .query_opt(
-            "SELECT spend_authorization_id FROM managed_acceptance_spend_authorizations WHERE tenant_id=$1 AND spend_body_sha256=$2 FOR UPDATE",
-            &[&principal.tenant_id, &spend_body_sha256],
-        )
-        .map_err(|e| e.to_string())?
-    {
-        let existing: String = row.get(0);
-        return load_spend_pg(tx, &existing);
-    }
     let expires_at = risk
         .get("expires_at")
         .and_then(Value::as_str)
@@ -1746,33 +3068,113 @@ fn issue_spend_pg(
     let pk = principal.principal_kind.as_str();
     let fixture_i: i32 = if fixture_only { 1 } else { 0 };
     let active = "active";
-    tx.execute(
-        "INSERT INTO managed_acceptance_spend_authorizations (
+    let inserted = tx
+        .execute(
+            "INSERT INTO managed_acceptance_spend_authorizations (
             spend_authorization_id, decision_id, risk_authorization_id, tenant_id,
             principal_kind, principal_id, spend_body_sha256, risk_authorization_sha256,
-            decision_body_sha256, residual_finding_sha256, fixture_only, status, body_json,
+            logical_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+            fixture_only, status, body_json,
             created_at, updated_at, expires_at, consumed_at, consumed_by_attempt_id, revoked_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$15,NULL,NULL,NULL)",
-        &[
-            &spend_id,
-            &decision_id,
-            &request.risk_authorization_id,
-            &principal.tenant_id,
-            &pk,
-            &principal.principal_id,
-            &spend_body_sha256,
-            &risk_sha,
-            &dsha,
-            &rsha,
-            &fixture_i,
-            &active,
-            &body.to_string(),
-            &now,
-            &expires_at,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16,NULL,NULL,NULL)
+           ON CONFLICT DO NOTHING",
+            &[
+                &spend_id,
+                &decision_id,
+                &request.risk_authorization_id,
+                &principal.tenant_id,
+                &pk,
+                &principal.principal_id,
+                &spend_body_sha256,
+                &risk_sha,
+                &logical_authorization_sha256,
+                &dsha,
+                &rsha,
+                &fixture_i,
+                &active,
+                &body.to_string(),
+                &now,
+                &expires_at,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    if inserted == 0 {
+        let existing =
+            find_active_spend_pg(tx, &principal.tenant_id, &logical_authorization_sha256)?
+                .ok_or("spend issuance conflict did not resolve to an active logical receipt")?;
+        return load_spend_pg(tx, &existing);
+    }
     load_spend_pg(tx, &spend_id)
+}
+
+/// Find an active receipt by its stable authorization identity. V33 makes the
+/// identity mandatory for every active row; any null value is database
+/// corruption and must fail closed rather than fall back to a legacy replay.
+fn find_active_spend_sqlite(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+    logical_authorization_sha256: &str,
+) -> Result<Option<String>, String> {
+    if tx
+        .query_row(
+            "SELECT spend_authorization_id FROM managed_acceptance_spend_authorizations
+             WHERE tenant_id=?1 AND status='active'
+               AND logical_authorization_sha256 IS NULL LIMIT 1",
+            params![tenant_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Err("active spend is missing mandatory logical authorization identity".to_string());
+    }
+    if let Some(id) = tx
+        .query_row(
+            "SELECT spend_authorization_id FROM managed_acceptance_spend_authorizations
+             WHERE tenant_id=?1 AND logical_authorization_sha256=?2 AND status='active'",
+            params![tenant_id, logical_authorization_sha256],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(Some(id));
+    }
+    Ok(None)
+}
+
+#[cfg(feature = "pg")]
+fn find_active_spend_pg(
+    tx: &mut postgres::Transaction<'_>,
+    tenant_id: &str,
+    logical_authorization_sha256: &str,
+) -> Result<Option<String>, String> {
+    if tx
+        .query_opt(
+            "SELECT spend_authorization_id FROM managed_acceptance_spend_authorizations
+             WHERE tenant_id=$1 AND status='active'
+               AND logical_authorization_sha256 IS NULL
+             LIMIT 1 FOR UPDATE",
+            &[&tenant_id],
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Err("active spend is missing mandatory logical authorization identity".to_string());
+    }
+    if let Some(row) = tx
+        .query_opt(
+            "SELECT spend_authorization_id FROM managed_acceptance_spend_authorizations
+             WHERE tenant_id=$1 AND logical_authorization_sha256=$2 AND status='active'
+             FOR UPDATE",
+            &[&tenant_id, &logical_authorization_sha256],
+        )
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(Some(row.get(0)));
+    }
+    Ok(None)
 }
 
 fn validate_risk_for_spend(
@@ -1798,7 +3200,7 @@ fn validate_risk_for_spend(
     let risk_fixture = risk
         .get("fixture_only")
         .and_then(Value::as_bool)
-        .unwrap_or(false);
+        .ok_or("risk authorization fixture_only must be a persisted boolean")?;
     if fixture_only != risk_fixture {
         return Err("fixture_only mismatch between principal and risk auth".into());
     }
@@ -1845,6 +3247,35 @@ fn validate_spend_against_decision(
     eq_str_field(&trial, "provider_host", &request.provider_host)?;
     eq_str_field(&trial, "provider_base_url", &request.provider_base_url)?;
     eq_str_field(&trial, "model", &request.model)?;
+    eq_str_field(&trial, "product_task_id", &request.product_task_id)?;
+    eq_value_field(
+        &trial,
+        "workflow_id",
+        &serde_json::to_value(&request.workflow_id).map_err(|error| error.to_string())?,
+    )?;
+    eq_value_field(
+        &trial,
+        "workflow_node_id",
+        &serde_json::to_value(&request.workflow_node_id).map_err(|error| error.to_string())?,
+    )?;
+    eq_str_field(&trial, "execution_id", &request.execution_id)?;
+    eq_str_field(&trial, "attempt_id", &request.attempt_id)?;
+    eq_str_field(&trial, "target_repo", &request.target_repo)?;
+    eq_str_field(&trial, "target_main_sha", &request.target_main_sha)?;
+    eq_str_field(&trial, "exact_codex_path", &request.binary_path)?;
+    eq_str_field(&trial, "exact_codex_sha256", &request.binary_sha256)?;
+    eq_str_field(
+        &trial,
+        "cancellation_identity",
+        &request.cancellation_identity,
+    )?;
+    eq_str_field(&trial, "rollback_identity", &request.rollback_identity)?;
+    eq_str_field(
+        &trial,
+        "output_branch_prefix",
+        &request.output_branch_prefix,
+    )?;
+    eq_value_field(&trial, "cost_authority", &request.cost_authority.to_json())?;
     if let Some(paths) = trial
         .get("admitted_endpoint_paths")
         .and_then(Value::as_array)
@@ -1860,17 +3291,13 @@ fn validate_spend_against_decision(
     } else {
         return Err("trial_envelope.admitted_endpoint_paths required".into());
     }
-    if let Some(ver) = trial.get("exact_codex_version").and_then(Value::as_str) {
-        if ver != request.binary_version {
-            return Err("binary_version mismatch vs decision trial envelope".into());
-        }
-    }
+    eq_str_field(&trial, "exact_codex_version", &request.binary_version)?;
     if trial
         .get("exact_codex_sha_required")
         .and_then(Value::as_bool)
-        .unwrap_or(true)
-        && (request.binary_sha256.len() != 64
-            || !request.binary_sha256.chars().all(|c| c.is_ascii_hexdigit()))
+        != Some(true)
+        || request.binary_sha256.len() != 64
+        || !request.binary_sha256.chars().all(|c| c.is_ascii_hexdigit())
     {
         return Err("binary_sha256 must be 64 hex chars when exact_codex_sha_required".into());
     }
@@ -1878,15 +3305,13 @@ fn validate_spend_against_decision(
         return Err("binary_path must be absolute".into());
     }
 
-    let draft_only = trial
-        .get("draft_pr_only")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    if draft_only && !request.draft_pr_only {
-        return Err("spend must keep draft_pr_only".into());
+    if trial.get("draft_pr_only").and_then(Value::as_bool) != Some(request.draft_pr_only)
+        || !request.draft_pr_only
+    {
+        return Err("spend draft_pr_only mismatches decision trial envelope".into());
     }
-    if !request.draft_pr_only {
-        return Err("production spend requires draft_pr_only".into());
+    if trial.get("auto_merge_disabled").and_then(Value::as_bool) != Some(true) {
+        return Err("trial_envelope.auto_merge_disabled must be true".into());
     }
     if request.target_main_sha.len() != 40 && request.target_main_sha.len() != 64 {
         return Err("target_main_sha invalid".into());
@@ -1908,7 +3333,7 @@ fn validate_spend_against_decision(
     {
         return Err("cancellation_identity and rollback_identity required".into());
     }
-    // cost_authority self-validates via construction
+    // cost_authority self-validates via construction and was equality-bound above.
     let _ = CostAuthority::from_json(&request.cost_authority.to_json())?;
     // If trial has monetary estimate text only, cost must not claim provider_reported without ceiling.
     if matches!(
@@ -1952,6 +3377,39 @@ fn eq_str_field(trial: &Value, key: &str, observed: &str) -> Result<(), String> 
     Ok(())
 }
 
+fn eq_value_field(trial: &Value, key: &str, observed: &Value) -> Result<(), String> {
+    let expected = trial
+        .get(key)
+        .ok_or_else(|| format!("trial_envelope.{key} required"))?;
+    if sort_value(expected) != sort_value(observed) {
+        return Err(format!("spend {key} mismatches decision trial envelope"));
+    }
+    Ok(())
+}
+
+/// Stable authorization identity for one logical spend request. Receipt IDs and
+/// timestamps deliberately do not participate, so a retry cannot mint a second
+/// active one-use grant for the same attempt.
+fn stable_spend_authorization_identity(body: &Value) -> Result<String, String> {
+    let mut identity = body.clone();
+    let object = identity
+        .as_object_mut()
+        .ok_or("spend authorization body must be an object")?;
+    object.remove("spend_authorization_id");
+    object.remove("created_at");
+    object.remove("logical_authorization_sha256");
+    // A risk acknowledgement is the parent authority chain, not the logical
+    // attempt identity. Revocation cascades to active spends, so a retry under
+    // an equivalent current acknowledgement must collapse to the same active
+    // spend rather than minting another one solely because its parent receipt
+    // UUID/timestamp changed.
+    object.remove("risk_authorization_id");
+    object.remove("risk_authorization_sha256");
+    Ok(sha256_hex(
+        canonical_json(&sort_value(&identity))?.as_bytes(),
+    ))
+}
+
 fn build_spend_body(
     spend_id: &str,
     principal: &AuthenticatedPrincipal,
@@ -1960,6 +3418,7 @@ fn build_spend_body(
     decision_id: &str,
     fixture_only: bool,
     now: &str,
+    logical_authorization_sha256: Option<&str>,
 ) -> Result<Value, String> {
     Ok(sort_value(&json!({
         "schema_version": "managed_acceptance_spend_authorization.v1",
@@ -1972,6 +3431,7 @@ fn build_spend_body(
         "tenant_id": principal.tenant_id,
         "principal_kind": principal.principal_kind.as_str(),
         "principal_id": principal.principal_id,
+        "logical_authorization_sha256": logical_authorization_sha256,
         "product_task_id": request.product_task_id,
         "workflow_id": request.workflow_id,
         "workflow_node_id": request.workflow_node_id,
@@ -2194,12 +3654,8 @@ fn admit_sqlite(
         .and_then(Value::as_str)
         .ok_or("spend missing risk_authorization_id")?;
     let risk = load_authorization_sqlite(tx, risk_authorization_id)?;
-    if risk
-        .get("execution_granted")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return Err("risk ack execution_granted must be false".into());
+    if risk.get("execution_granted").and_then(Value::as_bool) != Some(false) {
+        return Err("risk ack execution_granted must be a persisted false boolean".into());
     }
     let decision_id = spend
         .get("decision_id")
@@ -2303,6 +3759,15 @@ fn admit_pg(
     let spend = load_spend_pg(tx, spend_authorization_id)?;
     validate_spend_for_admit(&spend, principal, allow_fixture_dry_run, now)?;
     validate_attempt_body_matches_spend(attempt_id, body, &spend)?;
+    let risk_authorization_id = spend
+        .get("risk_authorization_id")
+        .and_then(Value::as_str)
+        .ok_or("spend missing risk_authorization_id")?
+        .to_string();
+    let risk = load_authorization_pg(tx, &risk_authorization_id)?;
+    if risk.get("execution_granted").and_then(Value::as_bool) != Some(false) {
+        return Err("risk ack execution_granted must be a persisted false boolean".into());
+    }
     let updated = tx
         .execute(
             "UPDATE managed_acceptance_spend_authorizations
@@ -2314,11 +3779,6 @@ fn admit_pg(
     if updated != 1 {
         return Err("spend authorization not active or already consumed".into());
     }
-    let risk_authorization_id = spend
-        .get("risk_authorization_id")
-        .and_then(Value::as_str)
-        .ok_or("spend missing risk_authorization_id")?
-        .to_string();
     let decision_id = spend
         .get("decision_id")
         .and_then(Value::as_str)
@@ -2385,19 +3845,27 @@ fn validate_spend_for_admit(
             return Err("spend authorization expired".into());
         }
     }
+    let spend_principal_kind = PrincipalKind::parse(
+        spend
+            .get("principal_kind")
+            .and_then(Value::as_str)
+            .ok_or("spend principal_kind is missing")?,
+    )?;
+    if &spend_principal_kind != principal.principal_kind() {
+        return Err("spend principal kind mismatch".into());
+    }
     let fixture_only = spend
         .get("fixture_only")
         .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if matches!(principal.principal_kind, PrincipalKind::FixturePrincipal) {
+        .ok_or("spend fixture_only must be a persisted boolean")?;
+    let spend_is_fixture = spend_principal_kind == PrincipalKind::FixturePrincipal;
+    if fixture_only != spend_is_fixture {
+        return Err("spend fixture_only boolean is inconsistent with principal kind".into());
+    }
+    if spend_is_fixture {
         if !allow_fixture_dry_run {
             return Err("fixture principal cannot admit production live attempt".into());
         }
-        if !fixture_only {
-            return Err("fixture principal requires fixture_only spend".into());
-        }
-    } else if fixture_only {
-        return Err("fixture_only spend cannot admit production principal".into());
     } else if !principal.may_authorize_production_live_start() {
         return Err("principal cannot admit production live attempt".into());
     }
@@ -2455,6 +3923,20 @@ fn validate_trial_envelope_shape(trial: &Value) -> Result<(), String> {
         "model",
         "admitted_endpoint_paths",
         "draft_pr_only",
+        "auto_merge_disabled",
+        "product_task_id",
+        "workflow_id",
+        "workflow_node_id",
+        "execution_id",
+        "attempt_id",
+        "target_repo",
+        "target_main_sha",
+        "exact_codex_path",
+        "exact_codex_sha256",
+        "cancellation_identity",
+        "rollback_identity",
+        "output_branch_prefix",
+        "cost_authority",
     ] {
         if trial.get(key).is_none() {
             return Err(format!("trial_envelope.{key} required"));
@@ -2494,6 +3976,61 @@ fn validate_attempt_terminal_status(status: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(feature = "pg")]
+fn parse_managed_acceptance_json(raw: &str, owner: &str) -> Result<Value, String> {
+    serde_json::from_str(raw)
+        .map_err(|error| format!("managed acceptance {owner} is invalid JSON: {error}"))
+}
+
+fn parse_managed_acceptance_sqlite_json(
+    raw: &str,
+    owner: &str,
+    column: usize,
+) -> rusqlite::Result<Value> {
+    serde_json::from_str(raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("managed acceptance {owner} is invalid JSON: {error}"),
+            )),
+        )
+    })
+}
+
+fn strict_managed_acceptance_sqlite_bool(
+    value: i64,
+    owner: &str,
+    column: usize,
+) -> rusqlite::Result<bool> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        other => Err(rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Integer,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "managed acceptance {owner} is not a persisted boolean (expected 0 or 1, got {other})"
+                ),
+            )),
+        )),
+    }
+}
+
+#[cfg(feature = "pg")]
+fn strict_managed_acceptance_pg_bool(value: i32, owner: &str) -> Result<bool, String> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        other => Err(format!(
+            "managed acceptance {owner} is not a persisted boolean (expected 0 or 1, got {other})"
+        )),
+    }
+}
+
 fn load_decision_sqlite(conn: &rusqlite::Connection, decision_id: &str) -> Result<Value, String> {
     conn.query_row(
         "SELECT decision_id, tenant_id, decision_body_sha256, residual_finding_sha256, status,
@@ -2510,7 +4047,11 @@ fn load_decision_sqlite(conn: &rusqlite::Connection, decision_id: &str) -> Resul
                 "status": row.get::<_, String>(4)?,
                 "principal_kind": row.get::<_, String>(5)?,
                 "principal_id": row.get::<_, Option<String>>(6)?,
-                "body_json": serde_json::from_str::<Value>(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+                "body_json": parse_managed_acceptance_sqlite_json(
+                    &row.get::<_, String>(7)?,
+                    "decision body_json",
+                    7,
+                )?,
                 "created_at": row.get::<_, String>(8)?,
                 "updated_at": row.get::<_, String>(9)?,
                 "expires_at": row.get::<_, Option<String>>(10)?,
@@ -2535,6 +4076,7 @@ fn load_decision_pg(
         )
         .map_err(|e| e.to_string())?;
     let body_s: String = row.get(7);
+    let body = parse_managed_acceptance_json(&body_s, "decision body_json")?;
     Ok(json!({
         "schema_version": "managed_acceptance_decision.v1",
         "decision_id": row.get::<_, String>(0),
@@ -2544,7 +4086,7 @@ fn load_decision_pg(
         "status": row.get::<_, String>(4),
         "principal_kind": row.get::<_, String>(5),
         "principal_id": row.get::<_, Option<String>>(6),
-        "body_json": serde_json::from_str::<Value>(&body_s).unwrap_or(Value::Null),
+        "body_json": body,
         "created_at": row.get::<_, String>(8),
         "updated_at": row.get::<_, String>(9),
         "expires_at": row.get::<_, Option<String>>(10),
@@ -2565,7 +4107,13 @@ fn load_authorization_sqlite(
         params![authorization_id],
         |row| {
             let body_s: String = row.get(12)?;
-            let body: Value = serde_json::from_str(&body_s).unwrap_or(Value::Null);
+            let body =
+                parse_managed_acceptance_sqlite_json(&body_s, "authorization body_json", 12)?;
+            let scope = parse_managed_acceptance_sqlite_json(
+                &row.get::<_, String>(8)?,
+                "authorization scope_json",
+                8,
+            )?;
             Ok(json!({
                 "schema_version": "managed_acceptance_authorization.v1",
                 "authorization_id": row.get::<_, String>(0)?,
@@ -2576,12 +4124,16 @@ fn load_authorization_sqlite(
                 "decision_body_sha256": row.get::<_, String>(5)?,
                 "residual_finding_sha256": row.get::<_, String>(6)?,
                 "authorization_sha256": row.get::<_, String>(7)?,
-                "scope": serde_json::from_str::<Value>(&row.get::<_, String>(8)?).unwrap_or(Value::Null),
+                "scope": scope,
                 "status": row.get::<_, String>(9)?,
                 "mutation_authority": row.get::<_, String>(10)?,
-                "execution_granted": row.get::<_, i64>(11)? != 0,
+                "execution_granted": strict_managed_acceptance_sqlite_bool(
+                    row.get::<_, i64>(11)?,
+                    "authorization execution_granted",
+                    11,
+                )?,
                 "body_json": body,
-                "fixture_only": body.get("fixture_only").and_then(Value::as_bool).unwrap_or(false),
+                "fixture_only": body.get("fixture_only").cloned().unwrap_or(Value::Null),
                 "created_at": row.get::<_, String>(13)?,
                 "updated_at": row.get::<_, String>(14)?,
                 "expires_at": row.get::<_, String>(15)?,
@@ -2608,8 +4160,12 @@ fn load_authorization_pg(
         )
         .map_err(|e| e.to_string())?;
     let body_s: String = row.get(12);
-    let body: Value = serde_json::from_str(&body_s).unwrap_or(Value::Null);
+    let body = parse_managed_acceptance_json(&body_s, "authorization body_json")?;
+    let scope_s: String = row.get(8);
+    let scope = parse_managed_acceptance_json(&scope_s, "authorization scope_json")?;
     let exec: i32 = row.get(11);
+    let execution_granted =
+        strict_managed_acceptance_pg_bool(exec, "authorization execution_granted")?;
     Ok(json!({
         "schema_version": "managed_acceptance_authorization.v1",
         "authorization_id": row.get::<_, String>(0),
@@ -2620,12 +4176,12 @@ fn load_authorization_pg(
         "decision_body_sha256": row.get::<_, String>(5),
         "residual_finding_sha256": row.get::<_, String>(6),
         "authorization_sha256": row.get::<_, String>(7),
-        "scope": serde_json::from_str::<Value>(&row.get::<_, String>(8)).unwrap_or(Value::Null),
+        "scope": scope,
         "status": row.get::<_, String>(9),
         "mutation_authority": row.get::<_, String>(10),
-        "execution_granted": exec != 0,
+        "execution_granted": execution_granted,
         "body_json": body,
-        "fixture_only": body.get("fixture_only").and_then(Value::as_bool).unwrap_or(false),
+        "fixture_only": body.get("fixture_only").cloned().unwrap_or(Value::Null),
         "created_at": row.get::<_, String>(13),
         "updated_at": row.get::<_, String>(14),
         "expires_at": row.get::<_, String>(15),
@@ -2637,13 +4193,14 @@ fn load_spend_sqlite(conn: &rusqlite::Connection, spend_id: &str) -> Result<Valu
     conn.query_row(
         "SELECT spend_authorization_id, decision_id, risk_authorization_id, tenant_id,
                 principal_kind, principal_id, spend_body_sha256, risk_authorization_sha256,
-                decision_body_sha256, residual_finding_sha256, fixture_only, status, body_json,
+                logical_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+                fixture_only, status, body_json,
                 created_at, updated_at, expires_at, consumed_at, consumed_by_attempt_id, revoked_at
          FROM managed_acceptance_spend_authorizations WHERE spend_authorization_id=?1",
         params![spend_id],
         |row| {
-            let body_s: String = row.get(12)?;
-            let body: Value = serde_json::from_str(&body_s).unwrap_or(Value::Null);
+            let body_s: String = row.get(13)?;
+            let body = parse_managed_acceptance_sqlite_json(&body_s, "spend body_json", 13)?;
             Ok(json!({
                 "schema_version": "managed_acceptance_spend_authorization.v1",
                 "spend_authorization_id": row.get::<_, String>(0)?,
@@ -2654,17 +4211,22 @@ fn load_spend_sqlite(conn: &rusqlite::Connection, spend_id: &str) -> Result<Valu
                 "principal_id": row.get::<_, String>(5)?,
                 "spend_body_sha256": row.get::<_, String>(6)?,
                 "risk_authorization_sha256": row.get::<_, String>(7)?,
-                "decision_body_sha256": row.get::<_, String>(8)?,
-                "residual_finding_sha256": row.get::<_, String>(9)?,
-                "fixture_only": row.get::<_, i64>(10)? != 0,
-                "status": row.get::<_, String>(11)?,
+                "logical_authorization_sha256": row.get::<_, Option<String>>(8)?,
+                "decision_body_sha256": row.get::<_, String>(9)?,
+                "residual_finding_sha256": row.get::<_, String>(10)?,
+                "fixture_only": strict_managed_acceptance_sqlite_bool(
+                    row.get::<_, i64>(11)?,
+                    "spend fixture_only",
+                    11,
+                )?,
+                "status": row.get::<_, String>(12)?,
                 "body_json": body,
-                "created_at": row.get::<_, String>(13)?,
-                "updated_at": row.get::<_, String>(14)?,
-                "expires_at": row.get::<_, String>(15)?,
-                "consumed_at": row.get::<_, Option<String>>(16)?,
-                "consumed_by_attempt_id": row.get::<_, Option<String>>(17)?,
-                "revoked_at": row.get::<_, Option<String>>(18)?,
+                "created_at": row.get::<_, String>(14)?,
+                "updated_at": row.get::<_, String>(15)?,
+                "expires_at": row.get::<_, String>(16)?,
+                "consumed_at": row.get::<_, Option<String>>(17)?,
+                "consumed_by_attempt_id": row.get::<_, Option<String>>(18)?,
+                "revoked_at": row.get::<_, Option<String>>(19)?,
             }))
         },
     )
@@ -2680,15 +4242,17 @@ fn load_spend_pg(
         .query_one(
             "SELECT spend_authorization_id, decision_id, risk_authorization_id, tenant_id,
                     principal_kind, principal_id, spend_body_sha256, risk_authorization_sha256,
-                    decision_body_sha256, residual_finding_sha256, fixture_only, status, body_json,
+                    logical_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+                    fixture_only, status, body_json,
                     created_at, updated_at, expires_at, consumed_at, consumed_by_attempt_id, revoked_at
              FROM managed_acceptance_spend_authorizations WHERE spend_authorization_id=$1",
             &[&spend_id],
         )
         .map_err(|e| e.to_string())?;
-    let body_s: String = row.get(12);
-    let body: Value = serde_json::from_str(&body_s).unwrap_or(Value::Null);
-    let fixture: i32 = row.get(10);
+    let body_s: String = row.get(13);
+    let body = parse_managed_acceptance_json(&body_s, "spend body_json")?;
+    let fixture_only =
+        strict_managed_acceptance_pg_bool(row.get::<_, i32>(11), "spend fixture_only")?;
     Ok(json!({
         "schema_version": "managed_acceptance_spend_authorization.v1",
         "spend_authorization_id": row.get::<_, String>(0),
@@ -2699,17 +4263,18 @@ fn load_spend_pg(
         "principal_id": row.get::<_, String>(5),
         "spend_body_sha256": row.get::<_, String>(6),
         "risk_authorization_sha256": row.get::<_, String>(7),
-        "decision_body_sha256": row.get::<_, String>(8),
-        "residual_finding_sha256": row.get::<_, String>(9),
-        "fixture_only": fixture != 0,
-        "status": row.get::<_, String>(11),
+        "logical_authorization_sha256": row.get::<_, Option<String>>(8),
+        "decision_body_sha256": row.get::<_, String>(9),
+        "residual_finding_sha256": row.get::<_, String>(10),
+        "fixture_only": fixture_only,
+        "status": row.get::<_, String>(12),
         "body_json": body,
-        "created_at": row.get::<_, String>(13),
-        "updated_at": row.get::<_, String>(14),
-        "expires_at": row.get::<_, String>(15),
-        "consumed_at": row.get::<_, Option<String>>(16),
-        "consumed_by_attempt_id": row.get::<_, Option<String>>(17),
-        "revoked_at": row.get::<_, Option<String>>(18),
+        "created_at": row.get::<_, String>(14),
+        "updated_at": row.get::<_, String>(15),
+        "expires_at": row.get::<_, String>(16),
+        "consumed_at": row.get::<_, Option<String>>(17),
+        "consumed_by_attempt_id": row.get::<_, Option<String>>(18),
+        "revoked_at": row.get::<_, Option<String>>(19),
     }))
 }
 
@@ -2721,6 +4286,19 @@ fn load_attempt_sqlite(conn: &rusqlite::Connection, attempt_id: &str) -> Result<
          FROM managed_acceptance_attempts WHERE attempt_id=?1",
         params![attempt_id],
         |row| {
+            let body = parse_managed_acceptance_sqlite_json(
+                &row.get::<_, String>(12)?,
+                "attempt body_json",
+                12,
+            )?;
+            let receipt = match row.get::<_, Option<String>>(13)? {
+                Some(raw) => Some(parse_managed_acceptance_sqlite_json(
+                    &raw,
+                    "attempt receipt_json",
+                    13,
+                )?),
+                None => None,
+            };
             Ok(json!({
                 "schema_version": "managed_acceptance_attempt.v1",
                 "attempt_id": row.get::<_, String>(0)?,
@@ -2735,8 +4313,8 @@ fn load_attempt_sqlite(conn: &rusqlite::Connection, attempt_id: &str) -> Result<
                 "attempt_body_sha256": row.get::<_, String>(9)?,
                 "status": row.get::<_, String>(10)?,
                 "terminal_class": row.get::<_, Option<String>>(11)?,
-                "body_json": serde_json::from_str::<Value>(&row.get::<_, String>(12)?).unwrap_or(Value::Null),
-                "receipt_json": row.get::<_, Option<String>>(13)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
+                "body_json": body,
+                "receipt_json": receipt,
                 "receipt_sha256": row.get::<_, Option<String>>(14)?,
                 "lease_token": row.get::<_, Option<String>>(15)?,
                 "created_at": row.get::<_, String>(16)?,
@@ -2764,6 +4342,11 @@ fn load_attempt_pg(
         .map_err(|e| e.to_string())?;
     let body_s: String = row.get(12);
     let receipt_s: Option<String> = row.get(13);
+    let body = parse_managed_acceptance_json(&body_s, "attempt body_json")?;
+    let receipt = receipt_s
+        .as_deref()
+        .map(|raw| parse_managed_acceptance_json(raw, "attempt receipt_json"))
+        .transpose()?;
     Ok(json!({
         "schema_version": "managed_acceptance_attempt.v1",
         "attempt_id": row.get::<_, String>(0),
@@ -2778,8 +4361,8 @@ fn load_attempt_pg(
         "attempt_body_sha256": row.get::<_, String>(9),
         "status": row.get::<_, String>(10),
         "terminal_class": row.get::<_, Option<String>>(11),
-        "body_json": serde_json::from_str::<Value>(&body_s).unwrap_or(Value::Null),
-        "receipt_json": receipt_s.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
+        "body_json": body,
+        "receipt_json": receipt,
         "receipt_sha256": row.get::<_, Option<String>>(14),
         "lease_token": row.get::<_, Option<String>>(15),
         "created_at": row.get::<_, String>(16),
@@ -2805,6 +4388,10 @@ mod tests {
     }
 
     fn decision_body(decision_id: &str) -> Value {
+        decision_body_for_attempt(decision_id, "attempt-1")
+    }
+
+    fn decision_body_for_attempt(decision_id: &str, attempt_id: &str) -> Value {
         json!({
             "decision_id": decision_id,
             "schema_version": "codex_partial_mediation_authority_decision.v2",
@@ -2828,6 +4415,24 @@ mod tests {
                 "provider_base_url": "https://api.openai.com/v1",
                 "admitted_endpoint_paths": vec!["/v1/responses"],
                 "model": "gpt-5.6-luna",
+                "product_task_id": "ptask-1",
+                "workflow_id": "wf-1",
+                "workflow_node_id": "node-1",
+                "execution_id": format!("codex-attempt-{attempt_id}"),
+                "attempt_id": attempt_id,
+                "target_repo": "org/disposable-trial",
+                "target_main_sha": "a".repeat(40),
+                "exact_codex_path": "/usr/bin/codex",
+                "exact_codex_sha256": "ab".repeat(32),
+                "cancellation_identity": "cancel-1",
+                "rollback_identity": "rollback-1",
+                "output_branch_prefix": "acp/",
+                "cost_authority": {
+                    "kind": "cost_unavailable",
+                    "monetary_ceiling_enforced": false,
+                    "note": "rely on request/token/time caps; no monetary ceiling claimed",
+                },
+                "auto_merge_disabled": true,
             },
         })
     }
@@ -2945,8 +4550,39 @@ mod tests {
     }
 
     #[test]
-    fn risk_ack_store_derived_spend_admit_idempotent_and_conflict() {
+    fn decision_creation_rejects_non_draft_status_without_transition_receipt() {
         let (_dir, store) = store();
+        let residual = "a9".repeat(32);
+        let parameter_error = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body("mad-non-draft-parameter"),
+                &residual,
+                "operator_accepted",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .expect_err("a decision cannot be created in an accepted state");
+        assert!(parameter_error.contains("transitions are receipt-owned"));
+
+        let mut self_declared = decision_body("mad-non-draft-body");
+        self_declared["status"] = json!("operator_accepted");
+        let body_error = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &self_declared,
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .expect_err("a decision body cannot self-declare accepted status");
+        assert!(body_error.contains("is not transition evidence"));
+    }
+
+    #[test]
+    fn risk_ack_store_derived_spend_admit_idempotent_and_conflict() {
+        let (dir, store) = store();
         let principal =
             AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-alice")
                 .unwrap();
@@ -3008,6 +4644,29 @@ mod tests {
         assert_eq!(spend["status"], "active");
 
         let attempt_body = attempt_body_for(&spend_request);
+        let unauthorized =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-mallory")
+                .unwrap();
+        let unauthorized_error = store
+            .admit_managed_acceptance_attempt(
+                &unauthorized,
+                "attempt-1",
+                &attempt_body,
+                &spend_id,
+                true,
+            )
+            .expect_err("another principal must not consume this spend");
+        assert!(
+            unauthorized_error.contains("spend principal mismatch"),
+            "{unauthorized_error}"
+        );
+        assert_eq!(
+            store
+                .get_managed_acceptance_spend_authorization(&spend_id)
+                .unwrap()
+                .unwrap()["status"],
+            "active"
+        );
         let a1 = store
             .admit_managed_acceptance_attempt(
                 &principal,
@@ -3031,6 +4690,21 @@ mod tests {
             )
             .unwrap();
         assert_eq!(a2["idempotent_replay"], true);
+        let restarted = LocalProductStore::new_with_clock(dir.path().join("ma.db"), || {
+            "2026-07-25T12:00:00Z".to_string()
+        })
+        .unwrap();
+        let restarted_replay = restarted
+            .admit_managed_acceptance_attempt(
+                &principal,
+                "attempt-1",
+                &attempt_body,
+                &spend_id,
+                true,
+            )
+            .unwrap();
+        assert_eq!(restarted_replay["idempotent_replay"], true);
+        assert_eq!(restarted_replay["lease_token"], lease);
 
         // spend consumed — cannot re-admit different attempt
         let spend_row = store
@@ -3052,29 +4726,6 @@ mod tests {
             true,
         );
         assert!(conflict.unwrap_err().contains("conflict"));
-
-        // Fixture cannot admit without allow_fixture_dry_run
-        let spend2_req = spend_req(&auth_id, "attempt-2");
-        let spend2 = store
-            .issue_managed_acceptance_spend_authorization(&principal, &spend2_req)
-            .unwrap();
-        let spend2_id = spend2["spend_authorization_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let err = store
-            .admit_managed_acceptance_attempt(
-                &principal,
-                "attempt-2",
-                &attempt_body_for(&spend2_req),
-                &spend2_id,
-                false,
-            )
-            .unwrap_err();
-        assert!(
-            err.contains("fixture") || err.contains("production"),
-            "{err}"
-        );
 
         store
             .complete_managed_acceptance_attempt(
@@ -3112,6 +4763,1080 @@ mod tests {
             &json!({"ok": true, "extra": 1}),
         );
         assert!(conflict_receipt.unwrap_err().contains("late terminal"));
+        let restarted_terminal = restarted
+            .get_managed_acceptance_attempt("attempt-1")
+            .unwrap()
+            .expect("terminal attempt must survive a separate store restart");
+        assert_eq!(restarted_terminal["status"], "succeeded");
+        assert_eq!(
+            restarted
+                .get_managed_acceptance_spend_authorization(&spend_id)
+                .unwrap()
+                .unwrap()["status"],
+            "consumed",
+            "terminalization must never reactivate a consumed spend"
+        );
+    }
+
+    #[test]
+    fn spend_issue_reuses_one_active_receipt_for_the_same_logical_attempt() {
+        let (_dir, store) = store();
+        let principal = AuthenticatedPrincipal::fixture_for_tests(
+            "tenant-a",
+            "fixture-principal-spend-idempotent",
+        )
+        .unwrap();
+        let residual = "77".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body_for_attempt("mad-spend-idempotent", "same-attempt"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let risk = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: "mad-spend-idempotent".into(),
+                    expected_decision_body_sha256: decision["decision_body_sha256"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        let request = spend_req(risk["authorization_id"].as_str().unwrap(), "same-attempt");
+
+        let first = store
+            .issue_managed_acceptance_spend_authorization(&principal, &request)
+            .unwrap();
+        let second = store
+            .issue_managed_acceptance_spend_authorization(&principal, &request)
+            .unwrap();
+
+        assert_eq!(first["status"], "active");
+        assert_eq!(
+            first["spend_authorization_id"], second["spend_authorization_id"],
+            "replay must reuse the one active logical spend receipt"
+        );
+        assert_eq!(
+            first["logical_authorization_sha256"],
+            stable_spend_authorization_identity(&first["body_json"]).unwrap(),
+            "persisted logical spend identity must match its canonical body"
+        );
+    }
+
+    #[test]
+    fn logical_spend_identity_is_stable_before_receipt_id_and_timestamp_generation() {
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-logical")
+                .unwrap();
+        let request = spend_req("maa-logical", "logical-attempt");
+        let risk = json!({
+            "authorization_sha256": "a1".repeat(32),
+            "decision_body_sha256": "b2".repeat(32),
+            "residual_finding_sha256": "c3".repeat(32),
+            "expires_at": "2026-07-26T00:00:00Z",
+        });
+        let first = build_spend_body(
+            "mas-first-receipt",
+            &principal,
+            &request,
+            &risk,
+            "mad-logical",
+            true,
+            "2026-07-25T12:00:00Z",
+            None,
+        )
+        .unwrap();
+        let second = build_spend_body(
+            "mas-second-receipt",
+            &principal,
+            &request,
+            &risk,
+            "mad-logical",
+            true,
+            "2026-07-25T12:01:00Z",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            stable_spend_authorization_identity(&first).unwrap(),
+            stable_spend_authorization_identity(&second).unwrap(),
+            "logical identity must be derived before UUID/timestamp receipt generation"
+        );
+        let mut different_expiry = second;
+        different_expiry["expires_at"] = json!("2026-07-26T01:00:00Z");
+        assert_ne!(
+            stable_spend_authorization_identity(&first).unwrap(),
+            stable_spend_authorization_identity(&different_expiry).unwrap(),
+            "expiry is authorization scope and must remain in the logical identity"
+        );
+    }
+
+    #[test]
+    fn attempt_admission_rejects_non_boolean_persisted_spend_fixture_flag() {
+        let (_dir, store) = store();
+        let principal = AuthenticatedPrincipal::fixture_for_tests(
+            "tenant-a",
+            "fixture-principal-spend-boolean",
+        )
+        .unwrap();
+        let decision_id = "mad-spend-boolean";
+        let residual = "7d".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body_for_attempt(decision_id, "spend-boolean-attempt"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let risk = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: decision_id.into(),
+                    expected_decision_body_sha256: decision["decision_body_sha256"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        let request = spend_req(
+            risk["authorization_id"].as_str().unwrap(),
+            "spend-boolean-attempt",
+        );
+        let spend = store
+            .issue_managed_acceptance_spend_authorization(&principal, &request)
+            .unwrap();
+        let spend_id = spend["spend_authorization_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .with_conn(|conn| {
+                // The production schema already constrains this column. Use
+                // SQLite's isolated test-only check bypass to prove the
+                // loader remains fail-closed even if storage is corrupted
+                // underneath that first line of defense.
+                conn.execute_batch("PRAGMA ignore_check_constraints=ON")
+                    .map_err(|error| error.to_string())?;
+                conn.execute(
+                    "UPDATE managed_acceptance_spend_authorizations
+                     SET fixture_only=-1 WHERE spend_authorization_id=?1",
+                    [&spend_id],
+                )
+                .map_err(|error| error.to_string())?;
+                conn.execute_batch("PRAGMA ignore_check_constraints=OFF")
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+
+        let error = store
+            .admit_managed_acceptance_attempt(
+                &principal,
+                "spend-boolean-attempt",
+                &attempt_body_for(&request),
+                &spend_id,
+                true,
+            )
+            .expect_err("non-boolean fixture flag must not consume a spend");
+        assert!(
+            error.contains("spend fixture_only is not a persisted boolean"),
+            "{error}"
+        );
+        let active: i64 = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM managed_acceptance_spend_authorizations
+                     WHERE spend_authorization_id=?1 AND status='active'",
+                    [&spend_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(active, 1, "rejected spend must never be consumed");
+    }
+
+    #[test]
+    fn attempt_admission_rejects_persisted_spend_principal_kind_tampering() {
+        let (_dir, store) = store();
+        let principal = AuthenticatedPrincipal::fixture_for_tests(
+            "tenant-a",
+            "fixture-principal-spend-principal-kind",
+        )
+        .unwrap();
+        let decision_id = "mad-spend-principal-kind";
+        let residual = "7f".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body_for_attempt(decision_id, "spend-principal-kind-attempt"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let risk = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: decision_id.into(),
+                    expected_decision_body_sha256: decision["decision_body_sha256"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        let request = spend_req(
+            risk["authorization_id"].as_str().unwrap(),
+            "spend-principal-kind-attempt",
+        );
+        let spend = store
+            .issue_managed_acceptance_spend_authorization(&principal, &request)
+            .unwrap();
+        let spend_id = spend["spend_authorization_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_spend_authorizations
+                     SET principal_kind='operator_api_key' WHERE spend_authorization_id=?1",
+                    [&spend_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+
+        let error = store
+            .admit_managed_acceptance_attempt(
+                &principal,
+                "spend-principal-kind-attempt",
+                &attempt_body_for(&request),
+                &spend_id,
+                true,
+            )
+            .expect_err("principal-kind tampering must not consume a spend");
+        assert!(error.contains("spend principal kind mismatch"), "{error}");
+        assert_eq!(
+            store
+                .get_managed_acceptance_spend_authorization(&spend_id)
+                .unwrap()
+                .unwrap()["status"],
+            "active",
+            "rejected spend must remain active"
+        );
+    }
+
+    #[test]
+    fn managed_acceptance_owner_json_read_errors_fail_closed() {
+        let (_dir, store) = store();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-owner-json")
+                .unwrap();
+        let decision_id = "mad-owner-json";
+        let residual = "7e".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body_for_attempt(decision_id, "owner-json-attempt"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let risk = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: decision_id.into(),
+                    expected_decision_body_sha256: decision["decision_body_sha256"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        let risk_id = risk["authorization_id"].as_str().unwrap().to_string();
+        let request = spend_req(&risk_id, "owner-json-attempt");
+        let spend = store
+            .issue_managed_acceptance_spend_authorization(&principal, &request)
+            .unwrap();
+        let spend_id = spend["spend_authorization_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .admit_managed_acceptance_attempt(
+                &principal,
+                "owner-json-attempt",
+                &attempt_body_for(&request),
+                &spend_id,
+                true,
+            )
+            .unwrap();
+
+        let original_decision: String = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT body_json FROM managed_acceptance_decisions WHERE decision_id=?1",
+                    [decision_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_decisions SET body_json='not-json' WHERE decision_id=?1",
+                    [decision_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(store.get_managed_acceptance_decision(decision_id).is_err());
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_decisions SET body_json=?1 WHERE decision_id=?2",
+                    params![original_decision, decision_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+
+        let original_risk: String = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT body_json FROM managed_acceptance_authorizations WHERE authorization_id=?1",
+                    [&risk_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_authorizations SET body_json='not-json' WHERE authorization_id=?1",
+                    [&risk_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(store
+            .get_active_managed_acceptance_authorization(&risk_id)
+            .is_err());
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_authorizations SET body_json=?1 WHERE authorization_id=?2",
+                    params![original_risk, risk_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+
+        let original_spend: String = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT body_json FROM managed_acceptance_spend_authorizations WHERE spend_authorization_id=?1",
+                    [&spend_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_spend_authorizations SET body_json='not-json' WHERE spend_authorization_id=?1",
+                    [&spend_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(store
+            .get_managed_acceptance_spend_authorization(&spend_id)
+            .is_err());
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_spend_authorizations SET body_json=?1 WHERE spend_authorization_id=?2",
+                    params![original_spend, spend_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_attempts SET receipt_json='not-json' WHERE attempt_id='owner-json-attempt'",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(store
+            .get_managed_acceptance_attempt("owner-json-attempt")
+            .is_err());
+    }
+
+    #[test]
+    fn concurrent_spend_issue_reuses_one_active_logical_receipt() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("spend-race.db");
+        let store = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
+            .unwrap();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-spend-race")
+                .unwrap();
+        let residual = "79".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body_for_attempt("mad-spend-race", "same-logical-attempt"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let risk = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: "mad-spend-race".into(),
+                    expected_decision_body_sha256: decision["decision_body_sha256"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        let risk_id = risk["authorization_id"].as_str().unwrap().to_string();
+        let request = spend_req(&risk_id, "same-logical-attempt");
+        let barrier = Arc::new(Barrier::new(3));
+        let mut joins = Vec::new();
+        for _ in 0..2 {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            let request = request.clone();
+            joins.push(thread::spawn(move || {
+                let concurrent =
+                    LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
+                        .unwrap();
+                let principal = AuthenticatedPrincipal::fixture_for_tests(
+                    "tenant-a",
+                    "fixture-principal-spend-race",
+                )
+                .unwrap();
+                barrier.wait();
+                concurrent.issue_managed_acceptance_spend_authorization(&principal, &request)
+            }));
+        }
+        barrier.wait();
+        let spends = joins
+            .into_iter()
+            .map(|join| {
+                join.join()
+                    .unwrap()
+                    .expect("concurrent logical spend issuance")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            spends[0]["spend_authorization_id"], spends[1]["spend_authorization_id"],
+            "concurrent retries must collapse before UUID/timestamp receipt creation"
+        );
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        let active: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM managed_acceptance_spend_authorizations
+                 WHERE tenant_id='tenant-a' AND status='active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 1, "only one active logical spend may persist");
+    }
+
+    #[test]
+    fn active_spend_logical_identity_constraints_reject_null_and_duplicate_writes() {
+        let (_dir, store) = store();
+        let principal = AuthenticatedPrincipal::fixture_for_tests(
+            "tenant-a",
+            "fixture-principal-logical-constraint",
+        )
+        .unwrap();
+        let residual = "7c".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body_for_attempt("mad-logical-constraint", "logical-attempt"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let risk = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: "mad-logical-constraint".into(),
+                    expected_decision_body_sha256: decision["decision_body_sha256"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        let request = spend_req(
+            risk["authorization_id"].as_str().unwrap(),
+            "logical-attempt",
+        );
+        let first = store
+            .issue_managed_acceptance_spend_authorization(&principal, &request)
+            .unwrap();
+        let first_id = first["spend_authorization_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut second_body = first["body_json"].clone();
+        second_body["spend_authorization_id"] = json!("mas-logical-duplicate-second");
+        second_body["created_at"] = json!("2026-07-25T12:00:01Z");
+        let second_sha = sha256_hex(canonical_json(&second_body).unwrap().as_bytes());
+        let null_error = store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE managed_acceptance_spend_authorizations
+                     SET logical_authorization_sha256=NULL WHERE spend_authorization_id=?1",
+                    [&first_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .expect_err("V33 must reject an active spend with no logical identity");
+        assert!(
+            null_error.contains("CHECK constraint failed"),
+            "unexpected active-null error: {null_error}"
+        );
+        let duplicate_error = store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO managed_acceptance_spend_authorizations (
+                        spend_authorization_id, decision_id, risk_authorization_id, tenant_id,
+                        principal_kind, principal_id, spend_body_sha256, risk_authorization_sha256,
+                        logical_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+                        fixture_only, status, body_json, created_at, updated_at, expires_at,
+                        consumed_at, consumed_by_attempt_id, revoked_at
+                     ) SELECT ?1, decision_id, risk_authorization_id, tenant_id,
+                        principal_kind, principal_id, ?2, risk_authorization_sha256,
+                        logical_authorization_sha256, decision_body_sha256, residual_finding_sha256,
+                        fixture_only, 'active', ?3, created_at, updated_at, expires_at,
+                        NULL, NULL, NULL
+                     FROM managed_acceptance_spend_authorizations WHERE spend_authorization_id=?4",
+                    rusqlite::params![
+                        "mas-logical-duplicate-second",
+                        second_sha,
+                        second_body.to_string(),
+                        first_id,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .expect_err("V33 must reject a second active spend for the same logical identity");
+        assert!(
+            duplicate_error.contains("UNIQUE constraint failed"),
+            "unexpected active-duplicate error: {duplicate_error}"
+        );
+        let replay = store
+            .issue_managed_acceptance_spend_authorization(&principal, &request)
+            .expect("the rejected raw writes must leave the original spend reusable");
+        assert_eq!(
+            replay["spend_authorization_id"],
+            first["spend_authorization_id"]
+        );
+    }
+
+    #[test]
+    fn spend_envelope_requires_exact_attempt_target_binary_and_recovery_bindings() {
+        let (_dir, store) = store();
+        let principal = AuthenticatedPrincipal::fixture_for_tests(
+            "tenant-a",
+            "fixture-principal-envelope-bindings",
+        )
+        .unwrap();
+        let residual = "7a".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body_for_attempt("mad-envelope-bindings", "bound-attempt"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let risk = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: "mad-envelope-bindings".into(),
+                    expected_decision_body_sha256: decision["decision_body_sha256"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        let base = spend_req(risk["authorization_id"].as_str().unwrap(), "bound-attempt");
+        let mut cases = Vec::new();
+        let mut changed = base.clone();
+        changed.product_task_id = "other-product-task".into();
+        cases.push(("product_task_id", changed));
+        let mut changed = base.clone();
+        changed.workflow_id = Some("other-workflow".into());
+        cases.push(("workflow_id", changed));
+        let mut changed = base.clone();
+        changed.workflow_node_id = Some("other-node".into());
+        cases.push(("workflow_node_id", changed));
+        let mut changed = base.clone();
+        changed.execution_id = "other-execution".into();
+        cases.push(("execution_id", changed));
+        let mut changed = base.clone();
+        changed.attempt_id = "other-attempt".into();
+        cases.push(("attempt_id", changed));
+        let mut changed = base.clone();
+        changed.target_repo = "org/other-target".into();
+        cases.push(("target_repo", changed));
+        let mut changed = base.clone();
+        changed.target_main_sha = "b".repeat(40);
+        cases.push(("target_main_sha", changed));
+        let mut changed = base.clone();
+        changed.binary_path = "/opt/other-codex".into();
+        cases.push(("binary_path", changed));
+        let mut changed = base.clone();
+        changed.binary_sha256 = "cd".repeat(32);
+        cases.push(("binary_sha256", changed));
+        let mut changed = base.clone();
+        changed.cancellation_identity = "other-cancel".into();
+        cases.push(("cancellation_identity", changed));
+        let mut changed = base.clone();
+        changed.rollback_identity = "other-rollback".into();
+        cases.push(("rollback_identity", changed));
+        let mut changed = base.clone();
+        changed.output_branch_prefix = "other/".into();
+        cases.push(("output_branch_prefix", changed));
+        let mut changed = base.clone();
+        changed.draft_pr_only = false;
+        cases.push(("draft_pr_only", changed));
+        let mut changed = base.clone();
+        changed.cost_authority = CostAuthority::ProviderReported {
+            max_cost: 1.0,
+            currency: "USD".into(),
+        };
+        cases.push(("cost_authority", changed));
+
+        for (field, request) in cases {
+            let error = store
+                .issue_managed_acceptance_spend_authorization(&principal, &request)
+                .expect_err(&format!("{field} mutation must not issue spend"));
+            assert!(
+                error.contains("mismatches decision trial envelope"),
+                "{field}: unexpected error {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn spend_issuance_rejects_missing_persisted_risk_fixture_boolean() {
+        let (_dir, store) = store();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-risk-boolean")
+                .unwrap();
+        let residual = "7d".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body_for_attempt("mad-risk-boolean", "risk-boolean-attempt"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let risk = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: "mad-risk-boolean".into(),
+                    expected_decision_body_sha256: decision["decision_body_sha256"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        let risk_id = risk["authorization_id"].as_str().unwrap().to_string();
+        store
+            .with_conn(|conn| {
+                let raw: String = conn
+                    .query_row(
+                        "SELECT body_json FROM managed_acceptance_authorizations
+                         WHERE authorization_id=?1",
+                        [&risk_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut body: Value =
+                    serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+                body.as_object_mut()
+                    .ok_or("risk authorization body must be an object")?
+                    .remove("fixture_only");
+                conn.execute(
+                    "UPDATE managed_acceptance_authorizations SET body_json=?1
+                     WHERE authorization_id=?2",
+                    params![body.to_string(), risk_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let error = store
+            .issue_managed_acceptance_spend_authorization(
+                &principal,
+                &spend_req(&risk_id, "risk-boolean-attempt"),
+            )
+            .expect_err("missing persisted risk boolean must fail closed");
+        assert!(
+            error.contains("fixture_only must be a persisted boolean"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn decision_status_changes_persist_hash_linked_transition_receipts() {
+        let (_dir, store) = store();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-transition")
+                .unwrap();
+        let residual = "88".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body("mad-transition-receipts"),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let decision_sha = decision["decision_body_sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let authorization = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: "mad-transition-receipts".into(),
+                    expected_decision_body_sha256: decision_sha.clone(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        store
+            .revoke_managed_acceptance_authorization(
+                &principal,
+                authorization["authorization_id"].as_str().unwrap(),
+            )
+            .unwrap();
+
+        let receipts = store
+            .list_managed_acceptance_decision_transition_receipts("mad-transition-receipts")
+            .unwrap();
+        assert_eq!(receipts.len(), 2);
+        let accepted = receipts
+            .iter()
+            .find(|receipt| receipt["to_status"] == "operator_accepted")
+            .unwrap();
+        let revoked = receipts
+            .iter()
+            .find(|receipt| receipt["to_status"] == "revoked")
+            .unwrap();
+        assert_eq!(accepted["decision_body_sha256"], decision_sha);
+        assert_eq!(accepted["from_status"], "draft_pending_operator");
+        assert_eq!(revoked["from_status"], "operator_accepted");
+        assert_eq!(
+            revoked["previous_transition_sha256"],
+            accepted["transition_sha256"]
+        );
+        assert_eq!(accepted["transition_sha256"].as_str().unwrap().len(), 64);
+        assert_eq!(revoked["transition_sha256"].as_str().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn decision_transition_receipt_content_tampering_fails_closed_on_read() {
+        let (_dir, store) = store();
+        let principal = AuthenticatedPrincipal::fixture_for_tests(
+            "tenant-a",
+            "fixture-principal-transition-tamper",
+        )
+        .unwrap();
+        let decision_id = "mad-transition-tamper";
+        let residual = "89".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body(decision_id),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: decision_id.into(),
+                    expected_decision_body_sha256: decision["decision_body_sha256"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_residual_finding_sha256: residual,
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        store
+            .with_conn(|conn| {
+                let (receipt_id, encoded): (String, String) = conn
+                    .query_row(
+                        "SELECT transition_receipt_id, receipt_json
+                         FROM managed_acceptance_decision_transition_receipts
+                         WHERE decision_id=?1",
+                        [decision_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut receipt: Value =
+                    serde_json::from_str(&encoded).map_err(|error| error.to_string())?;
+                receipt["reason"] = json!("tampered_after_persistence");
+                conn.execute(
+                    "UPDATE managed_acceptance_decision_transition_receipts
+                     SET receipt_json=?1 WHERE transition_receipt_id=?2",
+                    params![receipt.to_string(), receipt_id],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+
+        let error = store
+            .list_managed_acceptance_decision_transition_receipts(decision_id)
+            .expect_err("tampered transition content must not be readable as evidence");
+        assert!(error.contains("hash does not match content"), "{error}");
+    }
+
+    #[test]
+    fn decision_transition_receipt_owner_constraints_reject_forked_writes() {
+        let (_dir, store) = store();
+        let principal = AuthenticatedPrincipal::fixture_for_tests(
+            "tenant-a",
+            "fixture-principal-transition-fork",
+        )
+        .unwrap();
+        let decision_id = "mad-transition-fork";
+        let residual = "8a".repeat(32);
+        let decision = store
+            .upsert_managed_acceptance_decision(
+                "tenant-a",
+                &decision_body(decision_id),
+                &residual,
+                "draft_pending_operator",
+                None,
+                Some("2026-07-26T00:00:00Z"),
+            )
+            .unwrap();
+        let authorization = store
+            .accept_managed_acceptance_decision(
+                &principal,
+                &RiskAcknowledgementRequest {
+                    decision_id: decision_id.into(),
+                    expected_decision_body_sha256: decision["decision_body_sha256"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    expected_residual_finding_sha256: residual.clone(),
+                    submitted_phrase: OPERATOR_RISK_ACCEPTANCE_PHRASE.into(),
+                    explicit_go: true,
+                },
+            )
+            .unwrap();
+        store
+            .revoke_managed_acceptance_authorization(
+                &principal,
+                authorization["authorization_id"].as_str().unwrap(),
+            )
+            .unwrap();
+        let accepted_sha = store
+            .list_managed_acceptance_decision_transition_receipts(decision_id)
+            .unwrap()
+            .into_iter()
+            .find(|receipt| receipt["to_status"] == "operator_accepted")
+            .unwrap()["transition_sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let forged = decision_status_transition_receipt(
+            decision_id,
+            "tenant-a",
+            decision["decision_body_sha256"].as_str().unwrap(),
+            &residual,
+            Some(&accepted_sha),
+            "operator_accepted",
+            "revoked",
+            &principal,
+            "2026-07-25T12:00:01Z",
+            "forged_parallel_revocation",
+        )
+        .unwrap();
+        let child_error = store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO managed_acceptance_decision_transition_receipts (
+                        transition_receipt_id, decision_id, tenant_id, decision_body_sha256,
+                        previous_transition_sha256, transition_sha256, from_status, to_status,
+                        actor_principal_kind, actor_principal_id, receipt_json, created_at
+                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                    params![
+                        forged["transition_receipt_id"].as_str().unwrap(),
+                        decision_id,
+                        "tenant-a",
+                        decision["decision_body_sha256"].as_str().unwrap(),
+                        forged["previous_transition_sha256"].as_str().unwrap(),
+                        forged["transition_sha256"].as_str().unwrap(),
+                        forged["from_status"].as_str().unwrap(),
+                        forged["to_status"].as_str().unwrap(),
+                        forged["actor_principal_kind"].as_str().unwrap(),
+                        forged["actor_principal_id"].as_str().unwrap(),
+                        forged.to_string(),
+                        forged["at"].as_str().unwrap(),
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .expect_err("V32 must reject a second child transition from one predecessor");
+        assert!(
+            child_error.contains("UNIQUE constraint failed"),
+            "unexpected child fork error: {child_error}"
+        );
+
+        let forged_genesis = decision_status_transition_receipt(
+            decision_id,
+            "tenant-a",
+            decision["decision_body_sha256"].as_str().unwrap(),
+            &residual,
+            None,
+            "draft_pending_operator",
+            "operator_accepted",
+            &principal,
+            "2026-07-25T12:00:02Z",
+            "forged_second_genesis",
+        )
+        .unwrap();
+        let genesis_error = store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO managed_acceptance_decision_transition_receipts (
+                        transition_receipt_id, decision_id, tenant_id, decision_body_sha256,
+                        previous_transition_sha256, transition_sha256, from_status, to_status,
+                        actor_principal_kind, actor_principal_id, receipt_json, created_at
+                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                    params![
+                        forged_genesis["transition_receipt_id"].as_str().unwrap(),
+                        decision_id,
+                        "tenant-a",
+                        decision["decision_body_sha256"].as_str().unwrap(),
+                        Option::<String>::None,
+                        forged_genesis["transition_sha256"].as_str().unwrap(),
+                        forged_genesis["from_status"].as_str().unwrap(),
+                        forged_genesis["to_status"].as_str().unwrap(),
+                        forged_genesis["actor_principal_kind"].as_str().unwrap(),
+                        forged_genesis["actor_principal_id"].as_str().unwrap(),
+                        forged_genesis.to_string(),
+                        forged_genesis["at"].as_str().unwrap(),
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .expect_err("V32 must reject a second genesis transition");
+        assert!(
+            genesis_error.contains("UNIQUE constraint failed"),
+            "unexpected genesis fork error: {genesis_error}"
+        );
+
+        let receipts = store
+            .list_managed_acceptance_decision_transition_receipts(decision_id)
+            .expect("rejected writes must leave the persisted transition chain valid");
+        assert_eq!(receipts.len(), 2);
     }
 
     #[test]
@@ -3124,7 +5849,7 @@ mod tests {
             AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-race")
                 .unwrap();
         let residual = "11".repeat(32);
-        let body = decision_body("mad-race");
+        let body = decision_body_for_attempt("mad-race", "race-1");
         let decision = store
             .upsert_managed_acceptance_decision(
                 "tenant-a",
@@ -3314,7 +6039,7 @@ mod tests {
         let decision = store
             .upsert_managed_acceptance_decision(
                 "tenant-a",
-                &decision_body("mad-budget"),
+                &decision_body_for_attempt("mad-budget", "bad-budget"),
                 &residual,
                 "draft_pending_operator",
                 None,
@@ -3344,7 +6069,7 @@ mod tests {
             .issue_managed_acceptance_spend_authorization(&principal, &bad)
             .unwrap_err();
         assert!(err.contains("max_provider_requests"), "{err}");
-        bad = spend_req(&auth_id, "bad-model");
+        bad = spend_req(&auth_id, "bad-budget");
         bad.model = "mutated-model".into();
         let err = store
             .issue_managed_acceptance_spend_authorization(&principal, &bad)
@@ -3362,7 +6087,7 @@ mod tests {
         let decision = store
             .upsert_managed_acceptance_decision(
                 "tenant-a",
-                &decision_body("mad-mismatch"),
+                &decision_body_for_attempt("mad-mismatch", "mismatch-1"),
                 &residual,
                 "draft_pending_operator",
                 None,

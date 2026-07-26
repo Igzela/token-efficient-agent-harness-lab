@@ -145,11 +145,11 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     },
     SchemaMigration {
         version: 32,
-        description: "add managed acceptance decision, authorization, and attempt admission",
+        description: "add managed acceptance decision, authorization, attempt admission, and hash-linked transition receipts",
     },
     SchemaMigration {
         version: 33,
-        description: "add managed acceptance spend authorization, lease, and receipt identity",
+        description: "add managed acceptance stable logical spend authorization, lease, and receipt identity",
     },
 ];
 
@@ -660,6 +660,31 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_managed_acceptance_attempts_status
     ON managed_acceptance_attempts(tenant_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
+    transition_receipt_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    previous_transition_sha256 TEXT,
+    transition_sha256 TEXT NOT NULL CHECK (length(transition_sha256) = 64),
+    from_status TEXT NOT NULL,
+    to_status TEXT NOT NULL,
+    actor_principal_kind TEXT NOT NULL,
+    actor_principal_id TEXT NOT NULL,
+    receipt_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (decision_id, transition_sha256),
+    FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_transition_decision
+    ON managed_acceptance_decision_transition_receipts(decision_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_child
+    ON managed_acceptance_decision_transition_receipts(decision_id, previous_transition_sha256)
+    WHERE previous_transition_sha256 IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_genesis
+    ON managed_acceptance_decision_transition_receipts(decision_id)
+    WHERE previous_transition_sha256 IS NULL;
 ";
 
 pub(super) const V33_DDL: &str = "
@@ -671,6 +696,7 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_spend_authorizations (
     principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
     principal_id TEXT NOT NULL,
     spend_body_sha256 TEXT NOT NULL CHECK (length(spend_body_sha256) = 64),
+    logical_authorization_sha256 TEXT CHECK (logical_authorization_sha256 IS NULL OR length(logical_authorization_sha256) = 64),
     risk_authorization_sha256 TEXT NOT NULL CHECK (length(risk_authorization_sha256) = 64),
     decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
     residual_finding_sha256 TEXT NOT NULL CHECK (length(residual_finding_sha256) = 64),
@@ -683,12 +709,16 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_spend_authorizations (
     consumed_at TEXT,
     consumed_by_attempt_id TEXT,
     revoked_at TEXT,
+    CHECK (status <> 'active' OR logical_authorization_sha256 IS NOT NULL),
     UNIQUE (tenant_id, spend_body_sha256),
     FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id),
     FOREIGN KEY(risk_authorization_id) REFERENCES managed_acceptance_authorizations(authorization_id)
 );
 CREATE INDEX IF NOT EXISTS idx_managed_acceptance_spend_tenant
     ON managed_acceptance_spend_authorizations(tenant_id, status, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_spend_active_logical
+    ON managed_acceptance_spend_authorizations(tenant_id, logical_authorization_sha256)
+    WHERE status = 'active';
 ";
 
 pub(super) const V28_DDL: &str = "
@@ -1719,6 +1749,7 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_spend_authorizations (
     principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
     principal_id TEXT NOT NULL,
     spend_body_sha256 TEXT NOT NULL CHECK (length(spend_body_sha256) = 64),
+    logical_authorization_sha256 TEXT CHECK (logical_authorization_sha256 IS NULL OR length(logical_authorization_sha256) = 64),
     risk_authorization_sha256 TEXT NOT NULL CHECK (length(risk_authorization_sha256) = 64),
     decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
     residual_finding_sha256 TEXT NOT NULL CHECK (length(residual_finding_sha256) = 64),
@@ -1731,6 +1762,7 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_spend_authorizations (
     consumed_at TEXT,
     consumed_by_attempt_id TEXT,
     revoked_at TEXT,
+    CHECK (status <> 'active' OR logical_authorization_sha256 IS NOT NULL),
     UNIQUE (tenant_id, spend_body_sha256),
     FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id),
     FOREIGN KEY(risk_authorization_id) REFERENCES managed_acceptance_authorizations(authorization_id)
@@ -1764,6 +1796,35 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_managed_acceptance_attempts_status
     ON managed_acceptance_attempts(tenant_id, status, updated_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_spend_active_logical
+    ON managed_acceptance_spend_authorizations(tenant_id, logical_authorization_sha256)
+    WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
+    transition_receipt_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    previous_transition_sha256 TEXT,
+    transition_sha256 TEXT NOT NULL CHECK (length(transition_sha256) = 64),
+    from_status TEXT NOT NULL,
+    to_status TEXT NOT NULL,
+    actor_principal_kind TEXT NOT NULL,
+    actor_principal_id TEXT NOT NULL,
+    receipt_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (decision_id, transition_sha256),
+    FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_transition_decision
+    ON managed_acceptance_decision_transition_receipts(decision_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_child
+    ON managed_acceptance_decision_transition_receipts(decision_id, previous_transition_sha256)
+    WHERE previous_transition_sha256 IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_genesis
+    ON managed_acceptance_decision_transition_receipts(decision_id)
+    WHERE previous_transition_sha256 IS NULL;
 ";
 pub(crate) const POSTGRES_DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatch_history (
@@ -2766,6 +2827,7 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_spend_authorizations (
     principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
     principal_id TEXT NOT NULL,
     spend_body_sha256 TEXT NOT NULL CHECK (length(spend_body_sha256) = 64),
+    logical_authorization_sha256 TEXT CHECK (logical_authorization_sha256 IS NULL OR length(logical_authorization_sha256) = 64),
     risk_authorization_sha256 TEXT NOT NULL CHECK (length(risk_authorization_sha256) = 64),
     decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
     residual_finding_sha256 TEXT NOT NULL CHECK (length(residual_finding_sha256) = 64),
@@ -2778,6 +2840,7 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_spend_authorizations (
     consumed_at TEXT,
     consumed_by_attempt_id TEXT,
     revoked_at TEXT,
+    CHECK (status <> 'active' OR logical_authorization_sha256 IS NOT NULL),
     UNIQUE (tenant_id, spend_body_sha256),
     FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id),
     FOREIGN KEY(risk_authorization_id) REFERENCES managed_acceptance_authorizations(authorization_id)
@@ -2811,6 +2874,35 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_managed_acceptance_attempts_status
     ON managed_acceptance_attempts(tenant_id, status, updated_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_spend_active_logical
+    ON managed_acceptance_spend_authorizations(tenant_id, logical_authorization_sha256)
+    WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
+    transition_receipt_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    previous_transition_sha256 TEXT,
+    transition_sha256 TEXT NOT NULL CHECK (length(transition_sha256) = 64),
+    from_status TEXT NOT NULL,
+    to_status TEXT NOT NULL,
+    actor_principal_kind TEXT NOT NULL,
+    actor_principal_id TEXT NOT NULL,
+    receipt_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (decision_id, transition_sha256),
+    FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_transition_decision
+    ON managed_acceptance_decision_transition_receipts(decision_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_child
+    ON managed_acceptance_decision_transition_receipts(decision_id, previous_transition_sha256)
+    WHERE previous_transition_sha256 IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_genesis
+    ON managed_acceptance_decision_transition_receipts(decision_id)
+    WHERE previous_transition_sha256 IS NULL;
 ";
 
 #[cfg(test)]
@@ -2883,6 +2975,10 @@ mod tests {
             "managed_acceptance_decisions",
             "managed_acceptance_authorizations",
             "managed_acceptance_attempts",
+            "managed_acceptance_spend_authorizations",
+            "idx_managed_acceptance_spend_active_logical",
+            "managed_acceptance_decision_transition_receipts",
+            "idx_managed_acceptance_transition_decision",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),

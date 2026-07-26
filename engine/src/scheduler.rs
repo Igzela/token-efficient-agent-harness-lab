@@ -269,7 +269,7 @@ fn create_scheduler_executor(
             let config = crate::cli::CliConfig::from_env();
             match CliNodeExecutor::from_config_for(&config, executor_type) {
                 Some(exec) => Arc::new(ToolPolicyNodeExecutor::cli(
-                    Arc::new(exec),
+                    Arc::new(exec.with_managed_acceptance_store(Arc::clone(&store))),
                     store,
                     executor_type,
                 )),

@@ -570,6 +570,17 @@ fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
             .map_err(|error| format!("migration 33 column {col}: {error}"))?;
         }
     }
+    if !pg_column_exists(
+        &mut tx,
+        "managed_acceptance_spend_authorizations",
+        "logical_authorization_sha256",
+    )? {
+        tx.batch_execute(
+            "ALTER TABLE managed_acceptance_spend_authorizations
+             ADD COLUMN logical_authorization_sha256 TEXT;",
+        )
+        .map_err(|error| format!("migration 33 spend logical identity column: {error}"))?;
+    }
     tx.execute(
         "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
         &[&version],
@@ -594,6 +605,87 @@ fn validate_pg_v33_schema(client: &mut impl postgres::GenericClient) -> Result<(
         if !pg_table_present(client, table)? {
             return Err(format!("PostgreSQL v33 schema missing table {table}"));
         }
+    }
+    if !pg_column_exists(
+        client,
+        "managed_acceptance_spend_authorizations",
+        "logical_authorization_sha256",
+    )? {
+        return Err("PostgreSQL v33 spend logical authorization identity is missing".to_string());
+    }
+    let active_identity_constraint_ok = client
+        .query(
+            "SELECT pg_get_constraintdef(constraint_meta.oid)
+             FROM pg_constraint constraint_meta
+             JOIN pg_class table_class ON table_class.oid=constraint_meta.conrelid
+             JOIN pg_namespace namespace ON namespace.oid=table_class.relnamespace
+             WHERE namespace.oid=current_schema()::regnamespace
+               AND table_class.relname='managed_acceptance_spend_authorizations'
+               AND constraint_meta.contype='c'",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|row| {
+            row.get::<_, String>(0)
+                .to_ascii_lowercase()
+                .replace('"', "")
+        })
+        .any(|definition| {
+            definition.contains("logical_authorization_sha256 is not null")
+                && definition.contains("status <>")
+        });
+    if !active_identity_constraint_ok {
+        return Err(
+            "PostgreSQL v33 active spend rows may omit logical authorization identity".to_string(),
+        );
+    }
+    let index = client
+        .query_opt(
+            "SELECT index_meta.indisunique,
+                    pg_get_expr(index_meta.indpred, index_meta.indrelid),
+                    array_agg(attribute.attname ORDER BY key.ordinality)
+             FROM pg_class index_class
+             JOIN pg_namespace namespace ON namespace.oid=index_class.relnamespace
+             JOIN pg_index index_meta ON index_meta.indexrelid=index_class.oid
+             JOIN pg_class table_class ON table_class.oid=index_meta.indrelid
+             JOIN LATERAL unnest(index_meta.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+               ON TRUE
+             JOIN pg_attribute attribute
+               ON attribute.attrelid=table_class.oid AND attribute.attnum=key.attnum
+             WHERE namespace.oid=current_schema()::regnamespace
+               AND index_class.relname='idx_managed_acceptance_spend_active_logical'
+               AND table_class.relname='managed_acceptance_spend_authorizations'
+             GROUP BY index_meta.indisunique, index_meta.indpred, index_meta.indrelid",
+            &[],
+        )
+        .map_err(|error| error.to_string())?
+        .map(|row| {
+            (
+                row.get::<_, bool>(0),
+                row.get::<_, Option<String>>(1),
+                row.get::<_, Vec<String>>(2),
+            )
+        });
+    let predicate_ok = index.as_ref().is_some_and(|(_, predicate, _)| {
+        predicate.as_ref().is_some_and(|predicate| {
+            let normalized = predicate.to_ascii_lowercase();
+            normalized.contains("status = 'active'")
+                && !normalized.contains("logical_authorization_sha256 is not null")
+        })
+    });
+    let expected_columns = vec![
+        "tenant_id".to_string(),
+        "logical_authorization_sha256".to_string(),
+    ];
+    let index_ok = matches!(
+        index.as_ref(),
+        Some((true, Some(_), columns)) if *columns == expected_columns
+    );
+    if !index_ok || !predicate_ok {
+        return Err(
+            "PostgreSQL v33 active logical spend index is missing or malformed".to_string(),
+        );
     }
     validate_pg_v32_schema(client)
 }
@@ -621,7 +713,79 @@ fn validate_pg_v32_schema(client: &mut impl postgres::GenericClient) -> Result<(
             }
         }
     }
+    for (index, expected_columns, predicate) in [
+        (
+            "idx_managed_acceptance_transition_one_child",
+            vec!["decision_id", "previous_transition_sha256"],
+            "previous_transition_sha256 is not null",
+        ),
+        (
+            "idx_managed_acceptance_transition_one_genesis",
+            vec!["decision_id"],
+            "previous_transition_sha256 is null",
+        ),
+    ] {
+        if !pg_partial_unique_index_matches(
+            client,
+            "managed_acceptance_decision_transition_receipts",
+            index,
+            &expected_columns,
+            predicate,
+        )? {
+            return Err(format!(
+                "PostgreSQL v32 transition index {index} is missing or malformed"
+            ));
+        }
+    }
     validate_pg_v31_schema(client)
+}
+
+fn pg_partial_unique_index_matches(
+    client: &mut impl postgres::GenericClient,
+    table: &str,
+    index: &str,
+    expected_columns: &[&str],
+    expected_predicate: &str,
+) -> Result<bool, String> {
+    let metadata = client
+        .query_opt(
+            "SELECT index_meta.indisunique,
+                    pg_get_expr(index_meta.indpred, index_meta.indrelid),
+                    array_agg(attribute.attname ORDER BY key.ordinality)
+             FROM pg_class index_class
+             JOIN pg_namespace namespace ON namespace.oid=index_class.relnamespace
+             JOIN pg_index index_meta ON index_meta.indexrelid=index_class.oid
+             JOIN pg_class table_class ON table_class.oid=index_meta.indrelid
+             JOIN LATERAL unnest(index_meta.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+               ON TRUE
+             JOIN pg_attribute attribute
+               ON attribute.attrelid=table_class.oid AND attribute.attnum=key.attnum
+             WHERE namespace.oid=current_schema()::regnamespace
+               AND index_class.relname=$1
+               AND table_class.relname=$2
+             GROUP BY index_meta.indisunique, index_meta.indpred, index_meta.indrelid",
+            &[&index, &table],
+        )
+        .map_err(|error| error.to_string())?
+        .map(|row| {
+            (
+                row.get::<_, bool>(0),
+                row.get::<_, Option<String>>(1),
+                row.get::<_, Vec<String>>(2),
+            )
+        });
+    let expected_columns = expected_columns
+        .iter()
+        .map(|column| (*column).to_string())
+        .collect::<Vec<_>>();
+    Ok(matches!(
+        metadata,
+        Some((true, Some(predicate), columns))
+            if columns == expected_columns
+                && predicate
+                    .to_ascii_lowercase()
+                    .contains(expected_predicate)
+    ))
 }
 
 fn validate_pg_v31_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
@@ -1228,7 +1392,8 @@ impl LocalProductStore {
                 }
             }
             tx.batch_execute(
-                "DROP TABLE managed_acceptance_attempts;
+                "DROP TABLE managed_acceptance_decision_transition_receipts;
+                 DROP TABLE managed_acceptance_attempts;
                  DROP TABLE managed_acceptance_authorizations;
                  DROP TABLE managed_acceptance_decisions;",
             )

@@ -558,7 +558,7 @@ pub(crate) async fn api_tick_workflow_run(
             match crate::cli::CliNodeExecutor::from_config_for(&cli_config, executor_type) {
                 Some(inner) => {
                     let executor = ToolPolicyNodeExecutor::cli(
-                        std::sync::Arc::new(inner),
+                        std::sync::Arc::new(inner.with_managed_acceptance_store(store.clone())),
                         store.clone(),
                         executor_type,
                     );

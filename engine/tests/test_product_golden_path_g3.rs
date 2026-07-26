@@ -131,12 +131,9 @@ fn end_to_end_artifact_only_path_with_real_verification() {
         // Expected file must not exist on target main before the task.
         assert!(!repo.join("docs/product_golden_path_fixture.md").exists());
 
-        let validated = validate_intake(
-            &intake(&repo, &rev, "g3-e2e-1", pass_verify()),
-            "local",
-            "default",
-        )
-        .unwrap();
+        let mut request = intake(&repo, &rev, "g3-e2e-1", pass_verify());
+        request.confirm_output = Some(true);
+        let validated = validate_intake(&request, "local", "default").unwrap();
         let task = store.admit_product_task(&validated, "tester").unwrap();
         let task_id = task["task_id"].as_str().unwrap();
         let compiled = store
@@ -188,6 +185,58 @@ fn end_to_end_artifact_only_path_with_real_verification() {
             task["status"].as_str(),
             Some(ProductTaskStatus::AwaitingApproval.as_str())
         );
+        let approval_phase = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect("current verification receipt must satisfy the real owner path");
+        assert_eq!(approval_phase["stage"], "awaiting_approval");
+        // A trustworthy-looking receipt from another ProductTask version must
+        // not satisfy the approval-stage read. Change every persisted attempt
+        // consistently so this proves the version relation itself, not merely
+        // a mismatched nested field, is enforced.
+        let db_path = dir.path().join("store.db");
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        let workspace_record_id = task["workspace_record_id"].as_str().unwrap();
+        let original_workspace_json: String = connection
+            .query_row(
+                "SELECT workspace_json FROM supervised_patch_workspaces WHERE workspace_id=?1",
+                [workspace_record_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut stale_version_workspace: serde_json::Value =
+            serde_json::from_str(&original_workspace_json).unwrap();
+        stale_version_workspace["verification"]["expected_task_version"] = serde_json::json!(0);
+        for receipt in stale_version_workspace["verification"]["verification_attempts"]
+            .as_array_mut()
+            .unwrap()
+        {
+            receipt["expected_task_version"] = serde_json::json!(0);
+        }
+        connection
+            .execute(
+                "UPDATE supervised_patch_workspaces SET workspace_json=?1 WHERE workspace_id=?2",
+                [
+                    stale_version_workspace.to_string(),
+                    workspace_record_id.to_string(),
+                ],
+            )
+            .unwrap();
+        let stale_version_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("verification from a stale ProductTask version must fail closed");
+        assert!(
+            stale_version_error.contains("immediately preceding task version"),
+            "{stale_version_error}"
+        );
+        connection
+            .execute(
+                "UPDATE supervised_patch_workspaces SET workspace_json=?1 WHERE workspace_id=?2",
+                [
+                    original_workspace_json.clone(),
+                    workspace_record_id.to_string(),
+                ],
+            )
+            .unwrap();
         let ws = task["workspace_binding"]["workspace_path"]
             .as_str()
             .unwrap();
@@ -212,6 +261,10 @@ fn end_to_end_artifact_only_path_with_real_verification() {
             Some(ProductTaskStatus::Completed.as_str())
         );
         assert_eq!(done["output"]["mode"], "artifact_only");
+        let terminal_phase = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect("completed task must retain exactly-bound terminal evidence");
+        assert_eq!(terminal_phase["stage"], "terminal");
 
         // Target default branch byte-for-byte unchanged.
         let main_readme = std::fs::read_to_string(repo.join("README.md")).unwrap();
@@ -223,6 +276,497 @@ fn end_to_end_artifact_only_path_with_real_verification() {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&main_head.stdout).trim(), rev);
+
+        // Tamper only the isolated test store after the positive real-owner
+        // proof. Each call must re-read persisted receipt values and reject
+        // stale/missing data rather than accepting JSON-field presence.
+        let workspace_record_id = done["task"]["workspace_record_id"].as_str().unwrap();
+        let mut tampered_workspace: serde_json::Value =
+            serde_json::from_str(&original_workspace_json).unwrap();
+        tampered_workspace["verification"]["trustworthy"] = serde_json::json!(false);
+        connection
+            .execute(
+                "UPDATE supervised_patch_workspaces SET workspace_json=?1 WHERE workspace_id=?2",
+                [
+                    tampered_workspace.to_string(),
+                    workspace_record_id.to_string(),
+                ],
+            )
+            .unwrap();
+        let verification_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("untrustworthy verification receipt must fail closed");
+        assert!(
+            verification_error.contains("verification receipt is not accepted and trustworthy"),
+            "{verification_error}"
+        );
+        connection
+            .execute(
+                "UPDATE supervised_patch_workspaces SET workspace_json=?1 WHERE workspace_id=?2",
+                [
+                    original_workspace_json.clone(),
+                    workspace_record_id.to_string(),
+                ],
+            )
+            .unwrap();
+
+        let original_boundary_json: String = connection
+            .query_row(
+                "SELECT boundary_json FROM supervised_patch_workspaces WHERE workspace_id=?1",
+                [workspace_record_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE supervised_patch_workspaces SET workspace_json='not-json' WHERE workspace_id=?1",
+                [workspace_record_id],
+            )
+            .unwrap();
+        let workspace_owner_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("corrupt workspace owner JSON must fail closed at the authority read");
+        assert!(
+            workspace_owner_error.contains("managed acceptance workspace owner is invalid JSON"),
+            "{workspace_owner_error}"
+        );
+        connection
+            .execute(
+                "UPDATE supervised_patch_workspaces SET workspace_json=?1 WHERE workspace_id=?2",
+                [
+                    original_workspace_json.clone(),
+                    workspace_record_id.to_string(),
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE supervised_patch_workspaces SET boundary_json='not-json' WHERE workspace_id=?1",
+                [workspace_record_id],
+            )
+            .unwrap();
+        let boundary_owner_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("corrupt workspace boundary JSON must fail closed at the authority read");
+        assert!(
+            boundary_owner_error
+                .contains("managed acceptance workspace boundary owner is invalid JSON"),
+            "{boundary_owner_error}"
+        );
+        connection
+            .execute(
+                "UPDATE supervised_patch_workspaces SET boundary_json=?1 WHERE workspace_id=?2",
+                [original_boundary_json, workspace_record_id.to_string()],
+            )
+            .unwrap();
+
+        let original_artifact_json: String = connection
+            .query_row(
+                "SELECT artifact_json FROM supervised_patch_artifacts WHERE artifact_id=?1",
+                [artifact_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut tampered_artifact: serde_json::Value =
+            serde_json::from_str(&original_artifact_json).unwrap();
+        tampered_artifact["product_output_receipt"]["expected_task_version"] = serde_json::json!(0);
+        connection
+            .execute(
+                "UPDATE supervised_patch_artifacts SET artifact_json=?1 WHERE artifact_id=?2",
+                [tampered_artifact.to_string(), artifact_id.to_string()],
+            )
+            .unwrap();
+        let output_version_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("output receipt from a stale ProductTask version must fail closed");
+        assert!(
+            output_version_error.contains("output receipt/operation content binding"),
+            "{output_version_error}"
+        );
+        connection
+            .execute(
+                "UPDATE supervised_patch_artifacts SET artifact_json=?1 WHERE artifact_id=?2",
+                [original_artifact_json.clone(), artifact_id.to_string()],
+            )
+            .unwrap();
+        let original_changed_files_json: String = connection
+            .query_row(
+                "SELECT changed_files_json FROM supervised_patch_artifacts WHERE artifact_id=?1",
+                [artifact_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE supervised_patch_artifacts SET changed_files_json='not-json' WHERE artifact_id=?1",
+                [artifact_id],
+            )
+            .unwrap();
+        let changed_files_owner_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("corrupt artifact changed-files owner JSON must fail closed");
+        assert!(
+            changed_files_owner_error
+                .contains("managed acceptance artifact changed-files owner is invalid JSON"),
+            "{changed_files_owner_error}"
+        );
+        connection
+            .execute(
+                "UPDATE supervised_patch_artifacts SET changed_files_json=?1 WHERE artifact_id=?2",
+                [original_changed_files_json, artifact_id.to_string()],
+            )
+            .unwrap();
+
+        connection
+            .execute(
+                "UPDATE supervised_patch_artifacts SET artifact_json='not-json' WHERE artifact_id=?1",
+                [artifact_id],
+            )
+            .unwrap();
+        let artifact_json_owner_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("corrupt artifact owner JSON must fail closed at the authority read");
+        assert!(
+            artifact_json_owner_error.contains("managed acceptance artifact owner is invalid JSON"),
+            "{artifact_json_owner_error}"
+        );
+        connection
+            .execute(
+                "UPDATE supervised_patch_artifacts SET artifact_json=?1 WHERE artifact_id=?2",
+                [original_artifact_json.clone(), artifact_id.to_string()],
+            )
+            .unwrap();
+
+        let mut tampered_artifact: serde_json::Value =
+            serde_json::from_str(&original_artifact_json).unwrap();
+        tampered_artifact["product_task_id"] = serde_json::json!("other-product-task");
+        connection
+            .execute(
+                "UPDATE supervised_patch_artifacts SET artifact_json=?1 WHERE artifact_id=?2",
+                [tampered_artifact.to_string(), artifact_id.to_string()],
+            )
+            .unwrap();
+        let artifact_owner_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("artifact from another ProductTask must fail closed");
+        assert!(
+            artifact_owner_error.contains("no exact artifact")
+                || artifact_owner_error.contains("artifact target binding"),
+            "{artifact_owner_error}"
+        );
+        connection
+            .execute(
+                "UPDATE supervised_patch_artifacts SET artifact_json=?1 WHERE artifact_id=?2",
+                [original_artifact_json.clone(), artifact_id.to_string()],
+            )
+            .unwrap();
+
+        let mut tampered_artifact: serde_json::Value =
+            serde_json::from_str(&original_artifact_json).unwrap();
+        tampered_artifact["product_output_receipt"]["approval_id"] =
+            serde_json::json!("stale-approval-id");
+        connection
+            .execute(
+                "UPDATE supervised_patch_artifacts SET artifact_json=?1 WHERE artifact_id=?2",
+                [tampered_artifact.to_string(), artifact_id.to_string()],
+            )
+            .unwrap();
+        let approval_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("output receipt must bind the current approval");
+        assert!(
+            approval_error.contains("approval receipt")
+                || approval_error.contains("output receipt"),
+            "{approval_error}"
+        );
+        connection
+            .execute(
+                "UPDATE supervised_patch_artifacts SET artifact_json=?1 WHERE artifact_id=?2",
+                [original_artifact_json.clone(), artifact_id.to_string()],
+            )
+            .unwrap();
+
+        let original_artifact: serde_json::Value =
+            serde_json::from_str(&original_artifact_json).unwrap();
+        let approval_id = original_artifact["product_output_receipt"]["approval_id"]
+            .as_str()
+            .unwrap();
+        let original_approval_json: String = connection
+            .query_row(
+                "SELECT approval_json FROM workflow_run_approvals WHERE approval_id=?1",
+                [approval_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE workflow_run_approvals SET approval_json='not-json' WHERE approval_id=?1",
+                [approval_id],
+            )
+            .unwrap();
+        let approval_owner_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("corrupt approval owner JSON must fail closed");
+        assert!(
+            approval_owner_error.contains("workflow run approval receipt is invalid JSON"),
+            "{approval_owner_error}"
+        );
+        connection
+            .execute(
+                "UPDATE workflow_run_approvals SET approval_json=?1 WHERE approval_id=?2",
+                [original_approval_json, approval_id.to_string()],
+            )
+            .unwrap();
+
+        let run_id = done["task"]["run_id"].as_str().unwrap();
+        let (node_id, original_node_json): (String, String) = connection
+            .query_row(
+                "SELECT node_id, node_json FROM workflow_run_nodes WHERE run_id=?1 LIMIT 1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let original_run_json: String = connection
+            .query_row(
+                "SELECT run_json FROM workflow_runs WHERE run_id=?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE workflow_runs SET run_json='not-json' WHERE run_id=?1",
+                [run_id],
+            )
+            .unwrap();
+        let run_owner_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("corrupt workflow run JSON must fail closed at the authority read");
+        assert!(
+            run_owner_error.contains("managed acceptance workflow run owner is invalid JSON"),
+            "{run_owner_error}"
+        );
+        connection
+            .execute(
+                "UPDATE workflow_runs SET run_json=?1 WHERE run_id=?2",
+                [original_run_json, run_id.to_string()],
+            )
+            .unwrap();
+        let original_workflow_boundaries_json: String = connection
+            .query_row(
+                "SELECT boundaries_json FROM workflow_runs WHERE run_id=?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE workflow_runs SET boundaries_json='not-json' WHERE run_id=?1",
+                [run_id],
+            )
+            .unwrap();
+        let workflow_boundaries_owner_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("corrupt workflow boundaries JSON must fail closed at the authority read");
+        assert!(
+            workflow_boundaries_owner_error
+                .contains("managed acceptance workflow boundaries owner is invalid JSON"),
+            "{workflow_boundaries_owner_error}"
+        );
+        connection
+            .execute(
+                "UPDATE workflow_runs SET boundaries_json=?1 WHERE run_id=?2",
+                [original_workflow_boundaries_json, run_id.to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE workflow_run_nodes SET node_json='not-json' WHERE run_id=?1 AND node_id=?2",
+                [run_id, node_id.as_str()],
+            )
+            .unwrap();
+        let node_owner_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("corrupt workflow node JSON must fail closed at the authority read");
+        assert!(
+            node_owner_error.contains("managed acceptance workflow node owner is invalid JSON"),
+            "{node_owner_error}"
+        );
+        connection
+            .execute(
+                "UPDATE workflow_run_nodes SET node_json=?1 WHERE run_id=?2 AND node_id=?3",
+                [
+                    original_node_json.clone(),
+                    run_id.to_string(),
+                    node_id.clone(),
+                ],
+            )
+            .unwrap();
+        let duplicate_node_id = format!("{node_id}-duplicate-owner");
+        let mut duplicate_node: serde_json::Value =
+            serde_json::from_str(&original_node_json).unwrap();
+        duplicate_node["node_id"] = serde_json::json!(duplicate_node_id);
+        connection
+            .execute(
+                "INSERT INTO workflow_run_nodes
+                 (run_id, node_id, task_type, status, node_json, attempt_count)
+                 VALUES (?1, ?2, 'product_apply', 'completed', ?3, 0)",
+                [
+                    run_id.to_string(),
+                    duplicate_node_id.clone(),
+                    duplicate_node.to_string(),
+                ],
+            )
+            .unwrap();
+        let duplicate_node_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("multiple nodes claiming one ProductTask must fail closed");
+        assert!(
+            duplicate_node_error.contains("multiple workflow nodes claim one ProductTask owner"),
+            "{duplicate_node_error}"
+        );
+        connection
+            .execute(
+                "DELETE FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2",
+                [run_id, duplicate_node_id.as_str()],
+            )
+            .unwrap();
+
+        let original_terminal_evidence_json: String = connection
+            .query_row(
+                "SELECT evidence_json FROM product_task_terminal_evidence WHERE product_task_id=?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE product_task_terminal_evidence SET evidence_json='not-json' WHERE product_task_id=?1",
+                [task_id],
+            )
+            .unwrap();
+        let terminal_owner_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("corrupt terminal evidence JSON must fail closed at the authority read");
+        assert!(
+            terminal_owner_error.contains("product task terminal evidence is invalid JSON"),
+            "{terminal_owner_error}"
+        );
+        connection
+            .execute(
+                "UPDATE product_task_terminal_evidence SET evidence_json=?1 WHERE product_task_id=?2",
+                [original_terminal_evidence_json, task_id.to_string()],
+            )
+            .unwrap();
+
+        connection
+            .execute(
+                "DELETE FROM product_task_terminal_evidence WHERE product_task_id=?1",
+                [task_id],
+            )
+            .unwrap();
+        let terminal_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("completed claim without terminal evidence must fail closed");
+        assert!(
+            terminal_error.contains("terminal evidence"),
+            "{terminal_error}"
+        );
+    });
+}
+
+#[test]
+fn managed_acceptance_product_task_phase_fails_closed_on_binding_boolean_and_owner_bypasses() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let mut request = intake(&repo, &rev, "g3-managed-acceptance-phase", pass_verify());
+        request.confirm_output = Some(true);
+        let validated = validate_intake(&request, "local", "default").unwrap();
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+
+        let pre_execution = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect("pre-execution admission requires actual booleans and readable owners only");
+        assert_eq!(pre_execution["stage"], "pre_execution_admission");
+
+        let target_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "other-target", &rev)
+            .expect_err("target identity must not fall back to a path");
+        assert!(target_error.contains("target_id"), "{target_error}");
+        let revision_error = store
+            .validate_managed_acceptance_product_task_phase(
+                "local",
+                task_id,
+                "disposable",
+                &"f".repeat(40),
+            )
+            .expect_err("source revision must exactly bind spend main SHA");
+        assert!(
+            revision_error.contains("source_revision"),
+            "{revision_error}"
+        );
+
+        // Direct SQL is test-only tampering of an isolated store. The public
+        // seam must read the persisted boolean rather than treat field presence
+        // as a positive confirmation.
+        let db_path = dir.path().join("store.db");
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        connection
+            .execute(
+                "UPDATE product_tasks SET confirm_output=0 WHERE task_id=?1",
+                [task_id],
+            )
+            .unwrap();
+        let boolean_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("persisted false confirmation must fail closed");
+        assert!(boolean_error.contains("confirm_output"), "{boolean_error}");
+        connection
+            .execute(
+                "UPDATE product_tasks SET confirm_output=-1 WHERE task_id=?1",
+                [task_id],
+            )
+            .unwrap();
+        let malformed_boolean_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("non-boolean confirmation storage must fail closed");
+        assert!(
+            malformed_boolean_error.contains("confirm_output is not a persisted boolean"),
+            "{malformed_boolean_error}"
+        );
+    });
+
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo-owner-error");
+        let rev = init_git_repo(&repo);
+        let mut request = intake(
+            &repo,
+            &rev,
+            "g3-managed-acceptance-owner-error",
+            pass_verify(),
+        );
+        request.confirm_output = Some(true);
+        let validated = validate_intake(&request, "local", "default").unwrap();
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+
+        // Isolated destructive fixture: prove an evidence-owner read error is
+        // propagated rather than converted into an absent/valid receipt.
+        let connection = rusqlite::Connection::open(dir.path().join("store.db")).unwrap();
+        connection
+            .execute_batch("DROP TABLE product_task_terminal_evidence")
+            .unwrap();
+        let owner_error = store
+            .validate_managed_acceptance_product_task_phase("local", task_id, "disposable", &rev)
+            .expect_err("missing evidence owner must fail closed");
+        assert!(
+            owner_error.contains("product_task_terminal_evidence"),
+            "{owner_error}"
+        );
     });
 }
 

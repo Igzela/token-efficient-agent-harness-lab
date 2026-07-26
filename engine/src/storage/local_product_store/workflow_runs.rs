@@ -5257,7 +5257,16 @@ fn workflow_run_approvals_locked(
     let rows = stmt
         .query_map(params![run_id, limit], |row| {
             let text: String = row.get(0)?;
-            Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+            serde_json::from_str(&text).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("workflow run approval receipt is invalid JSON: {error}"),
+                    )),
+                )
+            })
         })
         .map_err(|e| e.to_string())?;
     collect_values(rows)
@@ -7338,14 +7347,13 @@ fn pg_workflow_run_edges(
             &[&run_id],
         )
         .map_err(|e| e.to_string())?;
-    let values: Vec<Value> = rows
-        .iter()
+    rows.iter()
         .map(|row| {
             let text: String = row.get(0);
-            serde_json::from_str(&text).unwrap_or(Value::Null)
+            serde_json::from_str(&text)
+                .map_err(|error| format!("workflow run approval receipt is invalid JSON: {error}"))
         })
-        .collect();
-    Ok(values)
+        .collect()
 }
 
 #[cfg(feature = "pg")]
@@ -7401,14 +7409,13 @@ fn pg_workflow_run_approvals(
             &[&run_id, &limit],
         )
         .map_err(|e| e.to_string())?;
-    let values: Vec<Value> = rows
-        .iter()
+    rows.iter()
         .map(|row| {
             let text: String = row.get(0);
-            serde_json::from_str(&text).unwrap_or(Value::Null)
+            serde_json::from_str(&text)
+                .map_err(|error| format!("workflow run approval receipt is invalid JSON: {error}"))
         })
-        .collect();
-    Ok(values)
+        .collect()
 }
 
 #[cfg(feature = "pg")]
