@@ -1755,6 +1755,7 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
     }
 
     fn migrate_v33_add_managed_acceptance_spend(conn: &Connection) -> Result<(), String> {
+        repair_sqlite_v32_transition_schema(conn)?;
         let spend_table_exists =
             sqlite_table_exists(conn, "managed_acceptance_spend_authorizations")?;
         if !spend_table_exists {
@@ -1764,6 +1765,44 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         repair_sqlite_v33_spend_schema(conn)?;
         Ok(())
     }
+}
+
+fn repair_sqlite_v32_transition_schema(conn: &Connection) -> Result<(), String> {
+    if !sqlite_table_exists(conn, "managed_acceptance_decision_transition_receipts")? {
+        return Ok(());
+    }
+    let columns = conn
+        .prepare("PRAGMA table_info(managed_acceptance_decision_transition_receipts)")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| error.to_string())?;
+    if !columns.iter().any(|column| column == "sequence") {
+        conn.execute("ALTER TABLE managed_acceptance_decision_transition_receipts ADD COLUMN sequence INTEGER NOT NULL DEFAULT 1", [])
+            .map_err(|error| error.to_string())?;
+    }
+    if !columns
+        .iter()
+        .any(|column| column == "previous_transition_sequence")
+    {
+        conn.execute("ALTER TABLE managed_acceptance_decision_transition_receipts ADD COLUMN previous_transition_sequence INTEGER", [])
+            .map_err(|error| error.to_string())?;
+    }
+    conn.execute_batch(
+        "UPDATE managed_acceptance_decision_transition_receipts
+         SET sequence = (SELECT COUNT(*) FROM managed_acceptance_decision_transition_receipts newer
+                         WHERE newer.decision_id = managed_acceptance_decision_transition_receipts.decision_id
+                           AND (newer.created_at < managed_acceptance_decision_transition_receipts.created_at
+                                OR (newer.created_at = managed_acceptance_decision_transition_receipts.created_at
+                                    AND newer.transition_receipt_id <= managed_acceptance_decision_transition_receipts.transition_receipt_id)));
+         UPDATE managed_acceptance_decision_transition_receipts
+         SET previous_transition_sequence = CASE WHEN previous_transition_sha256 IS NULL THEN NULL ELSE sequence - 1 END;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_sequence
+         ON managed_acceptance_decision_transition_receipts(decision_id, sequence);",
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn sqlite_table_exists(conn: &Connection, table: &str) -> Result<bool, String> {

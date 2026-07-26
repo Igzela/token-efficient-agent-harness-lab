@@ -666,6 +666,8 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
     decision_id TEXT NOT NULL,
     tenant_id TEXT NOT NULL,
     decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    sequence INTEGER NOT NULL DEFAULT 1 CHECK (sequence >= 1),
+    previous_transition_sequence INTEGER CHECK (previous_transition_sequence IS NULL OR previous_transition_sequence >= 1),
     previous_transition_sha256 TEXT,
     transition_sha256 TEXT NOT NULL CHECK (length(transition_sha256) = 64),
     from_status TEXT NOT NULL,
@@ -675,6 +677,7 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
     receipt_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (decision_id, transition_sha256),
+    UNIQUE (decision_id, sequence),
     FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_managed_acceptance_transition_decision
@@ -685,6 +688,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_child
 CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_one_genesis
     ON managed_acceptance_decision_transition_receipts(decision_id)
     WHERE previous_transition_sha256 IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_sequence
+    ON managed_acceptance_decision_transition_receipts(decision_id, sequence);
 ";
 
 pub(super) const V33_DDL: &str = "
@@ -1806,6 +1811,8 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
     decision_id TEXT NOT NULL,
     tenant_id TEXT NOT NULL,
     decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    sequence INTEGER NOT NULL DEFAULT 1 CHECK (sequence >= 1),
+    previous_transition_sequence INTEGER CHECK (previous_transition_sequence IS NULL OR previous_transition_sequence >= 1),
     previous_transition_sha256 TEXT,
     transition_sha256 TEXT NOT NULL CHECK (length(transition_sha256) = 64),
     from_status TEXT NOT NULL,
@@ -1815,6 +1822,7 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
     receipt_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (decision_id, transition_sha256),
+    UNIQUE (decision_id, sequence),
     FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_managed_acceptance_transition_decision
@@ -2884,6 +2892,8 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
     decision_id TEXT NOT NULL,
     tenant_id TEXT NOT NULL,
     decision_body_sha256 TEXT NOT NULL CHECK (length(decision_body_sha256) = 64),
+    sequence BIGINT NOT NULL DEFAULT 1 CHECK (sequence >= 1),
+    previous_transition_sequence BIGINT CHECK (previous_transition_sequence IS NULL OR previous_transition_sequence >= 1),
     previous_transition_sha256 TEXT,
     transition_sha256 TEXT NOT NULL CHECK (length(transition_sha256) = 64),
     from_status TEXT NOT NULL,
@@ -2893,6 +2903,7 @@ CREATE TABLE IF NOT EXISTS managed_acceptance_decision_transition_receipts (
     receipt_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (decision_id, transition_sha256),
+    UNIQUE (decision_id, sequence),
     FOREIGN KEY(decision_id) REFERENCES managed_acceptance_decisions(decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_managed_acceptance_transition_decision

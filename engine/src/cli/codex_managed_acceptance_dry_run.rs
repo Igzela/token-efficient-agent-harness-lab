@@ -755,7 +755,7 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
         "dry_run": true,
     });
     let admitted = store
-        .admit_managed_acceptance_attempt(
+        .admit_managed_acceptance_attempt_for_test(
             &fixture_principal,
             &config.attempt_id,
             &attempt_body,

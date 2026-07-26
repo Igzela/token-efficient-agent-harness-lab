@@ -149,27 +149,27 @@ impl CodexExecutableIdentity {
 /// Pre-launch authority binding for one product-managed Codex execution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodexBudgetAuthority {
-    pub schema_version: String,
-    pub task_id: String,
-    pub workflow_node_id: String,
+    pub(crate) schema_version: String,
+    pub(crate) task_id: String,
+    pub(crate) workflow_node_id: String,
     /// Collision-resistant attempt identity (UUID-based). Only this attempt may
     /// resume its parent-owned journal.
-    pub execution_id: String,
-    pub executable: CodexExecutableIdentity,
-    pub provider: CodexProviderIdentity,
-    pub model: String,
+    pub(crate) execution_id: String,
+    pub(crate) executable: CodexExecutableIdentity,
+    pub(crate) provider: CodexProviderIdentity,
+    pub(crate) model: String,
     /// Hard total provider HTTP POSTs (including any Codex-internal retries).
-    pub max_provider_requests: u64,
+    pub(crate) max_provider_requests: u64,
     /// Declared separate retry axis. Codex does not label retries on the wire;
     /// enforcement is therefore partial (see mediation admission report).
-    pub max_retries: u64,
-    pub max_input_tokens_per_request: u64,
-    pub max_output_tokens_per_request: u64,
-    pub max_cumulative_tokens: u64,
-    pub max_cost_usd: Option<f64>,
-    pub timeout_ms: u64,
-    pub worktree: PathBuf,
-    pub expires_unix_ms: u64,
+    pub(crate) max_retries: u64,
+    pub(crate) max_input_tokens_per_request: u64,
+    pub(crate) max_output_tokens_per_request: u64,
+    pub(crate) max_cumulative_tokens: u64,
+    pub(crate) max_cost_usd: Option<f64>,
+    pub(crate) timeout_ms: u64,
+    pub(crate) worktree: PathBuf,
+    pub(crate) expires_unix_ms: u64,
 }
 
 impl CodexBudgetAuthority {
@@ -388,7 +388,7 @@ pub(crate) struct GatewayJournalOwnershipFacts {
 /// variant is intentionally explicit so dry-runs/tests cannot be mistaken for
 /// live ProductTask execution authority.
 #[derive(Debug, Clone)]
-pub struct CodexGatewayStartPermit {
+pub(crate) struct CodexGatewayStartPermit {
     execution_id: String,
     kind: CodexGatewayStartPermitKind,
 }
@@ -445,7 +445,7 @@ impl CodexBudgetGateway {
     ///
     /// `upstream_base_url` must exactly match `authority.provider.base_url` after
     /// normalization — environment substitution of provider identity is rejected.
-    pub fn start(
+    pub(crate) fn start(
         permit: CodexGatewayStartPermit,
         authority: CodexBudgetAuthority,
         upstream_base_url: &str,

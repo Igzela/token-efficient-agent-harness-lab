@@ -553,6 +553,7 @@ fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map(|row| row.get::<_, i64>(0))
         .map_err(|error| format!("failed to re-read version for migration 33: {error}"))?;
     if current_version >= version {
+        repair_pg_v32_transition_schema(&mut tx)?;
         repair_pg_v33_spend_schema(&mut tx)?;
         tx.commit()
             .map_err(|error| format!("failed to finish migration 33 repair: {error}"))?;
@@ -562,6 +563,7 @@ fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
         tx.batch_execute(schema::V33_DDL)
             .map_err(|error| format!("migration 33 failed: {error}"))?;
     }
+    repair_pg_v32_transition_schema(&mut tx)?;
     for (col, decl) in [
         ("spend_authorization_id", "TEXT"),
         ("lease_token", "TEXT"),
@@ -593,6 +595,43 @@ fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
     .map_err(|error| format!("failed to record migration {version}: {error}"))?;
     tx.commit()
         .map_err(|error| format!("failed to commit migration 33: {error}"))
+}
+
+fn repair_pg_v32_transition_schema(tx: &mut postgres::Transaction<'_>) -> Result<(), String> {
+    if !pg_table_present(tx, "managed_acceptance_decision_transition_receipts")? {
+        return Ok(());
+    }
+    if !pg_column_exists(
+        tx,
+        "managed_acceptance_decision_transition_receipts",
+        "sequence",
+    )? {
+        tx.batch_execute("ALTER TABLE managed_acceptance_decision_transition_receipts ADD COLUMN sequence BIGINT NOT NULL DEFAULT 1")
+            .map_err(|error| error.to_string())?;
+    }
+    if !pg_column_exists(
+        tx,
+        "managed_acceptance_decision_transition_receipts",
+        "previous_transition_sequence",
+    )? {
+        tx.batch_execute("ALTER TABLE managed_acceptance_decision_transition_receipts ADD COLUMN previous_transition_sequence BIGINT")
+            .map_err(|error| error.to_string())?;
+    }
+    tx.batch_execute(
+        "WITH numbered AS (
+             SELECT transition_receipt_id,
+                    row_number() OVER (PARTITION BY decision_id ORDER BY created_at, transition_receipt_id) AS sequence
+             FROM managed_acceptance_decision_transition_receipts
+         )
+         UPDATE managed_acceptance_decision_transition_receipts receipt
+         SET sequence = numbered.sequence,
+             previous_transition_sequence = CASE WHEN receipt.previous_transition_sha256 IS NULL THEN NULL ELSE numbered.sequence - 1 END
+         FROM numbered
+         WHERE receipt.transition_receipt_id = numbered.transition_receipt_id;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_transition_sequence
+         ON managed_acceptance_decision_transition_receipts(decision_id, sequence);",
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn repair_pg_v33_spend_schema(tx: &mut postgres::Transaction<'_>) -> Result<(), String> {

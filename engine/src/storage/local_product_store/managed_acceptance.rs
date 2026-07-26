@@ -513,6 +513,8 @@ fn decision_status_transition_receipt(
     tenant_id: &str,
     decision_body_sha256: &str,
     residual_finding_sha256: &str,
+    sequence: i64,
+    previous_transition_sequence: Option<i64>,
     previous_transition_sha256: Option<&str>,
     from_status: &str,
     to_status: &str,
@@ -526,6 +528,8 @@ fn decision_status_transition_receipt(
         "tenant_id": tenant_id,
         "decision_body_sha256": decision_body_sha256,
         "residual_finding_sha256": residual_finding_sha256,
+        "sequence": sequence,
+        "previous_transition_sequence": previous_transition_sequence,
         "previous_transition_sha256": previous_transition_sha256,
         "from_status": from_status,
         "to_status": to_status,
@@ -542,6 +546,7 @@ fn decision_status_transition_receipt(
             json!(format!("matr-{}", &transition_sha256[..24])),
         );
         map.insert("transition_sha256".into(), json!(transition_sha256));
+        map.insert("receipt_sha256".into(), json!(transition_sha256));
     }
     Ok(receipt)
 }
@@ -564,8 +569,10 @@ fn validate_managed_acceptance_decision_transition_chain(
     }
 
     struct TransitionRecord {
+        sequence: i64,
         from_status: String,
         to_status: String,
+        previous_transition_sequence: Option<i64>,
         previous_transition_sha256: Option<String>,
     }
 
@@ -589,6 +596,15 @@ fn validate_managed_acceptance_decision_transition_chain(
             }
         }
         let transition_sha256 = required_str(receipt, "transition_sha256")?;
+        if receipt.get("receipt_sha256").and_then(Value::as_str) != Some(transition_sha256.as_str())
+        {
+            return Err("managed Codex transition receipt hash alias is invalid".to_string());
+        }
+        let sequence = receipt
+            .get("sequence")
+            .and_then(Value::as_i64)
+            .filter(|value| *value >= 1)
+            .ok_or("managed Codex transition sequence is invalid")?;
         if transition_sha256.len() != 64
             || !transition_sha256
                 .bytes()
@@ -618,6 +634,7 @@ fn validate_managed_acceptance_decision_transition_chain(
         })?;
         body.remove("transition_receipt_id");
         body.remove("transition_sha256");
+        body.remove("receipt_sha256");
         if sha256_hex(canonical_json(&hash_body)?.as_bytes()) != transition_sha256 {
             return Err(
                 "managed Codex decision transition receipt hash does not match content".to_string(),
@@ -632,6 +649,25 @@ fn validate_managed_acceptance_decision_transition_chain(
                 return Err("managed Codex decision transition predecessor is malformed".to_string())
             }
         };
+        let previous_transition_sequence = match receipt.get("previous_transition_sequence") {
+            Some(Value::Null) | None => None,
+            Some(value) => Some(
+                value
+                    .as_i64()
+                    .filter(|sequence| *sequence >= 1)
+                    .ok_or("managed Codex transition predecessor sequence is invalid")?,
+            ),
+        };
+        if sequence == 1
+            && (previous_transition_sequence.is_some() || previous_transition_sha256.is_some())
+        {
+            return Err("genesis transition cannot have a predecessor".to_string());
+        }
+        if sequence > 1
+            && (previous_transition_sequence.is_none() || previous_transition_sha256.is_none())
+        {
+            return Err("non-genesis transition requires one predecessor".to_string());
+        }
         if !matches!(
             (from_status.as_str(), to_status.as_str()),
             ("draft_pending_operator", "operator_accepted") | ("operator_accepted", "revoked")
@@ -642,8 +678,10 @@ fn validate_managed_acceptance_decision_transition_chain(
             .insert(
                 transition_sha256,
                 TransitionRecord {
+                    sequence,
                     from_status,
                     to_status,
+                    previous_transition_sequence,
                     previous_transition_sha256,
                 },
             )
@@ -683,12 +721,16 @@ fn validate_managed_acceptance_decision_transition_chain(
     let mut visited = std::collections::BTreeSet::new();
     let mut current_hash = genesis.clone();
     let mut expected_from_status = "draft_pending_operator".to_string();
+    let mut expected_sequence = 1_i64;
     let latest_to_status = loop {
         let record = records
             .get(&current_hash)
             .ok_or_else(|| "managed Codex decision transition chain is malformed".to_string())?;
         if record.from_status != expected_from_status {
             return Err("managed Codex decision transition predecessor link is stale".to_string());
+        }
+        if record.sequence != expected_sequence {
+            return Err("managed Codex decision transition sequence is not contiguous".to_string());
         }
         if !visited.insert(current_hash.clone()) {
             return Err("managed Codex decision transition chain contains a cycle".to_string());
@@ -697,8 +739,18 @@ fn validate_managed_acceptance_decision_transition_chain(
         match children.get(&current_hash) {
             None => break latest,
             Some(next) if next.len() == 1 => {
+                let next_record = records.get(&next[0]).ok_or_else(|| {
+                    "managed Codex decision transition chain is malformed".to_string()
+                })?;
+                if next_record.previous_transition_sequence != Some(record.sequence) {
+                    return Err(
+                        "managed Codex decision transition predecessor sequence is stale"
+                            .to_string(),
+                    );
+                }
                 current_hash = next[0].clone();
                 expected_from_status = latest;
+                expected_sequence += 1;
             }
             Some(_) => return Err("managed Codex decision transition chain is forked".to_string()),
         }
@@ -730,20 +782,30 @@ fn persist_transition_sqlite(
     let residual_sha = required_str(decision, "residual_finding_sha256")?;
     let previous = tx
         .query_row(
-            "SELECT transition_sha256 FROM managed_acceptance_decision_transition_receipts
+            "SELECT sequence, transition_sha256 FROM managed_acceptance_decision_transition_receipts
              WHERE decision_id=?1 AND to_status=?2
-             ORDER BY created_at DESC, transition_receipt_id DESC LIMIT 1",
+             ORDER BY sequence DESC LIMIT 1",
             params![decision_id, from_status],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()
         .map_err(|error| error.to_string())?;
+    let (sequence, previous_transition_sequence, previous_transition_sha256) = match previous {
+        Some((previous_sequence, previous_hash)) => (
+            previous_sequence + 1,
+            Some(previous_sequence),
+            Some(previous_hash),
+        ),
+        None => (1, None, None),
+    };
     let receipt = decision_status_transition_receipt(
         &decision_id,
         &tenant_id,
         &decision_sha,
         &residual_sha,
-        previous.as_deref(),
+        sequence,
+        previous_transition_sequence,
+        previous_transition_sha256.as_deref(),
         from_status,
         to_status,
         principal,
@@ -755,16 +817,19 @@ fn persist_transition_sqlite(
     tx.execute(
         "INSERT INTO managed_acceptance_decision_transition_receipts (
             transition_receipt_id, decision_id, tenant_id, decision_body_sha256,
-            previous_transition_sha256, transition_sha256, from_status, to_status,
+            sequence, previous_transition_sequence, previous_transition_sha256,
+            transition_sha256, from_status, to_status,
             actor_principal_kind, actor_principal_id, receipt_json, created_at
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
          ON CONFLICT(decision_id, transition_sha256) DO NOTHING",
         params![
             receipt_id,
             decision_id,
             tenant_id,
             decision_sha,
-            previous,
+            sequence,
+            previous_transition_sequence,
+            previous_transition_sha256,
             transition_sha,
             from_status,
             to_status,
@@ -794,19 +859,29 @@ fn persist_transition_pg(
     let residual_sha = required_str(decision, "residual_finding_sha256")?;
     let previous = tx
         .query_opt(
-            "SELECT transition_sha256 FROM managed_acceptance_decision_transition_receipts
+            "SELECT sequence, transition_sha256 FROM managed_acceptance_decision_transition_receipts
              WHERE decision_id=$1 AND to_status=$2
-             ORDER BY created_at DESC, transition_receipt_id DESC LIMIT 1 FOR UPDATE",
+             ORDER BY sequence DESC LIMIT 1 FOR UPDATE",
             &[&decision_id, &from_status],
         )
         .map_err(|error| error.to_string())?
-        .map(|row| row.get::<_, String>(0));
+        .map(|row| (row.get::<_, i64>(0), row.get::<_, String>(1)));
+    let (sequence, previous_transition_sequence, previous_transition_sha256) = match previous {
+        Some((previous_sequence, previous_hash)) => (
+            previous_sequence + 1,
+            Some(previous_sequence),
+            Some(previous_hash),
+        ),
+        None => (1, None, None),
+    };
     let receipt = decision_status_transition_receipt(
         &decision_id,
         &tenant_id,
         &decision_sha,
         &residual_sha,
-        previous.as_deref(),
+        sequence,
+        previous_transition_sequence,
+        previous_transition_sha256.as_deref(),
         from_status,
         to_status,
         principal,
@@ -818,16 +893,19 @@ fn persist_transition_pg(
     tx.execute(
         "INSERT INTO managed_acceptance_decision_transition_receipts (
             transition_receipt_id, decision_id, tenant_id, decision_body_sha256,
-            previous_transition_sha256, transition_sha256, from_status, to_status,
+            sequence, previous_transition_sequence, previous_transition_sha256,
+            transition_sha256, from_status, to_status,
             actor_principal_kind, actor_principal_id, receipt_json, created_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          ON CONFLICT (decision_id, transition_sha256) DO NOTHING",
         &[
             &receipt_id,
             &decision_id,
             &tenant_id,
             &decision_sha,
-            &previous,
+            &sequence,
+            &previous_transition_sequence,
+            &previous_transition_sha256,
             &transition_sha,
             &from_status,
             &to_status,
@@ -1005,7 +1083,7 @@ impl LocalProductStore {
             }
         }
 
-        match &self.db {
+        let row = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                     .map_err(|e| e.to_string())?;
@@ -1108,7 +1186,8 @@ impl LocalProductStore {
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(row)
             }),
-        }
+        }?;
+        Ok(row)
     }
 
     /// Store-derived risk acceptance. Scope and expiry come from the persisted decision only.
@@ -1507,11 +1586,54 @@ impl LocalProductStore {
         allow_fixture_dry_run: bool,
     ) -> Result<Value, String> {
         principal.require_scope(SCOPE_ATTEMPT_ADMIT)?;
+        let row = self.admit_managed_acceptance_attempt_internal(
+            principal,
+            attempt_id,
+            attempt_body,
+            spend_authorization_id,
+            allow_fixture_dry_run,
+        )?;
+        if let Value::Object(mut object) = row {
+            object.remove("lease_token");
+            return Ok(Value::Object(object));
+        }
+        Ok(row)
+    }
+
+    /// Explicit provider-free test seam. The lease is intentionally available
+    /// only through this named fixture API; production/general reads are
+    /// redacted and the managed executor receives it only as an opaque lease.
+    #[doc(hidden)]
+    pub fn admit_managed_acceptance_attempt_for_test(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        attempt_id: &str,
+        attempt_body: &Value,
+        spend_authorization_id: &str,
+        allow_fixture_dry_run: bool,
+    ) -> Result<Value, String> {
+        self.admit_managed_acceptance_attempt_internal(
+            principal,
+            attempt_id,
+            attempt_body,
+            spend_authorization_id,
+            allow_fixture_dry_run,
+        )
+    }
+
+    fn admit_managed_acceptance_attempt_internal(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        attempt_id: &str,
+        attempt_body: &Value,
+        spend_authorization_id: &str,
+        allow_fixture_dry_run: bool,
+    ) -> Result<Value, String> {
         let body = sort_value(attempt_body);
         let attempt_body_sha256 = sha256_hex(canonical_json(&body)?.as_bytes());
         let now = self.now();
 
-        match &self.db {
+        let row = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                     .map_err(|e| e.to_string())?;
@@ -1548,6 +1670,42 @@ impl LocalProductStore {
                 )?;
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(row)
+            }),
+        }?;
+        self.attach_attempt_lease_token(row, attempt_id)
+    }
+
+    fn attach_attempt_lease_token(
+        &self,
+        mut row: Value,
+        attempt_id: &str,
+    ) -> Result<Value, String> {
+        let token = self.current_attempt_lease_token(attempt_id)?;
+        if let Value::Object(ref mut object) = row {
+            object.insert("lease_token".to_string(), json!(token));
+        }
+        Ok(row)
+    }
+
+    fn current_attempt_lease_token(&self, attempt_id: &str) -> Result<String, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT lease_token FROM managed_acceptance_attempts WHERE attempt_id=?1",
+                    params![attempt_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|e| e.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT lease_token FROM managed_acceptance_attempts WHERE attempt_id=$1",
+                        &[&attempt_id],
+                    )
+                    .map(|row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())
             }),
         }
     }
@@ -1589,6 +1747,9 @@ impl LocalProductStore {
                         },
                     )
                     .map_err(|e| e.to_string())?;
+                if current_lease.as_deref() != Some(lease_token) {
+                    return Err("lease_token mismatch; ownership lost or cancelled".into());
+                }
                 if matches!(
                     current.as_str(),
                     "succeeded" | "failed" | "cancelled" | "outcome_unknown" | "replayed"
@@ -1600,9 +1761,6 @@ impl LocalProductStore {
                         return load_attempt_sqlite(&tx, attempt_id);
                     }
                     return Err("late terminal write after attempt already terminal".into());
-                }
-                if current_lease.as_deref() != Some(lease_token) {
-                    return Err("lease_token mismatch; ownership lost or cancelled".into());
                 }
                 tx.execute(
                     "UPDATE managed_acceptance_attempts SET status=?1, terminal_class=?2, receipt_json=?3, receipt_sha256=?4, updated_at=?5 WHERE attempt_id=?6",
@@ -1638,6 +1796,9 @@ impl LocalProductStore {
                 let current_lease: Option<String> = row.get(1);
                 let current_receipt_sha: Option<String> = row.get(2);
                 let current_class: Option<String> = row.get(3);
+                if current_lease.as_deref() != Some(lease_token) {
+                    return Err("lease_token mismatch; ownership lost or cancelled".into());
+                }
                 if matches!(
                     current.as_str(),
                     "succeeded" | "failed" | "cancelled" | "outcome_unknown" | "replayed"
@@ -1649,9 +1810,6 @@ impl LocalProductStore {
                         return load_attempt_pg(&mut tx, attempt_id);
                     }
                     return Err("late terminal write after attempt already terminal".into());
-                }
-                if current_lease.as_deref() != Some(lease_token) {
-                    return Err("lease_token mismatch; ownership lost or cancelled".into());
                 }
                 tx.execute(
                     "UPDATE managed_acceptance_attempts SET status=$1, terminal_class=$2, receipt_json=$3, receipt_sha256=$4, updated_at=$5 WHERE attempt_id=$6",
@@ -1942,7 +2100,7 @@ impl LocalProductStore {
         allow_fixture_dry_run: bool,
     ) -> Result<ManagedCodexSpawnLease, String> {
         let prepared = self.prepare_managed_codex_spawn(facts, allow_fixture_dry_run)?;
-        let attempt = self.admit_managed_acceptance_attempt(
+        let attempt = self.admit_managed_acceptance_attempt_internal(
             &prepared.principal,
             &prepared.attempt_id,
             &prepared.attempt_body,
@@ -2044,9 +2202,13 @@ impl LocalProductStore {
                 .and_then(Value::as_str)
                 != Some(lease.spend_authorization_id.as_str())
             || attempt.get("status").and_then(Value::as_str) != Some("admitted")
-            || attempt.get("lease_token").and_then(Value::as_str)
-                != Some(lease.lease_token.as_str())
         {
+            return Err(
+                "managed Codex attempt lease is stale, terminal, or owned by another caller"
+                    .to_string(),
+            );
+        }
+        if self.current_attempt_lease_token(&lease.attempt_id)? != lease.lease_token {
             return Err(
                 "managed Codex attempt lease is stale, terminal, or owned by another caller"
                     .to_string(),
@@ -4556,7 +4718,7 @@ fn load_attempt_sqlite(conn: &rusqlite::Connection, attempt_id: &str) -> Result<
                 )?),
                 None => None,
             };
-            Ok(json!({
+            Ok(redact_lease_fields(json!({
                 "schema_version": "managed_acceptance_attempt.v1",
                 "attempt_id": row.get::<_, String>(0)?,
                 "tenant_id": row.get::<_, String>(1)?,
@@ -4573,11 +4735,10 @@ fn load_attempt_sqlite(conn: &rusqlite::Connection, attempt_id: &str) -> Result<
                 "body_json": body,
                 "receipt_json": receipt,
                 "receipt_sha256": row.get::<_, Option<String>>(14)?,
-                "lease_token": row.get::<_, Option<String>>(15)?,
                 "created_at": row.get::<_, String>(16)?,
                 "updated_at": row.get::<_, String>(17)?,
                 "idempotent_replay": false,
-            }))
+            })))
         },
     )
     .map_err(|e| e.to_string())
@@ -4604,7 +4765,7 @@ fn load_attempt_pg(
         .as_deref()
         .map(|raw| parse_managed_acceptance_json(raw, "attempt receipt_json"))
         .transpose()?;
-    Ok(json!({
+    Ok(redact_lease_fields(json!({
         "schema_version": "managed_acceptance_attempt.v1",
         "attempt_id": row.get::<_, String>(0),
         "tenant_id": row.get::<_, String>(1),
@@ -4621,11 +4782,28 @@ fn load_attempt_pg(
         "body_json": body,
         "receipt_json": receipt,
         "receipt_sha256": row.get::<_, Option<String>>(14),
-        "lease_token": row.get::<_, Option<String>>(15),
         "created_at": row.get::<_, String>(16),
         "updated_at": row.get::<_, String>(17),
         "idempotent_replay": false,
-    }))
+    })))
+}
+
+fn redact_lease_fields(mut value: Value) -> Value {
+    match &mut value {
+        Value::Object(object) => {
+            object.remove("lease_token");
+            for child in object.values_mut() {
+                *child = redact_lease_fields(std::mem::take(child));
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                *child = redact_lease_fields(std::mem::take(child));
+            }
+        }
+        _ => {}
+    }
+    value
 }
 
 #[cfg(test)]
@@ -4924,8 +5102,18 @@ mod tests {
                 .unwrap()["status"],
             "active"
         );
-        let a1 = store
+        let public_admission = store
             .admit_managed_acceptance_attempt(
+                &principal,
+                "attempt-1",
+                &attempt_body,
+                &spend_id,
+                true,
+            )
+            .unwrap();
+        assert!(public_admission.get("lease_token").is_none());
+        let a1 = store
+            .admit_managed_acceptance_attempt_for_test(
                 &principal,
                 "attempt-1",
                 &attempt_body,
@@ -4961,7 +5149,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(restarted_replay["idempotent_replay"], true);
-        assert_eq!(restarted_replay["lease_token"], lease);
+        assert!(restarted_replay.get("lease_token").is_none());
 
         // spend consumed — cannot re-admit different attempt
         let spend_row = store
@@ -5001,11 +5189,12 @@ mod tests {
             &json!({"ok": false}),
         );
         assert!(late.unwrap_err().contains("late terminal"));
-        // Exact terminal replay is allowed; different receipt must reject.
+        // Exact terminal replay requires the current lease; a reconstructed
+        // receipt with an arbitrary lease is not an authorized replay.
         let exact = store
             .complete_managed_acceptance_attempt(
                 "attempt-1",
-                "wrong-lease",
+                &lease,
                 "succeeded",
                 "succeeded_fixture",
                 &json!({"ok": true}),
@@ -5019,7 +5208,9 @@ mod tests {
             "succeeded_fixture",
             &json!({"ok": true, "extra": 1}),
         );
-        assert!(conflict_receipt.unwrap_err().contains("late terminal"));
+        assert!(conflict_receipt
+            .unwrap_err()
+            .contains("lease_token mismatch"));
         let restarted_terminal = restarted
             .get_managed_acceptance_attempt("attempt-1")
             .unwrap()
@@ -6061,6 +6252,8 @@ mod tests {
             "tenant-a",
             decision["decision_body_sha256"].as_str().unwrap(),
             &residual,
+            2,
+            Some(1),
             Some(&accepted_sha),
             "operator_accepted",
             "revoked",
@@ -6106,6 +6299,8 @@ mod tests {
             "tenant-a",
             decision["decision_body_sha256"].as_str().unwrap(),
             &residual,
+            1,
+            None,
             None,
             "draft_pending_operator",
             "operator_accepted",
