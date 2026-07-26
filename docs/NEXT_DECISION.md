@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-07-25.
+Last updated: 2026-07-26.
 
 ## Current Direction
 
@@ -48,12 +48,12 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 
 ## Open PR Coordination
 
-- PR #299 is the cumulative Golden Path authority review surface and supersedes #297/#298.
-- PR #300 is provider-free RWE preparation stacked on #299; it cannot establish a live baseline.
-- PR #301 is observation-only CC Switch adaptation; it does not close #299/#300 authority.
+- PR #299 is merged and accepted; it supersedes #297/#298, which should close without merge.
+- PR #300 is the next eligible provider-free surface and must be mechanically restacked onto accepted `main` before independent review; it cannot establish a live baseline.
+- PR #301 follows as observation-only CC Switch adaptation and must be mechanically restacked without importing authority.
 - PR #225 is presentation-only and remains last.
 
-The immediate engineering task is to finish the final heads of #299/#300/#301 without overwriting the main documentation convergence, obtain complete CI and independent review, and merge only accepted surfaces in dependency order.
+The immediate engineering task is to restack and independently accept #300, then mechanically restack and accept #301, before any separately authorized live Golden Path task. Do not begin live RWE or later stages.
 
 ## Evidence Required for Every Engineering Board
 
@@ -128,13 +128,15 @@ Stop before any of the following:
 - unreviewed schema migration or SQLite/PostgreSQL semantic divergence;
 - performance, cost, or learning claim without comparable evidence.
 
-## Packet PE7-PRODUCT-GOLDEN-PATH-1 — authority board and live residual seal
+## Packet PE7-PRODUCT-GOLDEN-PATH-1 — accepted authority and live residual seal
 
 **State:** `IN_PROGRESS`
 
-Current provider-free surfaces are #299 and observation support #301. #297/#298 are superseded. Completion requires final accepted provider-free authority plus one bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+**Owned PR:** #300
 
-The live task requires a separate current-session spend authorization and parent-only credential. No repository prompt or fixture result grants that authority.
+The provider-free authority foundation from PR #299 is merged and accepted. The current eligible work is a mechanical restack and independent review of provider-free PR #300, followed by the observation-only PR #301 restack. Completion still requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+
+The live task requires a separate current-session spend authorization and parent-only credential. No repository prompt, fixture result, or merged authority code grants that live authority.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 

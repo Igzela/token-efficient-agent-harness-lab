@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-07-25.
+Last updated: 2026-07-26.
 
 ## Verified Repository State
 
@@ -13,7 +13,7 @@ This document separates three states that must not be conflated:
 A new PR head invalidates earlier CI and review conclusions for that PR.
 
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
-- Accepted runtime baseline is merged through PR #296 plus its documentation seal.
+- Accepted runtime baseline is merged through PR #299 at schema v33, including store-owned managed-acceptance authority, one-use spend/attempt leases, durable transition receipts, and PostgreSQL restart repair.
 - Rust `engine/` and `LocalProductStore` remain the sole authorities for workflow state, scheduling, leases, retries, budgets, approvals, evidence, output reconciliation, audit, and persistence.
 - SQLite is the default store; PostgreSQL is the supported parity backend.
 - ProductTask remains the sole product budget owner.
@@ -30,17 +30,16 @@ These surfaces are not accepted truth and must not be merged independently when 
 
 | PR | Purpose | Current status |
 |---|---|---|
-| #299 | Cumulative Codex residual-admission, risk acknowledgement, one-use spend, owner-derived preflight, and managed-attempt authority | Open; supersedes #297/#298; requires final independent review and exact-head/full CI on its final unchanged head |
-| #300 | Provider-free first-RWE corpus, authorization, runner, and evidence preparation stacked on #299 | Open; must remain blocked until #299 authority is accepted; no live baseline exists |
-| #301 | CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification | Open; observation scope only; does not close #299/#300 authority; requires token-bucket/identity corrections and final CI |
-| #297/#298 | Earlier residual-admission and authority-decision slices | Superseded by #299; do not merge separately |
+| #300 | Provider-free first-RWE corpus, authorization, runner, and evidence preparation | Open; next eligible surface after mechanical restack onto accepted PR #299/main; no live baseline exists |
+| #301 | CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification | Open; mechanical restack required; observation scope only and no authority import |
+| #297/#298 | Earlier residual-admission and authority-decision slices | Superseded by merged PR #299; close without merge |
 | #225 | Presentation-only Dashboard work | Independent and last |
 
 No live provider request, live managed acceptance, or live RWE baseline is established by these open PRs.
 
 ## Current Product Verdict
 
-Product Golden Path is default-off and `IN_PROGRESS`.
+Product Golden Path authority is accepted through PR #299; the live managed task remains default-off and `IN_PROGRESS`.
 
 Fixture evidence proves the existing product sequence:
 
@@ -50,7 +49,7 @@ intake → worktree/source binding → executable graph → scheduler lease
 → separate output confirmation → acp/* Draft PR → terminal evidence
 ```
 
-The remaining product proof is one tightly bounded live managed coding task under an accepted authority decision, authenticated non-fixture principal, parent-only provider credential, one-use spend authorization, unchanged target `main`, Draft-PR-only output, and exact terminal evidence.
+The remaining product proof is one tightly bounded live managed coding task under the accepted authority decision, authenticated non-fixture principal, parent-only provider credential, one-use spend authorization, unchanged target `main`, Draft-PR-only output, and exact terminal evidence. Before that live task, PR #300 and PR #301 must be mechanically restacked and independently reconciled against the accepted PR #299 semantics.
 
 The residual technical risks remain explicit:
 
@@ -65,7 +64,7 @@ Therefore live acceptance is not blocked only by credential presence.
 
 | Stage | State | Entry requirement |
 |---|---|---|
-| Golden Path residual seal | `IN_PROGRESS` | Accept the final provider-free authority surface, then complete one bounded live managed task |
+| Golden Path residual seal | `AUTHORITY_ACCEPTED_LIVE_E2E_PENDING` | Restack/reconcile #300 and #301, then separately authorize one bounded live managed task |
 | First Real Workload Evidence | `BLOCKED_PREREQUISITE` | Accepted Golden Path terminal evidence plus a separately authorized RWE spend envelope |
 | Architecture Convergence AC1–AC7 | `BLOCKED_PREREQUISITE` | Frozen and independently accepted pre-convergence RWE baseline |
 | Same-corpus RWE replay | `BLOCKED_PREREQUISITE` | Architecture Convergence complete |
@@ -108,14 +107,14 @@ These engineering-cost dimensions are evidence for RWE replay and Level-2 decisi
 
 ## Active Tracks
 
-- Provider-free Golden Path authority: #299, open and under final independent review.
-- Provider-free RWE preparation: #300, stacked and blocked on accepted #299 authority.
-- Observation adaptation: #301, open and limited to evidence parsing/normalization.
+- Provider-free Golden Path authority: PR #299 merged and accepted at schema v33.
+- Provider-free RWE preparation: PR #300 is the next eligible mechanical-restack and independent-review surface.
+- Observation adaptation: PR #301 remains observation-only and requires mechanical restack after #300 reconciliation.
 - Live Golden Path, live RWE, Architecture Convergence, Level-2, and Meta remain blocked by their named prerequisites.
 
 ## Open Work Coordination
 
-PRs #297/#298 are superseded by #299 and must not merge separately. #300 must be updated onto the final accepted #299 semantics. #301 may remain an independent observation-only layer but must not introduce a second budget, proxy, credential, store, or authorization owner. PR #225 remains presentation-only and last.
+PRs #297/#298 are superseded by merged PR #299 and should close without merge. PR #300 must be mechanically restacked onto accepted `main` and independently reviewed before any live Golden Path task. PR #301 follows as an observation-only restack and must not introduce a second budget, proxy, credential, store, or authorization owner. PR #225 remains presentation-only and last.
 
 All active branches must refresh this main documentation convergence before final merge and must not overwrite it with stale branch-local status text.
 
