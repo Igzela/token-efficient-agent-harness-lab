@@ -1329,7 +1329,7 @@ impl LocalProductStore {
                     .prepare(
                         "SELECT receipt_json FROM managed_acceptance_decision_transition_receipts
                          WHERE decision_id=?1
-                         ORDER BY created_at ASC, transition_receipt_id ASC",
+                         ORDER BY sequence ASC, transition_receipt_id ASC",
                     )
                     .map_err(|error| error.to_string())?;
                 let rows = statement
@@ -1356,7 +1356,7 @@ impl LocalProductStore {
                     .query(
                         "SELECT receipt_json FROM managed_acceptance_decision_transition_receipts
                          WHERE decision_id=$1
-                         ORDER BY created_at ASC, transition_receipt_id ASC",
+                         ORDER BY sequence ASC, transition_receipt_id ASC",
                         &[&decision_id],
                     )
                     .map_err(|error| error.to_string())?
