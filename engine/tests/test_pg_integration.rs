@@ -6902,6 +6902,33 @@ fn pg_rwe_concurrent_terminalization_and_restart_without_lease() {
 }
 
 #[cfg(feature = "pg-tests")]
+fn count_advisory_lock_waiters(url: &str) -> i64 {
+    let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
+    let query = r#"
+        SELECT COUNT(*)
+        FROM pg_locks
+        WHERE locktype = 'advisory'
+          AND granted = false
+    "#;
+    client.query_one(query, &[]).unwrap().get(0)
+}
+
+#[cfg(feature = "pg-tests")]
+fn wait_for_advisory_lock_waiters(url: &str, expected_count: i64, timeout_ms: u64) -> bool {
+    let start = std::time::Instant::now();
+    let poll_interval = std::time::Duration::from_millis(10);
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+
+    while start.elapsed() < timeout {
+        if count_advisory_lock_waiters(url) >= expected_count {
+            return true;
+        }
+        std::thread::sleep(poll_interval);
+    }
+    false
+}
+
+#[cfg(feature = "pg-tests")]
 #[test]
 fn pg_rwe_attempt_then_terminalization_lock_ordering() {
     let Some(store) = test_store() else {
@@ -6957,17 +6984,14 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
     });
     let evidence_sha = hex::encode(Sha256::digest(aggregate.to_string().as_bytes()));
 
+    let lock_key = format!("rwer:{run_id}");
+
     let mut blocker_client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let mut blocker_tx = blocker_client.transaction().unwrap();
     blocker_tx
-        .execute(
-            "SELECT pg_advisory_xact_lock(hashtext($1))",
-            &[&format!("rwer:{run_id}")],
-        )
+        .execute("SELECT pg_advisory_xact_lock(hashtext($1))", &[&lock_key])
         .unwrap();
 
-    let attempt_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let ab_clone = std::sync::Arc::clone(&attempt_barrier);
     let url_a = url.clone();
     let run_id_a = run_id.clone();
     let lease_a = lease.clone();
@@ -6977,7 +7001,6 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
     let evidence_a = evidence.clone();
     let attempt_handle = thread::spawn(move || {
         let store = LocalProductStore::new_postgres(&url_a, utc_now_string).unwrap();
-        ab_clone.wait();
         store.persist_rwe_task_attempt(
             &run_id_a,
             &lease_a,
@@ -6989,10 +7012,11 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
         )
     });
 
-    attempt_barrier.wait();
+    assert!(
+        wait_for_advisory_lock_waiters(&url, 1, 5000),
+        "attempt-first: must observe attempt backend waiting on lock"
+    );
 
-    let term_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let tb_clone = std::sync::Arc::clone(&term_barrier);
     let url_t = url.clone();
     let run_id_t = run_id.clone();
     let lease_t = lease.clone();
@@ -7000,7 +7024,6 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
     let evidence_sha_t = evidence_sha.clone();
     let term_handle = thread::spawn(move || {
         let store = LocalProductStore::new_postgres(&url_t, utc_now_string).unwrap();
-        tb_clone.wait();
         store.complete_rwe_run(
             &run_id_t,
             &lease_t,
@@ -7010,7 +7033,10 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
         )
     });
 
-    term_barrier.wait();
+    assert!(
+        wait_for_advisory_lock_waiters(&url, 2, 5000),
+        "attempt-first: must observe both attempt and terminal backends waiting"
+    );
 
     blocker_tx.rollback().unwrap();
     drop(blocker_client);
@@ -7105,17 +7131,14 @@ fn pg_rwe_terminal_first_rejects_late_attempt() {
     });
     let evidence_sha = hex::encode(Sha256::digest(aggregate.to_string().as_bytes()));
 
+    let lock_key = format!("rwer:{run_id}");
+
     let mut blocker_client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let mut blocker_tx = blocker_client.transaction().unwrap();
     blocker_tx
-        .execute(
-            "SELECT pg_advisory_xact_lock(hashtext($1))",
-            &[&format!("rwer:{run_id}")],
-        )
+        .execute("SELECT pg_advisory_xact_lock(hashtext($1))", &[&lock_key])
         .unwrap();
 
-    let term_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let tb_clone = std::sync::Arc::clone(&term_barrier);
     let url_t = url.clone();
     let run_id_t = run_id.clone();
     let lease_t = lease.clone();
@@ -7123,7 +7146,6 @@ fn pg_rwe_terminal_first_rejects_late_attempt() {
     let evidence_sha_t = evidence_sha.clone();
     let term_handle = thread::spawn(move || {
         let store = LocalProductStore::new_postgres(&url_t, utc_now_string).unwrap();
-        tb_clone.wait();
         store.complete_rwe_run(
             &run_id_t,
             &lease_t,
@@ -7133,10 +7155,11 @@ fn pg_rwe_terminal_first_rejects_late_attempt() {
         )
     });
 
-    term_barrier.wait();
+    assert!(
+        wait_for_advisory_lock_waiters(&url, 1, 5000),
+        "terminal-first: must observe terminal backend waiting on lock"
+    );
 
-    let attempt_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let ab_clone = std::sync::Arc::clone(&attempt_barrier);
     let url_a = url.clone();
     let run_id_a = run_id.clone();
     let lease_a = lease.clone();
@@ -7146,7 +7169,6 @@ fn pg_rwe_terminal_first_rejects_late_attempt() {
     let evidence_a = evidence.clone();
     let attempt_handle = thread::spawn(move || {
         let store = LocalProductStore::new_postgres(&url_a, utc_now_string).unwrap();
-        ab_clone.wait();
         store.persist_rwe_task_attempt(
             &run_id_a,
             &lease_a,
@@ -7158,7 +7180,10 @@ fn pg_rwe_terminal_first_rejects_late_attempt() {
         )
     });
 
-    attempt_barrier.wait();
+    assert!(
+        wait_for_advisory_lock_waiters(&url, 2, 5000),
+        "terminal-first: must observe both terminal and attempt backends waiting"
+    );
 
     blocker_tx.rollback().unwrap();
     drop(blocker_client);
