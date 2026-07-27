@@ -6901,26 +6901,64 @@ fn pg_rwe_concurrent_terminalization_and_restart_without_lease() {
     assert!(err.contains("admitted") || err.contains("lease") || err.contains("current run"));
 }
 
+/// Append an application_name parameter to a PostgreSQL connection string.
 #[cfg(feature = "pg-tests")]
-fn count_advisory_lock_waiters(url: &str) -> i64 {
-    let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
-    let query = r#"
-        SELECT COUNT(*)
-        FROM pg_locks
-        WHERE locktype = 'advisory'
-          AND granted = false
-    "#;
-    client.query_one(query, &[]).unwrap().get(0)
+fn url_with_application_name(url: &str, app_name: &str) -> String {
+    if url.starts_with("postgres://") || url.starts_with("postgresql://") {
+        if url.contains('?') {
+            format!("{url}&application_name={app_name}")
+        } else {
+            format!("{url}?application_name={app_name}")
+        }
+    } else {
+        format!("{url} application_name={app_name}")
+    }
 }
 
+/// Observe a specific named backend waiting on a specific advisory lock key.
+/// Joins pg_stat_activity (by application_name) with pg_locks (by advisory lock key
+/// identity) so unrelated waiters cannot produce false positives.
 #[cfg(feature = "pg-tests")]
-fn wait_for_advisory_lock_waiters(url: &str, expected_count: i64, timeout_ms: u64) -> bool {
+fn is_named_backend_waiting_on_lock(observer_url: &str, app_name: &str, lock_key: &str) -> bool {
+    let mut client = postgres::Client::connect(observer_url, postgres::NoTls).unwrap();
+    let row = client
+        .query_one(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_locks l
+                JOIN pg_stat_activity a ON l.pid = a.pid
+                WHERE l.locktype = 'advisory'
+                  AND l.granted = false
+                  AND a.application_name = $1
+                  AND (
+                      l.classid, l.objid
+                  ) = (
+                      (hashtext($2)::bigint >> 32)::int,
+                      (hashtext($2)::bigint & 4294967295::bigint)::int
+                  )
+            )
+            "#,
+            &[&app_name, &lock_key],
+        )
+        .unwrap();
+    row.get::<_, bool>(0)
+}
+
+/// Poll until a specific named backend is observed waiting on the target advisory lock.
+#[cfg(feature = "pg-tests")]
+fn wait_for_named_waiter(
+    observer_url: &str,
+    app_name: &str,
+    lock_key: &str,
+    timeout_ms: u64,
+) -> bool {
     let start = std::time::Instant::now();
     let poll_interval = std::time::Duration::from_millis(10);
     let timeout = std::time::Duration::from_millis(timeout_ms);
 
     while start.elapsed() < timeout {
-        if count_advisory_lock_waiters(url) >= expected_count {
+        if is_named_backend_waiting_on_lock(observer_url, app_name, lock_key) {
             return true;
         }
         std::thread::sleep(poll_interval);
@@ -6985,6 +7023,8 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
     let evidence_sha = hex::encode(Sha256::digest(aggregate.to_string().as_bytes()));
 
     let lock_key = format!("rwer:{run_id}");
+    let attempt_app = format!("rwe-attempt-{tag}");
+    let terminal_app = format!("rwe-terminal-{tag}");
 
     let mut blocker_client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let mut blocker_tx = blocker_client.transaction().unwrap();
@@ -6992,7 +7032,7 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
         .execute("SELECT pg_advisory_xact_lock(hashtext($1))", &[&lock_key])
         .unwrap();
 
-    let url_a = url.clone();
+    let url_a = url_with_application_name(&url, &attempt_app);
     let run_id_a = run_id.clone();
     let lease_a = lease.clone();
     let attempt_id_a = attempt_id.clone();
@@ -7013,11 +7053,11 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
     });
 
     assert!(
-        wait_for_advisory_lock_waiters(&url, 1, 5000),
-        "attempt-first: must observe attempt backend waiting on lock"
+        wait_for_named_waiter(&url, &attempt_app, &lock_key, 5000),
+        "attempt-first: must observe attempt backend 'attempt' waiting on rwer lock"
     );
 
-    let url_t = url.clone();
+    let url_t = url_with_application_name(&url, &terminal_app);
     let run_id_t = run_id.clone();
     let lease_t = lease.clone();
     let aggregate_t = aggregate.clone();
@@ -7034,8 +7074,8 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
     });
 
     assert!(
-        wait_for_advisory_lock_waiters(&url, 2, 5000),
-        "attempt-first: must observe both attempt and terminal backends waiting"
+        wait_for_named_waiter(&url, &terminal_app, &lock_key, 5000),
+        "attempt-first: must observe terminal backend 'terminal' waiting on rwer lock"
     );
 
     blocker_tx.rollback().unwrap();
@@ -7132,6 +7172,8 @@ fn pg_rwe_terminal_first_rejects_late_attempt() {
     let evidence_sha = hex::encode(Sha256::digest(aggregate.to_string().as_bytes()));
 
     let lock_key = format!("rwer:{run_id}");
+    let terminal_app = format!("rwe-terminal-tf-{tag}");
+    let attempt_app = format!("rwe-attempt-tf-{tag}");
 
     let mut blocker_client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let mut blocker_tx = blocker_client.transaction().unwrap();
@@ -7139,7 +7181,7 @@ fn pg_rwe_terminal_first_rejects_late_attempt() {
         .execute("SELECT pg_advisory_xact_lock(hashtext($1))", &[&lock_key])
         .unwrap();
 
-    let url_t = url.clone();
+    let url_t = url_with_application_name(&url, &terminal_app);
     let run_id_t = run_id.clone();
     let lease_t = lease.clone();
     let aggregate_t = aggregate.clone();
@@ -7156,11 +7198,11 @@ fn pg_rwe_terminal_first_rejects_late_attempt() {
     });
 
     assert!(
-        wait_for_advisory_lock_waiters(&url, 1, 5000),
-        "terminal-first: must observe terminal backend waiting on lock"
+        wait_for_named_waiter(&url, &terminal_app, &lock_key, 5000),
+        "terminal-first: must observe terminal backend 'terminal' waiting on rwer lock"
     );
 
-    let url_a = url.clone();
+    let url_a = url_with_application_name(&url, &attempt_app);
     let run_id_a = run_id.clone();
     let lease_a = lease.clone();
     let attempt_id_a = attempt_id.clone();
@@ -7181,8 +7223,8 @@ fn pg_rwe_terminal_first_rejects_late_attempt() {
     });
 
     assert!(
-        wait_for_advisory_lock_waiters(&url, 2, 5000),
-        "terminal-first: must observe both terminal and attempt backends waiting"
+        wait_for_named_waiter(&url, &attempt_app, &lock_key, 5000),
+        "terminal-first: must observe attempt backend 'attempt' waiting on rwer lock"
     );
 
     blocker_tx.rollback().unwrap();
