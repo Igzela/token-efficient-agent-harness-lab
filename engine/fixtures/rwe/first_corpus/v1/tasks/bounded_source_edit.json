@@ -17,6 +17,8 @@
   "model_identity": "gpt-test-model",
   "per_task_max_provider_requests": 1,
   "per_task_max_retries": 0,
+  "per_task_max_input_tokens": 6000,
+  "per_task_max_output_tokens": 6000,
   "per_task_max_total_tokens": 12000,
   "deterministic_seed": 42,
   "cleanup_rules": ["remove_worktree", "delete_draft_branch_if_created", "preserve_journal"]

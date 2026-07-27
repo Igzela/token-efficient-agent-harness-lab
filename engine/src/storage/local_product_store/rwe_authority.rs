@@ -80,6 +80,19 @@ pub(crate) fn validate_rwe_corpus_envelope(body: &Value) -> Result<(), String> {
     if corpus_sha256 != corpus.corpus_sha256 {
         return Err("RWE authorization corpus_sha256 does not match frozen corpus".into());
     }
+    let auth_admitted_executor = required_string_field(body, "admitted_executor")?;
+    if auth_admitted_executor != corpus.admitted_executor {
+        return Err("RWE authorization admitted_executor does not match frozen corpus".into());
+    }
+    let auth_auto_merge_disabled = body
+        .get("auto_merge_disabled")
+        .and_then(Value::as_bool)
+        .ok_or("RWE authorization auto_merge_disabled required")?;
+    if auth_auto_merge_disabled != corpus.auto_merge_disabled || !auth_auto_merge_disabled {
+        return Err(
+            "RWE authorization auto_merge_disabled must be true and match frozen corpus".into(),
+        );
+    }
     let task_ids = body
         .get("task_ids")
         .and_then(Value::as_array)
@@ -152,6 +165,8 @@ pub(crate) fn validate_rwe_corpus_envelope(body: &Value) -> Result<(), String> {
         if requests != task.per_task_max_provider_requests
             || total_tokens != task.per_task_max_total_tokens
             || wall_ms != task.timeout_ms
+            || input_tokens != task.per_task_max_input_tokens
+            || output_tokens != task.per_task_max_output_tokens
             || input_tokens.saturating_add(output_tokens) != total_tokens
             || retries != task.per_task_max_retries
         {
@@ -274,8 +289,8 @@ impl RwePerTaskBudget {
         Self {
             task_id: task.task_id.clone(),
             max_provider_requests: task.per_task_max_provider_requests,
-            max_input_tokens: task.per_task_max_total_tokens / 2,
-            max_output_tokens: task.per_task_max_total_tokens / 2,
+            max_input_tokens: task.per_task_max_input_tokens,
+            max_output_tokens: task.per_task_max_output_tokens,
             max_total_tokens: task.per_task_max_total_tokens,
             max_wall_time_ms: task.timeout_ms,
             max_retries: task.per_task_max_retries,
@@ -348,6 +363,8 @@ pub struct RweAuthorizationIssueRequest {
     pub executor_identity: String,
     pub model_identity: String,
     pub draft_pr_only: bool,
+    pub admitted_executor: String,
+    pub auto_merge_disabled: bool,
     pub expires_at: String,
     pub fixture_only: bool,
 }
@@ -543,6 +560,12 @@ impl LocalProductStore {
         if !request.draft_pr_only {
             return Err("draft_pr_only required".into());
         }
+        if request.admitted_executor.trim().is_empty() {
+            return Err("admitted_executor required".into());
+        }
+        if !request.auto_merge_disabled {
+            return Err("auto_merge_disabled required".into());
+        }
         if request.max_total_provider_requests == 0
             || request.max_total_tokens == 0
             || request.max_wall_time_ms == 0
@@ -642,6 +665,8 @@ impl LocalProductStore {
             "executor_identity": request.executor_identity,
             "model_identity": request.model_identity,
             "draft_pr_only": request.draft_pr_only,
+            "admitted_executor": request.admitted_executor,
+            "auto_merge_disabled": request.auto_merge_disabled,
             "one_use": true,
             "fixture_only": fixture_only,
             "expires_at": expires_at,
@@ -1192,6 +1217,11 @@ impl LocalProductStore {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
                 tx.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    &[&format!("rwer:{run_id}")],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
                     &[&format!("rweta:{task_attempt_id}")],
                 )
                 .map_err(|e| e.to_string())?;
@@ -1600,6 +1630,8 @@ fn validate_rwe_auth_for_admit(
         "max_wall_time_ms",
         "golden_path_product_task_id",
         "draft_pr_only",
+        "admitted_executor",
+        "auto_merge_disabled",
         "task_ids",
         "cost_authority",
         "per_task_budgets",
@@ -1833,6 +1865,8 @@ mod authority_regression_tests {
             "executor_identity": corpus.tasks[0].executor_identity,
             "model_identity": corpus.tasks[0].model_identity,
             "draft_pr_only": true,
+            "admitted_executor": corpus.admitted_executor,
+            "auto_merge_disabled": corpus.auto_merge_disabled,
             "golden_path_product_task_id": "gp-task",
         })
     }
@@ -1859,6 +1893,8 @@ mod authority_regression_tests {
             executor_identity: "codex_cli".into(),
             model_identity: "gpt-test-model".into(),
             draft_pr_only: true,
+            admitted_executor: "codex-cli-api-key-mediated".into(),
+            auto_merge_disabled: true,
             expires_at: "2026-08-01T00:00:00Z".into(),
             fixture_only: false,
         }
@@ -2093,5 +2129,80 @@ mod authority_regression_tests {
         }
         // 5 tasks * 1.0 = 5.0 <= 10.0
         assert!(validate_rwe_corpus_envelope(&consistent).is_ok());
+    }
+
+    #[test]
+    fn frozen_corpus_rejects_input_output_swap_with_same_total() {
+        let valid = valid_corpus_body();
+        validate_rwe_corpus_envelope(&valid).unwrap();
+
+        let mut input_up_output_down = valid.clone();
+        let b0 = &mut input_up_output_down["per_task_budgets"][0];
+        let orig_input = b0["max_input_tokens"].as_u64().unwrap();
+        let orig_output = b0["max_output_tokens"].as_u64().unwrap();
+        let delta = 1000_u64;
+        b0["max_input_tokens"] = json!(orig_input + delta);
+        b0["max_output_tokens"] = json!(orig_output - delta);
+        assert!(validate_rwe_corpus_envelope(&input_up_output_down).is_err());
+
+        let mut output_up_input_down = valid;
+        let b0 = &mut output_up_input_down["per_task_budgets"][0];
+        let orig_input = b0["max_input_tokens"].as_u64().unwrap();
+        let orig_output = b0["max_output_tokens"].as_u64().unwrap();
+        b0["max_input_tokens"] = json!(orig_input - delta);
+        b0["max_output_tokens"] = json!(orig_output + delta);
+        assert!(validate_rwe_corpus_envelope(&output_up_input_down).is_err());
+    }
+
+    #[test]
+    fn corpus_fixture_rejects_input_output_total_inconsistency() {
+        use crate::rwe::corpus::freeze_first_rwe_corpus_from_root;
+        let dir = tempfile::tempdir().unwrap();
+        let tasks_dir = dir.path().join("tasks");
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+        let mut bad = serde_json::from_str::<Value>(
+            &std::fs::read_to_string(
+                crate::rwe::corpus::default_corpus_fixture_root()
+                    .join("tasks/bounded_source_edit.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        bad["per_task_max_input_tokens"] = json!(9999);
+        bad["per_task_max_output_tokens"] = json!(6000);
+        std::fs::write(tasks_dir.join("bounded_source_edit.json"), bad.to_string()).unwrap();
+        for name in [
+            "controlled_cancellation",
+            "docs_code_sync",
+            "focused_bug_repair",
+            "small_test_addition",
+        ] {
+            std::fs::copy(
+                crate::rwe::corpus::default_corpus_fixture_root()
+                    .join(format!("tasks/{name}.json")),
+                tasks_dir.join(format!("{name}.json")),
+            )
+            .unwrap();
+        }
+        let err = freeze_first_rwe_corpus_from_root(dir.path()).unwrap_err();
+        assert!(
+            err.contains("per_task_max_input_tokens") || err.contains("per_task_max_total_tokens")
+        );
+    }
+
+    #[test]
+    fn envelope_rejects_admitted_executor_mismatch() {
+        let mut body = valid_corpus_body();
+        body["admitted_executor"] = json!("rogue-executor");
+        let err = validate_rwe_corpus_envelope(&body).unwrap_err();
+        assert!(err.contains("admitted_executor"), "{err}");
+    }
+
+    #[test]
+    fn envelope_rejects_auto_merge_disabled_false() {
+        let mut body = valid_corpus_body();
+        body["auto_merge_disabled"] = json!(false);
+        let err = validate_rwe_corpus_envelope(&body).unwrap_err();
+        assert!(err.contains("auto_merge_disabled"), "{err}");
     }
 }

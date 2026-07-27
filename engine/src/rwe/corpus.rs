@@ -34,6 +34,8 @@ pub struct RweTaskDefinition {
     pub model_identity: String,
     pub per_task_max_provider_requests: u64,
     pub per_task_max_retries: u64,
+    pub per_task_max_input_tokens: u64,
+    pub per_task_max_output_tokens: u64,
     pub per_task_max_total_tokens: u64,
     pub deterministic_seed: u64,
     pub cleanup_rules: Vec<String>,
@@ -99,6 +101,8 @@ impl RweTaskDefinition {
             "model_identity": self.model_identity,
             "per_task_max_provider_requests": self.per_task_max_provider_requests,
             "per_task_max_retries": self.per_task_max_retries,
+            "per_task_max_input_tokens": self.per_task_max_input_tokens,
+            "per_task_max_output_tokens": self.per_task_max_output_tokens,
             "per_task_max_total_tokens": self.per_task_max_total_tokens,
             "deterministic_seed": self.deterministic_seed,
             "cleanup_rules": self.cleanup_rules,
@@ -204,10 +208,59 @@ pub fn freeze_first_rwe_corpus_from_root(root: &Path) -> Result<FirstRweCorpus, 
                 .get("per_task_max_retries")
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
-            per_task_max_total_tokens: v
-                .get("per_task_max_total_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(12_000),
+            per_task_max_input_tokens: {
+                let val = v
+                    .get("per_task_max_input_tokens")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| {
+                        format!("{}: per_task_max_input_tokens required", path.display())
+                    })?;
+                if val == 0 {
+                    return Err(format!(
+                        "{}: per_task_max_input_tokens must be positive",
+                        path.display()
+                    ));
+                }
+                val
+            },
+            per_task_max_output_tokens: {
+                let val = v
+                    .get("per_task_max_output_tokens")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| {
+                        format!("{}: per_task_max_output_tokens required", path.display())
+                    })?;
+                if val == 0 {
+                    return Err(format!(
+                        "{}: per_task_max_output_tokens must be positive",
+                        path.display()
+                    ));
+                }
+                val
+            },
+            per_task_max_total_tokens: {
+                let val = v
+                    .get("per_task_max_total_tokens")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| {
+                        format!("{}: per_task_max_total_tokens required", path.display())
+                    })?;
+                let input = v
+                    .get("per_task_max_input_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let output = v
+                    .get("per_task_max_output_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if input.saturating_add(output) != val {
+                    return Err(format!(
+                        "{}: per_task_max_input_tokens + per_task_max_output_tokens must equal per_task_max_total_tokens",
+                        path.display()
+                    ));
+                }
+                val
+            },
             deterministic_seed: v
                 .get("deterministic_seed")
                 .and_then(Value::as_u64)

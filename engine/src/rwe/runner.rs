@@ -38,6 +38,8 @@ pub struct RweRunAuthorizationBody {
     pub executor_identity: String,
     pub model_identity: String,
     pub draft_pr_only: bool,
+    pub admitted_executor: String,
+    pub auto_merge_disabled: bool,
     pub expires_at: String,
 }
 
@@ -67,6 +69,8 @@ impl RweRunAuthorizationBody {
             "executor_identity": self.executor_identity,
             "model_identity": self.model_identity,
             "draft_pr_only": self.draft_pr_only,
+            "admitted_executor": self.admitted_executor,
+            "auto_merge_disabled": self.auto_merge_disabled,
             "one_use": true,
             "expires_at": self.expires_at,
         })
@@ -197,6 +201,8 @@ pub fn persist_rwe_run_authorization(
             executor_identity: body.executor_identity.clone(),
             model_identity: body.model_identity.clone(),
             draft_pr_only: body.draft_pr_only,
+            admitted_executor: body.admitted_executor.clone(),
+            auto_merge_disabled: body.auto_merge_disabled,
             expires_at: body.expires_at.clone(),
             fixture_only,
         },
@@ -243,6 +249,8 @@ pub fn run_provider_free_rwe(
         "max_wall_time_ms": auth_body.get("max_wall_time_ms"),
         "golden_path_product_task_id": auth_body.get("golden_path_product_task_id"),
         "draft_pr_only": auth_body.get("draft_pr_only"),
+        "admitted_executor": auth_body.get("admitted_executor"),
+        "auto_merge_disabled": auth_body.get("auto_merge_disabled"),
         "provider_free_fixture": allow_fixture,
     }));
 
@@ -417,6 +425,8 @@ mod tests {
             executor_identity: "codex-0.145.0".into(),
             model_identity: "gpt-test-model".into(),
             draft_pr_only: true,
+            admitted_executor: corpus.admitted_executor.clone(),
+            auto_merge_disabled: corpus.auto_merge_disabled,
             expires_at: expires_at.into(),
         }
     }
@@ -618,5 +628,57 @@ mod tests {
             err.contains("not active") || err.contains("revok") || err.contains("expired"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn admit_rejects_admitted_executor_and_auto_merge_mutation() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("rwe-boundary.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-rwe-b", "fixture-principal-b")
+                .unwrap();
+        let corpus = freeze_first_rwe_corpus().unwrap();
+
+        let body_ok = fixture_auth_body(
+            "rwe-boundary-auth-ok",
+            &principal,
+            &corpus,
+            "2026-08-01T00:00:00Z",
+        );
+        persist_rwe_run_authorization(&store, &principal, &body_ok, true).unwrap();
+        let mut run_body_ok = body_ok.to_json();
+        run_body_ok["run_id"] = json!("rwe-boundary-run-ok");
+        run_body_ok["provider_free_fixture"] = json!(true);
+        let admitted = store
+            .admit_rwe_run(
+                &principal,
+                "rwe-boundary-run-ok",
+                "rwe-boundary-auth-ok",
+                &run_body_ok,
+                true,
+            )
+            .unwrap();
+        assert!(admitted.get("lease_token").is_some());
+
+        let mut body_exec = fixture_auth_body(
+            "rwe-boundary-auth-exec",
+            &principal,
+            &corpus,
+            "2026-08-01T00:00:00Z",
+        );
+        body_exec.admitted_executor = "rogue-executor".into();
+        assert!(persist_rwe_run_authorization(&store, &principal, &body_exec, true).is_err());
+
+        let mut body_merge = fixture_auth_body(
+            "rwe-boundary-auth-merge",
+            &principal,
+            &corpus,
+            "2026-08-01T00:00:00Z",
+        );
+        body_merge.auto_merge_disabled = false;
+        assert!(persist_rwe_run_authorization(&store, &principal, &body_merge, true).is_err());
     }
 }
