@@ -54,7 +54,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 
 ## Open PR Coordination
 
-- PR #299 is merged and accepted; it supersedes #297/#298, which should close without merge.
+- PR #299 is merged and accepted; superseded PRs #297/#298 are closed without merge.
 - PR #300 is the current earliest eligible provider-free surface and cannot establish a live baseline.
 - PR #301 follows as observation-only CC Switch adaptation and must be mechanically restacked without importing authority.
 - PR #225 is presentation-only and remains last.
