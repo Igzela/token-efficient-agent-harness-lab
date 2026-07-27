@@ -33,8 +33,9 @@ These surfaces are not accepted truth and must not be merged independently when 
 |---|---|---|
 | #300 | Provider-free first-RWE corpus, authorization, runner, and evidence preparation | Open; current earliest eligible packet; no live baseline exists |
 | #301 | CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification | Open; blocked until #300 is accepted; observation scope only and no authority import |
-| #297/#298 | Earlier residual-admission and authority-decision slices | Superseded by merged PR #299; close without merge |
 | #225 | Presentation-only Dashboard work | Independent and last |
+
+PR #297 and #298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304.
 
 No live provider request, live managed acceptance, or live RWE baseline is established by these open PRs.
 
@@ -118,7 +119,7 @@ These engineering-cost dimensions are evidence for RWE replay and Level-2 decisi
 
 ## Open Work Coordination
 
-PRs #297/#298 are superseded by merged PR #299 and should close without merge. Complete and independently accept PR #300 first; PR #301 follows as an observation-only restack and must not introduce a second budget, proxy, credential, store, or authorization owner. After #301, implement the bounded context-capsule automation packet before any live Golden Path task. PR #225 remains presentation-only and last.
+PRs #297/#298 are closed without merge as superseded by merged PR #299. Complete and independently accept PR #300 first; PR #301 follows as an observation-only restack and must not introduce a second budget, proxy, credential, store, or authorization owner. After #301, implement the bounded context-capsule automation packet before any live Golden Path task. PR #225 remains presentation-only and last.
 
 All active branches must refresh this main documentation convergence before final merge and must not overwrite it with stale branch-local status text.
 
