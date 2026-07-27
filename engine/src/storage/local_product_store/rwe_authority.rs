@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{append_audit_locked, AuthenticatedPrincipal, DatabaseConnection, LocalProductStore};
+use crate::rwe::corpus::freeze_first_rwe_corpus;
 
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -37,6 +38,98 @@ fn sort_value(value: &Value) -> Value {
 
 fn canonical_json(value: &Value) -> Result<String, String> {
     Ok(sort_value(value).to_string())
+}
+
+fn required_string_field<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("RWE corpus authorization missing non-empty {field}"))
+}
+
+fn required_u64_field(value: &Value, field: &str) -> Result<u64, String> {
+    value
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("RWE corpus authorization missing numeric {field}"))
+}
+
+/// The frozen corpus is the authority for task order and per-task budgets. This is checked
+/// at issue and admission so a caller cannot authorize a subset while the runner executes the
+/// complete corpus.
+pub(crate) fn validate_rwe_corpus_envelope(body: &Value) -> Result<(), String> {
+    let corpus = freeze_first_rwe_corpus()?;
+    let corpus_sha256 = required_string_field(body, "corpus_sha256")?;
+    if corpus_sha256 != corpus.corpus_sha256 {
+        return Err("RWE authorization corpus_sha256 does not match frozen corpus".into());
+    }
+    let task_ids = body
+        .get("task_ids")
+        .and_then(Value::as_array)
+        .ok_or("RWE authorization task_ids array required")?;
+    let canonical_task_ids = corpus
+        .tasks
+        .iter()
+        .map(|task| task.task_id.as_str())
+        .collect::<Vec<_>>();
+    let observed_task_ids = task_ids
+        .iter()
+        .map(|id| {
+            id.as_str()
+                .ok_or("RWE authorization task_ids must contain strings")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if observed_task_ids != canonical_task_ids {
+        return Err("RWE authorization task_ids must exactly match frozen corpus order".into());
+    }
+
+    let budgets = body
+        .get("per_task_budgets")
+        .and_then(Value::as_array)
+        .ok_or("RWE authorization per_task_budgets array required")?;
+    if budgets.len() != corpus.tasks.len() {
+        return Err("RWE authorization must contain exactly one budget per corpus task".into());
+    }
+    let mut aggregate_requests = 0_u64;
+    let mut aggregate_tokens = 0_u64;
+    let mut aggregate_wall_ms = 0_u64;
+    for (budget, task) in budgets.iter().zip(&corpus.tasks) {
+        if required_string_field(budget, "task_id")? != task.task_id {
+            return Err("RWE per-task budgets must follow frozen corpus order".into());
+        }
+        let requests = required_u64_field(budget, "max_provider_requests")?;
+        let input_tokens = required_u64_field(budget, "max_input_tokens")?;
+        let output_tokens = required_u64_field(budget, "max_output_tokens")?;
+        let total_tokens = required_u64_field(budget, "max_total_tokens")?;
+        let wall_ms = required_u64_field(budget, "max_wall_time_ms")?;
+        if requests != task.per_task_max_provider_requests
+            || total_tokens != task.per_task_max_total_tokens
+            || wall_ms != task.timeout_ms
+            || input_tokens.saturating_add(output_tokens) != total_tokens
+        {
+            return Err(format!(
+                "RWE budget does not exactly match frozen corpus task {}",
+                task.task_id
+            ));
+        }
+        aggregate_requests = aggregate_requests
+            .checked_add(requests)
+            .ok_or("RWE aggregate provider-request budget overflow")?;
+        aggregate_tokens = aggregate_tokens
+            .checked_add(total_tokens)
+            .ok_or("RWE aggregate token budget overflow")?;
+        aggregate_wall_ms = aggregate_wall_ms
+            .checked_add(wall_ms)
+            .ok_or("RWE aggregate wall-time budget overflow")?;
+    }
+    if required_u64_field(body, "max_total_provider_requests")? != aggregate_requests
+        || required_u64_field(body, "max_total_tokens")? != aggregate_tokens
+        || required_u64_field(body, "max_wall_time_ms")? != aggregate_wall_ms
+    {
+        return Err("RWE aggregate budgets do not match frozen corpus budgets".into());
+    }
+    Ok(())
 }
 
 /// Per-task budget bound into the RWE authorization envelope.
@@ -70,7 +163,9 @@ impl RwePerTaskBudget {
 pub struct RweAuthorizationIssueRequest {
     pub authorization_id: String,
     pub corpus_sha256: String,
-    pub golden_path_terminal_evidence_id: String,
+    /// Canonical ProductTask ID owned by product_task_terminal_evidence.
+    /// This is intentionally not an evidence_id alias.
+    pub golden_path_product_task_id: String,
     pub task_ids: Vec<String>,
     pub max_total_provider_requests: u64,
     pub max_total_tokens: u64,
@@ -149,10 +244,10 @@ fn validate_golden_path_terminal_evidence(
         .pointer("/verification/status")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if !trustworthy && verification_status != "evidence_recorded" && verification_status != "passed"
-    {
+    if !trustworthy || !matches!(verification_status, "accepted" | "passed") {
         return Err(
-            "golden_path_terminal_evidence verification is not independently accepted".into(),
+            "golden_path_terminal_evidence requires trustworthy accepted/passed verification"
+                .into(),
         );
     }
     let approval_id = ev
@@ -162,33 +257,71 @@ fn validate_golden_path_terminal_evidence(
     if approval_id.is_empty() {
         return Err("golden_path_terminal_evidence missing independent approval identity".into());
     }
-    // Identity match: evidence id / product_task_id / main SHA / executor / model.
+    // The owner lookup contract is ProductTask ID; evidence_id remains a separate
+    // canonical receipt identity and is never accepted as an alias.
     let evidence_id = ev.get("evidence_id").and_then(Value::as_str).unwrap_or("");
-    let product_task_id = ev
+    if evidence_id.is_empty() {
+        return Err("golden_path_terminal_evidence missing evidence_id".into());
+    }
+    let ev_product_task_id = ev
         .get("product_task_id")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let gp_id = request.golden_path_terminal_evidence_id.trim();
-    if gp_id != evidence_id && gp_id != product_task_id {
-        return Err("golden_path_terminal_evidence_id does not match evidence identity".into());
+    let requested_product_task_id = request.golden_path_product_task_id.trim();
+    if requested_product_task_id != ev_product_task_id {
+        return Err("golden_path_product_task_id does not match ProductTask identity".into());
     }
-    if let Some(src) = ev.get("source_revision").and_then(Value::as_str) {
-        if !src.is_empty() && src != request.target_main_sha {
-            return Err(
-                "golden_path_terminal_evidence source_revision mismatches target_main_sha".into(),
-            );
-        }
-    }
-    if let Some(exec) = ev
-        .pointer("/node/managed_executor_identity")
+    let source_revision = ev
+        .get("source_revision")
         .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
+        .filter(|value| !value.is_empty())
+        .ok_or("golden_path_terminal_evidence source_revision required")?;
+    if source_revision != request.target_main_sha {
+        return Err(
+            "golden_path_terminal_evidence source_revision mismatches target_main_sha".into(),
+        );
+    }
+    let identity = ev
+        .pointer("/node/managed_executor_identity")
+        .and_then(Value::as_object)
+        .ok_or("golden_path_terminal_evidence managed_executor_identity object required")?;
+    if identity.get("schema_version").and_then(Value::as_str)
+        != Some("managed_executor_identity.v1")
+        || identity.get("executor_type").and_then(Value::as_str)
+            != Some(request.executor_identity.as_str())
+        || identity.get("model").and_then(Value::as_str) != Some(request.model_identity.as_str())
+        || identity.get("binary_path").and_then(Value::as_str) != Some(request.binary_path.as_str())
+        || identity.get("binary_version").and_then(Value::as_str)
+            != Some(request.binary_version.as_str())
+        || identity.get("binary_sha256").and_then(Value::as_str)
+            != Some(request.binary_sha256.as_str())
+        || identity.get("provider_kind").and_then(Value::as_str)
+            != Some(request.provider_kind.as_str())
+        || identity.get("provider_host").and_then(Value::as_str)
+            != Some(request.provider_host.as_str())
+        || identity.get("provider_base_url").and_then(Value::as_str)
+            != Some(request.provider_base_url.as_str())
     {
-        if exec != request.executor_identity {
-            return Err(
-                "golden_path_terminal_evidence executor identity mismatch vs authorization".into(),
-            );
-        }
+        return Err(
+            "golden_path_terminal_evidence executor/provider/binary/model identity mismatch".into(),
+        );
+    }
+    if ev.pointer("/output/intent").and_then(Value::as_str) != Some("draft_pr") {
+        return Err("golden_path_terminal_evidence output intent is not draft_pr".into());
+    }
+    let draft_pr = ev
+        .pointer("/output/draft_pr")
+        .and_then(Value::as_object)
+        .ok_or("golden_path_terminal_evidence draft_pr output target required")?;
+    if draft_pr.get("repository").and_then(Value::as_str) != Some(request.target_repo.as_str())
+        || draft_pr.get("base_branch").and_then(Value::as_str) != Some("main")
+        || draft_pr.get("draft").and_then(Value::as_bool) != Some(true)
+        || draft_pr
+            .get("head_sha")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+    {
+        return Err("golden_path_terminal_evidence draft_pr target mismatch".into());
     }
     Ok(())
 }
@@ -296,21 +429,19 @@ impl LocalProductStore {
         }
         let _ = super::CostAuthority::from_json(&request.cost_authority.to_json())?;
         // Bind / verify Golden Path terminal evidence (live requires full acceptance proof).
-        if request.golden_path_terminal_evidence_id.trim().is_empty() {
-            return Err("golden_path_terminal_evidence_id required".into());
+        if request.golden_path_product_task_id.trim().is_empty() {
+            return Err("golden_path_product_task_id required".into());
         }
         if !fixture_only {
-            let te = self.get_product_task_terminal_evidence(
-                request.golden_path_terminal_evidence_id.trim(),
-            );
+            let te =
+                self.get_product_task_terminal_evidence(request.golden_path_product_task_id.trim());
             match te {
                 Ok(ev) if !ev.is_null() => {
                     validate_golden_path_terminal_evidence(&ev, request)?;
                 }
                 _ => {
                     return Err(
-                        "golden_path_terminal_evidence_id not found in terminal-evidence owner"
-                            .into(),
+                        "golden_path_product_task_id not found in terminal-evidence owner".into(),
                     );
                 }
             }
@@ -326,7 +457,7 @@ impl LocalProductStore {
             "authorization_id": request.authorization_id,
             "tenant_id": principal.tenant_id(),
             "corpus_sha256": request.corpus_sha256,
-            "golden_path_terminal_evidence_id": request.golden_path_terminal_evidence_id,
+            "golden_path_product_task_id": request.golden_path_product_task_id,
             "principal_id": principal.principal_id(),
             "principal_kind": principal.principal_kind().as_str(),
             "task_ids": request.task_ids,
@@ -350,6 +481,7 @@ impl LocalProductStore {
             "fixture_only": fixture_only,
             "expires_at": expires_at,
         }));
+        validate_rwe_corpus_envelope(&body_json)?;
         let body_sha256 = sha256_hex(canonical_json(&body_json)?.as_bytes());
         self.insert_rwe_run_authorization_owned(
             principal.tenant_id(),
@@ -628,6 +760,16 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?
                 {
                     let existing = load_rwe_run_sqlite(&tx, run_id)?;
+                    let auth = load_rwe_auth_sqlite(&tx, authorization_id)?;
+                    validate_existing_rwe_run_replay(
+                        &existing,
+                        &auth,
+                        principal,
+                        authorization_id,
+                        allow_fixture,
+                        &body,
+                        &run_body_sha256,
+                    )?;
                     return exact_run_replay_or_conflict(&existing, &run_body_sha256);
                 }
                 let auth = load_rwe_auth_sqlite(&tx, authorization_id)?;
@@ -713,6 +855,16 @@ impl LocalProductStore {
                     .is_some()
                 {
                     let existing = load_rwe_run_pg(&mut tx, run_id)?;
+                    let auth = load_rwe_auth_pg(&mut tx, authorization_id)?;
+                    validate_existing_rwe_run_replay(
+                        &existing,
+                        &auth,
+                        principal,
+                        authorization_id,
+                        allow_fixture,
+                        &body,
+                        &run_body_sha256,
+                    )?;
                     return exact_run_replay_or_conflict(&existing, &run_body_sha256);
                 }
                 let auth = load_rwe_auth_pg(&mut tx, authorization_id)?;
@@ -798,6 +950,8 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                     .map_err(|e| e.to_string())?;
+                let run = load_rwe_run_sqlite(&tx, run_id)?;
+                validate_current_rwe_run_lease(&run, run_id, lease_token)?;
                 if let Some((
                     existing_run,
                     existing_task,
@@ -840,20 +994,6 @@ impl LocalProductStore {
                         "idempotent_replay": true,
                     }));
                 }
-                let run = load_rwe_run_sqlite(&tx, run_id)?;
-                let status = run.get("status").and_then(Value::as_str).unwrap_or("");
-                if status != "admitted" {
-                    return Err(format!(
-                        "cannot persist task attempt on run status {status}"
-                    ));
-                }
-                let expected_lease = run
-                    .pointer("/evidence_json/admit_state/lease_token")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                if expected_lease.is_empty() || expected_lease != lease_token {
-                    return Err("RWE task-attempt write requires current run lease/owner".into());
-                }
                 tx.execute(
                     "INSERT INTO rwe_task_attempts (
                         task_attempt_id, run_id, task_id, definition_sha256, classification,
@@ -885,6 +1025,8 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                let run = load_rwe_run_pg(&mut tx, run_id)?;
+                validate_current_rwe_run_lease(&run, run_id, lease_token)?;
                 if let Some(row) = tx
                     .query_opt(
                         "SELECT run_id, task_id, definition_sha256, classification, evidence_sha256
@@ -915,20 +1057,6 @@ impl LocalProductStore {
                         "classification": classification,
                         "idempotent_replay": true,
                     }));
-                }
-                let run = load_rwe_run_pg(&mut tx, run_id)?;
-                let status = run.get("status").and_then(Value::as_str).unwrap_or("");
-                if status != "admitted" {
-                    return Err(format!(
-                        "cannot persist task attempt on run status {status}"
-                    ));
-                }
-                let expected_lease = run
-                    .pointer("/evidence_json/admit_state/lease_token")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                if expected_lease.is_empty() || expected_lease != lease_token {
-                    return Err("RWE task-attempt write requires current run lease/owner".into());
                 }
                 tx.execute(
                     "INSERT INTO rwe_task_attempts (
@@ -1141,32 +1269,96 @@ fn exact_run_replay_or_conflict(existing: &Value, run_body_sha256: &str) -> Resu
                 .pointer("/evidence_json/run_body_sha256")
                 .and_then(Value::as_str)
         });
-    if let Some(sha) = existing_sha {
-        if sha != run_body_sha256 {
-            return Err("conflicting RWE run body reuse".into());
-        }
-    } else if existing.get("status").and_then(Value::as_str) != Some("admitted")
-        && existing.get("status").and_then(Value::as_str) != Some("fixture_complete")
-    {
-        return Err("conflicting RWE run reuse without admit body identity".into());
+    if existing_sha != Some(run_body_sha256) {
+        return Err("conflicting RWE run body reuse or missing body identity".into());
     }
-    // Current-owner context only: surface lease when run is still admitted.
-    let mut row = existing.clone();
+    let mut row = redact_lease_from_run_view(existing.clone());
     if let Value::Object(ref mut m) = row {
         m.insert("idempotent_replay".into(), json!(true));
-        if existing.get("status").and_then(Value::as_str) == Some("admitted") {
-            if let Some(lease) = existing
-                .pointer("/evidence_json/admit_state/lease_token")
-                .cloned()
-            {
-                m.insert("lease_token".into(), lease);
-            }
-        } else {
-            // Terminal runs: never re-expose lease via admit replay.
-            m.remove("lease_token");
-        }
     }
     Ok(row)
+}
+
+fn validate_existing_rwe_run_replay(
+    existing: &Value,
+    auth: &Value,
+    principal: &AuthenticatedPrincipal,
+    authorization_id: &str,
+    allow_fixture: bool,
+    run_body: &Value,
+    run_body_sha256: &str,
+) -> Result<(), String> {
+    let run_id = existing
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("existing RWE run missing run_id")?;
+    if auth.get("authorization_id").and_then(Value::as_str) != Some(authorization_id)
+        || existing.get("authorization_id").and_then(Value::as_str) != Some(authorization_id)
+    {
+        return Err("RWE existing-run replay authorization identity mismatch".into());
+    }
+    if auth.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id())
+        || existing.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id())
+    {
+        return Err("RWE existing-run replay tenant mismatch".into());
+    }
+    if auth.get("principal_id").and_then(Value::as_str) != Some(principal.principal_id())
+        || existing.get("principal_id").and_then(Value::as_str) != Some(principal.principal_id())
+        || auth.get("principal_kind").and_then(Value::as_str)
+            != Some(principal.principal_kind().as_str())
+    {
+        return Err("RWE existing-run replay principal/owner mismatch".into());
+    }
+    if auth.get("status").and_then(Value::as_str) != Some("consumed")
+        || auth.get("consumed_by_run_id").and_then(Value::as_str) != Some(run_id)
+    {
+        return Err("RWE existing-run replay authorization is not consumed by this run".into());
+    }
+    if auth.get("fixture_only").and_then(Value::as_bool) != Some(allow_fixture) {
+        return Err("RWE existing-run replay fixture/live state mismatch".into());
+    }
+    if !matches!(
+        existing.get("status").and_then(Value::as_str),
+        Some("admitted")
+            | Some("fixture_complete")
+            | Some("succeeded")
+            | Some("failed")
+            | Some("cancelled")
+            | Some("outcome_unknown")
+    ) {
+        return Err("RWE existing-run replay current state is not replayable".into());
+    }
+    let auth_body = auth
+        .get("body_json")
+        .ok_or("RWE existing-run replay authorization body missing")?;
+    validate_rwe_corpus_envelope(auth_body)?;
+    if run_body.get("authorization_id").and_then(Value::as_str) != Some(authorization_id) {
+        return Err("RWE existing-run replay body authorization mismatch".into());
+    }
+    if sha256_hex(canonical_json(run_body)?.as_bytes()) != run_body_sha256 {
+        return Err("RWE existing-run replay body hash mismatch".into());
+    }
+    Ok(())
+}
+
+fn validate_current_rwe_run_lease(
+    run: &Value,
+    run_id: &str,
+    lease_token: &str,
+) -> Result<(), String> {
+    if run.get("run_id").and_then(Value::as_str) != Some(run_id)
+        || run.get("status").and_then(Value::as_str) != Some("admitted")
+    {
+        return Err("RWE task-attempt write requires an admitted current run".into());
+    }
+    let expected_lease = run
+        .pointer("/evidence_json/admit_state/lease_token")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if expected_lease.is_empty() || expected_lease != lease_token {
+        return Err("RWE task-attempt write requires current run lease/owner".into());
+    }
+    Ok(())
 }
 
 fn validate_rwe_auth_for_admit(
@@ -1218,6 +1410,7 @@ fn validate_rwe_auth_for_admit(
         }
     }
     let body = auth.get("body_json").cloned().unwrap_or(Value::Null);
+    validate_rwe_corpus_envelope(&body)?;
     // Complete envelope vs run body — every authority field is mandatory.
     for field in [
         "corpus_sha256",
@@ -1228,7 +1421,7 @@ fn validate_rwe_auth_for_admit(
         "max_total_provider_requests",
         "max_total_tokens",
         "max_wall_time_ms",
-        "golden_path_terminal_evidence_id",
+        "golden_path_product_task_id",
         "draft_pr_only",
         "task_ids",
         "cost_authority",
@@ -1425,4 +1618,185 @@ fn load_rwe_run_pg(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod authority_regression_tests {
+    use super::*;
+
+    fn valid_corpus_body() -> Value {
+        let corpus = freeze_first_rwe_corpus().unwrap();
+        let task_ids = corpus
+            .tasks
+            .iter()
+            .map(|task| json!(task.task_id))
+            .collect::<Vec<_>>();
+        let budgets = corpus
+            .tasks
+            .iter()
+            .map(|task| {
+                json!({
+                    "task_id": task.task_id,
+                    "max_provider_requests": task.per_task_max_provider_requests,
+                    "max_input_tokens": task.per_task_max_total_tokens / 2,
+                    "max_output_tokens": task.per_task_max_total_tokens / 2,
+                    "max_total_tokens": task.per_task_max_total_tokens,
+                    "max_wall_time_ms": task.timeout_ms,
+                    "max_cost": null,
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "corpus_sha256": corpus.corpus_sha256,
+            "task_ids": task_ids,
+            "per_task_budgets": budgets,
+            "max_total_provider_requests": corpus.tasks.iter().map(|t| t.per_task_max_provider_requests).sum::<u64>(),
+            "max_total_tokens": corpus.tasks.iter().map(|t| t.per_task_max_total_tokens).sum::<u64>(),
+            "max_wall_time_ms": corpus.tasks.iter().map(|t| t.timeout_ms).sum::<u64>(),
+        })
+    }
+
+    fn request() -> RweAuthorizationIssueRequest {
+        RweAuthorizationIssueRequest {
+            authorization_id: "auth-1".into(),
+            corpus_sha256: "a".repeat(64),
+            golden_path_product_task_id: "product-task-1".into(),
+            task_ids: vec!["task-1".into()],
+            max_total_provider_requests: 1,
+            max_total_tokens: 12_000,
+            max_wall_time_ms: 180_000,
+            cost_authority: super::super::CostAuthority::CostUnavailable,
+            per_task_budgets: Vec::new(),
+            binary_path: "/usr/bin/codex".into(),
+            binary_version: "0.145.0".into(),
+            binary_sha256: "b".repeat(64),
+            provider_kind: "openai_compatible".into(),
+            provider_host: "api.openai.com".into(),
+            provider_base_url: "https://api.openai.com/v1".into(),
+            target_repo: "org/disposable".into(),
+            target_main_sha: "c".repeat(40),
+            executor_identity: "codex_cli".into(),
+            model_identity: "gpt-test-model".into(),
+            draft_pr_only: true,
+            expires_at: "2026-08-01T00:00:00Z".into(),
+            fixture_only: false,
+        }
+    }
+
+    fn evidence() -> Value {
+        json!({
+            "schema_version": "product_task_terminal_evidence.v2",
+            "evidence_id": "evidence-1",
+            "product_task_id": "product-task-1",
+            "task_status": "completed",
+            "node": {
+                "executor_class": "managed_coding",
+                "managed_executor_identity": {
+                    "schema_version": "managed_executor_identity.v1",
+                    "executor_type": "codex_cli",
+                    "binary_path": "/usr/bin/codex",
+                    "binary_version": "0.145.0",
+                    "binary_sha256": "b".repeat(64),
+                    "model": "gpt-test-model",
+                    "provider_kind": "openai_compatible",
+                    "provider_host": "api.openai.com",
+                    "provider_base_url": "https://api.openai.com/v1"
+                }
+            },
+            "source_revision": "c".repeat(40),
+            "verification": {"trustworthy": true, "status": "passed"},
+            "approval": {"approval_id": "approval-1"},
+            "output": {
+                "intent": "draft_pr",
+                "draft_pr": {
+                    "number": 1,
+                    "repository": "org/disposable",
+                    "base_branch": "main",
+                    "head_branch": "acp/product-task-1",
+                    "head_sha": "d".repeat(40),
+                    "draft": true
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn terminal_evidence_requires_trustworthy_and_accepted_status() {
+        let mut ev = evidence();
+        ev["verification"]["trustworthy"] = json!(false);
+        assert!(validate_golden_path_terminal_evidence(&ev, &request()).is_err());
+        ev["verification"]["trustworthy"] = json!(true);
+        ev["verification"]["status"] = json!("failed");
+        assert!(validate_golden_path_terminal_evidence(&ev, &request()).is_err());
+    }
+
+    #[test]
+    fn terminal_evidence_requires_object_identity_and_full_binding() {
+        let mut ev = evidence();
+        ev["node"]["managed_executor_identity"]["executor_type"] = json!("wrong");
+        assert!(validate_golden_path_terminal_evidence(&ev, &request()).is_err());
+        let mut ev = evidence();
+        ev["node"]["managed_executor_identity"]["provider_base_url"] =
+            json!("https://wrong.invalid/v1");
+        assert!(validate_golden_path_terminal_evidence(&ev, &request()).is_err());
+        let mut ev = evidence();
+        ev["output"]["draft_pr"]["repository"] = json!("org/other");
+        assert!(validate_golden_path_terminal_evidence(&ev, &request()).is_err());
+    }
+
+    #[test]
+    fn terminal_evidence_id_contract_is_product_task_id_only() {
+        let mut ev = evidence();
+        ev["product_task_id"] = json!("different-task");
+        assert!(validate_golden_path_terminal_evidence(&ev, &request()).is_err());
+    }
+
+    #[test]
+    fn frozen_corpus_rejects_subset_extra_duplicate_and_reordered_authority() {
+        let valid = valid_corpus_body();
+        validate_rwe_corpus_envelope(&valid).unwrap();
+
+        let mut subset = valid.clone();
+        subset["task_ids"] = json!([valid["task_ids"][0]]);
+        assert!(validate_rwe_corpus_envelope(&subset).is_err());
+
+        let mut extra = valid.clone();
+        extra["task_ids"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("extra"));
+        assert!(validate_rwe_corpus_envelope(&extra).is_err());
+
+        let mut duplicate = valid.clone();
+        let first = duplicate["task_ids"][0].clone();
+        duplicate["task_ids"].as_array_mut().unwrap()[1] = first;
+        assert!(validate_rwe_corpus_envelope(&duplicate).is_err());
+
+        let mut reordered = valid.clone();
+        reordered["task_ids"].as_array_mut().unwrap().swap(0, 1);
+        assert!(validate_rwe_corpus_envelope(&reordered).is_err());
+        let mut reordered_budgets = valid.clone();
+        reordered_budgets["per_task_budgets"]
+            .as_array_mut()
+            .unwrap()
+            .swap(0, 1);
+        assert!(validate_rwe_corpus_envelope(&reordered_budgets).is_err());
+    }
+
+    #[test]
+    fn frozen_corpus_rejects_duplicate_or_missing_budgets_and_wrong_aggregate() {
+        let valid = valid_corpus_body();
+        let mut duplicate = valid.clone();
+        let first = duplicate["per_task_budgets"][0].clone();
+        duplicate["per_task_budgets"].as_array_mut().unwrap()[1] = first;
+        assert!(validate_rwe_corpus_envelope(&duplicate).is_err());
+
+        let mut missing = valid.clone();
+        missing["per_task_budgets"].as_array_mut().unwrap().pop();
+        assert!(validate_rwe_corpus_envelope(&missing).is_err());
+
+        let mut wrong = valid;
+        wrong["max_total_tokens"] = json!(1);
+        assert!(validate_rwe_corpus_envelope(&wrong).is_err());
+    }
 }

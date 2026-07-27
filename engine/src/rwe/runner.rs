@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::corpus::{freeze_first_rwe_corpus, FirstRweCorpus, RWE_CORPUS_SCHEMA};
+use crate::storage::local_product_store::validate_rwe_corpus_envelope;
 use crate::storage::local_product_store::{
     AuthenticatedPrincipal, CostAuthority, LocalProductStore, RweAuthorizationIssueRequest,
     RwePerTaskBudget, SCOPE_SPEND_AUTHORIZE,
@@ -17,7 +18,7 @@ pub const RWE_RUN_EVIDENCE_SCHEMA: &str = "rwe_run_evidence.v1";
 pub struct RweRunAuthorizationBody {
     pub authorization_id: String,
     pub corpus_sha256: String,
-    pub golden_path_terminal_evidence_id: String,
+    pub golden_path_product_task_id: String,
     pub principal_id: String,
     pub principal_kind: String,
     pub task_ids: Vec<String>,
@@ -46,7 +47,7 @@ impl RweRunAuthorizationBody {
             "schema_version": RWE_RUN_AUTH_SCHEMA,
             "authorization_id": self.authorization_id,
             "corpus_sha256": self.corpus_sha256,
-            "golden_path_terminal_evidence_id": self.golden_path_terminal_evidence_id,
+            "golden_path_product_task_id": self.golden_path_product_task_id,
             "principal_id": self.principal_id,
             "principal_kind": self.principal_kind,
             "task_ids": self.task_ids,
@@ -178,7 +179,7 @@ pub fn persist_rwe_run_authorization(
         &RweAuthorizationIssueRequest {
             authorization_id: body.authorization_id.clone(),
             corpus_sha256: body.corpus_sha256.clone(),
-            golden_path_terminal_evidence_id: body.golden_path_terminal_evidence_id.clone(),
+            golden_path_product_task_id: body.golden_path_product_task_id.clone(),
             task_ids: body.task_ids.clone(),
             max_total_provider_requests: body.max_total_provider_requests,
             max_total_tokens: body.max_total_tokens,
@@ -217,6 +218,7 @@ pub fn run_provider_free_rwe(
         .get_rwe_run_authorization(authorization_id)?
         .ok_or_else(|| "RWE authorization not found".to_string())?;
     let auth_body = auth.get("body_json").cloned().unwrap_or(Value::Null);
+    validate_rwe_corpus_envelope(&auth_body)?;
 
     let run_body = sort_value(&json!({
         "schema_version": "rwe_run_body.v1",
@@ -239,7 +241,7 @@ pub fn run_provider_free_rwe(
         "max_total_provider_requests": auth_body.get("max_total_provider_requests"),
         "max_total_tokens": auth_body.get("max_total_tokens"),
         "max_wall_time_ms": auth_body.get("max_wall_time_ms"),
-        "golden_path_terminal_evidence_id": auth_body.get("golden_path_terminal_evidence_id"),
+        "golden_path_product_task_id": auth_body.get("golden_path_product_task_id"),
         "draft_pr_only": auth_body.get("draft_pr_only"),
         "provider_free_fixture": allow_fixture,
     }));
@@ -277,6 +279,20 @@ pub fn run_provider_free_rwe(
         .ok_or("admit missing lease_token")?
         .to_string();
 
+    // The store has admitted the exact frozen corpus envelope; dispatch only that canonical
+    // ordered task set, never a caller-declared subset or an independently reconstructed set.
+    let authorized_task_ids = auth_body
+        .get("task_ids")
+        .and_then(Value::as_array)
+        .ok_or("admitted RWE authorization missing canonical task_ids")?;
+    if authorized_task_ids.len() != corpus.tasks.len()
+        || authorized_task_ids
+            .iter()
+            .zip(&corpus.tasks)
+            .any(|(id, task)| id.as_str() != Some(task.task_id.as_str()))
+    {
+        return Err("admitted RWE authorization does not cover canonical corpus".into());
+    }
     let mut task_results = Vec::new();
     let mut total_requests = 0u64;
     for task in &corpus.tasks {
@@ -389,7 +405,7 @@ mod tests {
         RweRunAuthorizationBody {
             authorization_id: auth_id.into(),
             corpus_sha256: corpus.corpus_sha256.clone(),
-            golden_path_terminal_evidence_id: "gp-terminal-fixture".into(),
+            golden_path_product_task_id: "gp-terminal-fixture".into(),
             principal_id: principal.principal_id().into(),
             principal_kind: principal.principal_kind().as_str().into(),
             task_ids,
@@ -472,6 +488,119 @@ mod tests {
             &json!({"different": true}),
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn rwe_authority_rejects_foreign_replay_and_requires_lease_before_attempt_replay() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("rwe-authority.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let principal =
+            AuthenticatedPrincipal::fixture_for_tests("tenant-rwe-auth", "fixture-principal-owner")
+                .unwrap();
+        let foreign = AuthenticatedPrincipal::fixture_for_tests(
+            "tenant-rwe-foreign",
+            "fixture-principal-foreign",
+        )
+        .unwrap();
+        let corpus = freeze_first_rwe_corpus().unwrap();
+        let auth_id = "rwe-authority-auth";
+        let body = fixture_auth_body(auth_id, &principal, &corpus, "2026-08-01T00:00:00Z");
+        persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+        let mut run_body = body.to_json();
+        run_body["run_id"] = json!("rwe-authority-run");
+        run_body["provider_free_fixture"] = json!(true);
+        let admitted = store
+            .admit_rwe_run(&principal, "rwe-authority-run", auth_id, &run_body, true)
+            .unwrap();
+        let lease = admitted["lease_token"].as_str().unwrap().to_string();
+
+        let foreign_err = store
+            .admit_rwe_run(&foreign, "rwe-authority-run", auth_id, &run_body, true)
+            .unwrap_err();
+        assert!(foreign_err.contains("tenant") || foreign_err.contains("principal"));
+        assert!(store
+            .admit_rwe_run(
+                &principal,
+                "rwe-authority-run",
+                "wrong-authorization",
+                &run_body,
+                true,
+            )
+            .is_err());
+        let mut conflicting_body = run_body.clone();
+        conflicting_body["task_ids"] = json!([corpus.tasks[0].task_id]);
+        assert!(store
+            .admit_rwe_run(
+                &principal,
+                "rwe-authority-run",
+                auth_id,
+                &conflicting_body,
+                true,
+            )
+            .is_err());
+
+        let evidence = json!({"task_id": corpus.tasks[0].task_id, "replay": true});
+        assert!(store
+            .persist_rwe_task_attempt(
+                "rwe-authority-run",
+                "stale-lease",
+                "rwe-authority-attempt",
+                &corpus.tasks[0].task_id,
+                &corpus.tasks[0].definition_sha256,
+                "fixture_success",
+                &evidence,
+            )
+            .is_err());
+        let first = store
+            .persist_rwe_task_attempt(
+                "rwe-authority-run",
+                &lease,
+                "rwe-authority-attempt",
+                &corpus.tasks[0].task_id,
+                &corpus.tasks[0].definition_sha256,
+                "fixture_success",
+                &evidence,
+            )
+            .unwrap();
+        assert_eq!(first["idempotent_replay"], false);
+        assert!(store
+            .persist_rwe_task_attempt(
+                "rwe-authority-run",
+                "stale-lease",
+                "rwe-authority-attempt",
+                &corpus.tasks[0].task_id,
+                &corpus.tasks[0].definition_sha256,
+                "fixture_success",
+                &evidence,
+            )
+            .is_err());
+        let replay = store
+            .persist_rwe_task_attempt(
+                "rwe-authority-run",
+                &lease,
+                "rwe-authority-attempt",
+                &corpus.tasks[0].task_id,
+                &corpus.tasks[0].definition_sha256,
+                "fixture_success",
+                &evidence,
+            )
+            .unwrap();
+        assert_eq!(replay["idempotent_replay"], true);
+
+        let replayed = store
+            .admit_rwe_run(&principal, "rwe-authority-run", auth_id, &run_body, true)
+            .unwrap();
+        assert_eq!(replayed["idempotent_replay"], true);
+        assert!(replayed.get("lease_token").is_none());
+        assert!(store
+            .get_rwe_run("rwe-authority-run")
+            .unwrap()
+            .unwrap()
+            .get("lease_token")
+            .is_none());
     }
 
     #[test]

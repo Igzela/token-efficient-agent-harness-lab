@@ -43,13 +43,18 @@ use engine::provider::embedding::{
 #[cfg(feature = "pg-tests")]
 use engine::provider::transport::{HttpError, HttpRequest, HttpResponse, HttpTransport};
 #[cfg(feature = "pg-tests")]
+use engine::rwe::corpus::freeze_first_rwe_corpus;
+#[cfg(feature = "pg-tests")]
+use engine::rwe::runner::{persist_rwe_run_authorization, RweRunAuthorizationBody};
+#[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::BudgetAutoPausePolicy;
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::{
     AuthenticatedPrincipal, CostAuthority, DurableMemoryCreate, DurableMemoryRevision,
     ExternalRuntimeInvocationClaim, ExternalRuntimeScope, LocalProductStore,
     MemoryRetrievalRequest, MemoryScope, ProviderEmbeddingResolutionAction,
-    ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, SpendAuthorizationRequest,
+    ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, RwePerTaskBudget,
+    SpendAuthorizationRequest,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -6311,4 +6316,149 @@ fn pg_external_runtime_receipts_are_concurrent_restart_safe_and_scope_bound() {
             .count(),
         1
     );
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_authority_rejects_foreign_replay_and_stale_task_attempt_replay() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-{tag}");
+    let owner = format!("fixture-principal-owner-{tag}");
+    let foreign_tenant = format!("foreign-tenant-rwe-{tag}");
+    let foreign_owner = format!("fixture-principal-foreign-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(&tenant, &owner).unwrap();
+    let foreign =
+        AuthenticatedPrincipal::fixture_for_tests(&foreign_tenant, &foreign_owner).unwrap();
+    let corpus = freeze_first_rwe_corpus().unwrap();
+    let authorization_id = format!("rwe-pg-auth-{tag}");
+    let budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget {
+            task_id: task.task_id.clone(),
+            max_provider_requests: task.per_task_max_provider_requests,
+            max_input_tokens: task.per_task_max_total_tokens / 2,
+            max_output_tokens: task.per_task_max_total_tokens / 2,
+            max_total_tokens: task.per_task_max_total_tokens,
+            max_wall_time_ms: task.timeout_ms,
+            max_cost: None,
+        })
+        .collect::<Vec<_>>();
+    let body = RweRunAuthorizationBody {
+        authorization_id: authorization_id.clone(),
+        corpus_sha256: corpus.corpus_sha256.clone(),
+        golden_path_product_task_id: "pg-fixture-product-task".into(),
+        principal_id: principal.principal_id().into(),
+        principal_kind: principal.principal_kind().as_str().into(),
+        task_ids: corpus
+            .tasks
+            .iter()
+            .map(|task| task.task_id.clone())
+            .collect(),
+        max_total_provider_requests: corpus
+            .tasks
+            .iter()
+            .map(|task| task.per_task_max_provider_requests)
+            .sum(),
+        max_total_tokens: corpus
+            .tasks
+            .iter()
+            .map(|task| task.per_task_max_total_tokens)
+            .sum(),
+        max_wall_time_ms: corpus.tasks.iter().map(|task| task.timeout_ms).sum(),
+        cost_authority: CostAuthority::CostUnavailable,
+        per_task_budgets: budgets,
+        binary_path: "/usr/bin/codex".into(),
+        binary_version: "0.145.0".into(),
+        binary_sha256: "ab".repeat(32),
+        provider_kind: "openai_compatible".into(),
+        provider_host: "api.openai.com".into(),
+        provider_base_url: "https://api.openai.com/v1".into(),
+        target_repo: "org/disposable".into(),
+        target_main_sha: "a".repeat(40),
+        executor_identity: "codex-0.145.0".into(),
+        model_identity: "gpt-test-model".into(),
+        draft_pr_only: true,
+        expires_at: "2026-08-01T00:00:00Z".into(),
+    };
+    persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+    let run_id = format!("rwe-pg-run-{tag}");
+    let mut run_body = body.to_json();
+    run_body["run_id"] = json!(run_id.clone());
+    run_body["provider_free_fixture"] = json!(true);
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
+        .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+
+    let foreign_err = store
+        .admit_rwe_run(&foreign, &run_id, &authorization_id, &run_body, true)
+        .unwrap_err();
+    assert!(foreign_err.contains("tenant") || foreign_err.contains("principal"));
+    assert!(store
+        .admit_rwe_run(
+            &principal,
+            &run_id,
+            "wrong-rwe-authorization",
+            &run_body,
+            true,
+        )
+        .is_err());
+    let mut conflicting_body = run_body.clone();
+    conflicting_body["task_ids"] = json!([corpus.tasks[0].task_id]);
+    assert!(store
+        .admit_rwe_run(
+            &principal,
+            &run_id,
+            &authorization_id,
+            &conflicting_body,
+            true
+        )
+        .is_err());
+
+    let task = &corpus.tasks[0];
+    let evidence = json!({"task_id": task.task_id, "replay": true});
+    assert!(store
+        .persist_rwe_task_attempt(
+            &run_id,
+            "stale-lease",
+            &format!("{run_id}:attempt"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .is_err());
+    store
+        .persist_rwe_task_attempt(
+            &run_id,
+            &lease,
+            &format!("{run_id}:attempt"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .unwrap();
+    assert!(store
+        .persist_rwe_task_attempt(
+            &run_id,
+            "stale-lease",
+            &format!("{run_id}:attempt"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .is_err());
+
+    let replay = store
+        .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
+        .unwrap();
+    assert_eq!(replay["idempotent_replay"], true);
+    assert!(replay.get("lease_token").is_none());
+    assert!(store.get_rwe_run(&run_id).unwrap().unwrap()["lease_token"].is_null());
 }
