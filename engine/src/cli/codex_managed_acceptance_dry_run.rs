@@ -932,6 +932,7 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
         product_task_id: Some(config.product_task_id.clone()),
         workflow_node_id: Some(authority.workflow_node_id.clone()),
         managed_execution_id: Some(authority.execution_id.clone()),
+        provider_id: Some(authority.provider.provider_kind.clone()),
         requested_model: Some(authority.model.clone()),
         executable_path_fingerprint: Some(hex::encode(Sha256::digest(
             authority
@@ -942,6 +943,7 @@ pub fn run_managed_acceptance_dry_run(config: DryRunConfig) -> Result<DryRunRece
         ))),
         executable_version: Some(authority.executable.binary_version.clone()),
         executable_sha256: Some(authority.executable.binary_sha256.clone()),
+        ..UsageBindingContext::default()
     };
     let ts = "2026-07-25T00:00:00Z";
     let gw_event = budget_gateway_usage_to_event(&usage, &authority, &binding, ts);
