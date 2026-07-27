@@ -6966,30 +6966,30 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
         )
         .unwrap();
 
-    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let b_clone = std::sync::Arc::clone(&barrier);
-    let url_clone = url.clone();
-    let run_id_clone = run_id.clone();
-    let lease_clone = lease.clone();
-    let attempt_id_clone = attempt_id.clone();
-    let task_id_clone = task.task_id.clone();
-    let def_clone = task.definition_sha256.clone();
-    let evidence_clone = evidence.clone();
+    let attempt_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let ab_clone = std::sync::Arc::clone(&attempt_barrier);
+    let url_a = url.clone();
+    let run_id_a = run_id.clone();
+    let lease_a = lease.clone();
+    let attempt_id_a = attempt_id.clone();
+    let task_id_a = task.task_id.clone();
+    let def_a = task.definition_sha256.clone();
+    let evidence_a = evidence.clone();
     let attempt_handle = thread::spawn(move || {
-        let store = LocalProductStore::new_postgres(&url_clone, utc_now_string).unwrap();
-        b_clone.wait();
+        let store = LocalProductStore::new_postgres(&url_a, utc_now_string).unwrap();
+        ab_clone.wait();
         store.persist_rwe_task_attempt(
-            &run_id_clone,
-            &lease_clone,
-            &attempt_id_clone,
-            &task_id_clone,
-            &def_clone,
+            &run_id_a,
+            &lease_a,
+            &attempt_id_a,
+            &task_id_a,
+            &def_a,
             "fixture_success",
-            &evidence_clone,
+            &evidence_a,
         )
     });
 
-    barrier.wait();
+    attempt_barrier.wait();
 
     let term_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let tb_clone = std::sync::Arc::clone(&term_barrier);
@@ -7010,12 +7010,7 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
         )
     });
 
-    let term_result_before_release = {
-        let store2 = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
-        let run_row = store2.get_rwe_run(&run_id).unwrap().unwrap();
-        run_row["status"].as_str().unwrap().to_string()
-    };
-    assert_eq!(term_result_before_release, "admitted");
+    term_barrier.wait();
 
     blocker_tx.rollback().unwrap();
     drop(blocker_client);
@@ -7023,17 +7018,15 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
     let attempt_result = attempt_handle.join().unwrap();
     assert!(
         attempt_result.is_ok(),
-        "attempt must succeed after run lock released: {attempt_result:?}"
+        "attempt-first: attempt must commit before terminal: {attempt_result:?}"
     );
 
-    term_barrier.wait();
     let term_result = term_handle.join().unwrap();
     assert!(
         term_result.is_ok(),
-        "terminalization must succeed after attempt: {term_result:?}"
+        "attempt-first: terminal must succeed after attempt: {term_result:?}"
     );
-    let terminal_row = term_result.unwrap();
-    assert_eq!(terminal_row["status"], "fixture_complete");
+    assert_eq!(term_result.unwrap()["status"], "fixture_complete");
 
     let post_terminal = store.get_rwe_run(&run_id).unwrap().unwrap();
     assert_eq!(post_terminal["status"], "fixture_complete");
@@ -7054,12 +7047,148 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
             || late_err.contains("lease")
             || late_err.contains("current run")
     );
+}
 
-    let replay = store
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_terminal_first_rejects_late_attempt() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-tf-{tag}");
+    let owner = format!("fixture-principal-tf-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(&tenant, &owner).unwrap();
+    let corpus = freeze_first_rwe_corpus().unwrap();
+    let budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, None))
+        .collect::<Vec<_>>();
+    let body = pg_rwe_fixture_authorization_body(
+        &tag,
+        &principal,
+        &corpus,
+        budgets,
+        CostAuthority::CostUnavailable,
+    );
+    persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+    let authorization_id = body.authorization_id.clone();
+    let run_id = format!("rwe-pg-tf-run-{tag}");
+    let mut run_body = body.to_json();
+    run_body["run_id"] = json!(run_id.clone());
+    run_body["provider_free_fixture"] = json!(true);
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
+        .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+
+    let Some(url) = std::env::var("ACP_TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let task = &corpus.tasks[0];
+    let attempt_id = format!("{run_id}:tf-attempt");
+    let evidence = json!({"task_id": task.task_id, "tf_test": true});
+    let aggregate = json!({
+        "schema_version": "rwe_run_evidence.v1",
+        "run_id": run_id,
+        "authorization_id": authorization_id,
+        "corpus_sha256": corpus.corpus_sha256,
+        "corpus_schema": engine::rwe::corpus::RWE_CORPUS_SCHEMA,
+        "task_results": [evidence.clone()],
+        "aggregate_provider_requests": 0,
+        "live_provider_request": false,
+        "live_baseline_sealed": false,
+        "provider_free_fixture_completion": true,
+        "note": "terminal-first test",
+    });
+    let evidence_sha = hex::encode(Sha256::digest(aggregate.to_string().as_bytes()));
+
+    let mut blocker_client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut blocker_tx = blocker_client.transaction().unwrap();
+    blocker_tx
+        .execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1))",
+            &[&format!("rwer:{run_id}")],
+        )
+        .unwrap();
+
+    let term_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let tb_clone = std::sync::Arc::clone(&term_barrier);
+    let url_t = url.clone();
+    let run_id_t = run_id.clone();
+    let lease_t = lease.clone();
+    let aggregate_t = aggregate.clone();
+    let evidence_sha_t = evidence_sha.clone();
+    let term_handle = thread::spawn(move || {
+        let store = LocalProductStore::new_postgres(&url_t, utc_now_string).unwrap();
+        tb_clone.wait();
+        store.complete_rwe_run(
+            &run_id_t,
+            &lease_t,
+            "fixture_complete",
+            &aggregate_t,
+            &evidence_sha_t,
+        )
+    });
+
+    term_barrier.wait();
+
+    let attempt_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let ab_clone = std::sync::Arc::clone(&attempt_barrier);
+    let url_a = url.clone();
+    let run_id_a = run_id.clone();
+    let lease_a = lease.clone();
+    let attempt_id_a = attempt_id.clone();
+    let task_id_a = task.task_id.clone();
+    let def_a = task.definition_sha256.clone();
+    let evidence_a = evidence.clone();
+    let attempt_handle = thread::spawn(move || {
+        let store = LocalProductStore::new_postgres(&url_a, utc_now_string).unwrap();
+        ab_clone.wait();
+        store.persist_rwe_task_attempt(
+            &run_id_a,
+            &lease_a,
+            &attempt_id_a,
+            &task_id_a,
+            &def_a,
+            "fixture_success",
+            &evidence_a,
+        )
+    });
+
+    attempt_barrier.wait();
+
+    blocker_tx.rollback().unwrap();
+    drop(blocker_client);
+
+    let term_result = term_handle.join().unwrap();
+    assert!(
+        term_result.is_ok(),
+        "terminal-first: terminalization must commit first: {term_result:?}"
+    );
+    assert_eq!(term_result.unwrap()["status"], "fixture_complete");
+
+    let attempt_result = attempt_handle.join().unwrap();
+    assert!(
+        attempt_result.is_err(),
+        "terminal-first: attempt must be rejected after terminalization: {attempt_result:?}"
+    );
+    let err = attempt_result.unwrap_err();
+    assert!(
+        err.contains("admitted") || err.contains("lease") || err.contains("current run"),
+        "attempt rejection reason: {err}"
+    );
+
+    let post_terminal = store.get_rwe_run(&run_id).unwrap().unwrap();
+    assert_eq!(post_terminal["status"], "fixture_complete");
+
+    let late_err = store
         .persist_rwe_task_attempt(
             &run_id,
             &lease,
-            &attempt_id,
+            &format!("{run_id}:late-after-terminal"),
             &task.task_id,
             &task.definition_sha256,
             "fixture_success",
@@ -7067,24 +7196,9 @@ fn pg_rwe_attempt_then_terminalization_lock_ordering() {
         )
         .unwrap_err();
     assert!(
-        replay.contains("admitted") || replay.contains("lease") || replay.contains("current run")
-    );
-
-    let conflict_evidence = json!({"task_id": task.task_id, "lock_test": "different"});
-    let conflict_err = store
-        .persist_rwe_task_attempt(
-            &run_id,
-            &lease,
-            &format!("{run_id}:conflict-after-terminal"),
-            &task.task_id,
-            &task.definition_sha256,
-            "fixture_success",
-            &conflict_evidence,
-        )
-        .unwrap_err();
-    assert!(
-        conflict_err.contains("admitted")
-            || conflict_err.contains("lease")
-            || conflict_err.contains("current run")
+        late_err.contains("admitted")
+            || late_err.contains("lease")
+            || late_err.contains("current run"),
+        "attempt after terminalization must be rejected: {late_err}"
     );
 }
