@@ -6931,7 +6931,7 @@ fn is_named_backend_waiting_on_lock(observer_url: &str, app_name: &str, lock_key
                 WHERE l.locktype = 'advisory'
                   AND l.granted = false
                   AND a.application_name = $1
-                  AND l.classid::bigint = hashtext($2)::bigint >> 32
+                  AND l.classid::bigint = (hashtext($2)::bigint >> 32) & 4294967295::bigint
                   AND l.objid::bigint = hashtext($2)::bigint & 4294967295::bigint
             )
             "#,
