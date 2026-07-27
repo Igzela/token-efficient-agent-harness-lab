@@ -13,10 +13,23 @@
 
 pub mod claude_adapter;
 pub mod codex_adapter;
+pub mod endpoint_identity;
 pub mod gateway_adapter;
+pub mod model_normalize;
 pub mod opencode_adapter;
+pub mod pricing_estimate;
+pub mod protocol_usage;
 pub mod provider_adapter;
 pub mod reconcile;
+
+// Re-export observation helpers used by gateway/CLI paths.
+pub use endpoint_identity::{classify_provider_path, path_is_admitted, ProviderEndpointKind};
+pub use model_normalize::{normalize_codex_model, normalize_for_pricing_lookup};
+pub use pricing_estimate::{estimate_cost_usd, LOCAL_PRICING_TABLE_VERSION};
+pub use protocol_usage::{
+    aggregate_stream_usage, from_anthropic_response, from_openai_compatible_auto, usage_from_body,
+    ProtocolTokenUsage,
+};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

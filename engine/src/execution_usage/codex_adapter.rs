@@ -14,7 +14,13 @@ pub struct UsageBindingContext {
     pub product_task_id: Option<String>,
     pub workflow_node_id: Option<String>,
     pub managed_execution_id: Option<String>,
+    /// Exact provider identity from an authoritative owner (never a placeholder).
+    pub provider_id: Option<String>,
     pub requested_model: Option<String>,
+    /// Owner-supplied exact request/response identity when the body lacks one.
+    pub request_or_message_id: Option<String>,
+    /// Owner-supplied ordinal when multiple provider calls share one execution.
+    pub request_ordinal: Option<u64>,
     pub executable_path_fingerprint: Option<String>,
     pub executable_version: Option<String>,
     pub executable_sha256: Option<String>,

@@ -1284,10 +1284,12 @@ fn execute_product_codex_after_store_admission(
         product_task_id: Some(authority_snapshot.task_id.clone()),
         workflow_node_id: Some(authority_snapshot.workflow_node_id.clone()),
         managed_execution_id: Some(authority_snapshot.execution_id.clone()),
+        provider_id: Some(authority_snapshot.provider.provider_kind.clone()),
         requested_model: Some(authority_snapshot.model.clone()),
         executable_path_fingerprint: None,
         executable_version: Some(authority_snapshot.executable.binary_version.clone()),
         executable_sha256: Some(authority_snapshot.executable.binary_sha256.clone()),
+        ..UsageBindingContext::default()
     };
     let usage_events = mediated_codex_usage_evidence_bundle(
         &usage,
