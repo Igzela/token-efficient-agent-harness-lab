@@ -6337,15 +6337,7 @@ fn pg_rwe_authority_rejects_foreign_replay_and_stale_task_attempt_replay() {
     let budgets = corpus
         .tasks
         .iter()
-        .map(|task| RwePerTaskBudget {
-            task_id: task.task_id.clone(),
-            max_provider_requests: task.per_task_max_provider_requests,
-            max_input_tokens: task.per_task_max_total_tokens / 2,
-            max_output_tokens: task.per_task_max_total_tokens / 2,
-            max_total_tokens: task.per_task_max_total_tokens,
-            max_wall_time_ms: task.timeout_ms,
-            max_cost: None,
-        })
+        .map(|task| RwePerTaskBudget::from_task_definition(task, None))
         .collect::<Vec<_>>();
     let body = RweRunAuthorizationBody {
         authorization_id: authorization_id.clone(),
@@ -6461,4 +6453,446 @@ fn pg_rwe_authority_rejects_foreign_replay_and_stale_task_attempt_replay() {
     assert_eq!(replay["idempotent_replay"], true);
     assert!(replay.get("lease_token").is_none());
     assert!(store.get_rwe_run(&run_id).unwrap().unwrap()["lease_token"].is_null());
+}
+
+#[cfg(feature = "pg-tests")]
+fn pg_rwe_fixture_authorization_body(
+    tag: &str,
+    principal: &AuthenticatedPrincipal,
+    corpus: &engine::rwe::corpus::FirstRweCorpus,
+    budgets: Vec<RwePerTaskBudget>,
+    cost_authority: CostAuthority,
+) -> RweRunAuthorizationBody {
+    RweRunAuthorizationBody {
+        authorization_id: format!("rwe-pg-auth-{tag}"),
+        corpus_sha256: corpus.corpus_sha256.clone(),
+        golden_path_product_task_id: "pg-fixture-product-task".into(),
+        principal_id: principal.principal_id().into(),
+        principal_kind: principal.principal_kind().as_str().into(),
+        task_ids: corpus
+            .tasks
+            .iter()
+            .map(|task| task.task_id.clone())
+            .collect(),
+        max_total_provider_requests: corpus
+            .tasks
+            .iter()
+            .map(|task| task.per_task_max_provider_requests)
+            .sum(),
+        max_total_tokens: corpus
+            .tasks
+            .iter()
+            .map(|task| task.per_task_max_total_tokens)
+            .sum(),
+        max_wall_time_ms: corpus.tasks.iter().map(|task| task.timeout_ms).sum(),
+        cost_authority,
+        per_task_budgets: budgets,
+        binary_path: "/usr/bin/codex".into(),
+        binary_version: corpus.admitted_codex_version.clone(),
+        binary_sha256: "ab".repeat(32),
+        provider_kind: "openai_compatible".into(),
+        provider_host: "api.openai.com".into(),
+        provider_base_url: "https://api.openai.com/v1".into(),
+        target_repo: "org/disposable".into(),
+        target_main_sha: "a".repeat(40),
+        executor_identity: corpus.tasks[0].executor_identity.clone(),
+        model_identity: corpus.tasks[0].model_identity.clone(),
+        draft_pr_only: true,
+        expires_at: "2026-08-01T00:00:00Z".into(),
+    }
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_corpus_envelope_rejects_mutations_through_issue_and_admit() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-env-{tag}");
+    let owner = format!("fixture-principal-owner-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(&tenant, &owner).unwrap();
+    let corpus = freeze_first_rwe_corpus().unwrap();
+
+    let bad_budgets = corpus
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(i, task)| {
+            let mut budget = RwePerTaskBudget::from_task_definition(task, None);
+            if i == 0 {
+                budget.max_retries = 99;
+            }
+            budget
+        })
+        .collect::<Vec<_>>();
+    let bad_body = pg_rwe_fixture_authorization_body(
+        &format!("retry-{tag}"),
+        &principal,
+        &corpus,
+        bad_budgets,
+        CostAuthority::CostUnavailable,
+    );
+    assert!(persist_rwe_run_authorization(&store, &principal, &bad_body, true).is_err());
+
+    let bad_budgets = corpus
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(i, task)| {
+            let mut budget = RwePerTaskBudget::from_task_definition(task, None);
+            if i == 0 {
+                budget.executor_identity = "rogue-executor".into();
+            }
+            budget
+        })
+        .collect::<Vec<_>>();
+    let bad_body = pg_rwe_fixture_authorization_body(
+        &format!("exec-{tag}"),
+        &principal,
+        &corpus,
+        bad_budgets,
+        CostAuthority::CostUnavailable,
+    );
+    assert!(persist_rwe_run_authorization(&store, &principal, &bad_body, true).is_err());
+
+    let bad_budgets = corpus
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(i, task)| {
+            let mut budget = RwePerTaskBudget::from_task_definition(task, None);
+            if i == 0 {
+                budget.allowed_mutable_paths = vec!["src/rogue.rs".into()];
+            }
+            budget
+        })
+        .collect::<Vec<_>>();
+    let bad_body = pg_rwe_fixture_authorization_body(
+        &format!("paths-{tag}"),
+        &principal,
+        &corpus,
+        bad_budgets,
+        CostAuthority::CostUnavailable,
+    );
+    assert!(persist_rwe_run_authorization(&store, &principal, &bad_body, true).is_err());
+
+    let bad_budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, Some(1.0)))
+        .collect::<Vec<_>>();
+    let bad_body = pg_rwe_fixture_authorization_body(
+        &format!("cost-ceiling-{tag}"),
+        &principal,
+        &corpus,
+        bad_budgets,
+        CostAuthority::ProviderReported {
+            max_cost: 1.0,
+            currency: "USD".into(),
+        },
+    );
+    assert!(persist_rwe_run_authorization(&store, &principal, &bad_body, true).is_err());
+
+    let good_budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, Some(0.25)))
+        .collect::<Vec<_>>();
+    let good_body = pg_rwe_fixture_authorization_body(
+        &format!("good-{tag}"),
+        &principal,
+        &corpus,
+        good_budgets,
+        CostAuthority::ProviderReported {
+            max_cost: 5.0,
+            currency: "USD".into(),
+        },
+    );
+    let auth = persist_rwe_run_authorization(&store, &principal, &good_body, true).unwrap();
+    let auth_id = auth["authorization_id"].as_str().unwrap().to_string();
+    let run_id = format!("rwe-pg-env-run-{tag}");
+    let mut run_body = good_body.to_json();
+    run_body["run_id"] = json!(run_id.clone());
+    run_body["provider_free_fixture"] = json!(true);
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &auth_id, &run_body, true)
+        .unwrap();
+    assert!(admitted.get("lease_token").is_some());
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_concurrent_exact_task_attempt_replay_and_conflict() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-conc-{tag}");
+    let owner = format!("fixture-principal-owner-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(&tenant, &owner).unwrap();
+    let corpus = freeze_first_rwe_corpus().unwrap();
+    let budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, None))
+        .collect::<Vec<_>>();
+    let body = pg_rwe_fixture_authorization_body(
+        &tag,
+        &principal,
+        &corpus,
+        budgets,
+        CostAuthority::CostUnavailable,
+    );
+    persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+    let authorization_id = body.authorization_id.clone();
+    let run_id = format!("rwe-pg-conc-run-{tag}");
+    let mut run_body = body.to_json();
+    run_body["run_id"] = json!(run_id.clone());
+    run_body["provider_free_fixture"] = json!(true);
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
+        .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+
+    let Some(url) = std::env::var("ACP_TEST_DATABASE_URL").ok() else {
+        return;
+    };
+    let task = &corpus.tasks[0];
+    let attempt_id = format!("{run_id}:attempt");
+    let evidence = json!({"task_id": task.task_id, "concurrent": true});
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let b = std::sync::Arc::clone(&barrier);
+        let url = url.clone();
+        let run_id = run_id.clone();
+        let lease = lease.clone();
+        let attempt_id = attempt_id.clone();
+        let task_id = task.task_id.clone();
+        let def = task.definition_sha256.clone();
+        let evidence = evidence.clone();
+        handles.push(thread::spawn(move || {
+            let store = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+            b.wait();
+            store.persist_rwe_task_attempt(
+                &run_id,
+                &lease,
+                &attempt_id,
+                &task_id,
+                &def,
+                "fixture_success",
+                &evidence,
+            )
+        }));
+    }
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        2,
+        "both concurrent exact attempts must succeed via replay"
+    );
+    let rows = results.into_iter().map(|r| r.unwrap()).collect::<Vec<_>>();
+    assert_eq!(
+        rows.iter()
+            .filter(|v| v["idempotent_replay"].as_bool() == Some(false))
+            .count(),
+        1
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|v| v["idempotent_replay"].as_bool() == Some(true))
+            .count(),
+        1
+    );
+
+    let conflict_evidence = json!({"task_id": task.task_id, "concurrent": "different"});
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for ev in [evidence.clone(), conflict_evidence.clone()] {
+        let b = std::sync::Arc::clone(&barrier);
+        let url = url.clone();
+        let run_id = run_id.clone();
+        let lease = lease.clone();
+        let attempt_id = format!("{run_id}:conflict-attempt");
+        let task_id = task.task_id.clone();
+        let def = task.definition_sha256.clone();
+        handles.push(thread::spawn(move || {
+            let store = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+            b.wait();
+            store.persist_rwe_task_attempt(
+                &run_id,
+                &lease,
+                &attempt_id,
+                &task_id,
+                &def,
+                "fixture_success",
+                &ev,
+            )
+        }));
+    }
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "exactly one conflicting attempt may succeed"
+    );
+    assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+    let err = results
+        .into_iter()
+        .find(|r| r.is_err())
+        .unwrap()
+        .unwrap_err();
+    assert!(err.contains("conflict"));
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_concurrent_terminalization_and_restart_without_lease() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-term-{tag}");
+    let owner = format!("fixture-principal-owner-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(&tenant, &owner).unwrap();
+    let corpus = freeze_first_rwe_corpus().unwrap();
+    let budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, None))
+        .collect::<Vec<_>>();
+    let body = pg_rwe_fixture_authorization_body(
+        &tag,
+        &principal,
+        &corpus,
+        budgets,
+        CostAuthority::CostUnavailable,
+    );
+    persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+    let authorization_id = body.authorization_id.clone();
+    let run_id = format!("rwe-pg-term-run-{tag}");
+    let mut run_body = body.to_json();
+    run_body["run_id"] = json!(run_id.clone());
+    run_body["provider_free_fixture"] = json!(true);
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
+        .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+
+    let task = &corpus.tasks[0];
+    let evidence = json!({"task_id": task.task_id, "terminal": true});
+    store
+        .persist_rwe_task_attempt(
+            &run_id,
+            &lease,
+            &format!("{run_id}:attempt"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .unwrap();
+
+    let aggregate = json!({
+        "schema_version": "rwe_run_evidence.v1",
+        "run_id": run_id,
+        "authorization_id": authorization_id,
+        "corpus_sha256": corpus.corpus_sha256,
+        "corpus_schema": engine::rwe::corpus::RWE_CORPUS_SCHEMA,
+        "task_results": [evidence],
+        "aggregate_provider_requests": 0,
+        "live_provider_request": false,
+        "live_baseline_sealed": false,
+        "provider_free_fixture_completion": true,
+        "note": "fixture concurrency test",
+    });
+    let evidence_sha = hex::encode(Sha256::digest(aggregate.to_string().as_bytes()));
+
+    let Some(url) = std::env::var("ACP_TEST_DATABASE_URL").ok() else {
+        return;
+    };
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let b = std::sync::Arc::clone(&barrier);
+        let url = url.clone();
+        let run_id = run_id.clone();
+        let lease = lease.clone();
+        let aggregate = aggregate.clone();
+        let evidence_sha = evidence_sha.clone();
+        handles.push(thread::spawn(move || {
+            let store = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+            b.wait();
+            store.complete_rwe_run(
+                &run_id,
+                &lease,
+                "fixture_complete",
+                &aggregate,
+                &evidence_sha,
+            )
+        }));
+    }
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        2,
+        "concurrent terminal replay must be idempotent"
+    );
+    let rows = results.into_iter().map(|r| r.unwrap()).collect::<Vec<_>>();
+    assert_eq!(
+        rows.iter()
+            .filter(|v| v["idempotent_replay"].as_bool() == Some(false))
+            .count(),
+        1
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|v| v["idempotent_replay"].as_bool() == Some(true))
+            .count(),
+        1
+    );
+    for row in &rows {
+        assert!(row.get("lease_token").is_none() || row["lease_token"].is_null());
+    }
+
+    let run_view = store.get_rwe_run(&run_id).unwrap().unwrap();
+    assert!(run_view.get("lease_token").is_none() || run_view["lease_token"].is_null());
+
+    // Restart without lease recovery: exact terminal replay with a stale/missing lease succeeds.
+    let replay = store
+        .complete_rwe_run(
+            &run_id,
+            "stale-lease",
+            "fixture_complete",
+            &aggregate,
+            &evidence_sha,
+        )
+        .unwrap();
+    assert_eq!(replay["idempotent_replay"], true);
+    assert!(replay.get("lease_token").is_none() || replay["lease_token"].is_null());
+
+    // A missing or stale lease cannot write a new task attempt after terminalization.
+    let err = store
+        .persist_rwe_task_attempt(
+            &run_id,
+            &lease,
+            &format!("{run_id}:late-attempt"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .unwrap_err();
+    assert!(err.contains("admitted") || err.contains("lease") || err.contains("current run"));
 }

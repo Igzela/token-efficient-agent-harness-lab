@@ -392,15 +392,7 @@ mod tests {
         let per_task_budgets = corpus
             .tasks
             .iter()
-            .map(|t| RwePerTaskBudget {
-                task_id: t.task_id.clone(),
-                max_provider_requests: t.per_task_max_provider_requests,
-                max_input_tokens: t.per_task_max_total_tokens / 2,
-                max_output_tokens: t.per_task_max_total_tokens / 2,
-                max_total_tokens: t.per_task_max_total_tokens,
-                max_wall_time_ms: 180_000,
-                max_cost: None,
-            })
+            .map(|t| RwePerTaskBudget::from_task_definition(t, None))
             .collect();
         RweRunAuthorizationBody {
             authorization_id: auth_id.into(),

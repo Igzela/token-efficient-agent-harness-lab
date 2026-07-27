@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{append_audit_locked, AuthenticatedPrincipal, DatabaseConnection, LocalProductStore};
-use crate::rwe::corpus::freeze_first_rwe_corpus;
+use crate::rwe::corpus::{freeze_first_rwe_corpus, RweTaskDefinition};
 
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -55,6 +55,22 @@ fn required_u64_field(value: &Value, field: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("RWE corpus authorization missing numeric {field}"))
 }
 
+fn required_string_array_field(value: &Value, field: &str) -> Result<Vec<String>, String> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|v| {
+                    v.as_str().map(str::to_string).ok_or_else(|| {
+                        format!("RWE corpus authorization {field} must be a string array")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_else(|| Err(format!("RWE corpus authorization missing array {field}")))
+}
+
 /// The frozen corpus is the authority for task order and per-task budgets. This is checked
 /// at issue and admission so a caller cannot authorize a subset while the runner executes the
 /// complete corpus.
@@ -84,6 +100,34 @@ pub(crate) fn validate_rwe_corpus_envelope(body: &Value) -> Result<(), String> {
         return Err("RWE authorization task_ids must exactly match frozen corpus order".into());
     }
 
+    // Bind authorization executor/model/version to the frozen corpus identity.
+    let auth_executor = required_string_field(body, "executor_identity")?;
+    let auth_model = required_string_field(body, "model_identity")?;
+    let auth_binary_version = required_string_field(body, "binary_version")?;
+    if auth_binary_version != corpus.admitted_codex_version {
+        return Err(
+            "RWE authorization binary_version does not match frozen corpus admitted version".into(),
+        );
+    }
+    for task in &corpus.tasks {
+        if auth_executor != task.executor_identity || auth_model != task.model_identity {
+            return Err(
+                "RWE authorization executor/model identity does not match frozen corpus task identity"
+                    .into(),
+            );
+        }
+    }
+
+    let cost_authority_value = body
+        .get("cost_authority")
+        .ok_or("RWE authorization cost_authority required")?;
+    let cost_authority = super::CostAuthority::from_json(cost_authority_value)?;
+    let cost_ceiling = match &cost_authority {
+        super::CostAuthority::ProviderReported { max_cost, .. }
+        | super::CostAuthority::LocalEstimate { max_cost, .. } => Some(*max_cost),
+        super::CostAuthority::CostUnavailable => None,
+    };
+
     let budgets = body
         .get("per_task_budgets")
         .and_then(Value::as_array)
@@ -94,6 +138,7 @@ pub(crate) fn validate_rwe_corpus_envelope(body: &Value) -> Result<(), String> {
     let mut aggregate_requests = 0_u64;
     let mut aggregate_tokens = 0_u64;
     let mut aggregate_wall_ms = 0_u64;
+    let mut aggregate_cost = 0.0_f64;
     for (budget, task) in budgets.iter().zip(&corpus.tasks) {
         if required_string_field(budget, "task_id")? != task.task_id {
             return Err("RWE per-task budgets must follow frozen corpus order".into());
@@ -103,15 +148,73 @@ pub(crate) fn validate_rwe_corpus_envelope(body: &Value) -> Result<(), String> {
         let output_tokens = required_u64_field(budget, "max_output_tokens")?;
         let total_tokens = required_u64_field(budget, "max_total_tokens")?;
         let wall_ms = required_u64_field(budget, "max_wall_time_ms")?;
+        let retries = required_u64_field(budget, "max_retries")?;
         if requests != task.per_task_max_provider_requests
             || total_tokens != task.per_task_max_total_tokens
             || wall_ms != task.timeout_ms
             || input_tokens.saturating_add(output_tokens) != total_tokens
+            || retries != task.per_task_max_retries
         {
             return Err(format!(
                 "RWE budget does not exactly match frozen corpus task {}",
                 task.task_id
             ));
+        }
+        if required_string_field(budget, "source_repository")? != task.source_repository
+            || required_string_field(budget, "source_commit")? != task.source_commit
+            || required_string_field(budget, "source_tree_hash")? != task.source_tree_hash
+            || required_string_field(budget, "expected_outcome_class")?
+                != task.expected_outcome_class
+            || required_u64_field(budget, "patch_max_files")? != task.patch_max_files
+            || required_u64_field(budget, "patch_max_lines")? != task.patch_max_lines
+            || required_string_field(budget, "cancel_behavior")? != task.cancel_behavior
+            || required_string_field(budget, "executor_identity")? != task.executor_identity
+            || required_string_field(budget, "model_identity")? != task.model_identity
+            || required_u64_field(budget, "deterministic_seed")? != task.deterministic_seed
+        {
+            return Err(format!(
+                "RWE budget task-definition boundaries do not match frozen corpus task {}",
+                task.task_id
+            ));
+        }
+        if required_string_array_field(budget, "allowed_mutable_paths")?
+            != task.allowed_mutable_paths
+            || required_string_array_field(budget, "expected_verification_commands")?
+                != task.expected_verification_commands
+            || required_string_array_field(budget, "cleanup_rules")? != task.cleanup_rules
+        {
+            return Err(format!(
+                "RWE budget task-definition arrays do not match frozen corpus task {}",
+                task.task_id
+            ));
+        }
+        match budget
+            .get("max_cost")
+            .and_then(|v| if v.is_null() { None } else { v.as_f64() })
+        {
+            Some(max_cost) => {
+                if max_cost <= 0.0 {
+                    return Err(format!(
+                        "RWE budget max_cost must be positive for task {}",
+                        task.task_id
+                    ));
+                }
+                if cost_ceiling.is_none() {
+                    return Err(format!(
+                        "RWE budget max_cost present but cost_authority has no ceiling for task {}",
+                        task.task_id
+                    ));
+                }
+                aggregate_cost += max_cost;
+            }
+            None => {
+                if cost_ceiling.is_some() {
+                    return Err(format!(
+                        "RWE budget missing max_cost for task {} but cost_authority has ceiling",
+                        task.task_id
+                    ));
+                }
+            }
         }
         aggregate_requests = aggregate_requests
             .checked_add(requests)
@@ -129,10 +232,18 @@ pub(crate) fn validate_rwe_corpus_envelope(body: &Value) -> Result<(), String> {
     {
         return Err("RWE aggregate budgets do not match frozen corpus budgets".into());
     }
+    if let Some(ceiling) = cost_ceiling {
+        if aggregate_cost > ceiling {
+            return Err(
+                "RWE aggregate max_cost exceeds cost_authority ceiling or aggregate cost envelope"
+                    .into(),
+            );
+        }
+    }
     Ok(())
 }
 
-/// Per-task budget bound into the RWE authorization envelope.
+/// Frozen per-task task-definition and budget bound into the RWE authorization envelope.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RwePerTaskBudget {
     pub task_id: String,
@@ -141,10 +252,50 @@ pub struct RwePerTaskBudget {
     pub max_output_tokens: u64,
     pub max_total_tokens: u64,
     pub max_wall_time_ms: u64,
+    pub max_retries: u64,
+    pub source_repository: String,
+    pub source_commit: String,
+    pub source_tree_hash: String,
+    pub allowed_mutable_paths: Vec<String>,
+    pub expected_verification_commands: Vec<String>,
+    pub expected_outcome_class: String,
+    pub patch_max_files: u64,
+    pub patch_max_lines: u64,
+    pub cancel_behavior: String,
+    pub executor_identity: String,
+    pub model_identity: String,
+    pub deterministic_seed: u64,
+    pub cleanup_rules: Vec<String>,
     pub max_cost: Option<f64>,
 }
 
 impl RwePerTaskBudget {
+    pub fn from_task_definition(task: &RweTaskDefinition, max_cost: Option<f64>) -> Self {
+        Self {
+            task_id: task.task_id.clone(),
+            max_provider_requests: task.per_task_max_provider_requests,
+            max_input_tokens: task.per_task_max_total_tokens / 2,
+            max_output_tokens: task.per_task_max_total_tokens / 2,
+            max_total_tokens: task.per_task_max_total_tokens,
+            max_wall_time_ms: task.timeout_ms,
+            max_retries: task.per_task_max_retries,
+            source_repository: task.source_repository.clone(),
+            source_commit: task.source_commit.clone(),
+            source_tree_hash: task.source_tree_hash.clone(),
+            allowed_mutable_paths: task.allowed_mutable_paths.clone(),
+            expected_verification_commands: task.expected_verification_commands.clone(),
+            expected_outcome_class: task.expected_outcome_class.clone(),
+            patch_max_files: task.patch_max_files,
+            patch_max_lines: task.patch_max_lines,
+            cancel_behavior: task.cancel_behavior.clone(),
+            executor_identity: task.executor_identity.clone(),
+            model_identity: task.model_identity.clone(),
+            deterministic_seed: task.deterministic_seed,
+            cleanup_rules: task.cleanup_rules.clone(),
+            max_cost,
+        }
+    }
+
     pub fn to_json(&self) -> Value {
         json!({
             "task_id": self.task_id,
@@ -153,6 +304,20 @@ impl RwePerTaskBudget {
             "max_output_tokens": self.max_output_tokens,
             "max_total_tokens": self.max_total_tokens,
             "max_wall_time_ms": self.max_wall_time_ms,
+            "max_retries": self.max_retries,
+            "source_repository": self.source_repository,
+            "source_commit": self.source_commit,
+            "source_tree_hash": self.source_tree_hash,
+            "allowed_mutable_paths": self.allowed_mutable_paths,
+            "expected_verification_commands": self.expected_verification_commands,
+            "expected_outcome_class": self.expected_outcome_class,
+            "patch_max_files": self.patch_max_files,
+            "patch_max_lines": self.patch_max_lines,
+            "cancel_behavior": self.cancel_behavior,
+            "executor_identity": self.executor_identity,
+            "model_identity": self.model_identity,
+            "deterministic_seed": self.deterministic_seed,
+            "cleanup_rules": self.cleanup_rules,
             "max_cost": self.max_cost,
         })
     }
@@ -1025,6 +1190,11 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                tx.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    &[&format!("rweta:{task_attempt_id}")],
+                )
+                .map_err(|e| e.to_string())?;
                 let run = load_rwe_run_pg(&mut tx, run_id)?;
                 validate_current_rwe_run_lease(&run, run_id, lease_token)?;
                 if let Some(row) = tx
@@ -1127,6 +1297,7 @@ impl LocalProductStore {
                     .unwrap_or(Value::Null);
                 let admit_body_sha = admit
                     .pointer("/admit_state/run_body_sha256")
+                    .or_else(|| admit.pointer("/admit_run_body_sha256"))
                     .cloned()
                     .unwrap_or(Value::Null);
                 let receipt = build_canonical_terminal_receipt(
@@ -1170,6 +1341,11 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                tx.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    &[&format!("rwer:{run_id}")],
+                )
+                .map_err(|e| e.to_string())?;
                 let existing = load_rwe_run_pg(&mut tx, run_id)?;
                 let cur_status = existing
                     .get("status")
@@ -1181,6 +1357,7 @@ impl LocalProductStore {
                     .unwrap_or(Value::Null);
                 let admit_body_sha = admit
                     .pointer("/admit_state/run_body_sha256")
+                    .or_else(|| admit.pointer("/admit_run_body_sha256"))
                     .cloned()
                     .unwrap_or(Value::Null);
                 let receipt = build_canonical_terminal_receipt(
@@ -1634,25 +1811,29 @@ mod authority_regression_tests {
         let budgets = corpus
             .tasks
             .iter()
-            .map(|task| {
-                json!({
-                    "task_id": task.task_id,
-                    "max_provider_requests": task.per_task_max_provider_requests,
-                    "max_input_tokens": task.per_task_max_total_tokens / 2,
-                    "max_output_tokens": task.per_task_max_total_tokens / 2,
-                    "max_total_tokens": task.per_task_max_total_tokens,
-                    "max_wall_time_ms": task.timeout_ms,
-                    "max_cost": null,
-                })
-            })
+            .map(|task| RwePerTaskBudget::from_task_definition(task, None).to_json())
             .collect::<Vec<_>>();
         json!({
+            "schema_version": "rwe_run_authorization.v1",
             "corpus_sha256": corpus.corpus_sha256,
             "task_ids": task_ids,
             "per_task_budgets": budgets,
             "max_total_provider_requests": corpus.tasks.iter().map(|t| t.per_task_max_provider_requests).sum::<u64>(),
             "max_total_tokens": corpus.tasks.iter().map(|t| t.per_task_max_total_tokens).sum::<u64>(),
             "max_wall_time_ms": corpus.tasks.iter().map(|t| t.timeout_ms).sum::<u64>(),
+            "cost_authority": super::super::CostAuthority::CostUnavailable.to_json(),
+            "binary_path": "/usr/bin/codex",
+            "binary_version": corpus.admitted_codex_version,
+            "binary_sha256": "ab".repeat(32),
+            "provider_kind": "openai_compatible",
+            "provider_host": "api.openai.com",
+            "provider_base_url": "https://api.openai.com/v1",
+            "target_repo": "org/disposable",
+            "target_main_sha": "a".repeat(40),
+            "executor_identity": corpus.tasks[0].executor_identity,
+            "model_identity": corpus.tasks[0].model_identity,
+            "draft_pr_only": true,
+            "golden_path_product_task_id": "gp-task",
         })
     }
 
@@ -1798,5 +1979,119 @@ mod authority_regression_tests {
         let mut wrong = valid;
         wrong["max_total_tokens"] = json!(1);
         assert!(validate_rwe_corpus_envelope(&wrong).is_err());
+    }
+
+    #[test]
+    fn frozen_corpus_rejects_retry_and_identity_mutations() {
+        let valid = valid_corpus_body();
+        validate_rwe_corpus_envelope(&valid).unwrap();
+
+        let mut wrong_retries = valid.clone();
+        wrong_retries["per_task_budgets"][0]["max_retries"] = json!(99);
+        assert!(validate_rwe_corpus_envelope(&wrong_retries).is_err());
+
+        let mut wrong_executor = valid.clone();
+        wrong_executor["per_task_budgets"][1]["executor_identity"] = json!("rogue-executor");
+        assert!(validate_rwe_corpus_envelope(&wrong_executor).is_err());
+
+        let mut wrong_model = valid.clone();
+        wrong_model["per_task_budgets"][2]["model_identity"] = json!("rogue-model");
+        assert!(validate_rwe_corpus_envelope(&wrong_model).is_err());
+
+        let mut wrong_top_executor = valid.clone();
+        wrong_top_executor["executor_identity"] = json!("rogue-executor");
+        assert!(validate_rwe_corpus_envelope(&wrong_top_executor).is_err());
+
+        let mut wrong_version = valid.clone();
+        wrong_version["binary_version"] = json!("0.999.0");
+        assert!(validate_rwe_corpus_envelope(&wrong_version).is_err());
+    }
+
+    #[test]
+    fn frozen_corpus_rejects_source_and_task_definition_boundary_mutations() {
+        let valid = valid_corpus_body();
+        validate_rwe_corpus_envelope(&valid).unwrap();
+
+        let mut wrong_source = valid.clone();
+        wrong_source["per_task_budgets"][0]["source_repository"] =
+            json!("https://rogue.example/repo");
+        assert!(validate_rwe_corpus_envelope(&wrong_source).is_err());
+
+        let mut wrong_commit = valid.clone();
+        wrong_commit["per_task_budgets"][0]["source_commit"] = json!("00".repeat(20));
+        assert!(validate_rwe_corpus_envelope(&wrong_commit).is_err());
+
+        let mut wrong_paths = valid.clone();
+        wrong_paths["per_task_budgets"][0]["allowed_mutable_paths"] = json!(["src/rogue.rs"]);
+        assert!(validate_rwe_corpus_envelope(&wrong_paths).is_err());
+
+        let mut wrong_verification = valid.clone();
+        wrong_verification["per_task_budgets"][0]["expected_verification_commands"] =
+            json!(["rm -rf /"]);
+        assert!(validate_rwe_corpus_envelope(&wrong_verification).is_err());
+
+        let mut wrong_outcome = valid.clone();
+        wrong_outcome["per_task_budgets"][0]["expected_outcome_class"] = json!("unbounded_success");
+        assert!(validate_rwe_corpus_envelope(&wrong_outcome).is_err());
+
+        let mut wrong_patch = valid.clone();
+        wrong_patch["per_task_budgets"][0]["patch_max_files"] = json!(999);
+        assert!(validate_rwe_corpus_envelope(&wrong_patch).is_err());
+
+        let mut wrong_cancel = valid.clone();
+        wrong_cancel["per_task_budgets"][0]["cancel_behavior"] = json!("ignore");
+        assert!(validate_rwe_corpus_envelope(&wrong_cancel).is_err());
+
+        let mut wrong_cleanup = valid.clone();
+        wrong_cleanup["per_task_budgets"][0]["cleanup_rules"] = json!(["preserve_everything"]);
+        assert!(validate_rwe_corpus_envelope(&wrong_cleanup).is_err());
+    }
+
+    #[test]
+    fn frozen_corpus_rejects_cost_authority_inconsistency() {
+        let valid = valid_corpus_body();
+        validate_rwe_corpus_envelope(&valid).unwrap();
+
+        // max_cost present without a cost ceiling.
+        let mut cost_without_ceiling = valid.clone();
+        cost_without_ceiling["per_task_budgets"][0]["max_cost"] = json!(1.0);
+        assert!(validate_rwe_corpus_envelope(&cost_without_ceiling).is_err());
+
+        // ceiling present without per-task max_cost.
+        let mut ceiling_without_cost = valid.clone();
+        ceiling_without_cost["cost_authority"] = json!({
+            "kind": "provider_reported",
+            "max_cost": 10.0,
+            "currency": "USD",
+            "monetary_ceiling_enforced": true,
+        });
+        assert!(validate_rwe_corpus_envelope(&ceiling_without_cost).is_err());
+
+        // per-task costs exceed the aggregate ceiling.
+        let mut over_budget = valid.clone();
+        over_budget["cost_authority"] = json!({
+            "kind": "provider_reported",
+            "max_cost": 4.0,
+            "currency": "USD",
+            "monetary_ceiling_enforced": true,
+        });
+        for budget in over_budget["per_task_budgets"].as_array_mut().unwrap() {
+            budget["max_cost"] = json!(1.0);
+        }
+        assert!(validate_rwe_corpus_envelope(&over_budget).is_err());
+
+        // consistent ceiling and per-task costs are accepted.
+        let mut consistent = valid.clone();
+        consistent["cost_authority"] = json!({
+            "kind": "provider_reported",
+            "max_cost": 10.0,
+            "currency": "USD",
+            "monetary_ceiling_enforced": true,
+        });
+        for budget in consistent["per_task_budgets"].as_array_mut().unwrap() {
+            budget["max_cost"] = json!(1.0);
+        }
+        // 5 tasks * 1.0 = 5.0 <= 10.0
+        assert!(validate_rwe_corpus_envelope(&consistent).is_ok());
     }
 }
