@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-07-25.
+Last updated: 2026-07-27.
 
 This is the concise ownership map for accepted `main`. Current facts are in `docs/CURRENT_STATUS.md`; execution order and gates are in `docs/NEXT_DECISION.md`; architecture invariants are in `docs/ARCHITECTURE_BOOK.md`.
 
@@ -12,12 +12,14 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 
 | Area | Canonical owner | Boundary |
 |---|---|---|
+| Repository navigation and context capsule | `START_HERE.md`, `scripts/project_context.py`, `tools/test_project_context.py`, `scripts/check_agent_handoff.py` | One on-demand fail-closed transport view derived from accepted owners; not a status database or authority owner. Workflow publication and session injection remain unimplemented until their routed packet is accepted |
 | API and composition root | `engine/src/main.rs`, `engine/src/http_server/` | Sole startup/composition surface; runtime modes remain explicitly gated |
 | Dispatch analysis | `engine/src/dispatch_engine.rs`, analyzers, selectors, planners, decomposers | Advisory/default-noop unless an accepted contract admits execution |
 | Workflow runtime | `engine/src/workflow/`, `engine/src/scheduler.rs`, `engine/src/scheduler/`, `engine/src/executor_pool.rs`, `engine/src/node_executor.rs` | Sole persisted run, node, lease, retry, pause/kill, and concurrency path |
 | Recursive/agent nodes | Existing AgentStep and recursive-execution modules plus scheduler/store | Typed bounded nodes; no autonomous root-goal generation, production self-update, or authority expansion |
 | Managed CLI/process | `engine/src/cli/mod.rs`, `config.rs`, `cli_node_executor.rs`, process/probe owners | Bounded subprocess lifecycle, output limits, process-tree cleanup, exact executable identity, default-off admission |
 | Codex mediation and budget | `engine/src/cli/codex_budget_authority.rs`, `codex_mediation_admission.rs`, `codex_usage_journal.rs`, `codex_session_usage.rs` | Parent-held credential, loopback gateway, ProductTask budget enforcement, parent-owned fail-closed journal, session corroboration; class remains partial |
+| Managed-acceptance authority | `engine/src/storage/local_product_store/managed_acceptance.rs` and existing v32/v33 store/migration owners | Accepted store-owned decision, risk, one-use spend, attempt lease, transition receipt, restart, replay, audit, and rollback authority from PR #299 |
 | Multi-executor usage evidence | `engine/src/execution_usage/` — accepted adapters and reconcile owners | `execution_usage_event.v1`; evidence only; never a second budget or spend authority |
 | Workspace and patch | Existing supervised-patch/workspace owners and target-repository output owners | App-owned detached worktree, exact source binding, bounded patch and cleanup lifecycle |
 | Verification | Existing product verification, managed-run, process-outcome, and tool-policy owners | Fixed admitted commands, exact workspace/source/patch bindings, pause/kill/late-write refusal |
@@ -70,10 +72,11 @@ No earlier authority implies a later one. In particular, risk acknowledgement is
 
 | PR | Proposed modules/scope | Rule |
 |---|---|---|
-| #299 | Residual finding and partial-mediation decision under `engine/src/cli/`; proposed managed-acceptance decision/risk/spend/attempt tables and APIs under `engine/src/storage/local_product_store/`; owner-derived preflight and fixture dry-run | Cumulative authority review surface; supersedes #297/#298; not canonical until final approval/merge |
-| #300 | Proposed `engine/src/rwe/`, real versioned corpus definitions/fixtures, RWE authorization/run/task-attempt persistence | Stacked on accepted #299 semantics; no live baseline from fixtures |
-| #301 | Proposed `engine/src/execution_usage/{protocol_usage,model_normalize,pricing_estimate,endpoint_identity}.rs` plus adapter changes and third-party notices | Observation only; must canonicalize token buckets and preserve trustworthy provider/request identity; no authority import |
+| #300 | Proposed `engine/src/rwe/`, real versioned corpus definitions/fixtures, RWE authorization/run/task-attempt persistence | Current earliest eligible packet; no live baseline from fixtures |
+| #301 | Proposed `engine/src/execution_usage/{protocol_usage,model_normalize,pricing_estimate,endpoint_identity}.rs` plus adapter changes and third-party notices | Observation only; blocked until #300 is accepted; must canonicalize token buckets and preserve trustworthy provider/request identity; no authority import |
 | #225 | Dashboard presentation | Last; may project accepted schemas only |
+
+PR #297/#298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304.
 
 Do not copy explanatory labels into file names. Always inspect the actual final branch tree before documenting an owner.
 
@@ -99,6 +102,7 @@ This evidence informs RWE replay and Level-2 GO/NO-GO. It does not become a call
 
 ## Capability Boundaries
 
+- Context capsules summarize and route from accepted owners; they never authorize execution, spend, output, merge, release, deployment, RWE acceptance, or production adoption.
 - RWE must reuse existing task, scheduler, usage, scorecard, replay, audit, approval, output, terminal-evidence, and cleanup owners.
 - External runtimes and repositories may provide bounded adapters, parsers, or comparison evidence; they may not replace the core owners.
 - Provider/session logs are post-call evidence, not pre-call authority.
@@ -116,6 +120,7 @@ Existing disposable fault scenarios, SQLite/PostgreSQL recovery tests, stubs, cl
 
 ## Active Documents
 
+- `START_HERE.md` — stable navigation, frontier discovery, capsule fields, staleness, and automation boundary.
 - `docs/ARCHITECTURE_BOOK.md` — durable mission, architecture, authority, safety, and evidence invariants.
 - `docs/CURRENT_STATUS.md` — merged truth, open review surfaces, and current blockers.
 - `docs/NEXT_DECISION.md` — authoritative sequence, entry/exit gates, and immediate next action.
