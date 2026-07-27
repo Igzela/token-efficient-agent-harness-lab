@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-07-26.
+Last updated: 2026-07-27.
 
 ## Verified Repository State
 
@@ -14,6 +14,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR.
 
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
 - Accepted runtime baseline is merged through PR #299 at schema v33, including store-owned managed-acceptance authority, one-use spend/attempt leases, durable transition receipts, and PostgreSQL restart repair.
+- Context-capsule Phase 1 is accepted through PR #302: `START_HERE.md` is the canonical session entry and `scripts/project_context.py` generates an on-demand fail-closed Markdown or JSON transport view. Normal CI does not yet publish a capsule artifact/job summary or inject a fresh capsule into later Agent sessions.
 - Rust `engine/` and `LocalProductStore` remain the sole authorities for workflow state, scheduling, leases, retries, budgets, approvals, evidence, output reconciliation, audit, and persistence.
 - SQLite is the default store; PostgreSQL is the supported parity backend.
 - ProductTask remains the sole product budget owner.
@@ -30,8 +31,8 @@ These surfaces are not accepted truth and must not be merged independently when 
 
 | PR | Purpose | Current status |
 |---|---|---|
-| #300 | Provider-free first-RWE corpus, authorization, runner, and evidence preparation | Open; next eligible surface after mechanical restack onto accepted PR #299/main; no live baseline exists |
-| #301 | CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification | Open; mechanical restack required; observation scope only and no authority import |
+| #300 | Provider-free first-RWE corpus, authorization, runner, and evidence preparation | Open; current earliest eligible packet; no live baseline exists |
+| #301 | CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification | Open; blocked until #300 is accepted; observation scope only and no authority import |
 | #297/#298 | Earlier residual-admission and authority-decision slices | Superseded by merged PR #299; close without merge |
 | #225 | Presentation-only Dashboard work | Independent and last |
 
@@ -49,7 +50,7 @@ intake → worktree/source binding → executable graph → scheduler lease
 → separate output confirmation → acp/* Draft PR → terminal evidence
 ```
 
-The remaining product proof is one tightly bounded live managed coding task under the accepted authority decision, authenticated non-fixture principal, parent-only provider credential, one-use spend authorization, unchanged target `main`, Draft-PR-only output, and exact terminal evidence. Before that live task, PR #300 and PR #301 must be mechanically restacked and independently reconciled against the accepted PR #299 semantics.
+The remaining product proof is one tightly bounded live managed coding task under the accepted authority decision, authenticated non-fixture principal, parent-only provider credential, one-use spend authorization, unchanged target `main`, Draft-PR-only output, and exact terminal evidence. Before that live task, PR #300 and PR #301 must be independently reconciled and accepted, then context-capsule automation must provide exact-head workflow publication and fresh session-start injection without becoming a new authority owner.
 
 The residual technical risks remain explicit:
 
@@ -64,7 +65,8 @@ Therefore live acceptance is not blocked only by credential presence.
 
 | Stage | State | Entry requirement |
 |---|---|---|
-| Golden Path residual seal | `AUTHORITY_ACCEPTED_LIVE_E2E_PENDING` | Restack/reconcile #300 and #301, then separately authorize one bounded live managed task |
+| Golden Path residual seal | `AUTHORITY_ACCEPTED_LIVE_E2E_PENDING` | Accept #300, #301, and context-capsule automation, then separately authorize one bounded live managed task |
+| Context capsule automation | `BLOCKED_PREREQUISITE` | Accept #300 and #301, then add exact-head artifact/job-summary publication and fresh session-start injection under the existing `START_HERE.md` automation boundary |
 | First Real Workload Evidence | `BLOCKED_PREREQUISITE` | Accepted Golden Path terminal evidence plus a separately authorized RWE spend envelope |
 | Architecture Convergence AC1–AC7 | `BLOCKED_PREREQUISITE` | Frozen and independently accepted pre-convergence RWE baseline |
 | Same-corpus RWE replay | `BLOCKED_PREREQUISITE` | Architecture Convergence complete |
@@ -95,9 +97,10 @@ These engineering-cost dimensions are evidence for RWE replay and Level-2 decisi
 1. No accepted live managed coding-executor E2E exists.
 2. No accepted live RWE baseline exists.
 3. Architecture Convergence cannot begin before that baseline is frozen.
-4. No automatic multi-generation parent-selection loop is implemented.
-5. No demonstrated cross-task continuous-learning or Meta Improver result exists.
-6. Open PR claims remain proposals until their final heads are independently accepted.
+4. Context capsules are on-demand only; automatic exact-head publication and fresh session-start injection are not implemented.
+5. No automatic multi-generation parent-selection loop is implemented.
+6. No demonstrated cross-task continuous-learning or Meta Improver result exists.
+7. Open PR claims remain proposals until their final heads are independently accepted.
 
 ## Supporting Programs
 
@@ -108,13 +111,14 @@ These engineering-cost dimensions are evidence for RWE replay and Level-2 decisi
 ## Active Tracks
 
 - Provider-free Golden Path authority: PR #299 merged and accepted at schema v33.
-- Provider-free RWE preparation: PR #300 is the next eligible mechanical-restack and independent-review surface.
-- Observation adaptation: PR #301 remains observation-only and requires mechanical restack after #300 reconciliation.
-- Live Golden Path, live RWE, Architecture Convergence, Level-2, and Meta remain blocked by their named prerequisites.
+- Context governance: PR #302 merged; on-demand fail-closed capsule generation is accepted, while workflow publication and session injection remain a later bounded prerequisite.
+- Provider-free RWE preparation: PR #300 is the current earliest eligible implementation and independent-review surface.
+- Observation adaptation: PR #301 remains observation-only and follows #300.
+- Live Golden Path follows #300, #301, and capsule automation; live RWE, Architecture Convergence, Level-2, and Meta remain blocked by their named prerequisites.
 
 ## Open Work Coordination
 
-PRs #297/#298 are superseded by merged PR #299 and should close without merge. PR #300 must be mechanically restacked onto accepted `main` and independently reviewed before any live Golden Path task. PR #301 follows as an observation-only restack and must not introduce a second budget, proxy, credential, store, or authorization owner. PR #225 remains presentation-only and last.
+PRs #297/#298 are superseded by merged PR #299 and should close without merge. Complete and independently accept PR #300 first; PR #301 follows as an observation-only restack and must not introduce a second budget, proxy, credential, store, or authorization owner. After #301, implement the bounded context-capsule automation packet before any live Golden Path task. PR #225 remains presentation-only and last.
 
 All active branches must refresh this main documentation convergence before final merge and must not overwrite it with stale branch-local status text.
 
