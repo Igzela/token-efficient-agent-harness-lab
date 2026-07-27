@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-07-26.
+Last updated: 2026-07-27.
 
 ## Current Direction
 
@@ -15,7 +15,10 @@ Do not substitute feature count, model/provider count, Dashboard completeness, P
 The authoritative order is:
 
 ```text
-Golden Path authority and one live managed acceptance
+provider-free RWE authority reconciliation (#300)
+→ observation-only reconciliation (#301)
+→ context-capsule automation
+→ one bounded live Golden Path managed acceptance
 → first frozen Real Workload Evidence baseline
 → Architecture Convergence AC1–AC7
 → identical-corpus replay
@@ -25,18 +28,19 @@ Golden Path authority and one live managed acceptance
 → Dashboard #225 last
 ```
 
-Do not skip RWE and begin Architecture Convergence or Level-2 early. Provider-free fixture completion is not live acceptance.
+Do not skip RWE and begin Architecture Convergence or Level-2 early. Provider-free fixture completion is not live acceptance. Context-capsule automation is a transport and freshness prerequisite, not a runtime authority or evidence substitute.
 
 ## Active Routing
 
 1. `PE7-RWE-AUTHORITY-RESTACK-1` — `IN_PROGRESS`.
 2. `PE7-OBSERVATION-RESTACK-1` — `BLOCKED_PREREQUISITE`.
-3. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-8. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+3. `PE7-CONTEXT-CAPSULE-AUTOMATION-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+8. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+9. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
 ## Packet States
 
@@ -51,11 +55,11 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 ## Open PR Coordination
 
 - PR #299 is merged and accepted; it supersedes #297/#298, which should close without merge.
-- PR #300 is the next eligible provider-free surface and must be mechanically restacked onto accepted `main` before independent review; it cannot establish a live baseline.
+- PR #300 is the current earliest eligible provider-free surface and cannot establish a live baseline.
 - PR #301 follows as observation-only CC Switch adaptation and must be mechanically restacked without importing authority.
 - PR #225 is presentation-only and remains last.
 
-The immediate engineering task is to restack and independently accept #300, then mechanically restack and accept #301, before any separately authorized live Golden Path task. Do not begin live RWE or later stages.
+The immediate engineering order is to independently accept #300, then mechanically restack and accept #301, then complete the bounded context-capsule automation packet before any separately authorized live Golden Path task. Do not begin live RWE or later stages.
 
 ## Evidence Required for Every Engineering Board
 
@@ -89,6 +93,7 @@ A change that reduces tokens but increases total lifecycle cost or weakens relia
 ## Common Execution Protocol
 
 - Refresh actual `main`, open PR heads, CI, reviews, active documents, and overlapping ownership before work.
+- Generate a fresh context capsule from the confirmed accepted baseline; treat it as stale when `main`, PR head, CI, review, or canonical documents change.
 - Use one Agent session per coherent board when practical, with internal commit boundaries rather than repeated approval interruptions.
 - Do not combine unrelated authority surfaces into one unreviewable commit.
 - A new head invalidates earlier CI and review conclusions.
@@ -114,7 +119,8 @@ A live managed task may start only when all of these are current and exact:
 - request/retry/token/time/cost contract;
 - Draft-PR-only output, no auto-merge, no release/deploy;
 - gateway/session usage reconciliation;
-- cancellation, cleanup, rollback, approval, output-confirmation, and terminal-evidence owners.
+- cancellation, cleanup, rollback, approval, output-confirmation, and terminal-evidence owners;
+- a fresh context capsule bound to the current accepted-main SHA, active PR exact head, workflow evidence, review observation time, and next permitted action.
 
 Codex remains `mediation_hardened_partial`. Retry identity, product-enforced loopback-only network confinement, and host namespace limitations remain explicit residual risks unless separately proved.
 
@@ -123,7 +129,7 @@ Codex remains `mediation_hardened_partial`. Retry identity, product-enforced loo
 Stop before any of the following:
 
 - secret, credential, raw prompt/output/transcript, private path, or repository-content exposure;
-- second runtime, scheduler, store, evaluator, budget, approval, output, audit, or rollback owner;
+- second runtime, scheduler, store, evaluator, budget, approval, output, audit, rollback, or context-authority owner;
 - caller-asserted authority, stale or conflicting identity, duplicate effect, late write, missing lease, or outcome-unknown treated as success;
 - provider call in CI;
 - target-default-branch write, auto-merge, merge, release, deployment, installation, or production adoption;
@@ -148,15 +154,35 @@ PR #299 is the accepted authority foundation. Mechanically restack PR #300 onto 
 
 After PR #300 is accepted, mechanically restack PR #301 as an observation-only layer. It may normalize usage and pricing observations but must not import authority, credentials, proxy ownership, budget ownership, or live execution.
 
-## Packet PE7-PRODUCT-GOLDEN-PATH-1 — accepted authority and live residual seal
+## Packet PE7-CONTEXT-CAPSULE-AUTOMATION-1 — exact-head publication and session injection
 
 **State:** `BLOCKED_PREREQUISITE`
 
 **Prerequisite:** PE7-OBSERVATION-RESTACK-1
 
-The provider-free authority foundation from PR #299 is merged and accepted. This live packet becomes eligible only after PR #300 and PR #301 are independently reconciled and accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+Phase 1 is already accepted through PR #302: `START_HERE.md` owns navigation and `scripts/project_context.py` generates an on-demand fail-closed Markdown or JSON transport view. This packet adds automation only; it must not create a new status database, current-state owner, authorization owner, or committed dynamic `latest context` file.
 
-The live task requires a separate current-session spend authorization and parent-only credential. No repository prompt, fixture result, merged authority code, or prior test run grants that live authority.
+Required result:
+
+- generate once per terminal exact-head workflow, not once per job;
+- bind the capsule to accepted-main SHA, active packet, owned PR exact head, workflow run, complete required-check matrix, exact-head review/objection observation, and observation time;
+- publish only a short-lived workflow artifact and/or job summary;
+- inject or fetch a fresh capsule at the start of repository-controlled implementation, CI-repair, and review sessions;
+- mark evidence unavailable rather than guessing and invalidate the view whenever `main`, head, CI, review, or canonical documents change;
+- preserve secret, raw prompt/output/transcript, private-path, and repository-content redaction;
+- reuse `START_HERE.md`, `scripts/project_context.py`, its tests, and the handoff checker as the sole navigation/transport owners.
+
+This packet proves context freshness and routing only. It cannot authorize provider spend, live execution, output, merge, release, deployment, RWE acceptance, or a later packet.
+
+## Packet PE7-PRODUCT-GOLDEN-PATH-1 — accepted authority and live residual seal
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE7-CONTEXT-CAPSULE-AUTOMATION-1
+
+The provider-free authority foundation from PR #299 is merged and accepted. This live packet becomes eligible only after PR #300, PR #301, and context-capsule automation are independently accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+
+The live task requires a separate current-session spend authorization and parent-only credential. No repository prompt, fixture result, merged authority code, capsule, or prior test run grants that live authority.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 
