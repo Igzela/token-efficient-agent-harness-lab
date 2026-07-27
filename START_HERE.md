@@ -70,6 +70,12 @@ A new PR head invalidates earlier CI and review conclusions for that PR. A block
 
 Use targeted reads. Do not load every document when the role and packet narrow the necessary context.
 
+## Planning and Execution Separation
+
+The planning or architecture process owns cross-packet direction, architecture and authority choices, packet scope and ordering, acceptance gates, and GO/NO-GO decisions. An implementation agent owns only packet-internal execution planning: inspect the real code, choose the smallest quality-preserving implementation, implement, test, synchronize the smallest canonical documents, and return evidence.
+
+An implementation agent may resolve bounded design gaps only when doing so does not change the packet goal, prerequisites, authority, schema or durable contract, safety boundary, acceptance criteria, or sequence. If implementation requires any such change, stop with `DECISION_REQUIRED` and return the evidence, options, and consequences. A proposal does not become accepted direction until the appropriate canonical owner is updated under verified authority.
+
 ## Generate a Fresh Handoff Capsule
 
 From a repository checkout, run:
