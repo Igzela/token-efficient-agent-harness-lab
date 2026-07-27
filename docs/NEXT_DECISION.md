@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-07-27.
+Last updated: 2026-07-28.
 
 ## Current Direction
 
@@ -32,15 +32,14 @@ Do not skip RWE and begin Architecture Convergence or Level-2 early. Provider-fr
 
 ## Active Routing
 
-1. `PE7-RWE-AUTHORITY-RESTACK-1` — `IN_PROGRESS`.
-2. `PE7-OBSERVATION-RESTACK-1` — `BLOCKED_PREREQUISITE`.
-3. `PE7-CONTEXT-CAPSULE-AUTOMATION-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-8. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-9. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-OBSERVATION-RESTACK-1` — `IN_PROGRESS`.
+2. `PE7-CONTEXT-CAPSULE-AUTOMATION-1` — `BLOCKED_PREREQUISITE`.
+3. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+8. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
 ## Packet States
 
@@ -55,11 +54,11 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 ## Open PR Coordination
 
 - PR #299 is merged and accepted; superseded PRs #297/#298 are closed without merge.
-- PR #300 is the current earliest eligible provider-free surface and cannot establish a live baseline.
-- PR #301 follows as observation-only CC Switch adaptation and must be mechanically restacked without importing authority.
+- PR #300 is merged and accepted.
+- PR #301 is the current earliest eligible observation-only surface and has been mechanically restacked onto accepted main.
 - PR #225 is presentation-only and remains last.
 
-The immediate engineering order is to independently accept #300, then mechanically restack and accept #301, then complete the bounded context-capsule automation packet before any separately authorized live Golden Path task. Do not begin live RWE or later stages.
+The immediate engineering order is to independently accept #301, then complete the bounded context-capsule automation packet before any separately authorized live Golden Path task. Do not begin live RWE or later stages.
 
 ## Evidence Required for Every Engineering Board
 
@@ -136,23 +135,13 @@ Stop before any of the following:
 - unreviewed schema migration or SQLite/PostgreSQL semantic divergence;
 - performance, cost, or learning claim without comparable evidence.
 
-## Packet PE7-RWE-AUTHORITY-RESTACK-1 — provider-free PR #300 reconciliation
+## Packet PE7-OBSERVATION-RESTACK-1 — observation-only PR #301 reconciliation
 
 **State:** `IN_PROGRESS`
 
-**Owned PR:** #300
-
-PR #299 is the accepted authority foundation. Mechanically restack PR #300 onto accepted `main`, reconcile it against the final v33 store/spend/lease semantics, remove stale duplicated assumptions, run complete exact-head CI and independent review, and stop. This packet is provider-free and cannot establish a live RWE baseline or authorize a provider call.
-
-## Packet PE7-OBSERVATION-RESTACK-1 — observation-only PR #301 reconciliation
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE7-RWE-AUTHORITY-RESTACK-1
-
 **Owned PR:** #301
 
-After PR #300 is accepted, mechanically restack PR #301 as an observation-only layer. It may normalize usage and pricing observations but must not import authority, credentials, proxy ownership, budget ownership, or live execution.
+PR #300 is the accepted observation foundation. Mechanically restack PR #301 as an observation-only layer onto accepted main, verify observation file blob identity, run complete exact-head CI and independent review, and stop. This packet is observation-only and cannot import authority, credentials, proxy ownership, budget ownership, or live execution.
 
 ## Packet PE7-CONTEXT-CAPSULE-AUTOMATION-1 — exact-head publication and session injection
 
