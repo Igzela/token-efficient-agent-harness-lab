@@ -76,7 +76,7 @@ No earlier authority implies a later one. In particular, risk acknowledgement is
 | #301 | Proposed `engine/src/execution_usage/{protocol_usage,model_normalize,pricing_estimate,endpoint_identity}.rs` plus adapter changes and third-party notices | Observation only; blocked until #300 is accepted; must canonicalize token buckets and preserve trustworthy provider/request identity; no authority import |
 | #225 | Dashboard presentation | Last; may project accepted schemas only |
 
-PR #297/#298 are superseded by accepted PR #299 and should close without merge. PR #303 is superseded by accepted PostgreSQL ordering repair PR #304 and should close without merge.
+PR #297/#298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304.
 
 Do not copy explanatory labels into file names. Always inspect the actual final branch tree before documenting an owner.
 
