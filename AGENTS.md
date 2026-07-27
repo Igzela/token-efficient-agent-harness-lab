@@ -29,6 +29,14 @@ Conciseness must preserve quality. At session start, establish the leading valid
 
 Full Agent Autonomy Mode covers repository-scoped, testable, observable, verification-gated, and rollbackable work. The agent may inspect, resolve bounded design gaps, implement, test, review, document, repair CI, create PRs, and manually merge eligible work. Material architecture, authority, schema, security, evaluator, release, or recovery decisions must be recorded in an existing authoritative document.
 
+## Planning and Execution Boundary
+
+Cross-packet direction, architecture and authority choices, packet goal, prerequisites, ordering, acceptance criteria, and GO/NO-GO decisions belong to the planning or architecture process and their canonical document owners. The implementation agent may decide how to execute the accepted packet, but may not silently decide what the project should do next.
+
+Packet-internal judgment may choose implementation details, reuse existing owners, add focused tests, repair root causes, and synchronize the smallest canonical documents. It must not broaden scope, reorder packets, create a parallel owner, or change a schema, durable contract, security/recovery boundary, acceptance gate, or strategic claim unless the active packet and verified authority explicitly permit that change.
+
+When a necessary change crosses that boundary, stop with `DECISION_REQUIRED`; report the evidence, available options, consequences, and smallest proposed packet/doc update. Do not implement the proposed direction or mark it accepted before the planning process or canonical owner authorizes it.
+
 ## Model Selection
 
 Model and reasoning effort are user/tool settings. Do not edit model configuration to satisfy repository instructions; model choice never reduces testing, review, CI, audit, compatibility, compensation, or rollback.
