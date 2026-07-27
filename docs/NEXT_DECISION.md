@@ -141,7 +141,7 @@ Stop before any of the following:
 
 **Owned PR:** #301
 
-PR #300 is the accepted observation foundation. Mechanically restack PR #301 as an observation-only layer onto accepted main, verify observation file blob identity, run complete exact-head CI and independent review, and stop. This packet is observation-only and cannot import authority, credentials, proxy ownership, budget ownership, or live execution.
+PR #300 is the accepted prerequisite and RWE authority foundation. Mechanically restack PR #301 as an observation-only layer onto accepted main, verify observation file blob identity, run complete exact-head CI and independent review, and stop. This packet is observation-only and cannot import authority, credentials, proxy ownership, budget ownership, or live execution.
 
 ## Packet PE7-CONTEXT-CAPSULE-AUTOMATION-1 — exact-head publication and session injection
 
