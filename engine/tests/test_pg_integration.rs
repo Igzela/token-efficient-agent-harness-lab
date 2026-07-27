@@ -43,13 +43,18 @@ use engine::provider::embedding::{
 #[cfg(feature = "pg-tests")]
 use engine::provider::transport::{HttpError, HttpRequest, HttpResponse, HttpTransport};
 #[cfg(feature = "pg-tests")]
+use engine::rwe::corpus::freeze_first_rwe_corpus;
+#[cfg(feature = "pg-tests")]
+use engine::rwe::runner::{persist_rwe_run_authorization, RweRunAuthorizationBody};
+#[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::BudgetAutoPausePolicy;
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::{
     AuthenticatedPrincipal, CostAuthority, DurableMemoryCreate, DurableMemoryRevision,
     ExternalRuntimeInvocationClaim, ExternalRuntimeScope, LocalProductStore,
     MemoryRetrievalRequest, MemoryScope, ProviderEmbeddingResolutionAction,
-    ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, SpendAuthorizationRequest,
+    ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, RwePerTaskBudget,
+    SpendAuthorizationRequest,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -1818,6 +1823,9 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_preserves_spend_rollback_gua
         .count();
     assert_eq!(output_audits, 1);
 
+    store
+        .rollback_v34_to_v33("pg-rollback-operator", true)
+        .unwrap();
     let rollback_error = store
         .rollback_v33_to_v32("pg-rollback-operator", true)
         .expect_err("PostgreSQL must not drop spend history while any spend exists");
@@ -6307,5 +6315,953 @@ fn pg_external_runtime_receipts_are_concurrent_restart_safe_and_scope_bound() {
             .filter(|outcome| matches!(outcome, ExternalRuntimeInvocationClaim::Busy { .. }))
             .count(),
         1
+    );
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_authority_rejects_foreign_replay_and_stale_task_attempt_replay() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-{tag}");
+    let owner = format!("fixture-principal-owner-{tag}");
+    let foreign_tenant = format!("foreign-tenant-rwe-{tag}");
+    let foreign_owner = format!("fixture-principal-foreign-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(&tenant, &owner).unwrap();
+    let foreign =
+        AuthenticatedPrincipal::fixture_for_tests(&foreign_tenant, &foreign_owner).unwrap();
+    let corpus = freeze_first_rwe_corpus().unwrap();
+    let authorization_id = format!("rwe-pg-auth-{tag}");
+    let budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, None))
+        .collect::<Vec<_>>();
+    let body = RweRunAuthorizationBody {
+        authorization_id: authorization_id.clone(),
+        corpus_sha256: corpus.corpus_sha256.clone(),
+        golden_path_product_task_id: "pg-fixture-product-task".into(),
+        principal_id: principal.principal_id().into(),
+        principal_kind: principal.principal_kind().as_str().into(),
+        task_ids: corpus
+            .tasks
+            .iter()
+            .map(|task| task.task_id.clone())
+            .collect(),
+        max_total_provider_requests: corpus
+            .tasks
+            .iter()
+            .map(|task| task.per_task_max_provider_requests)
+            .sum(),
+        max_total_tokens: corpus
+            .tasks
+            .iter()
+            .map(|task| task.per_task_max_total_tokens)
+            .sum(),
+        max_wall_time_ms: corpus.tasks.iter().map(|task| task.timeout_ms).sum(),
+        cost_authority: CostAuthority::CostUnavailable,
+        per_task_budgets: budgets,
+        binary_path: "/usr/bin/codex".into(),
+        binary_version: "0.145.0".into(),
+        binary_sha256: "ab".repeat(32),
+        provider_kind: "openai_compatible".into(),
+        provider_host: "api.openai.com".into(),
+        provider_base_url: "https://api.openai.com/v1".into(),
+        target_repo: "org/disposable".into(),
+        target_main_sha: "a".repeat(40),
+        executor_identity: "codex-0.145.0".into(),
+        model_identity: "gpt-test-model".into(),
+        draft_pr_only: true,
+        admitted_executor: corpus.admitted_executor.clone(),
+        auto_merge_disabled: corpus.auto_merge_disabled,
+        expires_at: "2026-08-01T00:00:00Z".into(),
+    };
+    persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+    let run_id = format!("rwe-pg-run-{tag}");
+    let mut run_body = body.to_json();
+    run_body["run_id"] = json!(run_id.clone());
+    run_body["provider_free_fixture"] = json!(true);
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
+        .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+
+    let foreign_err = store
+        .admit_rwe_run(&foreign, &run_id, &authorization_id, &run_body, true)
+        .unwrap_err();
+    assert!(foreign_err.contains("tenant") || foreign_err.contains("principal"));
+    assert!(store
+        .admit_rwe_run(
+            &principal,
+            &run_id,
+            "wrong-rwe-authorization",
+            &run_body,
+            true,
+        )
+        .is_err());
+    let mut conflicting_body = run_body.clone();
+    conflicting_body["task_ids"] = json!([corpus.tasks[0].task_id]);
+    assert!(store
+        .admit_rwe_run(
+            &principal,
+            &run_id,
+            &authorization_id,
+            &conflicting_body,
+            true
+        )
+        .is_err());
+
+    let task = &corpus.tasks[0];
+    let evidence = json!({"task_id": task.task_id, "replay": true});
+    assert!(store
+        .persist_rwe_task_attempt(
+            &run_id,
+            "stale-lease",
+            &format!("{run_id}:attempt"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .is_err());
+    store
+        .persist_rwe_task_attempt(
+            &run_id,
+            &lease,
+            &format!("{run_id}:attempt"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .unwrap();
+    assert!(store
+        .persist_rwe_task_attempt(
+            &run_id,
+            "stale-lease",
+            &format!("{run_id}:attempt"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .is_err());
+
+    let replay = store
+        .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
+        .unwrap();
+    assert_eq!(replay["idempotent_replay"], true);
+    assert!(replay.get("lease_token").is_none());
+    assert!(store.get_rwe_run(&run_id).unwrap().unwrap()["lease_token"].is_null());
+}
+
+#[cfg(feature = "pg-tests")]
+fn pg_rwe_fixture_authorization_body(
+    tag: &str,
+    principal: &AuthenticatedPrincipal,
+    corpus: &engine::rwe::corpus::FirstRweCorpus,
+    budgets: Vec<RwePerTaskBudget>,
+    cost_authority: CostAuthority,
+) -> RweRunAuthorizationBody {
+    RweRunAuthorizationBody {
+        authorization_id: format!("rwe-pg-auth-{tag}"),
+        corpus_sha256: corpus.corpus_sha256.clone(),
+        golden_path_product_task_id: "pg-fixture-product-task".into(),
+        principal_id: principal.principal_id().into(),
+        principal_kind: principal.principal_kind().as_str().into(),
+        task_ids: corpus
+            .tasks
+            .iter()
+            .map(|task| task.task_id.clone())
+            .collect(),
+        max_total_provider_requests: corpus
+            .tasks
+            .iter()
+            .map(|task| task.per_task_max_provider_requests)
+            .sum(),
+        max_total_tokens: corpus
+            .tasks
+            .iter()
+            .map(|task| task.per_task_max_total_tokens)
+            .sum(),
+        max_wall_time_ms: corpus.tasks.iter().map(|task| task.timeout_ms).sum(),
+        cost_authority,
+        per_task_budgets: budgets,
+        binary_path: "/usr/bin/codex".into(),
+        binary_version: corpus.admitted_codex_version.clone(),
+        binary_sha256: "ab".repeat(32),
+        provider_kind: "openai_compatible".into(),
+        provider_host: "api.openai.com".into(),
+        provider_base_url: "https://api.openai.com/v1".into(),
+        target_repo: "org/disposable".into(),
+        target_main_sha: "a".repeat(40),
+        executor_identity: corpus.tasks[0].executor_identity.clone(),
+        model_identity: corpus.tasks[0].model_identity.clone(),
+        draft_pr_only: true,
+        admitted_executor: corpus.admitted_executor.clone(),
+        auto_merge_disabled: corpus.auto_merge_disabled,
+        expires_at: "2026-08-01T00:00:00Z".into(),
+    }
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_corpus_envelope_rejects_mutations_through_issue_and_admit() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-env-{tag}");
+    let owner = format!("fixture-principal-owner-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(&tenant, &owner).unwrap();
+    let corpus = freeze_first_rwe_corpus().unwrap();
+
+    let bad_budgets = corpus
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(i, task)| {
+            let mut budget = RwePerTaskBudget::from_task_definition(task, None);
+            if i == 0 {
+                budget.max_retries = 99;
+            }
+            budget
+        })
+        .collect::<Vec<_>>();
+    let bad_body = pg_rwe_fixture_authorization_body(
+        &format!("retry-{tag}"),
+        &principal,
+        &corpus,
+        bad_budgets,
+        CostAuthority::CostUnavailable,
+    );
+    assert!(persist_rwe_run_authorization(&store, &principal, &bad_body, true).is_err());
+
+    let bad_budgets = corpus
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(i, task)| {
+            let mut budget = RwePerTaskBudget::from_task_definition(task, None);
+            if i == 0 {
+                budget.executor_identity = "rogue-executor".into();
+            }
+            budget
+        })
+        .collect::<Vec<_>>();
+    let bad_body = pg_rwe_fixture_authorization_body(
+        &format!("exec-{tag}"),
+        &principal,
+        &corpus,
+        bad_budgets,
+        CostAuthority::CostUnavailable,
+    );
+    assert!(persist_rwe_run_authorization(&store, &principal, &bad_body, true).is_err());
+
+    let bad_budgets = corpus
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(i, task)| {
+            let mut budget = RwePerTaskBudget::from_task_definition(task, None);
+            if i == 0 {
+                budget.allowed_mutable_paths = vec!["src/rogue.rs".into()];
+            }
+            budget
+        })
+        .collect::<Vec<_>>();
+    let bad_body = pg_rwe_fixture_authorization_body(
+        &format!("paths-{tag}"),
+        &principal,
+        &corpus,
+        bad_budgets,
+        CostAuthority::CostUnavailable,
+    );
+    assert!(persist_rwe_run_authorization(&store, &principal, &bad_body, true).is_err());
+
+    let bad_budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, Some(1.0)))
+        .collect::<Vec<_>>();
+    let bad_body = pg_rwe_fixture_authorization_body(
+        &format!("cost-ceiling-{tag}"),
+        &principal,
+        &corpus,
+        bad_budgets,
+        CostAuthority::ProviderReported {
+            max_cost: 1.0,
+            currency: "USD".into(),
+        },
+    );
+    assert!(persist_rwe_run_authorization(&store, &principal, &bad_body, true).is_err());
+
+    let good_budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, Some(0.25)))
+        .collect::<Vec<_>>();
+    let good_body = pg_rwe_fixture_authorization_body(
+        &format!("good-{tag}"),
+        &principal,
+        &corpus,
+        good_budgets,
+        CostAuthority::ProviderReported {
+            max_cost: 5.0,
+            currency: "USD".into(),
+        },
+    );
+    let auth = persist_rwe_run_authorization(&store, &principal, &good_body, true).unwrap();
+    let auth_id = auth["authorization_id"].as_str().unwrap().to_string();
+    let run_id = format!("rwe-pg-env-run-{tag}");
+    let mut run_body = good_body.to_json();
+    run_body["run_id"] = json!(run_id.clone());
+    run_body["provider_free_fixture"] = json!(true);
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &auth_id, &run_body, true)
+        .unwrap();
+    assert!(admitted.get("lease_token").is_some());
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_concurrent_exact_task_attempt_replay_and_conflict() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-conc-{tag}");
+    let owner = format!("fixture-principal-owner-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(&tenant, &owner).unwrap();
+    let corpus = freeze_first_rwe_corpus().unwrap();
+    let budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, None))
+        .collect::<Vec<_>>();
+    let body = pg_rwe_fixture_authorization_body(
+        &tag,
+        &principal,
+        &corpus,
+        budgets,
+        CostAuthority::CostUnavailable,
+    );
+    persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+    let authorization_id = body.authorization_id.clone();
+    let run_id = format!("rwe-pg-conc-run-{tag}");
+    let mut run_body = body.to_json();
+    run_body["run_id"] = json!(run_id.clone());
+    run_body["provider_free_fixture"] = json!(true);
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
+        .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+
+    let Some(url) = std::env::var("ACP_TEST_DATABASE_URL").ok() else {
+        return;
+    };
+    let task = &corpus.tasks[0];
+    let attempt_id = format!("{run_id}:attempt");
+    let evidence = json!({"task_id": task.task_id, "concurrent": true});
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let b = std::sync::Arc::clone(&barrier);
+        let url = url.clone();
+        let run_id = run_id.clone();
+        let lease = lease.clone();
+        let attempt_id = attempt_id.clone();
+        let task_id = task.task_id.clone();
+        let def = task.definition_sha256.clone();
+        let evidence = evidence.clone();
+        handles.push(thread::spawn(move || {
+            let store = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+            b.wait();
+            store.persist_rwe_task_attempt(
+                &run_id,
+                &lease,
+                &attempt_id,
+                &task_id,
+                &def,
+                "fixture_success",
+                &evidence,
+            )
+        }));
+    }
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        2,
+        "both concurrent exact attempts must succeed via replay"
+    );
+    let rows = results.into_iter().map(|r| r.unwrap()).collect::<Vec<_>>();
+    assert_eq!(
+        rows.iter()
+            .filter(|v| v["idempotent_replay"].as_bool() == Some(false))
+            .count(),
+        1
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|v| v["idempotent_replay"].as_bool() == Some(true))
+            .count(),
+        1
+    );
+
+    let conflict_evidence = json!({"task_id": task.task_id, "concurrent": "different"});
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for ev in [evidence.clone(), conflict_evidence.clone()] {
+        let b = std::sync::Arc::clone(&barrier);
+        let url = url.clone();
+        let run_id = run_id.clone();
+        let lease = lease.clone();
+        let attempt_id = format!("{run_id}:conflict-attempt");
+        let task_id = task.task_id.clone();
+        let def = task.definition_sha256.clone();
+        handles.push(thread::spawn(move || {
+            let store = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+            b.wait();
+            store.persist_rwe_task_attempt(
+                &run_id,
+                &lease,
+                &attempt_id,
+                &task_id,
+                &def,
+                "fixture_success",
+                &ev,
+            )
+        }));
+    }
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "exactly one conflicting attempt may succeed"
+    );
+    assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+    let err = results
+        .into_iter()
+        .find(|r| r.is_err())
+        .unwrap()
+        .unwrap_err();
+    assert!(err.contains("conflict"));
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_concurrent_terminalization_and_restart_without_lease() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-term-{tag}");
+    let owner = format!("fixture-principal-owner-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(&tenant, &owner).unwrap();
+    let corpus = freeze_first_rwe_corpus().unwrap();
+    let budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, None))
+        .collect::<Vec<_>>();
+    let body = pg_rwe_fixture_authorization_body(
+        &tag,
+        &principal,
+        &corpus,
+        budgets,
+        CostAuthority::CostUnavailable,
+    );
+    persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+    let authorization_id = body.authorization_id.clone();
+    let run_id = format!("rwe-pg-term-run-{tag}");
+    let mut run_body = body.to_json();
+    run_body["run_id"] = json!(run_id.clone());
+    run_body["provider_free_fixture"] = json!(true);
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
+        .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+
+    let task = &corpus.tasks[0];
+    let evidence = json!({"task_id": task.task_id, "terminal": true});
+    store
+        .persist_rwe_task_attempt(
+            &run_id,
+            &lease,
+            &format!("{run_id}:attempt"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .unwrap();
+
+    let aggregate = json!({
+        "schema_version": "rwe_run_evidence.v1",
+        "run_id": run_id,
+        "authorization_id": authorization_id,
+        "corpus_sha256": corpus.corpus_sha256,
+        "corpus_schema": engine::rwe::corpus::RWE_CORPUS_SCHEMA,
+        "task_results": [evidence],
+        "aggregate_provider_requests": 0,
+        "live_provider_request": false,
+        "live_baseline_sealed": false,
+        "provider_free_fixture_completion": true,
+        "note": "fixture concurrency test",
+    });
+    let evidence_sha = hex::encode(Sha256::digest(aggregate.to_string().as_bytes()));
+
+    let Some(url) = std::env::var("ACP_TEST_DATABASE_URL").ok() else {
+        return;
+    };
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let b = std::sync::Arc::clone(&barrier);
+        let url = url.clone();
+        let run_id = run_id.clone();
+        let lease = lease.clone();
+        let aggregate = aggregate.clone();
+        let evidence_sha = evidence_sha.clone();
+        handles.push(thread::spawn(move || {
+            let store = LocalProductStore::new_postgres(&url, utc_now_string).unwrap();
+            b.wait();
+            store.complete_rwe_run(
+                &run_id,
+                &lease,
+                "fixture_complete",
+                &aggregate,
+                &evidence_sha,
+            )
+        }));
+    }
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        2,
+        "concurrent terminal replay must be idempotent"
+    );
+    let rows = results.into_iter().map(|r| r.unwrap()).collect::<Vec<_>>();
+    assert_eq!(
+        rows.iter()
+            .filter(|v| v["idempotent_replay"].as_bool() == Some(false))
+            .count(),
+        1
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|v| v["idempotent_replay"].as_bool() == Some(true))
+            .count(),
+        1
+    );
+    for row in &rows {
+        assert!(row.get("lease_token").is_none() || row["lease_token"].is_null());
+    }
+
+    let run_view = store.get_rwe_run(&run_id).unwrap().unwrap();
+    assert!(run_view.get("lease_token").is_none() || run_view["lease_token"].is_null());
+
+    // Restart without lease recovery: exact terminal replay with a stale/missing lease succeeds.
+    let replay = store
+        .complete_rwe_run(
+            &run_id,
+            "stale-lease",
+            "fixture_complete",
+            &aggregate,
+            &evidence_sha,
+        )
+        .unwrap();
+    assert_eq!(replay["idempotent_replay"], true);
+    assert!(replay.get("lease_token").is_none() || replay["lease_token"].is_null());
+
+    // A missing or stale lease cannot write a new task attempt after terminalization.
+    let err = store
+        .persist_rwe_task_attempt(
+            &run_id,
+            &lease,
+            &format!("{run_id}:late-attempt"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .unwrap_err();
+    assert!(err.contains("admitted") || err.contains("lease") || err.contains("current run"));
+}
+
+/// Append an application_name parameter to a PostgreSQL connection string.
+#[cfg(feature = "pg-tests")]
+fn url_with_application_name(url: &str, app_name: &str) -> String {
+    if url.starts_with("postgres://") || url.starts_with("postgresql://") {
+        if url.contains('?') {
+            format!("{url}&application_name={app_name}")
+        } else {
+            format!("{url}?application_name={app_name}")
+        }
+    } else {
+        format!("{url} application_name={app_name}")
+    }
+}
+
+/// Observe a specific named backend waiting on a specific advisory lock key.
+/// Joins pg_stat_activity (by application_name) with pg_locks (by advisory lock key
+/// identity) so unrelated waiters cannot produce false positives.
+#[cfg(feature = "pg-tests")]
+fn is_named_backend_waiting_on_lock(observer_url: &str, app_name: &str, lock_key: &str) -> bool {
+    let mut client = postgres::Client::connect(observer_url, postgres::NoTls).unwrap();
+    let row = client
+        .query_one(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_locks l
+                JOIN pg_stat_activity a ON l.pid = a.pid
+                WHERE l.locktype = 'advisory'
+                  AND l.granted = false
+                  AND a.application_name = $1
+                  AND l.classid::bigint = (hashtext($2)::bigint >> 32) & 4294967295::bigint
+                  AND l.objid::bigint = hashtext($2)::bigint & 4294967295::bigint
+            )
+            "#,
+            &[&app_name, &lock_key],
+        )
+        .unwrap();
+    row.get::<_, bool>(0)
+}
+
+/// Poll until a specific named backend is observed waiting on the target advisory lock.
+#[cfg(feature = "pg-tests")]
+fn wait_for_named_waiter(
+    observer_url: &str,
+    app_name: &str,
+    lock_key: &str,
+    timeout_ms: u64,
+) -> bool {
+    let start = std::time::Instant::now();
+    let poll_interval = std::time::Duration::from_millis(10);
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+
+    while start.elapsed() < timeout {
+        if is_named_backend_waiting_on_lock(observer_url, app_name, lock_key) {
+            return true;
+        }
+        std::thread::sleep(poll_interval);
+    }
+    false
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_attempt_then_terminalization_lock_ordering() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-lock-{tag}");
+    let owner = format!("fixture-principal-lock-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(&tenant, &owner).unwrap();
+    let corpus = freeze_first_rwe_corpus().unwrap();
+    let budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, None))
+        .collect::<Vec<_>>();
+    let body = pg_rwe_fixture_authorization_body(
+        &tag,
+        &principal,
+        &corpus,
+        budgets,
+        CostAuthority::CostUnavailable,
+    );
+    persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+    let authorization_id = body.authorization_id.clone();
+    let run_id = format!("rwe-pg-lock-run-{tag}");
+    let mut run_body = body.to_json();
+    run_body["run_id"] = json!(run_id.clone());
+    run_body["provider_free_fixture"] = json!(true);
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
+        .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+
+    let Some(url) = std::env::var("ACP_TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let task = &corpus.tasks[0];
+    let attempt_id = format!("{run_id}:lock-attempt");
+    let evidence = json!({"task_id": task.task_id, "lock_test": true});
+    let aggregate = json!({
+        "schema_version": "rwe_run_evidence.v1",
+        "run_id": run_id,
+        "authorization_id": authorization_id,
+        "corpus_sha256": corpus.corpus_sha256,
+        "corpus_schema": engine::rwe::corpus::RWE_CORPUS_SCHEMA,
+        "task_results": [evidence.clone()],
+        "aggregate_provider_requests": 0,
+        "live_provider_request": false,
+        "live_baseline_sealed": false,
+        "provider_free_fixture_completion": true,
+        "note": "lock ordering test",
+    });
+    let evidence_sha = hex::encode(Sha256::digest(aggregate.to_string().as_bytes()));
+
+    let lock_key = format!("rwer:{run_id}");
+    let attempt_app = format!("rwe-attempt-{tag}");
+    let terminal_app = format!("rwe-terminal-{tag}");
+
+    let mut blocker_client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut blocker_tx = blocker_client.transaction().unwrap();
+    blocker_tx
+        .execute("SELECT pg_advisory_xact_lock(hashtext($1))", &[&lock_key])
+        .unwrap();
+
+    let url_a = url_with_application_name(&url, &attempt_app);
+    let run_id_a = run_id.clone();
+    let lease_a = lease.clone();
+    let attempt_id_a = attempt_id.clone();
+    let task_id_a = task.task_id.clone();
+    let def_a = task.definition_sha256.clone();
+    let evidence_a = evidence.clone();
+    let attempt_handle = thread::spawn(move || {
+        let store = LocalProductStore::new_postgres(&url_a, utc_now_string).unwrap();
+        store.persist_rwe_task_attempt(
+            &run_id_a,
+            &lease_a,
+            &attempt_id_a,
+            &task_id_a,
+            &def_a,
+            "fixture_success",
+            &evidence_a,
+        )
+    });
+
+    assert!(
+        wait_for_named_waiter(&url, &attempt_app, &lock_key, 5000),
+        "attempt-first: must observe attempt backend 'attempt' waiting on rwer lock"
+    );
+
+    let url_t = url_with_application_name(&url, &terminal_app);
+    let run_id_t = run_id.clone();
+    let lease_t = lease.clone();
+    let aggregate_t = aggregate.clone();
+    let evidence_sha_t = evidence_sha.clone();
+    let term_handle = thread::spawn(move || {
+        let store = LocalProductStore::new_postgres(&url_t, utc_now_string).unwrap();
+        store.complete_rwe_run(
+            &run_id_t,
+            &lease_t,
+            "fixture_complete",
+            &aggregate_t,
+            &evidence_sha_t,
+        )
+    });
+
+    assert!(
+        wait_for_named_waiter(&url, &terminal_app, &lock_key, 5000),
+        "attempt-first: must observe terminal backend 'terminal' waiting on rwer lock"
+    );
+
+    blocker_tx.rollback().unwrap();
+    drop(blocker_client);
+
+    let attempt_result = attempt_handle.join().unwrap();
+    assert!(
+        attempt_result.is_ok(),
+        "attempt-first: attempt must commit before terminal: {attempt_result:?}"
+    );
+
+    let term_result = term_handle.join().unwrap();
+    assert!(
+        term_result.is_ok(),
+        "attempt-first: terminal must succeed after attempt: {term_result:?}"
+    );
+    assert_eq!(term_result.unwrap()["status"], "fixture_complete");
+
+    let post_terminal = store.get_rwe_run(&run_id).unwrap().unwrap();
+    assert_eq!(post_terminal["status"], "fixture_complete");
+
+    let late_err = store
+        .persist_rwe_task_attempt(
+            &run_id,
+            &lease,
+            &format!("{run_id}:late-after-terminal"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .unwrap_err();
+    assert!(
+        late_err.contains("admitted")
+            || late_err.contains("lease")
+            || late_err.contains("current run")
+    );
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_rwe_terminal_first_rejects_late_attempt() {
+    let Some(store) = test_store() else {
+        return;
+    };
+    let tag = uuid_tag();
+    let tenant = format!("tenant-rwe-tf-{tag}");
+    let owner = format!("fixture-principal-tf-{tag}");
+    let principal = AuthenticatedPrincipal::fixture_for_tests(&tenant, &owner).unwrap();
+    let corpus = freeze_first_rwe_corpus().unwrap();
+    let budgets = corpus
+        .tasks
+        .iter()
+        .map(|task| RwePerTaskBudget::from_task_definition(task, None))
+        .collect::<Vec<_>>();
+    let body = pg_rwe_fixture_authorization_body(
+        &tag,
+        &principal,
+        &corpus,
+        budgets,
+        CostAuthority::CostUnavailable,
+    );
+    persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
+    let authorization_id = body.authorization_id.clone();
+    let run_id = format!("rwe-pg-tf-run-{tag}");
+    let mut run_body = body.to_json();
+    run_body["run_id"] = json!(run_id.clone());
+    run_body["provider_free_fixture"] = json!(true);
+    let admitted = store
+        .admit_rwe_run(&principal, &run_id, &authorization_id, &run_body, true)
+        .unwrap();
+    let lease = admitted["lease_token"].as_str().unwrap().to_string();
+
+    let Some(url) = std::env::var("ACP_TEST_DATABASE_URL").ok() else {
+        return;
+    };
+
+    let task = &corpus.tasks[0];
+    let attempt_id = format!("{run_id}:tf-attempt");
+    let evidence = json!({"task_id": task.task_id, "tf_test": true});
+    let aggregate = json!({
+        "schema_version": "rwe_run_evidence.v1",
+        "run_id": run_id,
+        "authorization_id": authorization_id,
+        "corpus_sha256": corpus.corpus_sha256,
+        "corpus_schema": engine::rwe::corpus::RWE_CORPUS_SCHEMA,
+        "task_results": [evidence.clone()],
+        "aggregate_provider_requests": 0,
+        "live_provider_request": false,
+        "live_baseline_sealed": false,
+        "provider_free_fixture_completion": true,
+        "note": "terminal-first test",
+    });
+    let evidence_sha = hex::encode(Sha256::digest(aggregate.to_string().as_bytes()));
+
+    let lock_key = format!("rwer:{run_id}");
+    let terminal_app = format!("rwe-terminal-tf-{tag}");
+    let attempt_app = format!("rwe-attempt-tf-{tag}");
+
+    let mut blocker_client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut blocker_tx = blocker_client.transaction().unwrap();
+    blocker_tx
+        .execute("SELECT pg_advisory_xact_lock(hashtext($1))", &[&lock_key])
+        .unwrap();
+
+    let url_t = url_with_application_name(&url, &terminal_app);
+    let run_id_t = run_id.clone();
+    let lease_t = lease.clone();
+    let aggregate_t = aggregate.clone();
+    let evidence_sha_t = evidence_sha.clone();
+    let term_handle = thread::spawn(move || {
+        let store = LocalProductStore::new_postgres(&url_t, utc_now_string).unwrap();
+        store.complete_rwe_run(
+            &run_id_t,
+            &lease_t,
+            "fixture_complete",
+            &aggregate_t,
+            &evidence_sha_t,
+        )
+    });
+
+    assert!(
+        wait_for_named_waiter(&url, &terminal_app, &lock_key, 5000),
+        "terminal-first: must observe terminal backend 'terminal' waiting on rwer lock"
+    );
+
+    let url_a = url_with_application_name(&url, &attempt_app);
+    let run_id_a = run_id.clone();
+    let lease_a = lease.clone();
+    let attempt_id_a = attempt_id.clone();
+    let task_id_a = task.task_id.clone();
+    let def_a = task.definition_sha256.clone();
+    let evidence_a = evidence.clone();
+    let attempt_handle = thread::spawn(move || {
+        let store = LocalProductStore::new_postgres(&url_a, utc_now_string).unwrap();
+        store.persist_rwe_task_attempt(
+            &run_id_a,
+            &lease_a,
+            &attempt_id_a,
+            &task_id_a,
+            &def_a,
+            "fixture_success",
+            &evidence_a,
+        )
+    });
+
+    assert!(
+        wait_for_named_waiter(&url, &attempt_app, &lock_key, 5000),
+        "terminal-first: must observe attempt backend 'attempt' waiting on rwer lock"
+    );
+
+    blocker_tx.rollback().unwrap();
+    drop(blocker_client);
+
+    let term_result = term_handle.join().unwrap();
+    assert!(
+        term_result.is_ok(),
+        "terminal-first: terminalization must commit first: {term_result:?}"
+    );
+    assert_eq!(term_result.unwrap()["status"], "fixture_complete");
+
+    let attempt_result = attempt_handle.join().unwrap();
+    assert!(
+        attempt_result.is_err(),
+        "terminal-first: attempt must be rejected after terminalization: {attempt_result:?}"
+    );
+    let err = attempt_result.unwrap_err();
+    assert!(
+        err.contains("admitted") || err.contains("lease") || err.contains("current run"),
+        "attempt rejection reason: {err}"
+    );
+
+    let post_terminal = store.get_rwe_run(&run_id).unwrap().unwrap();
+    assert_eq!(post_terminal["status"], "fixture_complete");
+
+    let late_err = store
+        .persist_rwe_task_attempt(
+            &run_id,
+            &lease,
+            &format!("{run_id}:late-after-terminal"),
+            &task.task_id,
+            &task.definition_sha256,
+            "fixture_success",
+            &evidence,
+        )
+        .unwrap_err();
+    assert!(
+        late_err.contains("admitted")
+            || late_err.contains("lease")
+            || late_err.contains("current run"),
+        "attempt after terminalization must be rejected: {late_err}"
     );
 }

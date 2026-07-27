@@ -37,6 +37,7 @@ mod product_tasks;
 mod provider_audit;
 mod recursive_execution;
 mod regression_report_artifacts;
+mod rwe_authority;
 mod schema;
 mod supervised_patch;
 pub use supervised_patch::TargetOutputClaim;
@@ -102,6 +103,8 @@ pub use policy_replay_producer::{
     REPLAY_PRODUCER_SCHEMA_VERSION,
 };
 pub use provider_audit::{ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest};
+pub(crate) use rwe_authority::validate_rwe_corpus_envelope;
+pub use rwe_authority::{RweAuthorizationIssueRequest, RwePerTaskBudget};
 pub(crate) use tool_execution_policy::ToolExecutionGate;
 pub(crate) use workflow_runs::is_execution_owner_conflict;
 
@@ -245,7 +248,7 @@ impl LocalProductStore {
         &self.db_path
     }
 
-    pub(super) fn now(&self) -> String {
+    pub fn now(&self) -> String {
         (self.clock)()
     }
 
