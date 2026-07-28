@@ -56,6 +56,12 @@ bun run build:static
 cd "${ROOT}"
 cargo build -p engine
 
+ENGINE_BIN="$(cargo metadata --no-deps --format-version 1 | python3 -c "import sys,json; print(json.load(sys.stdin)['target_directory'] + '/debug/agent-control-plane')")"
+if [[ ! -x "${ENGINE_BIN}" ]]; then
+  echo "ERROR: engine binary not found at ${ENGINE_BIN}" >&2
+  exit 1
+fi
+
 unset ACP_PROVIDER_TYPE
 unset ACP_ENABLE_PROVIDER_EXECUTION
 unset ACP_API_KEY
@@ -69,7 +75,7 @@ PORT="${PORT}" \
 ACP_DB_PATH="${TMP_DIR}/local-team.db" \
 ACP_BACKUP_DIR="${TMP_DIR}/backups" \
 ACP_DASHBOARD_DIR="${ROOT}/dashboard/out" \
-"${ROOT}/target/debug/agent-control-plane" >"${TMP_DIR}/engine.log" 2>&1 &
+"${ENGINE_BIN}" >"${TMP_DIR}/engine.log" 2>&1 &
 ENGINE_PID="$!"
 
 for _ in {1..80}; do

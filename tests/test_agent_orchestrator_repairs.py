@@ -107,16 +107,32 @@ class TestWorkflowContracts(unittest.TestCase):
             source,
             r"expected_sha:\n(?:.*\n){0,4}\s+required:\s*true",
         )
-        # Every checkout must pin the resolved expected commit.
-        self.assertEqual(source.count("ref: ${{ env.EXPECTED_SHA }}"), 7)
+        # Every checkout must pin the resolved expected commit (seven test jobs + context-capsule publisher).
+        self.assertEqual(source.count("ref: ${{ env.EXPECTED_SHA }}"), 8)
         # Exact-head verification must not be skippable via inputs.expected_sha.
         self.assertNotIn("if: inputs.expected_sha", source)
-        self.assertEqual(source.count("name: Verify exact requested head"), 7)
+        self.assertEqual(source.count("name: Verify exact requested head"), 8)
         # Shell verification uses env (not raw input interpolation) and fails closed.
         scripts = self.shell_scripts("tests.yml")
         self.assertIn('if [ -z "${EXPECTED_SHA}" ]', scripts)
         self.assertIn('if [ "${actual}" != "${EXPECTED_SHA}" ]', scripts)
         self.assertIn("exit 1", scripts)
+
+    def test_context_capsule_publisher_binds_pr_and_reuses_one_snapshot(self):
+        source = self.read("tests.yml")
+        self.assertIn("GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}", source)
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", source)
+        self.assertIn("uses: ./trusted-base/actions/exact-head-check", source)
+        self.assertIn("--exact-head-proof trusted-exact-head-proof.json", source)
+        self.assertNotIn('checks["exact-head-check"] = {"result": "success"}', source)
+        self.assertIn("--capsule-json context-capsule/context-capsule.json", source)
+        repair = self.read("agent-ci-repair.yml")
+        prompt_step = repair.split("Build repair prompt from trusted checkout and bounded evidence", 1)[1].split("Recheck control immediately before Codex repair", 1)[0]
+        self.assertNotIn("GITHUB_SHA: ${{ inputs.head_sha }}", prompt_step)
+        self.assertIn("AGENT_CONTEXT_EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}", prompt_step)
+        self.assertIn('actual="$(git rev-parse HEAD)"', prompt_step)
+        self.assertIn('test "$actual" = "$INPUT_HEAD_SHA"', prompt_step)
+        self.assertNotIn("GH_TOKEN:", prompt_step)
 
     def test_repair_dispatch_carries_run_id_not_unbounded_logs(self):
         controller = self.read("agent-controller.yml")
@@ -987,7 +1003,9 @@ class TestDispatcher(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["workflow_run_id"], 456)
 
     def test_ci_repair_prompt_cli_works_from_repository_root_with_artifact(self):
-        sha = "c" * 40
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
         with tempfile.TemporaryDirectory() as temp:
             temp_path = pathlib.Path(temp)
             gh_path = temp_path / "gh"
@@ -1003,6 +1021,11 @@ class TestDispatcher(unittest.TestCase):
                 **os.environ,
                 "PATH": f"{temp}:{os.environ['PATH']}",
                 "AGENT_REPAIR_COUNT": "1",
+                # This fixture does not model a dispatch-bound workflow head.
+                # An inherited pull-request merge SHA must not impersonate one.
+                "GITHUB_SHA": "",
+                "GITHUB_RUN_ID": "",
+                "AGENT_CONTEXT_EXPECTED_HEAD_SHA": sha,
             }
             result = subprocess.run(
                 [sys.executable, str(CONTROL / "prompt_builder.py"), "ci-repair", "207", sha, str(evidence)],

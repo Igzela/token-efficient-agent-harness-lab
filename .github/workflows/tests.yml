@@ -72,7 +72,7 @@ jobs:
       - name: Check site OG metadata
         run: uv run --no-project python tools/check_site_og_metadata.py
       - name: Run relocated utility tests
-        run: uv run --no-project python -m unittest discover -s tools -p "test_*.py"
+        run: uv run --no-project --with pyyaml python -m unittest discover -s tools -p "test_*.py"
       - name: Run no-provider demo unit tests
         run: uv run --no-project python -m unittest tests.test_demo_no_provider
       - name: Run exact-head action contract tests
@@ -442,3 +442,119 @@ jobs:
             echo "All 3 docker compose build attempts failed"
             exit 1
           fi
+
+  context-capsule:
+    name: context-capsule
+    needs:
+      - python-tests
+      - rust-tests
+      - pg-integration-tests
+      - typescript-tests
+      - native-runtime
+      - docker-build
+      - rust-typescript-cutover
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
+      GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
+      - name: Verify exact requested head
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
+      - name: Check out trusted exact-head verifier
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-base
+          persist-credentials: false
+      - name: Verify live PR head with trusted base action
+        if: github.event_name == 'pull_request'
+        uses: ./trusted-base/actions/exact-head-check
+        with:
+          github-token: ${{ github.token }}
+          pull-request: ${{ github.event.pull_request.number }}
+          expected-head: ${{ env.EXPECTED_SHA }}
+          allow-fork-head: "true"
+          proof-path: trusted-exact-head-proof.json
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: |
+            **/uv.lock
+            **/pyproject.toml
+      - name: Convert needs context to source-check JSON
+        id: needs_json
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+
+          checks = json.loads(os.environ["NEEDS_JSON"])
+          with open("needs-context.json", "w", encoding="utf-8") as output:
+              json.dump(checks, output, sort_keys=True)
+          PY
+      - name: Generate context capsule
+        run: |
+          set -euo pipefail
+          mkdir -p context-capsule
+          args=(
+            --format json
+            --checks-json "$(cat needs-context.json)"
+            --event-name "${GITHUB_EVENT_NAME}"
+            --expected-head-sha "${EXPECTED_SHA}"
+          )
+          if [ -n "${GITHUB_PR_NUMBER}" ]; then
+            args+=(
+              --pr-number "${GITHUB_PR_NUMBER}"
+              --exact-head-proof trusted-exact-head-proof.json
+            )
+          fi
+          env -u GH_TOKEN -u GITHUB_TOKEN uv run --no-project python scripts/project_context.py \
+            "${args[@]}" > context-capsule/context-capsule.json
+          env -u GH_TOKEN -u GITHUB_TOKEN uv run --no-project python scripts/project_context.py \
+            --format markdown \
+            --capsule-json context-capsule/context-capsule.json > context-capsule/context-capsule.md
+      - name: Publish sanitized job summary
+        run: |
+          set -euo pipefail
+          echo '## Context Capsule' >> "$GITHUB_STEP_SUMMARY"
+          head -c 100000 context-capsule/context-capsule.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload context capsule artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: context-capsule-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.EXPECTED_SHA }}
+          path: context-capsule/
+          retention-days: 1
+          if-no-files-found: error
+      - name: Validate source-check matrix is fully successful
+        run: |
+          set -euo pipefail
+          uv run --no-project python scripts/project_context.py \
+            --format json \
+            --capsule-json context-capsule/context-capsule.json \
+            --require-success > /dev/null

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -54,6 +57,21 @@ Current review surface is PR #299.
 Issue #208 remains stopped and PR #299 is a prerequisite.
 """
         self.assertEqual(project_context.parse_first_routed_packet(text)["pr_number"], "302")
+
+    def test_explicit_non_numeric_owner_does_not_fallback_to_history(self) -> None:
+        for owner_label in ("Owned PR", "Review surface"):
+            with self.subTest(owner_label=owner_label):
+                text = f"""## Active Routing
+1. `PE7-AUTHORITY-1` — `IN_PROGRESS`.
+
+## Packet PE7-AUTHORITY-1
+**State:** `IN_PROGRESS`
+**{owner_label}:** TBD
+Phase one was accepted through PR #302.
+"""
+                self.assertIsNone(
+                    project_context.parse_first_routed_packet(text)["pr_number"]
+                )
 
     def test_parse_open_frontiers(self) -> None:
         text = """# Current Status
@@ -281,6 +299,586 @@ PR #299
             "notes": [],
         }
         json.dumps(capsule)
+
+    # -----------------------------------------------------------------------
+    # Exact-head alias map
+    # -----------------------------------------------------------------------
+
+    def test_exact_head_aliases_canonicalize(self) -> None:
+        for alias in ("exact-head-check", "exact-head", "exact-head-check / exact-head", "exact-head / exact-head-check"):
+            self.assertEqual(
+                project_context._canonical_check_name(alias),
+                "exact-head-check",
+                f"alias {alias!r} should canonicalize to exact-head-check",
+            )
+
+    def test_exact_head_near_matches_rejected(self) -> None:
+        for near in (
+            "exact-head-checks",
+            "exact-head-",
+            "exact_head",
+            "Exact-Head",
+            "exact head",
+            "head-exact",
+            "exact-head-check / exact-head / extra",
+        ):
+            self.assertIsNone(
+                project_context._canonical_check_name(near),
+                f"near match {near!r} must not canonicalize",
+            )
+
+    def test_duplicate_exact_head_aliases_do_not_count_twice(self) -> None:
+        checks = [
+            {"name": "exact-head", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "exact-head-check", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "rust-tests", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]
+        summary = project_context.summarize_checks(checks)
+        self.assertEqual(summary["state"], "incomplete")
+        # The successful list preserves raw observed names; duplicates are canonicalized.
+        self.assertEqual(summary["successful"], ["exact-head", "exact-head-check", "rust-tests"])
+        raw = (summary.get("raw_by_canonical") or {}).get("exact-head-check") or []
+        self.assertEqual(sorted(set(raw)), ["exact-head", "exact-head-check"])
+        # exact-head-check must not appear in missing_required despite two aliases.
+        self.assertNotIn("exact-head-check", summary["missing_required"])
+
+    def test_exact_head_alias_marks_matrix_successful(self) -> None:
+        checks = [
+            {"name": name, "status": "COMPLETED", "conclusion": "SUCCESS"}
+            for name in project_context.REQUIRED_CI_CHECKS
+            if name != "exact-head-check"
+        ]
+        checks.append(
+            {
+                "name": "exact-head-check / exact-head",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            }
+        )
+        matrix = project_context.source_required_check_matrix(
+            project_context.summarize_checks(checks), event_name="pull_request"
+        )
+        exact = next(item for item in matrix if item["logical_name"] == "exact-head-check")
+        self.assertEqual(exact["conclusion"], "success")
+        self.assertTrue(project_context.is_matrix_successful(matrix, event_name="push"))
+
+    # -----------------------------------------------------------------------
+    # Check-matrix states
+    # -----------------------------------------------------------------------
+
+    def test_failure_pending_cancelled_skipped_missing_states(self) -> None:
+        checks = [
+            {"name": "rust-tests", "status": "COMPLETED", "conclusion": "FAILURE"},
+            {"name": "python-tests", "status": "IN_PROGRESS", "conclusion": None},
+            {"name": "docker-build", "status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"name": "typescript-tests", "status": "COMPLETED", "conclusion": "SKIPPED"},
+        ]
+        summary = project_context.summarize_checks(checks)
+        self.assertEqual(summary["state"], "failed")
+        self.assertEqual(summary["failed"], ["docker-build", "rust-tests", "typescript-tests"])
+        self.assertEqual(summary["pending"], ["python-tests"])
+        matrix = project_context.source_required_check_matrix(summary)
+        missing = [item for item in matrix if item["conclusion"] == "missing"]
+        self.assertEqual(
+            sorted(item["logical_name"] for item in missing),
+            ["exact-head-check", "native-runtime", "pg-integration-tests", "rust-typescript-cutover"],
+        )
+
+    def test_successful_matrix_reports_all_required(self) -> None:
+        checks = [
+            {"name": name, "status": "COMPLETED", "conclusion": "SUCCESS"}
+            for name in project_context.REQUIRED_CI_CHECKS
+        ]
+        summary = project_context.summarize_checks(checks)
+        matrix = project_context.source_required_check_matrix(summary)
+        self.assertTrue(all(item["conclusion"] == "success" for item in matrix))
+        self.assertEqual(
+            [item["logical_name"] for item in matrix],
+            list(project_context.REQUIRED_CI_CHECKS),
+        )
+
+    def test_conflicting_required_check_outcomes_fail_the_matrix(self) -> None:
+        checks = [
+            {"name": name, "status": "COMPLETED", "conclusion": "SUCCESS"}
+            for name in project_context.REQUIRED_CI_CHECKS
+        ]
+        checks.extend(
+            [
+                {"name": "python-tests", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"name": "rust-tests", "status": "IN_PROGRESS", "conclusion": None},
+            ]
+        )
+        matrix = project_context.source_required_check_matrix(
+            project_context.summarize_checks(checks), event_name="pull_request"
+        )
+        conclusions = {item["logical_name"]: item["conclusion"] for item in matrix}
+        self.assertEqual(conclusions["python-tests"], "failed")
+        self.assertEqual(conclusions["rust-tests"], "pending")
+        self.assertFalse(project_context.is_matrix_successful(matrix))
+
+    # -----------------------------------------------------------------------
+    # Fingerprint and binding
+    # -----------------------------------------------------------------------
+
+    def test_fingerprint_is_stable_and_changes_with_binding(self) -> None:
+        base = {
+            "schema_version": "project_context.v1",
+            "repository": "owner/repo",
+            "binding": {
+                "accepted_baseline": {"sha": "a" * 40},
+                "canonical_document_source": {"source_sha": "b" * 40},
+                "canonical_routed_packet": {"packet": "PE7-CONTEXT-CAPSULE-AUTOMATION-1"},
+                "pr_exact_head": {"number": 306, "head_sha": "c" * 40},
+                "requested_pr_exact_head": {"number": 306, "head_sha": "c" * 40},
+                "checked_out_sha": "c" * 40,
+                "workflow_run_identity": {"run_id": "123", "run_attempt": "1"},
+            },
+        }
+        fp1 = project_context.compute_fingerprint(base)
+        fp2 = project_context.compute_fingerprint(base)
+        self.assertEqual(fp1, fp2)
+        self.assertEqual(len(fp1), 24)
+        base["binding"]["accepted_baseline"]["sha"] = "d" * 40
+        fp3 = project_context.compute_fingerprint(base)
+        self.assertNotEqual(fp1, fp3)
+        base["binding"]["requested_pr_exact_head"]["head_sha"] = "e" * 40
+        fp4 = project_context.compute_fingerprint(base)
+        self.assertNotEqual(fp3, fp4)
+
+    def test_fingerprint_ignores_mutable_fields(self) -> None:
+        base = {
+            "schema_version": "project_context.v1",
+            "repository": "owner/repo",
+            "generated_at": "2026-07-26T00:00:00Z",
+            "next_permitted_action": "action-a",
+            "binding": {
+                "accepted_baseline": {"sha": "a" * 40},
+                "canonical_document_source": {"source_sha": "b" * 40},
+                "canonical_routed_packet": {"packet": "PE7-CONTEXT-CAPSULE-AUTOMATION-1"},
+                "pr_exact_head": {"number": 306, "head_sha": "c" * 40},
+                "requested_pr_exact_head": {"number": 306, "head_sha": "c" * 40},
+                "checked_out_sha": "c" * 40,
+                "workflow_run_identity": {"run_id": "123", "run_attempt": "1"},
+            },
+        }
+        fp1 = project_context.compute_fingerprint(base)
+        base["generated_at"] = "2026-07-27T00:00:00Z"
+        base["next_permitted_action"] = "action-b"
+        fp2 = project_context.compute_fingerprint(base)
+        self.assertEqual(fp1, fp2)
+
+    # -----------------------------------------------------------------------
+    # Review observation
+    # -----------------------------------------------------------------------
+
+    def test_blocking_review_is_observed_unresolved(self) -> None:
+        obs = project_context._build_review_observation(
+            head_sha="h" * 40,
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[{"state": "CHANGES_REQUESTED", "body": "blocking"}],
+            comments=[],
+            observation_time="2026-07-28T00:00:00Z",
+        )
+        self.assertEqual(obs["unresolved_objections_state"], "blocking_reviews_present")
+
+    def test_explicit_blocking_comment_is_observed(self) -> None:
+        obs = project_context._build_review_observation(
+            head_sha="h" * 40,
+            aggregate_review="APPROVED",
+            reviews=[{"state": "APPROVED", "body": "lgtm"}],
+            comments=[{"body": "This is a BLOCKING issue."}],
+            observation_time="2026-07-28T00:00:00Z",
+        )
+        self.assertEqual(obs["unresolved_objections_state"], "explicit_blocking_comments_present")
+
+    def test_lowercase_blocking_comment_is_observed(self) -> None:
+        obs = project_context._build_review_observation(
+            head_sha="h" * 40,
+            aggregate_review="APPROVED",
+            reviews=[{"state": "APPROVED", "body": "lgtm"}],
+            comments=[{"body": "this is a blocking issue."}],
+            observation_time="2026-07-28T00:00:00Z",
+        )
+        self.assertEqual(obs["unresolved_objections_state"], "explicit_blocking_comments_present")
+
+    def test_approved_aggregate_not_treated_as_exact_head_acceptance(self) -> None:
+        obs = project_context._build_review_observation(
+            head_sha="h" * 40,
+            aggregate_review="APPROVED",
+            reviews=[{"state": "APPROVED", "body": "lgtm"}],
+            comments=[],
+            observation_time="2026-07-28T00:00:00Z",
+        )
+        self.assertEqual(obs["unresolved_objections_state"], "none_observed")
+
+    # -----------------------------------------------------------------------
+    # Packet state routing
+    # -----------------------------------------------------------------------
+
+    def test_complete_packet_routes_to_next_eligible(self) -> None:
+        action = project_context.next_permitted_action(
+            {"packet": "PE7-CONTEXT-CAPSULE-AUTOMATION-1", "state": "COMPLETE", "pr_number": "306"},
+            None,
+        )
+        self.assertIn("complete", action)
+        self.assertIn("next eligible", action)
+
+    def test_blocked_prerequisite_action_forbids_implementation(self) -> None:
+        action = project_context.next_permitted_action(
+            {"packet": "PE7-PRODUCT-GOLDEN-PATH-1", "state": "BLOCKED_PREREQUISITE", "pr_number": None},
+            None,
+        )
+        self.assertIn("do not implement the blocked packet", action)
+
+    # -----------------------------------------------------------------------
+    # Event-aware source matrix and provided checks
+    # -----------------------------------------------------------------------
+
+    def test_push_event_marks_exact_head_check_not_applicable(self) -> None:
+        checks = {
+            "python-tests": {"result": "success"},
+            "rust-tests": {"result": "success"},
+            "pg-integration-tests": {"result": "success"},
+            "typescript-tests": {"result": "success"},
+            "native-runtime": {"result": "success"},
+            "docker-build": {"result": "success"},
+            "rust-typescript-cutover": {"result": "success"},
+        }
+        capsule = project_context.build_capsule(
+            offline=True,
+            repository="owner/repo",
+            checks_json=json.dumps(checks),
+            event_name="push",
+        )
+        matrix = capsule.get("binding", {}).get("source_required_check_matrix", [])
+        exact = next(item for item in matrix if item["logical_name"] == "exact-head-check")
+        self.assertEqual(exact["conclusion"], "not_applicable")
+        self.assertTrue(project_context.is_matrix_successful(matrix, event_name="push"))
+
+    def test_successful_push_without_routed_pr_renders_an_unavailable_review(self) -> None:
+        next_text = """## Active Routing
+1. `PE7-CONTEXT-CAPSULE-AUTOMATION-1` — `IN_PROGRESS`.
+
+## Packet PE7-CONTEXT-CAPSULE-AUTOMATION-1
+**State:** `IN_PROGRESS`
+"""
+        documents = {
+            "availability": "local_only",
+            "source_sha": "b" * 40,
+            "current_status": "## Open Review Surfaces\n",
+            "next_decision": next_text,
+        }
+        checks = {
+            name: {"result": "success"}
+            for name in project_context.REQUIRED_CI_CHECKS
+            if name != "exact-head-check"
+        }
+        with (
+            mock.patch.object(
+                project_context,
+                "accepted_baseline",
+                return_value={
+                    "branch": "main",
+                    "sha": "b" * 40,
+                    "availability": "local_only",
+                    "source": "git rev-parse origin/main",
+                },
+            ),
+            mock.patch.object(project_context, "canonical_documents", return_value=documents),
+            mock.patch.object(
+                project_context,
+                "local_checkout_state",
+                return_value={
+                    "head_sha": "c" * 40,
+                    "branch": "main",
+                    "detached": False,
+                    "dirty": False,
+                    "change_count": 0,
+                },
+            ),
+        ):
+            capsule = project_context.build_capsule(
+                offline=True,
+                repository="owner/repo",
+                checks_json=json.dumps(checks),
+                event_name="push",
+            )
+        self.assertIsNone(capsule["active_frontier"])
+        self.assertEqual(
+            capsule["binding"]["review_observation"]["unresolved_objections_state"],
+            "unavailable",
+        )
+        self.assertTrue(project_context.is_matrix_successful(
+            capsule["binding"]["source_required_check_matrix"], event_name="push"
+        ))
+        rendered = project_context.markdown(capsule)
+        self.assertIn("Unresolved objections: `unavailable`", rendered)
+        self.assertIn("inspect PE7-CONTEXT-CAPSULE-AUTOMATION-1", rendered)
+
+    def test_pull_request_event_preserves_exact_head_check_required(self) -> None:
+        checks = {
+            "python-tests": {"result": "success"},
+            "rust-tests": {"result": "success"},
+            "pg-integration-tests": {"result": "success"},
+            "typescript-tests": {"result": "success"},
+            "native-runtime": {"result": "success"},
+            "docker-build": {"result": "success"},
+            "rust-typescript-cutover": {"result": "success"},
+        }
+        capsule = project_context.build_capsule(
+            offline=True,
+            repository="owner/repo",
+            checks_json=json.dumps(checks),
+            event_name="pull_request",
+        )
+        matrix = capsule.get("binding", {}).get("source_required_check_matrix", [])
+        exact = next(item for item in matrix if item["logical_name"] == "exact-head-check")
+        self.assertEqual(exact["conclusion"], "missing")
+        self.assertFalse(project_context.is_matrix_successful(matrix))
+
+    def test_not_applicable_exact_head_check_is_rejected_for_a_pr_snapshot(self) -> None:
+        checks = {
+            name: {"result": "success"}
+            for name in project_context.REQUIRED_CI_CHECKS
+            if name != "exact-head-check"
+        }
+        matrix = project_context.source_required_check_matrix(
+            project_context.summarize_checks(project_context.parse_checks_json(json.dumps(checks))),
+            event_name="push",
+        )
+        sha = "a" * 40
+        capsule = {
+            "schema_version": "project_context.v1",
+            "binding": {
+                "workflow_run_identity": {
+                    "availability": "confirmed",
+                    "event_name": "pull_request",
+                },
+                "source_required_check_matrix": matrix,
+                "requested_pr_exact_head": {"number": 777, "head_sha": sha},
+                "pr_exact_head": {"availability": "confirmed", "head_sha": sha},
+            },
+        }
+        with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "pull_request"}, clear=False):
+            self.assertFalse(project_context.has_valid_success_binding(capsule))
+
+    def test_complete_push_snapshot_is_accepted(self) -> None:
+        checks = {
+            name: {"result": "success"}
+            for name in project_context.REQUIRED_CI_CHECKS
+            if name != "exact-head-check"
+        }
+        capsule = {
+            "schema_version": "project_context.v1",
+            "binding": {
+                "workflow_run_identity": {
+                    "availability": "confirmed",
+                    "event_name": "push",
+                },
+                "source_required_check_matrix": project_context.source_required_check_matrix(
+                    project_context.summarize_checks(
+                        project_context.parse_checks_json(json.dumps(checks))
+                    ),
+                    event_name="push",
+                ),
+            },
+        }
+        with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "push"}, clear=False):
+            self.assertTrue(project_context.has_valid_success_binding(capsule))
+
+    def test_complete_pr_snapshot_requires_and_accepts_trusted_head_binding(self) -> None:
+        sha = "a" * 40
+        checks = [
+            {"name": name, "status": "COMPLETED", "conclusion": "SUCCESS"}
+            for name in project_context.REQUIRED_CI_CHECKS
+        ]
+        capsule = {
+            "schema_version": "project_context.v1",
+            "binding": {
+                "workflow_run_identity": {
+                    "availability": "confirmed",
+                    "event_name": "pull_request",
+                },
+                "source_required_check_matrix": project_context.source_required_check_matrix(
+                    project_context.summarize_checks(checks), event_name="pull_request"
+                ),
+                "requested_pr_exact_head": {"number": 777, "head_sha": sha},
+                "pr_exact_head": {"availability": "confirmed", "head_sha": sha},
+            },
+        }
+        with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "pull_request"}, clear=False):
+            self.assertTrue(project_context.has_valid_success_binding(capsule))
+
+    def test_pr_success_binding_requires_requested_exact_head(self) -> None:
+        checks = [
+            {"name": name, "status": "COMPLETED", "conclusion": "SUCCESS"}
+            for name in project_context.REQUIRED_CI_CHECKS
+        ]
+        capsule = {
+            "schema_version": "project_context.v1",
+            "binding": {
+                "workflow_run_identity": {
+                    "availability": "confirmed",
+                    "event_name": "pull_request",
+                },
+                "source_required_check_matrix": project_context.source_required_check_matrix(
+                    project_context.summarize_checks(checks), event_name="pull_request"
+                ),
+                "pr_exact_head": {"availability": "confirmed", "head_sha": "a" * 40},
+            },
+        }
+        with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "pull_request"}, clear=False):
+            self.assertFalse(project_context.has_valid_success_binding(capsule))
+
+    def test_pull_request_event_accepts_verified_exact_head_check(self) -> None:
+        checks = {
+            name: {"result": "success"}
+            for name in project_context.REQUIRED_CI_CHECKS
+        }
+        capsule = project_context.build_capsule(
+            offline=True,
+            repository="owner/repo",
+            checks_json=json.dumps(checks),
+            event_name="pull_request",
+            pr_number=777,
+            expected_head_sha="a" * 40,
+        )
+        matrix = capsule["binding"]["source_required_check_matrix"]
+        self.assertTrue(project_context.is_matrix_successful(matrix))
+        self.assertEqual(capsule["binding"]["pr_exact_head"]["number"], 777)
+        self.assertEqual(
+            capsule["binding"]["requested_pr_exact_head"],
+            {"number": 777, "head_sha": "a" * 40},
+        )
+
+    def test_trusted_exact_head_proof_binds_the_pr_and_matrix(self) -> None:
+        checks = {
+            name: {"result": "success"}
+            for name in project_context.REQUIRED_CI_CHECKS
+            if name != "exact-head-check"
+        }
+        proof = {
+            "kind": "exact-head-check-proof.v1",
+            "status": "pass",
+            "reason": "exact_head_match",
+            "repository": "owner/repo",
+            "pull_request": 777,
+            "expected_head": "a" * 40,
+            "live_head": "a" * 40,
+            "pr_state": "open",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "proof.json"
+            path.write_text(json.dumps(proof), encoding="utf-8")
+            capsule = project_context.build_capsule(
+                offline=True,
+                repository="owner/repo",
+                checks_json=json.dumps(checks),
+                event_name="pull_request",
+                pr_number=777,
+                expected_head_sha="a" * 40,
+                exact_head_proof=path,
+            )
+        self.assertTrue(project_context.is_matrix_successful(
+            capsule["binding"]["source_required_check_matrix"]
+        ))
+        self.assertTrue(project_context.is_requested_head_matched(capsule))
+
+    def test_trusted_exact_head_proof_rejects_unconfirmed_or_mismatched_state(self) -> None:
+        proof = {
+            "kind": "exact-head-check-proof.v1",
+            "status": "fail",
+            "reason": "head_moved",
+            "repository": "owner/repo",
+            "pull_request": 777,
+            "expected_head": "a" * 40,
+            "live_head": "b" * 40,
+            "pr_state": "open",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "proof.json"
+            path.write_text(json.dumps(proof), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "does not confirm"):
+                project_context.load_exact_head_proof(
+                    path,
+                    repository="owner/repo",
+                    pr_number=777,
+                    expected_head_sha="a" * 40,
+                )
+
+    def test_requested_head_requires_a_matching_confirmed_pr(self) -> None:
+        capsule = {
+            "binding": {
+                "requested_pr_exact_head": {"head_sha": "a" * 40},
+                "pr_exact_head": {
+                    "availability": "confirmed",
+                    "head_sha": "b" * 40,
+                },
+            }
+        }
+        self.assertFalse(project_context.is_requested_head_matched(capsule))
+        capsule["binding"]["pr_exact_head"]["head_sha"] = "a" * 40
+        self.assertTrue(project_context.is_requested_head_matched(capsule))
+
+    def test_failed_provided_check_marks_matrix_not_successful(self) -> None:
+        checks = {
+            "python-tests": {"result": "failure"},
+            "rust-tests": {"result": "success"},
+            "pg-integration-tests": {"result": "success"},
+            "typescript-tests": {"result": "success"},
+            "native-runtime": {"result": "success"},
+            "docker-build": {"result": "success"},
+            "rust-typescript-cutover": {"result": "success"},
+        }
+        capsule = project_context.build_capsule(
+            offline=True,
+            repository="owner/repo",
+            checks_json=json.dumps(checks),
+            event_name="push",
+        )
+        matrix = capsule.get("binding", {}).get("source_required_check_matrix", [])
+        self.assertFalse(project_context.is_matrix_successful(matrix))
+        python = next(item for item in matrix if item["logical_name"] == "python-tests")
+        self.assertEqual(python["conclusion"], "failed")
+
+    def test_require_success_exits_nonzero_on_failed_matrix(self) -> None:
+        checks = {
+            "python-tests": {"result": "failure"},
+            "rust-tests": {"result": "success"},
+            "pg-integration-tests": {"result": "success"},
+            "typescript-tests": {"result": "success"},
+            "native-runtime": {"result": "success"},
+            "docker-build": {"result": "success"},
+            "rust-typescript-cutover": {"result": "success"},
+        }
+        with mock.patch.object(
+            project_context,
+            "parse_args",
+            return_value=argparse.Namespace(
+                format="json",
+                offline=True,
+                repo="owner/repo",
+                checks_json=json.dumps(checks),
+                event_name="push",
+                require_success=True,
+            ),
+        ):
+            self.assertEqual(project_context.main(), 1)
+
+    def test_require_success_rejects_a_malformed_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "capsule.json"
+            snapshot.write_text(json.dumps({"binding": {}}), encoding="utf-8")
+            with mock.patch.object(
+                project_context,
+                "parse_args",
+                return_value=argparse.Namespace(
+                    format="json",
+                    capsule_json=snapshot,
+                    require_success=True,
+                ),
+            ):
+                self.assertEqual(project_context.main(), 1)
 
 
 if __name__ == "__main__":
