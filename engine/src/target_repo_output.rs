@@ -15,6 +15,7 @@ use crate::provider::redaction::{
 mod authority;
 
 pub const TARGET_REPO_OUTPUT_SCHEMA_VERSION: &str = "target_repo_output.v1";
+pub const GIT_WORKTREE_ADD_OUTCOME_UNKNOWN: &str = "git worktree add outcome is unknown";
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 30_000;
 const MAX_GIT_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
@@ -453,8 +454,10 @@ pub fn prepare_git_worktree(
                 .ok_or_else(|| "workspace_path is not valid UTF-8".to_string())?,
             &source,
         ],
-    )?;
-    let canonical_workspace = canonical_existing_dir(&planned_workspace, "workspace_path")?;
+    )
+    .map_err(|error| format!("{GIT_WORKTREE_ADD_OUTCOME_UNKNOWN}: {error}"))?;
+    let canonical_workspace = canonical_existing_dir(&planned_workspace, "workspace_path")
+        .map_err(|error| format!("{GIT_WORKTREE_ADD_OUTCOME_UNKNOWN}: {error}"))?;
 
     Ok(GitWorkspaceInfo {
         schema_version: TARGET_REPO_OUTPUT_SCHEMA_VERSION.to_string(),
@@ -485,6 +488,48 @@ pub fn remove_git_worktree(
         ],
     )?;
     Ok(())
+}
+
+/// Remove an exact app-owned worktree only when Git still registers it, then
+/// prove both the registration and path are absent. This is intentionally more
+/// conservative than a filesystem delete: a timed-out child can leave Git
+/// metadata behind after the directory has already disappeared.
+pub fn remove_git_worktree_and_verify_absent(
+    config: &TargetRepoOutputConfig,
+    target_repo_path: &Path,
+    workspace_path: &Path,
+) -> Result<(), String> {
+    config.require_enabled()?;
+    let target_repo = canonical_existing_dir(target_repo_path, "target_repo_path")?;
+    ensure_absolute_clean(workspace_path, "workspace_path")?;
+
+    if git_worktree_is_registered(config, &target_repo, workspace_path)? {
+        remove_git_worktree(config, &target_repo, workspace_path)?;
+    }
+    if git_worktree_is_registered(config, &target_repo, workspace_path)? {
+        return Err("workspace_path remains registered after git worktree removal".to_string());
+    }
+    match std::fs::symlink_metadata(workspace_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err("workspace_path exists without a registered Git worktree".to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn git_worktree_is_registered(
+    config: &TargetRepoOutputConfig,
+    target_repo_path: &Path,
+    workspace_path: &Path,
+) -> Result<bool, String> {
+    let worktrees = run_git(
+        config,
+        target_repo_path,
+        &["worktree", "list", "--porcelain"],
+    )?;
+    Ok(worktrees.stdout.lines().any(|line| {
+        line.strip_prefix("worktree ")
+            .is_some_and(|registered_path| Path::new(registered_path) == workspace_path)
+    }))
 }
 
 pub fn stage_and_build_patch(

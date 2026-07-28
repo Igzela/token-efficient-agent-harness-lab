@@ -2611,6 +2611,46 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn final_store_confirmation_accepts_only_the_exact_consumed_lease_and_rechecks_the_gate() {
+        let _guard = env_lock().lock().unwrap();
+        let _env = ProductTaskOutputEnvGuard::enable();
+        let root = tempfile::tempdir().unwrap();
+        let fixture = prepare_managed_codex_execution_fixture(root.path());
+        let facts = ManagedCodexLaunchFacts {
+            run_id: fixture.run_id.clone(),
+            workflow_id: fixture.workflow_id.clone(),
+            node_id: fixture.node_id.clone(),
+            workspace_path: fixture.workspace_path.clone(),
+            executable_path: fixture.admission.binary_path.clone(),
+            executable_version: fixture.admission.binary_version.clone(),
+            executable_sha256: fixture.admission.binary_sha256.clone(),
+            model: fixture.admission.model.clone(),
+        };
+        let lease = fixture.store.admit_managed_codex_spawn(&facts).unwrap();
+        let runtime =
+            crate::cli::codex_mediation_admission::ManagedCodexRuntimeAttestation::fully_attested_for_test();
+
+        fixture
+            .store
+            .confirm_managed_codex_spawn_before_child(&lease, &runtime)
+            .expect("the exact consumed lease must be revalidated without requiring active spend");
+
+        // This flip occurs after lease admission. The final store confirmation,
+        // immediately before a child could be spawned, must refuse it.
+        std::env::set_var(PRODUCT_TASK_GATE, "0");
+        let error = fixture
+            .store
+            .confirm_managed_codex_spawn_before_child(&lease, &runtime)
+            .unwrap_err();
+        assert_eq!(error, "product golden path execution gate is disabled");
+        assert!(
+            !fixture.marker.exists(),
+            "the direct confirmation seam never starts a child process"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn pre_child_cleanup_incomplete_is_bounded_and_terminalized() {
         struct EphemeralHomeFileGuard(PathBuf);
 

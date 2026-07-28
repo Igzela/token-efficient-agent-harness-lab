@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::product_golden_path::{product_gate_enabled, product_scheduler_kill_active};
 use crate::storage::local_product_store::ManagedCodexSpawnLease;
 
 use super::codex_mediation_admission::{
@@ -1092,7 +1093,7 @@ fn run_owner_derived_managed_acceptance_preflight_with_binding(
     // Derive owner facts solely from spend + store + host; never caller proof.
     runtime_attestation.assert_required_mediation_owners()?;
     let mut input = ManagedAcceptancePreflightInput {
-        execution_gate_enabled: true,
+        execution_gate_enabled: product_gate_enabled() && !product_scheduler_kill_active(),
         authority_decision_status: Some(
             decision
                 .get("status")

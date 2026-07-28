@@ -2129,7 +2129,11 @@ impl LocalProductStore {
         facts: &ManagedCodexLaunchFacts,
         allow_fixture_dry_run: bool,
     ) -> Result<ManagedCodexSpawnLease, String> {
-        let prepared = self.prepare_managed_codex_spawn(facts, allow_fixture_dry_run)?;
+        let prepared = self.prepare_managed_codex_spawn(
+            facts,
+            allow_fixture_dry_run,
+            ManagedCodexSpawnSpendState::ActiveForLeaseAdmission,
+        )?;
         let attempt = self.admit_managed_acceptance_attempt_internal(
             &prepared.principal,
             &prepared.attempt_id,
@@ -2182,6 +2186,12 @@ impl LocalProductStore {
         lease: &ManagedCodexSpawnLease,
         runtime: &crate::cli::codex_mediation_admission::ManagedCodexRuntimeAttestation,
     ) -> Result<(), String> {
+        if !crate::product_golden_path::product_gate_enabled() {
+            return Err("product golden path execution gate is disabled".to_string());
+        }
+        if crate::product_golden_path::product_scheduler_kill_active() {
+            return Err("product golden path scheduler kill switch is active".to_string());
+        }
         runtime.assert_required_mediation_owners()?;
         // Host-network sharing is a real runtime fact.  It is a residual
         // blocker, never a URL/string inference that can be waived by a node.
@@ -2192,7 +2202,11 @@ impl LocalProductStore {
             );
         }
         self.assert_managed_codex_spawn_lease_current(lease)?;
-        let prepared = self.prepare_managed_codex_spawn(&lease.facts, false)?;
+        let prepared = self.prepare_managed_codex_spawn(
+            &lease.facts,
+            false,
+            ManagedCodexSpawnSpendState::ConsumedCurrentLease(lease),
+        )?;
         if prepared.product_task_id != lease.product_task_id
             || prepared.product_task_version != lease.product_task_version
             || prepared.spend_authorization_id != lease.spend_authorization_id
@@ -2271,6 +2285,7 @@ impl LocalProductStore {
         &self,
         facts: &ManagedCodexLaunchFacts,
         allow_fixture_dry_run: bool,
+        spend_state: ManagedCodexSpawnSpendState<'_>,
     ) -> Result<PreparedManagedCodexSpawn, String> {
         validate_managed_codex_launch_facts(facts)?;
         let (workflow_id, node) =
@@ -2288,8 +2303,27 @@ impl LocalProductStore {
         let spend = self
             .get_managed_acceptance_spend_authorization(&spend_authorization_id)?
             .ok_or_else(|| "managed Codex bound spend owner is missing".to_string())?;
-        if spend.get("status").and_then(Value::as_str) != Some("active") {
-            return Err("managed Codex bound spend is not active for lease admission".to_string());
+        match spend_state {
+            ManagedCodexSpawnSpendState::ActiveForLeaseAdmission => {
+                if spend.get("status").and_then(Value::as_str) != Some("active") {
+                    return Err(
+                        "managed Codex bound spend is not active for lease admission".to_string(),
+                    );
+                }
+            }
+            ManagedCodexSpawnSpendState::ConsumedCurrentLease(lease) => {
+                self.assert_managed_codex_spawn_lease_current(lease)?;
+                if lease.spend_authorization_id != spend_authorization_id
+                    || spend.get("status").and_then(Value::as_str) != Some("consumed")
+                    || spend.get("consumed_by_attempt_id").and_then(Value::as_str)
+                        != Some(lease.attempt_id.as_str())
+                {
+                    return Err(
+                        "managed Codex consumed spend does not belong to the current lease"
+                            .to_string(),
+                    );
+                }
+            }
         }
         let spend_body = spend
             .get("body_json")
@@ -2443,6 +2477,15 @@ impl LocalProductStore {
             attempt_body,
         })
     }
+}
+
+/// The only two spend states permitted at the two store-owned spawn seams.
+/// Admission may consume an active authorization once; final pre-child
+/// confirmation may only revalidate that same consumed authorization under its
+/// exact current lease. No caller may turn a consumed spend back into active.
+enum ManagedCodexSpawnSpendState<'a> {
+    ActiveForLeaseAdmission,
+    ConsumedCurrentLease(&'a ManagedCodexSpawnLease),
 }
 
 struct PreparedManagedCodexSpawn {

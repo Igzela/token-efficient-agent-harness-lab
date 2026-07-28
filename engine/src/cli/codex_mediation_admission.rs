@@ -81,6 +81,23 @@ struct ManagedCodexChildLaunchOwner {
 }
 
 impl ManagedCodexRuntimeAttestation {
+    /// Provider-free test seam for store-bound pre-child validation. Production
+    /// attestations are only produced by `derive_runtime_attestation` from a
+    /// live launcher, gateway, and journal owner.
+    #[cfg(test)]
+    pub(crate) fn fully_attested_for_test() -> Self {
+        Self {
+            parent_credential_owner_present: true,
+            child_credential_clearance: true,
+            mediation_gateway_configured: true,
+            gateway_is_loopback: true,
+            gateway_exactly_bound_to_plan: true,
+            network_boundary: ManagedCodexNetworkBoundary::LoopbackOnlyEnforced,
+            journal_path_parent_owned: true,
+            journal_durable: true,
+        }
+    }
+
     pub fn parent_credential_owner_present(&self) -> bool {
         self.parent_credential_owner_present
     }

@@ -3,6 +3,14 @@
 use rusqlite::{params, OptionalExtension, Row};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::fs::OpenOptions;
+#[cfg(unix)]
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,7 +32,8 @@ use crate::product_golden_path::{
 use crate::read_only_planner::{ReadOnlyPlanner, READ_ONLY_PLAN_SCHEMA_VERSION};
 use crate::target_repo_output::{
     current_workspace_revision, inspect_git_patch_read_only, patch_hash as target_patch_hash,
-    prepare_git_worktree, remove_git_worktree, TargetRepoOutputConfig,
+    prepare_git_worktree, remove_git_worktree_and_verify_absent, TargetRepoOutputConfig,
+    GIT_WORKTREE_ADD_OUTCOME_UNKNOWN,
 };
 use crate::tool_policy_executor::{managed_tool_binding_sha256, ToolPolicyNodeExecutor};
 
@@ -66,6 +75,474 @@ const PRODUCT_TASK_SELECT: &str = "SELECT schema_version, task_id, tenant_id, wo
 // interrupted preparation.
 const PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_LIMIT: usize = 100;
 const PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_DELAY: Duration = Duration::from_millis(20);
+const PRODUCT_TASK_WORKSPACE_PREPARATION_ACTIVE: &str =
+    "product task workspace preparation is active";
+const PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED: &str =
+    "product task workspace preparation requires reconciliation";
+const PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE: &str =
+    "product task workspace preparation precondition is unavailable";
+const PRODUCT_TASK_WORKSPACE_PREPARATION_RECEIPT_SCHEMA_VERSION: &str =
+    "product_task_workspace_preparation.v1";
+
+fn product_task_workspace_preparation_reconciliation_error(detail: impl AsRef<str>) -> String {
+    format!(
+        "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: {}",
+        detail.as_ref()
+    )
+}
+
+/// Remove only the exact receipt-owned Git worktree and prove that both its
+/// registration and path are absent. A Git timeout can happen after the child
+/// mutates worktree metadata, so an unsuccessful or ambiguous removal is
+/// reconciliation rather than terminal compensation.
+fn remove_product_task_git_worktree_or_reconcile(
+    config: &TargetRepoOutputConfig,
+    target_repo_path: &Path,
+    workspace_path: &Path,
+) -> Result<(), String> {
+    remove_git_worktree_and_verify_absent(config, target_repo_path, workspace_path).map_err(|_| {
+        product_task_workspace_preparation_reconciliation_error(
+            "pinned git worktree removal is unavailable",
+        )
+    })
+}
+
+fn classify_product_task_git_worktree_prepare_error(error: String) -> String {
+    if error.starts_with(GIT_WORKTREE_ADD_OUTCOME_UNKNOWN) {
+        product_task_workspace_preparation_reconciliation_error(
+            "git worktree creation outcome is unknown",
+        )
+    } else {
+        format!("{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: {error}")
+    }
+}
+
+/// App-owned, per-worktree exclusion for the physical `git worktree` mutation.
+///
+/// ProductTask state remains the sole durable authority. This lock only keeps
+/// an active admit or explicit recovery from concurrently mutating git's
+/// worktree metadata for the same deterministic app-owned path. It is held by
+/// the file descriptor and therefore releases if its process exits.
+#[cfg(unix)]
+struct ProductTaskWorkspacePreparationLock {
+    file: std::fs::File,
+}
+
+#[cfg(unix)]
+impl ProductTaskWorkspacePreparationLock {
+    fn acquire<F>(workspace_path: &Path, on_contention: F) -> Result<Self, String>
+    where
+        F: FnOnce() -> Result<(), String>,
+    {
+        let workspace_root = workspace_path.parent().ok_or_else(|| {
+            product_task_workspace_preparation_reconciliation_error(
+                "workspace preparation lock root is unavailable",
+            )
+        })?;
+        let workspace_name = workspace_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "workspace preparation lock name is unavailable",
+                )
+            })?;
+        if !workspace_root.is_dir() {
+            return Err(product_task_workspace_preparation_reconciliation_error(
+                "workspace root is unavailable",
+            ));
+        }
+        let lock_path = workspace_root.join(format!(".{workspace_name}.prepare.lock"));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(lock_path)
+            .map_err(|_| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "workspace preparation lock is unavailable",
+                )
+            })?;
+
+        loop {
+            let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if result == 0 {
+                return Ok(Self { file });
+            }
+            match std::io::Error::last_os_error().kind() {
+                std::io::ErrorKind::Interrupted => continue,
+                std::io::ErrorKind::WouldBlock => break,
+                _ => {
+                    return Err(product_task_workspace_preparation_reconciliation_error(
+                        "workspace preparation lock is unavailable",
+                    ));
+                }
+            }
+        }
+
+        // This event contains only the ProductTask identity and makes an
+        // already-observed physical-worktree contention auditable. It does
+        // not grant authority or persist a path, command, prompt, or output.
+        // Never block an HTTP handler behind an unbounded flock waiter: the
+        // caller owns the bounded retry/backoff policy.
+        on_contention().map_err(|error| {
+            product_task_workspace_preparation_reconciliation_error(format!(
+                "workspace preparation contention audit failed: {error}"
+            ))
+        })?;
+        Err(PRODUCT_TASK_WORKSPACE_PREPARATION_ACTIVE.to_string())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProductTaskWorkspacePreparationLock {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+/// PostgreSQL's best-effort active-owner coordinator. It is intentionally
+/// try-only: a contending HTTP request must not consume an unpooled database
+/// session while a slow physical operation owns the lock. ProductTask's
+/// durable preparation receipt and the pinned local filesystem remain the
+/// recovery boundary; this session lock is not a distributed fencing lease.
+#[cfg(feature = "pg")]
+struct ProductTaskPostgresWorkspacePreparationLock {
+    client: postgres::Client,
+    key: String,
+}
+
+#[cfg(feature = "pg")]
+impl ProductTaskPostgresWorkspacePreparationLock {
+    fn acquire<F>(
+        store: &LocalProductStore,
+        task_id: &str,
+        mut on_contention: F,
+    ) -> Result<Self, String>
+    where
+        F: FnMut() -> Result<(), String>,
+    {
+        let key = format!("product_task.workspace_prepare:{task_id}");
+        let database_url = store.db_path().to_string_lossy();
+        let mut client = postgres::Client::connect(database_url.as_ref(), postgres::NoTls)
+            .map_err(|_| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "product task PostgreSQL preparation lock is unavailable",
+                )
+            })?;
+        let acquired = client
+            .query_one(
+                "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
+                &[&key],
+            )
+            .map_err(|_| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "product task PostgreSQL preparation lock is unavailable",
+                )
+            })?
+            .get::<_, bool>(0);
+        if !acquired {
+            on_contention().map_err(|error| {
+                product_task_workspace_preparation_reconciliation_error(format!(
+                    "workspace preparation contention audit failed: {error}"
+                ))
+            })?;
+            return Err(PRODUCT_TASK_WORKSPACE_PREPARATION_ACTIVE.to_string());
+        }
+        Ok(Self { client, key })
+    }
+}
+
+#[cfg(feature = "pg")]
+impl Drop for ProductTaskPostgresWorkspacePreparationLock {
+    fn drop(&mut self) {
+        let _ = self.client.execute(
+            "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+            &[&self.key],
+        );
+    }
+}
+
+#[cfg(not(unix))]
+struct ProductTaskWorkspacePreparationLock;
+
+#[cfg(not(unix))]
+impl ProductTaskWorkspacePreparationLock {
+    fn acquire<F>(_workspace_path: &Path, _on_contention: F) -> Result<Self, String>
+    where
+        F: FnOnce() -> Result<(), String>,
+    {
+        Err(product_task_workspace_preparation_reconciliation_error(
+            "workspace preparation lock is unavailable on this platform",
+        ))
+    }
+}
+
+/// Composes the local physical-worktree exclusion with PostgreSQL's active
+/// coordinator when applicable. ProductTask remains the sole durable lifecycle
+/// owner; both guards are ephemeral synchronization only.
+struct ProductTaskWorkspacePreparationGuard {
+    // Drop the local physical guard before the PostgreSQL active-owner
+    // coordinator. The session guard is not a distributed fencing lease and
+    // never proves that independently hosted filesystems share this path.
+    _filesystem_lock: ProductTaskWorkspacePreparationLock,
+    #[cfg(feature = "pg")]
+    _postgres_lock: Option<ProductTaskPostgresWorkspacePreparationLock>,
+}
+
+impl ProductTaskWorkspacePreparationGuard {
+    fn acquire<F>(
+        store: &LocalProductStore,
+        task_id: &str,
+        workspace_path: &Path,
+        mut on_contention: F,
+    ) -> Result<Self, String>
+    where
+        F: FnMut() -> Result<(), String>,
+    {
+        #[cfg(not(feature = "pg"))]
+        let _ = (store, task_id);
+        let mut contention_recorded = false;
+        #[cfg(feature = "pg")]
+        let postgres_lock = match &store.db {
+            DatabaseConnection::Pg(_) => Some(
+                ProductTaskPostgresWorkspacePreparationLock::acquire(store, task_id, || {
+                    if !contention_recorded {
+                        on_contention()?;
+                        contention_recorded = true;
+                    }
+                    Ok(())
+                })?,
+            ),
+            DatabaseConnection::Sqlite(_) => None,
+        };
+
+        let filesystem_lock = ProductTaskWorkspacePreparationLock::acquire(workspace_path, || {
+            if !contention_recorded {
+                on_contention()?;
+                contention_recorded = true;
+            }
+            Ok(())
+        })?;
+        Ok(Self {
+            _filesystem_lock: filesystem_lock,
+            #[cfg(feature = "pg")]
+            _postgres_lock: postgres_lock,
+        })
+    }
+}
+
+fn product_task_has_prepared_workspace(task: &Value) -> bool {
+    matches!(
+        task.get("status").and_then(Value::as_str).unwrap_or(""),
+        "workspace_bound"
+            | "graph_ready"
+            | "running"
+            | "verifying"
+            | "repair_pending"
+            | "awaiting_approval"
+            | "output_pending"
+            | "completed"
+            | "paused"
+    )
+}
+
+fn product_task_has_terminal_workspace_prepare_state(task: &Value) -> bool {
+    matches!(
+        task.get("status").and_then(Value::as_str).unwrap_or(""),
+        "failed" | "blocked" | "killed" | "budget_exhausted" | "outcome_unknown"
+    )
+}
+
+fn is_retryable_product_task_worktree_prepare_error(error: &str) -> bool {
+    error == PRODUCT_TASK_WORKSPACE_PREPARATION_ACTIVE
+        || error == "product task expected-current update conflict"
+        || error.starts_with("stale product task version: current=")
+}
+
+fn product_task_workspace_fs_id(task_id: &str) -> String {
+    format!(
+        "pt-{}",
+        task_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProductTaskWorkspacePreparationMarkerState {
+    Planned,
+    MarkerReady,
+}
+
+impl ProductTaskWorkspacePreparationMarkerState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Planned => "planned",
+            Self::MarkerReady => "marker_ready",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "planned" => Ok(Self::Planned),
+            "marker_ready" => Ok(Self::MarkerReady),
+            _ => Err(format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt state is invalid"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProductTaskWorkspacePreparationReceipt {
+    workspace_root: PathBuf,
+    workspace_path: PathBuf,
+    marker_sha256: String,
+    marker_state: ProductTaskWorkspacePreparationMarkerState,
+    receipt_sha256: String,
+}
+
+impl ProductTaskWorkspacePreparationReceipt {
+    fn planned(task_id: &str, workspace_root: PathBuf) -> Result<Self, String> {
+        let workspace_fs_id = product_task_workspace_fs_id(task_id);
+        let workspace_path = workspace_root.join(&workspace_fs_id);
+        let marker_sha256 = hex::encode(Sha256::digest(
+            format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECEIPT_SCHEMA_VERSION}:{task_id}:{}",
+                uuid::Uuid::new_v4()
+            )
+            .as_bytes(),
+        ));
+        let marker_state = ProductTaskWorkspacePreparationMarkerState::Planned;
+        let receipt_sha256 = product_task_workspace_preparation_receipt_sha256(
+            task_id,
+            &workspace_root,
+            &workspace_path,
+            &marker_sha256,
+            marker_state,
+        )?;
+        Ok(Self {
+            workspace_root,
+            workspace_path,
+            marker_sha256,
+            marker_state,
+            receipt_sha256,
+        })
+    }
+
+    fn from_persisted(
+        task_id: &str,
+        workspace_root: String,
+        workspace_path: String,
+        marker_sha256: String,
+        marker_state: String,
+        receipt_sha256: String,
+    ) -> Result<Self, String> {
+        let workspace_root = PathBuf::from(workspace_root);
+        let workspace_path = PathBuf::from(workspace_path);
+        let marker_state = ProductTaskWorkspacePreparationMarkerState::parse(&marker_state)?;
+        let workspace_fs_id = product_task_workspace_fs_id(task_id);
+        if !workspace_root.is_absolute()
+            || !workspace_path.is_absolute()
+            || workspace_path.parent() != Some(workspace_root.as_path())
+            || workspace_path.file_name().and_then(|name| name.to_str()) != Some(&workspace_fs_id)
+            || marker_sha256.len() != 64
+            || !marker_sha256
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        {
+            return Err(format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt identity is invalid"
+            ));
+        }
+        let expected_receipt_sha256 = product_task_workspace_preparation_receipt_sha256(
+            task_id,
+            &workspace_root,
+            &workspace_path,
+            &marker_sha256,
+            marker_state,
+        )?;
+        if receipt_sha256 != expected_receipt_sha256 {
+            return Err(format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt hash is invalid"
+            ));
+        }
+        Ok(Self {
+            workspace_root,
+            workspace_path,
+            marker_sha256,
+            marker_state,
+            receipt_sha256,
+        })
+    }
+
+    fn with_marker_state(
+        &self,
+        task_id: &str,
+        marker_state: ProductTaskWorkspacePreparationMarkerState,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            workspace_root: self.workspace_root.clone(),
+            workspace_path: self.workspace_path.clone(),
+            marker_sha256: self.marker_sha256.clone(),
+            marker_state,
+            receipt_sha256: product_task_workspace_preparation_receipt_sha256(
+                task_id,
+                &self.workspace_root,
+                &self.workspace_path,
+                &self.marker_sha256,
+                marker_state,
+            )?,
+        })
+    }
+
+    fn marker_path(&self, task_id: &str) -> Result<PathBuf, String> {
+        let workspace_fs_id = product_task_workspace_fs_id(task_id);
+        if self
+            .workspace_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(workspace_fs_id.as_str())
+        {
+            return Err(format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt workspace identity is invalid"
+            ));
+        }
+        Ok(self
+            .workspace_root
+            .join(format!(".{workspace_fs_id}.prepare.marker")))
+    }
+}
+
+fn product_task_workspace_preparation_receipt_sha256(
+    task_id: &str,
+    workspace_root: &Path,
+    workspace_path: &Path,
+    marker_sha256: &str,
+    marker_state: ProductTaskWorkspacePreparationMarkerState,
+) -> Result<String, String> {
+    let value = json!({
+        "schema_version": PRODUCT_TASK_WORKSPACE_PREPARATION_RECEIPT_SCHEMA_VERSION,
+        "task_id": task_id,
+        "workspace_root": workspace_root,
+        "workspace_path": workspace_path,
+        "marker_sha256": marker_sha256,
+        "marker_state": marker_state.as_str(),
+    });
+    let encoded = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
+    Ok(hex::encode(Sha256::digest(encoded)))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProductVerificationNodeAuthority {
@@ -728,29 +1205,22 @@ impl LocalProductStore {
         // Bounded CAS loop for concurrent duplicate intake.  Only the caller
         // that wins `admitted -> workspace_preparing` may create the physical
         // worktree; duplicate callers observe and wait for that durable owner.
+        let mut contention_observed = false;
         for attempt in 0..PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_LIMIT {
             let reserved = self.reserve_product_task(intake, actor)?;
             let status = reserved
                 .get("status")
                 .and_then(Value::as_str)
                 .unwrap_or("admitted");
-            if matches!(
-                status,
-                "workspace_bound"
-                    | "graph_ready"
-                    | "running"
-                    | "verifying"
-                    | "repair_pending"
-                    | "awaiting_approval"
-                    | "output_pending"
-                    | "completed"
-            ) {
-                return Ok(reserved);
-            }
-            if matches!(
-                status,
-                "failed" | "blocked" | "killed" | "budget_exhausted" | "outcome_unknown"
-            ) {
+            if product_task_has_prepared_workspace(&reserved)
+                || product_task_has_terminal_workspace_prepare_state(&reserved)
+            {
+                let task_id = reserved
+                    .get("task_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "reserved product task missing task_id".to_string())?;
+                let _ = self
+                    .retire_completed_product_task_workspace_preparation(task_id, &reserved, actor);
                 return Ok(reserved);
             }
 
@@ -759,32 +1229,17 @@ impl LocalProductStore {
                 .and_then(Value::as_str)
                 .ok_or_else(|| "reserved product task missing task_id".to_string())?
                 .to_string();
-            let version = reserved.get("version").and_then(Value::as_u64).unwrap_or(1);
-
             let owns_workspace_prepare = if status == ProductTaskStatus::Admitted.as_str() {
-                match self.transition_product_task(
-                    &task_id,
-                    ProductTaskStatus::WorkspacePreparing,
-                    Some(version),
-                    actor,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                ) {
-                    Ok(_) => true,
-                    Err(e)
-                        if e.contains("expected-current")
-                            || e.contains("conflict")
-                            || e.contains("stale product task version") =>
-                    {
-                        // Another concurrent admit won the CAS; re-read.
-                        std::thread::sleep(PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_DELAY);
-                        continue;
-                    }
-                    Err(e) => return Err(e),
-                }
+                // Validate read-only setup before publishing a durable
+                // `workspace_preparing` state.  A malformed current
+                // environment or target therefore leaves this idempotent task
+                // retryable as `admitted`, with no physical worktree effect.
+                validate_product_task_workspace_preflight(self, &task_id, intake)?;
+                // The later receipt/state transition is atomic and precedes
+                // any root, marker, guard, or Git effect. A guard setup
+                // failure after that durable boundary is reconciliation, not
+                // permission to clean an unproven physical outcome.
+                true
             } else if status == ProductTaskStatus::WorkspacePreparing.as_str() {
                 // The transition owner prepares the worktree.  An interrupted
                 // owner is recovered through recover_product_task_workspace,
@@ -806,41 +1261,30 @@ impl LocalProductStore {
                 break;
             }
 
-            match self.prepare_product_task_worktree(&task_id, intake, actor) {
+            match self.prepare_product_task_worktree(
+                &task_id,
+                intake,
+                actor,
+                "worktree_prepare_failed",
+                &mut contention_observed,
+            ) {
                 Ok(task) => return Ok(task),
-                Err(error)
-                    if error.contains("expected-current")
-                        || error.contains("conflict")
-                        || error.contains("stale product task version")
-                        || error.contains("already exists") =>
-                {
+                Err(error) if is_retryable_product_task_worktree_prepare_error(&error) => {
                     // Concurrent prepare: re-read and return if winner bound the task.
                     if let Some(current) = self.get_product_task(&task_id)? {
-                        let st = current.get("status").and_then(Value::as_str).unwrap_or("");
-                        if matches!(
-                            st,
-                            "workspace_bound"
-                                | "graph_ready"
-                                | "running"
-                                | "verifying"
-                                | "awaiting_approval"
-                                | "completed"
-                        ) {
+                        if product_task_has_prepared_workspace(&current)
+                            || product_task_has_terminal_workspace_prepare_state(&current)
+                        {
+                            let _ = self.retire_completed_product_task_workspace_preparation(
+                                &task_id, &current, actor,
+                            );
                             return Ok(current);
                         }
                     }
                     std::thread::sleep(PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_DELAY);
                     continue;
                 }
-                Err(error) => {
-                    let _ = self.fail_product_task_and_compensate(
-                        &task_id,
-                        "worktree_prepare_failed",
-                        &error,
-                        actor,
-                    );
-                    return Err(error);
-                }
+                Err(error) => return Err(error),
             }
         }
         // Final re-read after CAS retries.
@@ -851,23 +1295,14 @@ impl LocalProductStore {
                 &intake.idempotency_key,
             )?
             .ok_or_else(|| "product task admit concurrent retry exhausted".to_string())?;
-        let status = task.get("status").and_then(Value::as_str).unwrap_or("");
-        if matches!(
-            status,
-            "workspace_bound"
-                | "graph_ready"
-                | "running"
-                | "verifying"
-                | "repair_pending"
-                | "awaiting_approval"
-                | "output_pending"
-                | "completed"
-                | "failed"
-                | "blocked"
-                | "killed"
-                | "budget_exhausted"
-                | "outcome_unknown"
-        ) {
+        if product_task_has_prepared_workspace(&task)
+            || product_task_has_terminal_workspace_prepare_state(&task)
+        {
+            let task_id = task
+                .get("task_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "reserved product task missing task_id".to_string())?;
+            let _ = self.retire_completed_product_task_workspace_preparation(task_id, &task, actor);
             return Ok(task);
         }
         Err(
@@ -1157,7 +1592,10 @@ impl LocalProductStore {
 
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let updated = conn
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                let updated = tx
                     .execute(
                         "UPDATE product_tasks SET
                             status = ?1,
@@ -1187,7 +1625,7 @@ impl LocalProductStore {
                     return Err("product task expected-current update conflict".to_string());
                 }
                 append_audit_locked(
-                    conn,
+                    &tx,
                     &now,
                     actor,
                     "product_task.transition",
@@ -1200,11 +1638,12 @@ impl LocalProductStore {
                         "failure_code": failure_code,
                     }),
                 )?;
-                Ok(())
+                tx.commit().map_err(|error| error.to_string())
             })?,
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                let updated = client
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let updated = tx
                     .execute(
                         "UPDATE product_tasks SET
                             status = $1,
@@ -1239,20 +1678,619 @@ impl LocalProductStore {
                     "version": next_version,
                     "execution_admitted": to.admits_execution(),
                     "failure_code": failure_code,
-                })
-                .to_string();
-                client
-                    .execute(
-                        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
-                         VALUES ($1, $2, 'product_task.transition', $3, $4)",
-                        &[&now, &actor, &task_id, &audit_details],
-                    )
-                    .map_err(|e| e.to_string())?;
-                Ok(())
+                });
+                super::workflow_runs::pg_append_audit(
+                    &mut tx,
+                    &now,
+                    actor,
+                    "product_task.transition",
+                    task_id,
+                    &audit_details,
+                )?;
+                tx.commit().map_err(|error| error.to_string())
             })?,
         }
         self.get_product_task(task_id)?
             .ok_or_else(|| "product task missing after transition".to_string())
+    }
+
+    fn product_task_workspace_preparation_receipt(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<ProductTaskWorkspacePreparationReceipt>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let receipt = conn
+                    .query_row(
+                        "SELECT workspace_root, workspace_path, marker_sha256, marker_state,
+                                receipt_sha256
+                         FROM product_task_workspace_preparations WHERE task_id=?1",
+                        params![task_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, String>(4)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                receipt
+                    .map(|(root, path, marker, state, hash)| {
+                        ProductTaskWorkspacePreparationReceipt::from_persisted(
+                            task_id, root, path, marker, state, hash,
+                        )
+                    })
+                    .transpose()
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let receipt = client
+                    .query_opt(
+                        "SELECT workspace_root, workspace_path, marker_sha256, marker_state,
+                                receipt_sha256
+                         FROM product_task_workspace_preparations WHERE task_id=$1",
+                        &[&task_id],
+                    )
+                    .map_err(|_| {
+                        format!(
+                            "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt is unavailable"
+                        )
+                    })?;
+                receipt
+                    .map(|row| {
+                        ProductTaskWorkspacePreparationReceipt::from_persisted(
+                            task_id,
+                            row.get(0),
+                            row.get(1),
+                            row.get(2),
+                            row.get(3),
+                            row.get(4),
+                        )
+                    })
+                    .transpose()
+            }),
+        }
+    }
+
+    fn new_product_task_workspace_preparation_receipt(
+        &self,
+        task_id: &str,
+        intake: &ValidatedProductTaskIntake,
+    ) -> Result<ProductTaskWorkspacePreparationReceipt, String> {
+        let workspace_root = product_task_workspace_root_for_preparation(self, task_id, intake)?;
+        // The receipt is deliberately constructed from the read-only,
+        // canonicalized configuration view. It is committed with the state
+        // transition before any root, marker, or git mutation occurs.
+        ProductTaskWorkspacePreparationReceipt::planned(task_id, workspace_root)
+    }
+
+    fn ensure_product_task_workspace_preparation_receipt(
+        &self,
+        task_id: &str,
+        intake: &ValidatedProductTaskIntake,
+        actor: &str,
+    ) -> Result<ProductTaskWorkspacePreparationReceipt, String> {
+        if let Some(receipt) = self.product_task_workspace_preparation_receipt(task_id)? {
+            return Ok(receipt);
+        }
+
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "product task missing before workspace preparation".to_string())?;
+        let status = task.get("status").and_then(Value::as_str).unwrap_or("");
+        if status == ProductTaskStatus::WorkspacePreparing.as_str() {
+            return Err(format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: legacy preparing task has no receipt"
+            ));
+        }
+        if status != ProductTaskStatus::Admitted.as_str() {
+            return Err("product task is not eligible for workspace preparation".to_string());
+        }
+
+        let receipt = self.new_product_task_workspace_preparation_receipt(task_id, intake)?;
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                let existing = tx
+                    .query_row(
+                        "SELECT workspace_root, workspace_path, marker_sha256, marker_state,
+                                receipt_sha256
+                         FROM product_task_workspace_preparations WHERE task_id=?1",
+                        params![task_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, String>(4)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                if let Some((root, path, marker, state, hash)) = existing {
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return ProductTaskWorkspacePreparationReceipt::from_persisted(
+                        task_id, root, path, marker, state, hash,
+                    );
+                }
+                let (current_status, current_version): (String, i64) = tx
+                    .query_row(
+                        "SELECT status, version FROM product_tasks WHERE task_id=?1",
+                        params![task_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if current_status != ProductTaskStatus::Admitted.as_str() {
+                    return Err("product task expected-current update conflict".to_string());
+                }
+                let next_version = current_version.saturating_add(1);
+                let updated = tx
+                    .execute(
+                        "UPDATE product_tasks SET status=?1, version=?2, updated_at=?3
+                         WHERE task_id=?4 AND status=?5 AND version=?6",
+                        params![
+                            ProductTaskStatus::WorkspacePreparing.as_str(),
+                            next_version,
+                            now,
+                            task_id,
+                            ProductTaskStatus::Admitted.as_str(),
+                            current_version,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if updated != 1 {
+                    return Err("product task expected-current update conflict".to_string());
+                }
+                tx.execute(
+                    "INSERT INTO product_task_workspace_preparations (
+                        task_id, workspace_root, workspace_path, marker_sha256, marker_state,
+                        receipt_sha256, created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                    params![
+                        task_id,
+                        receipt.workspace_root.to_string_lossy(),
+                        receipt.workspace_path.to_string_lossy(),
+                        receipt.marker_sha256,
+                        receipt.marker_state.as_str(),
+                        receipt.receipt_sha256,
+                        now,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    actor,
+                    "product_task.transition",
+                    task_id,
+                    &json!({
+                        "from": ProductTaskStatus::Admitted.as_str(),
+                        "to": ProductTaskStatus::WorkspacePreparing.as_str(),
+                        "version": next_version,
+                        "execution_admitted": false,
+                        "failure_code": Value::Null,
+                    }),
+                )?;
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    actor,
+                    "product_task.workspace_prepare_planned",
+                    task_id,
+                    &json!({
+                        "receipt_sha256": receipt.receipt_sha256,
+                        "marker_state": receipt.marker_state.as_str(),
+                        "authority_owner": "product_task",
+                    }),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(receipt.clone())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                // Share the schema-transition exclusion used by v35 rollback.
+                // This keeps the admitted -> workspace_preparing transition
+                // and its durable receipt indivisible with respect to a
+                // destructive schema rollback: either this transaction
+                // publishes both before rollback observes the table, or it
+                // sees the retired schema before changing ProductTask state.
+                tx.query_one(
+                    "SELECT pg_advisory_xact_lock(
+                         hashtext(current_database()), hashtext(current_schema())
+                     )",
+                    &[],
+                )
+                .map_err(|error| {
+                    product_task_workspace_preparation_reconciliation_error(format!(
+                        "workspace preparation schema lock is unavailable: {error}"
+                    ))
+                })?;
+                let schema_version: i64 = tx
+                    .query_one(
+                        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                        &[],
+                    )
+                    .map_err(|error| {
+                        product_task_workspace_preparation_reconciliation_error(format!(
+                            "workspace preparation schema version is unavailable: {error}"
+                        ))
+                    })?
+                    .get(0);
+                if schema_version != super::migrations::V35_SCHEMA_VERSION {
+                    return Err(product_task_workspace_preparation_reconciliation_error(
+                        "workspace preparation schema is not current",
+                    ));
+                }
+                let existing = tx
+                    .query_opt(
+                        "SELECT workspace_root, workspace_path, marker_sha256, marker_state,
+                                receipt_sha256
+                         FROM product_task_workspace_preparations WHERE task_id=$1",
+                        &[&task_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if let Some(row) = existing {
+                    let existing = ProductTaskWorkspacePreparationReceipt::from_persisted(
+                        task_id,
+                        row.get(0),
+                        row.get(1),
+                        row.get(2),
+                        row.get(3),
+                        row.get(4),
+                    )?;
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(existing);
+                }
+                let row = tx
+                    .query_opt(
+                        "SELECT status, version FROM product_tasks WHERE task_id=$1 FOR UPDATE",
+                        &[&task_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        "product task missing before workspace preparation".to_string()
+                    })?;
+                let current_status: String = row.get(0);
+                let current_version: i64 = row.get(1);
+                if current_status != ProductTaskStatus::Admitted.as_str() {
+                    return Err("product task expected-current update conflict".to_string());
+                }
+                let next_version = current_version.saturating_add(1);
+                let updated = tx
+                    .execute(
+                        "UPDATE product_tasks SET status=$1, version=$2, updated_at=$3
+                         WHERE task_id=$4 AND status=$5 AND version=$6",
+                        &[
+                            &ProductTaskStatus::WorkspacePreparing.as_str(),
+                            &next_version,
+                            &now,
+                            &task_id,
+                            &ProductTaskStatus::Admitted.as_str(),
+                            &current_version,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if updated != 1 {
+                    return Err("product task expected-current update conflict".to_string());
+                }
+                tx.execute(
+                    "INSERT INTO product_task_workspace_preparations (
+                        task_id, workspace_root, workspace_path, marker_sha256, marker_state,
+                        receipt_sha256, created_at, updated_at
+                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7)",
+                    &[
+                        &task_id,
+                        &receipt.workspace_root.to_string_lossy(),
+                        &receipt.workspace_path.to_string_lossy(),
+                        &receipt.marker_sha256,
+                        &receipt.marker_state.as_str(),
+                        &receipt.receipt_sha256,
+                        &now,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                super::workflow_runs::pg_append_audit(
+                    &mut tx,
+                    &now,
+                    actor,
+                    "product_task.transition",
+                    task_id,
+                    &json!({
+                        "from": ProductTaskStatus::Admitted.as_str(),
+                        "to": ProductTaskStatus::WorkspacePreparing.as_str(),
+                        "version": next_version,
+                        "execution_admitted": false,
+                        "failure_code": Value::Null,
+                    }),
+                )?;
+                super::workflow_runs::pg_append_audit(
+                    &mut tx,
+                    &now,
+                    actor,
+                    "product_task.workspace_prepare_planned",
+                    task_id,
+                    &json!({
+                        "receipt_sha256": receipt.receipt_sha256,
+                        "marker_state": receipt.marker_state.as_str(),
+                        "authority_owner": "product_task",
+                    }),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(receipt.clone())
+            }),
+        }
+    }
+
+    fn validate_product_task_workspace_preparation_root(
+        &self,
+        task_id: &str,
+        receipt: &ProductTaskWorkspacePreparationReceipt,
+    ) -> Result<(), String> {
+        let workspace_fs_id = product_task_workspace_fs_id(task_id);
+        let configured = product_workspace_path(self, &workspace_fs_id)?;
+        let configured_root = configured.parent().ok_or_else(|| {
+            format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: configured root is unavailable"
+            )
+        })?;
+        let configured_root = canonicalize_with_missing_tail(configured_root).map_err(|_| {
+            format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: configured root is unavailable"
+            )
+        })?;
+        if configured_root != receipt.workspace_root
+            || receipt.workspace_path != receipt.workspace_root.join(workspace_fs_id)
+        {
+            return Err(format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: configured root does not match the receipt"
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_product_task_workspace_preparation_root(
+        &self,
+        task_id: &str,
+        receipt: &ProductTaskWorkspacePreparationReceipt,
+    ) -> Result<(), String> {
+        self.validate_product_task_workspace_preparation_root(task_id, receipt)?;
+        std::fs::create_dir_all(&receipt.workspace_root).map_err(|_| {
+            format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt root is unavailable"
+            )
+        })?;
+        let root = std::fs::canonicalize(&receipt.workspace_root).map_err(|_| {
+            format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt root is unavailable"
+            )
+        })?;
+        if root != receipt.workspace_root || !root.is_dir() {
+            return Err(format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt root identity is unavailable"
+            ));
+        }
+        Ok(())
+    }
+
+    fn mark_product_task_workspace_preparation_marker_ready(
+        &self,
+        task_id: &str,
+        receipt: &ProductTaskWorkspacePreparationReceipt,
+        actor: &str,
+    ) -> Result<ProductTaskWorkspacePreparationReceipt, String> {
+        if receipt.marker_state == ProductTaskWorkspacePreparationMarkerState::MarkerReady {
+            return Ok(receipt.clone());
+        }
+        let ready = receipt.with_marker_state(
+            task_id,
+            ProductTaskWorkspacePreparationMarkerState::MarkerReady,
+        )?;
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                let updated = tx
+                    .execute(
+                        "UPDATE product_task_workspace_preparations
+                         SET marker_state=?1, receipt_sha256=?2, updated_at=?3
+                         WHERE task_id=?4 AND marker_state='planned' AND receipt_sha256=?5",
+                        params![
+                            ready.marker_state.as_str(),
+                            ready.receipt_sha256,
+                            now,
+                            task_id,
+                            receipt.receipt_sha256,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if updated != 1 {
+                    return Err("product task expected-current update conflict".to_string());
+                }
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    actor,
+                    "product_task.workspace_prepare_marker_ready",
+                    task_id,
+                    &json!({
+                        "receipt_sha256": ready.receipt_sha256,
+                        "marker_state": ready.marker_state.as_str(),
+                        "authority_owner": "product_task",
+                    }),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(ready.clone())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let updated = tx
+                    .execute(
+                        "UPDATE product_task_workspace_preparations
+                         SET marker_state=$1, receipt_sha256=$2, updated_at=$3
+                         WHERE task_id=$4 AND marker_state='planned' AND receipt_sha256=$5",
+                        &[
+                            &ready.marker_state.as_str(),
+                            &ready.receipt_sha256,
+                            &now,
+                            &task_id,
+                            &receipt.receipt_sha256,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if updated != 1 {
+                    return Err("product task expected-current update conflict".to_string());
+                }
+                super::workflow_runs::pg_append_audit(
+                    &mut tx,
+                    &now,
+                    actor,
+                    "product_task.workspace_prepare_marker_ready",
+                    task_id,
+                    &json!({
+                        "receipt_sha256": ready.receipt_sha256,
+                        "marker_state": ready.marker_state.as_str(),
+                        "authority_owner": "product_task",
+                    }),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(ready.clone())
+            }),
+        }
+    }
+
+    fn ensure_product_task_workspace_preparation_marker(
+        &self,
+        task_id: &str,
+        receipt: &ProductTaskWorkspacePreparationReceipt,
+        actor: &str,
+    ) -> Result<ProductTaskWorkspacePreparationReceipt, String> {
+        validate_product_task_workspace_preparation_marker(task_id, receipt, true)?;
+        if receipt.marker_state == ProductTaskWorkspacePreparationMarkerState::Planned {
+            self.mark_product_task_workspace_preparation_marker_ready(task_id, receipt, actor)
+        } else {
+            Ok(receipt.clone())
+        }
+    }
+
+    fn retire_product_task_workspace_preparation_receipt(
+        &self,
+        task_id: &str,
+        receipt: &ProductTaskWorkspacePreparationReceipt,
+        actor: &str,
+        retired_after: &str,
+    ) -> Result<(), String> {
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                let removed = tx
+                    .execute(
+                        "DELETE FROM product_task_workspace_preparations
+                         WHERE task_id=?1 AND receipt_sha256=?2",
+                        params![task_id, receipt.receipt_sha256],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if removed == 0 {
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(());
+                }
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    actor,
+                    "product_task.workspace_prepare_retired",
+                    task_id,
+                    &json!({
+                        "receipt_sha256": receipt.receipt_sha256,
+                        "retired_after": retired_after,
+                        "authority_owner": "product_task",
+                    }),
+                )?;
+                tx.commit().map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let removed = tx
+                    .execute(
+                        "DELETE FROM product_task_workspace_preparations
+                         WHERE task_id=$1 AND receipt_sha256=$2",
+                        &[&task_id, &receipt.receipt_sha256],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if removed == 0 {
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(());
+                }
+                super::workflow_runs::pg_append_audit(
+                    &mut tx,
+                    &now,
+                    actor,
+                    "product_task.workspace_prepare_retired",
+                    task_id,
+                    &json!({
+                        "receipt_sha256": receipt.receipt_sha256,
+                        "retired_after": retired_after,
+                        "authority_owner": "product_task",
+                    }),
+                )?;
+                tx.commit().map_err(|error| error.to_string())
+            }),
+        }?;
+
+        #[cfg(unix)]
+        // The persisted receipt, not the current configuration, is the only
+        // source eligible for marker retirement. If that marker can no longer
+        // be proved to be the exact receipt marker, leave it for operator
+        // reconciliation rather than removing a replacement path.
+        if validate_product_task_workspace_preparation_marker(task_id, receipt, false).is_ok() {
+            if let Ok(marker_path) = receipt.marker_path(task_id) {
+                let _ = std::fs::remove_file(marker_path);
+            }
+        }
+        Ok(())
+    }
+
+    fn retire_completed_product_task_workspace_preparation(
+        &self,
+        task_id: &str,
+        task: &Value,
+        actor: &str,
+    ) -> Result<(), String> {
+        if !product_task_has_prepared_workspace(task)
+            && !product_task_has_terminal_workspace_prepare_state(task)
+        {
+            return Ok(());
+        }
+        let Some(receipt) = self.product_task_workspace_preparation_receipt(task_id)? else {
+            return Ok(());
+        };
+        let retired_after = if product_task_has_prepared_workspace(task) {
+            "workspace_bound"
+        } else {
+            "compensated_failure"
+        };
+        self.retire_product_task_workspace_preparation_receipt(
+            task_id,
+            &receipt,
+            actor,
+            retired_after,
+        )
     }
 
     fn prepare_product_task_worktree(
@@ -1260,49 +2298,141 @@ impl LocalProductStore {
         task_id: &str,
         intake: &ValidatedProductTaskIntake,
         actor: &str,
+        failure_code: &str,
+        contention_observed: &mut bool,
     ) -> Result<Value, String> {
         if let Some(existing) = self.get_product_task(task_id)? {
-            let st = existing.get("status").and_then(Value::as_str).unwrap_or("");
-            if matches!(
-                st,
-                "workspace_bound"
-                    | "graph_ready"
-                    | "running"
-                    | "verifying"
-                    | "awaiting_approval"
-                    | "output_pending"
-                    | "completed"
-            ) {
+            if product_task_has_prepared_workspace(&existing)
+                || product_task_has_terminal_workspace_prepare_state(&existing)
+            {
+                let _ = self
+                    .retire_completed_product_task_workspace_preparation(task_id, &existing, actor);
                 return Ok(existing);
             }
         }
 
+        // This read-only boundary must run before any root, marker, lock, or
+        // git mutation. In particular, a kill-switched recovery leaves a
+        // persisted workspace_preparing task recoverable and untouched.
+        validate_product_task_workspace_prerequisites(intake)?;
+        let receipt =
+            self.ensure_product_task_workspace_preparation_receipt(task_id, intake, actor)?;
+        self.ensure_product_task_workspace_preparation_root(task_id, &receipt)?;
+        let _workspace_preparation_lock = ProductTaskWorkspacePreparationGuard::acquire(
+            self,
+            task_id,
+            &receipt.workspace_path,
+            || {
+                if !*contention_observed {
+                    self.record_product_task_workspace_prepare_lock_contention(task_id, actor)?;
+                    *contention_observed = true;
+                }
+                Ok(())
+            },
+        )?;
+
+        // A concurrent admit or recovery may have completed while this caller
+        // retried the try-only guard. A prior owner may instead have
+        // terminalized a failed preparation while retaining this lock through
+        // compensation; never resurrect that task.
+        if let Some(existing) = self.get_product_task(task_id)? {
+            if product_task_has_prepared_workspace(&existing)
+                || product_task_has_terminal_workspace_prepare_state(&existing)
+            {
+                let _ = self
+                    .retire_completed_product_task_workspace_preparation(task_id, &existing, actor);
+                return Ok(existing);
+            }
+            let status = existing.get("status").and_then(Value::as_str).unwrap_or("");
+            if status != ProductTaskStatus::WorkspacePreparing.as_str() {
+                return Err("product task is not eligible for workspace preparation".to_string());
+            }
+        } else {
+            return Err("product task missing before workspace preparation".to_string());
+        }
+
+        // Re-validate the pinned root after acquiring the guard. The receipt
+        // is the only source of the physical path; a changed current root is
+        // a recoverable reconciliation condition, never permission to create
+        // a second worktree elsewhere.
+        self.validate_product_task_workspace_preparation_root(task_id, &receipt)?;
+        let receipt =
+            self.ensure_product_task_workspace_preparation_marker(task_id, &receipt, actor)?;
+        let prepared = self.prepare_product_task_worktree_locked(
+            task_id,
+            intake,
+            actor,
+            receipt.workspace_path.clone(),
+        );
+        match prepared {
+            Ok(task) => {
+                if product_task_has_prepared_workspace(&task) {
+                    // Durable workspace binding has superseded the pre-effect
+                    // receipt. Retirement is transactional/audited; a rare
+                    // retirement failure leaves only conservative rollback
+                    // residue and must not turn a bound task into a false
+                    // failed admission result.
+                    let _ = self.retire_product_task_workspace_preparation_receipt(
+                        task_id,
+                        &receipt,
+                        actor,
+                        "workspace_bound",
+                    );
+                }
+                Ok(task)
+            }
+            Err(error) if is_retryable_product_task_worktree_prepare_error(&error) => Err(error),
+            Err(error)
+                if error
+                    .starts_with(PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED)
+                    || error.starts_with(
+                        PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE,
+                    ) =>
+            {
+                // No physical worktree outcome was established. Retain the
+                // durable receipt and workspace_preparing state for an exact
+                // root/configuration reconciliation rather than terminalizing
+                // or deleting an unproven path.
+                Err(error)
+            }
+            Err(error) => {
+                // The same lock protects both physical preparation and its
+                // compensation/state finalization.  A waiting recovery cannot
+                // bind a worktree between this failure and terminal cleanup.
+                self.fail_product_task_and_compensate(
+                    task_id,
+                    intake,
+                    failure_code,
+                    &error,
+                    actor,
+                )?;
+                Err(error)
+            }
+        }
+    }
+
+    fn prepare_product_task_worktree_locked(
+        &self,
+        task_id: &str,
+        intake: &ValidatedProductTaskIntake,
+        actor: &str,
+        workspace_path: PathBuf,
+    ) -> Result<Value, String> {
+        // Configuration and target state can change after the initial
+        // preflight. Recheck while holding the pinned receipt guard, but keep
+        // a pre-effect failure recoverable rather than compensating an
+        // unproven worktree outcome.
+        validate_product_task_workspace_prerequisites(intake).map_err(|error| {
+            format!("{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: {error}")
+        })?;
         let config = TargetRepoOutputConfig::from_env();
-        config.require_enabled()?;
 
         let target_repo = Path::new(&intake.target_repo_path);
-        if !target_repo.is_absolute() {
-            return Err("target_repo_path must be absolute".to_string());
-        }
-        if !target_repo.is_dir() {
-            return Err("target_repo_path is not a directory".to_string());
-        }
-        let target_canonical = std::fs::canonicalize(target_repo).map_err(|e| e.to_string())?;
-
-        let workspace_fs_id = format!(
-            "pt-{}",
-            task_id
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                        c
-                    } else {
-                        '-'
-                    }
-                })
-                .collect::<String>()
-        );
-        let workspace_path = product_workspace_path(self, &workspace_fs_id)?;
+        let target_canonical = std::fs::canonicalize(target_repo).map_err(|_| {
+            format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: target repository is unavailable"
+            )
+        })?;
 
         // Concurrent admit may already have prepared this path for the same task.
         // Prefer reusing a valid existing worktree over destructive recreate.
@@ -1331,17 +2461,18 @@ impl LocalProductStore {
                     workspace_mode: "git_worktree".to_string(),
                 }
             } else {
-                let _ = remove_git_worktree(&config, &target_canonical, &workspace_path);
-                if workspace_path.exists() {
-                    let _ = std::fs::remove_dir_all(&workspace_path);
-                }
+                remove_product_task_git_worktree_or_reconcile(
+                    &config,
+                    &target_canonical,
+                    &workspace_path,
+                )?;
                 prepare_git_worktree(
                     &config,
                     &target_canonical,
                     &workspace_path,
                     &intake.source_revision,
                 )
-                .map_err(|e| format!("prepare_git_worktree failed: {e}"))?
+                .map_err(classify_product_task_git_worktree_prepare_error)?
             }
         } else {
             prepare_git_worktree(
@@ -1350,44 +2481,33 @@ impl LocalProductStore {
                 &workspace_path,
                 &intake.source_revision,
             )
-            .map_err(|e| format!("prepare_git_worktree failed: {e}"))?
+            .map_err(classify_product_task_git_worktree_prepare_error)?
         };
 
         let workspaces_root = workspace_path
             .parent()
-            .ok_or_else(|| "workspace has no app-owned root".to_string())?
+            .ok_or_else(|| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "prepared workspace has no app-owned root",
+                )
+            })?
             .to_path_buf();
         let workspaces_root = std::fs::canonicalize(&workspaces_root).unwrap_or(workspaces_root);
-        let ws = std::fs::canonicalize(Path::new(&prepared.workspace_path))
-            .map_err(|e| e.to_string())?;
+        let ws = std::fs::canonicalize(Path::new(&prepared.workspace_path)).map_err(|_| {
+            product_task_workspace_preparation_reconciliation_error(
+                "prepared workspace identity is unavailable",
+            )
+        })?;
         if !ws.starts_with(&workspaces_root) {
-            let _ = remove_git_worktree(
-                &config,
-                &target_canonical,
-                Path::new(&prepared.workspace_path),
-            );
-            return Err("workspace escaped app-owned workspace root".to_string());
+            return Err(product_task_workspace_preparation_reconciliation_error(
+                "prepared workspace escaped the app-owned workspace root",
+            ));
         }
 
-        let content_hash = match workspace_content_hash(Path::new(&prepared.workspace_path)) {
-            Ok(hash) => hash,
-            Err(e) => {
-                let _ = remove_git_worktree(
-                    &config,
-                    &target_canonical,
-                    Path::new(&prepared.workspace_path),
-                );
-                return Err(e);
-            }
-        };
+        let content_hash = workspace_content_hash(Path::new(&prepared.workspace_path))?;
 
         if let Some(expected_tree) = intake.source_tree_hash.as_deref() {
             if expected_tree.len() == 64 && expected_tree != content_hash {
-                let _ = remove_git_worktree(
-                    &config,
-                    &target_canonical,
-                    Path::new(&prepared.workspace_path),
-                );
                 return Err("source_tree_hash mismatch against prepared workspace".to_string());
             }
         }
@@ -1413,14 +2533,7 @@ impl LocalProductStore {
 
         let workspace = match self.record_supervised_patch_workspace(&workspace_request, actor) {
             Ok(ws) => ws,
-            Err(e) => {
-                let _ = remove_git_worktree(
-                    &config,
-                    &target_canonical,
-                    Path::new(&prepared.workspace_path),
-                );
-                return Err(format!("record supervised workspace failed: {e}"));
-            }
+            Err(e) => return Err(format!("record supervised workspace failed: {e}")),
         };
 
         let workspace_record_id = workspace
@@ -1450,16 +2563,9 @@ impl LocalProductStore {
         let current = self
             .get_product_task(task_id)?
             .ok_or_else(|| "task missing before finalize".to_string())?;
-        let current_status = current.get("status").and_then(Value::as_str).unwrap_or("");
-        if matches!(
-            current_status,
-            "workspace_bound"
-                | "graph_ready"
-                | "running"
-                | "verifying"
-                | "awaiting_approval"
-                | "completed"
-        ) {
+        if product_task_has_prepared_workspace(&current)
+            || product_task_has_terminal_workspace_prepare_state(&current)
+        {
             return Ok(current);
         }
         let version = current.get("version").and_then(Value::as_u64).unwrap_or(0);
@@ -1475,23 +2581,12 @@ impl LocalProductStore {
             Some(&provisional_run_id),
         ) {
             Ok(task) => Ok(task),
-            Err(e)
-                if e.contains("stale product task version")
-                    || e.contains("expected-current")
-                    || e.contains("conflict") =>
-            {
+            Err(e) if is_retryable_product_task_worktree_prepare_error(&e) => {
                 // Concurrent finisher won; return the bound task if present.
                 if let Some(task) = self.get_product_task(task_id)? {
-                    let st = task.get("status").and_then(Value::as_str).unwrap_or("");
-                    if matches!(
-                        st,
-                        "workspace_bound"
-                            | "graph_ready"
-                            | "running"
-                            | "verifying"
-                            | "awaiting_approval"
-                            | "completed"
-                    ) {
+                    if product_task_has_prepared_workspace(&task)
+                        || product_task_has_terminal_workspace_prepare_state(&task)
+                    {
                         return Ok(task);
                     }
                 }
@@ -1501,41 +2596,152 @@ impl LocalProductStore {
         }
     }
 
+    fn record_product_task_workspace_prepare_lock_contention(
+        &self,
+        task_id: &str,
+        actor: &str,
+    ) -> Result<(), String> {
+        let now = self.now();
+        let details = json!({
+            "synchronization_only": true,
+            "authority_owner": "product_task",
+        });
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                append_audit_locked(
+                    conn,
+                    &now,
+                    actor,
+                    "product_task.workspace_prepare_lock_contended",
+                    task_id,
+                    &details,
+                )?;
+                Ok(())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let details = details.to_string();
+                client
+                    .execute(
+                        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                         VALUES ($1, $2, 'product_task.workspace_prepare_lock_contended', $3, $4)",
+                        &[&now, &actor, &task_id, &details],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            }),
+        }
+    }
+
     fn fail_product_task_and_compensate(
         &self,
         task_id: &str,
+        intake: &ValidatedProductTaskIntake,
         code: &str,
         detail: &str,
         actor: &str,
     ) -> Result<Value, String> {
+        let receipt = self
+            .product_task_workspace_preparation_receipt(task_id)?
+            .ok_or_else(|| {
+                format!(
+                    "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt is missing before compensation"
+                )
+        })?;
+        self.validate_product_task_workspace_preparation_root(task_id, &receipt)?;
+        validate_product_task_workspace_preparation_marker(task_id, &receipt, false)?;
+
+        // A receipt-owned path can only be terminalized after the current
+        // target boundary is still usable and Git has removed that exact
+        // worktree. Direct filesystem deletion is insufficient because a
+        // timed-out `git worktree` child can leave registered metadata behind.
+        validate_product_task_workspace_prerequisites(intake).map_err(|_| {
+            product_task_workspace_preparation_reconciliation_error(
+                "pinned git worktree removal precondition is unavailable",
+            )
+        })?;
+        let config = TargetRepoOutputConfig::from_env();
+        let target_canonical = std::fs::canonicalize(&intake.target_repo_path).map_err(|_| {
+            product_task_workspace_preparation_reconciliation_error(
+                "pinned target repository is unavailable for worktree removal",
+            )
+        })?;
+
         let provisional = provisional_run_id_for_task(task_id);
-        if let Ok(workspaces) = self.supervised_patch_workspaces(50) {
-            for ws in workspaces {
-                if ws.get("run_id").and_then(Value::as_str) == Some(provisional.as_str()) {
-                    if let Some(ws_id) = ws.get("workspace_id").and_then(Value::as_str) {
-                        let _ = self.cleanup_workspace(ws_id, actor);
-                    }
+        let workspaces = self.supervised_patch_workspaces(50).map_err(|_| {
+            product_task_workspace_preparation_reconciliation_error(
+                "workspace cleanup is unavailable",
+            )
+        })?;
+        let mut supervised_workspace_seen = false;
+        for ws in workspaces {
+            if ws.get("run_id").and_then(Value::as_str) == Some(provisional.as_str()) {
+                let workspace_id =
+                    ws.get("workspace_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            product_task_workspace_preparation_reconciliation_error(
+                                "supervised workspace identity is unavailable",
+                            )
+                        })?;
+                let workspace_path = ws
+                    .get("workspace_path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        product_task_workspace_preparation_reconciliation_error(
+                            "supervised workspace path is unavailable",
+                        )
+                    })?;
+                if Path::new(workspace_path) != receipt.workspace_path {
+                    return Err(product_task_workspace_preparation_reconciliation_error(
+                        "supervised workspace path does not match the receipt",
+                    ));
                 }
+                let workspace_target = ws
+                    .get("target_repo_path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        product_task_workspace_preparation_reconciliation_error(
+                            "supervised workspace target is unavailable",
+                        )
+                    })?;
+                let workspace_target = std::fs::canonicalize(workspace_target).map_err(|_| {
+                    product_task_workspace_preparation_reconciliation_error(
+                        "supervised workspace target is unavailable",
+                    )
+                })?;
+                if workspace_target != target_canonical {
+                    return Err(product_task_workspace_preparation_reconciliation_error(
+                        "supervised workspace target does not match the pinned target",
+                    ));
+                }
+                // Never let a metadata-only `cleaned` status substitute for
+                // proof that Git has removed its exact registered worktree.
+                // The ProductTask receipt pins this path; the target-output
+                // owner performs the physical operation and verification.
+                remove_product_task_git_worktree_or_reconcile(
+                    &config,
+                    &target_canonical,
+                    &receipt.workspace_path,
+                )?;
+                if ws.get("status").and_then(Value::as_str) != Some("cleaned") {
+                    self.update_workspace_status(workspace_id, "cleaned", actor)
+                        .map_err(|_| {
+                            product_task_workspace_preparation_reconciliation_error(
+                                "supervised workspace cleanup status is unavailable",
+                            )
+                        })?;
+                }
+                supervised_workspace_seen = true;
             }
         }
-        // Also clean planned fs path if present without a workspace record.
-        let workspace_fs_id = format!(
-            "pt-{}",
-            task_id
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                        c
-                    } else {
-                        '-'
-                    }
-                })
-                .collect::<String>()
-        );
-        if let Ok(path) = product_workspace_path(self, &workspace_fs_id) {
-            if path.exists() {
-                let _ = std::fs::remove_dir_all(&path);
-            }
+
+        if !supervised_workspace_seen {
+            remove_product_task_git_worktree_or_reconcile(
+                &config,
+                &target_canonical,
+                &receipt.workspace_path,
+            )?;
         }
 
         let current = self.get_product_task(task_id)?;
@@ -1547,9 +2753,16 @@ impl LocalProductStore {
             .and_then(|t| t.get("status").and_then(Value::as_str))
             .unwrap_or("");
         if status == ProductTaskStatus::Failed.as_str() {
-            return current.ok_or_else(|| "failed task missing".to_string());
+            let failed = current.ok_or_else(|| "failed task missing".to_string())?;
+            let _ = self.retire_product_task_workspace_preparation_receipt(
+                task_id,
+                &receipt,
+                actor,
+                "compensated_failure",
+            );
+            return Ok(failed);
         }
-        self.transition_product_task(
+        let failed = self.transition_product_task(
             task_id,
             ProductTaskStatus::Failed,
             version,
@@ -1559,7 +2772,14 @@ impl LocalProductStore {
             Some(code),
             Some(detail),
             None,
-        )
+        )?;
+        let _ = self.retire_product_task_workspace_preparation_receipt(
+            task_id,
+            &receipt,
+            actor,
+            "compensated_failure",
+        );
+        Ok(failed)
     }
 
     /// G2: compile executable graph from a workspace-bound product task and create a
@@ -4390,52 +5610,184 @@ impl LocalProductStore {
         task_id: &str,
         actor: &str,
     ) -> Result<Value, String> {
-        let task = self
-            .get_product_task(task_id)?
-            .ok_or_else(|| format!("product task not found: {task_id}"))?;
-        let status = task.get("status").and_then(Value::as_str).unwrap_or("");
-        if status == ProductTaskStatus::WorkspaceBound.as_str() {
-            return Ok(task);
+        if !product_gate_enabled() {
+            return Err("product golden path intake is disabled".to_string());
         }
-        if status != ProductTaskStatus::WorkspacePreparing.as_str()
-            && status != ProductTaskStatus::Admitted.as_str()
-        {
-            return Err(format!(
-                "product task {task_id} is not recoverable for worktree prepare (status={status})"
-            ));
-        }
-        let intake_value = task
-            .get("intake")
-            .cloned()
-            .ok_or_else(|| "product task missing intake payload".to_string())?;
-        let intake = reconstruct_intake_from_task(&task, &intake_value)?;
-        if status == ProductTaskStatus::Admitted.as_str() {
-            let version = task.get("version").and_then(Value::as_u64).unwrap_or(1);
-            self.transition_product_task(
+        let mut contention_observed = false;
+        for attempt in 0..PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_LIMIT {
+            let task = self
+                .get_product_task(task_id)?
+                .ok_or_else(|| format!("product task not found: {task_id}"))?;
+            if product_task_has_prepared_workspace(&task)
+                || product_task_has_terminal_workspace_prepare_state(&task)
+            {
+                let _ =
+                    self.retire_completed_product_task_workspace_preparation(task_id, &task, actor);
+                return Ok(task);
+            }
+            let status = task.get("status").and_then(Value::as_str).unwrap_or("");
+            if status != ProductTaskStatus::WorkspacePreparing.as_str()
+                && status != ProductTaskStatus::Admitted.as_str()
+            {
+                return Err(format!(
+                    "product task {task_id} is not recoverable for worktree prepare (status={status})"
+                ));
+            }
+            let intake_value = task
+                .get("intake")
+                .cloned()
+                .ok_or_else(|| "product task missing intake payload".to_string())?;
+            let intake = reconstruct_intake_from_task(&task, &intake_value)?;
+            // This is intentionally before the receipt/guard path for both
+            // admitted and preparing rows: a disabled or invalid target-output
+            // boundary must not create a root, marker, or lock file.
+            validate_product_task_workspace_prerequisites(&intake)?;
+            if status == ProductTaskStatus::Admitted.as_str() {
+                validate_product_task_workspace_preflight(self, task_id, &intake)?;
+            }
+            match self.prepare_product_task_worktree(
                 task_id,
-                ProductTaskStatus::WorkspacePreparing,
-                Some(version),
+                &intake,
                 actor,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )?;
-        }
-        match self.prepare_product_task_worktree(task_id, &intake, actor) {
-            Ok(task) => Ok(task),
-            Err(error) => {
-                let _ = self.fail_product_task_and_compensate(
-                    task_id,
-                    "worktree_recover_failed",
-                    &error,
-                    actor,
-                );
+                "worktree_recover_failed",
+                &mut contention_observed,
+            ) {
+                Ok(task) => return Ok(task),
                 Err(error)
+                    if error == PRODUCT_TASK_WORKSPACE_PREPARATION_ACTIVE
+                        && attempt + 1 < PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_LIMIT =>
+                {
+                    std::thread::sleep(PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_DELAY);
+                }
+                Err(error) => return Err(error),
             }
         }
+        Err(
+            "product task workspace recovery retry exhausted while preparation remains active"
+                .to_string(),
+        )
     }
+}
+
+#[cfg(unix)]
+fn validate_product_task_workspace_preparation_marker(
+    task_id: &str,
+    receipt: &ProductTaskWorkspacePreparationReceipt,
+    create_if_planned: bool,
+) -> Result<(), String> {
+    let current_root = std::fs::canonicalize(&receipt.workspace_root).map_err(|_| {
+        format!(
+            "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt root is unavailable"
+        )
+    })?;
+    if current_root != receipt.workspace_root || !current_root.is_dir() {
+        return Err(format!(
+            "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt root identity is unavailable"
+        ));
+    }
+    let marker_path = receipt.marker_path(task_id)?;
+    let expected_contents = format!("{}\n", receipt.marker_sha256);
+    let read_marker = || -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&marker_path)
+            .map_err(|_| {
+                format!(
+                    "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker is unavailable"
+                )
+            })?;
+        let metadata = file.metadata().map_err(|_| {
+            format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker is unavailable"
+            )
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker is not a regular file"
+            ));
+        }
+        let mode = metadata.permissions().mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker permissions are invalid"
+            ));
+        }
+        if metadata.len() != expected_contents.len() as u64 {
+            return Err(format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker length is invalid"
+            ));
+        }
+        let mut contents = [0_u8; 65];
+        file.read_exact(&mut contents).map_err(|_| {
+            format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker is unavailable"
+            )
+        })?;
+        if contents.as_slice() != expected_contents.as_bytes() {
+            return Err(format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker identity is invalid"
+            ));
+        }
+        Ok(())
+    };
+
+    if receipt.marker_state == ProductTaskWorkspacePreparationMarkerState::MarkerReady
+        || !create_if_planned
+    {
+        return read_marker();
+    }
+
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&marker_path)
+    {
+        Ok(mut file) => {
+            file.write_all(expected_contents.as_bytes()).map_err(|_| {
+                format!(
+                    "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker is unavailable"
+                )
+            })?;
+            file.sync_all().map_err(|_| {
+                format!(
+                    "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker is unavailable"
+                )
+            })?;
+            let mode = file
+                .metadata()
+                .map_err(|_| {
+                    format!(
+                        "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker is unavailable"
+                    )
+                })?
+                .permissions()
+                .mode();
+            if mode & 0o077 != 0 {
+                return Err(format!(
+                    "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker permissions are invalid"
+                ));
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_marker(),
+        Err(_) => Err(format!(
+            "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker is unavailable"
+        )),
+    }
+}
+
+#[cfg(not(unix))]
+fn validate_product_task_workspace_preparation_marker(
+    _task_id: &str,
+    _receipt: &ProductTaskWorkspacePreparationReceipt,
+    _create_if_planned: bool,
+) -> Result<(), String> {
+    Err(format!(
+        "{PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED}: receipt marker is unsupported on this platform"
+    ))
 }
 
 fn product_workspace_path(
@@ -4455,6 +5807,107 @@ fn product_workspace_path(
         );
     }
     planned_workspace_path(store.db_path(), workspace_fs_id)
+}
+
+fn canonicalize_with_missing_tail(path: &Path) -> Result<PathBuf, String> {
+    if path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::CurDir | std::path::Component::ParentDir
+        )
+    }) {
+        return Err(format!(
+            "{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: workspace root contains relative traversal"
+        ));
+    }
+    let mut cursor = path;
+    let mut tail = Vec::new();
+    while !cursor.exists() {
+        let component = cursor.file_name().ok_or_else(|| {
+            format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: workspace root is unavailable"
+            )
+        })?;
+        tail.push(component.to_os_string());
+        cursor = cursor.parent().ok_or_else(|| {
+            format!(
+                "{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: workspace root is unavailable"
+            )
+        })?;
+    }
+    if !cursor.is_dir() {
+        return Err(format!(
+            "{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: workspace root is unavailable"
+        ));
+    }
+    let mut canonical = std::fs::canonicalize(cursor).map_err(|_| {
+        format!(
+            "{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: workspace root is unavailable"
+        )
+    })?;
+    for component in tail.into_iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
+}
+
+fn product_task_workspace_root_for_preparation(
+    store: &LocalProductStore,
+    task_id: &str,
+    intake: &ValidatedProductTaskIntake,
+) -> Result<PathBuf, String> {
+    validate_product_task_workspace_prerequisites(intake)?;
+    let workspace_fs_id = product_task_workspace_fs_id(task_id);
+    let workspace_path = product_workspace_path(store, &workspace_fs_id)?;
+    let workspace_root = workspace_path.parent().ok_or_else(|| {
+        format!(
+            "{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: workspace root is unavailable"
+        )
+    })?;
+    let target_root = std::fs::canonicalize(&intake.target_repo_path).map_err(|_| {
+        format!(
+            "{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: target repository is unavailable"
+        )
+    })?;
+    let canonical_workspace_root = canonicalize_with_missing_tail(workspace_root)?;
+    if canonical_workspace_root == target_root || canonical_workspace_root.starts_with(&target_root)
+    {
+        return Err(format!(
+            "{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: workspace root overlaps the target repository"
+        ));
+    }
+    Ok(canonical_workspace_root)
+}
+
+/// Validate only the read-only target-output and target-repository boundary.
+/// Both fresh admission and restart recovery run this before they can create a
+/// lock/marker or mutate a worktree.
+fn validate_product_task_workspace_prerequisites(
+    intake: &ValidatedProductTaskIntake,
+) -> Result<(), String> {
+    let config = TargetRepoOutputConfig::from_env();
+    config.require_enabled()?;
+    let target_repo = Path::new(&intake.target_repo_path);
+    if !target_repo.is_absolute() {
+        return Err("target_repo_path must be absolute".to_string());
+    }
+    if !target_repo.is_dir() {
+        return Err("target_repo_path is not a directory".to_string());
+    }
+    std::fs::canonicalize(target_repo).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Validate every read-only prerequisite before a fresh intake publishes
+/// `workspace_preparing`. Physical preparation repeats the generic checks
+/// while holding its exclusion; a persisted receipt supplies the root on
+/// recovery so a changed current root is never silently adopted.
+fn validate_product_task_workspace_preflight(
+    store: &LocalProductStore,
+    task_id: &str,
+    intake: &ValidatedProductTaskIntake,
+) -> Result<(), String> {
+    product_task_workspace_root_for_preparation(store, task_id, intake).map(|_| ())
 }
 
 fn product_export_root(store: &LocalProductStore) -> Result<PathBuf, String> {
@@ -5650,5 +7103,52 @@ mod product_verification_failure_tests {
             output.process_outcome.and_then(|outcome| outcome.exit_code),
             Some(0)
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod product_task_workspace_preparation_marker_tests {
+    use super::*;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    fn marker_ready_receipt(
+        task_id: &str,
+        workspace_root: PathBuf,
+    ) -> ProductTaskWorkspacePreparationReceipt {
+        let workspace_path = workspace_root.join(product_task_workspace_fs_id(task_id));
+        let marker_sha256 = "a".repeat(64);
+        let marker_state = ProductTaskWorkspacePreparationMarkerState::MarkerReady;
+        let receipt_sha256 = product_task_workspace_preparation_receipt_sha256(
+            task_id,
+            &workspace_root,
+            &workspace_path,
+            &marker_sha256,
+            marker_state,
+        )
+        .unwrap();
+        ProductTaskWorkspacePreparationReceipt {
+            workspace_root,
+            workspace_path,
+            marker_sha256,
+            marker_state,
+            receipt_sha256,
+        }
+    }
+
+    #[test]
+    fn marker_reader_rejects_a_fifo_without_blocking_or_reading_it() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let task_id = "marker-fifo";
+        let receipt = marker_ready_receipt(task_id, root);
+        let marker_path = receipt.marker_path(task_id).unwrap();
+        let marker_path = CString::new(marker_path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(marker_path.as_ptr(), 0o600) }, 0);
+
+        let error = validate_product_task_workspace_preparation_marker(task_id, &receipt, false)
+            .expect_err("a FIFO marker must be reconciliation, never a blocking read");
+        assert!(error.starts_with(PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED));
+        assert!(error.contains("not a regular file"));
     }
 }

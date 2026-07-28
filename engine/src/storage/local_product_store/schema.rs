@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 34;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 34;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 35;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 35;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -154,6 +154,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 34,
         description: "add RWE run authorization, runs, and task attempt evidence",
+    },
+    SchemaMigration {
+        version: 35,
+        description: "pin ProductTask worktree preparation to a durable pre-effect receipt",
     },
 ];
 
@@ -777,6 +781,22 @@ CREATE TABLE IF NOT EXISTS rwe_task_attempts (
     FOREIGN KEY(run_id) REFERENCES rwe_runs(run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_rwe_task_attempts_run ON rwe_task_attempts(run_id, created_at);
+";
+
+pub(super) const V35_DDL: &str = "
+CREATE TABLE IF NOT EXISTS product_task_workspace_preparations (
+    task_id TEXT PRIMARY KEY,
+    workspace_root TEXT NOT NULL,
+    workspace_path TEXT NOT NULL,
+    marker_sha256 TEXT NOT NULL CHECK (length(marker_sha256) = 64),
+    marker_state TEXT NOT NULL CHECK (marker_state IN ('planned','marker_ready')),
+    receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(task_id) REFERENCES product_tasks(task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_product_task_workspace_preparations_state
+    ON product_task_workspace_preparations(marker_state, updated_at);
 ";
 
 pub(super) const V28_DDL: &str = "
@@ -1933,6 +1953,19 @@ CREATE TABLE IF NOT EXISTS rwe_task_attempts (
     FOREIGN KEY(run_id) REFERENCES rwe_runs(run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_rwe_task_attempts_run ON rwe_task_attempts(run_id, created_at);
+CREATE TABLE IF NOT EXISTS product_task_workspace_preparations (
+    task_id TEXT PRIMARY KEY,
+    workspace_root TEXT NOT NULL,
+    workspace_path TEXT NOT NULL,
+    marker_sha256 TEXT NOT NULL CHECK (length(marker_sha256) = 64),
+    marker_state TEXT NOT NULL CHECK (marker_state IN ('planned','marker_ready')),
+    receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(task_id) REFERENCES product_tasks(task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_product_task_workspace_preparations_state
+    ON product_task_workspace_preparations(marker_state, updated_at);
 ";
 pub(crate) const POSTGRES_DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatch_history (
@@ -3061,6 +3094,19 @@ CREATE TABLE IF NOT EXISTS rwe_task_attempts (
     FOREIGN KEY(run_id) REFERENCES rwe_runs(run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_rwe_task_attempts_run ON rwe_task_attempts(run_id, created_at);
+CREATE TABLE IF NOT EXISTS product_task_workspace_preparations (
+    task_id TEXT PRIMARY KEY,
+    workspace_root TEXT NOT NULL,
+    workspace_path TEXT NOT NULL,
+    marker_sha256 TEXT NOT NULL CHECK (length(marker_sha256) = 64),
+    marker_state TEXT NOT NULL CHECK (marker_state IN ('planned','marker_ready')),
+    receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(task_id) REFERENCES product_tasks(task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_product_task_workspace_preparations_state
+    ON product_task_workspace_preparations(marker_state, updated_at);
 ";
 
 #[cfg(test)]
@@ -3128,6 +3174,8 @@ mod tests {
             "idx_product_tasks_target",
             "idx_product_tasks_run",
             "idx_product_tasks_workspace_record",
+            "product_task_workspace_preparations",
+            "idx_product_task_workspace_preparations_state",
             "product_task_terminal_evidence",
             "idx_product_terminal_evidence_task",
             "managed_acceptance_decisions",

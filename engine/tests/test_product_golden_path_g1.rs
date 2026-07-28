@@ -92,7 +92,7 @@ fn sample_intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskI
 #[test]
 fn schema_includes_product_tasks_at_v30() {
     let (_dir, store) = temp_store();
-    assert_eq!(store.schema_version().unwrap(), 34);
+    assert_eq!(store.schema_version().unwrap(), 35);
 }
 
 #[test]
@@ -181,9 +181,18 @@ fn rejects_missing_target_repo() {
             .expect("task reserved");
         assert_eq!(
             task["status"].as_str(),
-            Some(ProductTaskStatus::Failed.as_str())
+            Some(ProductTaskStatus::Admitted.as_str())
         );
         assert_eq!(task["execution_admitted"].as_bool(), Some(false));
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        let receipt_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM product_task_workspace_preparations WHERE task_id=?1",
+                [task["task_id"].as_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipt_count, 0, "preflight failure must remain retryable");
     });
 }
 
@@ -255,7 +264,8 @@ fn rejects_absolute_verification_binary() {
 #[test]
 fn empty_v30_rollback_works() {
     let (_dir, store) = temp_store();
-    assert_eq!(store.schema_version().unwrap(), 34);
+    assert_eq!(store.schema_version().unwrap(), 35);
+    store.rollback_v35_to_v34("tester", true).unwrap();
     store.rollback_v34_to_v33("tester", true).unwrap();
     store.rollback_v33_to_v32("tester", true).unwrap();
     store
@@ -271,6 +281,73 @@ fn empty_v30_rollback_works() {
 }
 
 #[test]
+fn v35_rollback_requires_drained_receipts_and_records_redacted_audit() {
+    with_gates(|| {
+        let (store_dir, store) = temp_store();
+        let repo = store_dir.path().join("target-repo");
+        let rev = init_git_repo(&repo);
+        let validated = validate_intake(
+            &sample_intake(&repo, &rev, "idem-v35-rollback-receipt"),
+            "local",
+            "default",
+        )
+        .unwrap();
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO product_task_workspace_preparations (
+                    task_id, workspace_root, workspace_path, marker_sha256, marker_state,
+                    receipt_sha256, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, 'planned', ?5, ?6, ?6)",
+                rusqlite::params![
+                    task_id,
+                    "/redacted/root",
+                    "/redacted/root/pt-test",
+                    "a".repeat(64),
+                    "b".repeat(64),
+                    "2026-07-28T00:00:00Z",
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let error = store
+            .rollback_v35_to_v34("rollback-operator", true)
+            .unwrap_err();
+        assert!(error.contains("v35 rollback blocked"));
+        assert_eq!(store.schema_version().unwrap(), 35);
+
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute(
+                "DELETE FROM product_task_workspace_preparations WHERE task_id = ?1",
+                [task_id],
+            )
+            .unwrap();
+        drop(connection);
+        store
+            .rollback_v35_to_v34("rollback-operator", true)
+            .unwrap();
+        let audit = store
+            .audit_events(10_000)
+            .unwrap()
+            .into_iter()
+            .find(|event| event["action"] == "schema.rollback.v35_to_v34")
+            .expect("v35 rollback audit");
+        assert_eq!(
+            audit["details"],
+            serde_json::json!({
+                "from_version": 35,
+                "to_version": 34,
+                "tables": ["product_task_workspace_preparations"],
+            })
+        );
+    });
+}
+
+#[test]
 fn occupied_v30_rollback_blocked() {
     with_gates(|| {
         let (store_dir, store) = temp_store();
@@ -279,6 +356,7 @@ fn occupied_v30_rollback_blocked() {
         let intake = sample_intake(&repo, &rev, "idem-rollback-block");
         let validated = validate_intake(&intake, "local", "default").unwrap();
         store.admit_product_task(&validated, "tester").unwrap();
+        store.rollback_v35_to_v34("tester", true).unwrap();
         store.rollback_v34_to_v33("tester", true).unwrap();
         store.rollback_v33_to_v32("tester", true).unwrap();
         store

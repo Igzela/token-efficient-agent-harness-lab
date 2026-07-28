@@ -3,7 +3,8 @@ use std::process::Command;
 
 use engine::target_repo_output::{
     export_patch, parse_github_repository_url, prepare_git_worktree, push_approved_branch,
-    remove_git_worktree, stage_and_build_patch, BranchPublishRequest, TargetRepoOutputConfig,
+    remove_git_worktree, remove_git_worktree_and_verify_absent, stage_and_build_patch,
+    BranchPublishRequest, TargetRepoOutputConfig,
 };
 use tempfile::tempdir;
 
@@ -95,6 +96,29 @@ fn target_repo_worktree_rejects_option_shaped_revision() {
 
     assert!(error.contains("invalid source revision"));
     assert!(!workspace.exists());
+}
+
+#[test]
+fn worktree_absence_verification_removes_a_stale_missing_path_registration() {
+    let (target, _, workspace_root) = fixture();
+    let workspace = workspace_root.path().join("workspace");
+    let config = TargetRepoOutputConfig::for_test(true, false);
+    prepare_git_worktree(&config, target.path(), &workspace, "main").unwrap();
+
+    std::fs::remove_dir_all(&workspace).unwrap();
+    assert!(!workspace.exists());
+    let before = git(target.path(), &["worktree", "list", "--porcelain"]);
+    assert!(before
+        .lines()
+        .any(|line| line == format!("worktree {}", workspace.display())));
+
+    remove_git_worktree_and_verify_absent(&config, target.path(), &workspace).unwrap();
+
+    assert!(!workspace.exists());
+    let after = git(target.path(), &["worktree", "list", "--porcelain"]);
+    assert!(!after
+        .lines()
+        .any(|line| line == format!("worktree {}", workspace.display())));
 }
 
 #[test]

@@ -114,8 +114,12 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     );
     bind_test_workflow(&occupied, &mut tree);
     occupied.save_recursive_tree(&tree).expect("save");
-    // Peel managed acceptance (v33/v32), terminal evidence (v31), product-task (v30), then PR_READY/evolution.
-    // so v26 recursive rollback can be attempted.
+    // Peel the workspace-preparation receipt (v35), RWE (v34), managed
+    // acceptance (v33/v32), terminal evidence (v31), product-task (v30),
+    // then PR_READY/evolution so v26 recursive rollback can be attempted.
+    occupied
+        .rollback_v35_to_v34("test", true)
+        .expect("empty workspace preparation rollback");
     occupied
         .rollback_v34_to_v33("test", true)
         .expect("empty rwe surface rollback");
@@ -149,6 +153,9 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     let empty_path = tempfile::NamedTempFile::new().expect("path");
     let empty = LocalProductStore::new(empty_path.path()).expect("store");
     empty
+        .rollback_v35_to_v34("test", true)
+        .expect("rollback v35");
+    empty
         .rollback_v34_to_v33("test", true)
         .expect("rollback v34");
     empty
@@ -178,5 +185,5 @@ fn recursive_schema_rollback_refuses_persisted_tree_and_reapplies_empty_state() 
     assert_eq!(empty.schema_version().expect("version"), 25);
     drop(empty);
     let reapplied = LocalProductStore::new(empty_path.path()).expect("reopen");
-    assert_eq!(reapplied.schema_version().expect("version"), 34);
+    assert_eq!(reapplied.schema_version().expect("version"), 35);
 }
