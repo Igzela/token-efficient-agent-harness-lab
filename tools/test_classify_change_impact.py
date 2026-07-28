@@ -12,10 +12,11 @@ spec.loader.exec_module(module)
 
 
 class ClassifyChangeImpactTests(unittest.TestCase):
-    def test_docs_only_ready_uses_fast_docs(self) -> None:
+    def test_docs_only_ready_requires_full_matrix(self) -> None:
         result = module.classify(["README.md", "docs/NEXT_DECISION.md"], draft=False)
-        self.assertEqual(result["mode"], "fast_docs")
+        self.assertEqual(result["mode"], "full")
         self.assertTrue(result["docs_only"])
+        self.assertFalse(result["fast_only"])
 
     def test_draft_code_uses_fast_draft(self) -> None:
         result = module.classify(["engine/src/lib.rs"], draft=True)
