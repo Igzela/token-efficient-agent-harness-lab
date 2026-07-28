@@ -34,7 +34,75 @@ env:
   GIT_CONFIG_VALUE_0: main
 
 jobs:
+  classify-change-impact:
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      mode: ${{ steps.classify.outputs.mode }}
+    steps:
+      - name: Check out classifier candidate
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify classifier candidate head
+        run: |
+          set -euo pipefail
+          test -n "${EXPECTED_SHA}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+      - name: Check out trusted base classifier
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-base
+          persist-credentials: false
+      - name: Classify exact candidate diff
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" != "pull_request" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          test -n "${BASE_SHA}"
+          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+          git diff --name-only "${BASE_SHA}" "${EXPECTED_SHA}" > changed-files.txt
+          git diff --raw --no-renames "${BASE_SHA}" "${EXPECTED_SHA}" > changed-raw.txt
+          args=()
+          while IFS= read -r path; do
+            [ -n "${path}" ] && args+=(--path "${path}")
+          done < changed-files.txt
+          python3 trusted-base/scripts/ci/classify_change_impact.py "${args[@]}" > impact.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+
+          data = json.load(open("impact.json", encoding="utf-8"))
+          docs_only = data.get("docs_only")
+          if not isinstance(docs_only, bool):
+              raise SystemExit("trusted classifier did not return a boolean docs_only result")
+          allowed_modes = {"000000", "100644"}
+          for line in open("changed-raw.txt", encoding="utf-8"):
+              if not line.startswith(":") or "\t" not in line:
+                  raise SystemExit("unparseable raw diff identity")
+              fields = line.split("\t", 1)[0].split()
+              if len(fields) < 2:
+                  raise SystemExit("incomplete raw diff identity")
+              old_mode = fields[0].removeprefix(":")
+              new_mode = fields[1]
+              if old_mode not in allowed_modes or new_mode not in allowed_modes:
+                  docs_only = False
+          print(f"docs_only={str(docs_only).lower()}")
+          print(f"mode={'docs_only' if docs_only else 'full'}")
+          PY
+
   python-tests:
+    needs: classify-change-impact
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -63,8 +131,9 @@ jobs:
           cache-dependency-glob: |
             **/uv.lock
             **/pyproject.toml
-      - name: Check wire codegen drift
-        run: bash scripts/check_wire_codegen_drift.sh
+      - name: Report documentation-only lane
+        if: needs.classify-change-impact.outputs.docs_only == 'true'
+        run: echo "Canonical docs-only lane; runtime and compiler checks are not applicable to this exact head."
       - name: Check GitHub Action pins
         run: bash scripts/check_github_action_pins.sh
       - name: Run security baseline checker
@@ -85,25 +154,38 @@ jobs:
         run: uv run --no-project python tools/check_readme_public_surface.py
       - name: Check site OG metadata
         run: uv run --no-project python tools/check_site_og_metadata.py
-      - name: Run relocated utility tests
-        run: uv run --no-project --with pyyaml python -m unittest discover -s tools -p "test_*.py"
       - name: Run CI lane classifier tests
         run: uv run --no-project python -m unittest tools.test_classify_change_impact
+      - name: Run CI workflow optimization contract tests
+        run: uv run --no-project --with pyyaml python -m unittest tools.test_ci_workflow_optimization
+      - name: Parse workflow YAML
+        run: uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
+      - name: Check wire codegen drift
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        run: bash scripts/check_wire_codegen_drift.sh
+      - name: Run relocated utility tests
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        run: uv run --no-project --with pyyaml python -m unittest discover -s tools -p "test_*.py"
       - name: Run no-provider demo unit tests
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: uv run --no-project python -m unittest tests.test_demo_no_provider
       - name: Run exact-head action contract tests
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: uv run --no-project python -m unittest tests.test_exact_head_action
       - name: Run external validation contract tests
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: uv run --no-project python -m unittest tests.test_external_validation
       - name: Check OpenCode fixture adapter manifest
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: bash scripts/check_opencode_fixture_manifest.sh
       - name: Run OpenCode fixture adapter tests
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: PYTHONPATH=adapters/opencode/src uv run --no-project python -m unittest discover -s adapters/opencode/tests -v
       - name: Verify canonical orchestrator regression suite is wired
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: uv run --no-project python scripts/verify_orchestrator_test_suite.py
-      - name: Parse agent workflow YAML
-        run: uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
       - name: Run orchestrator regression tests
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: |
           PYTHONPATH=scripts/agent-control uv run --no-project python -m unittest \
             tests/test_agent_control_ci.py \
@@ -114,10 +196,16 @@ jobs:
             tests/test_agent_orchestrator_artifacts.py \
             tests/test_agent_review_finalization.py
       - name: Run Python SDK tests
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 
   rust-tests:
+    needs: classify-change-impact
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -136,7 +224,11 @@ jobs:
             echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
             exit 1
           fi
+      - name: Report documentation-only lane
+        if: needs.classify-change-impact.outputs.docs_only == 'true'
+        run: echo "rust-tests not applicable to a trusted documentation-only diff"
       - name: Install bubblewrap for Codex mediation isolation probes
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -144,8 +236,16 @@ jobs:
           test -x /usr/bin/bwrap
           /usr/bin/bwrap --version
       - name: Install Rust toolchain
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
+      - name: Set up sccache
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: "v0.15.0"
+          disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -157,41 +257,32 @@ jobs:
           key: ${{ runner.os }}-rust-deps-2026-07-10-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
-      - name: Cache Rust target for rust-tests
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: target
-          key: ${{ runner.os }}-rust-target-2026-07-10-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-rust-target-2026-07-10-
       - name: Run cargo test
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cargo test -p engine
       - name: Check formatting
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cargo fmt --check
       - name: Run clippy
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cargo clippy -p engine --all-targets --all-features -- -D warnings
       - name: Audit Rust dependencies
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cargo install cargo-audit --version 0.22.2 --locked && cargo audit --deny warnings
+      - name: Report sccache statistics
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        continue-on-error: true
+        run: '"${SCCACHE_PATH}" --show-stats'
 
   pg-integration-tests:
+    needs: classify-change-impact
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: testuser
-          POSTGRES_PASSWORD: testpass
-          POSTGRES_DB: testdb
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U testuser"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=5
     env:
       ACP_TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/testdb
       CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      PG_CONTAINER: ci-postgres-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -210,15 +301,45 @@ jobs:
             echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
             exit 1
           fi
+      - name: Report documentation-only lane
+        if: needs.classify-change-impact.outputs.docs_only == 'true'
+        run: echo "pg-integration-tests not applicable to a trusted documentation-only diff"
+      - name: Start PostgreSQL service
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          docker run --detach --name "${PG_CONTAINER}" \
+            --env POSTGRES_USER=testuser \
+            --env POSTGRES_PASSWORD=testpass \
+            --env POSTGRES_DB=testdb \
+            --publish 5432:5432 \
+            postgres:16
+          for attempt in $(seq 1 30); do
+            if docker exec "${PG_CONTAINER}" pg_isready -U testuser; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "${PG_CONTAINER}"
+          exit 1
       - name: Install bubblewrap for Codex mediation isolation probes
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y bubblewrap
           test -x /usr/bin/bwrap
       - name: Install Rust toolchain
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
+      - name: Set up sccache
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: "v0.15.0"
+          disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -231,11 +352,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Run PostgreSQL integration tests
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cargo test -p engine --features pg-tests -- --test-threads=1
       - name: Verify PostgreSQL owner evidence through the PE-6 harness
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: PYTHONPATH=. python3 tools/run_fault_drills.py --suite storage --seed 0 --worker 0 --require-supported --output /tmp/acp-pe6-storage.json --format human
+      - name: Report sccache statistics
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        continue-on-error: true
+        run: '"${SCCACHE_PATH}" --show-stats'
+      - name: Stop PostgreSQL service
+        if: always() && needs.classify-change-impact.outputs.docs_only != 'true'
+        run: docker rm --force "${PG_CONTAINER}" || true
 
   typescript-tests:
+    needs: classify-change-impact
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -255,9 +386,14 @@ jobs:
             echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
             exit 1
           fi
+      - name: Report documentation-only lane
+        if: needs.classify-change-impact.outputs.docs_only == 'true'
+        run: echo "typescript-tests not applicable to a trusted documentation-only diff"
       - name: Set up Bun
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Cache Bun downloads
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
@@ -265,22 +401,34 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
       - name: Install SDK dependencies
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cd sdk/typescript && bun install --frozen-lockfile
       - name: Run SDK tests
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cd sdk/typescript && bun run test
       - name: Build SDK package
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cd sdk/typescript && bun run build
       - name: Audit SDK dependencies
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cd sdk/typescript && bun audit
       - name: Install dashboard dependencies
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cd dashboard && bun install --frozen-lockfile
       - name: Check dashboard
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cd dashboard && bun run lint && bun run typecheck && bun run build
       - name: Audit dashboard dependencies
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cd dashboard && bun audit
 
   native-runtime:
+    needs: classify-change-impact
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -299,9 +447,20 @@ jobs:
             echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
             exit 1
           fi
+      - name: Report documentation-only lane
+        if: needs.classify-change-impact.outputs.docs_only == 'true'
+        run: echo "native-runtime not applicable to a trusted documentation-only diff"
       - name: Install Rust toolchain
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
+      - name: Set up sccache
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: "v0.15.0"
+          disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -314,8 +473,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Set up Bun
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Cache Bun downloads
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
@@ -323,6 +484,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
       - name: Set up uv
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.11"
@@ -331,14 +493,19 @@ jobs:
             **/uv.lock
             **/pyproject.toml
       - name: Build static dashboard
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cd dashboard && bun install --frozen-lockfile && bun run build:static
       - name: Build native engine
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cargo build -p engine
       - name: Test LangGraph adapter
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: uv run --frozen --project adapters/langgraph python -m unittest discover -s adapters/langgraph/tests -v
       - name: Test Rust to LangGraph tool bridge
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cargo test -p engine --lib efficiency_benchmark_runtime::tests::langgraph_tool_bridge_invokes_the_real_adapter -- --ignored --exact
       - name: Smoke canonical fixture benchmark
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
           output_root="$(mktemp -d -t acp-efficiency-fixture.XXXXXX)"
@@ -350,12 +517,23 @@ jobs:
             --output-root "$output_root" \
             --benchmark-run-id ci-fixture-acceptance
       - name: Smoke native runtime
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: uv run --no-project python scripts/smoke_native_runtime.py
       - name: Smoke adaptive stub completion
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: bash scripts/smoke_adaptive_stub_completion.sh
+      - name: Report sccache statistics
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        continue-on-error: true
+        run: '"${SCCACHE_PATH}" --show-stats'
 
   rust-typescript-cutover:
+    needs: classify-change-impact
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -374,15 +552,27 @@ jobs:
             echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
             exit 1
           fi
+      - name: Report documentation-only lane
+        if: needs.classify-change-impact.outputs.docs_only == 'true'
+        run: echo "rust-typescript-cutover not applicable to a trusted documentation-only diff"
       - name: Install bubblewrap for Codex mediation isolation probes
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y bubblewrap
           test -x /usr/bin/bwrap
       - name: Install Rust toolchain
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
+      - name: Set up sccache
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: "v0.15.0"
+          disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -395,8 +585,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Set up Bun
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Cache Bun downloads
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
@@ -404,6 +596,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
       - name: Set up uv
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.11"
@@ -412,9 +605,15 @@ jobs:
             **/uv.lock
             **/pyproject.toml
       - name: Verify Rust + TypeScript stack
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: bash scripts/verify_rust_typescript_stack.sh
+      - name: Report sccache statistics
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        continue-on-error: true
+        run: '"${SCCACHE_PATH}" --show-stats'
 
   docker-build:
+    needs: classify-change-impact
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -434,7 +633,11 @@ jobs:
             echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
             exit 1
           fi
+      - name: Report documentation-only lane
+        if: needs.classify-change-impact.outputs.docs_only == 'true'
+        run: echo "docker-build not applicable to a trusted documentation-only diff"
       - name: Build local Docker services
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: |
           success=0
           for i in 1 2 3; do

@@ -59,11 +59,15 @@ Normal reversible repository work and already-configured local/GitHub services a
 
 Keep an implementation PR in Draft while its diff is changing. Draft pushes run the separate `pr-fast-checks` workflow for exact-head governance feedback only. That workflow is deliberately non-canonical: it cannot authorize review, merge, release, deployment, or acceptance.
 
-Run focused and applicable full checks locally, finish the complete-diff review, collect all known findings into one repair batch, and only then mark the PR Ready for review. The `ready_for_review` event triggers the single canonical `tests` workflow and its complete exact-head source-check matrix. Pushes to `main` and explicit exact-head fallback dispatches also use that complete matrix.
+Run focused and applicable full checks locally, finish the complete-diff review, collect all known findings into one repair batch, and only then mark the PR Ready for review. The `ready_for_review` event triggers the single canonical `tests` workflow. Its accepted-base classifier selects either the complete source-test matrix or the strict documentation-only mode; pushes to `main` and explicit exact-head fallback dispatches always use the complete matrix.
+
+A documentation-only candidate remains canonical CI, not fast feedback. Classification is computed from the accepted base checkout, not candidate-controlled classifier code. Every required job must still check out and verify the exact head and finish successfully; only compiler, runtime, database-test, TypeScript, Docker-build, and other non-applicable source-test steps are skipped. Empty, mixed, executable, symlink, submodule, workflow, script, test, configuration, dependency, schema, migration, generated, or otherwise uncertain diffs fail closed to the complete matrix.
+
+Rust source lanes use the pinned `sccache` action and the GitHub Actions cache backend as a performance optimization only. Cache contents, hit rates, misses, and statistics are never test or acceptance evidence. A cache failure may not turn a required command into success, and cached build outputs never replace exact-head checkout, compilation, tests, audit, or review.
 
 Do not push one repair at a time while CI is running. If a Ready candidate needs code or document changes, convert the PR back to Draft first, batch the repairs, validate locally, publish one replacement head, and mark it Ready again. A new head automatically cancels obsolete in-progress runs. Never restart an unchanged successful job or duplicate a workflow dispatch. Infrastructure-only failures may rerun only the failed job; code or test failures require a repaired head.
 
-A missing canonical `tests` run is not success. A fast-check success, a Draft head, a stale full run, or a prior-head review cannot satisfy merge eligibility. Documentation-only exceptions remain governed by `docs/REAL_WORLD_TESTING_PLAYBOOK.md`; they do not turn `pr-fast-checks` into canonical CI evidence.
+A missing canonical `tests` run is not success. A fast-check success, a Draft head, a stale run, a prior-head review, or a skipped required exact-head proof cannot satisfy merge eligibility. Documentation-only exceptions and targeted checks remain governed by `docs/REAL_WORLD_TESTING_PLAYBOOK.md`; they do not turn `pr-fast-checks` into canonical CI evidence.
 
 ## Execution-Ready Task Packets
 

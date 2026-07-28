@@ -12,21 +12,34 @@ spec.loader.exec_module(module)
 
 
 class ClassifyChangeImpactTests(unittest.TestCase):
-    def test_docs_only_ready_requires_full_matrix(self) -> None:
+    def test_docs_only_ready_uses_canonical_docs_lane(self) -> None:
         result = module.classify(["README.md", "docs/NEXT_DECISION.md"], draft=False)
-        self.assertEqual(result["mode"], "full")
+        self.assertEqual(result["schema_version"], "ci_change_impact.v2")
+        self.assertEqual(result["mode"], "docs_only")
         self.assertTrue(result["docs_only"])
         self.assertFalse(result["fast_only"])
 
-    def test_draft_code_uses_fast_draft(self) -> None:
+    def test_draft_code_uses_noncanonical_fast_lane(self) -> None:
         result = module.classify(["engine/src/lib.rs"], draft=True)
         self.assertEqual(result["mode"], "fast_draft")
         self.assertFalse(result["docs_only"])
+        self.assertTrue(result["fast_only"])
 
     def test_ready_code_requires_full_matrix(self) -> None:
         result = module.classify(["engine/src/lib.rs"], draft=False)
         self.assertEqual(result["mode"], "full")
         self.assertFalse(result["fast_only"])
+
+    def test_mixed_or_executable_diff_requires_full_matrix(self) -> None:
+        for paths in (
+            ["docs/guide.md", "scripts/check.py"],
+            ["README.md", ".github/workflows/tests.yml"],
+            ["docs/diagram.svg"],
+        ):
+            with self.subTest(paths=paths):
+                result = module.classify(paths, draft=False)
+                self.assertEqual(result["mode"], "full")
+                self.assertFalse(result["docs_only"])
 
     def test_empty_or_unsafe_path_fails_closed(self) -> None:
         self.assertEqual(module.classify([], draft=False)["mode"], "full")
