@@ -4,10 +4,10 @@ run-name: tests-${{ inputs.dispatch_nonce || github.run_id }}
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
-    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+    types: [ready_for_review]
   workflow_dispatch:
     inputs:
       expected_sha:
@@ -34,58 +34,7 @@ env:
   GIT_CONFIG_VALUE_0: main
 
 jobs:
-  change-impact:
-    runs-on: ubuntu-latest
-    outputs:
-      mode: ${{ steps.classify.outputs.mode }}
-      fast_only: ${{ steps.classify.outputs.fast_only }}
-      docs_only: ${{ steps.classify.outputs.docs_only }}
-    steps:
-      - name: Check out exact head
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ env.EXPECTED_SHA }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Verify exact requested head
-        run: |
-          set -euo pipefail
-          test -n "${EXPECTED_SHA}"
-          test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
-      - name: Classify change impact
-        id: classify
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_DRAFT: ${{ github.event.pull_request.draft || false }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-        run: |
-          set -euo pipefail
-          if [ "${EVENT_NAME}" = "pull_request" ]; then
-            test -n "${BASE_SHA}"
-            git diff --name-only "${BASE_SHA}" "${EXPECTED_SHA}" > changed-files.txt
-          else
-            printf '%s\n' '.github/workflows/tests.yml' > changed-files.txt
-          fi
-          cat changed-files.txt
-          args=()
-          while IFS= read -r path; do
-            [ -n "${path}" ] && args+=(--path "${path}")
-          done < changed-files.txt
-          if [ "${PR_DRAFT}" = "true" ]; then
-            args+=(--draft)
-          fi
-          python3 scripts/ci/classify_change_impact.py "${args[@]}" > impact.json
-          cat impact.json
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          data = json.load(open("impact.json", encoding="utf-8"))
-          print(f"mode={data['mode']}")
-          print(f"fast_only={str(data['fast_only']).lower()}")
-          print(f"docs_only={str(data['docs_only']).lower()}")
-          PY
-
   python-tests:
-    needs: change-impact
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -97,8 +46,15 @@ jobs:
       - name: Verify exact requested head
         run: |
           set -euo pipefail
-          test -n "${EXPECTED_SHA}"
-          test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Set up uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -107,13 +63,17 @@ jobs:
           cache-dependency-glob: |
             **/uv.lock
             **/pyproject.toml
-      - name: Run fast governance checks
+      - name: Check wire codegen drift
+        run: bash scripts/check_wire_codegen_drift.sh
+      - name: Check GitHub Action pins
+        run: bash scripts/check_github_action_pins.sh
+      - name: Run security baseline checker
+        run: uv run --no-project python tools/check_security_baseline.py
+      - name: Check agent handoff
+        run: uv run --no-project python scripts/check_agent_handoff.py
+      - name: Check exact-head diff
         run: |
           set -euo pipefail
-          bash scripts/check_github_action_pins.sh
-          uv run --no-project python tools/check_security_baseline.py
-          uv run --no-project python scripts/check_agent_handoff.py
-          uv run --no-project python -m unittest tools.test_classify_change_impact
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             base_sha="${{ github.event.pull_request.base.sha }}"
             git cat-file -e "${base_sha}^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "${base_sha}"
@@ -121,44 +81,29 @@ jobs:
           else
             git diff --check "${EXPECTED_SHA}^" "${EXPECTED_SHA}"
           fi
-      - name: Report fast lane
-        if: needs.change-impact.outputs.fast_only == 'true'
-        run: echo "mode=${{ needs.change-impact.outputs.mode }}; heavy source checks are not applicable to this candidate head"
-      - name: Check wire codegen drift
-        if: needs.change-impact.outputs.fast_only != 'true'
-        run: bash scripts/check_wire_codegen_drift.sh
       - name: Check public README surface
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: uv run --no-project python tools/check_readme_public_surface.py
       - name: Check site OG metadata
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: uv run --no-project python tools/check_site_og_metadata.py
       - name: Run relocated utility tests
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: uv run --no-project --with pyyaml python -m unittest discover -s tools -p "test_*.py"
+      - name: Run CI lane classifier tests
+        run: uv run --no-project python -m unittest tools.test_classify_change_impact
       - name: Run no-provider demo unit tests
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: uv run --no-project python -m unittest tests.test_demo_no_provider
       - name: Run exact-head action contract tests
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: uv run --no-project python -m unittest tests.test_exact_head_action
       - name: Run external validation contract tests
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: uv run --no-project python -m unittest tests.test_external_validation
       - name: Check OpenCode fixture adapter manifest
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: bash scripts/check_opencode_fixture_manifest.sh
       - name: Run OpenCode fixture adapter tests
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: PYTHONPATH=adapters/opencode/src uv run --no-project python -m unittest discover -s adapters/opencode/tests -v
       - name: Verify canonical orchestrator regression suite is wired
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: uv run --no-project python scripts/verify_orchestrator_test_suite.py
       - name: Parse agent workflow YAML
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
       - name: Run orchestrator regression tests
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: |
           PYTHONPATH=scripts/agent-control uv run --no-project python -m unittest \
             tests/test_agent_control_ci.py \
@@ -169,33 +114,38 @@ jobs:
             tests/test_agent_orchestrator_artifacts.py \
             tests/test_agent_review_finalization.py
       - name: Run Python SDK tests
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 
   rust-tests:
-    needs: change-impact
     runs-on: ubuntu-latest
     steps:
-      - name: Report not applicable
-        if: needs.change-impact.outputs.fast_only == 'true'
-        run: echo "rust-tests not applicable for mode=${{ needs.change-impact.outputs.mode }}"
       - name: Check out repository
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: needs.change-impact.outputs.fast_only != 'true'
-        run: test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Install bubblewrap for Codex mediation isolation probes
-        if: needs.change-impact.outputs.fast_only != 'true'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap && test -x /usr/bin/bwrap && /usr/bin/bwrap --version
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          test -x /usr/bin/bwrap
+          /usr/bin/bwrap --version
       - name: Install Rust toolchain
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Cache Cargo registry and Git dependencies
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -205,29 +155,25 @@ jobs:
             ~/.cargo/git/db
             ~/.cargo/git/checkouts
           key: ${{ runner.os }}-rust-deps-2026-07-10-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-rust-deps-2026-07-10-
+          restore-keys: |
+            ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Cache Rust target for rust-tests
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target
           key: ${{ runner.os }}-rust-target-2026-07-10-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-rust-target-2026-07-10-
+          restore-keys: |
+            ${{ runner.os }}-rust-target-2026-07-10-
       - name: Run cargo test
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cargo test -p engine
       - name: Check formatting
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cargo fmt --check
       - name: Run clippy
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cargo clippy -p engine --all-targets --all-features -- -D warnings
       - name: Audit Rust dependencies
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cargo install cargo-audit --version 0.22.2 --locked && cargo audit --deny warnings
 
   pg-integration-tests:
-    needs: change-impact
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -236,7 +182,8 @@ jobs:
           POSTGRES_USER: testuser
           POSTGRES_PASSWORD: testpass
           POSTGRES_DB: testdb
-        ports: ["5432:5432"]
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd="pg_isready -U testuser"
           --health-interval=5s
@@ -246,26 +193,32 @@ jobs:
       ACP_TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/testdb
       CARGO_INCREMENTAL: "0"
     steps:
-      - name: Report not applicable
-        if: needs.change-impact.outputs.fast_only == 'true'
-        run: echo "pg-integration-tests not applicable for mode=${{ needs.change-impact.outputs.mode }}"
       - name: Check out repository
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: needs.change-impact.outputs.fast_only != 'true'
-        run: test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Install bubblewrap for Codex mediation isolation probes
-        if: needs.change-impact.outputs.fast_only != 'true'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap && test -x /usr/bin/bwrap
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          test -x /usr/bin/bwrap
       - name: Install Rust toolchain
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Cache Cargo registry and Git dependencies
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -275,83 +228,80 @@ jobs:
             ~/.cargo/git/db
             ~/.cargo/git/checkouts
           key: ${{ runner.os }}-rust-deps-2026-07-10-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-rust-deps-2026-07-10-
+          restore-keys: |
+            ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Run PostgreSQL integration tests
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cargo test -p engine --features pg-tests -- --test-threads=1
       - name: Verify PostgreSQL owner evidence through the PE-6 harness
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: PYTHONPATH=. python3 tools/run_fault_drills.py --suite storage --seed 0 --worker 0 --require-supported --output /tmp/acp-pe6-storage.json --format human
 
   typescript-tests:
-    needs: change-impact
     runs-on: ubuntu-latest
     steps:
-      - name: Report not applicable
-        if: needs.change-impact.outputs.fast_only == 'true'
-        run: echo "typescript-tests not applicable for mode=${{ needs.change-impact.outputs.mode }}"
       - name: Check out repository
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: needs.change-impact.outputs.fast_only != 'true'
-        run: test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Set up Bun
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Cache Bun downloads
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('sdk/typescript/bun.lock', 'dashboard/bun.lock') }}
-          restore-keys: ${{ runner.os }}-bun-
+          restore-keys: |
+            ${{ runner.os }}-bun-
       - name: Install SDK dependencies
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cd sdk/typescript && bun install --frozen-lockfile
       - name: Run SDK tests
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cd sdk/typescript && bun run test
       - name: Build SDK package
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cd sdk/typescript && bun run build
       - name: Audit SDK dependencies
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cd sdk/typescript && bun audit
       - name: Install dashboard dependencies
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cd dashboard && bun install --frozen-lockfile
       - name: Check dashboard
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cd dashboard && bun run lint && bun run typecheck && bun run build
       - name: Audit dashboard dependencies
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cd dashboard && bun audit
 
   native-runtime:
-    needs: change-impact
     runs-on: ubuntu-latest
     steps:
-      - name: Report not applicable
-        if: needs.change-impact.outputs.fast_only == 'true'
-        run: echo "native-runtime not applicable for mode=${{ needs.change-impact.outputs.mode }}"
       - name: Check out repository
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: needs.change-impact.outputs.fast_only != 'true'
-        run: test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Install Rust toolchain
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Cache Cargo registry and Git dependencies
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -361,19 +311,18 @@ jobs:
             ~/.cargo/git/db
             ~/.cargo/git/checkouts
           key: ${{ runner.os }}-rust-deps-2026-07-10-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-rust-deps-2026-07-10-
+          restore-keys: |
+            ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Set up Bun
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Cache Bun downloads
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('sdk/typescript/bun.lock', 'dashboard/bun.lock') }}
-          restore-keys: ${{ runner.os }}-bun-
+          restore-keys: |
+            ${{ runner.os }}-bun-
       - name: Set up uv
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.11"
@@ -382,55 +331,58 @@ jobs:
             **/uv.lock
             **/pyproject.toml
       - name: Build static dashboard
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cd dashboard && bun install --frozen-lockfile && bun run build:static
       - name: Build native engine
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cargo build -p engine
       - name: Test LangGraph adapter
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: uv run --frozen --project adapters/langgraph python -m unittest discover -s adapters/langgraph/tests -v
       - name: Test Rust to LangGraph tool bridge
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: cargo test -p engine --lib efficiency_benchmark_runtime::tests::langgraph_tool_bridge_invokes_the_real_adapter -- --ignored --exact
       - name: Smoke canonical fixture benchmark
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: |
           set -euo pipefail
           output_root="$(mktemp -d -t acp-efficiency-fixture.XXXXXX)"
           trap 'rm -rf "$output_root"' EXIT
-          uv run --no-project python scripts/efficiency_live_benchmark.py --mode fixture --native-cli "$PWD/target/debug/efficiency_native_runtime" --langgraph-adapter "$PWD/target/debug/efficiency_langgraph_runtime" --output-root "$output_root" --benchmark-run-id ci-fixture-acceptance
+          uv run --no-project python scripts/efficiency_live_benchmark.py \
+            --mode fixture \
+            --native-cli "$PWD/target/debug/efficiency_native_runtime" \
+            --langgraph-adapter "$PWD/target/debug/efficiency_langgraph_runtime" \
+            --output-root "$output_root" \
+            --benchmark-run-id ci-fixture-acceptance
       - name: Smoke native runtime
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: uv run --no-project python scripts/smoke_native_runtime.py
       - name: Smoke adaptive stub completion
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: bash scripts/smoke_adaptive_stub_completion.sh
 
   rust-typescript-cutover:
-    needs: change-impact
     runs-on: ubuntu-latest
     steps:
-      - name: Report not applicable
-        if: needs.change-impact.outputs.fast_only == 'true'
-        run: echo "rust-typescript-cutover not applicable for mode=${{ needs.change-impact.outputs.mode }}"
       - name: Check out repository
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: needs.change-impact.outputs.fast_only != 'true'
-        run: test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Install bubblewrap for Codex mediation isolation probes
-        if: needs.change-impact.outputs.fast_only != 'true'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap && test -x /usr/bin/bwrap
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          test -x /usr/bin/bwrap
       - name: Install Rust toolchain
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
       - name: Cache Cargo registry and Git dependencies
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -440,19 +392,18 @@ jobs:
             ~/.cargo/git/db
             ~/.cargo/git/checkouts
           key: ${{ runner.os }}-rust-deps-2026-07-10-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-rust-deps-2026-07-10-
+          restore-keys: |
+            ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Set up Bun
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Cache Bun downloads
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('sdk/typescript/bun.lock', 'dashboard/bun.lock') }}
-          restore-keys: ${{ runner.os }}-bun-
+          restore-keys: |
+            ${{ runner.os }}-bun-
       - name: Set up uv
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.11"
@@ -461,31 +412,36 @@ jobs:
             **/uv.lock
             **/pyproject.toml
       - name: Verify Rust + TypeScript stack
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: bash scripts/verify_rust_typescript_stack.sh
 
   docker-build:
-    needs: change-impact
     runs-on: ubuntu-latest
     steps:
-      - name: Report not applicable
-        if: needs.change-impact.outputs.fast_only == 'true'
-        run: echo "docker-build not applicable for mode=${{ needs.change-impact.outputs.mode }}"
       - name: Check out repository
-        if: needs.change-impact.outputs.fast_only != 'true'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ env.EXPECTED_SHA }}
           persist-credentials: false
       - name: Verify exact requested head
-        if: needs.change-impact.outputs.fast_only != 'true'
-        run: test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Build local Docker services
-        if: needs.change-impact.outputs.fast_only != 'true'
         run: |
           success=0
           for i in 1 2 3; do
-            if docker compose build; then success=1; break; fi
+            if docker compose build; then
+              success=1
+              break
+            fi
             echo "Attempt $i failed, retrying..."
             sleep 10
           done
@@ -518,8 +474,15 @@ jobs:
       - name: Verify exact requested head
         run: |
           set -euo pipefail
-          test -n "${EXPECTED_SHA}"
-          test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to publish a context capsule without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
       - name: Check out trusted exact-head verifier
         if: github.event_name == 'pull_request'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -549,17 +512,39 @@ jobs:
           NEEDS_JSON: ${{ toJson(needs) }}
         run: |
           python3 - <<'PY'
-          import json, os
-          json.dump(json.loads(os.environ["NEEDS_JSON"]), open("needs-context.json", "w", encoding="utf-8"), sort_keys=True)
+          import json
+          import os
+
+          json.dump(
+              json.loads(os.environ["NEEDS_JSON"]),
+              open("needs-context.json", "w", encoding="utf-8"),
+              sort_keys=True,
+          )
           PY
       - name: Generate context capsule
         run: |
           set -euo pipefail
           mkdir -p context-capsule
-          args=(--format json --checks-json "$(cat needs-context.json)" --event-name "${GITHUB_EVENT_NAME}" --expected-head-sha "${EXPECTED_SHA}")
-          if [ -n "${GITHUB_PR_NUMBER}" ]; then args+=(--pr-number "${GITHUB_PR_NUMBER}" --exact-head-proof trusted-exact-head-proof.json); fi
-          env -u GH_TOKEN -u GITHUB_TOKEN uv run --no-project python scripts/project_context.py "${args[@]}" > context-capsule/context-capsule.json
-          env -u GH_TOKEN -u GITHUB_TOKEN uv run --no-project python scripts/project_context.py --format markdown --capsule-json context-capsule/context-capsule.json > context-capsule/context-capsule.md
+          args=(
+            --format json
+            --checks-json "$(cat needs-context.json)"
+            --event-name "${GITHUB_EVENT_NAME}"
+            --expected-head-sha "${EXPECTED_SHA}"
+          )
+          if [ -n "${GITHUB_PR_NUMBER}" ]; then
+            args+=(
+              --pr-number "${GITHUB_PR_NUMBER}"
+              --exact-head-proof trusted-exact-head-proof.json
+            )
+          fi
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            uv run --no-project python scripts/project_context.py "${args[@]}" \
+            > context-capsule/context-capsule.json
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            uv run --no-project python scripts/project_context.py \
+            --format markdown \
+            --capsule-json context-capsule/context-capsule.json \
+            > context-capsule/context-capsule.md
       - name: Publish sanitized job summary
         run: |
           echo '## Context Capsule' >> "$GITHUB_STEP_SUMMARY"
@@ -573,4 +558,9 @@ jobs:
           retention-days: 1
           if-no-files-found: error
       - name: Validate source-check matrix is fully successful
-        run: uv run --no-project python scripts/project_context.py --format json --capsule-json context-capsule/context-capsule.json --require-success > /dev/null
+        run: |
+          uv run --no-project python scripts/project_context.py \
+            --format json \
+            --capsule-json context-capsule/context-capsule.json \
+            --require-success \
+            > /dev/null
