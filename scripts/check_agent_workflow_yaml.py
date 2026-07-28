@@ -1,4 +1,4 @@
-"""Parse agent and canonical workflows while rejecting duplicate mapping keys."""
+"""Parse every repository workflow while rejecting duplicate mapping keys."""
 
 from pathlib import Path
 
@@ -37,8 +37,10 @@ def main() -> None:
         pass
     else:
         raise SystemExit("workflow YAML loader does not reject duplicate keys")
-    workflows = sorted(Path(".github/workflows").glob("agent-*.yml"))
-    workflows.append(Path(".github/workflows/tests.yml"))
+    workflow_root = Path(".github/workflows")
+    workflows = sorted({*workflow_root.glob("*.yml"), *workflow_root.glob("*.yaml")})
+    if not workflows:
+        raise SystemExit("no repository workflows found")
     for workflow in workflows:
         parsed = yaml.load(workflow.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
         if not isinstance(parsed, dict):
