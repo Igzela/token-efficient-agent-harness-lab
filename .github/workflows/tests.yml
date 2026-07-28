@@ -713,48 +713,48 @@ jobs:
       - name: Convert needs context to source-check JSON
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
+        working-directory: ${{ runner.temp }}
         run: |
           python3 - <<'PY'
           import json
           import os
-          from pathlib import Path
 
           json.dump(
               json.loads(os.environ["NEEDS_JSON"]),
-              open(Path(os.environ["RUNNER_TEMP"]) / "needs-context.json", "w", encoding="utf-8"),
+              open("needs-context.json", "w", encoding="utf-8"),
               sort_keys=True,
           )
           PY
       - name: Generate context capsule
+        working-directory: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          needs_context_path="${RUNNER_TEMP}/needs-context.json"
-          capsule_dir="${RUNNER_TEMP}/context-capsule"
-          mkdir -p "${capsule_dir}"
+          mkdir -p context-capsule
           args=(
             --format json
-            --checks-json "$(cat "${needs_context_path}")"
+            --checks-json "$(cat needs-context.json)"
             --event-name "${GITHUB_EVENT_NAME}"
           )
           if [ -n "${GITHUB_PR_NUMBER}" ]; then
             args+=(
               --pr-number "${GITHUB_PR_NUMBER}"
               --expected-head-sha "${EXPECTED_SHA}"
-              --exact-head-proof trusted-exact-head-proof.json
+              --exact-head-proof "${GITHUB_WORKSPACE}/trusted-exact-head-proof.json"
             )
           fi
           env -u GH_TOKEN -u GITHUB_TOKEN \
-            uv run --no-project python scripts/project_context.py "${args[@]}" \
-            > "${capsule_dir}/context-capsule.json"
+            uv run --no-project python "${GITHUB_WORKSPACE}/scripts/project_context.py" "${args[@]}" \
+            > context-capsule/context-capsule.json
           env -u GH_TOKEN -u GITHUB_TOKEN \
-            uv run --no-project python scripts/project_context.py \
+            uv run --no-project python "${GITHUB_WORKSPACE}/scripts/project_context.py" \
             --format markdown \
-            --capsule-json "${capsule_dir}/context-capsule.json" \
-            > "${capsule_dir}/context-capsule.md"
+            --capsule-json context-capsule/context-capsule.json \
+            > context-capsule/context-capsule.md
       - name: Publish sanitized job summary
+        working-directory: ${{ runner.temp }}
         run: |
           echo '## Context Capsule' >> "$GITHUB_STEP_SUMMARY"
-          head -c 100000 "${RUNNER_TEMP}/context-capsule/context-capsule.md" >> "$GITHUB_STEP_SUMMARY"
+          head -c 100000 context-capsule/context-capsule.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload context capsule artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -764,9 +764,10 @@ jobs:
           retention-days: 1
           if-no-files-found: error
       - name: Validate source-check matrix is fully successful
+        working-directory: ${{ runner.temp }}
         run: |
-          uv run --no-project python scripts/project_context.py \
+          uv run --no-project python "${GITHUB_WORKSPACE}/scripts/project_context.py" \
             --format json \
-            --capsule-json "${RUNNER_TEMP}/context-capsule/context-capsule.json" \
+            --capsule-json context-capsule/context-capsule.json \
             --require-success \
             > /dev/null
