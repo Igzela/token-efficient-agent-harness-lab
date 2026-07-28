@@ -334,7 +334,10 @@ def build_ci_repair_prompt(pr_number, head_sha, failed_jobs_json, logs, repair_c
     prompt = prompt.replace("{{AGENTS_MD}}", ctx.get("AGENTS_md", ""))
 
     capsule = generate_fresh_capsule(
-        offline=False,
+        # CI-repair renders PR-head code on a self-hosted worker. Keep GitHub
+        # credentials out of that renderer; the checked-out exact head and
+        # dispatch-bound GITHUB_SHA remain the fail-closed binding evidence.
+        offline=True,
         required_pr_number=pr_number,
         required_head_sha=head_sha,
     )

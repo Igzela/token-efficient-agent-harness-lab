@@ -128,7 +128,8 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("--capsule-json context-capsule/context-capsule.json", source)
         repair = self.read("agent-ci-repair.yml")
         prompt_step = repair.split("Build repair prompt from trusted checkout and bounded evidence", 1)[1].split("Recheck control immediately before Codex repair", 1)[0]
-        self.assertIn("GH_TOKEN: ${{ github.token }}", prompt_step)
+        self.assertIn("GITHUB_SHA: ${{ inputs.head_sha }}", prompt_step)
+        self.assertNotIn("GH_TOKEN:", prompt_step)
 
     def test_repair_dispatch_carries_run_id_not_unbounded_logs(self):
         controller = self.read("agent-controller.yml")

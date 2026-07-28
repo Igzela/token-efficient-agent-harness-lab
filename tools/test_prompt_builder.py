@@ -49,7 +49,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
         ) as gen:
             prompt = prompt_builder.build_ci_repair_prompt(301, "a" * 40, "[]", "logs", 0)
         gen.assert_called_once_with(
-            offline=False,
+            offline=True,
             required_pr_number=301,
             required_head_sha="a" * 40,
         )
