@@ -20,22 +20,72 @@ The system does not optimize token count in isolation. A lower-token result is n
 
 ## Decision Model
 
-Architecture and evolution decisions use two layers:
+Architecture and evolution decisions use two ordered layers:
 
 1. **Hard gates** — correctness, safety, authority, evidence integrity, compatibility, rollback, atomicity, restart, concurrency, and contamination controls.
-2. **Optimization evidence after hard gates pass** — quality, token/request use, latency, cost semantics, robustness, implementation effort, maintenance surface, migration risk, failure recovery, expected reuse, and realistic implementation feasibility.
+2. **Optimization evidence after hard gates pass** — accepted delivery, reliability, token/request use, latency, cost semantics, implementation effort, maintenance surface, migration risk, failure recovery, observed reuse, and realistic implementation feasibility.
 
-A single scalar score must not hide a failed hard gate. Multi-objective Pareto comparison is preferred when dimensions conflict.
+A failed hard gate is `INELIGIBLE`; it is not a low but otherwise acceptable economic score. Multi-objective Pareto comparison is the primary selection mechanism when dimensions conflict. A scalar may summarize an already eligible comparison for human display, but it may not grant execution, adoption, merge, release, deployment, or evaluator authority.
+
+The repository calls this evidence model **Verified Delivery Economics (VDE)**. VDE is a read-only projection over existing Golden Path, usage, verification, artifact, approval, output, terminal-evidence, RWE, replay, and implementation-cost owners. It is not a second evaluator, store, budget, authority, adoption controller, or source of truth.
+
+Success remains layered rather than collapsed:
 
 ```text
-Verified Delivery Efficiency
-=
-comparable verified and reusable delivery
-/
-(runtime cost + amortized implementation cost + maintenance cost + failure-recovery cost)
+verified_success
+= functional verification
+  ∧ regression verification
+  ∧ scope/mutable-surface compliance
+  ∧ evidence completeness
+
+maintainer_accepted_success
+= verified_success
+  ∧ versioned reviewer policy accepts without material rework
+
+delivered_success
+= maintainer_accepted_success
+  ∧ approval/output confirmation
+  ∧ bounded Draft-PR or export result
+  ∧ cleanup and terminal evidence
 ```
 
-This is a decision principle, not caller-supplied production authority.
+Economic comparison uses `delivered_success` unless a versioned comparison contract explicitly names a lower layer. All three layers remain observable so test success cannot hide review rejection, output failure, or incomplete cleanup.
+
+Task value uses one typed primary basis per comparison group:
+
+```text
+observed_market_value_usd
+| human_equivalent_cost_usd
+| human_expert_minutes
+| domain_verified_delivery_units
+```
+
+Different value bases are not implicitly composable. Cross-unit aggregation requires a separately reviewed, versioned conversion contract; otherwise results remain separated or Pareto-compared. Unknown value or cost is unavailable, never zero.
+
+Lifecycle evidence separates realized facts from forecasts:
+
+```text
+realized_lifecycle_cost
+forecast_lifecycle_cost
+observed_reuse_count
+expected_reuse_scenario
+```
+
+Forecast maintenance, future reuse, or amortization may appear only as labeled low/base/high scenarios. It cannot establish an accepted improvement claim until observed under the pre-registered measurement window.
+
+The general Lifecycle Cost of Accepted Pass is:
+
+```text
+LCAP
+= expected cumulative realized lifecycle cost
+  until first delivered_success or the frozen budget/stop rule terminates
+```
+
+`mean_attempt_cost / P(delivered_success)` is permitted only as an explicitly labeled simplification when attempts are independent, identically distributed, non-contaminating, fixed-cost, and governed by an unchanged retry policy. Adaptive repair, heterogeneous failure classes, restart, cancellation, and recovery require trajectory-level cumulative-cost estimation.
+
+VDE outputs may include hard-gate status, accepted-success observations and intervals, LCAP, human-relative saving, comparable verified-delivery efficiency, net verified value when both sides have trustworthy monetary semantics, and a lifecycle-cost Pareto frontier. A baseline-relative `VDE Index` is display-only and must disclose corpus, baseline, value basis, cost completeness, evidence-sufficiency state, and uncertainty.
+
+This is a decision and evidence principle, not caller-supplied production authority.
 
 ## Product Boundary
 
@@ -204,9 +254,34 @@ external_dependencies_added
 rollback_complexity
 known_maintenance_surface
 expected_reuse_count
+cost_or_measurement_unavailable_fields
 ```
 
-This evidence informs RWE replay and Level-2 decisions. It does not create a second runtime budget, scheduler, store, or evaluator.
+The accepted economic projection distinguishes observed evidence from forecasts. Failed, cancelled, timed-out, killed, recovered, and outcome-unknown attempts retain their consumed cost; successful-run-only costing is forbidden. `expected_reuse_count` remains a forecast input until reuse is observed. Reviewer time, material rework, operator interruptions, recovery work, and CI effort are part of lifecycle cost when measured; unavailable fields remain explicitly unavailable.
+
+Evidence sufficiency is stateful rather than falsely precise:
+
+```text
+INSUFFICIENT_REPETITIONS
+POINT_ESTIMATE_ONLY
+INTERVAL_AVAILABLE
+COMPARISON_ELIGIBLE
+```
+
+A single live Golden Path sample may prove evidence wiring and realized cost capture, but cannot establish a stable success probability, VDE improvement, ROI, or Level-2 decision. Repeated comparisons freeze corpus, source, verifier, reviewer policy, budget grid, seeds, stop rules, and statistical method before results are observed. Reviewer identity class, rubric, blinding, permitted repair, disagreement resolution, and review-time measurement are versioned parts of that protocol.
+
+Initial persistence is artifact-first and reuses existing evidence/artifact owners. Candidate contracts include:
+
+```text
+task_value_profile.v1
+implementation_cost_receipt.v1
+verified_delivery_observation.v1
+verified_delivery_comparison.v1
+```
+
+They are immutable/hash-bound evidence projections, not new authority. A database query table or automated adoption consumer requires a later reviewed design after live evidence proves the schemas stable. The current Level-1 `MetricVector` is not expanded merely to host VDE; a later Level-2 decision may map validated artifact fields into versioned Pareto objectives without replacing the existing evaluator owner.
+
+This evidence informs RWE replay and Level-2 decisions. It does not create a second runtime budget, scheduler, store, evaluator, or production-adoption path.
 
 ## Storage
 
@@ -223,7 +298,9 @@ The first RWE baseline is the prerequisite for Architecture Convergence.
 
 A valid corpus is real, versioned, hash-bound, replayable, fixed before convergence, bound to exact task/source/mutable-surface/verification/output/executor/budget identities, executed under separate one-use RWE spend authority, and incapable of labeling fixture execution as a live baseline.
 
-The baseline records product quality, runtime evidence, recovery behavior, approval/output/terminal bindings, and the implementation-cost receipt.
+Before the first economic comparison, the frozen corpus also binds each task's primary value basis, value source/confidence, acceptance rubric, reviewer policy, minimum repetitions, budget points, stop rules, non-inferiority margins, and cost-completeness requirements. Fixture corpora continue to prove authority and persistence only; they cannot establish task value or an economic baseline.
+
+The baseline records layered success, failure class, runtime evidence, recovery behavior, approval/output/terminal bindings, realized lifecycle cost, evidence-sufficiency state, and the implementation-cost receipt. Production task-mix value may later be observed separately, but it cannot replace the frozen-corpus comparison used for Architecture Convergence and Level-2 decisions.
 
 ## Architecture Convergence
 
@@ -237,13 +314,15 @@ Architecture Convergence is incremental compatibility work, not a rewrite:
 6. AC6 Rust-authoritative API/SDK/Dashboard schema convergence.
 7. AC7 obsolete-abstraction cleanup after all callers and evidence migrate.
 
-Each packet changes one coherent ownership boundary, preserves compatibility and rollback, and records implementation cost. The identical frozen RWE corpus is replayed after AC1–AC7.
+Each packet changes one coherent ownership boundary, preserves compatibility and rollback, and records implementation cost. The identical frozen RWE corpus and pre-registered economic protocol are replayed after AC1–AC7.
 
 ## Harness Evolution
 
-Level-1 is a default-off one-generation laboratory with immutable active-Harness identity, candidate lineage, equal-budget evaluation, hard gates, sealed holdout, Pareto archive, operator acknowledgement, and PR_READY output. It stops before production adoption.
+Level-1 is a default-off one-generation laboratory with immutable active-Harness identity, candidate lineage, equal-budget evaluation, hard gates, sealed holdout, Pareto archive, operator acknowledgement, and PR_READY output. It stops before production adoption. VDE does not rewrite or silently broaden its current evaluator or `MetricVector`.
 
-Level-2 is eligible only after an evidence-backed GO decision using Golden Path stability, pre/post-convergence RWE, contamination risk, lifecycle cost, implementation feasibility, and existing Level-1 composition.
+Level-2 is eligible only after an evidence-backed GO decision using Golden Path stability, pre/post-convergence identical-corpus RWE, contamination risk, layered accepted-success reliability, realized lifecycle cost, review/rework/recovery burden, maintenance surface, implementation feasibility, and existing Level-1 composition.
+
+A Level-2 GO requires every hard gate to pass, pre-registered quality and reliability non-inferiority, an eligible comparable value basis, uncertainty-aware improvement evidence, and no unacceptable authority, review, recovery, maintenance, or rollback regression. Pareto evidence precedes any scalar summary.
 
 Even on GO, Level-2 remains bounded and may not modify `main`, merge, deploy, rewrite its evaluator, expand its authority, or adopt a production Harness automatically.
 
@@ -259,11 +338,11 @@ Every adaptation records exact upstream commit, source mapping, license/attribut
 
 ## Dashboard Boundary
 
-The Dashboard and SDKs project accepted Rust-owned schemas and controls. They may display status, evidence, budgets, approvals, output operations, and lifecycle-cost summaries, but they do not become workflow, spend, approval, output, merge, release, or deployment authorities. Dashboard PR #225 remains presentation-only and last.
+The Dashboard and SDKs project accepted Rust-owned schemas and controls. They may display status, evidence, budgets, approvals, output operations, lifecycle-cost summaries, VDE evidence-sufficiency states, and baseline-relative indices, but they do not become workflow, evaluator, spend, approval, adoption, output, merge, release, or deployment authorities. A scalar VDE index must remain expandable to corpus, task, run, value basis, cost source, reviewer policy, failure class, and uncertainty. Dashboard PR #225 remains presentation-only and last.
 
 ## Safety and Non-Claims
 
-The repository does not currently claim full Codex admission, managed Claude/OpenCode admission, accepted live Golden Path completion, accepted live RWE, completed Architecture Convergence, automatic multi-generation evolution, demonstrated continuous learning, production self-update, or autonomous merge/release/deployment.
+The repository does not currently claim full Codex admission, managed Claude/OpenCode admission, accepted live Golden Path completion, accepted live RWE, stable accepted-success probability, realized VDE improvement, completed Architecture Convergence, automatic multi-generation evolution, demonstrated continuous learning, production self-update, or autonomous merge/release/deployment.
 
 Those claims require the evidence and gates in `docs/NEXT_DECISION.md`.
 
