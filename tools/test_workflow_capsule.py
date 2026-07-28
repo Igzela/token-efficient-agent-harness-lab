@@ -131,6 +131,13 @@ class WorkflowCapsuleTests(unittest.TestCase):
         self.assertIn("env -u GH_TOKEN -u GITHUB_TOKEN", generate.get("run", ""))
         self.assertIn("--capsule-json", generate.get("run", ""))
 
+    def test_ci_installs_yaml_parser_for_publisher_contract_tests(self) -> None:
+        source = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            "uv run --no-project --with pyyaml python -m unittest discover -s tools",
+            source,
+        )
+
     def test_context_capsule_not_in_required_checks(self) -> None:
         from tools import test_project_context as tpc
 

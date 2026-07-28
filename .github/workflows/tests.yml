@@ -53,22 +53,6 @@ jobs:
             echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
             exit 1
           fi
-      - name: Check out trusted exact-head verifier
-        if: github.event_name == 'pull_request'
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: trusted-base
-          persist-credentials: false
-      - name: Verify live PR head with trusted base action
-        if: github.event_name == 'pull_request'
-        uses: ./trusted-base/actions/exact-head-check
-        with:
-          github-token: ${{ github.token }}
-          pull-request: ${{ github.event.pull_request.number }}
-          expected-head: ${{ env.EXPECTED_SHA }}
-          allow-fork-head: "true"
-          proof-path: trusted-exact-head-proof.json
       - name: Set up uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -88,7 +72,7 @@ jobs:
       - name: Check site OG metadata
         run: uv run --no-project python tools/check_site_og_metadata.py
       - name: Run relocated utility tests
-        run: uv run --no-project python -m unittest discover -s tools -p "test_*.py"
+        run: uv run --no-project --with pyyaml python -m unittest discover -s tools -p "test_*.py"
       - name: Run no-provider demo unit tests
         run: uv run --no-project python -m unittest tests.test_demo_no_provider
       - name: Run exact-head action contract tests
@@ -497,6 +481,22 @@ jobs:
             echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
             exit 1
           fi
+      - name: Check out trusted exact-head verifier
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-base
+          persist-credentials: false
+      - name: Verify live PR head with trusted base action
+        if: github.event_name == 'pull_request'
+        uses: ./trusted-base/actions/exact-head-check
+        with:
+          github-token: ${{ github.token }}
+          pull-request: ${{ github.event.pull_request.number }}
+          expected-head: ${{ env.EXPECTED_SHA }}
+          allow-fork-head: "true"
+          proof-path: trusted-exact-head-proof.json
       - name: Set up uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
