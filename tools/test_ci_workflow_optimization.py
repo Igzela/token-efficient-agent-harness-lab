@@ -95,6 +95,27 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         self.assertIn("name: Stop PostgreSQL service", pg)
         self.assertIn("docker run --detach", pg)
 
+    def test_context_capsule_push_is_not_treated_as_a_pr_head(self) -> None:
+        capsule = self.job_source("context-capsule")
+        self.assertEqual(capsule.count('--expected-head-sha "${EXPECTED_SHA}"'), 1)
+        self.assertGreater(
+            capsule.index('--expected-head-sha "${EXPECTED_SHA}"'),
+            capsule.index('if [ -n "${GITHUB_PR_NUMBER}" ]'),
+        )
+        self.assertEqual(capsule.count("working-directory: ${{ runner.temp }}"), 4)
+        self.assertIn('open("needs-context.json"', capsule)
+        self.assertIn('--capsule-json context-capsule/context-capsule.json', capsule)
+        self.assertIn(
+            'cp "${GITHUB_WORKSPACE}/trusted-exact-head-proof.json" trusted-exact-head-proof.json',
+            capsule,
+        )
+        self.assertIn('--exact-head-proof trusted-exact-head-proof.json', capsule)
+        self.assertIn('python "${GITHUB_WORKSPACE}/scripts/project_context.py"', capsule)
+        self.assertIn('path: ${{ runner.temp }}/context-capsule/', capsule)
+        self.assertNotIn("NEEDS_CONTEXT_PATH:", capsule)
+        self.assertNotIn("CAPSULE_DIR:", capsule)
+        self.assertNotIn('path: context-capsule/', capsule)
+
     def test_canonical_identity_and_context_capsule_are_unchanged(self) -> None:
         self.assertIn("name: tests", self.source)
         self.assertIn("types: [ready_for_review]", self.source)
