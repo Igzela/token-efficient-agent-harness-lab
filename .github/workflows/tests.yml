@@ -442,3 +442,84 @@ jobs:
             echo "All 3 docker compose build attempts failed"
             exit 1
           fi
+
+  context-capsule:
+    name: context-capsule
+    needs:
+      - python-tests
+      - rust-tests
+      - pg-integration-tests
+      - typescript-tests
+      - native-runtime
+      - docker-build
+      - rust-typescript-cutover
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: read
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
+      GITHUB_EVENT_NAME: ${{ github.event_name }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
+      - name: Verify exact requested head
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing to run without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: |
+            **/uv.lock
+            **/pyproject.toml
+      - name: Convert needs context to source-check JSON
+        id: needs_json
+        run: |
+          set -euo pipefail
+          echo '${{ toJson(needs) }}' > needs-context.json
+      - name: Generate context capsule
+        run: |
+          set -euo pipefail
+          mkdir -p context-capsule
+          uv run --no-project python scripts/project_context.py \
+            --format markdown \
+            --checks-json "$(cat needs-context.json)" > context-capsule/context-capsule.md
+          uv run --no-project python scripts/project_context.py \
+            --format json \
+            --checks-json "$(cat needs-context.json)" > context-capsule/context-capsule.json
+      - name: Publish sanitized job summary
+        run: |
+          set -euo pipefail
+          echo '## Context Capsule' >> "$GITHUB_STEP_SUMMARY"
+          head -c 100000 context-capsule/context-capsule.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload context capsule artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: context-capsule-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.EXPECTED_SHA }}
+          path: context-capsule/
+          retention-days: 1
+          if-no-files-found: error
+      - name: Validate source-check matrix is fully successful
+        run: |
+          set -euo pipefail
+          uv run --no-project python scripts/project_context.py \
+            --format json \
+            --checks-json "$(cat needs-context.json)" \
+            --require-success > /dev/null

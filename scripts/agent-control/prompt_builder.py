@@ -9,10 +9,148 @@ import sys
 
 
 PROMPT_DIR = pathlib.Path(__file__).resolve().parent / "prompts"
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
+PROJECT_CONTEXT_SCRIPT = PROJECT_ROOT / "scripts" / "project_context.py"
 
 REPO_OWNER = os.environ.get("AGENT_REPO_OWNER", "Igzela")
 REPO_NAME = os.environ.get("AGENT_REPO_NAME", "token-efficient-agent-harness-lab")
 MAX_REVIEW_DIFF_CHARS = 100_000
+MAX_CAPSULE_CHARS = 100_000
+
+
+def _project_context_paths() -> tuple[pathlib.Path, pathlib.Path]:
+    """Locate the checked-out context generator for this prompt invocation.
+
+    Control scripts are sometimes copied into a temporary directory by tests or
+    workflow tooling. Their ``__file__`` location is then not a repository
+    boundary, so prefer an explicit root or the invoking working tree before
+    falling back to the script's normal checked-in location.
+    """
+    configured_root = os.environ.get("AGENT_PROJECT_ROOT")
+    candidates = []
+    if configured_root:
+        candidates.append(pathlib.Path(configured_root))
+    candidates.extend((pathlib.Path.cwd(), PROJECT_ROOT))
+
+    for root in candidates:
+        root = root.resolve()
+        script = root / "scripts" / "project_context.py"
+        if script.is_file():
+            return root, script
+    raise ValueError("Context capsule generator is unavailable from this working tree")
+
+
+def generate_fresh_capsule(
+    *,
+    offline: bool = False,
+    required_pr_number: int | None = None,
+    required_head_sha: str | None = None,
+    expected_packet: str | None = None,
+) -> str:
+    """Generate and validate a fresh bounded context capsule.
+
+    Regenerates on every invocation. Does not blindly reuse an artifact.
+    Validates the requested PR/head/packet when provided and refuses prompt
+    construction on mismatch.
+    """
+    project_root, project_context_script = _project_context_paths()
+    command = [sys.executable, str(project_context_script), "--format", "json"]
+    if offline:
+        command.append("--offline")
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=project_root,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"Context capsule generation failed: {result.stderr}")
+    raw_json = result.stdout
+    if len(raw_json) > MAX_CAPSULE_CHARS:
+        raise ValueError(
+            f"Context capsule JSON exceeds {MAX_CAPSULE_CHARS} characters"
+        )
+    try:
+        capsule = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Context capsule is not valid JSON") from exc
+
+    checkout_sha = capsule.get("local_checkout", {}).get("head_sha")
+    pr_head_sha = capsule.get("binding", {}).get("pr_exact_head", {}).get("head_sha")
+    workflow_sha = os.environ.get("GITHUB_SHA")
+    active_pr_number = capsule.get("active_frontier", {}).get("number")
+    canonical_packet = capsule.get("active_packet", {}).get("packet")
+
+    if required_head_sha:
+        # Prefer authoritative PR head from GitHub API, then workflow SHA, then
+        # local checkout. Fail closed only when an authoritative value is
+        # available and disagrees.
+        authoritative_head = pr_head_sha or workflow_sha
+        if authoritative_head and authoritative_head != required_head_sha:
+            raise ValueError(
+                f"Authoritative head {authoritative_head} does not match required head {required_head_sha}"
+            )
+        if (
+            not authoritative_head
+            and checkout_sha
+            and checkout_sha != required_head_sha
+            and os.environ.get("GITHUB_RUN_ID")
+        ):
+            raise ValueError(
+                f"Checkout SHA {checkout_sha} does not match required head {required_head_sha}"
+            )
+    if required_pr_number is not None:
+        frontier_available = (
+            capsule.get("active_frontier", {}).get("availability") == "confirmed"
+        )
+        if (
+            frontier_available
+            and active_pr_number is not None
+            and active_pr_number != required_pr_number
+        ):
+            raise ValueError(
+                f"Active PR #{active_pr_number} does not match required PR #{required_pr_number}"
+            )
+    if expected_packet:
+        if canonical_packet and canonical_packet != expected_packet:
+            raise ValueError(
+                f"Canonical routed packet {canonical_packet} does not match expected {expected_packet}"
+            )
+
+    command = [sys.executable, str(project_context_script), "--format", "markdown"]
+    if offline:
+        command.append("--offline")
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=project_root,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"Context capsule markdown generation failed: {result.stderr}"
+        )
+    return result.stdout[:MAX_CAPSULE_CHARS]
+
+
+def _prepend_capsule(prompt: str, capsule: str, *, workflow_bound_note: str = "") -> str:
+    """Prepend a bounded, non-authoritative capsule before task-specific content."""
+    if len(capsule) > MAX_CAPSULE_CHARS:
+        raise ValueError(
+            f"Capsule exceeds {MAX_CAPSULE_CHARS} character bound"
+        )
+    note = ""
+    if workflow_bound_note:
+        note = f"\n\n> Current workflow/session-bound context: {workflow_bound_note}"
+    return (
+        "## Fresh Repository Context Capsule (non-authoritative transport context)\n\n"
+        f"{capsule}"
+        f"{note}\n\n"
+        "---\n\n"
+        f"{prompt}"
+    )
 
 
 def _gh(*args):
@@ -153,7 +291,12 @@ def build_implementation_prompt(issue_number, template="implementation.md"):
     prompt = prompt.replace("{{REPO_NAME}}", f"{REPO_OWNER}/{REPO_NAME}")
     prompt = prompt.replace("{{GIT_BRANCH}}", os.environ.get("AGENT_BRANCH", "main"))
 
-    return prompt
+    capsule = generate_fresh_capsule(offline=False)
+    return _prepend_capsule(
+        prompt,
+        capsule,
+        workflow_bound_note=f"Issue #{issue_number}",
+    )
 
 
 def build_ci_repair_prompt(pr_number, head_sha, failed_jobs_json, logs, repair_count, template="ci_repair.md"):
@@ -177,7 +320,16 @@ def build_ci_repair_prompt(pr_number, head_sha, failed_jobs_json, logs, repair_c
     prompt = prompt.replace("{{REPO_NAME}}", f"{REPO_OWNER}/{REPO_NAME}")
     prompt = prompt.replace("{{AGENTS_MD}}", ctx.get("AGENTS_md", ""))
 
-    return prompt
+    capsule = generate_fresh_capsule(
+        offline=False,
+        required_pr_number=pr_number,
+        required_head_sha=head_sha,
+    )
+    return _prepend_capsule(
+        prompt,
+        capsule,
+        workflow_bound_note=f"CI repair for PR #{pr_number} at {head_sha}",
+    )
 
 
 def build_ci_repair_prompt_from_evidence(pr_number, head_sha, evidence_path, repair_count):
@@ -238,7 +390,16 @@ def build_review_prompt(pr_number, head_sha, template="review.md"):
     if ctx.get("review_schema"):
         prompt += "\n\n### Authoritative Schema\n\n```json\n" + ctx["review_schema"] + "\n```\n"
 
-    return prompt
+    capsule = generate_fresh_capsule(
+        offline=False,
+        required_pr_number=pr_number,
+        required_head_sha=head_sha,
+    )
+    return _prepend_capsule(
+        prompt,
+        capsule,
+        workflow_bound_note=f"Review of PR #{pr_number} at {head_sha}",
+    )
 
 
 def main():

@@ -6,16 +6,21 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPOSITORY = "Igzela/token-efficient-agent-harness-lab"
 PACKET_ID = r"(?:PE\d+|PR\d+|TOOL)(?:-[A-Z0-9]+)+"
+
+# Logical required check names. These are the canonical names used in the matrix.
 REQUIRED_CI_CHECKS = (
     "python-tests",
     "rust-tests",
@@ -26,6 +31,17 @@ REQUIRED_CI_CHECKS = (
     "rust-typescript-cutover",
     "exact-head-check",
 )
+
+# Explicit aliases for known check-name representations.
+# Every alias must canonicalize to exactly one logical required check.
+# Do not use substring, fuzzy, or similarity matching.
+CHECK_NAME_ALIASES = {
+    "exact-head-check": "exact-head-check",
+    "exact-head": "exact-head-check",
+    "exact-head-check / exact-head": "exact-head-check",
+    "exact-head / exact-head-check": "exact-head-check",
+}
+
 FAILED_CONCLUSIONS = {
     "ACTION_REQUIRED",
     "CANCELLED",
@@ -227,11 +243,17 @@ def canonical_documents(baseline: dict[str, Any], *, offline: bool) -> dict[str,
     }
 
 
-def _required_check_name(name: str) -> str | None:
+def _canonical_check_name(name: str) -> str | None:
+    """Return the logical required-check name for an observed check name.
+
+    Only exact aliases and exact logical names are accepted. No substring,
+    fuzzy, or similarity matching is used.
+    """
     normalized = name.strip()
-    for required in REQUIRED_CI_CHECKS:
-        if normalized == required or normalized.endswith(f" / {required}"):
-            return required
+    if normalized in CHECK_NAME_ALIASES:
+        return CHECK_NAME_ALIASES[normalized]
+    if normalized in REQUIRED_CI_CHECKS:
+        return normalized
     return None
 
 
@@ -250,6 +272,14 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
         "exact_head_review": {
             "state": "unavailable",
             "reason": "remote_review_state_unavailable",
+        },
+        "review_observation": {
+            "observed_head_sha": None,
+            "observation_time": None,
+            "aggregate_review_state": None,
+            "exact_head_review_state": "unavailable",
+            "unresolved_objections_state": "unavailable",
+            "unavailable_reason": "remote_review_state_unavailable",
         },
         "ci": {
             "state": "unavailable",
@@ -273,6 +303,8 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
             "reviewDecision",
             "statusCheckRollup",
             "url",
+            "reviews",
+            "comments",
         ]
     )
     result = run_command(
@@ -288,10 +320,19 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
         unavailable["unavailable_reason"] = "gh_pr_view_invalid_json"
         return unavailable
     aggregate_review = payload.get("reviewDecision") or "REVIEW_REQUIRED"
+    head_sha = payload.get("headRefOid")
+    observation_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    review_observation = _build_review_observation(
+        head_sha=head_sha,
+        aggregate_review=aggregate_review,
+        reviews=payload.get("reviews") or [],
+        comments=payload.get("comments") or [],
+        observation_time=observation_time,
+    )
     return {
         "number": payload.get("number", pr_number),
         "availability": "confirmed",
-        "head_sha": payload.get("headRefOid"),
+        "head_sha": head_sha,
         "head_branch": payload.get("headRefName"),
         "base_branch": payload.get("baseRefName"),
         "title": payload.get("title"),
@@ -303,8 +344,64 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
             "state": "unverified",
             "reason": "aggregate_review_decision_is_not_exact_head_bound",
         },
+        "review_observation": review_observation,
         "ci": summarize_checks(payload.get("statusCheckRollup") or []),
     }
+
+
+def _build_review_observation(
+    *,
+    head_sha: str | None,
+    aggregate_review: str | None,
+    reviews: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+    observation_time: str,
+) -> dict[str, Any]:
+    """Build a fail-closed review observation from available GitHub evidence.
+
+    Exact-head acceptance is never inferred from aggregate state or prose.
+    """
+    observation: dict[str, Any] = {
+        "observed_head_sha": head_sha,
+        "observation_time": observation_time,
+        "aggregate_review_state": aggregate_review,
+        "exact_head_review_state": "unverified",
+        "unresolved_objections_state": "unavailable",
+        "unavailable_reason": None,
+    }
+    if not reviews and not comments:
+        observation["unresolved_objections_state"] = "unavailable"
+        observation["unavailable_reason"] = "no_reviews_or_comments_exposed"
+        return observation
+
+    blocking_reviews = [
+        review
+        for review in reviews
+        if str(review.get("state") or "").upper() == "CHANGES_REQUESTED"
+    ]
+    if blocking_reviews:
+        observation["unresolved_objections_state"] = "blocking_reviews_present"
+        return observation
+
+    # Comments from the GitHub REST API do not expose resolved/unresolved state
+    # reliably. We only flag explicit BLOCKING mentions so we do not hide them.
+    explicit_blocking = [
+        comment
+        for comment in comments
+        if "BLOCKING" in str(comment.get("body") or "")
+    ]
+    if explicit_blocking:
+        observation["unresolved_objections_state"] = "explicit_blocking_comments_present"
+        return observation
+
+    if aggregate_review == "APPROVED" and reviews:
+        # Aggregate approval exists, but we still do not treat it as exact-head
+        # independent acceptance. Mark objections as none observed, not resolved.
+        observation["unresolved_objections_state"] = "none_observed"
+    else:
+        observation["unresolved_objections_state"] = "unavailable"
+        observation["unavailable_reason"] = "insufficient_review_evidence"
+    return observation
 
 
 def summarize_checks(checks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -313,6 +410,8 @@ def summarize_checks(checks: list[dict[str, Any]]) -> dict[str, Any]:
     pending: list[str] = []
     observed_required: set[str] = set()
     successful_required: set[str] = set()
+    raw_by_canonical: dict[str, list[str]] = {name: [] for name in REQUIRED_CI_CHECKS}
+
     for check in checks:
         name = str(
             check.get("name")
@@ -322,9 +421,10 @@ def summarize_checks(checks: list[dict[str, Any]]) -> dict[str, Any]:
         )
         conclusion = str(check.get("conclusion") or "").upper()
         status = str(check.get("status") or check.get("state") or "").upper()
-        required_name = _required_check_name(name)
+        required_name = _canonical_check_name(name)
         if required_name:
             observed_required.add(required_name)
+            raw_by_canonical.setdefault(required_name, []).append(name)
         if conclusion == "SUCCESS":
             successful.append(name)
             if required_name:
@@ -353,7 +453,82 @@ def summarize_checks(checks: list[dict[str, Any]]) -> dict[str, Any]:
         "failed": sorted(set(failed)),
         "pending": sorted(set(pending)),
         "missing_required": missing_required,
+        "incomplete_required": incomplete_required,
+        "raw_by_canonical": {k: sorted(set(v)) for k, v in raw_by_canonical.items()},
     }
+
+
+def source_required_check_matrix(
+    ci_summary: dict[str, Any], event_name: str | None = None
+) -> list[dict[str, Any]]:
+    """Return a per-required-check view of observed matrix state.
+
+    For push and workflow_dispatch events the PR-only `exact-head-check` is
+    marked not_applicable rather than missing.
+    """
+    successful = set(ci_summary.get("successful") or [])
+    failed = set(ci_summary.get("failed") or [])
+    pending = set(ci_summary.get("pending") or [])
+    raw_by_canonical = ci_summary.get("raw_by_canonical") or {}
+    matrix: list[dict[str, Any]] = []
+    for required in REQUIRED_CI_CHECKS:
+        raw_names = raw_by_canonical.get(required) or []
+        if required in successful:
+            conclusion = "success"
+        elif required in failed:
+            conclusion = "failed"
+        elif required in pending:
+            conclusion = "pending"
+        elif raw_names:
+            conclusion = "pending"
+        else:
+            conclusion = "missing"
+        if (
+            required == "exact-head-check"
+            and conclusion == "missing"
+            and event_name in {"push", "workflow_dispatch"}
+        ):
+            conclusion = "not_applicable"
+        matrix.append(
+            {
+                "logical_name": required,
+                "observed": bool(raw_names),
+                "conclusion": conclusion,
+                "raw_names": sorted(set(raw_names)),
+            }
+        )
+    return matrix
+
+
+def parse_checks_json(raw: str) -> list[dict[str, Any]]:
+    """Convert a GitHub Actions `needs` JSON blob into a checks array.
+
+    Expected shape: {"job-id": {"result": "success", "outputs": {}}, ...}
+    """
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    checks: list[dict[str, Any]] = []
+    for job_id, info in data.items():
+        if not isinstance(info, dict):
+            continue
+        result = str(info.get("result") or "").upper()
+        checks.append(
+            {
+                "name": job_id,
+                "status": "COMPLETED" if result else "IN_PROGRESS",
+                "conclusion": result if result else None,
+            }
+        )
+    return checks
+
+
+def is_matrix_successful(matrix: list[dict[str, Any]]) -> bool:
+    """True only when every required check is success or not_applicable."""
+    return all(item.get("conclusion") in {"success", "not_applicable"} for item in matrix)
 
 
 def local_checkout_state() -> dict[str, Any]:
@@ -370,11 +545,94 @@ def local_checkout_state() -> dict[str, Any]:
     }
 
 
+def workflow_run_identity() -> dict[str, Any]:
+    """Capture GitHub Actions workflow/run identity when available.
+
+    Returns unavailable outside a workflow run.
+    """
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if not run_id:
+        return {
+            "availability": "unavailable",
+            "run_id": None,
+            "run_attempt": None,
+            "event_name": None,
+            "repository": os.environ.get("GITHUB_REPOSITORY"),
+            "workflow": None,
+            "job": None,
+        }
+    return {
+        "availability": "confirmed",
+        "run_id": run_id,
+        "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+        "event_name": os.environ.get("GITHUB_EVENT_NAME"),
+        "repository": os.environ.get("GITHUB_REPOSITORY"),
+        "workflow": os.environ.get("GITHUB_WORKFLOW"),
+        "job": os.environ.get("GITHUB_JOB"),
+    }
+
+
+def session_binding() -> dict[str, Any]:
+    """Capture live session/workflow binding without provider credentials."""
+    return {
+        "availability": "confirmed" if os.environ.get("GITHUB_RUN_ID") else "unavailable",
+        "runner_os": os.environ.get("RUNNER_OS"),
+        "runner_arch": os.environ.get("RUNNER_ARCH"),
+        "github_actor": os.environ.get("GITHUB_ACTOR"),
+        "github_ref": os.environ.get("GITHUB_REF"),
+        "github_sha": os.environ.get("GITHUB_SHA"),
+        "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+        "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+        "github_event_name": os.environ.get("GITHUB_EVENT_NAME"),
+    }
+
+
+def staleness_conditions() -> list[str]:
+    return [
+        "accepted `main` SHA changes",
+        "active PR exact head changes",
+        "any required CI check conclusion changes",
+        "canonical documents change",
+        "review state or unresolved objections change",
+        "workflow run identity changes",
+        "local checkout becomes dirty or switches branch",
+    ]
+
+
+def compute_fingerprint(capsule: dict[str, Any]) -> str:
+    """Stable fingerprint over immutable binding fields.
+
+    This is transport-integrity evidence only, not authority. It intentionally
+    excludes mutable fields such as observation time and next permitted action.
+    """
+    binding = capsule.get("binding", {})
+    accepted = binding.get("accepted_baseline", {})
+    canonical = binding.get("canonical_document_source", {})
+    routed = binding.get("canonical_routed_packet", {})
+    pr = binding.get("pr_exact_head", {})
+    run = binding.get("workflow_run_identity", {})
+    fingerprint_input = {
+        "repository": capsule.get("repository"),
+        "accepted_main_sha": accepted.get("sha"),
+        "canonical_document_source_sha": canonical.get("source_sha"),
+        "canonical_routed_packet": routed.get("packet"),
+        "pr_number": pr.get("number"),
+        "pr_exact_head_sha": pr.get("head_sha"),
+        "checked_out_sha": binding.get("checked_out_sha"),
+        "workflow_run_id": run.get("run_id"),
+        "workflow_run_attempt": run.get("run_attempt"),
+    }
+    canonical_json = json.dumps(fingerprint_input, sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()[:24]
+
+
 def next_permitted_action(packet: dict[str, Any], active_pr: dict[str, Any] | None) -> str:
     packet_id = packet.get("packet") or "the earliest eligible packet"
     state = packet.get("state")
     if state == "BLOCKED_PREREQUISITE":
         return f"resolve the named prerequisite for {packet_id}; do not implement the blocked packet"
+    if state == "COMPLETE":
+        return f"{packet_id} is complete; refresh accepted main and select the next eligible packet"
     if not active_pr:
         return f"inspect {packet_id}, confirm ownership, and create or continue one focused PR"
     number = active_pr.get("number")
@@ -401,7 +659,13 @@ def next_permitted_action(packet: dict[str, Any], active_pr: dict[str, Any] | No
     )
 
 
-def build_capsule(*, offline: bool, repository: str | None = None) -> dict[str, Any]:
+def build_capsule(
+    *,
+    offline: bool,
+    repository: str | None = None,
+    checks_json: str | None = None,
+    event_name: str | None = None,
+) -> dict[str, Any]:
     repository = repository or repository_from_git()
     baseline = accepted_baseline(offline=offline)
     documents = canonical_documents(baseline, offline=offline)
@@ -409,6 +673,9 @@ def build_capsule(*, offline: bool, repository: str | None = None) -> dict[str, 
     status_text = documents.get("current_status", "")
     packet = parse_first_routed_packet(next_text)
     frontiers = parse_open_frontiers(status_text)
+
+    event_name = event_name or os.environ.get("GITHUB_EVENT_NAME")
+    provided_checks = parse_checks_json(checks_json) if checks_json else []
 
     pr_number = int(packet["pr_number"]) if packet.get("pr_number") else None
     active_pr = load_pr(repository, pr_number, offline=offline) if pr_number else None
@@ -430,12 +697,86 @@ def build_capsule(*, offline: bool, repository: str | None = None) -> dict[str, 
         and checkout.get("head_sha") == active_pr.get("head_sha")
     )
 
+    if active_pr and active_pr.get("availability") == "confirmed":
+        pr_ci_summary = active_pr.get("ci", {})
+        pr_check_items = [
+            {"name": name, "status": "COMPLETED", "conclusion": outcome.upper()}
+            for outcome in ("successful", "failed", "pending")
+            for name in (pr_ci_summary.get(outcome) or [])
+        ]
+        if provided_checks:
+            # Merge provided checks (e.g., current workflow needs) with PR status
+            # rollup so that PR-only exact-head-check is preserved while current
+            # run results are available immediately.
+            ci_summary = summarize_checks(provided_checks + pr_check_items)
+        else:
+            ci_summary = pr_ci_summary
+        active_pr["ci"] = ci_summary
+    elif provided_checks:
+        ci_summary = summarize_checks(provided_checks)
+        if active_pr is None:
+            active_pr = {
+                "number": None,
+                "availability": "unavailable",
+                "ci": ci_summary,
+            }
+        else:
+            active_pr["ci"] = ci_summary
+    else:
+        ci_summary = {
+            "state": "unavailable",
+            "successful": [],
+            "failed": [],
+            "pending": [],
+            "missing_required": list(REQUIRED_CI_CHECKS),
+        }
+    matrix = source_required_check_matrix(ci_summary, event_name=event_name)
+    run_identity = workflow_run_identity()
+    session = session_binding()
+
+    binding = {
+        "accepted_baseline": baseline,
+        "canonical_document_source": {
+            "availability": documents.get("availability"),
+            "source_sha": documents.get("source_sha"),
+        },
+        "canonical_routed_packet": packet,
+        "session_binding": session,
+        "pr_exact_head": {
+            "number": active_pr.get("number") if active_pr else None,
+            "head_sha": active_pr.get("head_sha") if active_pr else None,
+            "head_branch": active_pr.get("head_branch") if active_pr else None,
+            "base_branch": active_pr.get("base_branch") if active_pr else None,
+            "availability": active_pr.get("availability") if active_pr else "unavailable",
+        },
+        "checked_out_sha": checkout.get("head_sha"),
+        "workflow_run_identity": run_identity,
+        "source_required_check_matrix": matrix,
+        "review_observation": (
+            active_pr.get("review_observation")
+            if active_pr
+            else {
+                "observed_head_sha": None,
+                "observation_time": None,
+                "aggregate_review_state": None,
+                "exact_head_review_state": "unavailable",
+                "unresolved_objections_state": "unavailable",
+                "unavailable_reason": "no_active_pr",
+            }
+        ),
+        "unresolved_objection_observation": (
+            active_pr.get("review_observation", {}).get("unresolved_objections_state")
+            if active_pr
+            else "unavailable"
+        ),
+    }
+
     if documents.get("availability") == "unavailable":
         action = "obtain the accepted-main canonical documents before selecting or advancing work"
     else:
         action = next_permitted_action(packet, active_pr)
 
-    return {
+    capsule = {
         "schema_version": "project_context.v1",
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "repository": repository,
@@ -444,6 +785,7 @@ def build_capsule(*, offline: bool, repository: str | None = None) -> dict[str, 
             "availability": documents.get("availability"),
             "source_sha": documents.get("source_sha"),
         },
+        "binding": binding,
         "local_checkout": checkout,
         "active_packet": packet,
         "active_frontier": active_pr,
@@ -467,13 +809,16 @@ def build_capsule(*, offline: bool, repository: str | None = None) -> dict[str, 
             "no caller-asserted authority, secret exposure, invented evidence, or weakened fail-closed behavior",
             "no second runtime, scheduler, store, evaluator, budget, approval, output, audit, or rollback owner",
         ],
+        "staleness_conditions": staleness_conditions(),
         "notes": [
             "This capsule is a generated transport view, not an authority owner.",
             "Current status and routing are read from the accepted baseline, not branch-local prose.",
             "Unavailable remote facts are reported as unavailable rather than inferred.",
-            "The generator is on-demand; CI does not yet inject the capsule into later Agent sessions.",
+            "The generator is on-demand; CI may publish a short-lived artifact and job summary.",
         ],
     }
+    capsule["fingerprint"] = compute_fingerprint(capsule)
+    return capsule
 
 
 def markdown(capsule: dict[str, Any]) -> str:
@@ -482,6 +827,7 @@ def markdown(capsule: dict[str, Any]) -> str:
     checkout = capsule.get("local_checkout", {})
     packet = capsule["active_packet"]
     frontier = capsule.get("active_frontier")
+    binding = capsule.get("binding", {})
     lines = [
         "# Project Context Capsule",
         "",
@@ -525,8 +871,20 @@ def markdown(capsule: dict[str, Any]) -> str:
         )
     else:
         lines.append("- Active PR: `unavailable`")
+
+    pr_exact = binding.get("pr_exact_head", {})
+    run_identity = binding.get("workflow_run_identity", {})
+    review_obs = binding.get("review_observation", {})
     lines.extend(
         [
+            f"- Fingerprint: `{capsule.get('fingerprint') or 'unavailable'}`",
+            f"- Workflow run: `{run_identity.get('run_id') or 'unavailable'}` "
+            f"(event=`{run_identity.get('event_name') or 'unavailable'}`)",
+            f"- PR exact head binding: `{pr_exact.get('head_sha') or 'unavailable'}`",
+            (
+                f"- Unresolved objections: "
+                f"`{review_obs.get('unresolved_objections_state') or 'unavailable'}`"
+            ),
             f"- Next permitted action: {capsule['next_permitted_action']}",
             "",
             "## Required reading",
@@ -535,6 +893,19 @@ def markdown(capsule: dict[str, Any]) -> str:
     lines.extend(f"- {item}" for item in capsule["required_reading"])
     lines.extend(["", "## Hard stops"])
     lines.extend(f"- {item}" for item in capsule["hard_stops"])
+    lines.extend(["", "## Staleness conditions"])
+    lines.extend(f"- {item}" for item in capsule["staleness_conditions"])
+    lines.extend(["", "## Source required-check matrix"])
+    matrix = binding.get("source_required_check_matrix", [])
+    if matrix:
+        for item in matrix:
+            status = "✓" if item.get("conclusion") == "success" else item.get("conclusion", "?")
+            lines.append(
+                f"- `{item.get('logical_name')}`: {status} "
+                f"(raw: {', '.join(item.get('raw_names') or []) or 'none'})"
+            )
+    else:
+        lines.append("- unavailable")
     lines.extend(["", "## Other documented frontiers"])
     if capsule["blocked_or_other_frontiers"]:
         for item in capsule["blocked_or_other_frontiers"]:
@@ -543,6 +914,10 @@ def markdown(capsule: dict[str, Any]) -> str:
             )
     else:
         lines.append("- None discovered in accepted `docs/CURRENT_STATUS.md`.")
+    lines.extend(["", "*["])
+    lines.append(f"schema_version: {capsule['schema_version']}")
+    lines.append(f"generated_at: {capsule['generated_at']}")
+    lines.append("*]")
     lines.extend(["", *[f"> {note}" for note in capsule["notes"]]])
     return "\n".join(lines) + "\n"
 
@@ -556,16 +931,39 @@ def parse_args() -> argparse.Namespace:
         help="Do not contact the remote Git repository or GitHub CLI.",
     )
     parser.add_argument("--repo", help="Override owner/repository for GitHub lookups.")
+    parser.add_argument(
+        "--checks-json",
+        help="GitHub Actions needs JSON to use as the source check matrix.",
+    )
+    parser.add_argument(
+        "--event-name",
+        help="GitHub event name (push, pull_request, workflow_dispatch, etc.).",
+    )
+    parser.add_argument(
+        "--require-success",
+        action="store_true",
+        help="Exit non-zero if the source required-check matrix is not fully successful.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    capsule = build_capsule(offline=args.offline, repository=args.repo)
+    capsule = build_capsule(
+        offline=args.offline,
+        repository=args.repo,
+        checks_json=args.checks_json,
+        event_name=args.event_name,
+    )
     if args.format == "json":
         print(json.dumps(capsule, indent=2, sort_keys=True))
     else:
         print(markdown(capsule), end="")
+    if args.require_success:
+        matrix = capsule.get("binding", {}).get("source_required_check_matrix", [])
+        if not is_matrix_successful(matrix):
+            print("\nSource required-check matrix is not fully successful.", file=sys.stderr)
+            return 1
     return 0
 
 

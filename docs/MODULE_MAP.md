@@ -1,10 +1,10 @@
 # Module Map
 
-Last updated: 2026-07-27.
+Last updated: 2026-07-28.
 
 This is the concise ownership map for accepted `main`. Current facts are in `docs/CURRENT_STATUS.md`; execution order and gates are in `docs/NEXT_DECISION.md`; architecture invariants are in `docs/ARCHITECTURE_BOOK.md`.
 
-Open PR branches are listed separately and are not canonical owners until merged.
+Open PR branches are listed separately and are not canonical owners until merged. PR #300 (provider-free RWE authority) and PR #301 (CC Switch observation-only adaptation) are merged and accepted.
 
 Full Agent Autonomy Mode permits repository-scoped work that is testable, observable, reviewable, verification-gated, compatible, and rollbackable. Provider calls, target output, release, deployment, spend, and authority-critical actions retain separate gates.
 
@@ -12,7 +12,7 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 
 | Area | Canonical owner | Boundary |
 |---|---|---|
-| Repository navigation and context capsule | `START_HERE.md`, `scripts/project_context.py`, `tools/test_project_context.py`, `scripts/check_agent_handoff.py` | One on-demand fail-closed transport view derived from accepted owners; not a status database or authority owner. Workflow publication and session injection remain unimplemented until their routed packet is accepted |
+| Repository navigation and context capsule | `START_HERE.md`, `scripts/project_context.py`, `tools/test_project_context.py`, `scripts/check_agent_handoff.py`, `.github/workflows/tests.yml` (context-capsule publisher job), `scripts/agent-control/prompt_builder.py` | One on-demand fail-closed transport view and exact-head workflow publication/session injection derived from accepted owners; not a status database or authority owner |
 | API and composition root | `engine/src/main.rs`, `engine/src/http_server/` | Sole startup/composition surface; runtime modes remain explicitly gated |
 | Dispatch analysis | `engine/src/dispatch_engine.rs`, analyzers, selectors, planners, decomposers | Advisory/default-noop unless an accepted contract admits execution |
 | Workflow runtime | `engine/src/workflow/`, `engine/src/scheduler.rs`, `engine/src/scheduler/`, `engine/src/executor_pool.rs`, `engine/src/node_executor.rs` | Sole persisted run, node, lease, retry, pause/kill, and concurrency path |
@@ -20,7 +20,7 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Managed CLI/process | `engine/src/cli/mod.rs`, `config.rs`, `cli_node_executor.rs`, process/probe owners | Bounded subprocess lifecycle, output limits, process-tree cleanup, exact executable identity, default-off admission |
 | Codex mediation and budget | `engine/src/cli/codex_budget_authority.rs`, `codex_mediation_admission.rs`, `codex_usage_journal.rs`, `codex_session_usage.rs` | Parent-held credential, loopback gateway, ProductTask budget enforcement, parent-owned fail-closed journal, session corroboration; class remains partial |
 | Managed-acceptance authority | `engine/src/storage/local_product_store/managed_acceptance.rs` and existing v32/v33 store/migration owners | Accepted store-owned decision, risk, one-use spend, attempt lease, transition receipt, restart, replay, audit, and rollback authority from PR #299 |
-| Multi-executor usage evidence | `engine/src/execution_usage/` — accepted adapters and reconcile owners | `execution_usage_event.v1`; evidence only; never a second budget or spend authority |
+| Multi-executor usage evidence | `engine/src/execution_usage/` — accepted adapters and reconcile owners (PR #301) | `execution_usage_event.v1`; evidence only; never a second budget or spend authority |
 | Workspace and patch | Existing supervised-patch/workspace owners and target-repository output owners | App-owned detached worktree, exact source binding, bounded patch and cleanup lifecycle |
 | Verification | Existing product verification, managed-run, process-outcome, and tool-policy owners | Fixed admitted commands, exact workspace/source/patch bindings, pause/kill/late-write refusal |
 | Artifact | Existing supervised artifact capture, integrity, redaction, and store owners | Atomic content/hash-bound artifact; no approval or output authority |
@@ -29,6 +29,7 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Terminal evidence | `engine/src/storage/local_product_store/` product terminal-evidence owners | Exact persisted task/run/node/workspace/source/artifact/approval/output/audit binding |
 | Persistence and audit | `engine/src/storage/local_product_store/` and PostgreSQL backend | Sole SQLite/PostgreSQL transaction, migration, audit, idempotency, evidence, and rollback owner |
 | Scorecards/replay | Existing scorecard, trace, replay, and store owners | Derived comparison evidence; cannot mutate live routing or policy by itself |
+| Real Workload Evidence corpus | `engine/src/rwe/` and fixture corpus owners from PR #300 | Provider-free corpus authority, authorization/run/task-attempt persistence; no live baseline from fixtures |
 | Harness Evolution Level-1 | `engine/src/harness_evolution*.rs` plus existing store owners | Default-off one-generation fixture laboratory; active Harness immutable |
 | SDK and Dashboard | `sdk/`, `dashboard/` | Typed interaction and projection only; no backend authority |
 | Wire contracts | `wire_contract/`, `codegen/` | Shared cross-language schemas; drift checked by `scripts/check_wire_codegen_drift.sh` |
@@ -72,11 +73,9 @@ No earlier authority implies a later one. In particular, risk acknowledgement is
 
 | PR | Proposed modules/scope | Rule |
 |---|---|---|
-| #300 | Proposed `engine/src/rwe/`, real versioned corpus definitions/fixtures, RWE authorization/run/task-attempt persistence | Current earliest eligible packet; no live baseline from fixtures |
-| #301 | Proposed `engine/src/execution_usage/{protocol_usage,model_normalize,pricing_estimate,endpoint_identity}.rs` plus adapter changes and third-party notices | Observation only; blocked until #300 is accepted; must canonicalize token buckets and preserve trustworthy provider/request identity; no authority import |
 | #225 | Dashboard presentation | Last; may project accepted schemas only |
 
-PR #297/#298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304.
+PR #297/#298 are closed without merge as superseded by accepted PR #299. PR #300 is merged and accepted. PR #301 is merged and accepted (observation-only; no authority import). PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304.
 
 Do not copy explanatory labels into file names. Always inspect the actual final branch tree before documenting an owner.
 

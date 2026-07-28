@@ -107,11 +107,11 @@ class TestWorkflowContracts(unittest.TestCase):
             source,
             r"expected_sha:\n(?:.*\n){0,4}\s+required:\s*true",
         )
-        # Every checkout must pin the resolved expected commit.
-        self.assertEqual(source.count("ref: ${{ env.EXPECTED_SHA }}"), 7)
+        # Every checkout must pin the resolved expected commit (seven test jobs + context-capsule publisher).
+        self.assertEqual(source.count("ref: ${{ env.EXPECTED_SHA }}"), 8)
         # Exact-head verification must not be skippable via inputs.expected_sha.
         self.assertNotIn("if: inputs.expected_sha", source)
-        self.assertEqual(source.count("name: Verify exact requested head"), 7)
+        self.assertEqual(source.count("name: Verify exact requested head"), 8)
         # Shell verification uses env (not raw input interpolation) and fails closed.
         scripts = self.shell_scripts("tests.yml")
         self.assertIn('if [ -z "${EXPECTED_SHA}" ]', scripts)
