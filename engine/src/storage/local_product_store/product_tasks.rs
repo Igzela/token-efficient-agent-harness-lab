@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::node_executor::{
     CommandNodeExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor, ProcessOutcome,
@@ -57,6 +58,14 @@ const PRODUCT_TASK_SELECT: &str = "SELECT schema_version, task_id, tenant_id, wo
     workspace_binding_json, plan_id, run_id, workspace_record_id, failure_code,
     failure_detail, created_at, updated_at, created_by
  FROM product_tasks";
+
+// A duplicate intake must never race the worker that won the durable
+// `admitted -> workspace_preparing` transition into the physical git worktree
+// operation.  The bounded wait gives the transition owner time to publish its
+// terminal workspace state while retaining explicit recovery as the owner of
+// interrupted preparation.
+const PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_LIMIT: usize = 100;
+const PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_DELAY: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProductVerificationNodeAuthority {
@@ -716,8 +725,10 @@ impl LocalProductStore {
         }
         validate_source_revision_format(&intake.source_revision)?;
 
-        // Bounded CAS loop for concurrent duplicate intake.
-        for _ in 0..8 {
+        // Bounded CAS loop for concurrent duplicate intake.  Only the caller
+        // that wins `admitted -> workspace_preparing` may create the physical
+        // worktree; duplicate callers observe and wait for that durable owner.
+        for attempt in 0..PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_LIMIT {
             let reserved = self.reserve_product_task(intake, actor)?;
             let status = reserved
                 .get("status")
@@ -750,7 +761,7 @@ impl LocalProductStore {
                 .to_string();
             let version = reserved.get("version").and_then(Value::as_u64).unwrap_or(1);
 
-            if status == ProductTaskStatus::Admitted.as_str() {
+            let owns_workspace_prepare = if status == ProductTaskStatus::Admitted.as_str() {
                 match self.transition_product_task(
                     &task_id,
                     ProductTaskStatus::WorkspacePreparing,
@@ -762,28 +773,37 @@ impl LocalProductStore {
                     None,
                     None,
                 ) {
-                    Ok(_) => {}
+                    Ok(_) => true,
                     Err(e)
                         if e.contains("expected-current")
                             || e.contains("conflict")
                             || e.contains("stale product task version") =>
                     {
                         // Another concurrent admit won the CAS; re-read.
+                        std::thread::sleep(PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_DELAY);
                         continue;
                     }
                     Err(e) => return Err(e),
                 }
             } else if status == ProductTaskStatus::WorkspacePreparing.as_str() {
-                // Another worker is preparing; re-read until bound or failed.
-                // If preparation was interrupted, this worker may continue prepare below
-                // only when the binding is still missing.
-                if reserved.get("workspace_binding").is_some()
-                    && !reserved.get("workspace_binding").unwrap().is_null()
-                {
-                    // Binding present but status stale — rare; re-fetch after short yield.
-                    std::thread::yield_now();
+                // The transition owner prepares the worktree.  An interrupted
+                // owner is recovered through recover_product_task_workspace,
+                // rather than allowing a duplicate intake to steal the
+                // physical operation and race git's worktree metadata.
+                false
+            } else {
+                // All non-terminal states above are handled before this point;
+                // retain the existing fail-closed behavior for an unexpected
+                // persisted state by letting the preparation boundary validate it.
+                true
+            };
+
+            if !owns_workspace_prepare {
+                if attempt + 1 < PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_LIMIT {
+                    std::thread::sleep(PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_DELAY);
                     continue;
                 }
+                break;
             }
 
             match self.prepare_product_task_worktree(&task_id, intake, actor) {
@@ -809,7 +829,7 @@ impl LocalProductStore {
                             return Ok(current);
                         }
                     }
-                    std::thread::yield_now();
+                    std::thread::sleep(PRODUCT_TASK_CONCURRENT_ADMIT_RETRY_DELAY);
                     continue;
                 }
                 Err(error) => {
@@ -824,12 +844,36 @@ impl LocalProductStore {
             }
         }
         // Final re-read after CAS retries.
-        self.get_product_task_by_idempotency(
-            &intake.tenant_id,
-            &intake.workspace_id,
-            &intake.idempotency_key,
-        )?
-        .ok_or_else(|| "product task admit concurrent retry exhausted".to_string())
+        let task = self
+            .get_product_task_by_idempotency(
+                &intake.tenant_id,
+                &intake.workspace_id,
+                &intake.idempotency_key,
+            )?
+            .ok_or_else(|| "product task admit concurrent retry exhausted".to_string())?;
+        let status = task.get("status").and_then(Value::as_str).unwrap_or("");
+        if matches!(
+            status,
+            "workspace_bound"
+                | "graph_ready"
+                | "running"
+                | "verifying"
+                | "repair_pending"
+                | "awaiting_approval"
+                | "output_pending"
+                | "completed"
+                | "failed"
+                | "blocked"
+                | "killed"
+                | "budget_exhausted"
+                | "outcome_unknown"
+        ) {
+            return Ok(task);
+        }
+        Err(
+            "product task admit concurrent retry exhausted while workspace preparation remains in progress"
+                .to_string(),
+        )
     }
 
     pub fn get_product_task(&self, task_id: &str) -> Result<Option<Value>, String> {

@@ -622,33 +622,21 @@ fn concurrent_duplicate_intake_one_effect() {
                 store.admit_product_task(&validated, "tester")
             }));
         }
-        let mut ids = Vec::new();
-        let mut errors = Vec::new();
-        for h in handles {
-            match h.join().unwrap() {
-                Ok(task) => ids.push(task["task_id"].as_str().unwrap().to_string()),
-                Err(e) => errors.push(e),
-            }
-        }
-        // At least one admit must succeed; all successes share one task_id.
+        let ids = handles
+            .into_iter()
+            .map(|handle| {
+                let task = handle
+                    .join()
+                    .expect("concurrent admit thread must not panic")
+                    .expect("concurrent duplicate intake must wait for the canonical task");
+                task["task_id"].as_str().unwrap().to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 4);
         assert!(
-            !ids.is_empty(),
-            "at least one concurrent admit must succeed; errors={errors:?}"
+            ids.iter().all(|task_id| task_id == &ids[0]),
+            "concurrent intake must collapse to one task: {ids:?}"
         );
-        ids.sort();
-        ids.dedup();
-        assert_eq!(ids.len(), 1, "concurrent intake must collapse to one task");
-        // Losers may surface as CAS conflicts only; not unrelated failures.
-        for e in &errors {
-            assert!(
-                e.contains("stale")
-                    || e.contains("conflict")
-                    || e.contains("expected-current")
-                    || e.contains("already exists")
-                    || e.contains("retry exhausted"),
-                "unexpected concurrent admit error: {e}"
-            );
-        }
         let final_task = store
             .get_product_task_by_idempotency("local", "default", "rec-concurrent-1")
             .unwrap()
