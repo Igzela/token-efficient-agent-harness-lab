@@ -146,7 +146,12 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
             sys.modules[copied_spec.name] = copied_builder
             copied_spec.loader.exec_module(copied_builder)
 
-            capsule = copied_builder.generate_fresh_capsule(offline=True)
+            with mock.patch.dict(
+                os.environ,
+                {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_SHA": "a" * 40},
+                clear=False,
+            ):
+                capsule = copied_builder.generate_fresh_capsule(offline=True)
 
         self.assertIn("# Project Context Capsule", capsule)
 

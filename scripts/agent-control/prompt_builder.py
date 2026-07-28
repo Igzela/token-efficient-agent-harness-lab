@@ -81,11 +81,16 @@ def generate_fresh_capsule(
     except json.JSONDecodeError as exc:
         raise ValueError("Context capsule is not valid JSON") from exc
 
-    checkout_sha = capsule.get("local_checkout", {}).get("head_sha")
-    pr_head_sha = capsule.get("binding", {}).get("pr_exact_head", {}).get("head_sha")
+    local_checkout = capsule.get("local_checkout")
+    binding = capsule.get("binding")
+    active_frontier = capsule.get("active_frontier")
+    active_packet = capsule.get("active_packet")
+    checkout_sha = (local_checkout if isinstance(local_checkout, dict) else {}).get("head_sha")
+    pr_exact_head = (binding if isinstance(binding, dict) else {}).get("pr_exact_head")
+    pr_head_sha = (pr_exact_head if isinstance(pr_exact_head, dict) else {}).get("head_sha")
     workflow_sha = os.environ.get("GITHUB_SHA")
-    active_pr_number = capsule.get("active_frontier", {}).get("number")
-    canonical_packet = capsule.get("active_packet", {}).get("packet")
+    active_pr_number = (active_frontier if isinstance(active_frontier, dict) else {}).get("number")
+    canonical_packet = (active_packet if isinstance(active_packet, dict) else {}).get("packet")
 
     if required_head_sha:
         # Prefer authoritative PR head from GitHub API, then workflow SHA, then
