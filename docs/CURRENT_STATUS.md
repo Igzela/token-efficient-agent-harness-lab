@@ -15,7 +15,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR.
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
 - Accepted runtime baseline is merged through PR #300 at schema v34, including provider-free RWE corpus authority, store-owned spend, managed-acceptance authority, one-use spend/attempt leases, durable transition receipts, and PostgreSQL restart repair.
 - PR #301 is merged and accepted: CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification, under `engine/src/execution_usage/`. No authority was imported.
-- Context-capsule Phase 1 is accepted through PR #302: `START_HERE.md` is the canonical session entry and `scripts/project_context.py` generates an on-demand fail-closed Markdown or JSON transport view. Phase 2 (workflow publication and fresh session injection) is the current active implementation frontier.
+- Context-capsule Phase 1 is accepted through PR #302 and Phase 2 is accepted through PR #306 (squash merge `3cc38e3158d71068abf03f445657f8bce4d485e3`): `START_HERE.md` is the canonical session entry, `scripts/project_context.py` generates a fail-closed transport view, CI publishes a short-lived exact-head capsule, and repository-controlled prompts inject a fresh validated capsule. The capsule remains non-authoritative.
 - Rust `engine/` and `LocalProductStore` remain the sole authorities for workflow state, scheduling, leases, retries, budgets, approvals, evidence, output reconciliation, audit, and persistence.
 - SQLite is the default store; PostgreSQL is the supported parity backend.
 - ProductTask remains the sole product budget owner.
@@ -34,13 +34,13 @@ These surfaces are not accepted truth and must not be merged independently when 
 |---|---|---|
 | #225 | Presentation-only Dashboard work | Independent and last |
 
-PR #297 and #298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304. PR #301 is merged and accepted.
+PR #297 and #298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304. PR #301 and PR #306 are merged and accepted.
 
 No live provider request, live managed acceptance, or live RWE baseline is established by these open PRs.
 
 ## Current Product Verdict
 
-Product Golden Path authority is accepted through PR #299; the live managed task remains default-off and `IN_PROGRESS`.
+Product Golden Path authority is accepted through PR #299; the live managed task remains default-off and `AUTHORIZATION_REQUIRED`. No current live-task authorization is recorded.
 
 Fixture evidence proves the existing product sequence:
 
@@ -50,7 +50,7 @@ intake → worktree/source binding → executable graph → scheduler lease
 → separate output confirmation → acp/* Draft PR → terminal evidence
 ```
 
-The remaining product proof is one tightly bounded live managed coding task under the accepted authority decision, authenticated non-fixture principal, parent-only provider credential, one-use spend authorization, unchanged target `main`, Draft-PR-only output, and exact terminal evidence. PR #301 is accepted. Context-capsule automation must now provide exact-head workflow publication and fresh session-start injection without becoming a new authority owner before any live Golden Path task.
+The remaining product proof is one tightly bounded live managed coding task under the accepted authority decision, authenticated non-fixture principal, parent-only provider credential, one-use spend authorization, unchanged target `main`, Draft-PR-only output, and exact terminal evidence. PR #301 and PR #306 are accepted. Before any live Golden Path task, the external authorization manifest in `docs/NEXT_DECISION.md` must be current and persisted; context-capsule automation does not satisfy that authority gate.
 
 The residual technical risks remain explicit:
 
@@ -65,8 +65,8 @@ Therefore live acceptance is not blocked only by credential presence.
 
 | Stage | State | Entry requirement |
 |---|---|---|
-| Golden Path residual seal | `AUTHORITY_ACCEPTED_LIVE_E2E_PENDING` | Accept context-capsule automation, then separately authorize one bounded live managed task |
-| Context capsule automation | `IN_PROGRESS` | Add exact-head artifact/job-summary publication and fresh session-start injection under the existing `START_HERE.md` automation boundary; PR owned by PE7-CONTEXT-CAPSULE-AUTOMATION-1 |
+| Golden Path residual seal | `AUTHORIZATION_REQUIRED` | Supply the current exact live-authority manifest and separately authorize one bounded live managed task |
+| Context capsule automation | `COMPLETE` | PR #306 merged with exact-head publication and fresh session-start injection under the existing `START_HERE.md` automation boundary |
 | First Real Workload Evidence | `BLOCKED_PREREQUISITE` | Accepted Golden Path terminal evidence plus a separately authorized RWE spend envelope |
 | Architecture Convergence AC1–AC7 | `BLOCKED_PREREQUISITE` | Frozen and independently accepted pre-convergence RWE baseline |
 | Same-corpus RWE replay | `BLOCKED_PREREQUISITE` | Architecture Convergence complete |
@@ -97,7 +97,7 @@ These engineering-cost dimensions are evidence for RWE replay and Level-2 decisi
 1. No accepted live managed coding-executor E2E exists.
 2. No accepted live RWE baseline exists.
 3. Architecture Convergence cannot begin before that baseline is frozen.
-4. Context capsule Phase 2 (automatic exact-head publication and fresh session-start injection) is in progress.
+4. Context capsule Phase 2 (automatic exact-head publication and fresh session-start injection) is accepted; no current live-authority manifest has been supplied.
 5. No automatic multi-generation parent-selection loop is implemented.
 6. No demonstrated cross-task continuous-learning or Meta Improver result exists.
 7. Open PR claims remain proposals until their final heads are independently accepted.
@@ -111,13 +111,13 @@ These engineering-cost dimensions are evidence for RWE replay and Level-2 decisi
 ## Active Tracks
 
 - Provider-free Golden Path authority: PR #299 merged and accepted at schema v33; PR #300 merged and accepted at schema v34.
-- Context governance: PR #302 merged; on-demand fail-closed capsule generation is accepted. Workflow publication and fresh session injection are the current active implementation frontier under PE7-CONTEXT-CAPSULE-AUTOMATION-1.
+- Context governance: PR #302 and PR #306 are merged; on-demand fail-closed capsule generation, exact-head workflow publication, and fresh session injection are accepted transport behavior, not authority.
 - Observation adaptation: PR #301 is merged and accepted; observation-only and restacked onto accepted main.
-- Live Golden Path follows context-capsule automation; live RWE, Architecture Convergence, Level-2, and Meta remain blocked by their named prerequisites.
+- Live Golden Path is blocked at `AUTHORIZATION_REQUIRED`; live RWE, Architecture Convergence, Level-2, and Meta remain blocked by their named prerequisites.
 
 ## Open Work Coordination
 
-PRs #297/#298 are closed without merge as superseded by merged PR #299. PR #300 is merged and accepted. PR #301 is merged and accepted; it is observation-only and did not introduce a second budget, proxy, credential, store, or authorization owner. Implement the bounded context-capsule automation packet (PE7-CONTEXT-CAPSULE-AUTOMATION-1) before any separately authorized live Golden Path task. PR #225 remains presentation-only and last.
+PRs #297/#298 are closed without merge as superseded by merged PR #299. PR #300, PR #301, and PR #306 are merged and accepted. PR #301 is observation-only and did not introduce a second budget, proxy, credential, store, or authorization owner; PR #306 is non-authoritative context transport only. The sole next route is the live Golden Path external authorization gate, and no live task may begin without its exact manifest. PR #225 remains presentation-only and last.
 
 All active branches must refresh this main documentation convergence before final merge and must not overwrite it with stale branch-local status text.
 

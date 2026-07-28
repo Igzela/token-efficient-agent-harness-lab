@@ -4,7 +4,7 @@ Last updated: 2026-07-28.
 
 This is the concise ownership map for accepted `main`. Current facts are in `docs/CURRENT_STATUS.md`; execution order and gates are in `docs/NEXT_DECISION.md`; architecture invariants are in `docs/ARCHITECTURE_BOOK.md`.
 
-Open PR branches are listed separately and are not canonical owners until merged. PR #300 (provider-free RWE authority) and PR #301 (CC Switch observation-only adaptation) are merged and accepted.
+Open PR branches are listed separately and are not canonical owners until merged. PR #300 (provider-free RWE authority), PR #301 (CC Switch observation-only adaptation), and PR #306 (non-authoritative context-capsule automation) are merged and accepted.
 
 Full Agent Autonomy Mode permits repository-scoped work that is testable, observable, reviewable, verification-gated, compatible, and rollbackable. Provider calls, target output, release, deployment, spend, and authority-critical actions retain separate gates.
 
@@ -75,7 +75,7 @@ No earlier authority implies a later one. In particular, risk acknowledgement is
 |---|---|---|
 | #225 | Dashboard presentation | Last; may project accepted schemas only |
 
-PR #297/#298 are closed without merge as superseded by accepted PR #299. PR #300 is merged and accepted. PR #301 is merged and accepted (observation-only; no authority import). PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304.
+PR #297/#298 are closed without merge as superseded by accepted PR #299. PR #300 is merged and accepted. PR #301 is merged and accepted (observation-only; no authority import). PR #306 is merged and accepted (context transport only; no authority import). PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304.
 
 Do not copy explanatory labels into file names. Always inspect the actual final branch tree before documenting an owner.
 

@@ -17,8 +17,8 @@ The authoritative order is:
 ```text
 provider-free RWE authority reconciliation (#300)
 → observation-only reconciliation (#301)
-→ context-capsule automation
-→ one bounded live Golden Path managed acceptance
+→ context-capsule automation (#306 accepted)
+→ one bounded live Golden Path managed acceptance (`AUTHORIZATION_REQUIRED`)
 → first frozen Real Workload Evidence baseline
 → Architecture Convergence AC1–AC7
 → identical-corpus replay
@@ -32,13 +32,12 @@ Do not skip RWE and begin Architecture Convergence or Level-2 early. Provider-fr
 
 ## Active Routing
 
-1. `PE7-CONTEXT-CAPSULE-AUTOMATION-1` — `IN_PROGRESS`.
-2. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE`.
-3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE` (`AUTHORIZATION_REQUIRED`).
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
 ## Packet States
 
@@ -55,9 +54,10 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #299 is merged and accepted; superseded PRs #297/#298 are closed without merge.
 - PR #300 is merged and accepted.
 - PR #301 is merged and accepted; it is observation-only and did not import authority.
+- PR #306 is merged and accepted; it publishes/injects a non-authoritative fresh context capsule.
 - PR #225 is presentation-only and remains last.
 
-The immediate engineering order is to complete the bounded context-capsule automation packet (PE7-CONTEXT-CAPSULE-AUTOMATION-1) before any separately authorized live Golden Path task. Do not begin live RWE or later stages.
+The next route is `PE7-PRODUCT-GOLDEN-PATH-1`, but it is blocked at the external `AUTHORIZATION_REQUIRED` gate defined below. Do not begin a live Golden Path task, live RWE, or later stages without that exact authority.
 
 ## Evidence Required for Every Engineering Board
 
@@ -144,13 +144,13 @@ PR #300 is the accepted prerequisite and RWE authority foundation. PR #301 was m
 
 ## Packet PE7-CONTEXT-CAPSULE-AUTOMATION-1 — exact-head publication and session injection
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-**Owned PR:** TBD
+**Owned PR:** #306
 
 **Prerequisite:** PE7-OBSERVATION-RESTACK-1 (COMPLETE)
 
-Phase 1 is already accepted through PR #302: `START_HERE.md` owns navigation and `scripts/project_context.py` generates an on-demand fail-closed Markdown or JSON transport view. This packet adds automation only; it must not create a new status database, current-state owner, authorization owner, or committed dynamic `latest context` file.
+Phase 1 is accepted through PR #302: `START_HERE.md` owns navigation and `scripts/project_context.py` generates an on-demand fail-closed Markdown or JSON transport view. Phase 2 is accepted through PR #306, merged as `3cc38e3158d71068abf03f445657f8bce4d485e3` after exact-head CI and independent complete-diff review. It adds automation only and does not create a new status database, current-state owner, authorization owner, or committed dynamic `latest context` file.
 
 Required result:
 
@@ -168,11 +168,17 @@ This packet proves context freshness and routing only. It cannot authorize provi
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PE7-CONTEXT-CAPSULE-AUTOMATION-1
+**Owned PR:** TBD
 
-The provider-free authority foundation from PR #299 is merged and accepted. PR #300 and PR #301 are merged and accepted. This live packet becomes eligible only after context-capsule automation is independently accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+**Prerequisite:** PE7-CONTEXT-CAPSULE-AUTOMATION-1 (COMPLETE) and the exact external live-authority manifest below
 
-The live task requires a separate current-session spend authorization and parent-only credential. No repository prompt, fixture result, merged authority code, capsule, or prior test run grants that live authority.
+The provider-free authority foundation from PR #299 is merged and accepted. PR #300, PR #301, and PR #306 are merged and accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+
+**External gate:** `AUTHORIZATION_REQUIRED`
+
+No current live-task authority has been supplied. Before any provider or target-repository effect, existing canonical owners must provide and persist an exact current manifest containing every Golden Path Acceptance Gate input: accepted decision and residual-risk hashes; authenticated non-fixture principal and scopes; one-use spend authorization with its bounded limit; an already configured parent-only credential; exact executable path/version/SHA; provider kind/host/base URL/admitted paths/model; ProductTask/workflow/node/attempt identity; target repository and target-main SHA; request/retry/token/time/cost bounds; Draft-PR-only output restriction; usage reconciliation; and cancellation, cleanup, rollback, approval, output-confirmation, and terminal-evidence owners. A fresh capsule must bind those current identities at the time of execution.
+
+This packet does not authorize choosing a spend cap, target, provider, model, or credential, nor creating, rotating, copying, or disclosing a credential. While the manifest is absent, only provider-free inspection and verification are permitted. Report `AUTHORIZATION_REQUIRED`; do not mark this packet complete, call a provider, modify target `main`, start RWE, Architecture Convergence, Level-2, Meta, release, deployment, or Dashboard work.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 
