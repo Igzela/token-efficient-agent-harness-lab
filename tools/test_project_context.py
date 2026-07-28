@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -550,6 +551,61 @@ PR #299
             capsule["binding"]["requested_pr_exact_head"],
             {"number": 777, "head_sha": "a" * 40},
         )
+
+    def test_trusted_exact_head_proof_binds_the_pr_and_matrix(self) -> None:
+        checks = {
+            name: {"result": "success"}
+            for name in project_context.REQUIRED_CI_CHECKS
+            if name != "exact-head-check"
+        }
+        proof = {
+            "kind": "exact-head-check-proof.v1",
+            "status": "pass",
+            "reason": "exact_head_match",
+            "repository": "owner/repo",
+            "pull_request": 777,
+            "expected_head": "a" * 40,
+            "live_head": "a" * 40,
+            "pr_state": "open",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "proof.json"
+            path.write_text(json.dumps(proof), encoding="utf-8")
+            capsule = project_context.build_capsule(
+                offline=True,
+                repository="owner/repo",
+                checks_json=json.dumps(checks),
+                event_name="pull_request",
+                pr_number=777,
+                expected_head_sha="a" * 40,
+                exact_head_proof=path,
+            )
+        self.assertTrue(project_context.is_matrix_successful(
+            capsule["binding"]["source_required_check_matrix"]
+        ))
+        self.assertTrue(project_context.is_requested_head_matched(capsule))
+
+    def test_trusted_exact_head_proof_rejects_unconfirmed_or_mismatched_state(self) -> None:
+        proof = {
+            "kind": "exact-head-check-proof.v1",
+            "status": "fail",
+            "reason": "head_moved",
+            "repository": "owner/repo",
+            "pull_request": 777,
+            "expected_head": "a" * 40,
+            "live_head": "b" * 40,
+            "pr_state": "open",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "proof.json"
+            path.write_text(json.dumps(proof), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "does not confirm"):
+                project_context.load_exact_head_proof(
+                    path,
+                    repository="owner/repo",
+                    pr_number=777,
+                    expected_head_sha="a" * 40,
+                )
 
     def test_requested_head_requires_a_matching_confirmed_pr(self) -> None:
         capsule = {

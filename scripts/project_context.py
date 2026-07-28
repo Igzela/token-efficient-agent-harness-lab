@@ -550,6 +550,67 @@ def is_requested_head_matched(capsule: dict[str, Any]) -> bool:
     )
 
 
+def load_exact_head_proof(
+    path: Path,
+    *,
+    repository: str,
+    pr_number: int | None,
+    expected_head_sha: str | None,
+) -> dict[str, Any]:
+    """Validate a trusted exact-head action proof into a bounded PR observation.
+
+    The caller supplies this only from the trusted-base exact-head action. It
+    carries no review text, logs, or token material. Invalid or mismatched
+    proofs fail closed instead of becoming a caller-asserted success.
+    """
+    try:
+        proof = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"exact-head proof is unreadable: {exc}") from exc
+    if not isinstance(proof, dict):
+        raise ValueError("exact-head proof must be a JSON object")
+
+    actual_pr = proof.get("pull_request")
+    actual_head = proof.get("live_head")
+    expected = proof.get("expected_head")
+    if (
+        proof.get("kind") != "exact-head-check-proof.v1"
+        or proof.get("status") != "pass"
+        or proof.get("reason") != "exact_head_match"
+        or proof.get("repository") != repository
+        or not isinstance(actual_pr, int)
+        or pr_number != actual_pr
+        or not isinstance(actual_head, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", actual_head)
+        or expected_head_sha != actual_head
+        or expected != actual_head
+        or proof.get("pr_state") != "open"
+    ):
+        raise ValueError("exact-head proof does not confirm the requested open PR head")
+    return {
+        "number": actual_pr,
+        "head_sha": actual_head,
+        "head_branch": None,
+        "base_branch": None,
+        "availability": "confirmed",
+        "ci": {
+            "state": "unavailable",
+            "successful": [],
+            "failed": [],
+            "pending": [],
+            "missing_required": list(REQUIRED_CI_CHECKS),
+        },
+        "review_observation": {
+            "observed_head_sha": actual_head,
+            "observation_time": None,
+            "aggregate_review_state": None,
+            "exact_head_review_state": "unavailable",
+            "unresolved_objections_state": "unavailable",
+            "unavailable_reason": "trusted_exact_head_proof_has_no_review_observation",
+        },
+    }
+
+
 def local_checkout_state() -> dict[str, Any]:
     head = run_command(["git", "rev-parse", "--verify", "HEAD"])
     branch = run_command(["git", "symbolic-ref", "--short", "-q", "HEAD"])
@@ -689,6 +750,7 @@ def build_capsule(
     event_name: str | None = None,
     pr_number: int | None = None,
     expected_head_sha: str | None = None,
+    exact_head_proof: Path | None = None,
 ) -> dict[str, Any]:
     repository = repository or repository_from_git()
     baseline = accepted_baseline(offline=offline)
@@ -703,7 +765,22 @@ def build_capsule(
 
     routed_pr_number = int(packet["pr_number"]) if packet.get("pr_number") else None
     target_pr_number = pr_number if pr_number is not None else routed_pr_number
-    active_pr = load_pr(repository, target_pr_number, offline=offline) if target_pr_number else None
+    if exact_head_proof:
+        active_pr = load_exact_head_proof(
+            exact_head_proof,
+            repository=repository,
+            pr_number=target_pr_number,
+            expected_head_sha=expected_head_sha,
+        )
+        provided_checks.append(
+            {
+                "name": "exact-head-check",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            }
+        )
+    else:
+        active_pr = load_pr(repository, target_pr_number, offline=offline) if target_pr_number else None
     blocked_frontiers = [
         frontier
         for frontier in frontiers
@@ -978,6 +1055,11 @@ def parse_args() -> argparse.Namespace:
         help="Exact PR head expected by the caller or workflow session.",
     )
     parser.add_argument(
+        "--exact-head-proof",
+        type=Path,
+        help="Trusted exact-head action proof for a PR workflow without exposing a token to rendering.",
+    )
+    parser.add_argument(
         "--capsule-json",
         type=Path,
         help="Render or validate an existing generated capsule without regenerating it.",
@@ -1000,14 +1082,19 @@ def main() -> int:
             print(f"Context capsule snapshot is invalid: {exc}", file=sys.stderr)
             return 1
     else:
-        capsule = build_capsule(
-            offline=args.offline,
-            repository=args.repo,
-            checks_json=args.checks_json,
-            event_name=args.event_name,
-            pr_number=getattr(args, "pr_number", None),
-            expected_head_sha=getattr(args, "expected_head_sha", None),
-        )
+        try:
+            capsule = build_capsule(
+                offline=args.offline,
+                repository=args.repo,
+                checks_json=args.checks_json,
+                event_name=args.event_name,
+                pr_number=getattr(args, "pr_number", None),
+                expected_head_sha=getattr(args, "expected_head_sha", None),
+                exact_head_proof=getattr(args, "exact_head_proof", None),
+            )
+        except ValueError as exc:
+            print(f"Context capsule cannot establish trusted exact-head evidence: {exc}", file=sys.stderr)
+            return 1
     if args.format == "json":
         print(json.dumps(capsule, indent=2, sort_keys=True))
     else:

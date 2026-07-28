@@ -53,6 +53,22 @@ jobs:
             echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
             exit 1
           fi
+      - name: Check out trusted exact-head verifier
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-base
+          persist-credentials: false
+      - name: Verify live PR head with trusted base action
+        if: github.event_name == 'pull_request'
+        uses: ./trusted-base/actions/exact-head-check
+        with:
+          github-token: ${{ github.token }}
+          pull-request: ${{ github.event.pull_request.number }}
+          expected-head: ${{ env.EXPECTED_SHA }}
+          allow-fork-head: "true"
+          proof-path: trusted-exact-head-proof.json
       - name: Set up uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -500,14 +516,10 @@ jobs:
           import os
 
           checks = json.loads(os.environ["NEEDS_JSON"])
-          if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
-              checks["exact-head-check"] = {"result": "success"}
           with open("needs-context.json", "w", encoding="utf-8") as output:
               json.dump(checks, output, sort_keys=True)
           PY
       - name: Generate context capsule
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p context-capsule
@@ -518,9 +530,12 @@ jobs:
             --expected-head-sha "${EXPECTED_SHA}"
           )
           if [ -n "${GITHUB_PR_NUMBER}" ]; then
-            args+=(--pr-number "${GITHUB_PR_NUMBER}")
+            args+=(
+              --pr-number "${GITHUB_PR_NUMBER}"
+              --exact-head-proof trusted-exact-head-proof.json
+            )
           fi
-          uv run --no-project python scripts/project_context.py \
+          env -u GH_TOKEN -u GITHUB_TOKEN uv run --no-project python scripts/project_context.py \
             "${args[@]}" > context-capsule/context-capsule.json
           uv run --no-project python scripts/project_context.py \
             --format markdown \

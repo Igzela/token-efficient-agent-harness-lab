@@ -121,7 +121,10 @@ class TestWorkflowContracts(unittest.TestCase):
     def test_context_capsule_publisher_binds_pr_and_reuses_one_snapshot(self):
         source = self.read("tests.yml")
         self.assertIn("GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}", source)
-        self.assertIn('checks["exact-head-check"] = {"result": "success"}', source)
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", source)
+        self.assertIn("uses: ./trusted-base/actions/exact-head-check", source)
+        self.assertIn("--exact-head-proof trusted-exact-head-proof.json", source)
+        self.assertNotIn('checks["exact-head-check"] = {"result": "success"}', source)
         self.assertIn("--capsule-json context-capsule/context-capsule.json", source)
         repair = self.read("agent-ci-repair.yml")
         prompt_step = repair.split("Build repair prompt from trusted checkout and bounded evidence", 1)[1].split("Recheck control immediately before Codex repair", 1)[0]

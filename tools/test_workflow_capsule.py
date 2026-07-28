@@ -95,20 +95,40 @@ class WorkflowCapsuleTests(unittest.TestCase):
         run = validate.get("run", "")
         self.assertIn("--require-success", run)
 
-    def test_context_capsule_binds_event_pr_and_renders_one_snapshot(self) -> None:
+    def test_context_capsule_binds_event_pr_with_trusted_proof_and_renders_one_snapshot(self) -> None:
         job = self.workflow["jobs"]["context-capsule"]
         self.assertEqual(
             job.get("env", {}).get("GITHUB_PR_NUMBER"),
             "${{ github.event.pull_request.number || '' }}",
         )
         steps = job.get("steps", [])
+        trusted_checkout = next(
+            (step for step in steps if step.get("name") == "Check out trusted exact-head verifier"),
+            None,
+        )
+        self.assertIsNotNone(trusted_checkout)
+        self.assertEqual(
+            trusted_checkout.get("with", {}).get("ref"),
+            "${{ github.event.pull_request.base.sha }}",
+        )
+        trusted_verify = next(
+            (step for step in steps if step.get("name") == "Verify live PR head with trusted base action"),
+            None,
+        )
+        self.assertIsNotNone(trusted_verify)
+        self.assertEqual(trusted_verify.get("uses"), "./trusted-base/actions/exact-head-check")
+        self.assertEqual(
+            trusted_verify.get("with", {}).get("github-token"),
+            "${{ github.token }}",
+        )
         generate = next(
             (step for step in steps if step.get("name") == "Generate context capsule"),
             None,
         )
         self.assertIsNotNone(generate)
-        self.assertEqual(generate.get("env", {}).get("GH_TOKEN"), "${{ github.token }}")
-        self.assertIn("exact-head-check", generate.get("run", ""))
+        self.assertNotIn("GH_TOKEN", generate.get("env", {}))
+        self.assertIn("--exact-head-proof trusted-exact-head-proof.json", generate.get("run", ""))
+        self.assertIn("env -u GH_TOKEN -u GITHUB_TOKEN", generate.get("run", ""))
         self.assertIn("--capsule-json", generate.get("run", ""))
 
     def test_context_capsule_not_in_required_checks(self) -> None:
