@@ -4,11 +4,11 @@ Operational execution guide for real branches, commits, PRs, CI, review, rollbac
 
 ## Mode Summary
 
-The project validates changes through real repository work. Full Agent Autonomy Mode permits repo-scoped planning and execution when changes are testable, observable, reviewed, verification-gated, and rollbackable. Code, runtime, configuration, schema, workflow, release, authority, and external-action changes remain full-CI-gated. Strictly documentation-only changes may use the targeted exception defined below.
+The project validates changes through real repository work. Full Agent Autonomy Mode permits repo-scoped planning and execution when changes are testable, observable, reviewed, verification-gated, and rollbackable. Code, runtime, configuration, schema, workflow, release, authority, and external-action changes remain full-CI-gated. Strictly documentation-only changes use the canonical targeted mode defined below.
 
 ### Default Ship PR path
 
-The default daily development path is local Agent → focused Draft PR → fast feedback while changing → Ready for review → one canonical exact-head CI matrix → independent complete-diff review → manual squash merge. Auto-merge stays off. The GitHub Issue / Vader orchestrator is an optional unattended entry and is currently emergency-stopped until its replacement smoke is accepted; both paths meet at the same PR / exact-head CI / review / manual-merge boundary. Do not add a second Ship PR workflow or parallel merge owner.
+The default daily development path is local Agent → focused Draft PR → fast feedback while changing → Ready for review → one canonical exact-head CI run → independent complete-diff review → manual squash merge. Auto-merge stays off. The GitHub Issue / Vader orchestrator is an optional unattended entry and is currently emergency-stopped until its replacement smoke is accepted; both paths meet at the same PR / exact-head CI / review / manual-merge boundary. Do not add a second Ship PR workflow or parallel merge owner.
 
 Execution-ready packets are the default work units:
 
@@ -25,11 +25,17 @@ Two workflows have different authority:
 - `pr-fast-checks` runs on pull-request creation and replacement heads. It cancels obsolete in-progress runs and performs exact-head governance, security, handoff, workflow-contract, classifier, and diff checks. It is non-canonical feedback only and cannot authorize review, merge, release, deployment, or acceptance.
 - `tests` is the sole canonical source-test workflow. For pull requests it starts only on `ready_for_review`; pushes to `main` and explicit exact-head `workflow_dispatch` fallback runs remain complete-matrix paths. Every required source job must execute its exact-head verification step successfully.
 
+For a Ready pull request, `tests` checks out the accepted base separately and uses that trusted classifier to inspect the exact `base...head` path and file-mode diff. A strictly documentation-only result selects canonical `docs_only` mode: all required jobs still check out and verify the exact head and finish successfully, while compiler, runtime, database-test, TypeScript, Docker-build, and other non-applicable source-test steps report not applicable. Empty, mixed, executable, symlink, submodule, workflow, script, test, configuration, dependency, schema, migration, generated, or uncertain diffs fail closed to the complete matrix. Candidate-controlled classifier code cannot grant itself the documentation-only mode.
+
 Keep a changing PR in Draft. Before marking it Ready, batch all known repairs, run focused and applicable full local checks, and review the complete diff. If a Ready candidate needs another commit, convert it back to Draft before publishing the replacement head, then mark it Ready again after the repair batch stabilizes. A new head invalidates all prior CI and review conclusions.
 
 The workflow concurrency keys cancel obsolete runs for the same PR or exact fallback head. Do not duplicate dispatches or rerun an unchanged successful job. An infrastructure-only failure may rerun only the failed job; a code, test, contract, or workflow failure requires one repaired head after all related failures are inspected.
 
-A successful `pr-fast-checks` run is never a substitute for a missing canonical `tests` run. The documentation-only exception below remains a manual, path-bounded exception and does not promote the fast workflow into canonical CI evidence.
+A successful `pr-fast-checks` run is never a substitute for a missing canonical `tests` run. A canonical documentation-only run is distinguishable by its trusted classification and explicit not-applicable steps; it does not claim that unrelated runtime behavior was retested.
+
+### Compiler cache boundary
+
+Rust source lanes use a commit-pinned `sccache` setup action, a version-pinned compiler wrapper, and the GitHub Actions cache backend. The cache is a performance optimization only. It may reuse compiler outputs only when the compiler's own cache key matches; it never replaces source checkout, exact-head verification, compilation, tests, lint, dependency audit, fault drills, or review. Cache hits, misses, statistics, and stored objects are not acceptance evidence. A cache or cache-service failure must fail the affected setup/command or fall back to real compilation; it may not convert a required command into success.
 
 ## Model Selection
 
@@ -61,7 +67,7 @@ Standing authority permits normal reversible repository work: branch and commit 
 
 | Risk | Typical scope | Required evidence |
 |---|---|---|
-| low | docs, tests, deterministic CI fix, small isolated code | focused check, handoff guard, reviewable diff; docs-only PRs may use the targeted merge exception |
+| low | docs, tests, deterministic CI fix, small isolated code | focused check, handoff guard, reviewable diff; docs-only PRs may use the canonical targeted mode |
 | medium | new endpoint/UI/SDK, multi-module read model, bounded behavior change | focused integration tests, full stack, compatibility, rollback |
 | high | auth, provider authority, schema migration, automatic pause/promotion, release trust, recovery | explicit contract, threat/failure review, concurrency/fault tests, full CI, audit, compensation/rollback |
 
@@ -77,7 +83,7 @@ A PR is autonomously merge-eligible only when all are true:
 | packet/slice state | represented truthfully in active docs when state changes |
 | scope | matches goal, owners, decisions, allowed changes, and non-goals |
 | risk | classified with matching focused evidence |
-| CI | every required job completed successfully, unless the final diff qualifies for the strict documentation-only merge exception |
+| CI | every required job completed successfully under the complete or trusted documentation-only canonical mode |
 | handoff guard | pass |
 | review | diff reviewed against architecture, authority, compatibility, security, audit, and rollback |
 | rollback | clear and sufficient |
@@ -86,20 +92,21 @@ A PR is autonomously merge-eligible only when all are true:
 
 Green CI alone is not permission to merge a misleading, incompatible, or unreviewed change.
 
-## Documentation-Only Merge Exception
+## Documentation-Only Canonical Mode
 
-A PR may merge before the repository's full CI matrix completes only when its final diff is strictly documentation-only.
+A Ready PR may use the targeted canonical mode only when its final exact diff is strictly documentation-only.
 
 All of the following are required:
 
-1. Changed paths are limited to Markdown or plain-text documentation entrypoints and files, such as `README.md`, `AGENTS.md`, `CLAUDE.md`, and `docs/**/*.md`.
-2. The PR changes no code, tests, scripts, GitHub Actions/workflows, configuration, schema, migration, generated artifact, executable file, dependency manifest or lockfile, release artifact, or runtime data.
-3. The PR performs no tag, release, deployment, provider call, target-repository write, or other external mutation.
-4. The final diff has been reviewed and `git diff --check` plus `uv run --no-project python scripts/check_agent_handoff.py` pass. Run any applicable documentation/link validator when the touched surface has one.
-5. The PR has a clear rollback by revert, no unresolved human objection, and no branch-protection rule prevents merging.
-6. Any factual claim about code, runtime behavior, migration success, release state, or prior CI is backed by already verified underlying repository evidence. The docs-only PR itself cannot create that evidence.
+1. Changed paths are limited to allowlisted root documentation entrypoints or Markdown/plain-text files under `docs/`, such as `README.md`, `AGENTS.md`, `CLAUDE.md`, and `docs/**/*.md`.
+2. The raw diff contains only ordinary non-executable files or deletions. Symlinks, submodules, executable modes, generated artifacts, and unparseable file identities fail closed.
+3. The PR changes no code, tests, scripts, GitHub Actions/workflows, configuration, schema, migration, dependency manifest or lockfile, release artifact, or runtime data.
+4. The PR performs no tag, release, deployment, provider call, target-repository write, or other external mutation.
+5. The accepted-base classifier returns `docs_only`; every required canonical job still passes exact-head verification and the applicable governance, security, handoff, diff, and documentation checks pass.
+6. The final diff has been reviewed, has a clear rollback by revert, has no unresolved human objection, and is not blocked by branch protection.
+7. Any factual claim about code, runtime behavior, migration success, release state, or prior CI is backed by already verified underlying repository evidence. The docs-only PR itself cannot create that evidence.
 
-This exception is intended for factual synchronization, stale-state cleanup, clarification, pruning, typo/link repair, and documentation-governance changes. If the diff is mixed, generated, executable, security-sensitive outside prose, or uncertain, the normal complete-green-CI gate applies. If later CI reports a docs-specific failure, repair it promptly; do not reinterpret the early merge as proof of unrelated implementation correctness.
+This mode is intended for factual synchronization, stale-state cleanup, clarification, pruning, typo/link repair, and documentation-governance changes. If the diff is mixed, generated, executable, security-sensitive outside prose, or uncertain, the complete matrix applies. A documentation-only run proves only its exact documentation diff and targeted guards; it is not evidence that unrelated source/runtime behavior was re-executed.
 
 ## Feedback Trace Fields
 
@@ -116,7 +123,7 @@ Every product or governance PR should record:
 | `decision_record` | material design decision and authoritative location, when applicable |
 | `packet_contract_check` | pass/fail with deviations explained |
 | `focused_tests` | commands and results |
-| `ci_result` | pass/fail/queued with run ID, or docs-only exception plus targeted check results |
+| `ci_result` | pass/fail/queued with run ID and canonical mode |
 | `handoff_guard_result` | pass/fail |
 | `repair_summary` | root causes and coherent repair attempts |
 | `merge_result` | merged/blocked/pending |
@@ -136,7 +143,7 @@ Stop and report evidence when any occurs:
 5. an action requiring confirmation, missing credentials that cannot be repaired through an existing configured interface, or unavailable access after bounded recovery blocks validation;
 6. another agent owns conflicting in-progress work that cannot be reconciled safely;
 7. materially contradictory requirements cannot be resolved from code, merged history, tests, and authoritative documents;
-8. required CI remains failed, queued, in progress, or unexpectedly skipped at merge time, unless the final diff meets every requirement of the strict documentation-only merge exception.
+8. required canonical CI remains failed, queued, in progress, unexpectedly skipped, or missing at merge time.
 
 Do not stop merely because a packet is stale, a bounded decision is missing, or an initial implementation failed. Audit, update the contract, repair the root cause, and continue while work remains evidence-driven and rollbackable.
 
@@ -160,9 +167,9 @@ For each coherent packet or slice:
 - [ ] Review the diff against packet, architecture, module ownership, authority, security, compatibility, audit, and rollback
 - [ ] Run `uv run --no-project python scripts/check_agent_handoff.py`
 - [ ] Mark the stable candidate Ready to trigger canonical exact-head `tests`
-- [ ] Wait for every required CI job to complete, unless the final diff qualifies for the strict documentation-only merge exception
+- [ ] Wait for every required canonical job to complete successfully in its trusted mode
 - [ ] Repair failures at their root cause; return to Draft and batch changes instead of pushing during canonical CI
-- [ ] Merge only when the auto-merge classifier or documentation-only exception passes
+- [ ] Merge only when the classifier, exact-head evidence, review, objection, rollback, and authority gates pass
 - [ ] Refresh `main`, update active state, and continue if the bounded objective includes later packets
 
 ## Verification Baseline
@@ -182,15 +189,15 @@ uv run --no-project python scripts/check_agent_handoff.py
 git diff --check
 ```
 
-Add browser, Docker, migration, release, signing, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces. Strictly documentation-only PRs use the targeted checks in the exception instead of the full baseline unless an additional documentation-specific check is applicable.
+Add browser, Docker, migration, release, signing, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces. Strictly documentation-only PRs use the targeted canonical checks instead of non-applicable source/runtime commands unless an additional documentation-specific check is applicable.
 
 ## PR and Merge Policy
 
-Standing authority covers branch creation, commits, PRs, CI repair, independent review, eligible manual squash-merge, and refresh/continuation across ready packets. Automatic merge remains disabled. Manual merge requires the exact reviewed head, all required CI successful, no unresolved objection, a clean scope/path binding, and the normal classifier result; no repeated user confirmation is needed once those conditions pass.
+Standing authority covers branch creation, commits, PRs, CI repair, independent review, eligible manual squash-merge, and refresh/continuation across ready packets. Automatic merge remains disabled. Manual merge requires the exact reviewed head, all required canonical jobs successful, no unresolved objection, a clean scope/path binding, and the normal classifier result; no repeated user confirmation is needed once those conditions pass.
 
-Agents may autonomously create and merge scoped PRs when the classifier or documentation-only exception passes. Do not combine unrelated packets or risk surfaces merely to reduce PR count. When `docs/NEXT_DECISION.md` declares a grouped boundary, its ordered internal packets are one coherent risk surface and may share one branch and PR.
+Agents may autonomously create and merge scoped PRs when the classifier passes. Do not combine unrelated packets or risk surfaces merely to reduce PR count. When `docs/NEXT_DECISION.md` declares a grouped boundary, its ordered internal packets are one coherent risk surface and may share one branch and PR.
 
-The historical PE-5/PE-6 implementation and closeout boundaries remain in repository history. `PE56-POST-SEAL-REPAIR-1` is one coherent post-seal implementation, independent standards/spec review, documentation, and acceptance PR; it must not be split into PE-5, PE-6, prerequisite, or closeout PRs. Its independent reviews are separate review passes over the same final diff, not separate branches or PRs. Full repository validation and exact-head GitHub CI run only on the complete reviewed head. If a CI repair changes that head, the complete diff is reviewed again and the exact new head receives the full matrix. The final acceptance state is recorded only after those results and post-merge `main` verification exist.
+The historical PE-5/PE-6 implementation and closeout boundaries remain in repository history. `PE56-POST-SEAL-REPAIR-1` is one coherent post-seal implementation, independent standards/spec review, documentation, and acceptance PR; it must not be split into PE-5, PE-6, prerequisite, or closeout PRs. Its independent reviews are separate review passes over the same final diff, not separate branches or PRs. Full repository validation and exact-head GitHub CI run only on the complete reviewed head. If a CI repair changes that head, the complete diff is reviewed again and the exact new head receives the applicable canonical mode. The final acceptance state is recorded only after those results and post-merge `main` verification exist.
 
 A bounded objective may span multiple PRs in one session. After each merge, refresh `main`, reconcile active docs and open work, and continue only from the new repository state.
 
@@ -200,7 +207,7 @@ Do not rebase a focused PR only because `main` advanced with unrelated documenta
 
 ### Exact-head CI evidence
 
-Canonical CI evidence must prove which commit was checked out and tested. The `tests` workflow resolves `EXPECTED_SHA` from `inputs.expected_sha` (required on `workflow_dispatch`), the pull-request head SHA on `ready_for_review`, or `github.sha` on push to `main`; checkout uses that commit; every required job must execute the exact-head verification step successfully. A fast-check run, a pull-request run that skips that step, or a prior-head run is not acceptable exact-head evidence. The orchestrator fallback `workflow_dispatch` path continues to pass `expected_sha` and `dispatch_nonce` and must not be weakened.
+Canonical CI evidence must prove which commit was checked out and tested. The `tests` workflow resolves `EXPECTED_SHA` from `inputs.expected_sha` (required on `workflow_dispatch`), the pull-request head SHA on `ready_for_review`, or `github.sha` on push to `main`; checkout uses that commit; every required job must execute the exact-head verification step successfully. A fast-check run, a required job that skips that step, or a prior-head run is not acceptable exact-head evidence. The accepted-base classifier and raw file-mode diff bind the canonical mode before required jobs execute. The orchestrator fallback `workflow_dispatch` path continues to pass `expected_sha` and `dispatch_nonce`, always runs the complete matrix, and must not be weakened.
 
 ### Direct-main documentation coordination
 
@@ -208,7 +215,7 @@ While an implementation PR is in final exact-head CI or independent review, defe
 
 Documentation-only corrections should use a branch/PR by default. Direct-to-main documentation changes are reserved for explicit user authorization and must pass handoff/diff validation.
 
-For any PR that is not strictly documentation-only, CI must be completely green. Queued, in-progress, unexpectedly skipped, action-required, or failed CI is not success. A qualifying docs-only PR may merge after its targeted checks and final review without waiting for the full CI matrix.
+For any PR that is not strictly documentation-only, the complete canonical matrix must be green. A qualifying docs-only PR must still have a completed successful canonical `tests` run in trusted `docs_only` mode; queued, in-progress, action-required, failed, cancelled, or missing required jobs are not success.
 
 ## Documentation Maintenance
 
@@ -230,7 +237,7 @@ Every run reports:
 - packet or slice ID and starting/ending state
 - material decisions made and where they were recorded
 - exact files and behavior changed
-- focused tests and full CI run, or docs-only targeted checks and the observed CI state
+- focused tests and canonical CI run/mode
 - compatibility, authority, security, and audit result
 - residual risk and rollback
 - merge decision
