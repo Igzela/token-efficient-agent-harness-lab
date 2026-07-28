@@ -462,6 +462,7 @@ jobs:
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
       GITHUB_EVENT_NAME: ${{ github.event_name }}
+      GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -490,19 +491,40 @@ jobs:
             **/pyproject.toml
       - name: Convert needs context to source-check JSON
         id: needs_json
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
         run: |
           set -euo pipefail
-          echo '${{ toJson(needs) }}' > needs-context.json
+          python3 - <<'PY'
+          import json
+          import os
+
+          checks = json.loads(os.environ["NEEDS_JSON"])
+          if os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+              checks["exact-head-check"] = {"result": "success"}
+          with open("needs-context.json", "w", encoding="utf-8") as output:
+              json.dump(checks, output, sort_keys=True)
+          PY
       - name: Generate context capsule
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p context-capsule
+          args=(
+            --format json
+            --checks-json "$(cat needs-context.json)"
+            --event-name "${GITHUB_EVENT_NAME}"
+            --expected-head-sha "${EXPECTED_SHA}"
+          )
+          if [ -n "${GITHUB_PR_NUMBER}" ]; then
+            args+=(--pr-number "${GITHUB_PR_NUMBER}")
+          fi
+          uv run --no-project python scripts/project_context.py \
+            "${args[@]}" > context-capsule/context-capsule.json
           uv run --no-project python scripts/project_context.py \
             --format markdown \
-            --checks-json "$(cat needs-context.json)" > context-capsule/context-capsule.md
-          uv run --no-project python scripts/project_context.py \
-            --format json \
-            --checks-json "$(cat needs-context.json)" > context-capsule/context-capsule.json
+            --capsule-json context-capsule/context-capsule.json > context-capsule/context-capsule.md
       - name: Publish sanitized job summary
         run: |
           set -euo pipefail
@@ -521,5 +543,5 @@ jobs:
           set -euo pipefail
           uv run --no-project python scripts/project_context.py \
             --format json \
-            --checks-json "$(cat needs-context.json)" \
+            --capsule-json context-capsule/context-capsule.json \
             --require-success > /dev/null

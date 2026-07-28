@@ -466,9 +466,15 @@ def source_required_check_matrix(
     For push and workflow_dispatch events the PR-only `exact-head-check` is
     marked not_applicable rather than missing.
     """
-    successful = set(ci_summary.get("successful") or [])
-    failed = set(ci_summary.get("failed") or [])
-    pending = set(ci_summary.get("pending") or [])
+    def canonical_names(outcomes: list[str]) -> set[str]:
+        return {
+            _canonical_check_name(str(name)) or str(name)
+            for name in outcomes
+        }
+
+    successful = canonical_names(ci_summary.get("successful") or [])
+    failed = canonical_names(ci_summary.get("failed") or [])
+    pending = canonical_names(ci_summary.get("pending") or [])
     raw_by_canonical = ci_summary.get("raw_by_canonical") or {}
     matrix: list[dict[str, Any]] = []
     for required in REQUIRED_CI_CHECKS:
@@ -529,6 +535,19 @@ def parse_checks_json(raw: str) -> list[dict[str, Any]]:
 def is_matrix_successful(matrix: list[dict[str, Any]]) -> bool:
     """True only when every required check is success or not_applicable."""
     return all(item.get("conclusion") in {"success", "not_applicable"} for item in matrix)
+
+
+def is_requested_head_matched(capsule: dict[str, Any]) -> bool:
+    """Require a requested exact head to match a confirmed PR observation."""
+    binding = capsule.get("binding") or {}
+    expected_head = (binding.get("requested_pr_exact_head") or {}).get("head_sha")
+    if not expected_head:
+        return True
+    observed = binding.get("pr_exact_head") or {}
+    return (
+        observed.get("availability") == "confirmed"
+        and observed.get("head_sha") == expected_head
+    )
 
 
 def local_checkout_state() -> dict[str, Any]:
@@ -610,6 +629,7 @@ def compute_fingerprint(capsule: dict[str, Any]) -> str:
     canonical = binding.get("canonical_document_source", {})
     routed = binding.get("canonical_routed_packet", {})
     pr = binding.get("pr_exact_head", {})
+    requested_pr = binding.get("requested_pr_exact_head", {})
     run = binding.get("workflow_run_identity", {})
     fingerprint_input = {
         "repository": capsule.get("repository"),
@@ -618,6 +638,8 @@ def compute_fingerprint(capsule: dict[str, Any]) -> str:
         "canonical_routed_packet": routed.get("packet"),
         "pr_number": pr.get("number"),
         "pr_exact_head_sha": pr.get("head_sha"),
+        "requested_pr_number": requested_pr.get("number"),
+        "requested_pr_exact_head_sha": requested_pr.get("head_sha"),
         "checked_out_sha": binding.get("checked_out_sha"),
         "workflow_run_id": run.get("run_id"),
         "workflow_run_attempt": run.get("run_attempt"),
@@ -665,6 +687,8 @@ def build_capsule(
     repository: str | None = None,
     checks_json: str | None = None,
     event_name: str | None = None,
+    pr_number: int | None = None,
+    expected_head_sha: str | None = None,
 ) -> dict[str, Any]:
     repository = repository or repository_from_git()
     baseline = accepted_baseline(offline=offline)
@@ -677,12 +701,13 @@ def build_capsule(
     event_name = event_name or os.environ.get("GITHUB_EVENT_NAME")
     provided_checks = parse_checks_json(checks_json) if checks_json else []
 
-    pr_number = int(packet["pr_number"]) if packet.get("pr_number") else None
-    active_pr = load_pr(repository, pr_number, offline=offline) if pr_number else None
+    routed_pr_number = int(packet["pr_number"]) if packet.get("pr_number") else None
+    target_pr_number = pr_number if pr_number is not None else routed_pr_number
+    active_pr = load_pr(repository, target_pr_number, offline=offline) if target_pr_number else None
     blocked_frontiers = [
         frontier
         for frontier in frontiers
-        if pr_number is None or frontier["pr"] != pr_number
+        if target_pr_number is None or frontier["pr"] != target_pr_number
     ]
     checkout = local_checkout_state()
     checkout["matches_accepted_baseline"] = bool(
@@ -748,6 +773,10 @@ def build_capsule(
             "head_branch": active_pr.get("head_branch") if active_pr else None,
             "base_branch": active_pr.get("base_branch") if active_pr else None,
             "availability": active_pr.get("availability") if active_pr else "unavailable",
+        },
+        "requested_pr_exact_head": {
+            "number": pr_number,
+            "head_sha": expected_head_sha,
         },
         "checked_out_sha": checkout.get("head_sha"),
         "workflow_run_identity": run_identity,
@@ -940,6 +969,20 @@ def parse_args() -> argparse.Namespace:
         help="GitHub event name (push, pull_request, workflow_dispatch, etc.).",
     )
     parser.add_argument(
+        "--pr-number",
+        type=int,
+        help="Explicit PR number to observe instead of the routed canonical PR.",
+    )
+    parser.add_argument(
+        "--expected-head-sha",
+        help="Exact PR head expected by the caller or workflow session.",
+    )
+    parser.add_argument(
+        "--capsule-json",
+        type=Path,
+        help="Render or validate an existing generated capsule without regenerating it.",
+    )
+    parser.add_argument(
         "--require-success",
         action="store_true",
         help="Exit non-zero if the source required-check matrix is not fully successful.",
@@ -949,12 +992,22 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    capsule = build_capsule(
-        offline=args.offline,
-        repository=args.repo,
-        checks_json=args.checks_json,
-        event_name=args.event_name,
-    )
+    capsule_json = getattr(args, "capsule_json", None)
+    if capsule_json:
+        try:
+            capsule = json.loads(capsule_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"Context capsule snapshot is invalid: {exc}", file=sys.stderr)
+            return 1
+    else:
+        capsule = build_capsule(
+            offline=args.offline,
+            repository=args.repo,
+            checks_json=args.checks_json,
+            event_name=args.event_name,
+            pr_number=getattr(args, "pr_number", None),
+            expected_head_sha=getattr(args, "expected_head_sha", None),
+        )
     if args.format == "json":
         print(json.dumps(capsule, indent=2, sort_keys=True))
     else:
@@ -963,6 +1016,9 @@ def main() -> int:
         matrix = capsule.get("binding", {}).get("source_required_check_matrix", [])
         if not is_matrix_successful(matrix):
             print("\nSource required-check matrix is not fully successful.", file=sys.stderr)
+            return 1
+        if not is_requested_head_matched(capsule):
+            print("\nRequested exact PR head is unavailable or no longer current.", file=sys.stderr)
             return 1
     return 0
 

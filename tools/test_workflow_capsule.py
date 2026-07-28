@@ -95,6 +95,22 @@ class WorkflowCapsuleTests(unittest.TestCase):
         run = validate.get("run", "")
         self.assertIn("--require-success", run)
 
+    def test_context_capsule_binds_event_pr_and_renders_one_snapshot(self) -> None:
+        job = self.workflow["jobs"]["context-capsule"]
+        self.assertEqual(
+            job.get("env", {}).get("GITHUB_PR_NUMBER"),
+            "${{ github.event.pull_request.number || '' }}",
+        )
+        steps = job.get("steps", [])
+        generate = next(
+            (step for step in steps if step.get("name") == "Generate context capsule"),
+            None,
+        )
+        self.assertIsNotNone(generate)
+        self.assertEqual(generate.get("env", {}).get("GH_TOKEN"), "${{ github.token }}")
+        self.assertIn("exact-head-check", generate.get("run", ""))
+        self.assertIn("--capsule-json", generate.get("run", ""))
+
     def test_context_capsule_not_in_required_checks(self) -> None:
         from tools import test_project_context as tpc
 

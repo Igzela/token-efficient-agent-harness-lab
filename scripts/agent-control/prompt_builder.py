@@ -6,6 +6,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 
 PROMPT_DIR = pathlib.Path(__file__).resolve().parent / "prompts"
@@ -57,6 +58,10 @@ def generate_fresh_capsule(
     command = [sys.executable, str(project_context_script), "--format", "json"]
     if offline:
         command.append("--offline")
+    if required_pr_number is not None:
+        command.extend(("--pr-number", str(required_pr_number)))
+    if required_head_sha:
+        command.extend(("--expected-head-sha", required_head_sha))
     result = subprocess.run(
         command,
         capture_output=True,
@@ -118,19 +123,27 @@ def generate_fresh_capsule(
                 f"Canonical routed packet {canonical_packet} does not match expected {expected_packet}"
             )
 
-    command = [sys.executable, str(project_context_script), "--format", "markdown"]
-    if offline:
-        command.append("--offline")
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=project_root,
-    )
+    with tempfile.TemporaryDirectory(prefix="context-capsule-") as temp_dir:
+        snapshot_path = pathlib.Path(temp_dir) / "capsule.json"
+        snapshot_path.write_text(raw_json, encoding="utf-8")
+        command = [
+            sys.executable,
+            str(project_context_script),
+            "--format",
+            "markdown",
+            "--capsule-json",
+            str(snapshot_path),
+        ]
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=project_root,
+        )
     if result.returncode != 0:
         raise ValueError(
-            f"Context capsule markdown generation failed: {result.stderr}"
+            f"Context capsule markdown rendering failed: {result.stderr}"
         )
     return result.stdout[:MAX_CAPSULE_CHARS]
 

@@ -325,6 +325,26 @@ PR #299
         # exact-head-check must not appear in missing_required despite two aliases.
         self.assertNotIn("exact-head-check", summary["missing_required"])
 
+    def test_exact_head_alias_marks_matrix_successful(self) -> None:
+        checks = [
+            {"name": name, "status": "COMPLETED", "conclusion": "SUCCESS"}
+            for name in project_context.REQUIRED_CI_CHECKS
+            if name != "exact-head-check"
+        ]
+        checks.append(
+            {
+                "name": "exact-head-check / exact-head",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            }
+        )
+        matrix = project_context.source_required_check_matrix(
+            project_context.summarize_checks(checks), event_name="pull_request"
+        )
+        exact = next(item for item in matrix if item["logical_name"] == "exact-head-check")
+        self.assertEqual(exact["conclusion"], "success")
+        self.assertTrue(project_context.is_matrix_successful(matrix))
+
     # -----------------------------------------------------------------------
     # Check-matrix states
     # -----------------------------------------------------------------------
@@ -373,6 +393,7 @@ PR #299
                 "canonical_document_source": {"source_sha": "b" * 40},
                 "canonical_routed_packet": {"packet": "PE7-CONTEXT-CAPSULE-AUTOMATION-1"},
                 "pr_exact_head": {"number": 306, "head_sha": "c" * 40},
+                "requested_pr_exact_head": {"number": 306, "head_sha": "c" * 40},
                 "checked_out_sha": "c" * 40,
                 "workflow_run_identity": {"run_id": "123", "run_attempt": "1"},
             },
@@ -384,6 +405,9 @@ PR #299
         base["binding"]["accepted_baseline"]["sha"] = "d" * 40
         fp3 = project_context.compute_fingerprint(base)
         self.assertNotEqual(fp1, fp3)
+        base["binding"]["requested_pr_exact_head"]["head_sha"] = "e" * 40
+        fp4 = project_context.compute_fingerprint(base)
+        self.assertNotEqual(fp3, fp4)
 
     def test_fingerprint_ignores_mutable_fields(self) -> None:
         base = {
@@ -396,6 +420,7 @@ PR #299
                 "canonical_document_source": {"source_sha": "b" * 40},
                 "canonical_routed_packet": {"packet": "PE7-CONTEXT-CAPSULE-AUTOMATION-1"},
                 "pr_exact_head": {"number": 306, "head_sha": "c" * 40},
+                "requested_pr_exact_head": {"number": 306, "head_sha": "c" * 40},
                 "checked_out_sha": "c" * 40,
                 "workflow_run_identity": {"run_id": "123", "run_attempt": "1"},
             },
@@ -504,6 +529,41 @@ PR #299
         exact = next(item for item in matrix if item["logical_name"] == "exact-head-check")
         self.assertEqual(exact["conclusion"], "missing")
         self.assertFalse(project_context.is_matrix_successful(matrix))
+
+    def test_pull_request_event_accepts_verified_exact_head_check(self) -> None:
+        checks = {
+            name: {"result": "success"}
+            for name in project_context.REQUIRED_CI_CHECKS
+        }
+        capsule = project_context.build_capsule(
+            offline=True,
+            repository="owner/repo",
+            checks_json=json.dumps(checks),
+            event_name="pull_request",
+            pr_number=777,
+            expected_head_sha="a" * 40,
+        )
+        matrix = capsule["binding"]["source_required_check_matrix"]
+        self.assertTrue(project_context.is_matrix_successful(matrix))
+        self.assertEqual(capsule["binding"]["pr_exact_head"]["number"], 777)
+        self.assertEqual(
+            capsule["binding"]["requested_pr_exact_head"],
+            {"number": 777, "head_sha": "a" * 40},
+        )
+
+    def test_requested_head_requires_a_matching_confirmed_pr(self) -> None:
+        capsule = {
+            "binding": {
+                "requested_pr_exact_head": {"head_sha": "a" * 40},
+                "pr_exact_head": {
+                    "availability": "confirmed",
+                    "head_sha": "b" * 40,
+                },
+            }
+        }
+        self.assertFalse(project_context.is_requested_head_matched(capsule))
+        capsule["binding"]["pr_exact_head"]["head_sha"] = "a" * 40
+        self.assertTrue(project_context.is_requested_head_matched(capsule))
 
     def test_failed_provided_check_marks_matrix_not_successful(self) -> None:
         checks = {

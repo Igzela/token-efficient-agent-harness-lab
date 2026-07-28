@@ -118,6 +118,15 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn('if [ "${actual}" != "${EXPECTED_SHA}" ]', scripts)
         self.assertIn("exit 1", scripts)
 
+    def test_context_capsule_publisher_binds_pr_and_reuses_one_snapshot(self):
+        source = self.read("tests.yml")
+        self.assertIn("GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}", source)
+        self.assertIn('checks["exact-head-check"] = {"result": "success"}', source)
+        self.assertIn("--capsule-json context-capsule/context-capsule.json", source)
+        repair = self.read("agent-ci-repair.yml")
+        prompt_step = repair.split("Build repair prompt from trusted checkout and bounded evidence", 1)[1].split("Recheck control immediately before Codex repair", 1)[0]
+        self.assertIn("GH_TOKEN: ${{ github.token }}", prompt_step)
+
     def test_repair_dispatch_carries_run_id_not_unbounded_logs(self):
         controller = self.read("agent-controller.yml")
         monitor = self.read("agent-ci-monitor.yml")

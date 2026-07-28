@@ -6,6 +6,7 @@ import importlib.util
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -148,6 +149,22 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
             capsule = copied_builder.generate_fresh_capsule(offline=True)
 
         self.assertIn("# Project Context Capsule", capsule)
+
+    def test_capsule_markdown_renders_the_validated_json_snapshot(self) -> None:
+        commands: list[list[str]] = []
+
+        def run(command, **_kwargs):
+            commands.append(command)
+            if "--capsule-json" in command:
+                return subprocess.CompletedProcess(command, 0, "# Project Context Capsule\n", "")
+            return subprocess.CompletedProcess(command, 0, "{}", "")
+
+        with mock.patch.object(prompt_builder.subprocess, "run", side_effect=run):
+            capsule = prompt_builder.generate_fresh_capsule(offline=True)
+
+        self.assertEqual(capsule, "# Project Context Capsule\n")
+        self.assertEqual(sum("--capsule-json" not in command for command in commands), 1)
+        self.assertIn("--capsule-json", commands[1])
 
 
 if __name__ == "__main__":
