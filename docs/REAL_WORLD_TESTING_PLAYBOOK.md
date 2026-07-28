@@ -8,7 +8,7 @@ The project validates changes through real repository work. Full Agent Autonomy 
 
 ### Default Ship PR path
 
-The default daily development path is local Agent → focused branch → PR → exact-head CI → independent complete-diff review → manual squash merge. Auto-merge stays off. The GitHub Issue / Vader orchestrator is an optional unattended entry and is currently emergency-stopped until its replacement smoke is accepted; both paths meet at the same PR / exact-head CI / review / manual-merge boundary. Do not add a second Ship PR workflow or parallel merge owner.
+The default daily development path is local Agent → focused Draft PR → fast feedback while changing → Ready for review → one canonical exact-head CI matrix → independent complete-diff review → manual squash merge. Auto-merge stays off. The GitHub Issue / Vader orchestrator is an optional unattended entry and is currently emergency-stopped until its replacement smoke is accepted; both paths meet at the same PR / exact-head CI / review / manual-merge boundary. Do not add a second Ship PR workflow or parallel merge owner.
 
 Execution-ready packets are the default work units:
 
@@ -17,6 +17,19 @@ Observe → Select or repair packet → Decide → Implement → Verify → Revi
 ```
 
 The coding agent may resolve bounded missing decisions from current code, merged history, tests, and authoritative documents. Material architecture, authority, schema, migration, security, release, or recovery decisions must be recorded before dependent behavior is merged.
+
+### Fast feedback and canonical CI
+
+Two workflows have different authority:
+
+- `pr-fast-checks` runs on pull-request creation and replacement heads. It cancels obsolete in-progress runs and performs exact-head governance, security, handoff, workflow-contract, classifier, and diff checks. It is non-canonical feedback only and cannot authorize review, merge, release, deployment, or acceptance.
+- `tests` is the sole canonical source-test workflow. For pull requests it starts only on `ready_for_review`; pushes to `main` and explicit exact-head `workflow_dispatch` fallback runs remain complete-matrix paths. Every required source job must execute its exact-head verification step successfully.
+
+Keep a changing PR in Draft. Before marking it Ready, batch all known repairs, run focused and applicable full local checks, and review the complete diff. If a Ready candidate needs another commit, convert it back to Draft before publishing the replacement head, then mark it Ready again after the repair batch stabilizes. A new head invalidates all prior CI and review conclusions.
+
+The workflow concurrency keys cancel obsolete runs for the same PR or exact fallback head. Do not duplicate dispatches or rerun an unchanged successful job. An infrastructure-only failure may rerun only the failed job; a code, test, contract, or workflow failure requires one repaired head after all related failures are inspected.
+
+A successful `pr-fast-checks` run is never a substitute for a missing canonical `tests` run. The documentation-only exception below remains a manual, path-bounded exception and does not promote the fast workflow into canonical CI evidence.
 
 ## Model Selection
 
@@ -142,13 +155,13 @@ For each coherent packet or slice:
 - [ ] Restate goal, prerequisites, owners, allowed/forbidden changes, risk, acceptance, rollback, and hard stops
 - [ ] Record material decisions in an authoritative document
 - [ ] Add or update focused tests before behavior changes when practical
-- [ ] Implement one coherent reviewable slice
-- [ ] Run focused checks and applicable full verification
+- [ ] Implement one coherent reviewable slice in Draft and use `pr-fast-checks` for replacement-head feedback
+- [ ] Run focused checks and applicable full verification locally
 - [ ] Review the diff against packet, architecture, module ownership, authority, security, compatibility, audit, and rollback
 - [ ] Run `uv run --no-project python scripts/check_agent_handoff.py`
-- [ ] Open or update a PR with accurate feedback trace fields
+- [ ] Mark the stable candidate Ready to trigger canonical exact-head `tests`
 - [ ] Wait for every required CI job to complete, unless the final diff qualifies for the strict documentation-only merge exception
-- [ ] Repair failures at their root cause; do not weaken tests or guards
+- [ ] Repair failures at their root cause; return to Draft and batch changes instead of pushing during canonical CI
 - [ ] Merge only when the auto-merge classifier or documentation-only exception passes
 - [ ] Refresh `main`, update active state, and continue if the bounded objective includes later packets
 
@@ -187,7 +200,7 @@ Do not rebase a focused PR only because `main` advanced with unrelated documenta
 
 ### Exact-head CI evidence
 
-Canonical CI evidence must prove which commit was checked out and tested. The `tests` workflow resolves `EXPECTED_SHA` from `inputs.expected_sha` (required on `workflow_dispatch`), the pull-request head SHA, or `github.sha` on push to `main`; checkout uses that commit; every required job must execute the exact-head verification step successfully. A pull-request run that skips that step is not acceptable exact-head evidence. The orchestrator fallback `workflow_dispatch` path continues to pass `expected_sha` and `dispatch_nonce` and must not be weakened.
+Canonical CI evidence must prove which commit was checked out and tested. The `tests` workflow resolves `EXPECTED_SHA` from `inputs.expected_sha` (required on `workflow_dispatch`), the pull-request head SHA on `ready_for_review`, or `github.sha` on push to `main`; checkout uses that commit; every required job must execute the exact-head verification step successfully. A fast-check run, a pull-request run that skips that step, or a prior-head run is not acceptable exact-head evidence. The orchestrator fallback `workflow_dispatch` path continues to pass `expected_sha` and `dispatch_nonce` and must not be weakened.
 
 ### Direct-main documentation coordination
 
