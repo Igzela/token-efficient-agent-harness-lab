@@ -57,13 +57,13 @@ Normal reversible repository work and already-configured local/GitHub services a
 
 ## CI Lane Discipline
 
-Keep an implementation PR in Draft while its diff is still changing. Draft candidate heads run the fast governance lane; they are development feedback, not merge evidence. Run focused and applicable full checks locally, finish the complete-diff review, batch all known repairs, and only then mark the PR Ready for review. The `ready_for_review` event must run the complete exact-head matrix for every non-documentation change.
+Keep an implementation PR in Draft while its diff is changing. Draft pushes run the separate `pr-fast-checks` workflow for exact-head governance feedback only. That workflow is deliberately non-canonical: it cannot authorize review, merge, release, deployment, or acceptance.
 
-Strictly documentation-only heads use the trusted documentation lane. Any code, test, script, workflow, action, configuration, dependency, schema, migration, generated artifact, executable, or uncertain path requires the full matrix once Ready. Classification fails closed: an empty or unrecognized diff is full-CI work.
+Run focused and applicable full checks locally, finish the complete-diff review, collect all known findings into one repair batch, and only then mark the PR Ready for review. The `ready_for_review` event triggers the single canonical `tests` workflow and its complete exact-head source-check matrix. Pushes to `main` and explicit exact-head fallback dispatches also use that complete matrix.
 
-Do not push one repair at a time while CI is running. Collect all test, review, and contract findings into one repair batch, validate it locally, then publish one replacement head. A new head automatically cancels obsolete in-progress runs; never restart an unchanged successful job or duplicate a workflow dispatch. Infrastructure-only failures may rerun only the failed job. Code or test failures require a new repaired head.
+Do not push one repair at a time while CI is running. If a Ready candidate needs code or document changes, convert the PR back to Draft first, batch the repairs, validate locally, publish one replacement head, and mark it Ready again. A new head automatically cancels obsolete in-progress runs. Never restart an unchanged successful job or duplicate a workflow dispatch. Infrastructure-only failures may rerun only the failed job; code or test failures require a repaired head.
 
-Heavy jobs that are not applicable to a Draft or documentation-only head still report a successful explicit `not applicable` step so the required check matrix and context capsule remain complete. `not applicable` is lane evidence only; it never makes a non-documentation Draft head merge-eligible.
+A missing canonical `tests` run is not success. A fast-check success, a Draft head, a stale full run, or a prior-head review cannot satisfy merge eligibility. Documentation-only exceptions remain governed by `docs/REAL_WORLD_TESTING_PLAYBOOK.md`; they do not turn `pr-fast-checks` into canonical CI evidence.
 
 ## Execution-Ready Task Packets
 
