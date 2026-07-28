@@ -2,11 +2,11 @@
 
 Last updated: 2026-07-28.
 
-Current version: v35 candidate in PR #308. Accepted-main version: v34.
+Current version: v35 accepted through PR #308. Accepted-main version: v35.
 
 This is the durable architecture and safety baseline for the Token-Efficient Agent Harness Lab. Current facts live in `docs/CURRENT_STATUS.md`; routing and gates live in `docs/NEXT_DECISION.md`; concrete owners live in `docs/MODULE_MAP.md`. Historical packet details remain available in git history.
 
-The accepted schema carries **v32** hash-linked decision-transition receipts, **v33** managed-acceptance spend/lease logical authorization, and **v34** RWE authority rows. **Open review — PR #308 proposes v35** ProductTask workspace-preparation receipts for provider-free recovery preparation: the candidate pins one local physical-worktree plan before mutation, but does not authorize a provider call, live Golden Path task, RWE, Level-2, Meta, or Dashboard #225.
+The accepted schema carries **v32** hash-linked decision-transition receipts, **v33** managed-acceptance spend/lease logical authorization, **v34** RWE authority rows, and **v35** ProductTask workspace-preparation receipts for provider-free recovery preparation. PR #308 accepted the v35 change: it pins one local physical-worktree plan before mutation, but does not authorize a provider call, live Golden Path task, RWE, Level-2, Meta, or Dashboard #225.
 
 ## Mission
 
@@ -119,7 +119,7 @@ Every stage binds to exact current identities: tenant/workspace, ProductTask ver
 
 Missing, stale, conflicting, duplicate, late, revoked, expired, paused, killed, over-budget, lost-lease, or outcome-unknown state fails closed. Fixture completion proves wiring only; it is not managed acceptance, live RWE, or product capability proof.
 
-The v35 candidate makes physical worktree preparation explicitly recoverable without creating another authority owner. Fresh intake completes read-only target/root/overlap checks, then atomically publishes `admitted → workspace_preparing`, the transition audit, and one ProductTask-owned receipt. The receipt pins the canonical configured local root, deterministic workspace path, marker hash/state, and receipt hash before any root creation, marker, lock, Git, or supervised-workspace effect. Only that receipt may authorize subsequent root creation, marker validation, physical preparation, or compensation if PR #308 is accepted.
+The accepted v35 change makes physical worktree preparation explicitly recoverable without creating another authority owner. Fresh intake completes read-only target/root/overlap checks, then atomically publishes `admitted → workspace_preparing`, the transition audit, and one ProductTask-owned receipt. The receipt pins the canonical configured local root, deterministic workspace path, marker hash/state, and receipt hash before any root creation, marker, lock, Git, or supervised-workspace effect. Only that receipt may authorize subsequent root creation, marker validation, physical preparation, or compensation.
 
 The local file-descriptor lock protects one app-owned Git worktree path; PostgreSQL additionally supplies a try-only, session-scoped advisory coordinator for active ProductTask preparation. Those guards are synchronization only: they are not a durable lease, distributed fence, cross-host filesystem-visibility proof, or a second ProductTask/budget/rollback owner. A changed configured root, receipt/marker identity failure, unavailable guard, or failed contention audit is `reconciliation`—no cleanup, terminalization, or alternate-root worktree creation is allowed while the physical outcome is unproved. An observed contention audit contains only the ProductTask identity and redacted synchronization facts, never a path, command, prompt, or output.
 

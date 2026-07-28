@@ -55,6 +55,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #300 is merged and accepted.
 - PR #301 is merged and accepted; it is observation-only and did not import authority.
 - PR #306 is merged and accepted; it publishes/injects a non-authoritative fresh context capsule.
+- PR #308 is merged and accepted; it hardens provider-free ProductTask workspace preparation and recovery without importing live authority.
 - PR #225 is presentation-only and remains last.
 
 The next route is `PE7-PRODUCT-GOLDEN-PATH-1`, but it is blocked at the external `AUTHORIZATION_REQUIRED` gate defined below. Do not begin a live Golden Path task, live RWE, or later stages without that exact authority.
@@ -172,7 +173,7 @@ This packet proves context freshness and routing only. It cannot authorize provi
 
 **Prerequisite:** PE7-CONTEXT-CAPSULE-AUTOMATION-1 (COMPLETE) and the exact external live-authority manifest below
 
-The provider-free authority foundation from PR #299 is merged and accepted. PR #300, PR #301, and PR #306 are merged and accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+The provider-free authority foundation from PR #299 is merged and accepted. PR #300, PR #301, PR #306, and PR #308 are merged and accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
 
 **External gate:** `AUTHORIZATION_REQUIRED`
 
