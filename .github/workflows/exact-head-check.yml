@@ -1,11 +1,16 @@
 name: exact-head-check
 
-# Re-read the live PR head from trusted base-branch action code on every pull request.
+# Re-read the live PR head from trusted base-branch action code on every candidate event.
 # Pins follow repository Action pin policy.
 
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: exact-head-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
