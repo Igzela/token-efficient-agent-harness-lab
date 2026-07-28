@@ -106,9 +106,9 @@ The generated capsule is a transport view, not a new store or authority owner.
 
 ## Automation Boundary
 
-The repository currently provides an on-demand generator and CI tests for its fail-closed behavior. A normal CI run does not yet publish or inject a capsule into a later ChatGPT, Claude Code, Codex, reviewer, or repair session.
+The repository provides an on-demand generator and a terminal `context-capsule` CI job. After all seven source-test jobs reach terminal state, that job generates a token-free capsule, publishes a sanitized job summary and one-day artifact, and fails unless the complete source-check matrix is successful. Repository-controlled implementation, CI-repair, and review prompt builders regenerate and inject a fresh validated capsule at session start. No capsule is automatically injected into an arbitrary later ChatGPT, Claude Code, Codex, reviewer, or repair session.
 
-Safe automation must be added separately and must preserve these rules:
+This automation is non-authoritative and must preserve these rules:
 
 - generate once per exact-head workflow, not once per job;
 - bind the snapshot to accepted-main SHA, PR exact head, workflow run, required-check matrix, and observation time;
