@@ -736,10 +736,11 @@ jobs:
             --event-name "${GITHUB_EVENT_NAME}"
           )
           if [ -n "${GITHUB_PR_NUMBER}" ]; then
+            cp "${GITHUB_WORKSPACE}/trusted-exact-head-proof.json" trusted-exact-head-proof.json
             args+=(
               --pr-number "${GITHUB_PR_NUMBER}"
               --expected-head-sha "${EXPECTED_SHA}"
-              --exact-head-proof "${GITHUB_WORKSPACE}/trusted-exact-head-proof.json"
+              --exact-head-proof trusted-exact-head-proof.json
             )
           fi
           env -u GH_TOKEN -u GITHUB_TOKEN \
