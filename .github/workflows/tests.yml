@@ -361,6 +361,7 @@ jobs:
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         continue-on-error: true
         run: '"${SCCACHE_PATH}" --show-stats'
+
       - name: Stop PostgreSQL service
         if: always() && needs.classify-change-impact.outputs.docs_only != 'true'
         run: docker rm --force "${PG_CONTAINER}" || true
@@ -668,6 +669,8 @@ jobs:
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
       GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+      NEEDS_CONTEXT_PATH: ${{ runner.temp }}/needs-context.json
+      CAPSULE_DIR: ${{ runner.temp }}/context-capsule
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -720,50 +723,50 @@ jobs:
 
           json.dump(
               json.loads(os.environ["NEEDS_JSON"]),
-              open("needs-context.json", "w", encoding="utf-8"),
+              open(os.environ["NEEDS_CONTEXT_PATH"], "w", encoding="utf-8"),
               sort_keys=True,
           )
           PY
       - name: Generate context capsule
         run: |
           set -euo pipefail
-          mkdir -p context-capsule
+          mkdir -p "${CAPSULE_DIR}"
           args=(
             --format json
-            --checks-json "$(cat needs-context.json)"
+            --checks-json "$(cat "${NEEDS_CONTEXT_PATH}")"
             --event-name "${GITHUB_EVENT_NAME}"
-            --expected-head-sha "${EXPECTED_SHA}"
           )
           if [ -n "${GITHUB_PR_NUMBER}" ]; then
             args+=(
               --pr-number "${GITHUB_PR_NUMBER}"
+              --expected-head-sha "${EXPECTED_SHA}"
               --exact-head-proof trusted-exact-head-proof.json
             )
           fi
           env -u GH_TOKEN -u GITHUB_TOKEN \
             uv run --no-project python scripts/project_context.py "${args[@]}" \
-            > context-capsule/context-capsule.json
+            > "${CAPSULE_DIR}/context-capsule.json"
           env -u GH_TOKEN -u GITHUB_TOKEN \
             uv run --no-project python scripts/project_context.py \
             --format markdown \
-            --capsule-json context-capsule/context-capsule.json \
-            > context-capsule/context-capsule.md
+            --capsule-json "${CAPSULE_DIR}/context-capsule.json" \
+            > "${CAPSULE_DIR}/context-capsule.md"
       - name: Publish sanitized job summary
         run: |
           echo '## Context Capsule' >> "$GITHUB_STEP_SUMMARY"
-          head -c 100000 context-capsule/context-capsule.md >> "$GITHUB_STEP_SUMMARY"
+          head -c 100000 "${CAPSULE_DIR}/context-capsule.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload context capsule artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: context-capsule-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.EXPECTED_SHA }}
-          path: context-capsule/
+          path: ${{ runner.temp }}/context-capsule/
           retention-days: 1
           if-no-files-found: error
       - name: Validate source-check matrix is fully successful
         run: |
           uv run --no-project python scripts/project_context.py \
             --format json \
-            --capsule-json context-capsule/context-capsule.json \
+            --capsule-json "${CAPSULE_DIR}/context-capsule.json" \
             --require-success \
             > /dev/null
