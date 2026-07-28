@@ -15,7 +15,7 @@ correctness, safety, evidence, recovery, and rollback
 → low duplication and low context cost
 ```
 
-Conciseness must preserve quality. At session start, establish the leading valid frontier: remote accepted `main`, the latest exact head of the earliest eligible packet’s owned PR, and any blocked future frontiers. Never continue from a stale local branch, stale review head, or blocked downstream PR. Use `uv run --no-project python scripts/project_context.py` as an on-demand generated view, then verify its claims against Git/GitHub and canonical documents. CI currently tests the generator but does not automatically inject its output into a later Agent session.
+Conciseness must preserve quality. At session start, establish the leading valid frontier: remote accepted `main`, the latest exact head of the earliest eligible packet’s owned PR, and any blocked future frontiers. Never continue from a stale local branch, stale review head, or blocked downstream PR. Use `uv run --no-project python scripts/project_context.py` as an on-demand generated view, then verify its claims against Git/GitHub and canonical documents. Repository-controlled implementation, CI-repair, and review prompts regenerate and inject a fresh validated capsule at session start; arbitrary later sessions still require explicit regeneration.
 
 ## Current Guardrails
 
@@ -54,6 +54,16 @@ audit → focused branch/PR → focused checks → exact-head CI → complete-di
 Use one branch/PR per coherent packet. Auto-merge stays disabled. A new head invalidates prior CI and review. Rebase only for conflict, overlapping assumptions, explicit freshness, or proven integration risk.
 
 Normal reversible repository work and already-configured local/GitHub services are pre-authorized. Confirmation is still required for irreversible destruction, production release/deploy, new paid-provider POST, credential creation/rotation/disclosure, protected force-push, or unbounded external effects.
+
+## CI Lane Discipline
+
+Keep an implementation PR in Draft while its diff is changing. Draft pushes run the separate `pr-fast-checks` workflow for exact-head governance feedback only. That workflow is deliberately non-canonical: it cannot authorize review, merge, release, deployment, or acceptance.
+
+Run focused and applicable full checks locally, finish the complete-diff review, collect all known findings into one repair batch, and only then mark the PR Ready for review. The `ready_for_review` event triggers the single canonical `tests` workflow and its complete exact-head source-check matrix. Pushes to `main` and explicit exact-head fallback dispatches also use that complete matrix.
+
+Do not push one repair at a time while CI is running. If a Ready candidate needs code or document changes, convert the PR back to Draft first, batch the repairs, validate locally, publish one replacement head, and mark it Ready again. A new head automatically cancels obsolete in-progress runs. Never restart an unchanged successful job or duplicate a workflow dispatch. Infrastructure-only failures may rerun only the failed job; code or test failures require a repaired head.
+
+A missing canonical `tests` run is not success. A fast-check success, a Draft head, a stale full run, or a prior-head review cannot satisfy merge eligibility. Documentation-only exceptions remain governed by `docs/REAL_WORLD_TESTING_PLAYBOOK.md`; they do not turn `pr-fast-checks` into canonical CI evidence.
 
 ## Execution-Ready Task Packets
 
