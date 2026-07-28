@@ -121,15 +121,19 @@ def parse_first_routed_packet(next_text: str) -> dict[str, str | None]:
         end = heading.end() + next_heading.start() if next_heading else len(next_text)
         block = next_text[heading.start() : end]
     state_match = re.search(r"^\*\*State:\*\* `([A-Z_]+)`", block, re.MULTILINE)
-    structured_pr = re.search(
-        r"^\*\*(?:Owned PR|Review surface):\*\*\s*#(\d+)\s*$",
+    structured_owner = re.search(
+        r"^\*\*(?:Owned PR|Review surface):\*\*\s*(?P<value>.*?)\s*$",
         block,
         re.MULTILINE | re.IGNORECASE,
     )
     fallback_pr = re.search(r"\bPR #(\d+)\b|(?<!\w)#(\d+)\b", block)
     pr_number = None
-    if structured_pr:
-        pr_number = structured_pr.group(1)
+    if structured_owner:
+        structured_pr = re.fullmatch(
+            r"#(?P<number>\d+)", structured_owner.group("value").strip()
+        )
+        if structured_pr:
+            pr_number = structured_pr.group("number")
     elif fallback_pr:
         pr_number = fallback_pr.group(1) or fallback_pr.group(2)
     return {

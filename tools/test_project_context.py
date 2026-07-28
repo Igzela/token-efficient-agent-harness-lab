@@ -58,6 +58,21 @@ Issue #208 remains stopped and PR #299 is a prerequisite.
 """
         self.assertEqual(project_context.parse_first_routed_packet(text)["pr_number"], "302")
 
+    def test_explicit_non_numeric_owner_does_not_fallback_to_history(self) -> None:
+        for owner_label in ("Owned PR", "Review surface"):
+            with self.subTest(owner_label=owner_label):
+                text = f"""## Active Routing
+1. `PE7-AUTHORITY-1` — `IN_PROGRESS`.
+
+## Packet PE7-AUTHORITY-1
+**State:** `IN_PROGRESS`
+**{owner_label}:** TBD
+Phase one was accepted through PR #302.
+"""
+                self.assertIsNone(
+                    project_context.parse_first_routed_packet(text)["pr_number"]
+                )
+
     def test_parse_open_frontiers(self) -> None:
         text = """# Current Status
 
