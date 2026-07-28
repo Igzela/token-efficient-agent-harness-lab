@@ -267,6 +267,9 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
         assert_eq!(emitted_again, again);
         assert_eq!(store.audit_events(10_000).unwrap(), audit_before_reads);
         store
+            .rollback_v35_to_v34("rollback-operator", true)
+            .unwrap();
+        store
             .rollback_v34_to_v33("rollback-operator", true)
             .unwrap();
         store

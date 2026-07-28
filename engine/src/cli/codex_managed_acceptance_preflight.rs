@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::product_golden_path::{product_gate_enabled, product_scheduler_kill_active};
+use crate::storage::local_product_store::ManagedCodexSpawnLease;
+
 use super::codex_mediation_admission::{
     unprivileged_user_ns_available, CodexAdmissionClass, ManagedCodexRuntimeAttestation,
     BUBBLEWRAP_BIN,
@@ -182,6 +185,36 @@ pub struct ManagedAcceptancePreflightReport {
     pub notes: Vec<String>,
 }
 
+/// Runtime-only result for the exact store-issued spawn lease.
+///
+/// The extra acknowledgement bit is derived by re-reading the canonical
+/// decision owner after the full preflight. It is not a new authorization
+/// record or a substitute for the store's final before-child confirmation.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LeaseBoundManagedAcceptancePreflight {
+    report: ManagedAcceptancePreflightReport,
+    operator_risk_acknowledged: bool,
+}
+
+impl LeaseBoundManagedAcceptancePreflight {
+    pub(crate) fn result(&self) -> &ManagedAcceptancePreflightResult {
+        &self.report.result
+    }
+
+    /// A partial-mediation trial may proceed only after the canonical owner
+    /// records the required operator acknowledgement. It remains a bounded
+    /// residual trial, not a claim of full admission.
+    pub(crate) fn allows_child_spawn(&self) -> bool {
+        self.report
+            .result
+            .allows_live_trial_without_further_operator_ack()
+            || (matches!(
+                self.report.result,
+                ManagedAcceptancePreflightResult::ReadyPendingOperatorRiskAcceptance
+            ) && self.operator_risk_acknowledged)
+    }
+}
+
 impl ManagedAcceptancePreflightReport {
     pub fn to_json(&self) -> Value {
         json!({
@@ -247,8 +280,9 @@ fn classify_userns_pid() -> CapabilityEvidenceClass {
 }
 
 /// Run deterministic managed-acceptance preflight (no live provider call).
-/// Fixture/caller-asserted preflight. Production must use
-/// [`run_owner_derived_managed_acceptance_preflight`].
+/// Fixture/caller-asserted preflight. Provider-free active-spend inspection
+/// must use [`run_owner_derived_managed_acceptance_preflight`]; production
+/// child admission must use [`run_lease_bound_managed_acceptance_preflight`].
 #[doc(hidden)]
 pub fn run_managed_acceptance_preflight_fixture_only(
     input: &ManagedAcceptancePreflightInput,
@@ -830,11 +864,19 @@ pub fn fixture_ready_pending_operator_input(
     }
 }
 
-/// Production preflight entry: loads decision, risk, **mandatory** active unconsumed spend,
-/// ProductTask, target/output/evidence owners, and derives host binary/gateway/journal facts.
+enum ManagedAcceptancePreflightSpendBinding<'a> {
+    ActiveUnconsumed,
+    CurrentSpawnLease(&'a ManagedCodexSpawnLease),
+}
+
+/// Provider-free owner inspection for a future live task. This entry requires an
+/// active, unconsumed spend authorization and never creates an attempt lease,
+/// starts a gateway, spawns a child, or calls a provider.
 ///
-/// `expected_identities` is compared only as non-authoritative expectations.
-/// Caller booleans are never treated as proof; missing owners fail closed.
+/// Production child admission uses
+/// [`run_lease_bound_managed_acceptance_preflight`] after the store has issued
+/// the one-use lease and the launcher has derived its actual runtime
+/// attestation.
 pub fn run_owner_derived_managed_acceptance_preflight(
     store: &crate::storage::local_product_store::LocalProductStore,
     tenant_id: &str,
@@ -844,15 +886,94 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     runtime_attestation: &ManagedCodexRuntimeAttestation,
     expected_identities: &ManagedAcceptancePreflightInput,
 ) -> Result<ManagedAcceptancePreflightReport, String> {
+    run_owner_derived_managed_acceptance_preflight_with_binding(
+        store,
+        tenant_id,
+        decision_id,
+        risk_authorization_id,
+        spend_authorization_id,
+        runtime_attestation,
+        expected_identities,
+        ManagedAcceptancePreflightSpendBinding::ActiveUnconsumed,
+    )
+}
+
+/// Runtime preflight for the sole store-issued managed-Codex spawn lease.
+///
+/// The lease has already atomically consumed its one-use spend reservation, but
+/// the child has not yet been spawned and the gateway has not forwarded a
+/// request. This preserves the existing `LocalProductStore` ownership boundary
+/// while making the full owner-derived preflight part of the actual child
+/// admission path.
+pub(crate) fn run_lease_bound_managed_acceptance_preflight(
+    store: &crate::storage::local_product_store::LocalProductStore,
+    lease: &ManagedCodexSpawnLease,
+    runtime_attestation: &ManagedCodexRuntimeAttestation,
+) -> Result<LeaseBoundManagedAcceptancePreflight, String> {
+    let spend = store
+        .get_managed_acceptance_spend_authorization(lease.spend_authorization_id())?
+        .ok_or_else(|| "managed Codex spend owner is missing for runtime preflight".to_string())?;
+    let decision_id = spend
+        .get("decision_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "managed Codex spend is missing decision_id for runtime preflight".to_string()
+        })?;
+    let risk_authorization_id = spend
+        .get("risk_authorization_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "managed Codex spend is missing risk_authorization_id for runtime preflight".to_string()
+        })?;
+
+    let report = run_owner_derived_managed_acceptance_preflight_with_binding(
+        store,
+        lease.tenant_id(),
+        decision_id,
+        risk_authorization_id,
+        lease.spend_authorization_id(),
+        runtime_attestation,
+        &ManagedAcceptancePreflightInput::default(),
+        ManagedAcceptancePreflightSpendBinding::CurrentSpawnLease(lease),
+    )?;
+    let decision = store
+        .get_managed_acceptance_decision(decision_id)?
+        .ok_or_else(|| {
+            "managed Codex decision owner disappeared during runtime preflight".to_string()
+        })?;
+    let operator_risk_acknowledged = decision.get("status").and_then(Value::as_str)
+        == Some(AuthorityDecisionStatus::OperatorAccepted.as_str());
+
+    Ok(LeaseBoundManagedAcceptancePreflight {
+        report,
+        operator_risk_acknowledged,
+    })
+}
+
+/// Shared owner-derived preflight implementation. The caller-selected binding
+/// only controls the expected spend lifecycle state; every identity is read
+/// back from the existing store owner.
+fn run_owner_derived_managed_acceptance_preflight_with_binding(
+    store: &crate::storage::local_product_store::LocalProductStore,
+    tenant_id: &str,
+    decision_id: &str,
+    risk_authorization_id: &str,
+    spend_authorization_id: &str,
+    runtime_attestation: &ManagedCodexRuntimeAttestation,
+    expected_identities: &ManagedAcceptancePreflightInput,
+    spend_binding: ManagedAcceptancePreflightSpendBinding<'_>,
+) -> Result<ManagedAcceptancePreflightReport, String> {
+    // Loads decision, risk, spend, ProductTask, target/output/evidence owners,
+    // and derives host binary/gateway/journal facts. `expected_identities` is
+    // non-authoritative; missing owners always fail closed.
     use crate::cli::config::sha256_file;
     use crate::storage::local_product_store::CostAuthority;
     use std::os::unix::fs::PermissionsExt;
-    use std::process::Command;
 
     if spend_authorization_id.trim().is_empty() {
-        return Err(
-            "active unconsumed spend_authorization_id is mandatory for production preflight".into(),
-        );
+        return Err("spend_authorization_id is mandatory for owner-derived preflight".into());
     }
 
     let decision = store
@@ -889,18 +1010,47 @@ pub fn run_owner_derived_managed_acceptance_preflight(
         );
     }
 
-    // Exact active, unconsumed spend is mandatory (no optional/no-spend production path).
+    // A provider-free inspection only accepts an active, unconsumed spend. The
+    // runtime path can instead inspect the one exact consumed spend that is
+    // still bound to its current, pre-child store lease.
     let spend = store
         .get_managed_acceptance_spend_authorization(spend_authorization_id)?
         .ok_or_else(|| "spend authorization not found".to_string())?;
-    if spend.get("status").and_then(serde_json::Value::as_str) != Some("active") {
-        return Err(format!(
-            "spend authorization must be active and unconsumed (status={})",
-            spend
-                .get("status")
+    match &spend_binding {
+        ManagedAcceptancePreflightSpendBinding::ActiveUnconsumed => {
+            if spend.get("status").and_then(serde_json::Value::as_str) != Some("active") {
+                return Err(format!(
+                    "spend authorization must be active and unconsumed (status={})",
+                    spend
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("?")
+                ));
+            }
+            if spend
+                .get("consumed_at")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or("?")
-        ));
+                .is_some()
+            {
+                return Err("spend authorization already consumed".into());
+            }
+        }
+        ManagedAcceptancePreflightSpendBinding::CurrentSpawnLease(lease) => {
+            store.validate_managed_codex_preflight_lease(lease)?;
+            if lease.tenant_id() != tenant_id
+                || lease.spend_authorization_id() != spend_authorization_id
+                || spend.get("status").and_then(serde_json::Value::as_str) != Some("consumed")
+                || spend
+                    .get("consumed_by_attempt_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(lease.attempt_id())
+            {
+                return Err(
+                    "managed Codex runtime preflight lease/spend binding is stale or invalid"
+                        .into(),
+                );
+            }
+        }
     }
     if spend
         .get("risk_authorization_id")
@@ -911,13 +1061,6 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     }
     if spend.get("tenant_id").and_then(serde_json::Value::as_str) != Some(tenant_id) {
         return Err("spend tenant mismatch".into());
-    }
-    if spend
-        .get("consumed_at")
-        .and_then(serde_json::Value::as_str)
-        .is_some()
-    {
-        return Err("spend authorization already consumed".into());
     }
     let spend_body = spend
         .get("body_json")
@@ -950,7 +1093,7 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     // Derive owner facts solely from spend + store + host; never caller proof.
     runtime_attestation.assert_required_mediation_owners()?;
     let mut input = ManagedAcceptancePreflightInput {
-        execution_gate_enabled: true,
+        execution_gate_enabled: product_gate_enabled() && !product_scheduler_kill_active(),
         authority_decision_status: Some(
             decision
                 .get("status")
@@ -1091,8 +1234,9 @@ pub fn run_owner_derived_managed_acceptance_preflight(
         input.pricing_table_version = Some(pricing_table_version);
     }
 
-    // Binary: must exist, be readable+executable, recompute SHA, probe exact version.
-    // Never fall back to authorized SHA/version after probe failure.
+    // Binary: must exist, be readable+executable, and re-hash to the exact
+    // admitted identity. Preflight never executes the binary outside the
+    // mediated child boundary.
     let binary_path = spend_body
         .get("binary_path")
         .and_then(serde_json::Value::as_str)
@@ -1121,31 +1265,43 @@ pub fn run_owner_derived_managed_acceptance_preflight(
     if actual_sha != authorized_sha {
         return Err("recomputed binary SHA mismatches spend authorization".into());
     }
-    let version_output = Command::new(&path)
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("binary version probe failed: {e}"))?;
-    if !version_output.status.success() {
-        return Err("binary version probe returned non-zero status".into());
-    }
-    let text = String::from_utf8_lossy(&version_output.stdout);
-    let probed_version = text
-        .split_whitespace()
-        .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
-        .ok_or("binary version probe did not return a version token")?
-        .to_string();
     let authorized_version = spend_body
         .get("binary_version")
         .and_then(serde_json::Value::as_str)
         .ok_or("spend missing binary_version")?;
-    if probed_version != authorized_version {
+    let bound_version = match &spend_binding {
+        // The persisted spend is issued only for the exact admitted version;
+        // the current binary SHA above proves it has not changed. Do not turn
+        // provider-free inspection into an unmediated executable invocation.
+        ManagedAcceptancePreflightSpendBinding::ActiveUnconsumed => authorized_version.to_string(),
+        // The runtime path runs after gateway setup, when the parent may hold
+        // an upstream credential. Never execute the admitted binary outside
+        // the mediated child boundary at that point. The exact current lease
+        // and its immutable launch facts must already match the re-hashed
+        // spend identity; final store confirmation revalidates immediately
+        // before child spawn.
+        ManagedAcceptancePreflightSpendBinding::CurrentSpawnLease(lease) => {
+            let facts = lease.facts();
+            if facts.executable_path != path
+                || facts.executable_sha256 != actual_sha
+                || facts.executable_version != authorized_version
+            {
+                return Err(
+                    "managed Codex runtime preflight binary lease binding is stale or invalid"
+                        .into(),
+                );
+            }
+            facts.executable_version.clone()
+        }
+    };
+    if bound_version != authorized_version {
         return Err(format!(
-            "probed binary version {probed_version} mismatches spend authorization {authorized_version}"
+            "runtime binary version {bound_version} mismatches spend authorization {authorized_version}"
         ));
     }
     input.codex_binary_path = Some(path);
     input.codex_sha256 = Some(actual_sha);
-    input.codex_version = Some(probed_version);
+    input.codex_version = Some(bound_version);
 
     input.cancellation_cleanup_rollback_ready = spend_body
         .get("cancellation_identity")
@@ -1246,6 +1402,37 @@ mod tests {
     }
 
     #[test]
+    fn lease_bound_partial_trial_requires_persisted_operator_acknowledgement() {
+        let pending = ManagedAcceptancePreflightResult::ReadyPendingOperatorRiskAcceptance;
+        let blocked = ManagedAcceptancePreflightResult::BlockedMissingAuthorization;
+        let full = ManagedAcceptancePreflightResult::ReadyUnderFullAdmission;
+
+        let pending_without_ack = LeaseBoundManagedAcceptancePreflight {
+            report: minimal_report(pending.clone()),
+            operator_risk_acknowledged: false,
+        };
+        assert!(!pending_without_ack.allows_child_spawn());
+
+        let pending_with_ack = LeaseBoundManagedAcceptancePreflight {
+            report: minimal_report(pending),
+            operator_risk_acknowledged: true,
+        };
+        assert!(pending_with_ack.allows_child_spawn());
+
+        let blocked_with_ack = LeaseBoundManagedAcceptancePreflight {
+            report: minimal_report(blocked),
+            operator_risk_acknowledged: true,
+        };
+        assert!(!blocked_with_ack.allows_child_spawn());
+
+        let full_without_ack = LeaseBoundManagedAcceptancePreflight {
+            report: minimal_report(full),
+            operator_risk_acknowledged: false,
+        };
+        assert!(full_without_ack.allows_child_spawn());
+    }
+
+    #[test]
     fn missing_credential_classifies_correctly() {
         let decision = draft_partial_mediation_authority_decision();
         let mut input = fixture_ready_pending_operator_input(&decision);
@@ -1291,5 +1478,26 @@ mod tests {
         assert!(!text.contains("Bearer "));
         assert!(!text.contains("OPENAI_API_KEY="));
         assert_eq!(report.manifest["parent_credential_present"], true);
+    }
+
+    fn minimal_report(
+        result: ManagedAcceptancePreflightResult,
+    ) -> ManagedAcceptancePreflightReport {
+        ManagedAcceptancePreflightReport {
+            schema_version: MANAGED_ACCEPTANCE_PREFLIGHT_SCHEMA.to_string(),
+            result,
+            blockers: Vec::new(),
+            checks: Vec::new(),
+            capabilities: CapabilityClassificationReport {
+                bwrap: CapabilityEvidenceClass::Proved,
+                userns_pid: CapabilityEvidenceClass::Proved,
+                unshare_net: CapabilityEvidenceClass::Proved,
+                network_confinement: CapabilityEvidenceClass::Proved,
+                residual_verdict: "test".to_string(),
+                product_admission_class: "test".to_string(),
+            },
+            manifest: Value::Null,
+            notes: Vec::new(),
+        }
     }
 }

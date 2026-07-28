@@ -2,8 +2,10 @@ use std::path::Path;
 use std::process::Command;
 
 use engine::target_repo_output::{
-    export_patch, parse_github_repository_url, prepare_git_worktree, push_approved_branch,
-    remove_git_worktree, stage_and_build_patch, BranchPublishRequest, TargetRepoOutputConfig,
+    export_patch, inspect_registered_git_worktree, parse_github_repository_url,
+    prepare_git_worktree, push_approved_branch, remove_git_worktree,
+    remove_git_worktree_and_verify_absent, stage_and_build_patch, BranchPublishRequest,
+    TargetRepoOutputConfig,
 };
 use tempfile::tempdir;
 
@@ -95,6 +97,102 @@ fn target_repo_worktree_rejects_option_shaped_revision() {
 
     assert!(error.contains("invalid source revision"));
     assert!(!workspace.exists());
+}
+
+#[test]
+fn worktree_absence_verification_removes_a_stale_missing_path_registration() {
+    let (target, _, workspace_root) = fixture();
+    let workspace = workspace_root.path().join("workspace");
+    let config = TargetRepoOutputConfig::for_test(true, false);
+    prepare_git_worktree(&config, target.path(), &workspace, "main").unwrap();
+
+    std::fs::remove_dir_all(&workspace).unwrap();
+    assert!(!workspace.exists());
+    let before = git(target.path(), &["worktree", "list", "--porcelain"]);
+    assert!(before
+        .lines()
+        .any(|line| line == format!("worktree {}", workspace.display())));
+
+    remove_git_worktree_and_verify_absent(&config, target.path(), &workspace).unwrap();
+
+    assert!(!workspace.exists());
+    let after = git(target.path(), &["worktree", "list", "--porcelain"]);
+    assert!(!after
+        .lines()
+        .any(|line| line == format!("worktree {}", workspace.display())));
+}
+
+#[test]
+fn existing_worktree_must_be_registered_by_the_exact_target_repository() {
+    let (target, _, workspace_root) = fixture();
+    let workspace = workspace_root.path().join("workspace");
+    let source = git(target.path(), &["rev-parse", "main"]);
+    let foreign_root = tempdir().unwrap();
+    let foreign = foreign_root.path().join("foreign");
+    let clone = Command::new("git")
+        .args([
+            "clone",
+            "--no-hardlinks",
+            target.path().to_str().unwrap(),
+            foreign.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        clone.status.success(),
+        "foreign clone failed: {}",
+        String::from_utf8_lossy(&clone.stderr)
+    );
+    git(
+        &foreign,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            workspace.to_str().unwrap(),
+            &source,
+        ],
+    );
+
+    let error = inspect_registered_git_worktree(
+        &TargetRepoOutputConfig::for_test(true, false),
+        target.path(),
+        &workspace,
+        &source,
+    )
+    .expect_err("a matching commit in a foreign repository is not a target worktree");
+    assert!(
+        error.contains("not registered by target repository"),
+        "{error}"
+    );
+    assert!(
+        git(&foreign, &["worktree", "list", "--porcelain"])
+            .lines()
+            .any(|line| line == format!("worktree {}", workspace.display())),
+        "the rejected foreign worktree must not be deleted"
+    );
+}
+
+#[test]
+fn worktree_parent_overlap_is_rejected_before_parent_creation() {
+    let (target, _, _) = fixture();
+    let workspace_parent = target.path().join("nested").join("workspace-parent");
+    let workspace = workspace_parent.join("workspace");
+    let error = prepare_git_worktree(
+        &TargetRepoOutputConfig::for_test(true, false),
+        target.path(),
+        &workspace,
+        "main",
+    )
+    .expect_err("a workspace parent under the target must be rejected before creation");
+    assert!(
+        error.contains("must stay outside target repository"),
+        "{error}"
+    );
+    assert!(
+        !workspace_parent.exists(),
+        "target overlap must fail before creating the workspace parent"
+    );
 }
 
 #[test]

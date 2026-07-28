@@ -15,6 +15,7 @@ use crate::provider::redaction::{
 mod authority;
 
 pub const TARGET_REPO_OUTPUT_SCHEMA_VERSION: &str = "target_repo_output.v1";
+pub const GIT_WORKTREE_ADD_OUTCOME_UNKNOWN: &str = "git worktree add outcome is unknown";
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 30_000;
 const MAX_GIT_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
@@ -409,20 +410,10 @@ pub fn prepare_git_worktree(
     if workspace_path.exists() {
         return Err("workspace_path already exists".to_string());
     }
-    let workspace_parent = workspace_path
-        .parent()
-        .ok_or_else(|| "workspace_path has no parent".to_string())?;
-    std::fs::create_dir_all(workspace_parent).map_err(|error| error.to_string())?;
-    let workspace_parent = canonical_existing_dir(workspace_parent, "workspace_parent")?;
-    let planned_workspace = workspace_parent.join(
-        workspace_path
-            .file_name()
-            .ok_or_else(|| "workspace_path has no file name".to_string())?,
-    );
-    if planned_workspace.starts_with(&target_repo) || target_repo.starts_with(&planned_workspace) {
-        return Err("git worktree must stay outside target repository".to_string());
-    }
 
+    // Validate every target-side identity before creating even the workspace
+    // parent. A target path can be repointed between receipt publication and
+    // recovery; pre-effect overlap must fail before any root creation.
     let git_root = run_git(config, &target_repo, &["rev-parse", "--show-toplevel"])?;
     let git_root = canonical_existing_dir(Path::new(git_root.stdout.trim()), "git_root")?;
     if git_root != target_repo {
@@ -441,6 +432,34 @@ pub fn prepare_git_worktree(
         .stdout
         .trim()
         .to_string();
+
+    let workspace_parent = workspace_path
+        .parent()
+        .ok_or_else(|| "workspace_path has no parent".to_string())?;
+    let planned_parent = canonicalize_with_missing_tail(workspace_parent, "workspace_parent")?;
+    let planned_workspace = planned_parent.join(
+        workspace_path
+            .file_name()
+            .ok_or_else(|| "workspace_path has no file name".to_string())?,
+    );
+    if paths_overlap(&planned_parent, &target_repo)
+        || paths_overlap(&planned_workspace, &target_repo)
+    {
+        return Err("git worktree must stay outside target repository".to_string());
+    }
+
+    std::fs::create_dir_all(&planned_parent).map_err(|error| error.to_string())?;
+    let workspace_parent = canonical_existing_dir(&planned_parent, "workspace_parent")?;
+    let planned_workspace = workspace_parent.join(
+        workspace_path
+            .file_name()
+            .ok_or_else(|| "workspace_path has no file name".to_string())?,
+    );
+    if paths_overlap(&workspace_parent, &target_repo)
+        || paths_overlap(&planned_workspace, &target_repo)
+    {
+        return Err("git worktree must stay outside target repository".to_string());
+    }
     run_git(
         config,
         &target_repo,
@@ -453,13 +472,90 @@ pub fn prepare_git_worktree(
                 .ok_or_else(|| "workspace_path is not valid UTF-8".to_string())?,
             &source,
         ],
-    )?;
-    let canonical_workspace = canonical_existing_dir(&planned_workspace, "workspace_path")?;
+    )
+    .map_err(|error| format!("{GIT_WORKTREE_ADD_OUTCOME_UNKNOWN}: {error}"))?;
+    let canonical_workspace = canonical_existing_dir(&planned_workspace, "workspace_path")
+        .map_err(|error| format!("{GIT_WORKTREE_ADD_OUTCOME_UNKNOWN}: {error}"))?;
 
     Ok(GitWorkspaceInfo {
         schema_version: TARGET_REPO_OUTPUT_SCHEMA_VERSION.to_string(),
         workspace_path: canonical_workspace.to_string_lossy().into_owned(),
         source_revision: source,
+        default_branch,
+        workspace_mode: "git_worktree".to_string(),
+    })
+}
+
+/// Inspect an existing app-owned worktree only when the configured target
+/// repository still registers its exact canonical path and its checked-out
+/// revision is the exact commit resolved from that target.  Recovery must not
+/// infer ownership from a matching `HEAD` in an arbitrary directory: another
+/// repository can contain the same commit object.
+pub fn inspect_registered_git_worktree(
+    config: &TargetRepoOutputConfig,
+    target_repo_path: &Path,
+    workspace_path: &Path,
+    source_revision: &str,
+) -> Result<GitWorkspaceInfo, String> {
+    config.require_enabled()?;
+    authority::validate_source_revision(source_revision)?;
+    let target_repo = canonical_existing_dir(target_repo_path, "target_repo_path")?;
+    ensure_absolute_clean(workspace_path, "workspace_path")?;
+    let workspace = canonical_existing_dir(workspace_path, "workspace_path")?;
+    if workspace != workspace_path {
+        return Err("workspace_path canonical identity differs from its receipt".to_string());
+    }
+    if paths_overlap(&workspace, &target_repo) {
+        return Err("git worktree must stay outside target repository".to_string());
+    }
+
+    let git_root = run_git(config, &target_repo, &["rev-parse", "--show-toplevel"])?;
+    let git_root = canonical_existing_dir(Path::new(git_root.stdout.trim()), "git_root")?;
+    if git_root != target_repo {
+        return Err("target_repo_path must be the git worktree root".to_string());
+    }
+    if !git_worktree_is_registered(config, &target_repo, &workspace)? {
+        return Err("workspace_path is not registered by target repository".to_string());
+    }
+
+    let workspace_root = run_git(config, &workspace, &["rev-parse", "--show-toplevel"])?;
+    let workspace_root = canonical_existing_dir(
+        Path::new(workspace_root.stdout.trim()),
+        "workspace_git_root",
+    )?;
+    if workspace_root != workspace {
+        return Err("workspace_path is not the registered worktree root".to_string());
+    }
+
+    let revision_arg = format!("{source_revision}^{{commit}}");
+    let expected_source = run_git(
+        config,
+        &target_repo,
+        &["rev-parse", "--verify", "--end-of-options", &revision_arg],
+    )?
+    .stdout
+    .trim()
+    .to_string();
+    let actual_source = run_git(
+        config,
+        &workspace,
+        &["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"],
+    )?
+    .stdout
+    .trim()
+    .to_string();
+    if actual_source != expected_source {
+        return Err("workspace_path source revision does not match target repository".to_string());
+    }
+    let default_branch = run_git(config, &target_repo, &["symbolic-ref", "--short", "HEAD"])?
+        .stdout
+        .trim()
+        .to_string();
+
+    Ok(GitWorkspaceInfo {
+        schema_version: TARGET_REPO_OUTPUT_SCHEMA_VERSION.to_string(),
+        workspace_path: workspace.to_string_lossy().into_owned(),
+        source_revision: expected_source,
         default_branch,
         workspace_mode: "git_worktree".to_string(),
     })
@@ -485,6 +581,63 @@ pub fn remove_git_worktree(
         ],
     )?;
     Ok(())
+}
+
+/// Remove an exact app-owned worktree only when Git still registers it, then
+/// prove both the registration and path are absent. This is intentionally more
+/// conservative than a filesystem delete: a timed-out child can leave Git
+/// metadata behind after the directory has already disappeared.
+pub fn remove_git_worktree_and_verify_absent(
+    config: &TargetRepoOutputConfig,
+    target_repo_path: &Path,
+    workspace_path: &Path,
+) -> Result<(), String> {
+    config.require_enabled()?;
+    let target_repo = canonical_existing_dir(target_repo_path, "target_repo_path")?;
+    ensure_absolute_clean(workspace_path, "workspace_path")?;
+
+    if git_worktree_is_registered(config, &target_repo, workspace_path)? {
+        remove_git_worktree(config, &target_repo, workspace_path)?;
+    }
+    if git_worktree_is_registered(config, &target_repo, workspace_path)? {
+        return Err("workspace_path remains registered after git worktree removal".to_string());
+    }
+    match std::fs::symlink_metadata(workspace_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err("workspace_path exists without a registered Git worktree".to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn git_worktree_is_registered(
+    config: &TargetRepoOutputConfig,
+    target_repo_path: &Path,
+    workspace_path: &Path,
+) -> Result<bool, String> {
+    let worktrees = run_git(
+        config,
+        target_repo_path,
+        &["worktree", "list", "--porcelain"],
+    )?;
+    git_worktree_is_registered_in_porcelain(
+        &worktrees.stdout,
+        worktrees.stdout_truncated,
+        workspace_path,
+    )
+}
+
+fn git_worktree_is_registered_in_porcelain(
+    worktree_list: &str,
+    truncated: bool,
+    workspace_path: &Path,
+) -> Result<bool, String> {
+    if truncated {
+        return Err("git worktree registration listing is truncated".to_string());
+    }
+    Ok(worktree_list.lines().any(|line| {
+        line.strip_prefix("worktree ")
+            .is_some_and(|registered_path| Path::new(registered_path) == workspace_path)
+    }))
 }
 
 pub fn stage_and_build_patch(
@@ -1076,6 +1229,30 @@ fn canonical_existing_dir(path: &Path, field: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+fn canonicalize_with_missing_tail(path: &Path, field: &str) -> Result<PathBuf, String> {
+    ensure_absolute_clean(path, field)?;
+    let mut cursor = path;
+    let mut tail = Vec::new();
+    while !cursor.exists() {
+        let component = cursor
+            .file_name()
+            .ok_or_else(|| format!("{field} has no existing ancestor"))?;
+        tail.push(component.to_os_string());
+        cursor = cursor
+            .parent()
+            .ok_or_else(|| format!("{field} has no existing ancestor"))?;
+    }
+    let mut canonical = canonical_existing_dir(cursor, field)?;
+    for component in tail.into_iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
+}
+
 fn ensure_absolute_clean(path: &Path, field: &str) -> Result<(), String> {
     if !path.is_absolute() {
         return Err(format!("{field} must be absolute"));
@@ -1349,6 +1526,18 @@ mod tests {
             base64_encode(b"Aladdin:open sesame"),
             "QWxhZGRpbjpvcGVuIHNlc2FtZQ=="
         );
+    }
+
+    #[test]
+    fn truncated_worktree_registration_listing_fails_closed() {
+        let workspace = Path::new("/tmp/receipt-worktree");
+        let error = git_worktree_is_registered_in_porcelain(
+            "worktree /tmp/other-worktree\nHEAD deadbeef\n",
+            true,
+            workspace,
+        )
+        .expect_err("a truncated listing cannot prove registration absence");
+        assert_eq!(error, "git worktree registration listing is truncated");
     }
 
     fn draft_request() -> GitHubPullRequestRequest {

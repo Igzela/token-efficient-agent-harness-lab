@@ -1582,6 +1582,32 @@ impl LocalProductStore {
         }
     }
 
+    pub(crate) fn supervised_patch_workspace_count_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<i64, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM supervised_patch_workspaces WHERE run_id=?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT COUNT(*) FROM supervised_patch_workspaces WHERE run_id=$1",
+                        &[&run_id],
+                    )
+                    .map(|row| row.get(0))
+                    .map_err(|error| error.to_string())
+            }),
+        }
+    }
+
     pub fn get_supervised_patch_workspace(
         &self,
         workspace_id: &str,
