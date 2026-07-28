@@ -127,10 +127,7 @@ class WorkflowCapsuleTests(unittest.TestCase):
         )
         self.assertIsNotNone(generate)
         self.assertNotIn("GH_TOKEN", generate.get("env", {}))
-        self.assertIn(
-            '--exact-head-proof "${GITHUB_WORKSPACE}/trusted-exact-head-proof.json"',
-            generate.get("run", ""),
-        )
+        self.assertIn("--exact-head-proof trusted-exact-head-proof.json", generate.get("run", ""))
         self.assertIn("env -u GH_TOKEN -u GITHUB_TOKEN", generate.get("run", ""))
         self.assertEqual(
             generate.get("run", "").count("env -u GH_TOKEN -u GITHUB_TOKEN"),
