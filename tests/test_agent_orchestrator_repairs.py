@@ -1016,6 +1016,9 @@ class TestDispatcher(unittest.TestCase):
                 **os.environ,
                 "PATH": f"{temp}:{os.environ['PATH']}",
                 "AGENT_REPAIR_COUNT": "1",
+                # This fixture does not model a dispatch-bound workflow head.
+                # An inherited pull-request merge SHA must not impersonate one.
+                "GITHUB_SHA": "",
             }
             result = subprocess.run(
                 [sys.executable, str(CONTROL / "prompt_builder.py"), "ci-repair", "207", sha, str(evidence)],
