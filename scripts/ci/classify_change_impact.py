@@ -26,20 +26,24 @@ def is_documentation_path(raw_path: str) -> bool:
     path = raw_path.strip().replace("\\", "/")
     if not path or path.startswith("/") or ".." in PurePosixPath(path).parts:
         return False
-    return path in ROOT_DOCUMENTS or path.startswith("docs/")
+    if path in ROOT_DOCUMENTS:
+        return True
+    return path.startswith("docs/") and PurePosixPath(path).suffix.lower() in {".md", ".txt"}
 
 
 def classify(paths: list[str], *, draft: bool) -> dict[str, object]:
     normalized = sorted({path.strip().replace("\\", "/") for path in paths if path.strip()})
     docs_only = bool(normalized) and all(is_documentation_path(path) for path in normalized)
-    # Only Draft work is eligible for non-canonical fast feedback. Once a PR
-    # becomes Ready, every candidate uses the canonical complete matrix. This
-    # keeps the existing exact-head orchestrator contract singular.
-    mode = "fast_draft" if draft else "full"
+    if draft:
+        mode = "fast_draft"
+    elif docs_only:
+        mode = "docs_only"
+    else:
+        mode = "full"
     return {
-        "schema_version": "ci_change_impact.v1",
+        "schema_version": "ci_change_impact.v2",
         "mode": mode,
-        "fast_only": mode != "full",
+        "fast_only": mode == "fast_draft",
         "docs_only": docs_only,
         "changed_files": normalized,
     }
