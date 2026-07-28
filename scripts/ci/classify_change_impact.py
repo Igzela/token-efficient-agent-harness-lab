@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Conservative CI impact classifier for pull-request candidate heads."""
+"""Conservative CI lane classifier for pull-request candidate heads."""
 
 from __future__ import annotations
 
@@ -32,12 +32,10 @@ def is_documentation_path(raw_path: str) -> bool:
 def classify(paths: list[str], *, draft: bool) -> dict[str, object]:
     normalized = sorted({path.strip().replace("\\", "/") for path in paths if path.strip()})
     docs_only = bool(normalized) and all(is_documentation_path(path) for path in normalized)
-    if draft:
-        mode = "fast_draft"
-    elif docs_only:
-        mode = "fast_docs"
-    else:
-        mode = "full"
+    # Only Draft work is eligible for non-canonical fast feedback. Once a PR
+    # becomes Ready, every candidate uses the canonical complete matrix. This
+    # keeps the existing exact-head orchestrator contract singular.
+    mode = "fast_draft" if draft else "full"
     return {
         "schema_version": "ci_change_impact.v1",
         "mode": mode,
