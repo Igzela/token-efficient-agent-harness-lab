@@ -123,7 +123,7 @@ The accepted v35 change makes physical worktree preparation explicitly recoverab
 
 The local file-descriptor lock protects one app-owned Git worktree path; PostgreSQL additionally supplies a try-only, session-scoped advisory coordinator for active ProductTask preparation. Those guards are synchronization only: they are not a durable lease, distributed fence, cross-host filesystem-visibility proof, or a second ProductTask/budget/rollback owner. A changed configured root, receipt/marker identity failure, unavailable guard, or failed contention audit is `reconciliation`—no cleanup, terminalization, or alternate-root worktree creation is allowed while the physical outcome is unproved. An observed contention audit contains only the ProductTask identity and redacted synchronization facts, never a path, command, prompt, or output.
 
-The candidate receipt retires only after a durable `workspace_bound` result or compensation that proves the exact Git registration and workspace path are absent; idempotent admission/recovery reaps crash-left retirement residue conservatively. If accepted, v35 rollback is permitted only after its receipt table is drained, with the rollback audit committed atomically and matching SQLite/PostgreSQL semantics.
+The accepted v35 receipt retires only after a durable `workspace_bound` result or compensation that proves the exact Git registration and workspace path are absent; idempotent admission/recovery reaps crash-left retirement residue conservatively. v35 rollback is permitted only after its receipt table is drained, with the rollback audit committed atomically and matching SQLite/PostgreSQL semantics.
 
 ## Managed Process Boundary
 
