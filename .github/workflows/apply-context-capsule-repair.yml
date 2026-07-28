@@ -5,7 +5,7 @@ on:
     branches: [agent/context-capsule-push-repair-1]
   pull_request:
     branches: [main]
-    types: [opened]
+    types: [opened, synchronize]
 
 permissions:
   contents: write
@@ -33,14 +33,18 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          gh_open = "$" + "{{"
+          def gh(text: str) -> str:
+              return text.replace("__GH__", gh_open)
+
           workflow = Path('.github/workflows/tests.yml')
           source = workflow.read_text(encoding='utf-8')
           replacements = [
               (
-                  "      GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}\n",
-                  "      GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}\n"
-                  "      NEEDS_CONTEXT_PATH: ${{ runner.temp }}/needs-context.json\n"
-                  "      CAPSULE_DIR: ${{ runner.temp }}/context-capsule\n",
+                  gh("      GITHUB_PR_NUMBER: __GH__ github.event.pull_request.number || '' }}\n"),
+                  gh("      GITHUB_PR_NUMBER: __GH__ github.event.pull_request.number || '' }}\n"
+                     "      NEEDS_CONTEXT_PATH: __GH__ runner.temp }}/needs-context.json\n"
+                     "      CAPSULE_DIR: __GH__ runner.temp }}/context-capsule\n"),
               ),
               (
                   '              open("needs-context.json", "w", encoding="utf-8"),',
@@ -72,12 +76,22 @@ jobs:
                   '          head -c 100000 context-capsule/context-capsule.md >> "$GITHUB_STEP_SUMMARY"\n',
                   '          head -c 100000 "${CAPSULE_DIR}/context-capsule.md" >> "$GITHUB_STEP_SUMMARY"\n',
               ),
-              ('          path: context-capsule/\n', '          path: ${{ runner.temp }}/context-capsule/\n'),
+              (
+                  gh('          path: __GH__ runner.temp }}/context-capsule/\n'),
+                  gh('          path: __GH__ runner.temp }}/context-capsule/\n'),
+              ),
+              (
+                  '          path: context-capsule/\n',
+                  gh('          path: __GH__ runner.temp }}/context-capsule/\n'),
+              ),
               (
                   '            --capsule-json context-capsule/context-capsule.json \\\n',
                   '            --capsule-json "${CAPSULE_DIR}/context-capsule.json" \\\n',
               ),
           ]
+          # The first no-op assertion ensures the target runner-temp expression is
+          # constructed literally rather than expanded by the temporary workflow.
+          assert replacements.pop(8)[0].endswith('runner.temp }}/context-capsule/\n')
           for old, new in replacements:
               count = source.count(old)
               if count != 1:
@@ -90,7 +104,7 @@ jobs:
           marker = '    def test_canonical_identity_and_context_capsule_are_unchanged(self) -> None:\n'
           if tests.count(marker) != 1:
               raise SystemExit('test insertion marker changed')
-          addition = '''    def test_context_capsule_push_is_not_treated_as_a_pr_head(self) -> None:\n        capsule = self.job_source("context-capsule")\n        self.assertIn("NEEDS_CONTEXT_PATH: ${{ runner.temp }}/needs-context.json", capsule)\n        self.assertIn("CAPSULE_DIR: ${{ runner.temp }}/context-capsule", capsule)\n        self.assertEqual(capsule.count('--expected-head-sha "${EXPECTED_SHA}"'), 1)\n        self.assertGreater(\n            capsule.index('--expected-head-sha "${EXPECTED_SHA}"'),\n            capsule.index('if [ -n "${GITHUB_PR_NUMBER}" ]'),\n        )\n        self.assertIn('open(os.environ["NEEDS_CONTEXT_PATH"]', capsule)\n        self.assertIn('mkdir -p "${CAPSULE_DIR}"', capsule)\n        self.assertIn('path: ${{ runner.temp }}/context-capsule/', capsule)\n        self.assertNotIn('open("needs-context.json"', capsule)\n        self.assertNotIn('path: context-capsule/', capsule)\n\n'''
+          addition = gh('''    def test_context_capsule_push_is_not_treated_as_a_pr_head(self) -> None:\n        capsule = self.job_source("context-capsule")\n        self.assertIn("NEEDS_CONTEXT_PATH: __GH__ runner.temp }}/needs-context.json", capsule)\n        self.assertIn("CAPSULE_DIR: __GH__ runner.temp }}/context-capsule", capsule)\n        self.assertEqual(capsule.count('--expected-head-sha "${EXPECTED_SHA}"'), 1)\n        self.assertGreater(\n            capsule.index('--expected-head-sha "${EXPECTED_SHA}"'),\n            capsule.index('if [ -n "${GITHUB_PR_NUMBER}" ]'),\n        )\n        self.assertIn('open(os.environ["NEEDS_CONTEXT_PATH"]', capsule)\n        self.assertIn('mkdir -p "${CAPSULE_DIR}"', capsule)\n        self.assertIn('path: __GH__ runner.temp }}/context-capsule/', capsule)\n        self.assertNotIn('open("needs-context.json"', capsule)\n        self.assertNotIn('path: context-capsule/', capsule)\n\n''')
           test_path.write_text(tests.replace(marker, addition + marker, 1), encoding='utf-8')
           PY
           rm .github/workflows/apply-context-capsule-repair.yml
