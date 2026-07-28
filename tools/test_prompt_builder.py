@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -170,6 +171,30 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
         self.assertEqual(capsule, "# Project Context Capsule\n")
         self.assertEqual(sum("--capsule-json" not in command for command in commands), 1)
         self.assertIn("--capsule-json", commands[1])
+
+    def test_unavailable_frontier_does_not_break_required_pr_transport(self) -> None:
+        capsule_json = json.dumps(
+            {
+                "local_checkout": {"head_sha": "a" * 40},
+                "binding": {"pr_exact_head": None},
+                "active_frontier": None,
+                "active_packet": None,
+            }
+        )
+
+        def run(command, **_kwargs):
+            output = "# Project Context Capsule\n" if "--capsule-json" in command else capsule_json
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        with mock.patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}, clear=False), mock.patch.object(
+            prompt_builder.subprocess, "run", side_effect=run
+        ):
+            capsule = prompt_builder.generate_fresh_capsule(
+                offline=True,
+                required_pr_number=301,
+                required_head_sha="a" * 40,
+        )
+        self.assertIn("Project Context Capsule", capsule)
 
 
 if __name__ == "__main__":

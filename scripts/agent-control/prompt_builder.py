@@ -112,7 +112,8 @@ def generate_fresh_capsule(
             )
     if required_pr_number is not None:
         frontier_available = (
-            capsule.get("active_frontier", {}).get("availability") == "confirmed"
+            (active_frontier if isinstance(active_frontier, dict) else {}).get("availability")
+            == "confirmed"
         )
         if (
             frontier_available
