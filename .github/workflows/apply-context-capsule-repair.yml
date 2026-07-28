@@ -1,8 +1,6 @@
 name: apply-context-capsule-repair
 
 on:
-  push:
-    branches: [agent/context-capsule-push-repair-1]
   pull_request:
     branches: [main]
     types: [opened, synchronize]
@@ -16,14 +14,14 @@ concurrency:
 
 jobs:
   apply:
-    if: github.event_name == 'push' || github.head_ref == 'agent/context-capsule-push-repair-1'
+    if: github.head_ref == 'agent/context-capsule-push-repair-1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: agent/context-capsule-push-repair-1
           fetch-depth: 0
-          token: ${{ github.token }}
+          persist-credentials: false
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.11"
@@ -108,11 +106,59 @@ jobs:
           bash scripts/check_github_action_pins.sh
           git diff --check
           test "$(git diff --name-only | sort)" = $'.github/workflows/tests.yml\ntools/test_ci_workflow_optimization.py'
-      - name: Commit bounded repair
+      - name: Create candidate Git commit object
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add .github/workflows/tests.yml tools/test_ci_workflow_optimization.py
-          git commit -m "ci: repair push context capsule validation"
-          git push origin HEAD:agent/context-capsule-push-repair-1
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import urllib.request
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          api = f'https://api.github.com/repos/{repo}/git'
+
+          def post(path, payload):
+              request = urllib.request.Request(
+                  api + path,
+                  data=json.dumps(payload).encode(),
+                  headers={
+                      'Accept': 'application/vnd.github+json',
+                      'Authorization': f'Bearer {token}',
+                      'Content-Type': 'application/json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                  },
+                  method='POST',
+              )
+              with urllib.request.urlopen(request) as response:
+                  return json.load(response)
+
+          entries = []
+          for path in ('.github/workflows/tests.yml', 'tools/test_ci_workflow_optimization.py'):
+              blob = post('/blobs', {'content': Path(path).read_text(encoding='utf-8'), 'encoding': 'utf-8'})
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+          parent = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          base_tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+          tree = post('/trees', {'base_tree': base_tree, 'tree': entries})
+          commit = post('/commits', {
+              'message': 'ci: repair push context capsule validation',
+              'tree': tree['sha'],
+              'parents': [parent],
+          })
+          Path('/tmp/repair-commit.json').write_text(
+              json.dumps({'parent': parent, 'commit_sha': commit['sha'], 'tree_sha': tree['sha']}, sort_keys=True),
+              encoding='utf-8',
+          )
+          print(commit['sha'])
+          PY
+      - name: Upload candidate commit identity
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: context-capsule-repair-commit-${{ github.run_id }}
+          path: /tmp/repair-commit.json
+          retention-days: 1
+          if-no-files-found: error
