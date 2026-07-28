@@ -23,10 +23,19 @@ use super::codex_budget_authority::{
 
 pub const CODEX_MEDIATED_ADMISSION_SCHEMA: &str = "codex_mediated_admission.v2";
 pub const BUBBLEWRAP_BIN: &str = "/usr/bin/bwrap";
+const SEALED_HELPER_PATH: &str = "/usr/bin:/bin";
 /// Fixed in-sandbox path for the admitted Codex binary (never the real home path).
 pub const SANDBOX_CODEX_BIN: &str = "/opt/acp/managed-codex";
 /// Fixed in-sandbox path for the task-scoped CODEX_HOME.
 pub const SANDBOX_CODEX_HOME: &str = "/opt/acp/codex-home";
+
+/// Seal every helper process that may run after the parent has read its
+/// provider credential. `bwrap --clearenv` applies only to its sandbox child;
+/// the bwrap helper process itself must receive no inherited secret-bearing
+/// environment.
+pub(crate) fn seal_untrusted_helper_environment(command: &mut Command) {
+    command.env_clear().env("PATH", SEALED_HELPER_PATH);
+}
 
 /// Typed fact about the child network namespace. The currently wired launch
 /// shares the host network; a loopback gateway alone is not network confinement.
@@ -157,6 +166,7 @@ pub fn unprivileged_user_ns_available() -> bool {
         return false;
     }
     let mut cmd = Command::new(bwrap);
+    seal_untrusted_helper_environment(&mut cmd);
     cmd.arg("--die-with-parent")
         .arg("--unshare-user")
         .arg("--unshare-pid")
@@ -770,6 +780,7 @@ pub fn probe_real_auth_hidden(
     }
     // Auth hide relies on tmpfs over /home, not user namespaces (GHA often denies uid_map).
     let mut cmd = Command::new(bwrap);
+    seal_untrusted_helper_environment(&mut cmd);
     cmd.arg("--die-with-parent")
         .arg("--ro-bind")
         .arg("/usr")
@@ -982,6 +993,32 @@ mod tests {
         assert!(
             Path::new(BUBBLEWRAP_BIN).is_file(),
             "BLOCKED: /usr/bin/bwrap is required for this provider-free validation lane"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sealed_helper_environment_drops_injected_parent_credentials() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("credential-probe");
+        std::fs::write(
+            &probe,
+            b"#!/bin/sh\nif [ -n \"${ACP_CODEX_UPSTREAM_API_KEY:-}\" ] || [ -n \"${OPENAI_API_KEY:-}\" ] || [ -n \"${UNRELATED_SECRET:-}\" ]; then\n  exit 91\nfi\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let mut command = Command::new(&probe);
+        command
+            .env("ACP_CODEX_UPSTREAM_API_KEY", "synthetic-parent-key")
+            .env("OPENAI_API_KEY", "synthetic-fallback-key")
+            .env("UNRELATED_SECRET", "synthetic-unrelated-secret");
+        seal_untrusted_helper_environment(&mut command);
+        assert!(
+            command.status().unwrap().success(),
+            "a sealed helper must not receive injected parent credentials"
         );
     }
 
@@ -1251,6 +1288,7 @@ mod tests {
         }
         let host_pid = std::process::id();
         let mut cmd = Command::new(BUBBLEWRAP_BIN);
+        seal_untrusted_helper_environment(&mut cmd);
         cmd.arg("--die-with-parent")
             .arg("--unshare-user")
             .arg("--unshare-pid")

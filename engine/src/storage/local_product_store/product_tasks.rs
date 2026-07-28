@@ -31,9 +31,9 @@ use crate::product_golden_path::{
 };
 use crate::read_only_planner::{ReadOnlyPlanner, READ_ONLY_PLAN_SCHEMA_VERSION};
 use crate::target_repo_output::{
-    current_workspace_revision, inspect_git_patch_read_only, patch_hash as target_patch_hash,
-    prepare_git_worktree, remove_git_worktree_and_verify_absent, TargetRepoOutputConfig,
-    GIT_WORKTREE_ADD_OUTCOME_UNKNOWN,
+    current_workspace_revision, inspect_git_patch_read_only, inspect_registered_git_worktree,
+    patch_hash as target_patch_hash, prepare_git_worktree, remove_git_worktree_and_verify_absent,
+    TargetRepoOutputConfig, GIT_WORKTREE_ADD_OUTCOME_UNKNOWN,
 };
 use crate::tool_policy_executor::{managed_tool_binding_sha256, ToolPolicyNodeExecutor};
 
@@ -2058,6 +2058,33 @@ impl LocalProductStore {
         Ok(())
     }
 
+    /// A receipt pins the app-owned root, but the target path is current
+    /// runtime configuration. Reconcile before any root, marker, lock, Git,
+    /// or compensation effect when a target path has been repointed into that
+    /// receipt root (or vice versa).
+    fn validate_product_task_workspace_preparation_target_boundary(
+        &self,
+        intake: &ValidatedProductTaskIntake,
+        receipt: &ProductTaskWorkspacePreparationReceipt,
+    ) -> Result<(), String> {
+        let target_root = std::fs::canonicalize(&intake.target_repo_path).map_err(|_| {
+            product_task_workspace_preparation_reconciliation_error(
+                "current target repository is unavailable",
+            )
+        })?;
+        if !target_root.is_dir() {
+            return Err(product_task_workspace_preparation_reconciliation_error(
+                "current target repository is unavailable",
+            ));
+        }
+        if paths_overlap(&receipt.workspace_root, &target_root) {
+            return Err(product_task_workspace_preparation_reconciliation_error(
+                "pinned workspace root overlaps current target repository",
+            ));
+        }
+        Ok(())
+    }
+
     fn ensure_product_task_workspace_preparation_root(
         &self,
         task_id: &str,
@@ -2317,6 +2344,8 @@ impl LocalProductStore {
         validate_product_task_workspace_prerequisites(intake)?;
         let receipt =
             self.ensure_product_task_workspace_preparation_receipt(task_id, intake, actor)?;
+        self.validate_product_task_workspace_preparation_root(task_id, &receipt)?;
+        self.validate_product_task_workspace_preparation_target_boundary(intake, &receipt)?;
         self.ensure_product_task_workspace_preparation_root(task_id, &receipt)?;
         let _workspace_preparation_lock = ProductTaskWorkspacePreparationGuard::acquire(
             self,
@@ -2356,12 +2385,14 @@ impl LocalProductStore {
         // a recoverable reconciliation condition, never permission to create
         // a second worktree elsewhere.
         self.validate_product_task_workspace_preparation_root(task_id, &receipt)?;
+        self.validate_product_task_workspace_preparation_target_boundary(intake, &receipt)?;
         let receipt =
             self.ensure_product_task_workspace_preparation_marker(task_id, &receipt, actor)?;
         let prepared = self.prepare_product_task_worktree_locked(
             task_id,
             intake,
             actor,
+            &receipt,
             receipt.workspace_path.clone(),
         );
         match prepared {
@@ -2416,6 +2447,7 @@ impl LocalProductStore {
         task_id: &str,
         intake: &ValidatedProductTaskIntake,
         actor: &str,
+        receipt: &ProductTaskWorkspacePreparationReceipt,
         workspace_path: PathBuf,
     ) -> Result<Value, String> {
         // Configuration and target state can change after the initial
@@ -2425,6 +2457,7 @@ impl LocalProductStore {
         validate_product_task_workspace_prerequisites(intake).map_err(|error| {
             format!("{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: {error}")
         })?;
+        self.validate_product_task_workspace_preparation_target_boundary(intake, receipt)?;
         let config = TargetRepoOutputConfig::from_env();
 
         let target_repo = Path::new(&intake.target_repo_path);
@@ -2434,46 +2467,24 @@ impl LocalProductStore {
             )
         })?;
 
-        // Concurrent admit may already have prepared this path for the same task.
-        // Prefer reusing a valid existing worktree over destructive recreate.
-        let prepared = if workspace_path.is_dir() {
-            let head = std::process::Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(&workspace_path)
-                .output();
-            let head_ok = head
-                .as_ref()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .filter(|h| {
-                    h == &intake.source_revision
-                        || intake.source_revision.starts_with(h.as_str())
-                        || h.starts_with(&intake.source_revision)
-                });
-            if let Some(source_revision) = head_ok {
-                crate::target_repo_output::GitWorkspaceInfo {
-                    schema_version: crate::target_repo_output::TARGET_REPO_OUTPUT_SCHEMA_VERSION
-                        .to_string(),
-                    workspace_path: workspace_path.to_string_lossy().into_owned(),
-                    source_revision,
-                    default_branch: "main".to_string(),
-                    workspace_mode: "git_worktree".to_string(),
-                }
-            } else {
-                remove_product_task_git_worktree_or_reconcile(
-                    &config,
-                    &target_canonical,
-                    &workspace_path,
-                )?;
-                prepare_git_worktree(
-                    &config,
-                    &target_canonical,
-                    &workspace_path,
-                    &intake.source_revision,
+        // A concurrent admit or interrupted child can leave an existing path.
+        // Reuse is safe only if the configured target repository itself still
+        // registers that exact receipt path and resolves it to the exact pinned
+        // source.  A matching HEAD in a foreign/stale repository is not proof
+        // of target ownership and must remain reconciliation, never cleanup or
+        // an alternate worktree creation.
+        let prepared = if workspace_path.exists() {
+            inspect_registered_git_worktree(
+                &config,
+                &target_canonical,
+                &workspace_path,
+                &intake.source_revision,
+            )
+            .map_err(|_| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "existing receipt workspace registration or source identity is unproved",
                 )
-                .map_err(classify_product_task_git_worktree_prepare_error)?
-            }
+            })?
         } else {
             prepare_git_worktree(
                 &config,
@@ -2650,6 +2661,7 @@ impl LocalProductStore {
         })?;
         self.validate_product_task_workspace_preparation_root(task_id, &receipt)?;
         validate_product_task_workspace_preparation_marker(task_id, &receipt, false)?;
+        self.validate_product_task_workspace_preparation_target_boundary(intake, &receipt)?;
 
         // A receipt-owned path can only be terminalized after the current
         // target boundary is still usable and Git has removed that exact
@@ -2668,75 +2680,94 @@ impl LocalProductStore {
         })?;
 
         let provisional = provisional_run_id_for_task(task_id);
-        let workspaces = self.supervised_patch_workspaces(50).map_err(|_| {
-            product_task_workspace_preparation_reconciliation_error(
-                "workspace cleanup is unavailable",
-            )
-        })?;
-        let mut supervised_workspace_seen = false;
-        for ws in workspaces {
-            if ws.get("run_id").and_then(Value::as_str) == Some(provisional.as_str()) {
-                let workspace_id =
-                    ws.get("workspace_id")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            product_task_workspace_preparation_reconciliation_error(
-                                "supervised workspace identity is unavailable",
-                            )
-                        })?;
-                let workspace_path = ws
-                    .get("workspace_path")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        product_task_workspace_preparation_reconciliation_error(
-                            "supervised workspace path is unavailable",
-                        )
-                    })?;
-                if Path::new(workspace_path) != receipt.workspace_path {
-                    return Err(product_task_workspace_preparation_reconciliation_error(
-                        "supervised workspace path does not match the receipt",
-                    ));
-                }
-                let workspace_target = ws
-                    .get("target_repo_path")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        product_task_workspace_preparation_reconciliation_error(
-                            "supervised workspace target is unavailable",
-                        )
-                    })?;
-                let workspace_target = std::fs::canonicalize(workspace_target).map_err(|_| {
+        let supervised_workspace_count = self
+            .supervised_patch_workspace_count_for_run(&provisional)
+            .map_err(|_| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "workspace cleanup is unavailable",
+                )
+            })?;
+        if supervised_workspace_count > 1 {
+            return Err(product_task_workspace_preparation_reconciliation_error(
+                "multiple supervised workspaces match the provisional run",
+            ));
+        }
+        let supervised_workspace = self
+            .get_supervised_patch_workspace_for_run(&provisional)
+            .map_err(|_| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "workspace cleanup is unavailable",
+                )
+            })?;
+
+        if let Some(ws) = supervised_workspace {
+            if ws.get("run_id").and_then(Value::as_str) != Some(provisional.as_str()) {
+                return Err(product_task_workspace_preparation_reconciliation_error(
+                    "supervised workspace run does not match the receipt",
+                ));
+            }
+            let workspace_id = ws
+                .get("workspace_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    product_task_workspace_preparation_reconciliation_error(
+                        "supervised workspace identity is unavailable",
+                    )
+                })?;
+            let workspace_path = ws
+                .get("workspace_path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    product_task_workspace_preparation_reconciliation_error(
+                        "supervised workspace path is unavailable",
+                    )
+                })?;
+            let workspace_canonical_path = ws
+                .get("workspace_canonical_path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    product_task_workspace_preparation_reconciliation_error(
+                        "supervised workspace canonical path is unavailable",
+                    )
+                })?;
+            if Path::new(workspace_path) != receipt.workspace_path
+                || Path::new(workspace_canonical_path) != receipt.workspace_path
+            {
+                return Err(product_task_workspace_preparation_reconciliation_error(
+                    "supervised workspace path does not match the receipt",
+                ));
+            }
+            let workspace_target = ws
+                .get("target_repo_canonical_path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
                     product_task_workspace_preparation_reconciliation_error(
                         "supervised workspace target is unavailable",
                     )
                 })?;
-                if workspace_target != target_canonical {
-                    return Err(product_task_workspace_preparation_reconciliation_error(
-                        "supervised workspace target does not match the pinned target",
-                    ));
-                }
-                // Never let a metadata-only `cleaned` status substitute for
-                // proof that Git has removed its exact registered worktree.
-                // The ProductTask receipt pins this path; the target-output
-                // owner performs the physical operation and verification.
-                remove_product_task_git_worktree_or_reconcile(
-                    &config,
-                    &target_canonical,
-                    &receipt.workspace_path,
-                )?;
-                if ws.get("status").and_then(Value::as_str) != Some("cleaned") {
-                    self.update_workspace_status(workspace_id, "cleaned", actor)
-                        .map_err(|_| {
-                            product_task_workspace_preparation_reconciliation_error(
-                                "supervised workspace cleanup status is unavailable",
-                            )
-                        })?;
-                }
-                supervised_workspace_seen = true;
+            if Path::new(workspace_target) != target_canonical {
+                return Err(product_task_workspace_preparation_reconciliation_error(
+                    "supervised workspace target does not match the pinned target",
+                ));
             }
-        }
-
-        if !supervised_workspace_seen {
+            // Never let a metadata-only `cleaned` status substitute for proof
+            // that Git has removed its exact registered worktree. The
+            // ProductTask receipt pins this path; the target-output owner
+            // performs the physical operation and verification.
+            remove_product_task_git_worktree_or_reconcile(
+                &config,
+                &target_canonical,
+                &receipt.workspace_path,
+            )?;
+            if ws.get("status").and_then(Value::as_str) != Some("cleaned") {
+                self.update_workspace_status(workspace_id, "cleaned", actor)
+                    .map_err(|_| {
+                        product_task_workspace_preparation_reconciliation_error(
+                            "supervised workspace cleanup status is unavailable",
+                        )
+                    })?;
+            }
+        } else {
             remove_product_task_git_worktree_or_reconcile(
                 &config,
                 &target_canonical,
@@ -5851,6 +5882,10 @@ fn canonicalize_with_missing_tail(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
+}
+
 fn product_task_workspace_root_for_preparation(
     store: &LocalProductStore,
     task_id: &str,
@@ -5870,8 +5905,7 @@ fn product_task_workspace_root_for_preparation(
         )
     })?;
     let canonical_workspace_root = canonicalize_with_missing_tail(workspace_root)?;
-    if canonical_workspace_root == target_root || canonical_workspace_root.starts_with(&target_root)
-    {
+    if paths_overlap(&canonical_workspace_root, &target_root) {
         return Err(format!(
             "{PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE}: workspace root overlaps the target repository"
         ));

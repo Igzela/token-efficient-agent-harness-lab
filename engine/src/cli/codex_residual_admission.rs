@@ -22,7 +22,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::codex_mediation_admission::{
-    unprivileged_user_ns_available, CodexAdmissionClass, BUBBLEWRAP_BIN,
+    seal_untrusted_helper_environment, unprivileged_user_ns_available, CodexAdmissionClass,
+    BUBBLEWRAP_BIN,
 };
 use super::config::ADMITTED_CODEX_VERSION;
 
@@ -236,6 +237,7 @@ pub fn probe_unshare_net_available() -> CapabilityEvidenceClass {
         return CapabilityEvidenceClass::Unsupported;
     }
     let mut cmd = Command::new(BUBBLEWRAP_BIN);
+    seal_untrusted_helper_environment(&mut cmd);
     cmd.arg("--die-with-parent")
         .arg("--unshare-net")
         .arg("--ro-bind")
@@ -359,6 +361,7 @@ PY"#,
     );
 
     let mut cmd = Command::new(BUBBLEWRAP_BIN);
+    seal_untrusted_helper_environment(&mut cmd);
     cmd.arg("--die-with-parent")
         .arg("--unshare-net")
         .arg("--ro-bind")
@@ -602,6 +605,7 @@ pub fn investigate_user_pid_namespace() -> UserPidNamespaceFinding {
     } else {
         // Distinguish hard fail vs unknown via a direct probe message.
         let mut cmd = Command::new(BUBBLEWRAP_BIN);
+        seal_untrusted_helper_environment(&mut cmd);
         cmd.arg("--die-with-parent")
             .arg("--unshare-user")
             .arg("--unshare-pid")

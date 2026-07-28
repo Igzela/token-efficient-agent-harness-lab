@@ -1023,6 +1023,266 @@ exec {git} "$@"
 
 #[cfg(unix)]
 #[test]
+fn recovery_refuses_foreign_worktree_with_a_matching_source_commit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let validated = validate_intake(
+            &intake(&repo, &rev, "rec-foreign-worktree-recovery-1"),
+            "local",
+            "default",
+        )
+        .unwrap();
+
+        // Publish the durable preparation receipt without creating the target
+        // worktree. The failed post-add command is outcome-unknown and must
+        // therefore remain recoverable rather than terminalized.
+        let wrapper_dir = dir.path().join("git-wrapper");
+        std::fs::create_dir_all(&wrapper_dir).unwrap();
+        let real_git = git_binary_from_path();
+        let shell_quote = |path: &std::path::Path| {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
+        };
+        let wrapper = wrapper_dir.join("git");
+        std::fs::write(
+            &wrapper,
+            format!(
+                r#"#!/bin/sh
+previous=''
+for arg in "$@"; do
+  if [ "$previous" = "worktree" ] && [ "$arg" = "add" ]; then
+    exit 99
+  fi
+  previous="$arg"
+done
+exec {git} "$@"
+"#,
+                git = shell_quote(&real_git),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let old_path = std::env::var_os("PATH").expect("PATH must be set for git fixtures");
+        let mut path_entries = vec![wrapper_dir];
+        path_entries.extend(std::env::split_paths(&old_path));
+        let admission_error = {
+            let _env = ScopedEnv::set(vec![("PATH", std::env::join_paths(path_entries).unwrap())]);
+            store
+                .admit_product_task(&validated, "tester")
+                .expect_err("failed worktree add must retain a receipt for reconciliation")
+        };
+        assert!(
+            admission_error
+                .starts_with("product task workspace preparation requires reconciliation"),
+            "{admission_error}"
+        );
+
+        let task = store
+            .get_product_task_by_idempotency("local", "default", "rec-foreign-worktree-recovery-1")
+            .unwrap()
+            .expect("preparing task");
+        let task_id = task["task_id"].as_str().unwrap().to_string();
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        let workspace_path: String = connection
+            .query_row(
+                "SELECT workspace_path FROM product_task_workspace_preparations WHERE task_id=?1",
+                [&task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(connection);
+        let workspace_path = std::path::PathBuf::from(workspace_path);
+        assert!(!workspace_path.exists());
+
+        // A clone of the target contains the same commit object, but only the
+        // foreign repository registers this path. A HEAD-only recovery check
+        // would incorrectly bind it as the target worktree.
+        let foreign_root = tempfile::tempdir().unwrap();
+        let foreign = foreign_root.path().join("foreign");
+        let clone = Command::new(&real_git)
+            .args([
+                "clone",
+                "--no-hardlinks",
+                repo.to_str().unwrap(),
+                foreign.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            clone.status.success(),
+            "foreign clone failed: {}",
+            String::from_utf8_lossy(&clone.stderr)
+        );
+        let foreign_add = Command::new(&real_git)
+            .args([
+                "worktree",
+                "add",
+                "--detach",
+                workspace_path.to_str().unwrap(),
+                &rev,
+            ])
+            .current_dir(&foreign)
+            .output()
+            .unwrap();
+        assert!(
+            foreign_add.status.success(),
+            "foreign worktree add failed: {}",
+            String::from_utf8_lossy(&foreign_add.stderr)
+        );
+
+        let recovery_error = store
+            .recover_product_task_workspace(&task_id, "recovery")
+            .expect_err("foreign worktree must require reconciliation");
+        assert!(
+            recovery_error
+                .starts_with("product task workspace preparation requires reconciliation"),
+            "{recovery_error}"
+        );
+        assert!(
+            recovery_error
+                .contains("existing receipt workspace registration or source identity is unproved"),
+            "{recovery_error}"
+        );
+        assert_eq!(
+            store.get_product_task(&task_id).unwrap().unwrap()["status"],
+            ProductTaskStatus::WorkspacePreparing.as_str()
+        );
+        assert_eq!(
+            store.supervised_patch_workspaces(10).unwrap().len(),
+            0,
+            "foreign workspace must not produce a target supervised-workspace record"
+        );
+        let foreign_worktrees = Command::new(&real_git)
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(&foreign)
+            .output()
+            .unwrap();
+        assert!(foreign_worktrees.status.success());
+        assert!(
+            String::from_utf8_lossy(&foreign_worktrees.stdout)
+                .lines()
+                .any(|line| line == format!("worktree {}", workspace_path.display())),
+            "recovery must not delete a foreign registered worktree"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn target_path_drift_blocks_recovery_before_root_marker_or_lock_recreation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let validated = validate_intake(
+            &intake(&repo, &rev, "rec-target-path-drift-1"),
+            "local",
+            "default",
+        )
+        .unwrap();
+
+        let wrapper_dir = dir.path().join("git-wrapper");
+        std::fs::create_dir_all(&wrapper_dir).unwrap();
+        let real_git = git_binary_from_path();
+        let shell_quote = |path: &std::path::Path| {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
+        };
+        let wrapper = wrapper_dir.join("git");
+        std::fs::write(
+            &wrapper,
+            format!(
+                r#"#!/bin/sh
+previous=''
+for arg in "$@"; do
+  if [ "$previous" = "worktree" ] && [ "$arg" = "add" ]; then
+    exit 99
+  fi
+  previous="$arg"
+done
+exec {git} "$@"
+"#,
+                git = shell_quote(&real_git),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let old_path = std::env::var_os("PATH").expect("PATH must be set for git fixtures");
+        let mut path_entries = vec![wrapper_dir];
+        path_entries.extend(std::env::split_paths(&old_path));
+        let admission_error = {
+            let _env = ScopedEnv::set(vec![("PATH", std::env::join_paths(path_entries).unwrap())]);
+            store
+                .admit_product_task(&validated, "tester")
+                .expect_err("failed worktree add must retain a preparation receipt")
+        };
+        assert!(
+            admission_error
+                .starts_with("product task workspace preparation requires reconciliation"),
+            "{admission_error}"
+        );
+
+        let task = store
+            .get_product_task_by_idempotency("local", "default", "rec-target-path-drift-1")
+            .unwrap()
+            .expect("preparing task");
+        let task_id = task["task_id"].as_str().unwrap().to_string();
+        let workspace_root = std::path::PathBuf::from(
+            std::env::var("ACP_PRODUCT_WORKSPACE_ROOT").expect("workspace root"),
+        );
+        let marker_path = workspace_root.join(format!(".pt-{task_id}.prepare.marker"));
+        assert!(workspace_root.is_dir());
+        assert!(marker_path.is_file());
+
+        // The original target was valid when the receipt was published. After
+        // a restart its configured path drifts to the parent of that pinned
+        // workspace root. Remove the old root so any new root/marker/lock is
+        // attributable to the recovery under test.
+        let drifted_target = workspace_root.parent().unwrap().to_path_buf();
+        std::fs::remove_dir_all(&workspace_root).unwrap();
+        assert!(!workspace_root.exists());
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute(
+                "UPDATE product_tasks SET target_repo_path=?1 WHERE task_id=?2",
+                rusqlite::params![drifted_target.to_string_lossy(), &task_id],
+            )
+            .unwrap();
+        drop(connection);
+
+        let recovery_error = store
+            .recover_product_task_workspace(&task_id, "recovery")
+            .expect_err("target/root overlap must require reconciliation before effects");
+        assert!(
+            recovery_error
+                .starts_with("product task workspace preparation requires reconciliation"),
+            "{recovery_error}"
+        );
+        assert!(
+            recovery_error.contains("pinned workspace root overlaps current target repository"),
+            "{recovery_error}"
+        );
+        assert!(
+            !workspace_root.exists(),
+            "recovery must not recreate a workspace root inside the drifted target"
+        );
+        assert!(
+            !marker_path.exists(),
+            "recovery must not recreate the receipt marker after target drift"
+        );
+        assert_eq!(
+            store.get_product_task(&task_id).unwrap().unwrap()["status"],
+            ProductTaskStatus::WorkspacePreparing.as_str()
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
 fn unproven_worktree_compensation_requires_reconciliation() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1545,6 +1805,269 @@ fn restart_retires_a_crash_left_preparation_receipt_after_workspace_binding() {
             !marker_path.exists(),
             "receipt retirement must remove only the exact durable marker"
         );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn compensation_cleans_exact_workspace_beyond_global_listing_limit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task_id = admit(&store, &repo, &rev, "rec-compensation-exact-run-lookup-1");
+        let provisional = engine::product_golden_path::provisional_run_id_for_task(&task_id);
+        let original_workspace = store
+            .get_supervised_patch_workspace_for_run(&provisional)
+            .unwrap()
+            .expect("bound task workspace record");
+        let original_workspace_id = original_workspace["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Simulate a crash after a physical workspace binding but before
+        // receipt retirement. Force the resumed prepare to fail before it can
+        // create a second record, so compensation must find this original
+        // provisional-run record exactly.
+        let workspace_root = std::fs::canonicalize(
+            std::env::var_os("ACP_PRODUCT_WORKSPACE_ROOT").expect("workspace root"),
+        )
+        .unwrap();
+        let workspace_path = workspace_root.join(format!("pt-{task_id}"));
+        let marker_sha256 = "b".repeat(64);
+        let marker_state = "marker_ready";
+        let receipt_sha256 = workspace_preparation_receipt_sha256(
+            &task_id,
+            &workspace_root,
+            &workspace_path,
+            &marker_sha256,
+            marker_state,
+        );
+        let marker_path = workspace_root.join(format!(".pt-{task_id}.prepare.marker"));
+        std::fs::write(&marker_path, format!("{marker_sha256}\n")).unwrap();
+        std::fs::set_permissions(&marker_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO product_task_workspace_preparations (
+                    task_id, workspace_root, workspace_path, marker_sha256, marker_state,
+                    receipt_sha256, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                rusqlite::params![
+                    &task_id,
+                    workspace_root.to_string_lossy(),
+                    workspace_path.to_string_lossy(),
+                    &marker_sha256,
+                    marker_state,
+                    &receipt_sha256,
+                    "2026-07-28T00:00:00Z",
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE product_tasks
+                 SET status='workspace_preparing', version=version+1, source_tree_hash=?1
+                 WHERE task_id=?2",
+                rusqlite::params!["f".repeat(64), &task_id],
+            )
+            .unwrap();
+        drop(connection);
+
+        // These rows sort ahead of the original ProductTask workspace. A
+        // global `LIMIT 50` scan would miss it; exact run lookup must not.
+        let unrelated_root = dir.path().join("unrelated-workspaces");
+        for sequence in 0..51 {
+            let unrelated_path = unrelated_root.join(format!("workspace-{sequence:02}"));
+            store
+                .record_supervised_patch_workspace(
+                    &serde_json::json!({
+                        "run_id": format!("unrelated-run-{sequence:02}"),
+                        "target_id": format!("unrelated-target-{sequence:02}"),
+                        "target_repo_path": repo.to_string_lossy(),
+                        "workspace_path": unrelated_path.to_string_lossy(),
+                        "source_revision": rev,
+                        "status": "requested",
+                    }),
+                    "fixture",
+                )
+                .unwrap();
+        }
+        assert!(
+            store
+                .supervised_patch_workspaces(50)
+                .unwrap()
+                .iter()
+                .all(|workspace| workspace["run_id"] != provisional),
+            "the original workspace must be outside the old global-listing window"
+        );
+
+        let error = store
+            .recover_product_task_workspace(&task_id, "recovery")
+            .expect_err("mismatched source tree must enter compensation");
+        assert!(error.contains("source_tree_hash mismatch against prepared workspace"));
+        assert_eq!(
+            store.get_product_task(&task_id).unwrap().unwrap()["status"],
+            ProductTaskStatus::Failed.as_str()
+        );
+        assert_eq!(
+            store
+                .get_supervised_patch_workspace(&original_workspace_id)
+                .unwrap()
+                .unwrap()["status"],
+            "cleaned",
+            "exact provisional-run lookup must clean the original workspace record"
+        );
+        assert!(
+            !workspace_path.exists(),
+            "compensation must prove the receipt worktree path is absent"
+        );
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        let receipt_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM product_task_workspace_preparations WHERE task_id=?1",
+                [&task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipt_count, 0);
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn compensation_refuses_ambiguous_duplicate_provisional_workspace_records() {
+    use std::os::unix::fs::PermissionsExt;
+
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task_id = admit(&store, &repo, &rev, "rec-compensation-duplicate-run-1");
+        let provisional = engine::product_golden_path::provisional_run_id_for_task(&task_id);
+        let original_workspace = store
+            .get_supervised_patch_workspace_for_run(&provisional)
+            .unwrap()
+            .expect("bound task workspace record");
+        let original_workspace_id = original_workspace["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let workspace_root = std::fs::canonicalize(
+            std::env::var_os("ACP_PRODUCT_WORKSPACE_ROOT").expect("workspace root"),
+        )
+        .unwrap();
+        let workspace_path = workspace_root.join(format!("pt-{task_id}"));
+        let marker_sha256 = "c".repeat(64);
+        let marker_state = "marker_ready";
+        let receipt_sha256 = workspace_preparation_receipt_sha256(
+            &task_id,
+            &workspace_root,
+            &workspace_path,
+            &marker_sha256,
+            marker_state,
+        );
+        let marker_path = workspace_root.join(format!(".pt-{task_id}.prepare.marker"));
+        std::fs::write(&marker_path, format!("{marker_sha256}\n")).unwrap();
+        std::fs::set_permissions(&marker_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO product_task_workspace_preparations (
+                    task_id, workspace_root, workspace_path, marker_sha256, marker_state,
+                    receipt_sha256, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                rusqlite::params![
+                    &task_id,
+                    workspace_root.to_string_lossy(),
+                    workspace_path.to_string_lossy(),
+                    &marker_sha256,
+                    marker_state,
+                    &receipt_sha256,
+                    "2026-07-28T00:00:00Z",
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE product_tasks
+                 SET status='workspace_preparing', version=version+1, source_tree_hash=?1
+                 WHERE task_id=?2",
+                rusqlite::params!["e".repeat(64), &task_id],
+            )
+            .unwrap();
+        drop(connection);
+
+        let duplicate = store
+            .record_supervised_patch_workspace(
+                &serde_json::json!({
+                    "run_id": provisional,
+                    "target_id": "duplicate-target",
+                    "target_repo_path": repo.to_string_lossy(),
+                    "workspace_path": workspace_path.to_string_lossy(),
+                    "source_revision": rev,
+                    "workspace_mode": "git_worktree",
+                    "git": {
+                        "default_branch": "main",
+                        "source_revision": rev,
+                    },
+                    "status": "workspace_created",
+                }),
+                "fixture",
+            )
+            .unwrap();
+        assert_ne!(duplicate["workspace_id"], original_workspace_id);
+        assert_eq!(
+            store
+                .supervised_patch_workspaces(10)
+                .unwrap()
+                .into_iter()
+                .filter(|workspace| workspace["run_id"] == provisional)
+                .count(),
+            2
+        );
+
+        let recovery_error = store
+            .recover_product_task_workspace(&task_id, "recovery")
+            .expect_err("ambiguous provisional workspace records must block compensation");
+        assert!(
+            recovery_error
+                .starts_with("product task workspace preparation requires reconciliation"),
+            "{recovery_error}"
+        );
+        assert!(
+            recovery_error.contains("multiple supervised workspaces match the provisional run"),
+            "{recovery_error}"
+        );
+        assert_eq!(
+            store.get_product_task(&task_id).unwrap().unwrap()["status"],
+            ProductTaskStatus::WorkspacePreparing.as_str()
+        );
+        assert!(
+            workspace_path.is_dir(),
+            "ambiguous metadata must not trigger destructive worktree cleanup"
+        );
+        assert_ne!(
+            store
+                .get_supervised_patch_workspace(&original_workspace_id)
+                .unwrap()
+                .unwrap()["status"],
+            "cleaned"
+        );
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        let receipt_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM product_task_workspace_preparations WHERE task_id=?1",
+                [&task_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipt_count, 1);
     });
 }
 
@@ -2551,7 +3074,18 @@ fn postgres_workspace_transition_audit_failure_keeps_task_admitted() {
             Some(ProductTaskStatus::Admitted.as_str()),
             "task transition and transition audit must commit atomically"
         );
-        assert!(store.supervised_patch_workspaces(10).unwrap().is_empty());
+        let task_id = persisted["task_id"]
+            .as_str()
+            .expect("admission reservation task id")
+            .to_string();
+        let provisional = engine::product_golden_path::provisional_run_id_for_task(&task_id);
+        assert!(
+            store
+                .get_supervised_patch_workspace_for_run(&provisional)
+                .unwrap()
+                .is_none(),
+            "a failed admitted-to-preparing transition must not leave a workspace for its task"
+        );
     });
 }
 
