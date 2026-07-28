@@ -1,0 +1,78 @@
+name: pr-fast-checks
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, converted_to_draft]
+
+concurrency:
+  group: pr-fast-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+jobs:
+  fast-pr-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact requested head
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_SHA}" ]; then
+            echo "EXPECTED_SHA is empty; refusing fast feedback without an exact head"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "${actual}" != "${EXPECTED_SHA}" ]; then
+            echo "HEAD ${actual} does not match EXPECTED_SHA ${EXPECTED_SHA}"
+            exit 1
+          fi
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: |
+            **/uv.lock
+            **/pyproject.toml
+      - name: Classify bounded Draft feedback
+        run: |
+          set -euo pipefail
+          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+          git diff --name-only "${BASE_SHA}" "${EXPECTED_SHA}" > changed-files.txt
+          args=(--draft)
+          while IFS= read -r path; do
+            [ -n "${path}" ] && args+=(--path "${path}")
+          done < changed-files.txt
+          python3 scripts/ci/classify_change_impact.py "${args[@]}" > impact.json
+          python3 - <<'PY'
+          import json
+          data = json.load(open("impact.json", encoding="utf-8"))
+          if data["mode"] != "fast_draft" or not data["fast_only"]:
+              raise SystemExit("fast workflow did not produce the bounded Draft lane")
+          print(json.dumps(data, sort_keys=True))
+          PY
+      - name: Run fast governance checks
+        run: |
+          set -euo pipefail
+          bash scripts/check_github_action_pins.sh
+          uv run --no-project python tools/check_security_baseline.py
+          uv run --no-project python scripts/check_agent_handoff.py
+          uv run --no-project python -m unittest tools.test_classify_change_impact
+          uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
+          git diff --check "${BASE_SHA}" "${EXPECTED_SHA}"
+      - name: Report non-canonical lane
+        run: |
+          echo "Fast PR feedback passed for ${EXPECTED_SHA}."
+          echo "This workflow is not canonical merge evidence. Mark the PR Ready for review to trigger the complete tests workflow."
