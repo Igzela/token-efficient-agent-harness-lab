@@ -1,0 +1,108 @@
+name: apply-context-capsule-repair
+
+on:
+  push:
+    branches: [agent/context-capsule-push-repair-1]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-context-capsule-repair
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: agent/context-capsule-push-repair-1
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.11"
+      - name: Apply bounded repair
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/tests.yml')
+          source = workflow.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  "      GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}\n",
+                  "      GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}\n"
+                  "      NEEDS_CONTEXT_PATH: ${{ runner.temp }}/needs-context.json\n"
+                  "      CAPSULE_DIR: ${{ runner.temp }}/context-capsule\n",
+              ),
+              (
+                  '              open("needs-context.json", "w", encoding="utf-8"),',
+                  '              open(os.environ["NEEDS_CONTEXT_PATH"], "w", encoding="utf-8"),',
+              ),
+              ('          mkdir -p context-capsule\n', '          mkdir -p "${CAPSULE_DIR}"\n'),
+              (
+                  '            --checks-json "$(cat needs-context.json)"\n'
+                  '            --event-name "${GITHUB_EVENT_NAME}"\n'
+                  '            --expected-head-sha "${EXPECTED_SHA}"\n',
+                  '            --checks-json "$(cat "${NEEDS_CONTEXT_PATH}")"\n'
+                  '            --event-name "${GITHUB_EVENT_NAME}"\n',
+              ),
+              (
+                  '              --pr-number "${GITHUB_PR_NUMBER}"\n'
+                  '              --exact-head-proof trusted-exact-head-proof.json\n',
+                  '              --pr-number "${GITHUB_PR_NUMBER}"\n'
+                  '              --expected-head-sha "${EXPECTED_SHA}"\n'
+                  '              --exact-head-proof trusted-exact-head-proof.json\n',
+              ),
+              ('            > context-capsule/context-capsule.json\n', '            > "${CAPSULE_DIR}/context-capsule.json"\n'),
+              (
+                  '            --capsule-json context-capsule/context-capsule.json \\\n'
+                  '            > context-capsule/context-capsule.md\n',
+                  '            --capsule-json "${CAPSULE_DIR}/context-capsule.json" \\\n'
+                  '            > "${CAPSULE_DIR}/context-capsule.md"\n',
+              ),
+              (
+                  '          head -c 100000 context-capsule/context-capsule.md >> "$GITHUB_STEP_SUMMARY"\n',
+                  '          head -c 100000 "${CAPSULE_DIR}/context-capsule.md" >> "$GITHUB_STEP_SUMMARY"\n',
+              ),
+              ('          path: context-capsule/\n', '          path: ${{ runner.temp }}/context-capsule/\n'),
+              (
+                  '            --capsule-json context-capsule/context-capsule.json \\\n',
+                  '            --capsule-json "${CAPSULE_DIR}/context-capsule.json" \\\n',
+              ),
+          ]
+          for old, new in replacements:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one workflow match, got {count}: {old!r}')
+              source = source.replace(old, new, 1)
+          workflow.write_text(source, encoding='utf-8')
+
+          test_path = Path('tools/test_ci_workflow_optimization.py')
+          tests = test_path.read_text(encoding='utf-8')
+          marker = '    def test_canonical_identity_and_context_capsule_are_unchanged(self) -> None:\n'
+          if tests.count(marker) != 1:
+              raise SystemExit('test insertion marker changed')
+          addition = '''    def test_context_capsule_push_is_not_treated_as_a_pr_head(self) -> None:\n        capsule = self.job_source("context-capsule")\n        self.assertIn("NEEDS_CONTEXT_PATH: ${{ runner.temp }}/needs-context.json", capsule)\n        self.assertIn("CAPSULE_DIR: ${{ runner.temp }}/context-capsule", capsule)\n        self.assertEqual(capsule.count('--expected-head-sha "${EXPECTED_SHA}"'), 1)\n        self.assertGreater(\n            capsule.index('--expected-head-sha "${EXPECTED_SHA}"'),\n            capsule.index('if [ -n "${GITHUB_PR_NUMBER}" ]'),\n        )\n        self.assertIn('open(os.environ["NEEDS_CONTEXT_PATH"]', capsule)\n        self.assertIn('mkdir -p "${CAPSULE_DIR}"', capsule)\n        self.assertIn('path: ${{ runner.temp }}/context-capsule/', capsule)\n        self.assertNotIn('open("needs-context.json"', capsule)\n        self.assertNotIn('path: context-capsule/', capsule)\n\n'''
+          test_path.write_text(tests.replace(marker, addition + marker, 1), encoding='utf-8')
+          PY
+          rm .github/workflows/apply-context-capsule-repair.yml
+      - name: Validate repair
+        run: |
+          set -euo pipefail
+          uv run --no-project --with pyyaml python -m unittest tools.test_ci_workflow_optimization -v
+          uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
+          bash scripts/check_github_action_pins.sh
+          git diff --check
+          test "$(git diff --name-only | sort)" = $'.github/workflows/apply-context-capsule-repair.yml\n.github/workflows/tests.yml\ntools/test_ci_workflow_optimization.py'
+      - name: Commit bounded repair
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/apply-context-capsule-repair.yml .github/workflows/tests.yml tools/test_ci_workflow_optimization.py
+          git commit -m "ci: repair push context capsule validation"
+          git push origin HEAD:agent/context-capsule-push-repair-1
