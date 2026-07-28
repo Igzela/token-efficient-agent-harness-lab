@@ -63,8 +63,37 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         self.assertEqual(self.source.count('version: "v0.15.0"'), 4)
         self.assertEqual(self.source.count('SCCACHE_GHA_ENABLED: "true"'), 4)
         self.assertEqual(self.source.count("RUSTC_WRAPPER: sccache"), 4)
+        self.assertEqual(self.source.count("disable_annotations: true"), 4)
+        self.assertEqual(self.source.count("continue-on-error: true"), 4)
+        self.assertEqual(self.source.count('${SCCACHE_PATH}'), 4)
         self.assertNotIn("Cache Rust target for rust-tests", self.source)
         self.assertNotIn("rust-target-2026-07-10", self.source)
+
+    def test_expensive_steps_are_guarded_and_postgres_is_conditional(self) -> None:
+        cheap = {
+            "Check out repository",
+            "Verify exact requested head",
+            "Report documentation-only lane",
+        }
+        for name in (
+            "rust-tests",
+            "pg-integration-tests",
+            "typescript-tests",
+            "native-runtime",
+            "rust-typescript-cutover",
+            "docker-build",
+        ):
+            with self.subTest(job=name):
+                for step in self.parsed["jobs"][name]["steps"]:
+                    if step.get("name") in cheap:
+                        continue
+                    condition = str(step.get("if", ""))
+                    self.assertIn("docs_only != 'true'", condition, step.get("name"))
+        pg = self.job_source("pg-integration-tests")
+        self.assertNotIn("services:", pg)
+        self.assertIn("name: Start PostgreSQL service", pg)
+        self.assertIn("name: Stop PostgreSQL service", pg)
+        self.assertIn("docker run --detach", pg)
 
     def test_canonical_identity_and_context_capsule_are_unchanged(self) -> None:
         self.assertIn("name: tests", self.source)

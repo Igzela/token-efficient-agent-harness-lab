@@ -243,6 +243,7 @@ jobs:
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: "v0.15.0"
+          disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -270,30 +271,18 @@ jobs:
         run: cargo install cargo-audit --version 0.22.2 --locked && cargo audit --deny warnings
       - name: Report sccache statistics
         if: needs.classify-change-impact.outputs.docs_only != 'true'
-        run: sccache --show-stats
+        continue-on-error: true
+        run: '"${SCCACHE_PATH}" --show-stats'
 
   pg-integration-tests:
     needs: classify-change-impact
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: testuser
-          POSTGRES_PASSWORD: testpass
-          POSTGRES_DB: testdb
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U testuser"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=5
     env:
       ACP_TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/testdb
       CARGO_INCREMENTAL: "0"
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
+      PG_CONTAINER: ci-postgres-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -315,6 +304,24 @@ jobs:
       - name: Report documentation-only lane
         if: needs.classify-change-impact.outputs.docs_only == 'true'
         run: echo "pg-integration-tests not applicable to a trusted documentation-only diff"
+      - name: Start PostgreSQL service
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          docker run --detach --name "${PG_CONTAINER}" \
+            --env POSTGRES_USER=testuser \
+            --env POSTGRES_PASSWORD=testpass \
+            --env POSTGRES_DB=testdb \
+            --publish 5432:5432 \
+            postgres:16
+          for attempt in $(seq 1 30); do
+            if docker exec "${PG_CONTAINER}" pg_isready -U testuser; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "${PG_CONTAINER}"
+          exit 1
       - name: Install bubblewrap for Codex mediation isolation probes
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: |
@@ -330,6 +337,7 @@ jobs:
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: "v0.15.0"
+          disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -351,7 +359,11 @@ jobs:
         run: PYTHONPATH=. python3 tools/run_fault_drills.py --suite storage --seed 0 --worker 0 --require-supported --output /tmp/acp-pe6-storage.json --format human
       - name: Report sccache statistics
         if: needs.classify-change-impact.outputs.docs_only != 'true'
-        run: sccache --show-stats
+        continue-on-error: true
+        run: '"${SCCACHE_PATH}" --show-stats'
+      - name: Stop PostgreSQL service
+        if: always() && needs.classify-change-impact.outputs.docs_only != 'true'
+        run: docker rm --force "${PG_CONTAINER}" || true
 
   typescript-tests:
     needs: classify-change-impact
@@ -446,6 +458,7 @@ jobs:
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: "v0.15.0"
+          disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -511,7 +524,8 @@ jobs:
         run: bash scripts/smoke_adaptive_stub_completion.sh
       - name: Report sccache statistics
         if: needs.classify-change-impact.outputs.docs_only != 'true'
-        run: sccache --show-stats
+        continue-on-error: true
+        run: '"${SCCACHE_PATH}" --show-stats'
 
   rust-typescript-cutover:
     needs: classify-change-impact
@@ -556,6 +570,7 @@ jobs:
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: "v0.15.0"
+          disable_annotations: true
       - name: Cache Cargo registry and Git dependencies
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -594,7 +609,8 @@ jobs:
         run: bash scripts/verify_rust_typescript_stack.sh
       - name: Report sccache statistics
         if: needs.classify-change-impact.outputs.docs_only != 'true'
-        run: sccache --show-stats
+        continue-on-error: true
+        run: '"${SCCACHE_PATH}" --show-stats'
 
   docker-build:
     needs: classify-change-impact
