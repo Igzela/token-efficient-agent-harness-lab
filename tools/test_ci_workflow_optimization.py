@@ -95,6 +95,21 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         self.assertIn("name: Stop PostgreSQL service", pg)
         self.assertIn("docker run --detach", pg)
 
+    def test_context_capsule_push_is_not_treated_as_a_pr_head(self) -> None:
+        capsule = self.job_source("context-capsule")
+        self.assertIn("NEEDS_CONTEXT_PATH: ${{ runner.temp }}/needs-context.json", capsule)
+        self.assertIn("CAPSULE_DIR: ${{ runner.temp }}/context-capsule", capsule)
+        self.assertEqual(capsule.count('--expected-head-sha "${EXPECTED_SHA}"'), 1)
+        self.assertGreater(
+            capsule.index('--expected-head-sha "${EXPECTED_SHA}"'),
+            capsule.index('if [ -n "${GITHUB_PR_NUMBER}" ]'),
+        )
+        self.assertIn('open(os.environ["NEEDS_CONTEXT_PATH"]', capsule)
+        self.assertIn('mkdir -p "${CAPSULE_DIR}"', capsule)
+        self.assertIn('path: ${{ runner.temp }}/context-capsule/', capsule)
+        self.assertNotIn('open("needs-context.json"', capsule)
+        self.assertNotIn('path: context-capsule/', capsule)
+
     def test_canonical_identity_and_context_capsule_are_unchanged(self) -> None:
         self.assertIn("name: tests", self.source)
         self.assertIn("types: [ready_for_review]", self.source)
