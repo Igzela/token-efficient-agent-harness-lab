@@ -105,6 +105,11 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         self.assertEqual(capsule.count("working-directory: ${{ runner.temp }}"), 4)
         self.assertIn('open("needs-context.json"', capsule)
         self.assertIn('--capsule-json context-capsule/context-capsule.json', capsule)
+        self.assertIn(
+            'cp "${GITHUB_WORKSPACE}/trusted-exact-head-proof.json" trusted-exact-head-proof.json',
+            capsule,
+        )
+        self.assertIn('--exact-head-proof trusted-exact-head-proof.json', capsule)
         self.assertIn('python "${GITHUB_WORKSPACE}/scripts/project_context.py"', capsule)
         self.assertIn('path: ${{ runner.temp }}/context-capsule/', capsule)
         self.assertNotIn("NEEDS_CONTEXT_PATH:", capsule)
