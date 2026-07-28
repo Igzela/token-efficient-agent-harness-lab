@@ -2164,6 +2164,17 @@ impl LocalProductStore {
         })
     }
 
+    /// Read-only validation used by the runtime owner-derived preflight. It
+    /// proves that the exact store-issued lease still owns the consumed spend
+    /// immediately before a child could be spawned; it creates no new lease,
+    /// does not change spend state, and does not grant any output authority.
+    pub(crate) fn validate_managed_codex_preflight_lease(
+        &self,
+        lease: &ManagedCodexSpawnLease,
+    ) -> Result<(), String> {
+        self.assert_managed_codex_spawn_lease_current(lease)
+    }
+
     /// Revalidate the current store owners and the actual launcher/gateway/
     /// journal attestation immediately before the child `Command::spawn`.
     pub fn confirm_managed_codex_spawn_before_child(

@@ -146,6 +146,12 @@ Residual risks remain explicit:
 
 A bounded live trial under partial mediation requires an explicit authority decision and must not be described as full admission.
 
+### Pre-child owner-derived preflight
+
+The sole store-issued managed-Codex spawn lease atomically consumes its one-use spend before a gateway can start. After that consumption but before any child spawn, the runtime re-reads the current lease/spend/decision/risk/ProductTask owners, derives the actual launcher/gateway/journal attestation, and runs the lease-bound owner-derived preflight. It is an additional fail-closed admission check, not a second budget, lease, credential, evidence, or authorization owner. Preflight never executes the admitted binary outside the mediated child boundary: it compares the current re-hashed binary identity with the canonical spend and, for a runtime lease, its immutable launch facts; the final store confirmation revalidates before child spawn.
+
+The active-unconsumed-spend inspection remains provider-free and cannot create a lease, start a child, call a provider, or establish live-task authority. A `draft_pending_operator` partial-mediation report remains blocked; only a fresh store-derived `operator_accepted` decision can let its bounded residual trial pass this runtime gate, and it is never labeled full admission. A pre-child failure has no forwarded provider request; the runtime shuts down a started temporary gateway and removes its ephemeral home and parent-owned journal before terminalizing the already-consumed lease as failed. The same artifact cleanup applies when gateway startup fails after journal setup but before a gateway is returned. If cleanup cannot establish that those temporary artifacts are gone, terminal failure reports a bounded `pre-child cleanup incomplete` state rather than claiming clean removal. These mechanics do not satisfy the external Golden Path authorization gate or remove the stated mediation residuals.
+
 ## Usage and Cost Evidence
 
 `execution_usage_event.v1` is the normalized post-call evidence contract.
