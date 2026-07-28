@@ -14,7 +14,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR.
 
 - Repository: `Igzela/token-efficient-agent-harness-lab`.
 - The accepted runtime baseline is merged through PR #300 at schema v34, including provider-free RWE corpus authority, store-owned spend, managed-acceptance authority, one-use spend/attempt leases, durable transition receipts, and PostgreSQL restart repair.
-- **Open review — PR #308 proposes schema v35:** a ProductTask-owned workspace-preparation receipt for provider-free local worktree recovery. The candidate pins one planned local path before a physical effect, remains under `LocalProductStore`/ProductTask ownership, and does not grant a provider call, live task, credential, budget, scheduler, target-output, or merge authority.
+- PR #308 is merged and accepted at schema v35: a ProductTask-owned workspace-preparation receipt for provider-free local worktree recovery. It pins one planned local path before a physical effect, remains under `LocalProductStore`/ProductTask ownership, and does not grant a provider call, live task, credential, budget, scheduler, target-output, or merge authority.
 - PR #301 is merged and accepted: CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification, under `engine/src/execution_usage/`. No authority was imported.
 - Context-capsule Phase 1 is accepted through PR #302 and Phase 2 is accepted through PR #306 (squash merge `3cc38e3158d71068abf03f445657f8bce4d485e3`): `START_HERE.md` is the canonical session entry, `scripts/project_context.py` generates a fail-closed transport view, CI publishes a short-lived exact-head capsule, and repository-controlled prompts inject a fresh validated capsule. The capsule remains non-authoritative.
 - Rust `engine/` and `LocalProductStore` remain the sole authorities for workflow state, scheduling, leases, retries, budgets, approvals, evidence, output reconciliation, audit, and persistence.
@@ -34,9 +34,8 @@ These surfaces are not accepted truth and must not be merged independently when 
 | PR | Purpose | Current status |
 |---|---|---|
 | #225 | Presentation-only Dashboard work | Independent and last |
-| #308 | Provider-free v35 ProductTask worktree preparation/recovery hardening | Open review; no live Golden Path authority |
 
-PR #297 and #298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304. PR #301 and PR #306 are merged and accepted.
+PR #297 and #298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304. PR #301, PR #306, and PR #308 are merged and accepted.
 
 No live provider request, live managed acceptance, or live RWE baseline is established by these open PRs.
 
@@ -113,14 +112,14 @@ These engineering-cost dimensions are evidence for RWE replay and Level-2 decisi
 ## Active Tracks
 
 - Provider-free Golden Path authority: PR #299 merged and accepted at schema v33; PR #300 merged and accepted at schema v34.
-- **Open review — PR #308 candidate:** schema v35 uses one persisted ProductTask preparation receipt plus local synchronization only; changed roots or unproved physical outcomes require reconciliation, and the live Golden Path remains `AUTHORIZATION_REQUIRED`.
+- Product Golden Path preflight: PR #308 is merged and accepted at schema v35; one persisted ProductTask preparation receipt plus local synchronization only; changed roots or unproved physical outcomes require reconciliation, and the live Golden Path remains `AUTHORIZATION_REQUIRED`.
 - Context governance: PR #302 and PR #306 are merged; on-demand fail-closed capsule generation, exact-head workflow publication, and fresh session injection are accepted transport behavior, not authority.
 - Observation adaptation: PR #301 is merged and accepted; observation-only and restacked onto accepted main.
 - Live Golden Path is blocked at `AUTHORIZATION_REQUIRED`; live RWE, Architecture Convergence, Level-2, and Meta remain blocked by their named prerequisites.
 
 ## Open Work Coordination
 
-PRs #297/#298 are closed without merge as superseded by merged PR #299. PR #300, PR #301, and PR #306 are merged and accepted. PR #301 is observation-only and did not introduce a second budget, proxy, credential, store, or authorization owner; PR #306 is non-authoritative context transport only. The sole next route is the live Golden Path external authorization gate, and no live task may begin without its exact manifest. PR #225 remains presentation-only and last.
+PRs #297/#298 are closed without merge as superseded by merged PR #299. PR #300, PR #301, PR #306, and PR #308 are merged and accepted. PR #301 is observation-only and did not introduce a second budget, proxy, credential, store, or authorization owner; PR #306 is non-authoritative context transport only; PR #308 is provider-free workspace-preparation and recovery hardening only. The sole next route is the live Golden Path external authorization gate, and no live task may begin without its exact manifest. PR #225 remains presentation-only and last.
 
 All active branches must refresh this main documentation convergence before final merge and must not overwrite it with stale branch-local status text.
 
