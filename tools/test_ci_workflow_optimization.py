@@ -97,15 +97,16 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
 
     def test_context_capsule_push_is_not_treated_as_a_pr_head(self) -> None:
         capsule = self.job_source("context-capsule")
-        self.assertIn("NEEDS_CONTEXT_PATH: ${{ runner.temp }}/needs-context.json", capsule)
-        self.assertIn("CAPSULE_DIR: ${{ runner.temp }}/context-capsule", capsule)
+        self.assertNotIn("NEEDS_CONTEXT_PATH:", capsule)
+        self.assertNotIn("CAPSULE_DIR:", capsule)
         self.assertEqual(capsule.count('--expected-head-sha "${EXPECTED_SHA}"'), 1)
         self.assertGreater(
             capsule.index('--expected-head-sha "${EXPECTED_SHA}"'),
             capsule.index('if [ -n "${GITHUB_PR_NUMBER}" ]'),
         )
-        self.assertIn('open(os.environ["NEEDS_CONTEXT_PATH"]', capsule)
-        self.assertIn('mkdir -p "${CAPSULE_DIR}"', capsule)
+        self.assertIn('Path(os.environ["RUNNER_TEMP"]) / "needs-context.json"', capsule)
+        self.assertIn('needs_context_path="${RUNNER_TEMP}/needs-context.json"', capsule)
+        self.assertIn('capsule_dir="${RUNNER_TEMP}/context-capsule"', capsule)
         self.assertIn('path: ${{ runner.temp }}/context-capsule/', capsule)
         self.assertNotIn('open("needs-context.json"', capsule)
         self.assertNotIn('path: context-capsule/', capsule)
