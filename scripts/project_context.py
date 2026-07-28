@@ -388,7 +388,7 @@ def _build_review_observation(
     explicit_blocking = [
         comment
         for comment in comments
-        if "BLOCKING" in str(comment.get("body") or "")
+        if "BLOCKING" in str(comment.get("body") or "").upper()
     ]
     if explicit_blocking:
         observation["unresolved_objections_state"] = "explicit_blocking_comments_present"
@@ -479,12 +479,12 @@ def source_required_check_matrix(
     matrix: list[dict[str, Any]] = []
     for required in REQUIRED_CI_CHECKS:
         raw_names = raw_by_canonical.get(required) or []
-        if required in successful:
-            conclusion = "success"
-        elif required in failed:
+        if required in failed:
             conclusion = "failed"
         elif required in pending:
             conclusion = "pending"
+        elif required in successful:
+            conclusion = "success"
         elif raw_names:
             conclusion = "pending"
         else:
@@ -532,14 +532,84 @@ def parse_checks_json(raw: str) -> list[dict[str, Any]]:
     return checks
 
 
-def is_matrix_successful(matrix: list[dict[str, Any]]) -> bool:
-    """True only when every required check is success or not_applicable."""
-    return all(item.get("conclusion") in {"success", "not_applicable"} for item in matrix)
+def is_matrix_successful(
+    matrix: list[dict[str, Any]], *, event_name: str | None = None
+) -> bool:
+    """True only for one complete, successful entry per required check."""
+    if not isinstance(matrix, list) or len(matrix) != len(REQUIRED_CI_CHECKS):
+        return False
+    observed_required: set[str] = set()
+    for item in matrix:
+        if not isinstance(item, dict):
+            return False
+        required = item.get("logical_name")
+        conclusion = item.get("conclusion")
+        raw_names = item.get("raw_names")
+        if (
+            required not in REQUIRED_CI_CHECKS
+            or required in observed_required
+            or not isinstance(raw_names, list)
+            or conclusion not in {"success", "not_applicable"}
+            or (
+                conclusion == "success"
+                and (item.get("observed") is not True or not raw_names)
+            )
+            or (
+                conclusion == "not_applicable"
+                and (
+                    required != "exact-head-check"
+                    or event_name not in {"push", "workflow_dispatch"}
+                    or item.get("observed") is not False
+                    or raw_names
+                )
+            )
+        ):
+            return False
+        observed_required.add(required)
+    return observed_required == set(REQUIRED_CI_CHECKS)
+
+
+def has_valid_success_binding(capsule: dict[str, Any]) -> bool:
+    """Validate the minimal generated-capsule shape before accepting success."""
+    if not isinstance(capsule, dict) or capsule.get("schema_version") != "project_context.v1":
+        return False
+    binding = capsule.get("binding")
+    if not isinstance(binding, dict):
+        return False
+    run_identity = binding.get("workflow_run_identity")
+    if (
+        not isinstance(run_identity, dict)
+        or run_identity.get("availability") != "confirmed"
+    ):
+        return False
+    bound_event = run_identity.get("event_name")
+    live_event = os.environ.get("GITHUB_EVENT_NAME")
+    if live_event and bound_event != live_event:
+        return False
+    event_name = live_event or bound_event
+    if event_name not in {"push", "pull_request", "workflow_dispatch"}:
+        return False
+    matrix = binding.get("source_required_check_matrix")
+    if not is_matrix_successful(matrix, event_name=event_name):
+        return False
+    if event_name == "pull_request":
+        requested = binding.get("requested_pr_exact_head")
+        if (
+            not isinstance(requested, dict)
+            or not isinstance(requested.get("number"), int)
+            or not isinstance(requested.get("head_sha"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", requested["head_sha"])
+        ):
+            return False
+        return is_requested_head_matched(capsule)
+    return True
 
 
 def is_requested_head_matched(capsule: dict[str, Any]) -> bool:
     """Require a requested exact head to match a confirmed PR observation."""
     binding = capsule.get("binding") or {}
+    if not isinstance(binding, dict):
+        return False
     expected_head = (binding.get("requested_pr_exact_head") or {}).get("head_sha")
     if not expected_head:
         return True
@@ -816,13 +886,7 @@ def build_capsule(
         active_pr["ci"] = ci_summary
     elif provided_checks:
         ci_summary = summarize_checks(provided_checks)
-        if active_pr is None:
-            active_pr = {
-                "number": None,
-                "availability": "unavailable",
-                "ci": ci_summary,
-            }
-        else:
+        if active_pr:
             active_pr["ci"] = ci_summary
     else:
         ci_summary = {
@@ -836,6 +900,19 @@ def build_capsule(
     run_identity = workflow_run_identity()
     session = session_binding()
 
+    review_observation = (
+        active_pr.get("review_observation")
+        if isinstance(active_pr, dict)
+        and isinstance(active_pr.get("review_observation"), dict)
+        else {
+            "observed_head_sha": None,
+            "observation_time": None,
+            "aggregate_review_state": None,
+            "exact_head_review_state": "unavailable",
+            "unresolved_objections_state": "unavailable",
+            "unavailable_reason": "no_active_pr_review_observation",
+        }
+    )
     binding = {
         "accepted_baseline": baseline,
         "canonical_document_source": {
@@ -858,23 +935,10 @@ def build_capsule(
         "checked_out_sha": checkout.get("head_sha"),
         "workflow_run_identity": run_identity,
         "source_required_check_matrix": matrix,
-        "review_observation": (
-            active_pr.get("review_observation")
-            if active_pr
-            else {
-                "observed_head_sha": None,
-                "observation_time": None,
-                "aggregate_review_state": None,
-                "exact_head_review_state": "unavailable",
-                "unresolved_objections_state": "unavailable",
-                "unavailable_reason": "no_active_pr",
-            }
-        ),
-        "unresolved_objection_observation": (
-            active_pr.get("review_observation", {}).get("unresolved_objections_state")
-            if active_pr
-            else "unavailable"
-        ),
+        "review_observation": review_observation,
+        "unresolved_objection_observation": review_observation[
+            "unresolved_objections_state"
+        ],
     }
 
     if documents.get("availability") == "unavailable":
@@ -1100,8 +1164,7 @@ def main() -> int:
     else:
         print(markdown(capsule), end="")
     if args.require_success:
-        matrix = capsule.get("binding", {}).get("source_required_check_matrix", [])
-        if not is_matrix_successful(matrix):
+        if not has_valid_success_binding(capsule):
             print("\nSource required-check matrix is not fully successful.", file=sys.stderr)
             return 1
         if not is_requested_head_matched(capsule):

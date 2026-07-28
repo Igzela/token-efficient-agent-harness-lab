@@ -47,6 +47,7 @@ def generate_fresh_capsule(
     required_pr_number: int | None = None,
     required_head_sha: str | None = None,
     expected_packet: str | None = None,
+    require_local_checkout: bool = False,
 ) -> str:
     """Generate and validate a fresh bounded context capsule.
 
@@ -89,20 +90,31 @@ def generate_fresh_capsule(
     pr_exact_head = (binding if isinstance(binding, dict) else {}).get("pr_exact_head")
     pr_head_sha = (pr_exact_head if isinstance(pr_exact_head, dict) else {}).get("head_sha")
     workflow_sha = os.environ.get("GITHUB_SHA")
+    workflow_bound_sha = os.environ.get("AGENT_CONTEXT_EXPECTED_HEAD_SHA")
     active_pr_number = (active_frontier if isinstance(active_frontier, dict) else {}).get("number")
     canonical_packet = (active_packet if isinstance(active_packet, dict) else {}).get("packet")
 
     if required_head_sha:
-        # Prefer authoritative PR head from GitHub API, then workflow SHA, then
-        # local checkout. Fail closed only when an authoritative value is
-        # available and disagrees.
-        authoritative_head = pr_head_sha or workflow_sha
-        if authoritative_head and authoritative_head != required_head_sha:
+        if workflow_bound_sha and workflow_bound_sha != required_head_sha:
             raise ValueError(
-                f"Authoritative head {authoritative_head} does not match required head {required_head_sha}"
+                f"Workflow-bound head {workflow_bound_sha} does not match required head {required_head_sha}"
             )
-        if (
-            not authoritative_head
+        if pr_head_sha and pr_head_sha != required_head_sha:
+            raise ValueError(
+                f"Authoritative PR head {pr_head_sha} does not match required head {required_head_sha}"
+            )
+        if require_local_checkout:
+            if checkout_sha != required_head_sha:
+                raise ValueError(
+                    f"Checked-out SHA {checkout_sha or 'unavailable'} does not match required head {required_head_sha}"
+                )
+        elif not pr_head_sha and workflow_sha and workflow_sha != required_head_sha:
+            raise ValueError(
+                f"Workflow SHA {workflow_sha} does not match required head {required_head_sha}"
+            )
+        elif (
+            not workflow_sha
+            and not pr_head_sha
             and checkout_sha
             and checkout_sha != required_head_sha
             and os.environ.get("GITHUB_RUN_ID")
@@ -341,11 +353,12 @@ def build_ci_repair_prompt(pr_number, head_sha, failed_jobs_json, logs, repair_c
 
     capsule = generate_fresh_capsule(
         # CI-repair renders PR-head code on a self-hosted worker. Keep GitHub
-        # credentials out of that renderer; the checked-out exact head and
-        # dispatch-bound GITHUB_SHA remain the fail-closed binding evidence.
+        # credentials out of that renderer and independently bind the prompt
+        # to the actual checked-out exact head.
         offline=True,
         required_pr_number=pr_number,
         required_head_sha=head_sha,
+        require_local_checkout=True,
     )
     return _prepend_capsule(
         prompt,

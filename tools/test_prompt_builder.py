@@ -53,6 +53,7 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
             offline=True,
             required_pr_number=301,
             required_head_sha="a" * 40,
+            require_local_checkout=True,
         )
         self.assertIn("## Fresh Repository Context Capsule", prompt)
         self.assertIn("CI repair for PR #301", prompt)
@@ -194,6 +195,92 @@ class PromptBuilderCapsuleTests(unittest.TestCase):
                 required_pr_number=301,
                 required_head_sha="a" * 40,
         )
+        self.assertIn("Project Context Capsule", capsule)
+
+    def test_ci_repair_prefers_checked_out_head_over_dispatch_sha(self) -> None:
+        sha = "a" * 40
+        capsule_json = json.dumps(
+            {
+                "local_checkout": {"head_sha": sha},
+                "binding": {"pr_exact_head": None},
+                "active_frontier": None,
+                "active_packet": None,
+            }
+        )
+
+        def run(command, **_kwargs):
+            output = "# Project Context Capsule\n" if "--capsule-json" in command else capsule_json
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_SHA": "b" * 40,
+                "AGENT_CONTEXT_EXPECTED_HEAD_SHA": sha,
+            },
+            clear=False,
+        ), mock.patch.object(prompt_builder.subprocess, "run", side_effect=run):
+            capsule = prompt_builder.generate_fresh_capsule(
+                offline=True,
+                required_pr_number=301,
+                required_head_sha=sha,
+                require_local_checkout=True,
+            )
+        self.assertIn("Project Context Capsule", capsule)
+
+    def test_ci_repair_rejects_mismatched_checked_out_head(self) -> None:
+        expected = "a" * 40
+        capsule_json = json.dumps(
+            {
+                "local_checkout": {"head_sha": "b" * 40},
+                "binding": {"pr_exact_head": None},
+                "active_frontier": None,
+                "active_packet": None,
+            }
+        )
+
+        def run(command, **_kwargs):
+            return subprocess.CompletedProcess(command, 0, capsule_json, "")
+
+        with mock.patch.dict(
+            os.environ,
+            {"AGENT_CONTEXT_EXPECTED_HEAD_SHA": expected},
+            clear=False,
+        ), mock.patch.object(prompt_builder.subprocess, "run", side_effect=run), self.assertRaisesRegex(
+            ValueError, "Checked-out SHA"
+        ):
+            prompt_builder.generate_fresh_capsule(
+                offline=True,
+                required_pr_number=301,
+                required_head_sha=expected,
+                require_local_checkout=True,
+            )
+
+    def test_pr_head_takes_precedence_over_workflow_merge_sha(self) -> None:
+        sha = "a" * 40
+        capsule_json = json.dumps(
+            {
+                "local_checkout": {"head_sha": sha},
+                "binding": {"pr_exact_head": {"head_sha": sha}},
+                "active_frontier": None,
+                "active_packet": None,
+            }
+        )
+
+        def run(command, **_kwargs):
+            output = "# Project Context Capsule\n" if "--capsule-json" in command else capsule_json
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        with mock.patch.dict(
+            os.environ,
+            {"GITHUB_SHA": "b" * 40},
+            clear=False,
+        ), mock.patch.object(prompt_builder.subprocess, "run", side_effect=run):
+            capsule = prompt_builder.generate_fresh_capsule(
+                required_pr_number=301,
+                required_head_sha=sha,
+            )
         self.assertIn("Project Context Capsule", capsule)
 
 

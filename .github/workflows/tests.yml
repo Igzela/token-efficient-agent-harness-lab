@@ -457,11 +457,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: write
       pull-requests: read
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
-      GITHUB_EVENT_NAME: ${{ github.event_name }}
       GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
     steps:
       - name: Check out repository
@@ -537,7 +535,7 @@ jobs:
           fi
           env -u GH_TOKEN -u GITHUB_TOKEN uv run --no-project python scripts/project_context.py \
             "${args[@]}" > context-capsule/context-capsule.json
-          uv run --no-project python scripts/project_context.py \
+          env -u GH_TOKEN -u GITHUB_TOKEN uv run --no-project python scripts/project_context.py \
             --format markdown \
             --capsule-json context-capsule/context-capsule.json > context-capsule/context-capsule.md
       - name: Publish sanitized job summary

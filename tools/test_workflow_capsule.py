@@ -55,7 +55,7 @@ class WorkflowCapsuleTests(unittest.TestCase):
         job = self.workflow["jobs"]["context-capsule"]
         perms = job.get("permissions", {})
         self.assertEqual(perms.get("contents"), "read")
-        self.assertEqual(perms.get("actions"), "write")
+        self.assertNotIn("actions", perms)
         self.assertEqual(perms.get("pull-requests"), "read")
 
     def test_context_capsule_checks_out_expected_sha(self) -> None:
@@ -129,6 +129,10 @@ class WorkflowCapsuleTests(unittest.TestCase):
         self.assertNotIn("GH_TOKEN", generate.get("env", {}))
         self.assertIn("--exact-head-proof trusted-exact-head-proof.json", generate.get("run", ""))
         self.assertIn("env -u GH_TOKEN -u GITHUB_TOKEN", generate.get("run", ""))
+        self.assertEqual(
+            generate.get("run", "").count("env -u GH_TOKEN -u GITHUB_TOKEN"),
+            2,
+        )
         self.assertIn("--capsule-json", generate.get("run", ""))
 
     def test_ci_installs_yaml_parser_for_publisher_contract_tests(self) -> None:

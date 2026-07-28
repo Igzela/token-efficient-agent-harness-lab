@@ -128,7 +128,10 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("--capsule-json context-capsule/context-capsule.json", source)
         repair = self.read("agent-ci-repair.yml")
         prompt_step = repair.split("Build repair prompt from trusted checkout and bounded evidence", 1)[1].split("Recheck control immediately before Codex repair", 1)[0]
-        self.assertIn("GITHUB_SHA: ${{ inputs.head_sha }}", prompt_step)
+        self.assertNotIn("GITHUB_SHA: ${{ inputs.head_sha }}", prompt_step)
+        self.assertIn("AGENT_CONTEXT_EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}", prompt_step)
+        self.assertIn('actual="$(git rev-parse HEAD)"', prompt_step)
+        self.assertIn('test "$actual" = "$INPUT_HEAD_SHA"', prompt_step)
         self.assertNotIn("GH_TOKEN:", prompt_step)
 
     def test_repair_dispatch_carries_run_id_not_unbounded_logs(self):
@@ -1000,7 +1003,9 @@ class TestDispatcher(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["workflow_run_id"], 456)
 
     def test_ci_repair_prompt_cli_works_from_repository_root_with_artifact(self):
-        sha = "c" * 40
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
         with tempfile.TemporaryDirectory() as temp:
             temp_path = pathlib.Path(temp)
             gh_path = temp_path / "gh"
@@ -1020,6 +1025,7 @@ class TestDispatcher(unittest.TestCase):
                 # An inherited pull-request merge SHA must not impersonate one.
                 "GITHUB_SHA": "",
                 "GITHUB_RUN_ID": "",
+                "AGENT_CONTEXT_EXPECTED_HEAD_SHA": sha,
             }
             result = subprocess.run(
                 [sys.executable, str(CONTROL / "prompt_builder.py"), "ci-repair", "207", sha, str(evidence)],

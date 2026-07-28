@@ -121,8 +121,12 @@ jobs:
         env:
           AGENT_REPAIR_COUNT: ${{ inputs.repair_count }}
           AGENT_REPO: ${{ github.repository }}
-          GITHUB_SHA: ${{ inputs.head_sha }}
+          AGENT_CONTEXT_EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
         run: |
+          set -euo pipefail
+          test "$AGENT_CONTEXT_EXPECTED_HEAD_SHA" = "$INPUT_HEAD_SHA"
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$INPUT_HEAD_SHA"
           python3 scripts/agent-control/prompt_builder.py ci-repair "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA" \
             "$RUNNER_TEMP/repair-input/repair-evidence.json" > "$RUNNER_TEMP/repair-prompt.txt"
       - name: Recheck control immediately before Codex repair
