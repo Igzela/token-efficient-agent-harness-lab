@@ -27,10 +27,12 @@ const SENSITIVE_KEYS: &[&str] = &[
     "api_key",
     "authorization_header",
     "credential",
+    "credentials",
     "prompt",
     "raw_output",
     "raw_prompt",
     "raw_response",
+    "raw_transcript",
     "secret",
     "transcript",
 ];
@@ -338,6 +340,7 @@ fn validate_non_inferiority(margins: &Map<String, Value>) -> Result<(), String> 
 }
 
 fn validate_cost_completeness(cost: &Map<String, Value>) -> Result<(), String> {
+    require_unique_strings_from_map(cost, "required_fields", false)?;
     let required = cost
         .get("required_fields")
         .and_then(Value::as_array)
@@ -452,6 +455,7 @@ fn validate_verified_delivery_comparison(
 ) -> Result<(), String> {
     let identical_protocol = required_bool_value(body, "identical_protocol")?;
     let hard_gates_passed = required_bool_value(body, "hard_gate_non_inferiority_passed")?;
+    require_bool(body, "cross_value_basis_aggregation", false)?;
     require_bool(body, "automatic_go_authorized", false)?;
     required_sha256(body, "pre_observation_set_sha256")?;
     required_sha256(body, "post_observation_set_sha256")?;
@@ -917,6 +921,7 @@ mod tests {
             "adoption_authorized": false,
             "identical_protocol": true,
             "hard_gate_non_inferiority_passed": true,
+            "cross_value_basis_aggregation": false,
             "automatic_go_authorized": false,
             "pre_observation_set_sha256": sha(),
             "post_observation_set_sha256": sha(),
@@ -939,6 +944,7 @@ mod tests {
             "adoption_authorized": false,
             "identical_protocol": true,
             "hard_gate_non_inferiority_passed": false,
+            "cross_value_basis_aggregation": false,
             "automatic_go_authorized": false,
             "pre_observation_set_sha256": sha(),
             "post_observation_set_sha256": sha(),
@@ -953,6 +959,29 @@ mod tests {
             .contains("does not match derived"));
         hard_gate_failure["evidence_sufficiency"] = json!("INTERVAL_AVAILABLE");
         freeze_vde_artifact(hard_gate_failure, &protocol).unwrap();
+
+        let mut cross_basis = json!({
+            "schema_version": VERIFIED_DELIVERY_COMPARISON_SCHEMA,
+            "protocol_sha256": protocol.body_sha256,
+            "fixture_only": false,
+            "adoption_authorized": false,
+            "identical_protocol": true,
+            "hard_gate_non_inferiority_passed": true,
+            "cross_value_basis_aggregation": true,
+            "automatic_go_authorized": false,
+            "pre_observation_set_sha256": sha(),
+            "post_observation_set_sha256": sha(),
+            "completed_repetitions_per_task": 3,
+            "interval_available": true,
+            "cost_complete": true,
+            "evidence_sufficiency": "COMPARISON_ELIGIBLE",
+            "lifecycle_cost_pareto_frontier": [{"point_id": "p1"}]
+        });
+        assert!(freeze_vde_artifact(cross_basis.clone(), &protocol)
+            .unwrap_err()
+            .contains("cross_value_basis_aggregation must be false"));
+        cross_basis["cross_value_basis_aggregation"] = json!(false);
+        freeze_vde_artifact(cross_basis, &protocol).unwrap();
     }
 
     #[test]
