@@ -39,7 +39,9 @@ jobs:
           bash scripts/check_github_action_pins.sh
           uv run --no-project python scripts/check_agent_handoff.py
           git diff --check
-          test "$(git diff --name-only | sort)" = $'.github/workflows/pr-fast-checks.yml\n.github/workflows/tests.yml\nAGENTS.md\ndocs/REAL_WORLD_TESTING_PLAYBOOK.md\ntools/test_ci_lane_contract.py'
+          actual="$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort)"
+          expected=$'.github/workflows/pr-fast-checks.yml\n.github/workflows/tests.yml\nAGENTS.md\ndocs/REAL_WORLD_TESTING_PLAYBOOK.md\ntools/test_ci_lane_contract.py'
+          test "${actual}" = "${expected}"
       - name: Package final files
         run: |
           set -euo pipefail
