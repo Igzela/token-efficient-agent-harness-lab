@@ -36,7 +36,12 @@ class PE6CloseoutAuditTests(unittest.TestCase):
             self.assertTrue(SCENARIOS_BY_ID[scenario_id].owner)
         workflow = (ROOT / ".github/workflows/tests.yml").read_text(encoding="utf-8")
         self.assertIn('python -m unittest discover -s tools -p "test_*.py"', workflow)
-        self.assertIn("cargo test -p engine --features pg-tests -- --test-threads=1", workflow)
+        self.assertIn("bash scripts/ci/run_postgres_tests.sh", workflow)
+        pg_runner = (ROOT / "scripts" / "ci" / "run_postgres_tests.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("cargo test -p engine --features pg-tests --lib", pg_runner)
+        self.assertIn("test_pe6_fault_drills", pg_runner)
 
     def test_harness_has_no_external_release_provider_or_host_authority(self) -> None:
         harness = (ROOT / "scripts/fault_drill_harness.py").read_text(encoding="utf-8")

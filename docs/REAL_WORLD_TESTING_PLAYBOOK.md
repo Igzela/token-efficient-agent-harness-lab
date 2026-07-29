@@ -33,9 +33,11 @@ The workflow concurrency keys cancel obsolete runs for the same PR or exact fall
 
 A successful `pr-fast-checks` run is never a substitute for a missing canonical `tests` run. A canonical documentation-only run is distinguishable by its trusted classification and explicit not-applicable steps; it does not claim that unrelated runtime behavior was retested.
 
-### Compiler cache boundary
+### Build cache boundary
 
 Rust source lanes use a commit-pinned `sccache` setup action, a version-pinned compiler wrapper, and the GitHub Actions cache backend. The cache is a performance optimization only. It may reuse compiler outputs only when the compiler's own cache key matches; it never replaces source checkout, exact-head verification, compilation, tests, lint, dependency audit, fault drills, or review. Cache hits, misses, statistics, and stored objects are not acceptance evidence. A cache or cache-service failure must fail the affected setup/command or fall back to real compilation; it may not convert a required command into success.
+
+The Docker source lane uses commit-pinned Buildx/Bake actions and separately scoped GitHub Actions layer caches for the engine and Dashboard images. BuildKit may reuse only content-addressed layers matching the current Dockerfile, build context, and inputs; both image targets are still built on every applicable exact head. Docker cache contents and cache-service behavior are non-authoritative and never replace a successful build.
 
 ## Model Selection
 
