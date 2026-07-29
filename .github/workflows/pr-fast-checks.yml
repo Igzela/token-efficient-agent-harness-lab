@@ -15,11 +15,19 @@ permissions:
 env:
   EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
+  PR_IS_DRAFT: ${{ github.event.pull_request.draft }}
 
 jobs:
   fast-pr-checks:
     runs-on: ubuntu-latest
     steps:
+      - name: Enforce Draft lane
+        run: |
+          set -euo pipefail
+          if [ "${PR_IS_DRAFT}" != "true" ]; then
+            echo "Changing PR heads must remain Draft. Convert this PR to Draft, publish the stabilized head, then mark it Ready once to trigger canonical tests."
+            exit 1
+          fi
       - name: Check out exact PR head
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -70,6 +78,7 @@ jobs:
           uv run --no-project python tools/check_security_baseline.py
           uv run --no-project python scripts/check_agent_handoff.py
           uv run --no-project python -m unittest tools.test_classify_change_impact
+          uv run --no-project --with pyyaml python -m unittest tools.test_ci_lane_contract
           uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
           git diff --check "${BASE_SHA}" "${EXPECTED_SHA}"
       - name: Report non-canonical lane

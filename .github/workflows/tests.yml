@@ -52,26 +52,44 @@ jobs:
           test -n "${EXPECTED_SHA}"
           test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
       - name: Check out trusted base classifier
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000' && github.event.forced != true)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.before }}
           path: trusted-base
           persist-credentials: false
       - name: Classify exact candidate diff
         id: classify
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          PUSH_FORCED: ${{ github.event.forced || false }}
         run: |
           set -euo pipefail
-          if [ "${EVENT_NAME}" != "pull_request" ]; then
+          full_mode() {
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
             echo "mode=full" >> "$GITHUB_OUTPUT"
+          }
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            full_mode
             exit 0
+          fi
+          if [ "${EVENT_NAME}" != "pull_request" ] && [ "${EVENT_NAME}" != "push" ]; then
+            full_mode
+            exit 0
+          fi
+          if [ "${EVENT_NAME}" = "push" ]; then
+            if [ "${PUSH_FORCED}" = "true" ] || [ -z "${BASE_SHA}" ] || [ "${BASE_SHA}" = "0000000000000000000000000000000000000000" ]; then
+              full_mode
+              exit 0
+            fi
           fi
           test -n "${BASE_SHA}"
           git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+          if ! git merge-base --is-ancestor "${BASE_SHA}" "${EXPECTED_SHA}"; then
+            full_mode
+            exit 0
+          fi
           git diff --name-only "${BASE_SHA}" "${EXPECTED_SHA}" > changed-files.txt
           git diff --raw --no-renames "${BASE_SHA}" "${EXPECTED_SHA}" > changed-raw.txt
           args=()
@@ -157,7 +175,7 @@ jobs:
       - name: Run CI lane classifier tests
         run: uv run --no-project python -m unittest tools.test_classify_change_impact
       - name: Run CI workflow optimization contract tests
-        run: uv run --no-project --with pyyaml python -m unittest tools.test_ci_workflow_optimization
+        run: uv run --no-project --with pyyaml python -m unittest tools.test_ci_workflow_optimization tools.test_ci_lane_contract
       - name: Parse workflow YAML
         run: uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
       - name: Check wire codegen drift
