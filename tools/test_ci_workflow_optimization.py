@@ -105,7 +105,17 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
             "cargo install cargo-audit --version 0.22.2 --locked --force",
             rust,
         )
-        self.assertIn("cargo audit --version | grep -F 'cargo-audit 0.22.2'", rust)
+        self.assertEqual(
+            rust.count(
+                "CARGO_TERM_COLOR=never cargo audit --version"
+            ),
+            2,
+        )
+        self.assertIn(
+            "CARGO_TERM_COLOR=never cargo audit --version"
+            " | grep -F 'cargo-audit 0.22.2'",
+            rust,
+        )
 
     def test_docker_build_uses_pinned_scoped_buildkit_caches(self) -> None:
         docker = self.job_source("docker-build")
