@@ -161,9 +161,7 @@ pub fn freeze_vde_artifact(
     if !VDE_ARTIFACT_SCHEMAS.contains(&schema) {
         return Err(format!("unsupported VDE artifact schema {schema}"));
     }
-    if body.get("protocol_sha256").and_then(Value::as_str)
-        != Some(protocol.body_sha256.as_str())
-    {
+    if body.get("protocol_sha256").and_then(Value::as_str) != Some(protocol.body_sha256.as_str()) {
         return Err("protocol_sha256 does not match frozen protocol".into());
     }
     require_bool(&body, "fixture_only", false)?;
@@ -216,8 +214,7 @@ fn validate_protocol_task(
     required_nonempty_str(task, "cancel_behavior").map_err(|e| format!("{prefix}: {e}"))?;
     required_nonempty_str(task, "executor_identity").map_err(|e| format!("{prefix}: {e}"))?;
     required_nonempty_str(task, "model_identity").map_err(|e| format!("{prefix}: {e}"))?;
-    required_nonempty_str(task, "expected_outcome_class")
-        .map_err(|e| format!("{prefix}: {e}"))?;
+    required_nonempty_str(task, "expected_outcome_class").map_err(|e| format!("{prefix}: {e}"))?;
     require_bool(task, "draft_pr_only", true).map_err(|e| format!("{prefix}: {e}"))?;
     require_bool(task, "auto_merge_disabled", true).map_err(|e| format!("{prefix}: {e}"))?;
     require_unique_strings(task, "budget_point_ids", false)
@@ -348,9 +345,7 @@ fn validate_cost_completeness(cost: &Map<String, Value>) -> Result<(), String> {
     let values: HashSet<_> = required.iter().filter_map(Value::as_str).collect();
     for field in REQUIRED_COST_FIELDS {
         if !values.contains(field) {
-            return Err(format!(
-                "cost_completeness.required_fields missing {field}"
-            ));
+            return Err(format!("cost_completeness.required_fields missing {field}"));
         }
     }
     required_bool_from_map(cost, "failed_attempt_costs_required")?;
@@ -615,10 +610,7 @@ fn required_positive_u64(value: &Value, key: &str) -> Result<u64, String> {
     Ok(number)
 }
 
-fn required_positive_u64_from_map(
-    value: &Map<String, Value>,
-    key: &str,
-) -> Result<u64, String> {
+fn required_positive_u64_from_map(value: &Map<String, Value>, key: &str) -> Result<u64, String> {
     let number = required_u64_from_map(value, key)?;
     if number == 0 {
         return Err(format!("{key} must be positive"));
@@ -889,7 +881,10 @@ mod tests {
             "evidence_sufficiency": "INSUFFICIENT_REPETITIONS"
         });
         let artifact = freeze_vde_artifact(body, &protocol).unwrap();
-        assert_eq!(artifact.schema_version, VERIFIED_DELIVERY_OBSERVATION_SCHEMA);
+        assert_eq!(
+            artifact.schema_version,
+            VERIFIED_DELIVERY_OBSERVATION_SCHEMA
+        );
         assert_eq!(artifact.body_sha256.len(), 64);
     }
 
