@@ -284,9 +284,24 @@ jobs:
       - name: Run clippy
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cargo clippy -p engine --all-targets --all-features -- -D warnings
+      - name: Cache cargo-audit binary
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        id: cache-cargo-audit
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2
+      - name: Ensure cargo-audit
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        run: |
+          if ! cargo audit --version 2>/dev/null | grep -Fq 'cargo-audit 0.22.2'; then
+            cargo install cargo-audit --version 0.22.2 --locked --force
+          fi
       - name: Audit Rust dependencies
         if: needs.classify-change-impact.outputs.docs_only != 'true'
-        run: cargo install cargo-audit --version 0.22.2 --locked && cargo audit --deny warnings
+        run: |
+          cargo audit --version | grep -F 'cargo-audit 0.22.2'
+          cargo audit --deny warnings
       - name: Report sccache statistics
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         continue-on-error: true
@@ -371,7 +386,7 @@ jobs:
             ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Run PostgreSQL integration tests
         if: needs.classify-change-impact.outputs.docs_only != 'true'
-        run: cargo test -p engine --features pg-tests -- --test-threads=1
+        run: bash scripts/ci/run_postgres_tests.sh
       - name: Verify PostgreSQL owner evidence through the PE-6 harness
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: PYTHONPATH=. python3 tools/run_fault_drills.py --suite storage --seed 0 --worker 0 --require-supported --output /tmp/acp-pe6-storage.json --format human
@@ -624,7 +639,7 @@ jobs:
             **/pyproject.toml
       - name: Verify Rust + TypeScript stack
         if: needs.classify-change-impact.outputs.docs_only != 'true'
-        run: bash scripts/verify_rust_typescript_stack.sh
+        run: bash scripts/verify_rust_typescript_stack.sh --integration-only
       - name: Report sccache statistics
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         continue-on-error: true
@@ -654,19 +669,23 @@ jobs:
       - name: Report documentation-only lane
         if: needs.classify-change-impact.outputs.docs_only == 'true'
         run: echo "docker-build not applicable to a trusted documentation-only diff"
+      - name: Set up Docker Buildx
+        if: needs.classify-change-impact.outputs.docs_only != 'true'
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - name: Build local Docker services
         if: needs.classify-change-impact.outputs.docs_only != 'true'
-        run: |
-          success=0
-          for i in 1 2 3; do
-            if docker compose build; then
-              success=1
-              break
-            fi
-            echo "Attempt $i failed, retrying..."
-            sleep 10
-          done
-          test "$success" -eq 1
+        uses: docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b # v7.3.0
+        with:
+          source: .
+          files: ./docker-compose.yml
+          targets: |
+            engine
+            dashboard
+          set: |
+            engine.cache-from=type=gha,scope=docker-engine
+            engine.cache-to=type=gha,mode=max,scope=docker-engine
+            dashboard.cache-from=type=gha,scope=docker-dashboard
+            dashboard.cache-to=type=gha,mode=max,scope=docker-dashboard
 
   context-capsule:
     name: context-capsule

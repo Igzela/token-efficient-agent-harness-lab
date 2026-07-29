@@ -15,7 +15,12 @@ class FaultDrillEvidenceTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
         self.assertIn('python -m unittest discover -s tools -p "test_*.py"', workflow)
         self.assertIn("cargo test -p engine", workflow)
-        self.assertIn("cargo test -p engine --features pg-tests -- --test-threads=1", workflow)
+        self.assertIn("bash scripts/ci/run_postgres_tests.sh", workflow)
+        pg_runner = (ROOT / "scripts" / "ci" / "run_postgres_tests.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("cargo test -p engine --features pg-tests --lib", pg_runner)
+        self.assertIn("test_pe6_fault_drills", pg_runner)
         self.assertIn("tools/run_fault_drills.py --suite storage", workflow)
         self.assertIn("--require-supported", workflow)
         self.assertNotIn("fault_drill_harness.py --arbitrary-command", workflow)

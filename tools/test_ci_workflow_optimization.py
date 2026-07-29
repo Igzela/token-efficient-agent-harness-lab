@@ -69,6 +69,66 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         self.assertNotIn("Cache Rust target for rust-tests", self.source)
         self.assertNotIn("rust-target-2026-07-10", self.source)
 
+    def test_full_code_lane_does_not_repeat_unrelated_rust_targets(self) -> None:
+        pg = self.job_source("pg-integration-tests")
+        self.assertIn("bash scripts/ci/run_postgres_tests.sh", pg)
+        self.assertNotIn(
+            "cargo test -p engine --features pg-tests -- --test-threads=1",
+            pg,
+        )
+
+        cutover = self.job_source("rust-typescript-cutover")
+        self.assertIn(
+            "bash scripts/verify_rust_typescript_stack.sh --integration-only",
+            cutover,
+        )
+
+        runner = (ROOT / "scripts" / "ci" / "run_postgres_tests.sh").read_text(
+            encoding="utf-8"
+        )
+        for target in (
+            "test_pe6_fault_drills",
+            "test_pg_integration",
+            "test_product_golden_path_g2",
+            "test_product_golden_path_recovery",
+        ):
+            self.assertIn(target, runner)
+        self.assertIn("actual_targets", runner)
+        self.assertIn("cargo test -p engine --features pg-tests --lib", runner)
+
+    def test_cargo_audit_install_is_versioned_and_cached(self) -> None:
+        rust = self.job_source("rust-tests")
+        self.assertIn("name: Cache cargo-audit binary", rust)
+        self.assertIn("cargo-audit-0.22.2", rust)
+        self.assertIn("name: Ensure cargo-audit", rust)
+        self.assertIn(
+            "cargo install cargo-audit --version 0.22.2 --locked --force",
+            rust,
+        )
+        self.assertIn("cargo audit --version | grep -F 'cargo-audit 0.22.2'", rust)
+
+    def test_docker_build_uses_pinned_scoped_buildkit_caches(self) -> None:
+        docker = self.job_source("docker-build")
+        self.assertIn(
+            "docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
+            docker,
+        )
+        self.assertIn(
+            "docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b",
+            docker,
+        )
+        self.assertIn("files: ./docker-compose.yml", docker)
+        self.assertIn("targets: |\n            engine\n            dashboard", docker)
+        self.assertIn(
+            "engine.cache-to=type=gha,mode=max,scope=docker-engine",
+            docker,
+        )
+        self.assertIn(
+            "dashboard.cache-to=type=gha,mode=max,scope=docker-dashboard",
+            docker,
+        )
+        self.assertNotIn("docker compose build", docker)
+
     def test_expensive_steps_are_guarded_and_postgres_is_conditional(self) -> None:
         cheap = {
             "Check out repository",

@@ -5,6 +5,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${ACP_VERIFY_PORT:-18080}"
 TMP_DIR="$(mktemp -d)"
 ENGINE_PID=""
+MODE="${1:-full}"
+
+if [[ "${MODE}" != "full" && "${MODE}" != "--integration-only" ]]; then
+  echo "usage: $0 [--integration-only]" >&2
+  exit 2
+fi
 
 cleanup() {
   if [[ -n "${ENGINE_PID}" ]] && kill -0 "${ENGINE_PID}" 2>/dev/null; then
@@ -37,20 +43,26 @@ fi
 cd "${ROOT}"
 
 bash scripts/check_wire_codegen_drift.sh
-cargo fmt --check
-cargo clippy -p engine -- -D warnings
-cargo test -p engine
+if [[ "${MODE}" == "full" ]]; then
+  cargo fmt --check
+  cargo clippy -p engine -- -D warnings
+  cargo test -p engine
 
-cd "${ROOT}/sdk/typescript"
-bun install --frozen-lockfile
-bun run test
-bun run build
+  cd "${ROOT}/sdk/typescript"
+  bun install --frozen-lockfile
+  bun run test
+  bun run build
 
-cd "${ROOT}/dashboard"
-bun install --frozen-lockfile
-bun run lint
-bun run typecheck
-bun run build
+  cd "${ROOT}/dashboard"
+  bun install --frozen-lockfile
+  bun run lint
+  bun run typecheck
+  bun run build
+else
+  cd "${ROOT}/dashboard"
+  bun install --frozen-lockfile
+fi
+
 bun run build:static
 
 cd "${ROOT}"
