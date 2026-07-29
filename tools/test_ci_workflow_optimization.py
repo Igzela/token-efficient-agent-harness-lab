@@ -113,7 +113,7 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
         )
         self.assertIn(
             "CARGO_TERM_COLOR=never cargo audit --version"
-            " | grep -F 'cargo-audit 0.22.2'",
+            " | grep -F 'cargo-audit-audit 0.22.2'",
             rust,
         )
 

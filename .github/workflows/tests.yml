@@ -294,13 +294,14 @@ jobs:
       - name: Ensure cargo-audit
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: |
-          if ! CARGO_TERM_COLOR=never cargo audit --version 2>/dev/null | grep -Fq 'cargo-audit 0.22.2'; then
+          # cargo-audit 0.22.2 intentionally reports this nested command name.
+          if ! CARGO_TERM_COLOR=never cargo audit --version 2>/dev/null | grep -Fq 'cargo-audit-audit 0.22.2'; then
             cargo install cargo-audit --version 0.22.2 --locked --force
           fi
       - name: Audit Rust dependencies
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: |
-          CARGO_TERM_COLOR=never cargo audit --version | grep -F 'cargo-audit 0.22.2'
+          CARGO_TERM_COLOR=never cargo audit --version | grep -F 'cargo-audit-audit 0.22.2'
           cargo audit --deny warnings
       - name: Report sccache statistics
         if: needs.classify-change-impact.outputs.docs_only != 'true'
