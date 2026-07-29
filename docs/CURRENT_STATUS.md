@@ -17,7 +17,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR.
 - PR #308 is merged and accepted at schema v35: a ProductTask-owned workspace-preparation receipt for provider-free local worktree recovery. It pins one planned local path before a physical effect, remains under `LocalProductStore`/ProductTask ownership, and does not grant a provider call, live task, credential, budget, scheduler, target-output, or merge authority.
 - PR #301 is merged and accepted: CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification, under `engine/src/execution_usage/`. No authority was imported.
 - Context-capsule Phase 1 is accepted through PR #302 and Phase 2 through PR #306: `START_HERE.md` is the canonical session entry, `scripts/project_context.py` generates a fail-closed transport view, CI publishes a short-lived exact-head capsule, and repository-controlled prompts inject a fresh validated capsule. The capsule remains non-authoritative.
-- CI execution discipline is accepted through PR #310 and PR #311: changing Draft heads use non-canonical fast feedback; Ready heads use one canonical `tests` workflow with accepted-base documentation-only classification or the complete matrix; and Rust source lanes use pinned `sccache` only as a non-authoritative compiler cache.
+- CI execution discipline is accepted through PR #310, PR #311, and PR #315: changing heads are action-enforced Drafts with non-canonical fast feedback; one `ready_for_review` transition triggers canonical exact-head CI; normal prose-only `main` pushes use the accepted-before classifier over the complete `before...after` range; uncertain pushes and explicit dispatches fail closed to the full matrix; and Rust source lanes use pinned `sccache` only as a non-authoritative compiler cache. PR #315 merged as `faac83ac7bcdf60460a966f7483b7e719d4fc1a1`; post-merge `push: main` run `30421284939` passed all seven source jobs and terminal context-capsule artifact `8712219360` bound to that SHA.
 - PR #313 is merged as `ca5ce1023664c58be8d15d681a80f262fb2be70b`. Its final PR exact-head matrix passed, and post-merge `push: main` run `30381836225` completed successfully with all seven source jobs plus terminal context-capsule artifact `8697748363` bound to the same SHA.
 - Verified Delivery Economics (VDE) is adopted as a provider-free architecture and routing contract. Durable semantics live in `docs/ARCHITECTURE_BOOK.md`; execution order and gates live in `docs/NEXT_DECISION.md`. No runtime, schema, database table, Level-1 `MetricVector`, evaluator, store, budget, or adoption authority is added by this documentation decision.
 - Rust `engine/` and `LocalProductStore` remain the sole authorities for workflow state, scheduling, leases, retries, budgets, approvals, evidence, output reconciliation, audit, and persistence.
@@ -36,7 +36,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR.
 |---|---|---|
 | #225 | Presentation-only Dashboard work | Independent and last |
 
-PR #297 and #298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304. PR #301, PR #306, PR #308, PR #310, PR #311, and PR #313 are merged and accepted.
+PR #297 and #298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304. PR #301, PR #306, PR #308, PR #310, PR #311, PR #313, and PR #315 are merged and accepted.
 
 No live provider request, live managed acceptance, live RWE baseline, accepted success probability, or realized VDE result is established.
 
@@ -102,7 +102,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 
 - Provider-free Golden Path authority: PR #299 merged and accepted at schema v33; PR #300 merged and accepted at schema v34.
 - Product Golden Path preflight: PR #308 is merged and accepted at schema v35; the live Golden Path remains `AUTHORIZATION_REQUIRED`.
-- Context/CI governance: PR #302, PR #306, PR #310, PR #311, and PR #313 are merged and accepted; transport and cache state remain non-authoritative.
+- Context/CI governance: PR #302, PR #306, PR #310, PR #311, PR #313, and PR #315 are merged and accepted; transport, fast feedback, and cache state remain non-authoritative.
 - VDE governance: the provider-free decision contract is documented; artifact schemas, real corpus, live observations, persistence automation, and Dashboard projection remain gated future work.
 - Observation adaptation: PR #301 is merged and accepted; observation-only and restacked onto accepted main.
 - Live RWE, Architecture Convergence, Level-2, and Meta remain blocked by their named prerequisites.
