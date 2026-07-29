@@ -18,8 +18,10 @@ The authoritative order is:
 provider-free RWE authority reconciliation (#300)
 → observation-only reconciliation (#301)
 → context-capsule automation (#306/#313 accepted)
-→ one bounded live Golden Path managed acceptance (`AUTHORIZATION_REQUIRED`)
-→ freeze the first real RWE + VDE measurement contract
+→ provider-free RWE economic protocol and VDE artifact contracts
+→ one bounded live Golden Path managed acceptance (`DEFERRED_BY_OWNER`;
+  `AUTHORIZATION_REQUIRED` remains unresolved)
+→ freeze one operator-supplied real RWE corpus under the accepted protocol
 → first frozen Real Workload Evidence baseline
 → Architecture Convergence AC1–AC7
 → identical-corpus and identical-protocol replay
@@ -29,11 +31,11 @@ provider-free RWE authority reconciliation (#300)
 → Dashboard #225 last
 ```
 
-Do not skip the live Golden Path, economic-corpus freeze, or first RWE baseline and begin Architecture Convergence or Level-2 early. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
+The owner has temporarily deferred the live Golden Path because no callable Agent runtime or credential is currently available. This changes scheduling, not acceptance: do not claim the packet complete, and do not skip the live Golden Path, real economic-corpus freeze, or first RWE baseline to begin Architecture Convergence or Level-2 early. Provider-free protocol/artifact work may proceed because it creates no execution or spend authority. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE` (`AUTHORIZATION_REQUIRED`).
+1. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE` (`DEFERRED_BY_OWNER`; `AUTHORIZATION_REQUIRED` remains unresolved).
 2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
 3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
 4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
@@ -61,7 +63,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #225 is presentation-only and remains last.
 
-The next product route is `PE7-PRODUCT-GOLDEN-PATH-1`, but it is blocked at the external `AUTHORIZATION_REQUIRED` gate below. Do not begin a live Golden Path task, live RWE, Architecture Convergence, or later stages without that exact authority.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319. No further packet is currently executable without operator-supplied real-task/value/reviewer inputs or live authority. The live product route remains `PE7-PRODUCT-GOLDEN-PATH-1`, but the owner has temporarily deferred it and its external `AUTHORIZATION_REQUIRED` gate remains unresolved. Do not begin a live Golden Path task, live RWE, Architecture Convergence, or later stages without that exact authority and the named evidence prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -199,6 +201,29 @@ Required result:
 
 This packet proves context freshness and routing only. It cannot authorize provider spend, live execution, output, merge, release, deployment, RWE acceptance, VDE acceptance, or a later packet.
 
+## Packet PE7-VDE-RWE-ARTIFACT-CONTRACTS-1 — provider-free measurement contracts
+
+**State:** `COMPLETE`
+
+**Owned PR:** #319
+
+**Prerequisite:** PE7-CONTEXT-CAPSULE-AUTOMATION-1 (COMPLETE)
+
+Implement immutable, canonical-hash-bound `rwe_economic_protocol.v1`, `task_value_profile.v1`, `implementation_cost_receipt.v1`, `verified_delivery_observation.v1`, and `verified_delivery_comparison.v1` contracts under the existing `engine/src/rwe/` owner.
+
+Required behavior:
+
+- freeze exact task/source/tree/definition/mutable-surface/verification/output/executor/model/cleanup identities;
+- bind typed value basis, source, confidence, acceptance rubric, reviewer policy, repetitions, budget grid, stop rules, non-inferiority margins, cost completeness, seeds, and statistical method before results;
+- derive evidence sufficiency without treating unavailable evidence as zero;
+- keep realized cost, forecasts, observed reuse, and expected reuse separate;
+- require identical-protocol and hard-gate evidence before `COMPARISON_ELIGIBLE`;
+- retain truthful insufficient, failed, and NO-GO artifacts;
+- reject fixture/placeholder sources and raw prompt/output/transcript/credential fields from a real protocol;
+- add no database table, migration, runtime execution, provider call, spend lease, reviewer authority, output authority, Level-1 `MetricVector` change, automated adoption, release, or deployment.
+
+Acceptance requires focused Rust tests, complete applicable CI, complete-diff review, handoff validation, and rollback by reverting the packet. This packet does not freeze an operator-supplied real corpus, establish a baseline, or unblock Architecture Convergence.
+
 ## Packet PE7-PRODUCT-GOLDEN-PATH-1 — accepted authority and live residual seal
 
 **State:** `BLOCKED_PREREQUISITE`
@@ -209,9 +234,11 @@ This packet proves context freshness and routing only. It cannot authorize provi
 
 The provider-free authority foundation from PR #299 is merged and accepted. PR #300, PR #301, PR #306, PR #308, and PR #313 are merged and accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
 
+**Scheduling:** `DEFERRED_BY_OWNER`
+
 **External gate:** `AUTHORIZATION_REQUIRED`
 
-No current live-task authority has been supplied. Before any provider or target-repository effect, existing canonical owners must provide and persist an exact current manifest containing every Golden Path Acceptance Gate input: accepted decision and residual-risk hashes; authenticated non-fixture principal and scopes; one-use spend authorization with its bounded limit; an already configured parent-only credential; exact executable path/version/SHA; provider kind/host/base URL/admitted paths/model; ProductTask/workflow/node/attempt identity; target repository and target-main SHA; request/retry/token/time/cost bounds; Draft-PR-only output restriction; usage reconciliation; and cancellation, cleanup, rollback, approval, output-confirmation, and terminal-evidence owners. A fresh capsule must bind those current identities at execution time.
+The owner has temporarily shelved live execution because no callable Agent runtime or credential is currently available. No current live-task authority has been supplied. Resumption requires an explicit owner decision plus the exact current manifest. Before any provider or target-repository effect, existing canonical owners must provide and persist every Golden Path Acceptance Gate input: accepted decision and residual-risk hashes; authenticated non-fixture principal and scopes; one-use spend authorization with its bounded limit; an already configured parent-only credential; exact executable path/version/SHA; provider kind/host/base URL/admitted paths/model; ProductTask/workflow/node/attempt identity; target repository and target-main SHA; request/retry/token/time/cost bounds; Draft-PR-only output restriction; usage reconciliation; and cancellation, cleanup, rollback, approval, output-confirmation, and terminal-evidence owners. A fresh capsule must bind those current identities at execution time.
 
 This packet does not authorize choosing a spend cap, target, provider, model, credential, value basis, or reviewer policy, nor creating, rotating, copying, or disclosing a credential. While the manifest is absent, only provider-free inspection, contract preparation, and verification are permitted. Provider-free preparation may tighten owner-derived preflight, pre-child cleanup, and VDE/RWE artifact schemas, but it cannot create a lease or live authority, forward a provider request, change this packet state, or claim economic performance. Report `AUTHORIZATION_REQUIRED`; do not mark this packet complete, call a provider, modify target `main`, start RWE, Architecture Convergence, Level-2, Meta, release, deployment, or Dashboard work.
 
