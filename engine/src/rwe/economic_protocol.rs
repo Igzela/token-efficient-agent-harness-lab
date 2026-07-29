@@ -894,6 +894,25 @@ mod tests {
     }
 
     #[test]
+    fn task_value_profile_must_match_frozen_protocol() {
+        let protocol = freeze_rwe_economic_protocol(protocol_body()).unwrap();
+        let value_profile = protocol.body["tasks"][0]["value_profile"].clone();
+        let mut body = json!({
+            "schema_version": TASK_VALUE_PROFILE_SCHEMA,
+            "protocol_sha256": protocol.body_sha256,
+            "fixture_only": false,
+            "adoption_authorized": false,
+            "task_id": "task-1",
+            "value_profile": value_profile
+        });
+        freeze_vde_artifact(body.clone(), &protocol).unwrap();
+        body["value_profile"]["unit"] = json!("caller-rewritten-unit");
+        assert!(freeze_vde_artifact(body, &protocol)
+            .unwrap_err()
+            .contains("does not exactly match"));
+    }
+
+    #[test]
     fn comparison_requires_derived_eligibility_and_pareto_evidence() {
         let protocol = freeze_rwe_economic_protocol(protocol_body()).unwrap();
         let mut body = json!({

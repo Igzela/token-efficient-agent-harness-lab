@@ -35,13 +35,12 @@ The owner has temporarily deferred the live Golden Path because no callable Agen
 
 ## Active Routing
 
-1. `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` — `IN_PROGRESS` (provider-free).
-2. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE` (`DEFERRED_BY_OWNER`; `AUTHORIZATION_REQUIRED` remains unresolved).
-3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE` (`DEFERRED_BY_OWNER`; `AUTHORIZATION_REQUIRED` remains unresolved).
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
 ## Packet States
 
@@ -64,7 +63,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #225 is presentation-only and remains last.
 
-The next executable route is the provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet. The live product route remains `PE7-PRODUCT-GOLDEN-PATH-1`, but the owner has temporarily deferred it and its external `AUTHORIZATION_REQUIRED` gate remains unresolved. Do not begin a live Golden Path task, live RWE, Architecture Convergence, or later stages without that exact authority and the named evidence prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319. No further packet is currently executable without operator-supplied real-task/value/reviewer inputs or live authority. The live product route remains `PE7-PRODUCT-GOLDEN-PATH-1`, but the owner has temporarily deferred it and its external `AUTHORIZATION_REQUIRED` gate remains unresolved. Do not begin a live Golden Path task, live RWE, Architecture Convergence, or later stages without that exact authority and the named evidence prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -204,9 +203,9 @@ This packet proves context freshness and routing only. It cannot authorize provi
 
 ## Packet PE7-VDE-RWE-ARTIFACT-CONTRACTS-1 — provider-free measurement contracts
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-**Owned branch:** `agent/defer-goldenpath-rwe-protocol`
+**Owned PR:** #319
 
 **Prerequisite:** PE7-CONTEXT-CAPSULE-AUTOMATION-1 (COMPLETE)
 

@@ -30,7 +30,7 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Persistence and audit | `engine/src/storage/local_product_store/` and PostgreSQL backend | Sole SQLite/PostgreSQL transaction, migration, audit, idempotency, evidence, and rollback owner |
 | Scorecards/replay | Existing scorecard, trace, replay, and store owners | Derived comparison evidence; cannot mutate live routing or policy by itself |
 | Real Workload Evidence corpus | `engine/src/rwe/` and fixture corpus owners from PR #300 | Provider-free corpus authority, authorization/run/task-attempt persistence; no live baseline from fixtures |
-| RWE economic protocol and VDE artifacts | `engine/src/rwe/economic_protocol.rs` (proposed by the active provider-free packet) | Immutable/hash-bound protocol and artifact validation only; no runtime, store, budget, reviewer, output, adoption, or release authority |
+| RWE economic protocol and VDE artifacts | `engine/src/rwe/economic_protocol.rs` (PR #319) | Immutable/hash-bound protocol and artifact validation only; no runtime, store, budget, reviewer, output, adoption, or release authority |
 | Harness Evolution Level-1 | `engine/src/harness_evolution*.rs` plus existing store owners | Default-off one-generation fixture laboratory; active Harness immutable |
 | SDK and Dashboard | `sdk/`, `dashboard/` | Typed interaction and projection only; no backend authority |
 | Wire contracts | `wire_contract/`, `codegen/` | Shared cross-language schemas; drift checked by `scripts/check_wire_codegen_drift.sh` |
