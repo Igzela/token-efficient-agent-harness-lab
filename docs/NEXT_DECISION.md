@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-07-28.
+Last updated: 2026-07-29.
 
 ## Current Direction
 
@@ -17,9 +17,9 @@ The authoritative order is:
 ```text
 provider-free RWE authority reconciliation (#300)
 → observation-only reconciliation (#301)
-→ context-capsule automation (#306 accepted)
+→ context-capsule automation (#306/#313 accepted)
 → one bounded live Golden Path managed acceptance (`AUTHORIZATION_REQUIRED`)
-→ freeze the first real RWE + Verified Delivery Economics measurement contract
+→ freeze the first real RWE + VDE measurement contract
 → first frozen Real Workload Evidence baseline
 → Architecture Convergence AC1–AC7
 → identical-corpus and identical-protocol replay
@@ -29,7 +29,7 @@ provider-free RWE authority reconciliation (#300)
 → Dashboard #225 last
 ```
 
-Do not skip the live Golden Path, economic-corpus freeze, or first RWE baseline and begin Architecture Convergence or Level-2 early. Provider-free fixture completion is not live acceptance. Context-capsule automation is a transport and freshness prerequisite, not a runtime authority or evidence substitute. VDE is a read-only evidence projection, not a new execution or adoption authority.
+Do not skip the live Golden Path, economic-corpus freeze, or first RWE baseline and begin Architecture Convergence or Level-2 early. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
 
 ## Active Routing
 
@@ -58,10 +58,10 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #306 is merged and accepted; it publishes/injects a non-authoritative fresh context capsule.
 - PR #308 is merged and accepted; it hardens provider-free ProductTask workspace preparation and recovery without importing live authority.
 - PR #310 and PR #311 are merged CI-governance changes.
-- PR #313 is merged after a green final PR exact-head matrix; its post-merge push workflow must be observed separately before it is cited as accepted-main CI evidence.
+- PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #225 is presentation-only and remains last.
 
-The next product route is `PE7-PRODUCT-GOLDEN-PATH-1`, but it is blocked at the external `AUTHORIZATION_REQUIRED` gate defined below. Do not begin a live Golden Path task, live RWE, Architecture Convergence, or later stages without that exact authority.
+The next product route is `PE7-PRODUCT-GOLDEN-PATH-1`, but it is blocked at the external `AUTHORIZATION_REQUIRED` gate below. Do not begin a live Golden Path task, live RWE, Architecture Convergence, or later stages without that exact authority.
 
 ## Evidence Required for Every Engineering Board
 
@@ -104,24 +104,19 @@ A Level-2 GO decision requires more than runtime token improvement. It must cons
 
 A change that reduces tokens but increases total lifecycle cost, weakens reliability, increases material rework, or broadens authority without accepted benefit is not an efficiency improvement.
 
-## Verified Delivery Economics Decision Contract
+## VDE Routing Contract
 
-Verified Delivery Economics (VDE) is adopted as the repository's economic evidence projection. It reuses existing Golden Path, usage, verification, artifact, approval, output, terminal-evidence, RWE, replay, and implementation-cost owners. It must not create a second runtime, evaluator, store, budget, approval, adoption, audit, or rollback authority.
+`docs/ARCHITECTURE_BOOK.md` is the sole full owner of VDE semantics: layered success, typed value bases, realized/forecast separation, LCAP, evidence-sufficiency states, reviewer measurement, artifact-first persistence, Pareto precedence, and non-authority boundaries.
 
-The durable rules are:
+This document owns only execution routing:
 
-1. Hard gates precede every economic metric; a failed gate is `INELIGIBLE`.
-2. Preserve `verified_success`, `maintainer_accepted_success`, and `delivered_success` separately. Economic delivery comparisons use `delivered_success` unless a frozen contract explicitly names another layer.
-3. Each comparable task group has one typed primary value basis: trustworthy monetary value, human-equivalent monetary cost, expert minutes, or domain verified-delivery units. Different bases are not implicitly added.
-4. Unknown cost/value is unavailable, never zero. Realized and forecast costs remain separate.
-5. General LCAP is expected cumulative realized lifecycle cost until first delivered success or the frozen stop/budget rule. `mean_cost / success_probability` is allowed only under explicitly proved independent fixed-cost assumptions.
-6. A single live sample proves wiring and realized-cost capture only. Evidence states are `INSUFFICIENT_REPETITIONS`, `POINT_ESTIMATE_ONLY`, `INTERVAL_AVAILABLE`, and `COMPARISON_ELIGIBLE`.
-7. Reviewer rubric, identity class, blinding, material-rework rule, disagreement resolution, and time measurement are versioned parts of the protocol.
-8. Pareto comparison precedes scalar summary. A `VDE Index` is Dashboard-only and cannot select or adopt a production candidate.
-9. Initial persistence is artifact-first through existing owners. Proposed versioned projections are `task_value_profile.v1`, `implementation_cost_receipt.v1`, `verified_delivery_observation.v1`, and `verified_delivery_comparison.v1`.
-10. Do not extend the current Level-1 `MetricVector`, add a database table, or automate adoption before live data proves the artifact schemas stable and a later packet authorizes that change.
+- the first live Golden Path sample may prove evidence wiring and realized-cost capture only; it remains `INSUFFICIENT_REPETITIONS`;
+- before RWE, freeze the exact real corpus, source/verifier, primary value basis, reviewer policy, repetitions, budget grid, stop rules, non-inferiority margins, cost completeness, seeds, and statistical method;
+- replay the identical corpus and protocol after Architecture Convergence;
+- require `COMPARISON_ELIGIBLE` evidence and hard-gate non-inferiority before Level-2 GO;
+- do not extend Level-1 `MetricVector`, add a VDE table, automate adoption, or create a second evidence authority in this packet.
 
-This decision contract is provider-free preparation. It does not move the active frontier, authorize the live Golden Path, establish an RWE baseline, or create a VDE result.
+This provider-free contract does not move the active frontier, authorize a live task, establish an RWE baseline, or create a VDE result.
 
 ## Common Execution Protocol
 
@@ -157,7 +152,7 @@ A live managed task may start only when all of these are current and exact:
 
 Codex remains `mediation_hardened_partial`. Retry identity, product-enforced loopback-only network confinement, and host namespace limitations remain explicit residual risks unless separately proved.
 
-The first bounded live Golden Path task also records one complete realized workflow sample when available: provider/request/token/latency/cost-source evidence, human preparation, review and material rework time, repair iterations, CI effort, recovery, approval/output, cleanup, and terminal evidence. That sample must be labeled `INSUFFICIENT_REPETITIONS` and must not be reported as ROI, stable VDE, success probability, or an RWE baseline.
+The first bounded live Golden Path task also records one complete realized workflow sample when available: provider/request/token/latency/cost-source evidence, human preparation, review and material rework time, repair iterations, CI effort, recovery, approval/output, cleanup, and terminal evidence. That sample must not be reported as ROI, stable VDE, success probability, or an RWE baseline.
 
 ## Hard Stops
 
@@ -186,11 +181,11 @@ PR #300 is the accepted prerequisite and RWE authority foundation. PR #301 was m
 
 **State:** `COMPLETE`
 
-**Owned PR:** #306
+**Owned PR:** #306, with push-terminal repair accepted through #313
 
 **Prerequisite:** PE7-OBSERVATION-RESTACK-1 (COMPLETE)
 
-Phase 1 is accepted through PR #302: `START_HERE.md` owns navigation and `scripts/project_context.py` generates an on-demand fail-closed Markdown or JSON transport view. Phase 2 is accepted through PR #306, merged as `3cc38e3158d71068abf03f445657f8bce4d485e3` after exact-head CI and independent complete-diff review. It adds automation only and does not create a new status database, current-state owner, authorization owner, or committed dynamic `latest context` file.
+Phase 1 is accepted through PR #302: `START_HERE.md` owns navigation and `scripts/project_context.py` generates an on-demand fail-closed Markdown or JSON transport view. Phase 2 is accepted through PR #306. PR #313 proves the repaired post-merge push terminal path. The automation does not create a status database, current-state owner, authorization owner, or committed dynamic `latest context` file.
 
 Required result:
 
@@ -212,13 +207,13 @@ This packet proves context freshness and routing only. It cannot authorize provi
 
 **Prerequisite:** PE7-CONTEXT-CAPSULE-AUTOMATION-1 (COMPLETE) and the exact external live-authority manifest below
 
-The provider-free authority foundation from PR #299 is merged and accepted. PR #300, PR #301, PR #306, and PR #308 are merged and accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+The provider-free authority foundation from PR #299 is merged and accepted. PR #300, PR #301, PR #306, PR #308, and PR #313 are merged and accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
 
 **External gate:** `AUTHORIZATION_REQUIRED`
 
-No current live-task authority has been supplied. Before any provider or target-repository effect, existing canonical owners must provide and persist an exact current manifest containing every Golden Path Acceptance Gate input: accepted decision and residual-risk hashes; authenticated non-fixture principal and scopes; one-use spend authorization with its bounded limit; an already configured parent-only credential; exact executable path/version/SHA; provider kind/host/base URL/admitted paths/model; ProductTask/workflow/node/attempt identity; target repository and target-main SHA; request/retry/token/time/cost bounds; Draft-PR-only output restriction; usage reconciliation; and cancellation, cleanup, rollback, approval, output-confirmation, and terminal-evidence owners. A fresh capsule must bind those current identities at the time of execution.
+No current live-task authority has been supplied. Before any provider or target-repository effect, existing canonical owners must provide and persist an exact current manifest containing every Golden Path Acceptance Gate input: accepted decision and residual-risk hashes; authenticated non-fixture principal and scopes; one-use spend authorization with its bounded limit; an already configured parent-only credential; exact executable path/version/SHA; provider kind/host/base URL/admitted paths/model; ProductTask/workflow/node/attempt identity; target repository and target-main SHA; request/retry/token/time/cost bounds; Draft-PR-only output restriction; usage reconciliation; and cancellation, cleanup, rollback, approval, output-confirmation, and terminal-evidence owners. A fresh capsule must bind those current identities at execution time.
 
-This packet does not authorize choosing a spend cap, target, provider, model, credential, value basis, or reviewer policy, nor creating, rotating, copying, or disclosing a credential. While the manifest is absent, only provider-free inspection, contract preparation, and verification are permitted. Provider-free preparation may tighten the owner-derived preflight, pre-child cleanup, and VDE/RWE artifact schemas, but it cannot create a lease or live authority, forward a provider request, change this packet state, or claim economic performance. Report `AUTHORIZATION_REQUIRED`; do not mark this packet complete, call a provider, modify target `main`, start RWE, Architecture Convergence, Level-2, Meta, release, deployment, or Dashboard work.
+This packet does not authorize choosing a spend cap, target, provider, model, credential, value basis, or reviewer policy, nor creating, rotating, copying, or disclosing a credential. While the manifest is absent, only provider-free inspection, contract preparation, and verification are permitted. Provider-free preparation may tighten owner-derived preflight, pre-child cleanup, and VDE/RWE artifact schemas, but it cannot create a lease or live authority, forward a provider request, change this packet state, or claim economic performance. Report `AUTHORIZATION_REQUIRED`; do not mark this packet complete, call a provider, modify target `main`, start RWE, Architecture Convergence, Level-2, Meta, release, deployment, or Dashboard work.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 
