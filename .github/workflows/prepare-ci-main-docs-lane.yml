@@ -30,7 +30,10 @@ jobs:
         with:
           python-version: "3.11"
       - name: Apply bounded CI optimization
-        run: python3 .github/ci/prepare_ci_main_docs_lane.py
+        run: |
+          set -euo pipefail
+          git show 8044f963ee2b6b5752cd084ada6d4860881c3786:.github/workflows/pr-fast-checks.yml > .github/workflows/pr-fast-checks.yml
+          python3 .github/ci/prepare_ci_main_docs_lane.py
       - name: Validate generated result
         run: |
           set -euo pipefail
