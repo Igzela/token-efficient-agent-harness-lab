@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: prepare-ci-main-docs-lane
+  group: prepare-ci-main-docs-lane-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
