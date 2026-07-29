@@ -8,7 +8,7 @@ on:
     types: [opened, synchronize]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: prepare-ci-main-docs-lane
@@ -42,22 +42,82 @@ jobs:
           actual="$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort)"
           expected=$'.github/workflows/pr-fast-checks.yml\n.github/workflows/tests.yml\nAGENTS.md\ndocs/REAL_WORLD_TESTING_PLAYBOOK.md\ntools/test_ci_lane_contract.py'
           test "${actual}" = "${expected}"
-      - name: Package final files
+      - name: Create validated candidate commit object
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          out=/tmp/ci-main-docs-lane-final
-          mkdir -p "$out/.github/workflows" "$out/tools" "$out/docs"
-          cp .github/workflows/tests.yml "$out/.github/workflows/tests.yml"
-          cp .github/workflows/pr-fast-checks.yml "$out/.github/workflows/pr-fast-checks.yml"
-          cp tools/test_ci_lane_contract.py "$out/tools/test_ci_lane_contract.py"
-          cp AGENTS.md "$out/AGENTS.md"
-          cp docs/REAL_WORLD_TESTING_PLAYBOOK.md "$out/docs/REAL_WORLD_TESTING_PLAYBOOK.md"
-          git diff --binary > "$out/final.patch"
-      - name: Upload final files
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import urllib.request
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          api = f'https://api.github.com/repos/{repo}/git'
+
+          def post(path, payload):
+              request = urllib.request.Request(
+                  api + path,
+                  data=json.dumps(payload).encode(),
+                  headers={
+                      'Accept': 'application/vnd.github+json',
+                      'Authorization': f'Bearer {token}',
+                      'Content-Type': 'application/json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                  },
+                  method='POST',
+              )
+              with urllib.request.urlopen(request) as response:
+                  return json.load(response)
+
+          retained = (
+              '.github/workflows/pr-fast-checks.yml',
+              '.github/workflows/tests.yml',
+              'AGENTS.md',
+              'docs/REAL_WORLD_TESTING_PLAYBOOK.md',
+              'tools/test_ci_lane_contract.py',
+          )
+          entries = []
+          for path in retained:
+              blob = post('/blobs', {
+                  'content': Path(path).read_text(encoding='utf-8'),
+                  'encoding': 'utf-8',
+              })
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+          entries.extend((
+              {'path': '.github/workflows/prepare-ci-main-docs-lane.yml', 'mode': '100644', 'type': 'blob', 'sha': None},
+              {'path': '.github/ci/prepare_ci_main_docs_lane.py', 'mode': '100644', 'type': 'blob', 'sha': None},
+          ))
+          parent = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          base_tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+          tree = post('/trees', {'base_tree': base_tree, 'tree': entries})
+          commit = post('/commits', {
+              'message': 'ci: enforce Draft lanes and optimize main docs pushes',
+              'tree': tree['sha'],
+              'parents': [parent],
+          })
+          payload = {
+              'parent_sha': parent,
+              'candidate_sha': commit['sha'],
+              'tree_sha': tree['sha'],
+              'retained_files': retained,
+              'removed_files': (
+                  '.github/workflows/prepare-ci-main-docs-lane.yml',
+                  '.github/ci/prepare_ci_main_docs_lane.py',
+              ),
+          }
+          Path('/tmp/ci-candidate.json').write_text(json.dumps(payload, sort_keys=True), encoding='utf-8')
+          print(json.dumps(payload, sort_keys=True))
+          PY
+      - name: Upload candidate identity
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ci-main-docs-lane-final-${{ github.run_id }}
-          path: /tmp/ci-main-docs-lane-final/
-          include-hidden-files: true
+          name: ci-main-docs-lane-candidate-${{ github.run_id }}
+          path: /tmp/ci-candidate.json
           retention-days: 1
           if-no-files-found: error
