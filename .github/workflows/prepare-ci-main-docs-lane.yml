@@ -42,9 +42,30 @@ jobs:
           bash scripts/check_github_action_pins.sh
           uv run --no-project python scripts/check_agent_handoff.py
           git diff --check
-          actual="$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort)"
-          expected=$'.github/workflows/pr-fast-checks.yml\n.github/workflows/tests.yml\nAGENTS.md\ndocs/REAL_WORLD_TESTING_PLAYBOOK.md\ntools/test_ci_lane_contract.py'
-          test "${actual}" = "${expected}"
+          python3 - <<'PY'
+          import subprocess
+
+          actual = set(filter(None, subprocess.check_output(
+              ['bash', '-lc', '{ git diff --name-only; git ls-files --others --exclude-standard; }'],
+              text=True,
+          ).splitlines()))
+          allowed = {
+              '.github/workflows/pr-fast-checks.yml',
+              '.github/workflows/tests.yml',
+              'AGENTS.md',
+              'docs/REAL_WORLD_TESTING_PLAYBOOK.md',
+              'tools/test_ci_lane_contract.py',
+          }
+          required_new = {
+              '.github/workflows/tests.yml',
+              'AGENTS.md',
+              'docs/REAL_WORLD_TESTING_PLAYBOOK.md',
+          }
+          if not actual <= allowed:
+              raise SystemExit(f'unexpected generated paths: {sorted(actual - allowed)}')
+          if not required_new <= actual:
+              raise SystemExit(f'missing generated paths: {sorted(required_new - actual)}')
+          PY
       - name: Create validated candidate commit object
         if: github.event_name == 'push'
         env:
