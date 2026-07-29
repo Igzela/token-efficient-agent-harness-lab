@@ -64,7 +64,7 @@ jobs:
           if not required_new <= actual:
               raise SystemExit(f'missing generated paths: {sorted(required_new - actual)}')
           PY
-      - name: Create validated candidate commit object
+      - name: Create validated blob identities
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -102,42 +102,29 @@ jobs:
               'docs/REAL_WORLD_TESTING_PLAYBOOK.md',
               'tools/test_ci_lane_contract.py',
           )
-          entries = []
+          blob_shas = {}
           for path in retained:
               blob = post('/blobs', {
                   'content': Path(path).read_text(encoding='utf-8'),
                   'encoding': 'utf-8',
               })
-              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
-          entries.extend((
-              {'path': '.github/workflows/prepare-ci-main-docs-lane.yml', 'mode': '100644', 'type': 'blob', 'sha': None},
-              {'path': '.github/ci/prepare_ci_main_docs_lane.py', 'mode': '100644', 'type': 'blob', 'sha': None},
-          ))
-          parent = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          base_tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
-          tree = post('/trees', {'base_tree': base_tree, 'tree': entries})
-          commit = post('/commits', {
-              'message': 'ci: enforce Draft lanes and optimize main docs pushes',
-              'tree': tree['sha'],
-              'parents': [parent],
-          })
+              blob_shas[path] = blob['sha']
           payload = {
-              'parent_sha': parent,
-              'candidate_sha': commit['sha'],
-              'tree_sha': tree['sha'],
-              'retained_files': retained,
+              'parent_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'base_tree_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+              'blob_shas': blob_shas,
               'removed_files': (
                   '.github/workflows/prepare-ci-main-docs-lane.yml',
                   '.github/ci/prepare_ci_main_docs_lane.py',
               ),
           }
-          Path('/tmp/ci-candidate.json').write_text(json.dumps(payload, sort_keys=True), encoding='utf-8')
+          Path('/tmp/ci-blobs.json').write_text(json.dumps(payload, sort_keys=True), encoding='utf-8')
           print(json.dumps(payload, sort_keys=True))
           PY
-      - name: Upload candidate identity
+      - name: Upload validated blob identities
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ci-main-docs-lane-candidate-${{ github.run_id }}
-          path: /tmp/ci-candidate.json
+          name: ci-main-docs-lane-blobs-${{ github.run_id }}
+          path: /tmp/ci-blobs.json
           retention-days: 1
           if-no-files-found: error
