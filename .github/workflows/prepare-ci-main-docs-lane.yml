@@ -58,5 +58,6 @@ jobs:
         with:
           name: ci-main-docs-lane-final-${{ github.run_id }}
           path: /tmp/ci-main-docs-lane-final/
+          include-hidden-files: true
           retention-days: 1
           if-no-files-found: error
