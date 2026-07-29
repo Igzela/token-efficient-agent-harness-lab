@@ -18,6 +18,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR.
 - PR #301 is merged and accepted: CC Switch observation-only adaptation for protocol usage parsing, stream aggregation, model normalization, pricing estimates, and endpoint classification, under `engine/src/execution_usage/`. No authority was imported.
 - Context-capsule Phase 1 is accepted through PR #302 and Phase 2 through PR #306: `START_HERE.md` is the canonical session entry, `scripts/project_context.py` generates a fail-closed transport view, CI publishes a short-lived exact-head capsule, and repository-controlled prompts inject a fresh validated capsule. The capsule remains non-authoritative.
 - CI execution discipline is accepted through PR #310, PR #311, and PR #315: changing heads are action-enforced Drafts with non-canonical fast feedback; one `ready_for_review` transition triggers canonical exact-head CI; normal prose-only `main` pushes use the accepted-before classifier over the complete `before...after` range; uncertain pushes and explicit dispatches fail closed to the full matrix; and Rust source lanes use pinned `sccache` only as a non-authoritative compiler cache. PR #315 merged as `faac83ac7bcdf60460a966f7483b7e719d4fc1a1`; post-merge `push: main` run `30421284939` passed all seven source jobs and terminal context-capsule artifact `8712219360` bound to that SHA.
+- PR #318 is merged as `70700f9bf7eef25c4bdf86be7fc0a78686f0927a`: PostgreSQL and cutover lanes no longer repeat unrelated owners' checks, `cargo-audit` is pinned/cached, and Docker uses independently scoped Buildx/Bake layer caches. Its exact-head and post-merge canonical CI passed; caches remain non-authoritative.
 - PR #313 is merged as `ca5ce1023664c58be8d15d681a80f262fb2be70b`. Its final PR exact-head matrix passed, and post-merge `push: main` run `30381836225` completed successfully with all seven source jobs plus terminal context-capsule artifact `8697748363` bound to the same SHA.
 - Verified Delivery Economics (VDE) is adopted as a provider-free architecture and routing contract. Durable semantics live in `docs/ARCHITECTURE_BOOK.md`; execution order and gates live in `docs/NEXT_DECISION.md`. No runtime, schema, database table, Level-1 `MetricVector`, evaluator, store, budget, or adoption authority is added by this documentation decision.
 - Rust `engine/` and `LocalProductStore` remain the sole authorities for workflow state, scheduling, leases, retries, budgets, approvals, evidence, output reconciliation, audit, and persistence.
@@ -42,7 +43,7 @@ No live provider request, live managed acceptance, live RWE baseline, accepted s
 
 ## Current Product Verdict
 
-Product Golden Path authority is accepted through PR #299; the live managed task remains default-off and `AUTHORIZATION_REQUIRED`. No current live-task authorization is recorded.
+Product Golden Path authority is accepted through PR #299; the live managed task remains default-off and `AUTHORIZATION_REQUIRED`. The owner has temporarily marked live execution `DEFERRED_BY_OWNER` because no callable Agent runtime or credential is currently available. No current live-task authorization is recorded, and deferral is not completion.
 
 Fixture evidence proves the existing product sequence:
 
@@ -67,7 +68,8 @@ Therefore live acceptance is not blocked only by credential presence.
 
 | Stage | State | Entry requirement |
 |---|---|---|
-| Golden Path residual seal | `AUTHORIZATION_REQUIRED` | Supply the current exact live-authority manifest and separately authorize one bounded live managed task |
+| Provider-free RWE/VDE artifact contracts | `IN_PROGRESS` | Freeze hash-bound schemas and fail-closed validation without provider/runtime authority |
+| Golden Path residual seal | `DEFERRED_BY_OWNER` / `AUTHORIZATION_REQUIRED` | Explicitly resume, supply the current exact live-authority manifest, and separately authorize one bounded live managed task |
 | Context capsule automation | `COMPLETE` | PR #306 provides publication/injection; PR #313 proves the repaired post-merge push terminal path on `ca5ce102…` |
 | VDE decision and measurement contract | `COMPLETE` | Provider-free architecture/routing contract only; no accepted live measurement or implementation artifact exists |
 | First Real Workload Evidence | `BLOCKED_PREREQUISITE` | Accepted Golden Path terminal evidence, frozen real economic corpus/protocol, and separately authorized RWE spend envelope |
@@ -86,7 +88,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 
 1. No accepted live managed coding-executor E2E exists.
 2. No accepted live RWE baseline exists.
-3. No frozen real economic corpus, reviewer protocol, repetition grid, or accepted VDE observation exists.
+3. No frozen operator-supplied real economic corpus, reviewer protocol instance, repetition grid, or accepted VDE observation exists. Provider-free schema work does not satisfy this gap.
 4. Architecture Convergence cannot begin before that baseline is frozen.
 5. No automatic multi-generation parent-selection loop is implemented.
 6. No demonstrated cross-task continuous-learning or Meta Improver result exists.
@@ -102,14 +104,14 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 
 - Provider-free Golden Path authority: PR #299 merged and accepted at schema v33; PR #300 merged and accepted at schema v34.
 - Product Golden Path preflight: PR #308 is merged and accepted at schema v35; the live Golden Path remains `AUTHORIZATION_REQUIRED`.
-- Context/CI governance: PR #302, PR #306, PR #310, PR #311, PR #313, and PR #315 are merged and accepted; transport, fast feedback, and cache state remain non-authoritative.
-- VDE governance: the provider-free decision contract is documented; artifact schemas, real corpus, live observations, persistence automation, and Dashboard projection remain gated future work.
+- Context/CI governance: PR #302, PR #306, PR #310, PR #311, PR #313, PR #315, and PR #318 are merged and accepted; transport, fast feedback, and cache state remain non-authoritative.
+- VDE governance: the provider-free decision contract is documented; provider-free artifact-schema validation is the active packet, while a real corpus, live observations, persistence automation, and Dashboard projection remain gated future work.
 - Observation adaptation: PR #301 is merged and accepted; observation-only and restacked onto accepted main.
 - Live RWE, Architecture Convergence, Level-2, and Meta remain blocked by their named prerequisites.
 
 ## Open Work Coordination
 
-The sole next product route is the live Golden Path external authorization gate. Provider-free VDE contract preparation may continue only when it does not start live RWE, add a second owner, or change that route. PR #225 remains presentation-only and last.
+The live product route remains the Golden Path external authorization gate, but the owner has temporarily deferred it. The active executable route is provider-free RWE/VDE protocol and artifact validation under the existing RWE owner. It must not start live RWE, add a second owner, or make Architecture Convergence eligible. PR #225 remains presentation-only and last.
 
 All active branches must refresh this main documentation convergence before final merge and must not overwrite it with stale branch-local status text.
 
