@@ -22,53 +22,53 @@ pub const LOCAL_FOLDER_APPLY_RECEIPT_SCHEMA: &str = "local_folder_apply_receipt.
 pub const LOCAL_FOLDER_EXCLUDED_PATHS_ENV: &str = "ACP_PRODUCT_LOCAL_FOLDER_EXCLUDED_PATHS";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalFolderEntry {
+pub(crate) struct LocalFolderEntry {
     /// Always a bounded slash-separated relative path.
-    pub relative_path: String,
-    pub sha256: String,
-    pub executable: bool,
+    pub(crate) relative_path: String,
+    pub(crate) sha256: String,
+    pub(crate) executable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalFolderManifest {
-    pub schema_version: String,
+pub(crate) struct LocalFolderManifest {
+    pub(crate) schema_version: String,
     /// Internal-only identity; never project it into public terminal evidence.
-    pub canonical_root: PathBuf,
-    pub entries: Vec<LocalFolderEntry>,
-    pub tree_sha256: String,
+    pub(crate) canonical_root: PathBuf,
+    pub(crate) entries: Vec<LocalFolderEntry>,
+    pub(crate) tree_sha256: String,
     /// Binds the manifest to the exact configured exclusion policy without
     /// persisting the excluded private path names in public evidence.
     #[serde(default)]
-    pub excluded_paths_sha256: String,
+    pub(crate) excluded_paths_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalFolderApplyReceipt {
-    pub schema_version: String,
-    pub source_tree_sha256: String,
-    pub staged_tree_sha256: String,
-    pub rollback_root: PathBuf,
-    pub changed_relative_paths: Vec<String>,
-    pub rollback_complete: bool,
+pub(crate) struct LocalFolderApplyReceipt {
+    pub(crate) schema_version: String,
+    pub(crate) source_tree_sha256: String,
+    pub(crate) staged_tree_sha256: String,
+    pub(crate) rollback_root: PathBuf,
+    pub(crate) changed_relative_paths: Vec<String>,
+    pub(crate) rollback_complete: bool,
 }
 
 /// Digest-only description of the bounded difference between the immutable
 /// local source preimage and its app-owned staging copy. It is suitable for
 /// the existing artifact/approval owners without retaining file content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalFolderChangeSummary {
-    pub source_tree_sha256: String,
-    pub staged_tree_sha256: String,
-    pub changed_relative_paths: Vec<String>,
-    pub added_relative_paths: Vec<String>,
-    pub modified_relative_paths: Vec<String>,
-    pub deleted_relative_paths: Vec<String>,
-    pub change_sha256: String,
+pub(crate) struct LocalFolderChangeSummary {
+    pub(crate) source_tree_sha256: String,
+    pub(crate) staged_tree_sha256: String,
+    pub(crate) changed_relative_paths: Vec<String>,
+    pub(crate) added_relative_paths: Vec<String>,
+    pub(crate) modified_relative_paths: Vec<String>,
+    pub(crate) deleted_relative_paths: Vec<String>,
+    pub(crate) change_sha256: String,
 }
 
 /// Create an app-owned staging copy after rejecting symlinks and unsafe file
 /// kinds. `excluded_paths` are exact relative paths or directory prefixes.
-pub fn stage_local_folder(
+pub(crate) fn stage_local_folder(
     source_root: &Path,
     staging_root: &Path,
     excluded_paths: &[String],
@@ -98,7 +98,7 @@ pub fn stage_local_folder(
 
 /// Read the local-only exclusion policy. Empty segments are ignored, while
 /// every supplied path is normalized and de-duplicated before use.
-pub fn configured_local_folder_exclusions() -> Result<Vec<String>, String> {
+pub(crate) fn configured_local_folder_exclusions() -> Result<Vec<String>, String> {
     let configured = std::env::var(LOCAL_FOLDER_EXCLUDED_PATHS_ENV).unwrap_or_default();
     let raw = configured
         .split(',')
@@ -113,7 +113,7 @@ pub fn configured_local_folder_exclusions() -> Result<Vec<String>, String> {
     Ok(normalized.into_iter().collect())
 }
 
-pub fn capture_local_folder_manifest(
+pub(crate) fn capture_local_folder_manifest(
     source_root: &Path,
     excluded_paths: &[String],
 ) -> Result<LocalFolderManifest, String> {
@@ -121,7 +121,7 @@ pub fn capture_local_folder_manifest(
     capture_local_folder_manifest_inner(&source, &normalize_exclusions(excluded_paths)?)
 }
 
-pub fn verify_local_folder_manifest_current(
+pub(crate) fn verify_local_folder_manifest_current(
     expected: &LocalFolderManifest,
     excluded_paths: &[String],
 ) -> Result<(), String> {
@@ -139,7 +139,7 @@ pub fn verify_local_folder_manifest_current(
 /// set. The original source must still equal `source_manifest`; before each
 /// replacement an app-owned rollback copy is persisted. A failure rolls back
 /// every earlier change and reports a bounded error.
-pub fn apply_local_folder_changes(
+pub(crate) fn apply_local_folder_changes(
     source_manifest: &LocalFolderManifest,
     staged_root: &Path,
     rollback_root: &Path,
@@ -227,7 +227,7 @@ pub fn apply_local_folder_changes(
     })
 }
 
-pub fn summarize_local_folder_changes(
+pub(crate) fn summarize_local_folder_changes(
     source_manifest: &LocalFolderManifest,
     staged_root: &Path,
     excluded_paths: &[String],
@@ -297,7 +297,7 @@ fn summarize_local_folder_manifests(
     })
 }
 
-pub fn rollback_local_folder_changes(
+pub(crate) fn rollback_local_folder_changes(
     source_root: &Path,
     rollback_root: &Path,
     changed_paths: &[String],
