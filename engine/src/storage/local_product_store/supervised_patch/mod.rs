@@ -5602,6 +5602,13 @@ fn validate_terminal_product_output_record(
     let output_status = output.get("status").and_then(Value::as_str);
     if (output_intent == "artifact_only" && output_status != Some("artifact_only"))
         || (output_intent == "export_patch" && output_status != Some("exported"))
+        || (output_intent == "apply_local_changes"
+            && (output_status != Some("applied_local_changes")
+                || output.get("patch_hash") != artifact.get("patch_hash")
+                || output
+                    .get("rollback_bundle_present")
+                    .and_then(Value::as_bool)
+                    != Some(true)))
     {
         return Err("nonnetwork output receipt status changed at terminal CAS".to_string());
     }

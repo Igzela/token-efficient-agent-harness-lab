@@ -556,8 +556,39 @@ fn backup_then_replace(
         applied_marker_path,
         serde_json::to_vec(&applied_marker).map_err(|error| error.to_string())?,
     )
-    .map_err(|error| format!("local-folder rollback apply marker: {error}"))?;
+    .map_err(|error| {
+        let compensation = restore_preimage_after_marker_failure(
+            &target,
+            &backup,
+            before.map(|entry| entry.executable),
+        );
+        match compensation {
+            Ok(()) => format!("local-folder rollback apply marker: {error}"),
+            Err(compensation_error) => format!(
+                "local-folder apply effect is unconfirmed after rollback marker failure: {error}; {compensation_error}"
+            ),
+        }
+    })?;
     Ok(())
+}
+
+fn restore_preimage_after_marker_failure(
+    target: &Path,
+    backup: &Path,
+    before_executable: Option<bool>,
+) -> Result<(), String> {
+    match before_executable {
+        Some(executable) => copy_file_atomic_existing_parent(backup, target, executable),
+        None => match fs::symlink_metadata(target) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                Err("local-folder marker compensation found an unsafe target".to_string())
+            }
+            Ok(_) => fs::remove_file(target)
+                .map_err(|error| format!("local-folder marker compensation: {error}")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("local-folder marker compensation: {error}")),
+        },
+    }
 }
 
 fn local_root_fingerprint(root: &Path) -> String {

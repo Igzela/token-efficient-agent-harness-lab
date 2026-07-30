@@ -8,6 +8,8 @@ use engine::product_golden_path::{
     ProductVerificationCommand, PRODUCT_TASK_GATE,
 };
 use engine::storage::local_product_store::LocalProductStore;
+use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::process::Command;
 use std::sync::{Arc, Barrier, Mutex, OnceLock};
 
@@ -36,6 +38,59 @@ fn temp_store() -> (tempfile::TempDir, LocalProductStore) {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("store.db")).unwrap();
     (dir, store)
+}
+
+struct EnvironmentGuard(Vec<(&'static str, Option<OsString>)>);
+
+impl EnvironmentGuard {
+    fn set(values: &[(&'static str, String)]) -> Self {
+        let prior = values
+            .iter()
+            .map(|(key, _)| (*key, std::env::var_os(key)))
+            .collect();
+        for (key, value) in values {
+            std::env::set_var(key, value);
+        }
+        Self(prior)
+    }
+}
+
+impl Drop for EnvironmentGuard {
+    fn drop(&mut self) {
+        for (key, value) in self.0.drain(..) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
+fn admit_fake_codex_runtime(root: &std::path::Path) -> EnvironmentGuard {
+    let binary = root.join("codex-fixture");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex-cli 0.146.7'; else echo '--json --sandbox workspace-write --ask-for-approval --model'; fi\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let binary_sha256 = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+    EnvironmentGuard::set(&[
+        ("ACP_ENABLE_CLI_EXECUTION", "1".to_string()),
+        ("ACP_CODEX_BIN", binary.to_string_lossy().into_owned()),
+        ("ACP_CODEX_SHA256", binary_sha256),
+        ("ACP_CODEX_VERSION_POLICY", ">=0.146.0,<0.147.0".to_string()),
+        ("ACP_CODEX_REQUIRED_CAPABILITIES", "--sandbox".to_string()),
+        (
+            "ACP_CODEX_RUNTIME_PROFILE_ID",
+            "codex-evidence-fixture.v1".to_string(),
+        ),
+        ("ACP_CODEX_MODEL", "gpt-5.6-luna".to_string()),
+    ])
 }
 
 fn init_git_repo(root: &std::path::Path) -> String {
@@ -310,6 +365,7 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
 fn terminal_evidence_uses_managed_executor_class_and_owner_reported_usage() {
     with_gates(|| {
         let (dir, store) = temp_store();
+        let _runtime = admit_fake_codex_runtime(dir.path());
         let repo = dir.path().join("repo");
         let rev = init_git_repo(&repo);
         let mut request = intake(&repo, &rev, "ev-managed-classification-1", "artifact_only");
@@ -1012,7 +1068,7 @@ fn draft_pr_rejects_non_github_remote_before_branch_push() {
             .unwrap();
         assert!(out.status.success(), "{:?}", out);
         let out = Command::new("git")
-            .args(["remote", "add", "origin"])
+            .args(["remote", "set-url", "origin"])
             .arg(&bare)
             .current_dir(&repo)
             .output()

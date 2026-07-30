@@ -5629,7 +5629,6 @@ impl LocalProductStore {
                 "source_tree_sha256": receipt.source_tree_sha256,
                 "staged_tree_sha256": receipt.staged_tree_sha256,
                 "rollback_bundle_present": true,
-                "rollback_root": rollback_root.to_string_lossy(),
                 "rollback_root_fingerprint": hex::encode(Sha256::digest(rollback_root.to_string_lossy().as_bytes())),
             }));
         }
@@ -6137,10 +6136,6 @@ impl LocalProductStore {
         let output = artifact
             .pointer("/product_output_receipt/output")
             .ok_or_else(|| "local-folder rollback output receipt is missing".to_string())?;
-        let rollback_root = output
-            .get("rollback_root")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "local-folder rollback locator is missing".to_string())?;
         let changed_paths = output
             .get("changed_relative_paths")
             .and_then(Value::as_array)
@@ -6160,9 +6155,16 @@ impl LocalProductStore {
             .join("local-folder-rollbacks")
             .join(task_id)
             .join(&artifact_id);
-        if Path::new(rollback_root) != expected_rollback_root {
+        let expected_rollback_root_fingerprint = hex::encode(Sha256::digest(
+            expected_rollback_root.to_string_lossy().as_bytes(),
+        ));
+        if output
+            .get("rollback_root_fingerprint")
+            .and_then(Value::as_str)
+            != Some(expected_rollback_root_fingerprint.as_str())
+        {
             return Err(
-                "local-folder rollback locator does not match its artifact binding".to_string(),
+                "local-folder rollback proof does not match its artifact binding".to_string(),
             );
         }
         let claim = self.claim_product_local_apply_rollback(&artifact_id, task_id, actor)?;
@@ -6171,7 +6173,7 @@ impl LocalProductStore {
         }
         if let Err(_error) = crate::local_folder_source::rollback_local_folder_changes(
             Path::new(source),
-            Path::new(rollback_root),
+            &expected_rollback_root,
             &changed_paths,
         ) {
             let _ = self.mark_product_local_apply_rollback_outcome_unknown(
@@ -7061,6 +7063,22 @@ fn validate_completed_product_output_binding(
         || product_json_sha256(output)? != required_product_task_string(receipt, "output_sha256")?
     {
         return Err("completed output receipt content hash changed".to_string());
+    }
+    if (output_intent == "artifact_only"
+        && (output.get("status").and_then(Value::as_str) != Some("artifact_only")
+            || output.get("target_mutation").and_then(Value::as_bool) != Some(false)))
+        || (output_intent == "export_patch"
+            && (output.get("status").and_then(Value::as_str) != Some("exported")
+                || output.get("patch_hash") != Some(&Value::String(patch_hash.clone()))))
+        || (output_intent == "apply_local_changes"
+            && (output.get("status").and_then(Value::as_str) != Some("applied_local_changes")
+                || output.get("patch_hash") != Some(&Value::String(patch_hash.clone()))
+                || output
+                    .get("rollback_bundle_present")
+                    .and_then(Value::as_bool)
+                    != Some(true)))
+    {
+        return Err("completed output receipt result does not match its output intent".to_string());
     }
     Ok(json!({"receipt": receipt, "output": output}))
 }

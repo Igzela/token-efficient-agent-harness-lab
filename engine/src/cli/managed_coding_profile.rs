@@ -167,6 +167,25 @@ impl ManagedCodingRuntimeProfile {
         if self.schema_version != MANAGED_CODING_RUNTIME_PROFILE_SCHEMA {
             return Err("managed coding runtime profile schema is unsupported".to_string());
         }
+        match self.executor_kind {
+            ManagedCodingExecutorKind::ProviderNative
+                if self.canonical_executable_path.is_some() =>
+            {
+                return Err(
+                    "provider-native managed coding profile cannot declare a binary executable"
+                        .to_string(),
+                );
+            }
+            ManagedCodingExecutorKind::ProviderNative
+                if matches!(self.protocol_kind, ManagedCodingProtocolKind::None) =>
+            {
+                return Err(
+                    "provider-native managed coding profile requires a protocol identity"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
         self.version_policy.validate()?;
         for (field, value) in [
             ("profile_id", self.profile_id.as_str()),
@@ -387,10 +406,22 @@ fn validate_sha256(value: &str) -> Result<(), String> {
 }
 
 fn parse_version(output: &str) -> Result<String, String> {
-    output
-        .split_whitespace()
-        .find_map(|token| Semver::parse(token).ok().map(|version| version.render()))
-        .ok_or_else(|| "managed coding version probe did not produce semantic version".to_string())
+    let fields = output.split_whitespace().collect::<Vec<_>>();
+    let version = match fields.as_slice() {
+        [version] => *version,
+        [product, version] if *product == "codex-cli" => *version,
+        _ => {
+            return Err(
+                "managed coding version probe output is not an admitted Codex version form"
+                    .to_string(),
+            )
+        }
+    };
+    let parsed = Semver::parse(version)?;
+    if version != parsed.render() {
+        return Err("managed coding version probe output is not canonical".to_string());
+    }
+    Ok(parsed.render())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -553,5 +584,31 @@ mod tests {
         let mut mutated = profile.clone();
         mutated.usage_parser_version = "changed.v2".to_string();
         assert!(revalidate_binary_runtime(&mutated, &observed).is_err());
+    }
+
+    #[test]
+    fn arbitrary_output_cannot_smuggle_a_semantic_version() {
+        let (_directory, path, sha256) = script(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'unexpected 0.146.7 text'; else echo '--sandbox'; fi\n",
+        );
+        assert!(admit_binary_runtime(&profile(path, sha256)).is_err());
+    }
+
+    #[test]
+    fn provider_native_and_binary_profiles_cannot_cross_authority_boundaries() {
+        let (_directory, path, sha256) = script("#!/bin/sh\necho 'codex-cli 0.146.1'\n");
+        let binary = profile(path, sha256);
+        assert!(ManagedCodingRuntimeProfile {
+            executor_kind: ManagedCodingExecutorKind::ProviderNative,
+            ..binary.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(ManagedCodingRuntimeProfile {
+            expected_binary_sha256: None,
+            ..binary
+        }
+        .validate()
+        .is_err());
     }
 }
