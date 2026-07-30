@@ -437,30 +437,8 @@ pub fn prepare_git_worktree(
     .stdout
     .trim()
     .to_string();
-    let default_branch = run_git(config, &target_repo, &["symbolic-ref", "--short", "HEAD"])?
-        .stdout
-        .trim()
-        .to_string();
-    let origin_remote = run_git(config, &target_repo, &["remote", "get-url", "origin"])?
-        .stdout
-        .trim()
-        .to_string();
-    if origin_remote.is_empty() || contains_sensitive_patterns(&origin_remote) {
-        return Err("target repository origin identity is unavailable or unsafe".to_string());
-    }
-    let default_branch_sha = run_git(
-        config,
-        &target_repo,
-        &[
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            &format!("refs/heads/{default_branch}^{{commit}}"),
-        ],
-    )?
-    .stdout
-    .trim()
-    .to_string();
+    let (default_branch, origin_remote, default_branch_sha) =
+        inspect_git_source_identity(config, &target_repo)?;
 
     let workspace_parent = workspace_path
         .parent()
@@ -580,30 +558,8 @@ pub fn inspect_registered_git_worktree(
     if actual_source != expected_source {
         return Err("workspace_path source revision does not match target repository".to_string());
     }
-    let default_branch = run_git(config, &target_repo, &["symbolic-ref", "--short", "HEAD"])?
-        .stdout
-        .trim()
-        .to_string();
-    let origin_remote = run_git(config, &target_repo, &["remote", "get-url", "origin"])?
-        .stdout
-        .trim()
-        .to_string();
-    if origin_remote.is_empty() || contains_sensitive_patterns(&origin_remote) {
-        return Err("target repository origin identity is unavailable or unsafe".to_string());
-    }
-    let default_branch_sha = run_git(
-        config,
-        &target_repo,
-        &[
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            &format!("refs/heads/{default_branch}^{{commit}}"),
-        ],
-    )?
-    .stdout
-    .trim()
-    .to_string();
+    let (default_branch, origin_remote, default_branch_sha) =
+        inspect_git_source_identity(config, &target_repo)?;
 
     let origin_remote_fingerprint = hex::encode(Sha256::digest(origin_remote.as_bytes()));
     Ok(GitWorkspaceInfo {
@@ -616,6 +572,39 @@ pub fn inspect_registered_git_worktree(
         default_branch_sha,
         workspace_mode: "git_worktree".to_string(),
     })
+}
+
+/// Capture the stable target identity used both at workspace admission and
+/// immediately before Git output/recovery.
+fn inspect_git_source_identity(
+    config: &TargetRepoOutputConfig,
+    target_repo: &Path,
+) -> Result<(String, String, String), String> {
+    let default_branch = run_git(config, target_repo, &["symbolic-ref", "--short", "HEAD"])?
+        .stdout
+        .trim()
+        .to_string();
+    let origin_remote = run_git(config, target_repo, &["remote", "get-url", "origin"])?
+        .stdout
+        .trim()
+        .to_string();
+    if origin_remote.is_empty() || contains_sensitive_patterns(&origin_remote) {
+        return Err("target repository origin identity is unavailable or unsafe".to_string());
+    }
+    let default_branch_sha = run_git(
+        config,
+        target_repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("refs/heads/{default_branch}^{{commit}}"),
+        ],
+    )?
+    .stdout
+    .trim()
+    .to_string();
+    Ok((default_branch, origin_remote, default_branch_sha))
 }
 
 pub fn remove_git_worktree(

@@ -2725,6 +2725,113 @@ impl LocalProductStore {
         )
     }
 
+    /// Persist an explicit rollback claim before touching an operator's local
+    /// source. The completed ProductTask remains immutable; this is a
+    /// separately auditable compensation receipt owned by its artifact.
+    pub fn claim_product_local_apply_rollback(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.local_apply_rollback_claimed",
+            None,
+            |artifact, now| {
+                let receipt = artifact
+                    .get_mut("product_output_receipt")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| "local apply output receipt is missing".to_string())?;
+                if receipt.get("product_task_id").and_then(Value::as_str) != Some(product_task_id)
+                    || receipt.get("output_intent").and_then(Value::as_str)
+                        != Some("apply_local_changes")
+                    || receipt.get("state").and_then(Value::as_str) != Some("completed")
+                {
+                    return Err("local apply receipt does not authorize rollback".to_string());
+                }
+                if let Some(existing) = receipt.get("rollback") {
+                    return match existing.get("state").and_then(Value::as_str) {
+                        Some("completed") => Ok(json!({"rollback": existing, "reused": true})),
+                        Some("effect_started" | "outcome_unknown") => Err(
+                            "local-folder rollback already has an unconfirmed effect; reconciliation required"
+                                .to_string(),
+                        ),
+                        _ => Err("local-folder rollback receipt is invalid".to_string()),
+                    };
+                }
+                let rollback = json!({
+                    "schema_version": "local_folder_rollback_receipt.v1",
+                    "rollback_id": format!("local-rollback-{artifact_id}"),
+                    "state": "effect_started",
+                    "product_task_id": product_task_id,
+                    "effect_started_at": now,
+                    "effect_started_by": actor,
+                });
+                receipt.insert("rollback".to_string(), rollback.clone());
+                Ok(json!({"rollback": rollback, "reused": false}))
+            },
+        )
+    }
+
+    pub fn complete_product_local_apply_rollback(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.finish_product_local_apply_rollback(artifact_id, product_task_id, actor, "completed")
+    }
+
+    pub fn mark_product_local_apply_rollback_outcome_unknown(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.finish_product_local_apply_rollback(
+            artifact_id,
+            product_task_id,
+            actor,
+            "outcome_unknown",
+        )
+    }
+
+    fn finish_product_local_apply_rollback(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        actor: &str,
+        state: &str,
+    ) -> Result<Value, String> {
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            if state == "completed" {
+                "product_task.local_apply_rollback_completed"
+            } else {
+                "product_task.local_apply_rollback_outcome_unknown"
+            },
+            None,
+            |artifact, now| {
+                let rollback = artifact
+                    .pointer_mut("/product_output_receipt/rollback")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| "local-folder rollback receipt is missing".to_string())?;
+                if rollback.get("product_task_id").and_then(Value::as_str) != Some(product_task_id)
+                    || rollback.get("state").and_then(Value::as_str) != Some("effect_started")
+                {
+                    return Err("local-folder rollback receipt is not active".to_string());
+                }
+                rollback.insert("state".to_string(), json!(state));
+                rollback.insert("completed_at".to_string(), json!(now));
+                rollback.insert("completed_by".to_string(), json!(actor));
+                Ok(json!({"rollback": rollback, "reused": false}))
+            },
+        )
+    }
+
     /// Replay a non-network receipt after another caller already won terminal CAS.
     ///
     /// Authority remains current-state: only completed@expected+1 with a matching

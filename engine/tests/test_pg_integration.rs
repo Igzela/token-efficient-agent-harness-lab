@@ -430,7 +430,7 @@ fn pg_product_task_to_approval(
 
 #[test]
 #[cfg(feature = "pg-tests")]
-fn pg_local_folder_export_is_staged_idempotent_and_leaves_source_unchanged() {
+fn pg_local_folder_apply_and_rollback_are_staged_and_idempotent() {
     let Some(store) = test_store() else { return };
     std::env::set_var(PRODUCT_TASK_GATE, "1");
     let root = tempfile::tempdir().unwrap();
@@ -442,7 +442,7 @@ fn pg_local_folder_export_is_staged_idempotent_and_leaves_source_unchanged() {
     let source = std::fs::canonicalize(source).unwrap();
     let tag = uuid_tag();
     let request = ProductTaskIntakeRequest {
-        objective: "postgres local-folder export fixture".to_string(),
+        objective: "postgres local-folder apply fixture".to_string(),
         target_id: format!("pg-local-folder-{tag}"),
         target_repo_path: source.to_string_lossy().into_owned(),
         source_kind: Some("local_folder".to_string()),
@@ -453,7 +453,7 @@ fn pg_local_folder_export_is_staged_idempotent_and_leaves_source_unchanged() {
             command: "test -f docs/product_golden_path_fixture.md".to_string(),
             timeout_ms: 5_000,
         }],
-        output_intent: "export_patch".to_string(),
+        output_intent: "apply_local_changes".to_string(),
         executor_policy: ProductExecutorPolicy {
             allowed_executors: vec!["command".to_string()],
             prefer: Some("command".to_string()),
@@ -507,8 +507,8 @@ fn pg_local_folder_export_is_staged_idempotent_and_leaves_source_unchanged() {
         )
         .unwrap();
     assert_eq!(completed["task"]["status"], "completed");
-    assert_eq!(completed["output"]["status"], "exported");
-    assert!(!source.join("docs/product_golden_path_fixture.md").exists());
+    assert_eq!(completed["output"]["status"], "applied_local_changes");
+    assert!(source.join("docs/product_golden_path_fixture.md").exists());
     let replay = store
         .output_product_task(
             task_id,
@@ -519,6 +519,15 @@ fn pg_local_folder_export_is_staged_idempotent_and_leaves_source_unchanged() {
         )
         .unwrap();
     assert_eq!(replay["reused"], true);
+    let rolled_back = store
+        .rollback_product_task_local_folder_apply(task_id, "pg-rollback-operator")
+        .unwrap();
+    assert_eq!(rolled_back["rollback"]["state"], "completed");
+    assert!(!source.join("docs/product_golden_path_fixture.md").exists());
+    let rollback_replay = store
+        .rollback_product_task_local_folder_apply(task_id, "pg-rollback-operator")
+        .unwrap();
+    assert_eq!(rollback_replay["reused"], true);
 }
 
 #[test]

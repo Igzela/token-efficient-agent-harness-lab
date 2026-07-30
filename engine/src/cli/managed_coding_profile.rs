@@ -54,12 +54,18 @@ pub struct RuntimeVersionPolicy {
 
 impl RuntimeVersionPolicy {
     fn validate(&self) -> Result<(), String> {
-        if self.allowed_versions.is_empty()
-            && self.minimum_inclusive.is_none()
-            && self.maximum_exclusive.is_none()
-        {
+        let explicit_allowlist = !self.allowed_versions.is_empty();
+        let bounded_range = self.minimum_inclusive.is_some() && self.maximum_exclusive.is_some();
+        if !matches!(
+            (
+                explicit_allowlist,
+                self.minimum_inclusive.is_some(),
+                self.maximum_exclusive.is_some()
+            ),
+            (true, false, false) | (false, true, true)
+        ) {
             return Err(
-                "managed coding runtime version policy requires an allowlist or supported range"
+                "managed coding runtime version policy requires exactly an allowlist or a bounded supported range"
                     .to_string(),
             );
         }
@@ -80,7 +86,9 @@ impl RuntimeVersionPolicy {
             .as_deref()
             .map(Semver::parse)
             .transpose()?;
-        if minimum.is_some_and(|minimum| maximum.is_some_and(|maximum| minimum >= maximum)) {
+        if bounded_range
+            && minimum.is_some_and(|minimum| maximum.is_some_and(|maximum| minimum >= maximum))
+        {
             return Err(
                 "managed coding runtime version range must have a lower bound before its upper bound"
                     .to_string(),
@@ -494,6 +502,16 @@ mod tests {
             maximum_exclusive: None,
             denied_versions: vec![],
         };
+        assert!(admit_binary_runtime(&profile).is_err());
+    }
+
+    #[test]
+    fn one_sided_version_range_fails_closed() {
+        let (_directory, path, sha256) = script(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex-cli 0.146.1'; else echo '--sandbox'; fi\n",
+        );
+        let mut profile = profile(path, sha256);
+        profile.version_policy.maximum_exclusive = None;
         assert!(admit_binary_runtime(&profile).is_err());
     }
 

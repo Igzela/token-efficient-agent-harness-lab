@@ -4537,11 +4537,6 @@ impl LocalProductStore {
                 actor,
             )?;
             if claim.get("claim_action").and_then(Value::as_str) != Some("apply_local_changes") {
-                let _ = self.mark_product_task_output_outcome_unknown(
-                    task_id,
-                    actor,
-                    "local_apply_effect_claim_replayed",
-                );
                 return Err(
                     "apply_local_changes has a prior effect claim; reconciliation required"
                         .to_string(),
@@ -5634,6 +5629,7 @@ impl LocalProductStore {
                 "source_tree_sha256": receipt.source_tree_sha256,
                 "staged_tree_sha256": receipt.staged_tree_sha256,
                 "rollback_bundle_present": true,
+                "rollback_root": rollback_root.to_string_lossy(),
                 "rollback_root_fingerprint": hex::encode(Sha256::digest(rollback_root.to_string_lossy().as_bytes())),
             }));
         }
@@ -6101,6 +6097,108 @@ impl LocalProductStore {
             "product task workspace recovery retry exhausted while preparation remains active"
                 .to_string(),
         )
+    }
+
+    /// Execute the receipt-bound compensation path for a completed local
+    /// apply. The rollback locator never crosses a public projection; only the
+    /// artifact receipt may supply it. A crash after the claim is deliberately
+    /// reconciliation-only rather than a second filesystem mutation.
+    pub fn rollback_product_task_local_folder_apply(
+        &self,
+        task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if !product_gate_enabled() {
+            return Err("product golden path intake is disabled".to_string());
+        }
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        if task.get("status").and_then(Value::as_str) != Some(ProductTaskStatus::Completed.as_str())
+            || task.get("output_intent").and_then(Value::as_str) != Some("apply_local_changes")
+        {
+            return Err(
+                "local-folder rollback requires a completed apply_local_changes task".to_string(),
+            );
+        }
+        let run_id = required_product_task_string(&task, "run_id")?;
+        let workspace_record_id = required_product_task_string(&task, "workspace_record_id")?;
+        let source_revision = task
+            .pointer("/workspace_binding/source_revision")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "local-folder rollback source identity is missing".to_string())?;
+        let artifact = self.current_product_task_artifact(
+            task_id,
+            &run_id,
+            &workspace_record_id,
+            source_revision,
+        )?;
+        let artifact_id = required_product_task_string(&artifact, "artifact_id")?;
+        let output = artifact
+            .pointer("/product_output_receipt/output")
+            .ok_or_else(|| "local-folder rollback output receipt is missing".to_string())?;
+        let rollback_root = output
+            .get("rollback_root")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "local-folder rollback locator is missing".to_string())?;
+        let changed_paths = output
+            .get("changed_relative_paths")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "local-folder rollback paths are missing".to_string())?
+            .iter()
+            .map(|path| {
+                path.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| "local-folder rollback path is invalid".to_string())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let source = task
+            .get("target_repo_path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "local-folder rollback source is missing".to_string())?;
+        let expected_rollback_root = product_export_root(self)?
+            .join("local-folder-rollbacks")
+            .join(task_id)
+            .join(&artifact_id);
+        if Path::new(rollback_root) != expected_rollback_root {
+            return Err(
+                "local-folder rollback locator does not match its artifact binding".to_string(),
+            );
+        }
+        let claim = self.claim_product_local_apply_rollback(&artifact_id, task_id, actor)?;
+        if claim.get("reused").and_then(Value::as_bool) == Some(true) {
+            return Ok(json!({"task": task, "rollback": claim.get("rollback"), "reused": true}));
+        }
+        if let Err(_error) = crate::local_folder_source::rollback_local_folder_changes(
+            Path::new(source),
+            Path::new(rollback_root),
+            &changed_paths,
+        ) {
+            let _ = self.mark_product_local_apply_rollback_outcome_unknown(
+                &artifact_id,
+                task_id,
+                actor,
+            );
+            return Err(
+                "local-folder rollback effect is unconfirmed; reconciliation required".to_string(),
+            );
+        }
+        let rollback = match self.complete_product_local_apply_rollback(
+            &artifact_id,
+            task_id,
+            actor,
+        ) {
+            Ok(result) => result,
+            Err(_error) => {
+                let _ = self.mark_product_local_apply_rollback_outcome_unknown(
+                    &artifact_id,
+                    task_id,
+                    actor,
+                );
+                return Err("local-folder rollback receipt completion is unconfirmed; reconciliation required".to_string());
+            }
+        };
+        Ok(json!({"task": task, "rollback": rollback.get("rollback"), "reused": false}))
     }
 }
 
@@ -7982,6 +8080,15 @@ mod local_folder_product_task_tests {
             )
             .unwrap();
         assert_eq!(repeated["reused"], true);
+        let rolled_back = store
+            .rollback_product_task_local_folder_apply(task_id, "rollback-operator")
+            .unwrap();
+        assert_eq!(rolled_back["rollback"]["state"], "completed");
+        assert!(!source.join("docs/product_golden_path_fixture.md").exists());
+        let rollback_repeated = store
+            .rollback_product_task_local_folder_apply(task_id, "rollback-operator")
+            .unwrap();
+        assert_eq!(rollback_repeated["reused"], true);
     }
 
     #[test]
@@ -8017,7 +8124,7 @@ mod local_folder_product_task_tests {
         assert!(error.contains("prior effect claim"));
         assert_eq!(
             restarted.get_product_task(&task_id).unwrap().unwrap()["status"],
-            "outcome_unknown"
+            "awaiting_approval"
         );
         assert!(!source.join("docs/product_golden_path_fixture.md").exists());
     }

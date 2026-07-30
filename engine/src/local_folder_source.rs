@@ -302,8 +302,10 @@ pub fn rollback_local_folder_changes(
     rollback_root: &Path,
     changed_paths: &[String],
 ) -> Result<(), String> {
+    let source_root = canonical_local_root(source_root)?;
+    let source_root_fingerprint = local_root_fingerprint(&source_root);
     for relative in changed_paths.iter().rev() {
-        let target = joined_relative(source_root, relative)?;
+        let target = joined_relative(&source_root, relative)?;
         let backup = joined_relative(rollback_root, relative)?;
         let marker_path = backup.with_extension("acp-applied");
         let marker_raw = fs::read(&marker_path)
@@ -318,6 +320,10 @@ pub fn rollback_local_folder_changes(
                 .get("relative_path")
                 .and_then(serde_json::Value::as_str)
                 != Some(relative)
+            || marker
+                .get("source_root_fingerprint")
+                .and_then(serde_json::Value::as_str)
+                != Some(source_root_fingerprint.as_str())
         {
             return Err("local-folder rollback proof is invalid".to_string());
         }
@@ -535,6 +541,7 @@ fn backup_then_replace(
     let applied_marker = json!({
         "schema_version": "local_folder_rollback_preimage.v1",
         "relative_path": relative,
+        "source_root_fingerprint": local_root_fingerprint(source),
         "applied_sha256": after.map(|entry| entry.sha256.as_str()),
         "applied_executable": after.map(|entry| entry.executable),
         "applied_absent": after.is_none(),
@@ -551,6 +558,10 @@ fn backup_then_replace(
     )
     .map_err(|error| format!("local-folder rollback apply marker: {error}"))?;
     Ok(())
+}
+
+fn local_root_fingerprint(root: &Path) -> String {
+    hex::encode(Sha256::digest(root.to_string_lossy().as_bytes()))
 }
 
 /// Ensure the source-side parent chain is made only of real directories before
@@ -803,6 +814,41 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, "local-folder rollback preimage is stale");
         assert_eq!(fs::read(source.join("a.txt")).unwrap(), b"operator-edit");
+    }
+
+    #[test]
+    fn rollback_refuses_a_different_source_root_even_with_the_same_postimage() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a.txt"), b"before").unwrap();
+        let stage = root.path().join("stage");
+        let manifest = stage_local_folder(&source, &stage, &[]).unwrap();
+        fs::write(stage.join("a.txt"), b"applied").unwrap();
+        let expected = summarize_local_folder_changes(&manifest, &stage, &[])
+            .unwrap()
+            .change_sha256;
+        let receipt = apply_local_folder_changes(
+            &manifest,
+            &stage,
+            &root.path().join("rollback"),
+            &["a.txt".to_string()],
+            &[],
+            &expected,
+        )
+        .unwrap();
+        let unrelated = root.path().join("unrelated");
+        fs::create_dir(&unrelated).unwrap();
+        fs::write(unrelated.join("a.txt"), b"applied").unwrap();
+
+        let error = rollback_local_folder_changes(
+            &unrelated,
+            &receipt.rollback_root,
+            &receipt.changed_relative_paths,
+        )
+        .unwrap_err();
+        assert_eq!(error, "local-folder rollback proof is invalid");
+        assert_eq!(fs::read(unrelated.join("a.txt")).unwrap(), b"applied");
     }
 
     #[test]

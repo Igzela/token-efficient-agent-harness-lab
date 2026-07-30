@@ -638,8 +638,10 @@ fn parse_runtime_version_policy(policy: &str) -> Result<ParsedRuntimeVersionPoli
             return Err("ACP_CODEX_VERSION_POLICY must be =x.y.z or >=x.y.z,<x.y.z".to_string());
         }
     }
-    if minimum.is_none() && maximum.is_none() {
-        return Err("ACP_CODEX_VERSION_POLICY is empty".to_string());
+    if minimum.is_none() || maximum.is_none() {
+        return Err(
+            "ACP_CODEX_VERSION_POLICY must be =x.y.z or a bounded >=x.y.z,<x.y.z range".to_string(),
+        );
     }
     Ok((vec![], minimum, maximum))
 }
