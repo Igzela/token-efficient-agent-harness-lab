@@ -37,13 +37,12 @@ The owner has explicitly authorized the two provider-free packets below. They ge
 
 ## Active Routing
 
-1. `PE7-DEEPSEEK-DUAL-PROTOCOL-MANAGED-CODING-1` — `IN_PROGRESS` on `pe7/deepseek-dual-protocol-managed-coding-1`; provider-free only.
-2. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on Packets 1 and 2 plus its exact live-authority manifest.
-3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `AUTHORIZATION_REQUIRED` after accepted Packets 1 and 2; provider-free manifest preparation may proceed, but no live request is authorized.
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
+3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
 ## Packet States
 
@@ -66,7 +65,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319 and Packet 1 is complete through PR #320. Packet 2 is the sole executable packet. Do not begin Packet 3 before Packet 2 plus its exact live authority, or RWE/Architecture Convergence/later stages before their named prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, Packet 1 is complete through PR #320, and Packet 2 is complete through PR #321. Packet 3 is now the active frontier but remains authorization-gated: only provider-free manifest and dry-run preparation is permitted. Do not make a provider request or begin RWE/Architecture Convergence/later stages before their named prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -245,9 +244,9 @@ Required evidence includes compatible Codex patch admission without a Rust const
 
 ## Packet PE7-DEEPSEEK-DUAL-PROTOCOL-MANAGED-CODING-1
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-**Owned PR:** one focused Draft PR on `pe7/deepseek-dual-protocol-managed-coding-1`
+**Owned PR:** #321, merged as `542a5a453308f8a84e540f48767a80a9e58bf99d`
 
 **Prerequisite:** Packet `PE7-MANAGED-CODING-BOUNDARY-GENERALIZATION-1` accepted and merged. Satisfied by PR #320.
 
