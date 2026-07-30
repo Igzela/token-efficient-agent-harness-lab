@@ -4488,6 +4488,16 @@ impl LocalProductStore {
         }
 
         let output_intent = required_product_task_string(&task, "output_intent")?;
+        if output_intent == "apply_local_changes" && status == ProductTaskStatus::OutcomeUnknown {
+            // A local mutation may already have reached the operator source
+            // while its receipt outcome is uncertain. Never retry or infer a
+            // second apply; the app-owned rollback bundle must be reconciled
+            // through explicit recovery evidence instead.
+            return Err(
+                "apply_local_changes refuses an outcome-unknown effect; reconciliation required"
+                    .to_string(),
+            );
+        }
         let output_result = if output_intent == "artifact_only" {
             json!({
                 "mode": "artifact_only",

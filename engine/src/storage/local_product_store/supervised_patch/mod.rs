@@ -2583,7 +2583,10 @@ impl LocalProductStore {
         output: &Value,
         actor: &str,
     ) -> Result<Value, String> {
-        if !matches!(output_intent, "artifact_only" | "export_patch") {
+        if !matches!(
+            output_intent,
+            "artifact_only" | "export_patch" | "apply_local_changes"
+        ) {
             return Err("nonnetwork output receipt intent is invalid".to_string());
         }
         // Create/reuse path keeps strict expected-current authority. A concurrent
