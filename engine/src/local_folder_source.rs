@@ -361,19 +361,70 @@ fn backup_then_replace(
 ) -> Result<(), String> {
     let target = joined_relative(source, relative)?;
     let backup = joined_relative(rollback, relative)?;
-    if before.is_some() {
+    ensure_destination_parent_safe(source, relative)?;
+    if let Some(expected) = before {
+        let metadata = fs::symlink_metadata(&target)
+            .map_err(|_| "local-folder source preimage is stale".to_string())?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err("local-folder source preimage is unsafe".to_string());
+        }
+        if file_sha256(&target)? != expected.sha256
+            || is_executable(&target)? != expected.executable
+        {
+            return Err("local-folder source preimage is stale".to_string());
+        }
         copy_file_atomic(&target, &backup, is_executable(&target)?)?;
         fs::write(backup.with_extension("acp-present"), b"1")
             .map_err(|error| format!("local-folder rollback marker: {error}"))?;
+    } else if fs::symlink_metadata(&target).is_ok() {
+        return Err("local-folder source preimage is stale".to_string());
     }
     match after {
-        Some(entry) => copy_file_atomic(
+        Some(entry) => copy_file_atomic_existing_parent(
             &joined_relative(staged, relative)?,
             &target,
             entry.executable,
         )?,
         None => fs::remove_file(&target)
             .map_err(|error| format!("local-folder apply delete: {error}"))?,
+    }
+    Ok(())
+}
+
+/// Ensure the source-side parent chain is made only of real directories before
+/// a confirmed apply writes below it. This rejects a post-manifest symlink
+/// substitution and creates only missing bounded directory components.
+fn ensure_destination_parent_safe(source: &Path, relative: &str) -> Result<(), String> {
+    let normalized = normalize_relative(relative)?;
+    let relative = Path::new(&normalized);
+    let Some(parent) = relative.parent() else {
+        return Ok(());
+    };
+    let mut current = source.to_path_buf();
+    for component in parent.components() {
+        let Component::Normal(name) = component else {
+            return Err("local-folder destination parent is invalid".to_string());
+        };
+        current.push(name);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_dir() => {}
+            Ok(_) => return Err("local-folder destination parent is unsafe".to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::create_dir(&current) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => {
+                        return Err(format!("local-folder destination directory: {error}"));
+                    }
+                }
+                let metadata = fs::symlink_metadata(&current)
+                    .map_err(|_| "local-folder destination parent is unavailable".to_string())?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err("local-folder destination parent is unsafe".to_string());
+                }
+            }
+            Err(_) => return Err("local-folder destination parent is unavailable".to_string()),
+        }
     }
     Ok(())
 }
@@ -407,6 +458,22 @@ fn copy_file_atomic(from: &Path, to: &Path, executable: bool) -> Result<(), Stri
         .ok_or_else(|| "local-folder destination parent is missing".to_string())?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("local-folder create directory: {error}"))?;
+    copy_file_atomic_existing_parent(from, to, executable)
+}
+
+fn copy_file_atomic_existing_parent(
+    from: &Path,
+    to: &Path,
+    executable: bool,
+) -> Result<(), String> {
+    let parent = to
+        .parent()
+        .ok_or_else(|| "local-folder destination parent is missing".to_string())?;
+    let metadata = fs::symlink_metadata(parent)
+        .map_err(|_| "local-folder destination parent is unavailable".to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("local-folder destination parent is unsafe".to_string());
+    }
     let temporary = parent.join(format!(".acp-stage-{}", uuid::Uuid::new_v4()));
     let mut input =
         fs::File::open(from).map_err(|error| format!("local-folder source read: {error}"))?;
@@ -562,5 +629,34 @@ mod tests {
         assert_eq!(error, "local-folder exclusion policy changed after staging");
         assert_eq!(fs::read(source.join("public.txt")).unwrap(), b"before");
         assert_eq!(fs::read(source.join("private.txt")).unwrap(), b"private");
+    }
+
+    #[test]
+    fn replacement_rechecks_the_exact_preimage_immediately_before_write() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a.txt"), b"before").unwrap();
+        let stage = root.path().join("stage");
+        let manifest = stage_local_folder(&source, &stage, &[]).unwrap();
+        fs::write(stage.join("a.txt"), b"after").unwrap();
+        // This simulates a user edit after the manifest check but before this
+        // individual replacement receives its write turn.
+        fs::write(source.join("a.txt"), b"concurrent").unwrap();
+        let before = entries_by_path(&manifest.entries);
+        let staged = capture_local_folder_manifest(&stage, &[]).unwrap();
+        let after = entries_by_path(&staged.entries);
+
+        let error = backup_then_replace(
+            &source,
+            &stage,
+            &root.path().join("rollback"),
+            "a.txt",
+            before.get("a.txt"),
+            after.get("a.txt"),
+        )
+        .unwrap_err();
+        assert_eq!(error, "local-folder source preimage is stale");
+        assert_eq!(fs::read(source.join("a.txt")).unwrap(), b"concurrent");
     }
 }
