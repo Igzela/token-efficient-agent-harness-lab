@@ -337,6 +337,7 @@ fn postgres_managed_executor_receives_exact_long_objective_without_public_persis
     };
     with_gates(|| {
         let dir = tempfile::tempdir().unwrap();
+        let _runtime = admit_fake_codex_runtime(dir.path());
         let workspace_root = dir.path().join("product-workspaces");
         std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", &workspace_root);
         let repo = dir.path().join("repo");
