@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-07-29.
+Last updated: 2026-07-30.
 
 ## Current Direction
 
@@ -19,8 +19,10 @@ provider-free RWE authority reconciliation (#300)
 → observation-only reconciliation (#301)
 → context-capsule automation (#306/#313 accepted)
 → provider-free RWE economic protocol and VDE artifact contracts
-→ one bounded live Golden Path managed acceptance (`DEFERRED_BY_OWNER`;
-  `AUTHORIZATION_REQUIRED` remains unresolved)
+→ managed-coding boundary generalization
+→ provider-free DeepSeek dual-protocol integration
+→ one bounded DeepSeek Golden Path managed acceptance (`AUTHORIZATION_REQUIRED`
+  remains unresolved)
 → freeze one operator-supplied real RWE corpus under the accepted protocol
 → first frozen Real Workload Evidence baseline
 → Architecture Convergence AC1–AC7
@@ -31,16 +33,18 @@ provider-free RWE authority reconciliation (#300)
 → Dashboard #225 last
 ```
 
-The owner has temporarily deferred the live Golden Path because no callable Agent runtime or credential is currently available. This changes scheduling, not acceptance: do not claim the packet complete, and do not skip the live Golden Path, real economic-corpus freeze, or first RWE baseline to begin Architecture Convergence or Level-2 early. Provider-free protocol/artifact work may proceed because it creates no execution or spend authority. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
+The owner has explicitly authorized the two provider-free packets below. They generalize the existing ProductTask-owned managed-coding path and add deterministic mock-only DeepSeek protocol coverage; neither authorizes a provider request, credential disclosure, target output, target-main mutation, automatic merge, release, deployment, RWE, or economic claim. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-1` — `BLOCKED_PREREQUISITE` (`DEFERRED_BY_OWNER`; `AUTHORIZATION_REQUIRED` remains unresolved).
-2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-MANAGED-CODING-BOUNDARY-GENERALIZATION-1` — `READY_FOR_EXECUTION`.
+2. `PE7-DEEPSEEK-DUAL-PROTOCOL-MANAGED-CODING-1` — `BLOCKED_PREREQUISITE` on Packet 1.
+3. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on Packets 1 and 2 plus its exact live-authority manifest.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+8. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
 ## Packet States
 
@@ -63,7 +67,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319. No further packet is currently executable without operator-supplied real-task/value/reviewer inputs or live authority. The live product route remains `PE7-PRODUCT-GOLDEN-PATH-1`, but the owner has temporarily deferred it and its external `AUTHORIZATION_REQUIRED` gate remains unresolved. Do not begin a live Golden Path task, live RWE, Architecture Convergence, or later stages without that exact authority and the named evidence prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319. Packet 1 is now the sole executable packet. Do not begin Packet 2 before Packet 1 is accepted, Packet 3 before Packets 1 and 2 plus its exact live authority, or RWE/Architecture Convergence/later stages before their named prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -142,8 +146,8 @@ A live managed task may start only when all of these are current and exact:
 - authenticated non-fixture operator principal and required scopes;
 - separate one-use spend authorization;
 - parent-only credential that never enters the child;
-- exact executable path/version/SHA;
-- exact provider kind/host/base URL/admitted paths/model;
+- versioned managed-coding runtime profile and exact observed executable path/version/SHA/capabilities when a binary exists;
+- exact provider/protocol/host/base URL/admitted paths/requested model/resolved model;
 - exact ProductTask/workflow/node/attempt identity;
 - exact target repository and target-main SHA;
 - request/retry/token/time/cost contract;
@@ -224,29 +228,57 @@ Required behavior:
 
 Acceptance requires focused Rust tests, complete applicable CI, complete-diff review, handoff validation, and rollback by reverting the packet. This packet does not freeze an operator-supplied real corpus, establish a baseline, or unblock Architecture Convergence.
 
-## Packet PE7-PRODUCT-GOLDEN-PATH-1 — accepted authority and live residual seal
+## Packet PE7-MANAGED-CODING-BOUNDARY-GENERALIZATION-1
+
+**State:** `READY_FOR_EXECUTION`
+
+**Owned PR:** TBD (one focused Draft PR)
+
+**Prerequisite:** accepted provider-free Golden Path authority through PR #319.
+
+Generalize the ProductTask-owned managed-coding boundary without replacing the Rust runtime, scheduler, `LocalProductStore`, ProductTask budget, managed-acceptance decision/risk/spend/attempt receipts, workspace, verification, artifact, approval, output, audit, or terminal-evidence owners. Rust-owned wire governance must define a versioned runtime profile containing executor kind, protocol kind, executable identity where applicable, capability probes, requested/resolved model, thinking configuration, provider/credential/endpoint identity, usage-parser and pricing provenance, and admission class.
+
+Codex may no longer be admitted by a compile-time `0.145.0` equality check. A profile-controlled compatible range or explicit list is permitted, but every execution must canonicalize a regular executable; reject symlinks, missing/non-executable files, drift, failed probes, hash/profile mutation, and revalidate immediately before spawn. The exact observed path, version, SHA-256, capabilities, and profile hash bind the attempt. Existing Codex schemas and fixtures remain readable through explicit compatibility adapters.
+
+Add `git_repository` and `local_folder` source kinds. Git retains exact remote/default-branch SHA, app-owned detached worktree, bounded mutable paths, unchanged target main, and Draft-PR/export-only output. Local folders require an absolute canonical root, a safe source manifest/tree hash, staging-copy execution, secret/private-path exclusions, original-manifest revalidation, and public redaction. `artifact_only`, export/bounded bundle, and separately confirmed `apply_local_changes` are distinct outputs; the latter must verify preimages, create an app-owned rollback bundle, refuse stale/duplicate/late/cancelled/unknown effects, and retain redacted cleanup/rollback evidence.
+
+Required evidence includes compatible Codex patch admission without a Rust constant change; failed capability, symlink, replacement, and profile-mutation cases; legacy fixture readability; local-folder staging, verification, rollback, stale-preimage, symlink-escape, cancellation, restart, duplicate, cleanup, migration/idempotency, and SQLite/PostgreSQL parity. No provider call or target output is permitted.
+
+## Packet PE7-DEEPSEEK-DUAL-PROTOCOL-MANAGED-CODING-1
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Owned PR:** TBD
+**Owned PR:** TBD (one focused Draft PR)
 
-**Prerequisite:** PE7-CONTEXT-CAPSULE-AUTOMATION-1 (COMPLETE) and the exact external live-authority manifest below
+**Prerequisite:** Packet `PE7-MANAGED-CODING-BOUNDARY-GENERALIZATION-1` accepted and merged.
 
-The provider-free authority foundation from PR #299 is merged and accepted. PR #300, PR #301, PR #306, PR #308, and PR #313 are merged and accepted. Completion requires one separately authorized bounded live managed coding task that reaches verification, artifact, current approval, separate output confirmation, `acp/*` Draft PR, unchanged target `main`, reconciled usage, cleanup, and exact terminal evidence.
+Introduce one protocol-neutral, ProductTask-bound managed provider-call authority. It binds ProductTask/workflow/node/attempt, model role, provider/protocol/host/base URL/path, requested/resolved model, symbolic credential reference, request/retry/token/time/cost limits, current spend authorization, and attempt lease. It reuses the existing provider clients, AgentStep/scheduler/tool-policy/supervised-workspace path, normalized `execution_usage_event.v1`, and parent-owned journal; it must not form a hidden agent loop or another budget owner.
 
-**Scheduling:** `DEFERRED_BY_OWNER`
+The only accepted DeepSeek identities are `deepseek-v4-flash` and `deepseek-v4-pro`. Support both official compatibility routes: OpenAI-compatible `https://api.deepseek.com` plus `/chat/completions` with `Authorization: Bearer`, and Anthropic-compatible `https://api.deepseek.com/anthropic` plus `/v1/messages` with `x-api-key`. The parent Harness resolves symbolic `DEEPSEEK_API_KEY`; no raw credential may enter a model-created command, child environment, persistence, public evidence, or log. Missing/ambiguous/aliased/conflicting returned model or insufficient required usage fails closed, including the provider's documented fallback mapping for unsupported Anthropic model names.
 
-**External gate:** `AUTHORIZATION_REQUIRED`
+Default roles are Pro planner, Flash implementer, deterministic verification, then Pro bounded review, under one ProductTask budget envelope with optional bounded per-role sublimits. Profiles must preserve exact request paths, thinking/effort, tool semantics, stream and non-stream parsing, request IDs, stop status, normalized cache/reasoning usage, retry/outcome-unknown classification, versioned price source/verified-at metadata, and conservative pre-send reservation. Missing or stale dollar pricing blocks a dollar live gate; provider-free fixtures may use token-only bounds.
 
-The owner has temporarily shelved live execution because no callable Agent runtime or credential is currently available. No current live-task authority has been supplied. Resumption requires an explicit owner decision plus the exact current manifest. Before any provider or target-repository effect, existing canonical owners must provide and persist every Golden Path Acceptance Gate input: accepted decision and residual-risk hashes; authenticated non-fixture principal and scopes; one-use spend authorization with its bounded limit; an already configured parent-only credential; exact executable path/version/SHA; provider kind/host/base URL/admitted paths/model; ProductTask/workflow/node/attempt identity; target repository and target-main SHA; request/retry/token/time/cost bounds; Draft-PR-only output restriction; usage reconciliation; and cancellation, cleanup, rollback, approval, output-confirmation, and terminal-evidence owners. A fresh capsule must bind those current identities at execution time.
+Required evidence is deterministic local mock-provider coverage for both models and both protocols, role routing, tools/malformed tools, identity and alias rejection, usage conflicts, cache/reasoning accounting, all limits, pre-send versus outcome-unknown behavior, malformed/truncated streams, credential redaction, cancellation/restart/duplicate/lease/late-response handling, existing-provider/Codex compatibility, and SQLite/PostgreSQL parity. Canonical CI never calls DeepSeek.
 
-This packet does not authorize choosing a spend cap, target, provider, model, credential, value basis, or reviewer policy, nor creating, rotating, copying, or disclosing a credential. While the manifest is absent, only provider-free inspection, contract preparation, and verification are permitted. Provider-free preparation may tighten owner-derived preflight, pre-child cleanup, and VDE/RWE artifact schemas, but it cannot create a lease or live authority, forward a provider request, change this packet state, or claim economic performance. Report `AUTHORIZATION_REQUIRED`; do not mark this packet complete, call a provider, modify target `main`, start RWE, Architecture Convergence, Level-2, Meta, release, deployment, or Dashboard work.
+## Packet PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1
+
+**State:** `BLOCKED_PREREQUISITE` / `AUTHORIZATION_REQUIRED`
+
+**Owned PR:** TBD (one focused Draft PR)
+
+**Prerequisite:** Packets 1 and 2 accepted and merged; refreshed main/capsule; no unresolved objection; exact live manifest; parent-only credential presence; and an owner-supplied one-use `MAX_COST_USD`.
+
+Before any provider request, display the exact manifest: accepted main and decision/residual-risk hashes; authenticated non-fixture principal/scopes; credential reference and presence only; protocol/provider/base/path; role-model profiles; hard request/retry/token/time/cost limits; ProductTask/workflow/node/attempt IDs; source identity and mutable paths; verifier; approval/output/cleanup/rollback/evidence owners; and Draft-PR-only target restriction. Ask only for the cost cap, confirmation of parent-environment credential presence, and final acceptance of that manifest.
+
+The sole first target is `Igzela/alters-lab`. Refresh and bind its current default-branch SHA, reject overlapping assumptions, and select only a tiny deterministic task touching at most three bounded files. Execute Pro planning, Flash implementation, deterministic verification, and Pro review; neither model receives spend, approval, output, or merge authority. The only target output is an unmerged `acp/*` Draft PR and target main must remain unchanged. If the target is unsuitable, return `DECISION_REQUIRED`; do not substitute another target.
+
+Completion requires reconciled redacted usage/cost evidence, expired one-use spend, closed attempt lease, cleanup and rollback receipts, independently reviewed terminal evidence, exactly one realized workflow sample labeled `INSUFFICIENT_REPETITIONS`, and post-observation canonical-document updates. It authorizes neither RWE nor economic, reliability, learning, ROI, success-probability, release, deployment, installation, target-main, or auto-merge claims.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PE7-PRODUCT-GOLDEN-PATH-1
+**Prerequisite:** `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1`
 
 PR #300 may prepare provider-free corpus, authorization, runner, and evidence contracts, but live RWE requires accepted Golden Path terminal evidence plus a separately persisted one-use RWE spend envelope.
 

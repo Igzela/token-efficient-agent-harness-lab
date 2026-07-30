@@ -175,9 +175,19 @@ The local file-descriptor lock protects one app-owned Git worktree path; Postgre
 
 The accepted v35 receipt retires only after a durable `workspace_bound` result or compensation that proves the exact Git registration and workspace path are absent; idempotent admission/recovery reaps crash-left retirement residue conservatively. v35 rollback is permitted only after its receipt table is drained, with the rollback audit committed atomically and matching SQLite/PostgreSQL semantics.
 
+### Authorized managed-coding generalization
+
+The managed-coding product boundary is executor-generic, even where accepted code still contains Codex-specific adapters. Its versioned, Rust-owned runtime profile binds executor kind, protocol kind, exact executable identity when one exists, required capability probes, requested and resolved model, thinking configuration, provider identity, symbolic credential reference, endpoint allowlist, usage-parser version, pricing source/version, and admission classification. A profile may express a compatible release range or an explicit list, but terminal evidence always records the actual canonical path, observed version, SHA-256, capability results, and profile hash. A process name, configured path, or caller assertion alone never admits execution.
+
+At admission and immediately before spawn, binary-backed executors must reject symlinks, non-regular/missing/non-executable files, path drift, identity/profile mutation, and missing or changed required capabilities. These checks add no second lease, budget, credential, store, or process owner. Existing Codex records retain their historical schema values through explicit compatibility adapters; historical evidence is not rewritten merely to generalize a name.
+
+Product source is either `git_repository` or `local_folder`. A Git source binds remote/repository/default-branch SHA, an app-owned detached worktree, bounded mutable paths, and unchanged target main. A local-folder source binds an operator-selected absolute canonical root and safe exact manifest/tree hash, runs in an app-owned staging copy by default, excludes configured secret/private paths, and exposes only bounded relative paths/fingerprints outside the internal workspace owner. It refuses symlink escapes, traversal, devices, sockets, and unsafe special files. Original-source revalidation is mandatory before any output.
+
+Local-folder `artifact_only`, bounded export, and `apply_local_changes` are separate output modes. Applying needs fresh preimage hashes, bounded atomic replacement where available, an app-owned rollback bundle created before mutation, refusal of stale/duplicate/late/cancelled/outcome-unknown/out-of-scope effects, and cleanup/rollback receipts. Separate current approval and output confirmation remain mandatory; direct in-place execution is not permitted.
+
 ## Managed Process Boundary
 
-The accepted managed-process owner provides exact executable identity, cleared/minimal environment, bounded output and time, descendant cleanup where proved, typed process outcomes, and non-retryable handling after an effect may have begun.
+The accepted managed-process owner provides exact executable identity, cleared/minimal environment, bounded output and time, descendant cleanup where proved, typed process outcomes, and non-retryable handling after an effect may have begun. Managed coding profiles extend this owner rather than create an executor-specific process supervisor.
 
 There is no universal cross-executor sandbox that can be treated as a complete security boundary.
 
@@ -233,6 +243,14 @@ Cost semantics are explicit:
 - `cost_unavailable` when neither is trustworthy.
 
 Unknown price is unavailable, not zero. Local estimates never become billing receipts or pre-call spend authority unless a separately reviewed gateway contract enforces them.
+
+### Managed provider calls
+
+Protocol adapters are evidence and transport adapters beneath one ProductTask-owned managed provider-call authority. Every send binds the current ProductTask/workflow/node/attempt, lease, one-use spend state, model role, exact provider/protocol/host/base URL/path, requested and resolved model, symbolic credential reference, and hard request/retry/input/output/cumulative-token/time/cost limits. The parent Harness resolves credentials only at the send boundary; raw values do not enter tool subprocesses, model-created commands, persistence, durable evidence, or public projections.
+
+The initial admitted DeepSeek profiles are exact: `deepseek-v4-flash` and `deepseek-v4-pro`; OpenAI-compatible Chat Completions at `https://api.deepseek.com/chat/completions`; and Anthropic-compatible Messages at `https://api.deepseek.com/anthropic/v1/messages`. Unsupported-name fallback or alias mapping is not resolved-model evidence. Missing, ambiguous, conflicting, or untrusted returned model/usage evidence is fail-closed for an admitted class. Both protocols share the same ProductTask spend envelope; planner/implementer/reviewer sublimits never become spend owners.
+
+The parent-owned journal conservatively reserves before send, retains consumption after failed, killed, cancelled, timed-out, or outcome-unknown effects, and never retries an outcome-unknown request. Protocol-specific parsers normalize stream/non-stream text and tool semantics, request identity, stop status, cache and reasoning buckets, and usage into `execution_usage_event.v1`; they never substitute a second journal or budget owner. A dollar-denominated live gate requires current, versioned, source-labeled conservative pricing. Token-only fixture limits remain allowed, but unknown/stale price is unavailable rather than zero.
 
 ## Evidence and Lifecycle Cost
 

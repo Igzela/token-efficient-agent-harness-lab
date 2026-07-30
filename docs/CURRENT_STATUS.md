@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-07-29.
+Last updated: 2026-07-30.
 
 ## Verified Repository State
 
@@ -44,7 +44,7 @@ No live provider request, live managed acceptance, live RWE baseline, accepted s
 
 ## Current Product Verdict
 
-Product Golden Path authority is accepted through PR #299; the live managed task remains default-off and `AUTHORIZATION_REQUIRED`. The owner has temporarily marked live execution `DEFERRED_BY_OWNER` because no callable Agent runtime or credential is currently available. No current live-task authorization is recorded, and deferral is not completion.
+Product Golden Path authority is accepted through PR #299; live execution remains default-off and `AUTHORIZATION_REQUIRED`. The owner has resumed provider-free implementation of the bounded managed-coding generalization recorded in `docs/NEXT_DECISION.md`: Packet 1 may establish the generic runtime/profile and source boundaries, then Packet 2 may add provider-free DeepSeek dual-protocol adapters. This accepted direction is not a provider-call, spend, target-output, or live-task authorization. Packet 3 remains separately gated by its exact one-use manifest, parent-only credential presence, and owner-supplied spend cap.
 
 Fixture evidence proves the existing product sequence:
 
@@ -70,7 +70,9 @@ Therefore live acceptance is not blocked only by credential presence.
 | Stage | State | Entry requirement |
 |---|---|---|
 | Provider-free RWE/VDE artifact contracts | `COMPLETE` | PR #319 freezes hash-bound schemas and fail-closed validation without provider/runtime authority |
-| Golden Path residual seal | `DEFERRED_BY_OWNER` / `AUTHORIZATION_REQUIRED` | Explicitly resume, supply the current exact live-authority manifest, and separately authorize one bounded live managed task |
+| Managed-coding boundary generalization | `READY_FOR_EXECUTION` | Packet `PE7-MANAGED-CODING-BOUNDARY-GENERALIZATION-1`; no provider call or target output |
+| DeepSeek dual-protocol managed coding | `BLOCKED_PREREQUISITE` | Accepted Packet 1, then Packet `PE7-DEEPSEEK-DUAL-PROTOCOL-MANAGED-CODING-1`; CI remains provider-free |
+| Golden Path live residual seal | `BLOCKED_PREREQUISITE` / `AUTHORIZATION_REQUIRED` | Accepted Packets 1 and 2, then a current exact one-use manifest, parent-only credential presence, and owner-supplied spend cap |
 | Context capsule automation | `COMPLETE` | PR #306 provides publication/injection; PR #313 proves the repaired post-merge push terminal path on `ca5ce102…` |
 | VDE decision and measurement contract | `COMPLETE` | Provider-free architecture/routing contract only; no accepted live measurement or implementation artifact exists |
 | First Real Workload Evidence | `BLOCKED_PREREQUISITE` | Accepted Golden Path terminal evidence, frozen real economic corpus/protocol, and separately authorized RWE spend envelope |
@@ -104,7 +106,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 ## Active Tracks
 
 - Provider-free Golden Path authority: PR #299 merged and accepted at schema v33; PR #300 merged and accepted at schema v34.
-- Product Golden Path preflight: PR #308 is merged and accepted at schema v35; the live Golden Path remains `AUTHORIZATION_REQUIRED`.
+- Product Golden Path preflight: PR #308 is merged and accepted at schema v35. The next ordered work is managed-coding boundary generalization, then provider-free DeepSeek dual-protocol integration; the live Golden Path remains `AUTHORIZATION_REQUIRED`.
 - Context/CI governance: PR #302, PR #306, PR #310, PR #311, PR #313, PR #315, and PR #318 are merged and accepted; transport, fast feedback, and cache state remain non-authoritative.
 - VDE governance: the provider-free decision contract and artifact-schema validation are complete through PR #319; a real corpus, live observations, persistence automation, and Dashboard projection remain gated future work.
 - Observation adaptation: PR #301 is merged and accepted; observation-only and restacked onto accepted main.
@@ -112,7 +114,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 
 ## Open Work Coordination
 
-The live product route remains the Golden Path external authorization gate, but the owner has temporarily deferred it. Provider-free RWE/VDE protocol and artifact validation is complete through PR #319 and does not make Architecture Convergence eligible. No further packet is executable without operator-supplied real-task/value/reviewer inputs or live authority. PR #225 remains presentation-only and last.
+The live product route remains the Golden Path external authorization gate. The owner has authorized only the two provider-free implementation packets that precede its live residual seal; this does not make RWE, Architecture Convergence, Level-2, Meta, or Dashboard work eligible. PR #225 remains presentation-only and last.
 
 All active branches must refresh this main documentation convergence before final merge and must not overwrite it with stale branch-local status text.
 
