@@ -534,6 +534,14 @@ pub struct ProductWorkspaceBinding {
     /// exclusions. `None` preserves existing git and historical records.
     #[serde(default)]
     pub local_folder_exclusions_sha256: Option<String>,
+    #[serde(default)]
+    pub git_origin_remote: Option<String>,
+    #[serde(default)]
+    pub git_origin_remote_fingerprint: Option<String>,
+    #[serde(default)]
+    pub git_default_branch: Option<String>,
+    #[serde(default)]
+    pub git_default_branch_sha: Option<String>,
     pub provisional_run_id: String,
     pub allowed_paths: Vec<String>,
     pub bound_at: String,

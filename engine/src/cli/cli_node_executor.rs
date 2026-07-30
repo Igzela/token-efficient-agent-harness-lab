@@ -2276,6 +2276,12 @@ mod tests {
             &["config", "user.name", "Executor Test"][..],
             &["add", "README.md"][..],
             &["commit", "-m", "fixture"][..],
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/cli-product.git",
+            ][..],
         ] {
             let output = Command::new("git")
                 .args(args)

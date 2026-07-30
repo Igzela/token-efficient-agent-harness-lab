@@ -2642,6 +2642,89 @@ impl LocalProductStore {
         }
     }
 
+    /// Persist the local-folder effect identity before the original source can
+    /// be mutated.  A restart that observes this claim cannot safely infer
+    /// whether the filesystem effect happened, so the caller must reconcile
+    /// rather than retrying the apply.
+    pub fn claim_product_local_apply_effect(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        approval_id: &str,
+        expected_task_version: u64,
+        actor: &str,
+    ) -> Result<Value, String> {
+        let authority_request = json!({
+            "schema_version": "product_output_authority_request.v1",
+            "product_task_id": product_task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval_id,
+            "output_intent": "apply_local_changes",
+            "expected_task_version": expected_task_version,
+        });
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.local_apply_effect_claimed",
+            Some(&authority_request),
+            |artifact, now| {
+                let request = json!({
+                    "schema_version": "product_nonnetwork_output_request.v1",
+                    "product_task_id": product_task_id,
+                    "artifact_id": artifact_id,
+                    "approval_id": approval_id,
+                    "output_intent": "apply_local_changes",
+                    "expected_task_version": expected_task_version,
+                    "source_revision": artifact.get("source_revision"),
+                    "patch_hash": artifact.get("patch_hash"),
+                });
+                let request_sha256 = target_output_json_sha256(&request)?;
+                if let Some(existing) = artifact.get("product_output_receipt") {
+                    if existing.get("request") == Some(&request)
+                        && existing.get("request_sha256").and_then(Value::as_str)
+                            == Some(request_sha256.as_str())
+                        && existing.get("state").and_then(Value::as_str)
+                            == Some("effect_started")
+                    {
+                        let mut replay = existing.clone();
+                        replay
+                            .as_object_mut()
+                            .expect("product output receipt is an object")
+                            .insert("claim_action".to_string(), json!("reconciliation_required"));
+                        return Ok(replay);
+                    }
+                    return Err("local apply output receipt already exists with another binding".to_string());
+                }
+                let receipt = json!({
+                    "schema_version": "product_output_receipt.v1",
+                    "receipt_id": format!("product-output-receipt-{artifact_id}-{}", &request_sha256[..12]),
+                    "state": "effect_started",
+                    "product_task_id": product_task_id,
+                    "artifact_id": artifact_id,
+                    "approval_id": approval_id,
+                    "output_intent": "apply_local_changes",
+                    "expected_task_version": expected_task_version,
+                    "source_revision": artifact.get("source_revision"),
+                    "patch_hash": artifact.get("patch_hash"),
+                    "request": request,
+                    "request_sha256": request_sha256,
+                    "effect_started_at": now,
+                    "effect_started_by": actor,
+                });
+                artifact
+                    .as_object_mut()
+                    .ok_or_else(|| "supervised patch artifact must be an object".to_string())?
+                    .insert("product_output_receipt".to_string(), receipt.clone());
+                let mut response = receipt;
+                response
+                    .as_object_mut()
+                    .expect("product output receipt is an object")
+                    .insert("claim_action".to_string(), json!("apply_local_changes"));
+                Ok(response)
+            },
+        )
+    }
+
     /// Replay a non-network receipt after another caller already won terminal CAS.
     ///
     /// Authority remains current-state: only completed@expected+1 with a matching
@@ -5155,6 +5238,27 @@ fn record_or_reuse_nonnetwork_output_receipt(
             && existing.get("state").and_then(Value::as_str) == Some("completed")
         {
             return Ok(existing.clone());
+        }
+        if output_intent == "apply_local_changes"
+            && existing.get("request") == Some(&request)
+            && existing.get("request_sha256").and_then(Value::as_str)
+                == Some(request_sha256.as_str())
+            && existing.get("state").and_then(Value::as_str) == Some("effect_started")
+        {
+            let mut completed = existing.clone();
+            let receipt = completed
+                .as_object_mut()
+                .ok_or_else(|| "product output receipt must be an object".to_string())?;
+            receipt.insert("state".to_string(), json!("completed"));
+            receipt.insert("output".to_string(), output.clone());
+            receipt.insert("output_sha256".to_string(), json!(output_sha256));
+            receipt.insert("completed_at".to_string(), json!(now));
+            receipt.insert("completed_by".to_string(), json!(actor));
+            artifact
+                .as_object_mut()
+                .ok_or_else(|| "supervised patch artifact must be an object".to_string())?
+                .insert("product_output_receipt".to_string(), completed.clone());
+            return Ok(completed);
         }
         return Err("nonnetwork output receipt already exists with another binding".to_string());
     }

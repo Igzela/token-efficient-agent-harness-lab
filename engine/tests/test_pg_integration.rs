@@ -430,6 +430,99 @@ fn pg_product_task_to_approval(
 
 #[test]
 #[cfg(feature = "pg-tests")]
+fn pg_local_folder_export_is_staged_idempotent_and_leaves_source_unchanged() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("operator-folder");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("README.md"), b"original").unwrap();
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let source = std::fs::canonicalize(source).unwrap();
+    let tag = uuid_tag();
+    let request = ProductTaskIntakeRequest {
+        objective: "postgres local-folder export fixture".to_string(),
+        target_id: format!("pg-local-folder-{tag}"),
+        target_repo_path: source.to_string_lossy().into_owned(),
+        source_kind: Some("local_folder".to_string()),
+        source_revision: "operator-supplied-placeholder".to_string(),
+        source_tree_hash: None,
+        allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f docs/product_golden_path_fixture.md".to_string(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: "export_patch".to_string(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["command".to_string()],
+            prefer: Some("command".to_string()),
+        },
+        budget: None,
+        risk_class: "low".to_string(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: Some(false),
+        idempotency_key: format!("pg-local-folder-{tag}"),
+        expected_version: None,
+        tenant_id: Some("local".to_string()),
+        workspace_id: Some("default".to_string()),
+        workspace_mode: Some("local_folder".to_string()),
+    };
+    let validated = validate_intake(&request, "local", "default").unwrap();
+    let task = store
+        .admit_product_task(&validated, "pg-local-folder")
+        .unwrap();
+    let task_id = task["task_id"].as_str().unwrap();
+    let compiled = store
+        .compile_and_schedule_product_task(task_id, "pg-local-folder", &["command".to_string()])
+        .unwrap();
+    let run_id = compiled["task"]["run_id"].as_str().unwrap();
+    let executor = engine::node_executor::CommandNodeExecutor::default();
+    for _ in 0..8 {
+        let tick = store
+            .tick_with_executor(run_id, "pg-local-folder", 1, &executor)
+            .unwrap();
+        if tick.pointer("/run/status").and_then(Value::as_str) == Some("completed") {
+            break;
+        }
+    }
+    let finalized = store
+        .finalize_product_task_after_execution(task_id, "pg-local-folder")
+        .unwrap();
+    let approval = store
+        .approve_product_task(
+            task_id,
+            "pg-independent-operator",
+            finalized["task"]["version"].as_u64().unwrap(),
+        )
+        .unwrap();
+    let completed = store
+        .output_product_task(
+            task_id,
+            "pg-output-operator",
+            finalized["task"]["version"].as_u64().unwrap(),
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(completed["task"]["status"], "completed");
+    assert_eq!(completed["output"]["status"], "exported");
+    assert!(!source.join("docs/product_golden_path_fixture.md").exists());
+    let replay = store
+        .output_product_task(
+            task_id,
+            "pg-output-operator",
+            completed["task"]["version"].as_u64().unwrap(),
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(replay["reused"], true);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
 fn pg_managed_acceptance_product_task_phase_revalidates_real_receipts() {
     let Some(store) = test_store() else { return };
     std::env::set_var(PRODUCT_TASK_GATE, "1");
@@ -1047,6 +1140,12 @@ fn pg_product_repo(label: &str) -> (tempfile::TempDir, String) {
         &["config", "user.name", "PG Product Test"][..],
         &["add", "README.md"][..],
         &["commit", "-m", "init"][..],
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/pg-product.git",
+        ][..],
     ] {
         let output = Command::new("git")
             .args(args)
@@ -1861,6 +1960,12 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         &["config", "user.name", "PG Product Test"][..],
         &["add", "README.md"][..],
         &["commit", "-m", "init"][..],
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/pg-product-approval.git",
+        ][..],
     ] {
         let output = Command::new("git")
             .args(args)

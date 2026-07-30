@@ -11,6 +11,7 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 
 pub const LOCAL_FOLDER_MANIFEST_SCHEMA: &str = "local_folder_source_manifest.v1";
@@ -304,6 +305,49 @@ pub fn rollback_local_folder_changes(
     for relative in changed_paths.iter().rev() {
         let target = joined_relative(source_root, relative)?;
         let backup = joined_relative(rollback_root, relative)?;
+        let marker_path = backup.with_extension("acp-applied");
+        let marker_raw = fs::read(&marker_path)
+            .map_err(|_| "local-folder rollback proof is unavailable".to_string())?;
+        let marker: serde_json::Value = serde_json::from_slice(&marker_raw)
+            .map_err(|_| "local-folder rollback proof is invalid".to_string())?;
+        if marker
+            .get("schema_version")
+            .and_then(serde_json::Value::as_str)
+            != Some("local_folder_rollback_preimage.v1")
+            || marker
+                .get("relative_path")
+                .and_then(serde_json::Value::as_str)
+                != Some(relative)
+        {
+            return Err("local-folder rollback proof is invalid".to_string());
+        }
+        if marker
+            .get("applied_absent")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            if fs::symlink_metadata(&target).is_ok() {
+                return Err("local-folder rollback preimage is stale".to_string());
+            }
+        } else {
+            let expected_sha = marker
+                .get("applied_sha256")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "local-folder rollback proof is invalid".to_string())?;
+            let expected_executable = marker
+                .get("applied_executable")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| "local-folder rollback proof is invalid".to_string())?;
+            let metadata = fs::symlink_metadata(&target)
+                .map_err(|_| "local-folder rollback preimage is stale".to_string())?;
+            if metadata.file_type().is_symlink()
+                || !metadata.is_file()
+                || file_sha256(&target)? != expected_sha
+                || is_executable(&target)? != expected_executable
+            {
+                return Err("local-folder rollback preimage is stale".to_string());
+            }
+        }
         let marker = backup.with_extension("acp-present");
         if marker.exists() {
             copy_file_atomic(&backup, &target, is_executable(&backup)?)?;
@@ -488,6 +532,24 @@ fn backup_then_replace(
         None => fs::remove_file(&target)
             .map_err(|error| format!("local-folder apply delete: {error}"))?,
     }
+    let applied_marker = json!({
+        "schema_version": "local_folder_rollback_preimage.v1",
+        "relative_path": relative,
+        "applied_sha256": after.map(|entry| entry.sha256.as_str()),
+        "applied_executable": after.map(|entry| entry.executable),
+        "applied_absent": after.is_none(),
+    });
+    let applied_marker_path = backup.with_extension("acp-applied");
+    let marker_parent = applied_marker_path
+        .parent()
+        .ok_or_else(|| "local-folder rollback marker parent is missing".to_string())?;
+    fs::create_dir_all(marker_parent)
+        .map_err(|error| format!("local-folder rollback marker directory: {error}"))?;
+    fs::write(
+        applied_marker_path,
+        serde_json::to_vec(&applied_marker).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("local-folder rollback apply marker: {error}"))?;
     Ok(())
 }
 
@@ -708,6 +770,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fs::read(source.join("a.txt")).unwrap(), b"before");
+    }
+
+    #[test]
+    fn rollback_refuses_to_overwrite_a_concurrent_source_edit() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a.txt"), b"before").unwrap();
+        let stage = root.path().join("stage");
+        let manifest = stage_local_folder(&source, &stage, &[]).unwrap();
+        fs::write(stage.join("a.txt"), b"applied").unwrap();
+        let expected = summarize_local_folder_changes(&manifest, &stage, &[])
+            .unwrap()
+            .change_sha256;
+        let receipt = apply_local_folder_changes(
+            &manifest,
+            &stage,
+            &root.path().join("rollback"),
+            &["a.txt".to_string()],
+            &[],
+            &expected,
+        )
+        .unwrap();
+        fs::write(source.join("a.txt"), b"operator-edit").unwrap();
+
+        let error = rollback_local_folder_changes(
+            &source,
+            &receipt.rollback_root,
+            &receipt.changed_relative_paths,
+        )
+        .unwrap_err();
+        assert_eq!(error, "local-folder rollback preimage is stale");
+        assert_eq!(fs::read(source.join("a.txt")).unwrap(), b"operator-edit");
     }
 
     #[test]

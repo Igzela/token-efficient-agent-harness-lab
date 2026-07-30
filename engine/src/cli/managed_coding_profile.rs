@@ -53,7 +53,44 @@ pub struct RuntimeVersionPolicy {
 }
 
 impl RuntimeVersionPolicy {
+    fn validate(&self) -> Result<(), String> {
+        if self.allowed_versions.is_empty()
+            && self.minimum_inclusive.is_none()
+            && self.maximum_exclusive.is_none()
+        {
+            return Err(
+                "managed coding runtime version policy requires an allowlist or supported range"
+                    .to_string(),
+            );
+        }
+        for version in self
+            .allowed_versions
+            .iter()
+            .chain(self.denied_versions.iter())
+        {
+            Semver::parse(version)?;
+        }
+        let minimum = self
+            .minimum_inclusive
+            .as_deref()
+            .map(Semver::parse)
+            .transpose()?;
+        let maximum = self
+            .maximum_exclusive
+            .as_deref()
+            .map(Semver::parse)
+            .transpose()?;
+        if minimum.is_some_and(|minimum| maximum.is_some_and(|maximum| minimum >= maximum)) {
+            return Err(
+                "managed coding runtime version range must have a lower bound before its upper bound"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
     pub fn admits(&self, observed: &str) -> Result<bool, String> {
+        self.validate()?;
         let observed = Semver::parse(observed)?;
         let canonical = observed.render();
         if self
@@ -122,6 +159,7 @@ impl ManagedCodingRuntimeProfile {
         if self.schema_version != MANAGED_CODING_RUNTIME_PROFILE_SCHEMA {
             return Err("managed coding runtime profile schema is unsupported".to_string());
         }
+        self.version_policy.validate()?;
         for (field, value) in [
             ("profile_id", self.profile_id.as_str()),
             ("provider_identity", self.provider_identity.as_str()),
@@ -442,6 +480,21 @@ mod tests {
                 .observed_version,
             "0.146.99"
         );
+    }
+
+    #[test]
+    fn unconstrained_version_policy_fails_closed() {
+        let (_directory, path, sha256) = script(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex-cli 0.146.1'; else echo '--sandbox'; fi\n",
+        );
+        let mut profile = profile(path, sha256);
+        profile.version_policy = RuntimeVersionPolicy {
+            allowed_versions: vec![],
+            minimum_inclusive: None,
+            maximum_exclusive: None,
+            denied_versions: vec![],
+        };
+        assert!(admit_binary_runtime(&profile).is_err());
     }
 
     #[test]

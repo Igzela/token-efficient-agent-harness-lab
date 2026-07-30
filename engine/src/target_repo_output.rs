@@ -84,6 +84,15 @@ pub struct GitWorkspaceInfo {
     pub workspace_path: String,
     pub source_revision: String,
     pub default_branch: String,
+    /// Exact credential-free origin retained only by the internal workspace
+    /// owner. Public/audit projections expose the fingerprint below instead.
+    pub origin_remote: String,
+    /// SHA-256 fingerprint of the credential-free origin. Public and audit
+    /// projections retain this fingerprint rather than the internal remote.
+    pub origin_remote_fingerprint: String,
+    /// Exact current commit of the bound default branch, distinct from a
+    /// possibly detached source revision.
+    pub default_branch_sha: String,
     pub workspace_mode: String,
 }
 
@@ -432,6 +441,26 @@ pub fn prepare_git_worktree(
         .stdout
         .trim()
         .to_string();
+    let origin_remote = run_git(config, &target_repo, &["remote", "get-url", "origin"])?
+        .stdout
+        .trim()
+        .to_string();
+    if origin_remote.is_empty() || contains_sensitive_patterns(&origin_remote) {
+        return Err("target repository origin identity is unavailable or unsafe".to_string());
+    }
+    let default_branch_sha = run_git(
+        config,
+        &target_repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("refs/heads/{default_branch}^{{commit}}"),
+        ],
+    )?
+    .stdout
+    .trim()
+    .to_string();
 
     let workspace_parent = workspace_path
         .parent()
@@ -477,11 +506,15 @@ pub fn prepare_git_worktree(
     let canonical_workspace = canonical_existing_dir(&planned_workspace, "workspace_path")
         .map_err(|error| format!("{GIT_WORKTREE_ADD_OUTCOME_UNKNOWN}: {error}"))?;
 
+    let origin_remote_fingerprint = hex::encode(Sha256::digest(origin_remote.as_bytes()));
     Ok(GitWorkspaceInfo {
         schema_version: TARGET_REPO_OUTPUT_SCHEMA_VERSION.to_string(),
         workspace_path: canonical_workspace.to_string_lossy().into_owned(),
         source_revision: source,
         default_branch,
+        origin_remote,
+        origin_remote_fingerprint,
+        default_branch_sha,
         workspace_mode: "git_worktree".to_string(),
     })
 }
@@ -551,12 +584,36 @@ pub fn inspect_registered_git_worktree(
         .stdout
         .trim()
         .to_string();
+    let origin_remote = run_git(config, &target_repo, &["remote", "get-url", "origin"])?
+        .stdout
+        .trim()
+        .to_string();
+    if origin_remote.is_empty() || contains_sensitive_patterns(&origin_remote) {
+        return Err("target repository origin identity is unavailable or unsafe".to_string());
+    }
+    let default_branch_sha = run_git(
+        config,
+        &target_repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("refs/heads/{default_branch}^{{commit}}"),
+        ],
+    )?
+    .stdout
+    .trim()
+    .to_string();
 
+    let origin_remote_fingerprint = hex::encode(Sha256::digest(origin_remote.as_bytes()));
     Ok(GitWorkspaceInfo {
         schema_version: TARGET_REPO_OUTPUT_SCHEMA_VERSION.to_string(),
         workspace_path: workspace.to_string_lossy().into_owned(),
         source_revision: expected_source,
         default_branch,
+        origin_remote,
+        origin_remote_fingerprint,
+        default_branch_sha,
         workspace_mode: "git_worktree".to_string(),
     })
 }

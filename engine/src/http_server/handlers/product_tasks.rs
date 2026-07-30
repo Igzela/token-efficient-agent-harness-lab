@@ -14,7 +14,9 @@ use crate::product_golden_path::{
     ProductTaskBudget, ProductTaskIntakeRequest, ProductVerificationCommand,
     ProductVerificationRuntimeAuthority, PRODUCT_TASK_GATE,
 };
-use crate::storage::local_product_store::product_tasks::public_product_task_projection;
+use crate::storage::local_product_store::product_tasks::{
+    public_product_task_projection, public_product_task_result_projection,
+};
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, GitHubPullRequestConfig, GitHubPullRequestRequest,
     GitHubRepository,
@@ -208,7 +210,7 @@ pub(crate) async fn api_compile_and_schedule_product_task(
             cors_headers(),
             Json(json!({
                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                "result": result,
+                "result": public_product_task_result_projection(&result),
             })),
         )),
         Err(error) => {
@@ -267,7 +269,7 @@ pub(crate) async fn api_finalize_product_task(
             cors_headers(),
             Json(json!({
                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                "result": result,
+                "result": public_product_task_result_projection(&result),
             })),
         )),
         Err(error) => Err(ApiError::with_code(
@@ -315,7 +317,7 @@ pub(crate) async fn api_approve_and_output_product_task(
             cors_headers(),
             Json(json!({
                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                "result": result,
+                "result": public_product_task_result_projection(&result),
             })),
         )),
         Err(error) => Err(ApiError::with_code(
@@ -358,7 +360,7 @@ pub(crate) async fn api_approve_product_task(
             cors_headers(),
             Json(json!({
                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                "approval": approval,
+                "approval": public_product_task_result_projection(&approval),
             })),
         )),
         Err(error) => {
@@ -518,7 +520,7 @@ pub(crate) async fn api_output_product_task(
                             cors_headers(),
                             Json(json!({
                                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                                "result": completed,
+                                "result": public_product_task_result_projection(&completed),
                             })),
                         ));
                     }
@@ -567,7 +569,7 @@ pub(crate) async fn api_output_product_task(
                 cors_headers(),
                 Json(json!({
                     "schema_version": AXUM_API_SCHEMA_VERSION,
-                    "result": result,
+                    "result": public_product_task_result_projection(&result),
                 })),
             ))
         }

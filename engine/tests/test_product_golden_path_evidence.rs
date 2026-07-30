@@ -56,6 +56,17 @@ fn init_git_repo(root: &std::path::Path) -> String {
         assert!(out.status.success());
     }
     let out = Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/evidence-product.git",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(root)
         .output()
@@ -776,6 +787,60 @@ fn export_patch_writes_approved_patch_without_touching_main() {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), rev);
+    });
+}
+
+#[test]
+fn export_patch_refuses_default_branch_drift_after_workspace_binding() {
+    with_gates(|| {
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let validated = validate_intake(
+            &intake(
+                &repo,
+                &rev,
+                "ev-export-default-branch-drift",
+                "export_patch",
+            ),
+            "local",
+            "default",
+        )
+        .unwrap();
+        let task = store.admit_product_task(&validated, "tester").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        complete_to_approval(&store, task_id);
+        std::fs::write(repo.join("README.md"), "advanced externally\n").unwrap();
+        for args in [
+            &["add", "README.md"][..],
+            &["commit", "-m", "external advance"][..],
+        ] {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+        let awaiting = store.get_product_task(task_id).unwrap().unwrap();
+        let version = awaiting["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .unwrap();
+        let error = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap_err();
+        assert_eq!(error, "git source identity changed before output");
+        assert_eq!(
+            store.get_product_task(task_id).unwrap().unwrap()["status"],
+            "awaiting_approval"
+        );
     });
 }
 

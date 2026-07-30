@@ -45,6 +45,15 @@ fn init_git_repo(root: &std::path::Path) -> String {
     run_git(root, &["config", "user.name", "G2 Tester"]);
     run_git(root, &["add", "README.md"]);
     run_git(root, &["commit", "-m", "init"]);
+    run_git(
+        root,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/g2-product.git",
+        ],
+    );
     run_git(root, &["rev-parse", "HEAD"]).trim().to_string()
 }
 

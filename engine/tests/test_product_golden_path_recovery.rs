@@ -187,6 +187,17 @@ fn init_git_repo(root: &std::path::Path) -> String {
         assert!(out.status.success());
     }
     let out = Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/recovery-product.git",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(root)
         .output()
