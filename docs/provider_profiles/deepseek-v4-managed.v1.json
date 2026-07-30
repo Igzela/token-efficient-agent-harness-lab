@@ -1,0 +1,53 @@
+{
+  "schema_version": "managed_deepseek_profile.v1",
+  "provider_kind": "deepseek",
+  "models": [
+    "deepseek-v4-flash",
+    "deepseek-v4-pro"
+  ],
+  "routes": {
+    "openai_compatible": {
+      "base_url": "https://api.deepseek.com",
+      "endpoint_path": "/chat/completions",
+      "credential_transport": "Authorization: Bearer",
+      "credential_reference": "DEEPSEEK_API_KEY"
+    },
+    "anthropic_compatible": {
+      "base_url": "https://api.deepseek.com/anthropic",
+      "endpoint_path": "/v1/messages",
+      "credential_transport": "x-api-key",
+      "credential_reference": "DEEPSEEK_API_KEY"
+    }
+  },
+  "role_models": {
+    "planner": "deepseek-v4-pro",
+    "implementer": "deepseek-v4-flash",
+    "reviewer": "deepseek-v4-pro"
+  },
+  "pricing": {
+    "profile_id": "deepseek-v4-usd-2026-07-30",
+    "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "verified_at": "2026-07-30",
+    "current_required_for_live_dollar_gate": true,
+    "usd_per_million_tokens": {
+      "deepseek-v4-flash": {
+        "cache_hit_input": 0.0028,
+        "cache_miss_input": 0.14,
+        "output": 0.28
+      },
+      "deepseek-v4-pro": {
+        "cache_hit_input": 0.003625,
+        "cache_miss_input": 0.435,
+        "output": 0.87
+      }
+    }
+  },
+  "source_urls": [
+    "https://api-docs.deepseek.com/api/create-chat-completion",
+    "https://api-docs.deepseek.com/guides/anthropic_api",
+    "https://api-docs.deepseek.com/quick_start/pricing/"
+  ],
+  "verified_at": "2026-07-30",
+  "usage_parser_version": "protocol_usage.v1",
+  "provider_free_tests_only": true
+}

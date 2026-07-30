@@ -37,14 +37,13 @@ The owner has explicitly authorized the two provider-free packets below. They ge
 
 ## Active Routing
 
-1. `PE7-MANAGED-CODING-BOUNDARY-GENERALIZATION-1` — `READY_FOR_EXECUTION`.
-2. `PE7-DEEPSEEK-DUAL-PROTOCOL-MANAGED-CODING-1` — `BLOCKED_PREREQUISITE` on Packet 1.
-3. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on Packets 1 and 2 plus its exact live-authority manifest.
-4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-8. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-DEEPSEEK-DUAL-PROTOCOL-MANAGED-CODING-1` — `IN_PROGRESS` on `pe7/deepseek-dual-protocol-managed-coding-1`; provider-free only.
+2. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on Packets 1 and 2 plus its exact live-authority manifest.
+3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
 ## Packet States
 
@@ -67,7 +66,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319. Packet 1 is now the sole executable packet. Do not begin Packet 2 before Packet 1 is accepted, Packet 3 before Packets 1 and 2 plus its exact live authority, or RWE/Architecture Convergence/later stages before their named prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319 and Packet 1 is complete through PR #320. Packet 2 is the sole executable packet. Do not begin Packet 3 before Packet 2 plus its exact live authority, or RWE/Architecture Convergence/later stages before their named prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -230,11 +229,11 @@ Acceptance requires focused Rust tests, complete applicable CI, complete-diff re
 
 ## Packet PE7-MANAGED-CODING-BOUNDARY-GENERALIZATION-1
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
-**Owned PR:** TBD (one focused Draft PR)
+**Owned PR:** #320, merged as `630895b91703eb9e9caada24690a08900c0d6991`
 
-**Prerequisite:** accepted provider-free Golden Path authority through PR #319.
+**Prerequisite:** accepted provider-free Golden Path authority through PR #319. Satisfied.
 
 Generalize the ProductTask-owned managed-coding boundary without replacing the Rust runtime, scheduler, `LocalProductStore`, ProductTask budget, managed-acceptance decision/risk/spend/attempt receipts, workspace, verification, artifact, approval, output, audit, or terminal-evidence owners. Rust-owned wire governance must define a versioned runtime profile containing executor kind, protocol kind, executable identity where applicable, capability probes, requested/resolved model, thinking configuration, provider/credential/endpoint identity, usage-parser and pricing provenance, and admission class.
 
@@ -246,11 +245,11 @@ Required evidence includes compatible Codex patch admission without a Rust const
 
 ## Packet PE7-DEEPSEEK-DUAL-PROTOCOL-MANAGED-CODING-1
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
-**Owned PR:** TBD (one focused Draft PR)
+**Owned PR:** one focused Draft PR on `pe7/deepseek-dual-protocol-managed-coding-1`
 
-**Prerequisite:** Packet `PE7-MANAGED-CODING-BOUNDARY-GENERALIZATION-1` accepted and merged.
+**Prerequisite:** Packet `PE7-MANAGED-CODING-BOUNDARY-GENERALIZATION-1` accepted and merged. Satisfied by PR #320.
 
 Introduce one protocol-neutral, ProductTask-bound managed provider-call authority. It binds ProductTask/workflow/node/attempt, model role, provider/protocol/host/base URL/path, requested/resolved model, symbolic credential reference, request/retry/token/time/cost limits, current spend authorization, and attempt lease. It reuses the existing provider clients, AgentStep/scheduler/tool-policy/supervised-workspace path, normalized `execution_usage_event.v1`, and parent-owned journal; it must not form a hidden agent loop or another budget owner.
 

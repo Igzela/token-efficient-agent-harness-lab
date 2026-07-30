@@ -5001,6 +5001,88 @@ fn redact_lease_fields(mut value: Value) -> Value {
     value
 }
 
+/// Adapter from the existing store-owned managed-acceptance authority to the
+/// protocol-neutral provider-call boundary. It reloads persisted attempt/spend
+/// rows on every check; the provider layer never accepts caller assertions as
+/// authority and never persists a second lease or budget.
+impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductStore {
+    fn current_authority(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    ) -> Result<crate::provider::managed_deepseek::PersistedAuthoritySnapshot, String> {
+        let attempt = self
+            .get_managed_acceptance_attempt(&binding.attempt_id)?
+            .ok_or_else(|| "managed provider attempt is missing".to_string())?;
+        if attempt.get("status").and_then(Value::as_str) != Some("admitted")
+            || attempt.get("product_task_id").and_then(Value::as_str)
+                != Some(binding.product_task_id.as_str())
+            || attempt.get("workflow_node_id").and_then(Value::as_str)
+                != Some(binding.node_id.as_str())
+        {
+            return Err("managed provider attempt lease is stale or mismatched".to_string());
+        }
+        let current_lease_token = self.current_attempt_lease_token(&binding.attempt_id)?;
+        if current_lease_token.is_empty()
+            || crate::provider::managed_deepseek::managed_attempt_lease_id(&current_lease_token)
+                != binding.attempt_lease_id
+        {
+            return Err("managed provider attempt lease is stale or mismatched".to_string());
+        }
+        let persisted_workflow_id = attempt
+            .pointer("/body_json/workflow_id")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                attempt
+                    .pointer("/body_json/workflow/workflow_id")
+                    .and_then(Value::as_str)
+            })
+            .ok_or_else(|| {
+                "managed provider attempt lacks persisted workflow identity".to_string()
+            })?;
+        if persisted_workflow_id != binding.workflow_id {
+            return Err("managed provider workflow identity is stale or mismatched".to_string());
+        }
+        let spend_id = attempt
+            .get("spend_authorization_id")
+            .and_then(Value::as_str)
+            .filter(|value| *value == binding.spend_authorization_id)
+            .ok_or_else(|| "managed provider spend identity is stale or mismatched".to_string())?;
+        let spend = self
+            .get_managed_acceptance_spend_authorization(spend_id)?
+            .ok_or_else(|| "managed provider spend authorization is missing".to_string())?;
+        let spend_status = spend
+            .get("status")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "managed provider spend status is missing".to_string())?
+            .to_string();
+        let consumed_by_attempt_id = spend
+            .get("consumed_by_attempt_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if spend_status == "consumed"
+            && consumed_by_attempt_id.as_deref() != Some(binding.attempt_id.as_str())
+        {
+            return Err("managed provider spend was consumed by another attempt".to_string());
+        }
+        if spend_status != "active" && spend_status != "consumed" {
+            return Err("managed provider spend is not current".to_string());
+        }
+        Ok(
+            crate::provider::managed_deepseek::PersistedAuthoritySnapshot {
+                product_task_id: binding.product_task_id.clone(),
+                workflow_id: binding.workflow_id.clone(),
+                node_id: binding.node_id.clone(),
+                attempt_id: binding.attempt_id.clone(),
+                spend_authorization_id: binding.spend_authorization_id.clone(),
+                attempt_lease_id: binding.attempt_lease_id.clone(),
+                spend_status,
+                consumed_by_attempt_id,
+                lease_status: "current".to_string(),
+            },
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
