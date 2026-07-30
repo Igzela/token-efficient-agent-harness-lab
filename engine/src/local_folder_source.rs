@@ -51,6 +51,20 @@ pub struct LocalFolderApplyReceipt {
     pub rollback_complete: bool,
 }
 
+/// Digest-only description of the bounded difference between the immutable
+/// local source preimage and its app-owned staging copy. It is suitable for
+/// the existing artifact/approval owners without retaining file content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalFolderChangeSummary {
+    pub source_tree_sha256: String,
+    pub staged_tree_sha256: String,
+    pub changed_relative_paths: Vec<String>,
+    pub added_relative_paths: Vec<String>,
+    pub modified_relative_paths: Vec<String>,
+    pub deleted_relative_paths: Vec<String>,
+    pub change_sha256: String,
+}
+
 /// Create an app-owned staging copy after rejecting symlinks and unsafe file
 /// kinds. `excluded_paths` are exact relative paths or directory prefixes.
 pub fn stage_local_folder(
@@ -130,13 +144,20 @@ pub fn apply_local_folder_changes(
     rollback_root: &Path,
     allowed_paths: &[String],
     excluded_paths: &[String],
+    expected_change_sha256: &str,
 ) -> Result<LocalFolderApplyReceipt, String> {
     let exclusions = normalize_exclusions(excluded_paths)?;
     if exclusion_paths_sha256(&exclusions) != source_manifest.excluded_paths_sha256 {
         return Err("local-folder exclusion policy changed after staging".to_string());
     }
     verify_local_folder_manifest_current(source_manifest, excluded_paths)?;
-    let staged = capture_local_folder_manifest_inner(staged_root, &BTreeSet::new())?;
+    let staged_root = canonical_local_root(staged_root)
+        .map_err(|_| "local-folder staging root is unsafe".to_string())?;
+    let staged = capture_local_folder_manifest_inner(&staged_root, &BTreeSet::new())?;
+    let change_summary = summarize_local_folder_manifests(source_manifest, &staged)?;
+    if change_summary.change_sha256 != expected_change_sha256 {
+        return Err("local-folder staged change identity is stale".to_string());
+    }
     let allowed = normalize_exclusions(allowed_paths)?;
     if allowed.is_empty() {
         return Err("local-folder apply requires bounded allowed paths".to_string());
@@ -180,7 +201,7 @@ pub fn apply_local_folder_changes(
     for relative in &changed {
         if let Err(error) = backup_then_replace(
             &source_manifest.canonical_root,
-            staged_root,
+            &staged_root,
             rollback_root,
             relative,
             before.get(relative),
@@ -202,6 +223,76 @@ pub fn apply_local_folder_changes(
         rollback_root: rollback_root.to_path_buf(),
         changed_relative_paths: changed,
         rollback_complete: false,
+    })
+}
+
+pub fn summarize_local_folder_changes(
+    source_manifest: &LocalFolderManifest,
+    staged_root: &Path,
+    excluded_paths: &[String],
+) -> Result<LocalFolderChangeSummary, String> {
+    verify_local_folder_manifest_current(source_manifest, excluded_paths)?;
+    let exclusions = normalize_exclusions(excluded_paths)?;
+    if exclusion_paths_sha256(&exclusions) != source_manifest.excluded_paths_sha256 {
+        return Err("local-folder exclusion policy changed after staging".to_string());
+    }
+    let staged_root = canonical_local_root(staged_root)
+        .map_err(|_| "local-folder staging root is unsafe".to_string())?;
+    let staged = capture_local_folder_manifest_inner(&staged_root, &BTreeSet::new())?;
+    summarize_local_folder_manifests(source_manifest, &staged)
+}
+
+fn summarize_local_folder_manifests(
+    source_manifest: &LocalFolderManifest,
+    staged: &LocalFolderManifest,
+) -> Result<LocalFolderChangeSummary, String> {
+    let before = entries_by_path(&source_manifest.entries);
+    let after = entries_by_path(&staged.entries);
+    let paths = before
+        .keys()
+        .chain(after.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut changed = Vec::new();
+    let mut added = Vec::new();
+    let mut modified = Vec::new();
+    let mut deleted = Vec::new();
+    for path in paths {
+        match (before.get(&path), after.get(&path)) {
+            (None, Some(_)) => {
+                changed.push(path.clone());
+                added.push(path);
+            }
+            (Some(_), None) => {
+                changed.push(path.clone());
+                deleted.push(path);
+            }
+            (Some(left), Some(right)) if *left != *right => {
+                changed.push(path.clone());
+                modified.push(path);
+            }
+            _ => {}
+        }
+    }
+    let digest_input = serde_json::json!({
+        "source_tree_sha256": source_manifest.tree_sha256,
+        "staged_tree_sha256": staged.tree_sha256,
+        "changed_relative_paths": changed,
+        "added_relative_paths": added,
+        "modified_relative_paths": modified,
+        "deleted_relative_paths": deleted,
+    });
+    let change_sha256 = hex::encode(Sha256::digest(
+        serde_json::to_vec(&digest_input).map_err(|error| error.to_string())?,
+    ));
+    Ok(LocalFolderChangeSummary {
+        source_tree_sha256: source_manifest.tree_sha256.clone(),
+        staged_tree_sha256: staged.tree_sha256.clone(),
+        changed_relative_paths: changed,
+        added_relative_paths: added,
+        modified_relative_paths: modified,
+        deleted_relative_paths: deleted,
+        change_sha256,
     })
 }
 
@@ -380,11 +471,20 @@ fn backup_then_replace(
         return Err("local-folder source preimage is stale".to_string());
     }
     match after {
-        Some(entry) => copy_file_atomic_existing_parent(
-            &joined_relative(staged, relative)?,
-            &target,
-            entry.executable,
-        )?,
+        Some(entry) => {
+            let staged_input = joined_relative(staged, relative)?;
+            let metadata = fs::symlink_metadata(&staged_input)
+                .map_err(|_| "local-folder staged input is stale".to_string())?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err("local-folder staged input is unsafe".to_string());
+            }
+            if file_sha256(&staged_input)? != entry.sha256
+                || is_executable(&staged_input)? != entry.executable
+            {
+                return Err("local-folder staged input is stale".to_string());
+            }
+            copy_file_atomic_existing_parent(&staged_input, &target, entry.executable)?;
+        }
         None => fs::remove_file(&target)
             .map_err(|error| format!("local-folder apply delete: {error}"))?,
     }
@@ -588,12 +688,16 @@ mod tests {
         let stage = root.path().join("stage");
         let manifest = stage_local_folder(&source, &stage, &[]).unwrap();
         fs::write(stage.join("a.txt"), b"after").unwrap();
+        let expected = summarize_local_folder_changes(&manifest, &stage, &[])
+            .unwrap()
+            .change_sha256;
         let receipt = apply_local_folder_changes(
             &manifest,
             &stage,
             &root.path().join("rollback"),
             &["a.txt".to_string()],
             &[],
+            &expected,
         )
         .unwrap();
         assert_eq!(fs::read(source.join("a.txt")).unwrap(), b"after");
@@ -624,11 +728,66 @@ mod tests {
             &root.path().join("rollback"),
             &["public.txt".to_string()],
             &[],
+            "not-reached",
         )
         .unwrap_err();
         assert_eq!(error, "local-folder exclusion policy changed after staging");
         assert_eq!(fs::read(source.join("public.txt")).unwrap(), b"before");
         assert_eq!(fs::read(source.join("private.txt")).unwrap(), b"private");
+    }
+
+    #[test]
+    fn change_summary_binds_sorted_add_modify_and_delete_sets() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("delete.txt"), b"before").unwrap();
+        fs::write(source.join("modify.txt"), b"before").unwrap();
+        let stage = root.path().join("stage");
+        let manifest = stage_local_folder(&source, &stage, &[]).unwrap();
+
+        fs::remove_file(stage.join("delete.txt")).unwrap();
+        fs::write(stage.join("modify.txt"), b"after").unwrap();
+        fs::write(stage.join("add.txt"), b"new").unwrap();
+
+        let first = summarize_local_folder_changes(&manifest, &stage, &[]).unwrap();
+        let second = summarize_local_folder_changes(&manifest, &stage, &[]).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.added_relative_paths, vec!["add.txt"]);
+        assert_eq!(first.modified_relative_paths, vec!["modify.txt"]);
+        assert_eq!(first.deleted_relative_paths, vec!["delete.txt"]);
+        assert_eq!(
+            first.changed_relative_paths,
+            vec!["add.txt", "delete.txt", "modify.txt"]
+        );
+        assert_eq!(first.change_sha256.len(), 64);
+    }
+
+    #[test]
+    fn apply_rejects_a_staged_change_that_differs_from_the_approved_digest() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a.txt"), b"before").unwrap();
+        let stage = root.path().join("stage");
+        let manifest = stage_local_folder(&source, &stage, &[]).unwrap();
+        fs::write(stage.join("a.txt"), b"approved").unwrap();
+        let approved = summarize_local_folder_changes(&manifest, &stage, &[])
+            .unwrap()
+            .change_sha256;
+        fs::write(stage.join("a.txt"), b"changed-after-approval").unwrap();
+
+        let error = apply_local_folder_changes(
+            &manifest,
+            &stage,
+            &root.path().join("rollback"),
+            &["a.txt".to_string()],
+            &[],
+            &approved,
+        )
+        .unwrap_err();
+        assert_eq!(error, "local-folder staged change identity is stale");
+        assert_eq!(fs::read(source.join("a.txt")).unwrap(), b"before");
     }
 
     #[test]

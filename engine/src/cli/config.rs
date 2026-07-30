@@ -729,16 +729,19 @@ fn env_required_f64(key: &str) -> Result<f64, String> {
         .map_err(|_| format!("{key} must be a number"))
 }
 
+/// Process environments are shared by all lib tests. Keep CLI profile tests
+/// serialized across modules so a temporary admission fixture cannot race a
+/// concurrent configuration test.
+#[cfg(test)]
+pub(crate) fn cli_env_test_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::OutputStream;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     fn clear_claude_admission_env() {
         for key in [
@@ -1020,7 +1023,9 @@ mod tests {
     fn cli_config_keeps_claude_disabled_without_filesystem_confinement() {
         use sha2::{Digest, Sha256};
 
-        let _guard = env_lock().lock().unwrap();
+        let _guard = cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_claude_admission_env();
         let dir = tempfile::tempdir().unwrap();
         let binary = fake_claude_binary(dir.path());
@@ -1048,7 +1053,9 @@ mod tests {
     fn cli_config_keeps_subscription_default_claude_disabled_without_confinement() {
         use sha2::{Digest, Sha256};
 
-        let _guard = env_lock().lock().unwrap();
+        let _guard = cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_claude_admission_env();
         let dir = tempfile::tempdir().unwrap();
         let binary = fake_claude_binary(dir.path());

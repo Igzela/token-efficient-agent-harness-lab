@@ -4332,7 +4332,10 @@ fn prepare_product_artifact_fields(
     expected_patch_hash: &str,
 ) -> Result<PreparedProductArtifact, String> {
     if workspace.get("workspace_id").and_then(Value::as_str) != Some(workspace_id)
-        || workspace.get("workspace_mode").and_then(Value::as_str) != Some("git_worktree")
+        || !matches!(
+            workspace.get("workspace_mode").and_then(Value::as_str),
+            Some("git_worktree" | "copy")
+        )
         || matches!(
             workspace.get("status").and_then(Value::as_str),
             Some("rejected" | "quarantined" | "cleaned") | None
@@ -4342,6 +4345,96 @@ fn prepare_product_artifact_fields(
     }
     let workspace_path = required_str(workspace, "workspace_path")?;
     let path = Path::new(workspace_path);
+    if workspace.get("workspace_mode").and_then(Value::as_str) == Some("copy") {
+        let source_path = required_str(workspace, "target_repo_path")?;
+        let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
+        let source_manifest = crate::local_folder_source::capture_local_folder_manifest(
+            Path::new(source_path),
+            &exclusions,
+        )?;
+        if source_manifest.tree_sha256 != required_str(workspace, "source_revision")? {
+            return Err("local-folder source revision changed before artifact capture".to_string());
+        }
+        let summary = crate::local_folder_source::summarize_local_folder_changes(
+            &source_manifest,
+            path,
+            &exclusions,
+        )?;
+        if summary.changed_relative_paths.is_empty() {
+            return Err("no changes detected against source revision".to_string());
+        }
+        if summary.change_sha256 != expected_patch_hash {
+            return Err(
+                "verified patch identity changed before atomic artifact commit".to_string(),
+            );
+        }
+        let secret_findings = scan_for_secrets(path)?;
+        if !secret_findings.is_empty() {
+            return Err("local-folder artifact secret scan failed".to_string());
+        }
+        let confirmed = crate::local_folder_source::summarize_local_folder_changes(
+            &source_manifest,
+            path,
+            &exclusions,
+        )?;
+        if confirmed != summary {
+            return Err(
+                "verified patch identity changed during atomic artifact commit".to_string(),
+            );
+        }
+        let verification = workspace
+            .get("verification")
+            .cloned()
+            .ok_or_else(|| "product artifact workspace verification is missing".to_string())?;
+        if verification.get("status").and_then(Value::as_str) != Some("evidence_recorded")
+            || verification.get("trustworthy").and_then(Value::as_bool) != Some(true)
+        {
+            return Err("product artifact workspace verification is not trustworthy".to_string());
+        }
+        let review_diff = truncate_text(
+            format!(
+                "local-folder change bundle: added={} modified={} deleted={}",
+                summary.added_relative_paths.len(),
+                summary.modified_relative_paths.len(),
+                summary.deleted_relative_paths.len()
+            ),
+            MAX_REVIEW_DIFF_BYTES,
+        );
+        let changed_files = summary
+            .added_relative_paths
+            .iter()
+            .map(|path| format!("+{path}"))
+            .chain(
+                summary
+                    .modified_relative_paths
+                    .iter()
+                    .map(|path| format!("~{path}")),
+            )
+            .chain(
+                summary
+                    .deleted_relative_paths
+                    .iter()
+                    .map(|path| format!("-{path}")),
+            )
+            .collect::<Vec<_>>();
+        return Ok(PreparedProductArtifact {
+            workspace_id: workspace_id.to_string(),
+            run_id: required_str(workspace, "run_id")?.to_string(),
+            plan_id: optional_str(workspace, "plan_id").map(str::to_string),
+            target_id: required_str(workspace, "target_id")?.to_string(),
+            source_revision: required_str(workspace, "source_revision")?.to_string(),
+            patch_hash: summary.change_sha256,
+            changed_files: json!(changed_files),
+            review_diff,
+            verification,
+            redaction_status: "redacted".to_string(),
+            secret_scan_status: "passed".to_string(),
+            secret_findings: json!([]),
+            added: json!(summary.added_relative_paths),
+            modified: json!(summary.modified_relative_paths),
+            deleted: json!(summary.deleted_relative_paths),
+        });
+    }
     let config = TargetRepoOutputConfig::from_env();
     let changes = staged_changed_files(&config, path)?;
     if changes.changed_files.is_empty() {
@@ -4662,7 +4755,7 @@ fn validate_product_terminal_evidence_candidate(
         return Err("terminal evidence deterministic identity mismatch".to_string());
     }
     match required_str(task, "output_intent")? {
-        "artifact_only" | "export_patch" => {
+        "artifact_only" | "export_patch" | "apply_local_changes" => {
             let receipt = artifact
                 .get("product_output_receipt")
                 .ok_or_else(|| "terminal evidence output receipt missing".to_string())?;
@@ -5022,6 +5115,16 @@ fn record_or_reuse_nonnetwork_output_receipt(
             || output.get("target_mutation").and_then(Value::as_bool) != Some(false)
         {
             return Err("artifact-only output result is not non-mutating".to_string());
+        }
+    } else if output_intent == "apply_local_changes" {
+        if output.get("status").and_then(Value::as_str) != Some("applied_local_changes")
+            || output.get("patch_hash") != artifact.get("patch_hash")
+            || output
+                .get("rollback_bundle_present")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err("local apply output result does not match approved artifact".to_string());
         }
     } else if output.get("status").and_then(Value::as_str) != Some("exported")
         || output.get("patch_hash") != artifact.get("patch_hash")

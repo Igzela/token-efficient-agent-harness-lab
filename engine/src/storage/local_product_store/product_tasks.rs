@@ -4244,6 +4244,29 @@ impl LocalProductStore {
         {
             return Err("workspace_canonical_path_superseded".to_string());
         }
+        if workspace.get("workspace_mode").and_then(Value::as_str) == Some("copy") {
+            let source_path = workspace
+                .get("target_repo_path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workspace_source_path_unavailable".to_string())?;
+            let exclusions = crate::local_folder_source::configured_local_folder_exclusions()
+                .map_err(|_| "workspace_exclusion_policy_unavailable".to_string())?;
+            let source_manifest = crate::local_folder_source::capture_local_folder_manifest(
+                Path::new(source_path),
+                &exclusions,
+            )
+            .map_err(|_| "workspace_source_revision_unavailable".to_string())?;
+            if source_manifest.tree_sha256 != source_revision {
+                return Err("workspace_source_revision_superseded".to_string());
+            }
+            let summary = crate::local_folder_source::summarize_local_folder_changes(
+                &source_manifest,
+                Path::new(workspace_path),
+                &exclusions,
+            )
+            .map_err(|_| "workspace_patch_identity_unavailable".to_string())?;
+            return Ok(summary.change_sha256);
+        }
         let current_revision = current_workspace_revision(
             &TargetRepoOutputConfig::from_env(),
             Path::new(workspace_path),
@@ -5398,6 +5421,55 @@ impl LocalProductStore {
         let config = TargetRepoOutputConfig::from_env();
 
         if output_intent == "export_patch" {
+            if workspace.get("workspace_mode").and_then(Value::as_str) == Some("copy") {
+                let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
+                let source_manifest = crate::local_folder_source::capture_local_folder_manifest(
+                    Path::new(target_repo_path),
+                    &exclusions,
+                )?;
+                if source_manifest.tree_sha256 != source_revision {
+                    return Err("local-folder source changed before export".to_string());
+                }
+                let summary = crate::local_folder_source::summarize_local_folder_changes(
+                    &source_manifest,
+                    Path::new(workspace_path),
+                    &exclusions,
+                )?;
+                if summary.change_sha256 != patch_hash {
+                    return Err(
+                        "local-folder change bundle identity changed before export".to_string()
+                    );
+                }
+                let export_dir = product_export_root(self)?.join(task_id);
+                std::fs::create_dir_all(&export_dir).map_err(|e| e.to_string())?;
+                let export_path =
+                    export_dir.join(format!("{artifact_id}.local-folder-change-bundle.json"));
+                let bundle = json!({
+                    "schema_version": "local_folder_change_bundle.v1",
+                    "source_tree_sha256": summary.source_tree_sha256,
+                    "staged_tree_sha256": summary.staged_tree_sha256,
+                    "change_sha256": summary.change_sha256,
+                    "changed_relative_paths": summary.changed_relative_paths,
+                    "added_relative_paths": summary.added_relative_paths,
+                    "modified_relative_paths": summary.modified_relative_paths,
+                    "deleted_relative_paths": summary.deleted_relative_paths,
+                });
+                std::fs::write(
+                    &export_path,
+                    serde_json::to_vec(&bundle).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                return Ok(json!({
+                    "mode": "export_patch",
+                    "status": "exported",
+                    "artifact_id": artifact_id,
+                    "patch_hash": patch_hash,
+                    "change_bundle_sha256": product_json_sha256(&bundle)?,
+                    "approval_id": approval_binding.get("approval_id"),
+                    "approval_binding": approval_binding,
+                    "product_task_id": task_id,
+                }));
+            }
             let exported = crate::target_repo_output::export_patch(
                 &config,
                 Path::new(workspace_path),
@@ -5469,6 +5541,7 @@ impl LocalProductStore {
                 &rollback_root,
                 &allowed_paths,
                 &exclusions,
+                patch_hash,
             )?;
             return Ok(json!({
                 "mode": "apply_local_changes",
@@ -7537,6 +7610,182 @@ mod local_folder_product_task_tests {
         assert!(public["target_repo_path_fingerprint"].is_string());
         assert!(public["workspace_binding"]["workspace_path_fingerprint"].is_string());
         assert!(public["workspace_binding"]["target_repo_canonical_path_fingerprint"].is_string());
+    }
+
+    #[test]
+    fn local_folder_confirmed_output_applies_once_through_existing_receipt_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("operator-folder");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("README.md"), b"original").unwrap();
+        let _gate_guard = ProductGateGuard(std::env::var_os(PRODUCT_TASK_GATE));
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        let source = std::fs::canonicalize(&source).unwrap();
+        let request = ProductTaskIntakeRequest {
+            objective: "Create the approved bounded local document".to_string(),
+            target_id: "local-folder-apply-fixture".to_string(),
+            target_repo_path: source.to_string_lossy().into_owned(),
+            source_kind: Some("local_folder".to_string()),
+            source_revision: "operator-supplied-placeholder".to_string(),
+            source_tree_hash: None,
+            allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "test -f docs/product_golden_path_fixture.md".to_string(),
+                timeout_ms: 1_000,
+            }],
+            output_intent: "apply_local_changes".to_string(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["command".to_string()],
+                prefer: Some("command".to_string()),
+            },
+            budget: None,
+            risk_class: "low".to_string(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(false),
+            idempotency_key: "local-folder-apply".to_string(),
+            expected_version: None,
+            tenant_id: Some("tenant-local".to_string()),
+            workspace_id: Some("workspace-local".to_string()),
+            workspace_mode: Some("local_folder".to_string()),
+        };
+        let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
+        let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
+        let task = store.admit_product_task(&intake, "operator").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        let compiled = store
+            .compile_and_schedule_product_task(task_id, "operator", &["command".to_string()])
+            .unwrap();
+        let run_id = compiled["task"]["run_id"].as_str().unwrap();
+        let executor = crate::node_executor::CommandNodeExecutor::default();
+        for _ in 0..8 {
+            let tick = store
+                .tick_with_executor(run_id, "scheduler", 1, &executor)
+                .unwrap();
+            if tick.pointer("/run/status").and_then(Value::as_str) == Some("completed") {
+                break;
+            }
+            assert_ne!(
+                tick.pointer("/run/status").and_then(Value::as_str),
+                Some("failed")
+            );
+        }
+        assert_eq!(
+            store.get_workflow_run(run_id).unwrap().unwrap()["status"],
+            "completed"
+        );
+        let finalized = store
+            .finalize_product_task_after_execution(task_id, "scheduler")
+            .expect("local folder finalization must succeed");
+        let version = finalized["task"]["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .expect("local folder approval must succeed");
+        let completed = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(completed["task"]["status"], "completed");
+        assert_eq!(
+            std::fs::read_to_string(source.join("docs/product_golden_path_fixture.md")).unwrap(),
+            FIXTURE_DETERMINISTIC_NOTE_CONTENT
+        );
+        let repeated = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                completed["task"]["version"].as_u64().unwrap(),
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(repeated["reused"], true);
+    }
+
+    #[test]
+    fn local_folder_export_emits_a_redacted_change_bundle_without_mutating_source() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("operator-folder");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("README.md"), b"original").unwrap();
+        let _gate_guard = ProductGateGuard(std::env::var_os(PRODUCT_TASK_GATE));
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        let source = std::fs::canonicalize(&source).unwrap();
+        let request = ProductTaskIntakeRequest {
+            objective: "Create the approved bounded local document".to_string(),
+            target_id: "local-folder-export-fixture".to_string(),
+            target_repo_path: source.to_string_lossy().into_owned(),
+            source_kind: Some("local_folder".to_string()),
+            source_revision: "operator-supplied-placeholder".to_string(),
+            source_tree_hash: None,
+            allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "test -f docs/product_golden_path_fixture.md".to_string(),
+                timeout_ms: 1_000,
+            }],
+            output_intent: "export_patch".to_string(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["command".to_string()],
+                prefer: Some("command".to_string()),
+            },
+            budget: None,
+            risk_class: "low".to_string(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(false),
+            idempotency_key: "local-folder-export".to_string(),
+            expected_version: None,
+            tenant_id: Some("tenant-local".to_string()),
+            workspace_id: Some("workspace-local".to_string()),
+            workspace_mode: Some("local_folder".to_string()),
+        };
+        let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
+        let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
+        let task = store.admit_product_task(&intake, "operator").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        let compiled = store
+            .compile_and_schedule_product_task(task_id, "operator", &["command".to_string()])
+            .unwrap();
+        let run_id = compiled["task"]["run_id"].as_str().unwrap();
+        let executor = crate::node_executor::CommandNodeExecutor::default();
+        for _ in 0..8 {
+            let tick = store
+                .tick_with_executor(run_id, "scheduler", 1, &executor)
+                .unwrap();
+            if tick.pointer("/run/status").and_then(Value::as_str) == Some("completed") {
+                break;
+            }
+            assert_ne!(
+                tick.pointer("/run/status").and_then(Value::as_str),
+                Some("failed")
+            );
+        }
+        let finalized = store
+            .finalize_product_task_after_execution(task_id, "scheduler")
+            .expect("local folder finalization must succeed");
+        let version = finalized["task"]["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .expect("local folder approval must succeed");
+        let completed = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(completed["task"]["status"], "completed");
+        assert_eq!(completed["output"]["status"], "exported");
+        assert!(completed["output"]["change_bundle_sha256"].is_string());
+        assert!(completed["output"].get("export_path").is_none());
+        assert!(!source.join("docs/product_golden_path_fixture.md").exists());
     }
 
     #[test]

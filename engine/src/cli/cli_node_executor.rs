@@ -2079,11 +2079,12 @@ mod tests {
         ALL_MANAGED_ACCEPTANCE_SCOPES,
     };
     use serde_json::json;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::Arc;
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[cfg(unix)]
@@ -2579,7 +2580,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn product_scheduler_executor_uses_store_lease_before_gateway_or_child_spawn() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let _env = ProductTaskOutputEnvGuard::enable();
         let root = tempfile::tempdir().unwrap();
         let fixture = prepare_managed_codex_execution_fixture(root.path());
@@ -2624,7 +2625,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn runtime_owner_preflight_blocks_before_managed_child_spawn() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let _env = ProductTaskOutputEnvGuard::enable();
         let root = tempfile::tempdir().unwrap();
         let fixture = prepare_managed_codex_execution_fixture(root.path());
@@ -2709,7 +2710,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn final_store_confirmation_accepts_only_the_exact_consumed_lease_and_rechecks_the_gate() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let _env = ProductTaskOutputEnvGuard::enable();
         let root = tempfile::tempdir().unwrap();
         let fixture = prepare_managed_codex_execution_fixture(root.path());
@@ -2762,7 +2763,7 @@ mod tests {
             }
         }
 
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let _env = ProductTaskOutputEnvGuard::enable();
         let root = tempfile::tempdir().unwrap();
         let fixture = prepare_managed_codex_execution_fixture(root.path());
@@ -2840,7 +2841,7 @@ mod tests {
             }
         }
 
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let _env = ProductTaskOutputEnvGuard::enable();
         let root = tempfile::tempdir().unwrap();
         let fixture = prepare_managed_codex_execution_fixture(root.path());
@@ -2907,7 +2908,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn product_run_owner_cannot_be_downgraded_by_stripped_node_metadata() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let _env = ProductTaskOutputEnvGuard::enable();
 
         {
@@ -3669,14 +3670,14 @@ mod tests {
 
     #[test]
     fn test_cli_env_allowlist_defaults_empty() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         std::env::remove_var("ACP_CLI_ENV_ALLOWLIST");
         assert!(cli_env_allowlist().is_empty());
     }
 
     #[test]
     fn claude_env_allowlist_excludes_host_paths_and_unadmitted_routing_overrides() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         std::env::set_var(
             "ACP_CLI_ENV_ALLOWLIST",
             "HOME,TMP,TMPDIR,CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY,ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_MODEL,CLAUDE_CODE_USE_BEDROCK,HTTPS_PROXY,ANTHROPIC_TLS_INSECURE",
