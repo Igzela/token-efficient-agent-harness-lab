@@ -174,6 +174,12 @@ impl ProductGoldenPathDisabledEnvGuard {
         std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH");
         Self(previous)
     }
+
+    fn enable() -> Self {
+        let previous = std::env::var_os("ACP_PRODUCT_GOLDEN_PATH");
+        std::env::set_var("ACP_PRODUCT_GOLDEN_PATH", "1");
+        Self(previous)
+    }
 }
 
 impl Drop for ProductGoldenPathDisabledEnvGuard {
@@ -12952,6 +12958,314 @@ async fn axum_delegated_prepare_is_default_off_after_admin_authorization() {
     assert_eq!(
         response_json(response).await["code"],
         "product_golden_path_disabled"
+    );
+}
+
+#[tokio::test]
+async fn axum_delegated_prepare_activate_and_revocation_terminal_are_provider_free() {
+    use engine::executor_pool::{
+        CostProfile, ExecutorCapabilities, ExecutorEntry, ExecutorMetrics, ExecutorStatus,
+    };
+    use engine::node_executor::FailNodeExecutor;
+    use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
+    use engine::storage::local_product_store::ALL_MANAGED_ACCEPTANCE_SCOPES;
+    use std::sync::Mutex as StdMutex;
+
+    let _product_env_lock = product_golden_path_env_lock().lock().await;
+    let _product_env = ProductGoldenPathDisabledEnvGuard::enable();
+    let _target_env_lock = target_repo_output_env_lock().lock().await;
+    let _target_env = TargetRepoOutputEnvGuard::enable_local_remote();
+
+    let dir = tempdir().unwrap();
+    let repo = dir.path().join("target");
+    std::fs::create_dir_all(repo.join("docs")).unwrap();
+    std::fs::write(
+        repo.join("docs/USER_GUIDE.md"),
+        "# User guide\n\n`alters-lab doctor` checks health.\n",
+    )
+    .unwrap();
+    git(&repo, &["init", "-b", "main"]);
+    git(&repo, &["config", "user.name", "Delegated HTTP Test"]);
+    git(
+        &repo,
+        &["config", "user.email", "delegated-http@example.invalid"],
+    );
+    git(&repo, &["add", "docs/USER_GUIDE.md"]);
+    git(&repo, &["commit", "-m", "initial"]);
+    git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/Igzela/alters-lab.git",
+        ],
+    );
+    let revision = git(&repo, &["rev-parse", "HEAD"]);
+
+    let store =
+        Arc::new(LocalProductStore::new(dir.path().join("delegated-positive-http.db")).unwrap());
+    let mut resolver = TenantResolver::new();
+    let tenant_scopes = HashSet::from(["team:admin".to_string(), "dispatch:execute".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "tenant-a".to_string(),
+        name: "Delegated Positive".to_string(),
+        scopes: tenant_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (approver_key, approver_raw) = resolver
+        .create_api_key("tenant-a", Some(tenant_scopes.clone()), None, 1.0)
+        .unwrap();
+    let (activator_key, activator_raw) = resolver
+        .create_api_key(
+            "tenant-a",
+            Some(HashSet::from(["dispatch:execute".to_string()])),
+            None,
+            1.0,
+        )
+        .unwrap();
+    for (key, user) in [
+        (&approver_key, "delegated-approver-user"),
+        (&activator_key, "delegated-activator-user"),
+    ] {
+        store
+            .record_api_key_metadata(
+                &key.key_id,
+                user,
+                "operator",
+                &ALL_MANAGED_ACCEPTANCE_SCOPES
+                    .iter()
+                    .map(|scope| (*scope).to_string())
+                    .collect::<Vec<_>>(),
+                "delegated-http-test",
+            )
+            .unwrap();
+    }
+
+    let mut scheduler = WorkflowScheduler::new(
+        store.clone(),
+        SchedulerConfig {
+            executor_type: "managed_deepseek".into(),
+            supervised_workers_enabled: true,
+            ..Default::default()
+        },
+    );
+    scheduler.executor_pool().register(ExecutorEntry {
+        executor_type: "managed_deepseek".into(),
+        executor: Arc::new(FailNodeExecutor {
+            error_domain: "provider_free_test".into(),
+            error_message: "provider transport is intentionally absent".into(),
+        }),
+        capabilities: ExecutorCapabilities {
+            supported_task_types: vec!["managed_deepseek".into()],
+            supported_task_domains: vec!["product_golden_path".into()],
+            requires_auth: true,
+            requires_cli: false,
+            max_timeout_ms: 30_000,
+        },
+        status: ExecutorStatus::default(),
+        cost_profile: CostProfile::default(),
+        metrics: ExecutorMetrics::default(),
+    });
+    scheduler.start().unwrap();
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_scheduler(Arc::new(StdMutex::new(scheduler)))
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    let task_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/product/tasks")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {activator_raw}"),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "objective": "Clarify that alters-lab doctor performs a read-only health check.",
+                        "target_id": "alters-lab-docs",
+                        "target_repo_path": repo,
+                        "source_revision": revision,
+                        "allowed_paths": ["docs/USER_GUIDE.md"],
+                        "verification_commands": [{
+                            "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+                            "timeout_ms": 5000
+                        }],
+                        "output_intent": "draft_pr",
+                        "executor_policy": {
+                            "allowed_executors": ["managed_deepseek"],
+                            "prefer": "managed_deepseek"
+                        },
+                        "risk_class": "low",
+                        "approval_required": true,
+                        "confirm_execution": true,
+                        "confirm_output": true,
+                        "idempotency_key": "delegated-positive-http-1",
+                        "tenant_id": "tenant-a",
+                        "workspace_id": "default",
+                        "workspace_mode": "git_worktree"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(task_response.status(), StatusCode::OK);
+    let task_id = response_json(task_response).await["task_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let created_at = chrono::Utc::now();
+    let expires_at = created_at + chrono::Duration::hours(24);
+    let delegation_id = format!("delegation-http-{}", uuid::Uuid::new_v4());
+    let delegation = json!({
+        "schema_version": "managed_autonomous_delegation.v1",
+        "delegation_id": delegation_id,
+        "created_at": created_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        "expires_at": expires_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        "executions": 1,
+        "repositories": ["Igzela/alters-lab"],
+        "task_classes": ["documentation"],
+        "allowed_paths": ["docs/USER_GUIDE.md"],
+        "max_changed_files": 1,
+        "max_changed_lines": 100,
+        "max_cost_usd_per_run": 0.50,
+        "max_total_cost_usd": 0.50,
+        "protocol": "openai_compatible",
+        "models": {
+            "planner": "deepseek-v4-pro",
+            "implementer": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro"
+        },
+        "output": {
+            "draft_pr_only": true,
+            "target_main_write": false,
+            "merge": false,
+            "auto_merge": false
+        },
+        "forbidden": [
+            "credential changes",
+            "authentication or permission changes",
+            "schema or database migrations",
+            "dependency changes",
+            "executable or workflow changes",
+            "destructive operations",
+            "release",
+            "deployment"
+        ]
+    });
+    let mut proposal = json!({
+        "schema_version": "pe7_product_golden_path_live_seal_manifest.v1",
+        "target": {
+            "repository": "Igzela/alters-lab",
+            "default_branch": "main",
+            "default_branch_sha": revision,
+            "allowed_mutable_paths": ["docs/USER_GUIDE.md"],
+            "target_main_must_remain_unchanged": true,
+            "output": "one_unmerged_acp_draft_pr_only"
+        },
+        "provider": {"protocol": "openai_compatible"},
+        "role_models": {
+            "planner": "deepseek-v4-pro",
+            "implementer": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro"
+        },
+        "limits": {"max_cost_usd": null}
+    });
+    proposal["manifest_sha256"] = json!(
+        engine::storage::local_product_store::compute_attempt_manifest_sha256(&proposal).unwrap()
+    );
+    let attempt_id = format!("attempt-http-{}", uuid::Uuid::new_v4());
+    let prepare = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/product/tasks/{task_id}/delegated/prepare"))
+                .header(header::AUTHORIZATION, format!("Bearer {approver_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "delegation": delegation,
+                        "proposal_manifest": proposal,
+                        "approved_proposal_sha256": proposal["manifest_sha256"],
+                        "attempt_id": attempt_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(prepare.status(), StatusCode::OK);
+    let prepared = response_json(prepare).await;
+    assert_eq!(prepared["execution_activated"], false);
+
+    let activation_body = json!({
+        "delegation_id": delegation_id,
+        "attempt_id": attempt_id,
+        "final_manifest": prepared["final_manifest"],
+        "spend_authorization_id": prepared["spend_authorization_id"]
+    });
+    let same_principal = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/product/tasks/{task_id}/delegated/activate"
+                ))
+                .header(header::AUTHORIZATION, format!("Bearer {approver_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(activation_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let same_principal_status = same_principal.status();
+    let same_principal_body = response_json(same_principal).await;
+    assert_eq!(
+        same_principal_status,
+        StatusCode::FORBIDDEN,
+        "{same_principal_body:#}"
+    );
+    assert_eq!(same_principal_body["code"], "delegated_authority_invalid");
+
+    let activated = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/product/tasks/{task_id}/delegated/activate"
+                ))
+                .header(header::AUTHORIZATION, format!("Bearer {activator_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(activation_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(activated.status(), StatusCode::OK);
+
+    let approver = store
+        .authenticate_managed_acceptance_principal("tenant-a", &approver_key.key_id, Some(0.50))
+        .unwrap();
+    store.revoke_delegation(&approver, &delegation_id).unwrap();
+    let terminal = store.delegated_authority_state(&delegation_id).unwrap();
+    assert_eq!(terminal["delegation_state"], "revoked");
+    assert_eq!(terminal["spend_authorization_state"], "revoked");
+    assert_eq!(terminal["attempt_lease_state"], "closed");
+    assert_eq!(
+        terminal["terminal_evidence"]["schema_version"],
+        "managed_delegated_revocation_terminal_evidence.v1"
     );
 }
 

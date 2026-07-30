@@ -9,9 +9,12 @@ use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::ffi::CString;
 use std::io::{Read, Seek, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
@@ -22,6 +25,9 @@ pub const SCOPE_SPEND_AUTHORIZE: &str = "managed_acceptance:spend_authorize";
 pub const SCOPE_ATTEMPT_ADMIT: &str = "managed_acceptance:attempt_admit";
 pub const SCOPE_REVOKE: &str = "managed_acceptance:revoke";
 pub const SCOPE_DELEGATED_AUTONOMY: &str = "managed_acceptance:delegated_autonomy";
+pub const SCOPE_DELEGATED_MANIFEST_APPROVE: &str = "managed_acceptance:delegated_manifest_approve";
+pub const SCOPE_DELEGATED_EXECUTE: &str = "managed_acceptance:delegated_execute";
+pub const SCOPE_DELEGATED_ARTIFACT_CONFIRM: &str = "managed_acceptance:delegated_artifact_confirm";
 
 pub const ALL_MANAGED_ACCEPTANCE_SCOPES: &[&str] = &[
     SCOPE_RISK_ACKNOWLEDGE,
@@ -29,6 +35,9 @@ pub const ALL_MANAGED_ACCEPTANCE_SCOPES: &[&str] = &[
     SCOPE_ATTEMPT_ADMIT,
     SCOPE_REVOKE,
     SCOPE_DELEGATED_AUTONOMY,
+    SCOPE_DELEGATED_MANIFEST_APPROVE,
+    SCOPE_DELEGATED_EXECUTE,
+    SCOPE_DELEGATED_ARTIFACT_CONFIRM,
 ];
 
 pub const DELEGATION_SCHEMA_VERSION: &str = "managed_autonomous_delegation.v1";
@@ -36,10 +45,6 @@ pub const FINAL_MANIFEST_SCHEMA_VERSION: &str = "managed_final_execution_manifes
 pub const DELEGATED_ARTIFACT_CONFIRMATION_SCHEMA_VERSION: &str =
     "managed_delegated_artifact_confirmation.v1";
 const DELEGATED_MANIFEST_APPROVAL_SCHEMA_VERSION: &str = "managed_delegated_manifest_approval.v1";
-const DELEGATED_MANIFEST_APPROVER_ROLE: &str =
-    "LocalProductStore.managed_acceptance.delegated_manifest_approver.v1";
-const DELEGATED_ARTIFACT_CONFIRMER_ROLE: &str =
-    "LocalProductStore.managed_acceptance.delegated_artifact_confirmer.v1";
 
 type DelegatedSpendSqliteRow = (
     String,
@@ -66,6 +71,7 @@ type DelegatedAttemptSqliteRow = (
     String,
     String,
     Option<String>,
+    Option<String>,
 );
 
 type DelegatedArtifactConfirmationSqliteRow = (
@@ -78,6 +84,8 @@ type DelegatedArtifactConfirmationSqliteRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
+    String,
 );
 
 /// Hash-bound policy delegated by an authenticated operator. This is a policy
@@ -485,10 +493,6 @@ pub fn confirm_delegated_artifact_output(
     })))
 }
 
-fn delegated_authority_id(role: &str, delegation_sha256: &str) -> String {
-    sha256_hex(format!("{role}:{delegation_sha256}").as_bytes())
-}
-
 fn replay_delegated_artifact_confirmation(
     existing_sha: &str,
     existing_json: &str,
@@ -703,13 +707,13 @@ fn validate_manifest_approval_row(
     status: &str,
     expires_at: &str,
     approver_id: &str,
+    authenticated_approver_id: &str,
 ) -> Result<(), String> {
     if status != "active" || is_at_or_before(expires_at, now)? {
         return Err("delegation is not active".into());
     }
     if manifest.get("delegation_sha256").and_then(Value::as_str) != Some(delegation_sha256)
-        || approver_id
-            != delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, delegation_sha256)
+        || approver_id != authenticated_approver_id
     {
         return Err("delegated manifest approver authority is stale or mismatched".into());
     }
@@ -821,10 +825,10 @@ impl LocalProductStore {
         let now = self.now();
         delegation.validate(&now)?;
         let delegation_sha256 = delegation.sha256()?;
-        let manifest_approver_id =
-            delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, &delegation_sha256);
-        let artifact_confirmer_id =
-            delegated_authority_id(DELEGATED_ARTIFACT_CONFIRMER_ROLE, &delegation_sha256);
+        principal.require_scope(SCOPE_DELEGATED_MANIFEST_APPROVE)?;
+        principal.require_scope(SCOPE_SPEND_AUTHORIZE)?;
+        let manifest_approver_id = principal.principal_id().to_string();
+        let artifact_confirmer_id = String::new();
         let body = delegation.body();
         let body_json = body.to_string();
         let existing = match &self.db {
@@ -1154,9 +1158,15 @@ impl LocalProductStore {
     /// output artifact.
     pub fn approve_delegated_manifest(
         &self,
+        principal: &AuthenticatedPrincipal,
         delegation_id: &str,
         manifest: &Value,
     ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_DELEGATED_MANIFEST_APPROVE)?;
+        principal.require_scope(SCOPE_SPEND_AUTHORIZE)?;
+        if matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal) {
+            return Err("fixture principal cannot approve a production delegated manifest".into());
+        }
         let manifest_sha256 = validate_delegated_manifest_policy(manifest)?;
         self.require_final_manifest_approved_proposal(delegation_id, manifest)?;
         let now = self.now();
@@ -1178,6 +1188,7 @@ impl LocalProductStore {
                     &row.1,
                     &row.2,
                     &row.3,
+                    principal.principal_id(),
                 )?;
                 if let (Some(existing_sha), Some(existing_json)) = (&row.4, &row.5) {
                     let receipt = validate_existing_manifest_approval(
@@ -1230,6 +1241,7 @@ impl LocalProductStore {
                     &status,
                     &expires_at,
                     &approver_id,
+                    principal.principal_id(),
                 )?;
                 let existing_sha: Option<String> = row.get(4);
                 let existing_json: Option<String> = row.get(5);
@@ -1312,10 +1324,13 @@ impl LocalProductStore {
     /// approval receipt and never accepts a caller-provided cap.
     pub fn issue_delegated_spend(
         &self,
+        principal: &AuthenticatedPrincipal,
         delegation_id: &str,
         approval_receipt_sha256: &str,
         manifest: &Value,
     ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_DELEGATED_MANIFEST_APPROVE)?;
+        principal.require_scope(SCOPE_SPEND_AUTHORIZE)?;
         let manifest_sha256 = validate_delegated_manifest_policy(manifest)?;
         let now = self.now();
         let spend_id = format!("mds-{}", Uuid::new_v4());
@@ -1328,8 +1343,7 @@ impl LocalProductStore {
             "max_cost_usd": manifest.pointer("/limits/max_cost_usd"),
             "one_use": true,
             "approval_receipt_sha256": approval_receipt_sha256,
-            "issued_by": manifest.get("delegation_sha256").and_then(Value::as_str)
-                .map(|sha| delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, sha)),
+            "issued_by": principal.principal_id(),
             "created_at": now,
             "expires_at": manifest.pointer("/delegation/expires_at"),
             "manifest": manifest
@@ -1357,7 +1371,7 @@ impl LocalProductStore {
                 if manifest.get("delegation_sha256").and_then(Value::as_str) != Some(row.0.as_str()) {
                     return Err("manifest delegation hash does not match persisted delegation".into());
                 }
-                if row.5 != delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, &row.0)
+                if row.5 != principal.principal_id()
                     || row.6.as_deref() != Some(approval_receipt_sha256)
                 {
                     return Err("delegated spend requires the exact separated manifest approval".into());
@@ -1461,8 +1475,7 @@ impl LocalProductStore {
                 if manifest.get("delegation_sha256").and_then(Value::as_str) != Some(stored_sha.as_str()) {
                     return Err("manifest delegation hash does not match persisted delegation".into());
                 }
-                if approver_id
-                    != delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, &stored_sha)
+                if approver_id != principal.principal_id()
                     || approval_sha.as_deref() != Some(approval_receipt_sha256)
                 {
                     return Err("delegated spend requires the exact separated manifest approval".into());
@@ -1551,10 +1564,16 @@ impl LocalProductStore {
     /// returns the same lease; a different attempt or manifest is rejected.
     pub fn admit_delegated_attempt(
         &self,
+        principal: &AuthenticatedPrincipal,
         delegation_id: &str,
         attempt_id: &str,
         manifest: &Value,
     ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_DELEGATED_EXECUTE)?;
+        principal.require_scope(SCOPE_ATTEMPT_ADMIT)?;
+        if matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal) {
+            return Err("fixture principal cannot activate a production delegated attempt".into());
+        }
         let manifest_sha256 = manifest
             .get("manifest_sha256")
             .and_then(Value::as_str)
@@ -1572,14 +1591,13 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?;
                 let row: DelegatedAttemptSqliteRow = tx
                     .query_row(
-                        "SELECT delegation_sha256, COALESCE(spend_status,''), attempt_id, attempt_lease_id, attempt_lease_token, expires_at, manifest_approver_id, status, manifest_json FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        "SELECT delegation_sha256, COALESCE(spend_status,''), attempt_id, attempt_lease_id, attempt_lease_token, expires_at, manifest_approver_id, status, manifest_json, attempt_activator_id FROM managed_acceptance_delegations WHERE delegation_id=?1",
                         params![delegation_id],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?)),
                     )
                     .map_err(|e| e.to_string())?;
                 if row.7 != "active"
-                    || row.6
-                        != delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, &row.0)
+                    || row.6 == principal.principal_id()
                     || is_at_or_before(&row.5, &now)?
                     || row.8.as_deref() != Some(manifest_json.as_str())
                     || manifest.get("delegation_sha256").and_then(Value::as_str)
@@ -1588,7 +1606,9 @@ impl LocalProductStore {
                     return Err("delegated attempt authority is stale or mismatched".into());
                 }
                 if let Some(existing_attempt) = row.2 {
-                    if existing_attempt == attempt_id {
+                    if existing_attempt == attempt_id
+                        && row.9.as_deref() == Some(principal.principal_id())
+                    {
                         return Ok(json!({
                             "schema_version": "managed_delegated_attempt_lease.v1",
                             "delegation_id": delegation_id,
@@ -1606,8 +1626,8 @@ impl LocalProductStore {
                     return Err("delegated spend is not active".into());
                 }
                 tx.execute(
-                    "UPDATE managed_acceptance_delegations SET attempt_id=?1, attempt_lease_id=?2, attempt_lease_token=?3, attempt_status='admitted', spend_status='consumed', updated_at=?4 WHERE delegation_id=?5 AND attempt_id IS NULL AND spend_status='active'",
-                    params![attempt_id, lease_id, lease_token, now, delegation_id],
+                    "UPDATE managed_acceptance_delegations SET attempt_id=?1, attempt_lease_id=?2, attempt_lease_token=?3, attempt_status='admitted', spend_status='consumed', attempt_activator_id=?4, updated_at=?5 WHERE delegation_id=?6 AND attempt_id IS NULL AND spend_status='active'",
+                    params![attempt_id, lease_id, lease_token, principal.principal_id(), now, delegation_id],
                 )
                 .map_err(|e| e.to_string())?;
                 tx.commit().map_err(|e| e.to_string())?;
@@ -1627,7 +1647,7 @@ impl LocalProductStore {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
                 let row = tx
                     .query_one(
-                        "SELECT delegation_sha256, COALESCE(spend_status,''), attempt_id, attempt_lease_id, attempt_lease_token, expires_at, manifest_approver_id, status, manifest_json FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                        "SELECT delegation_sha256, COALESCE(spend_status,''), attempt_id, attempt_lease_id, attempt_lease_token, expires_at, manifest_approver_id, status, manifest_json, attempt_activator_id FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
                         &[&delegation_id],
                     )
                     .map_err(|e| e.to_string())?;
@@ -1640,9 +1660,9 @@ impl LocalProductStore {
                 let approver_id: String = row.get(6);
                 let status: String = row.get(7);
                 let persisted_manifest: Option<String> = row.get(8);
+                let existing_activator_id: Option<String> = row.get(9);
                 if status != "active"
-                    || approver_id
-                        != delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, &stored_sha)
+                    || approver_id == principal.principal_id()
                     || is_at_or_before(&expires_at, &now)?
                     || persisted_manifest.as_deref() != Some(manifest_json.as_str())
                     || manifest.get("delegation_sha256").and_then(Value::as_str)
@@ -1651,7 +1671,9 @@ impl LocalProductStore {
                     return Err("delegated attempt authority is stale or mismatched".into());
                 }
                 if let Some(existing_attempt) = existing_attempt {
-                    if existing_attempt == attempt_id {
+                    if existing_attempt == attempt_id
+                        && existing_activator_id.as_deref() == Some(principal.principal_id())
+                    {
                         tx.commit().map_err(|e| e.to_string())?;
                         return Ok(json!({"schema_version":"managed_delegated_attempt_lease.v1","delegation_id":delegation_id,"manifest_sha256":manifest_sha256,"attempt_id":existing_attempt,"attempt_lease_id":existing_lease_id,"attempt_lease_token":existing_token,"status":"admitted","replayed":true}));
                     }
@@ -1661,8 +1683,8 @@ impl LocalProductStore {
                     return Err("delegated spend is not active".into());
                 }
                 tx.execute(
-                    "UPDATE managed_acceptance_delegations SET attempt_id=$1, attempt_lease_id=$2, attempt_lease_token=$3, attempt_status='admitted', spend_status='consumed', updated_at=$4 WHERE delegation_id=$5 AND attempt_id IS NULL AND spend_status='active'",
-                    &[&attempt_id, &lease_id, &lease_token, &now, &delegation_id],
+                    "UPDATE managed_acceptance_delegations SET attempt_id=$1, attempt_lease_id=$2, attempt_lease_token=$3, attempt_status='admitted', spend_status='consumed', attempt_activator_id=$4, updated_at=$5 WHERE delegation_id=$6 AND attempt_id IS NULL AND spend_status='active'",
+                    &[&attempt_id, &lease_id, &lease_token, &principal.principal_id(), &now, &delegation_id],
                 )
                 .map_err(|e| e.to_string())?;
                 tx.commit().map_err(|e| e.to_string())?;
@@ -1677,6 +1699,7 @@ impl LocalProductStore {
     #[allow(clippy::too_many_arguments)]
     pub fn persist_delegated_artifact_confirmation(
         &self,
+        principal: &AuthenticatedPrincipal,
         delegation_id: &str,
         manifest: &Value,
         artifact: &Value,
@@ -1686,6 +1709,10 @@ impl LocalProductStore {
         target_main_sha: &str,
         realized_cost_usd: f64,
     ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_DELEGATED_ARTIFACT_CONFIRM)?;
+        if matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal) {
+            return Err("fixture principal cannot confirm a production delegated artifact".into());
+        }
         let _manifest_sha256 = validate_delegated_manifest_policy(manifest)?;
         let manifest_json = manifest.to_string();
         let now = self.now();
@@ -1694,6 +1721,8 @@ impl LocalProductStore {
                        status: &str,
                        expires_at: &str,
                        confirmer_id: &str,
+                       activator_id: Option<&str>,
+                       approver_id: &str,
                        persisted_manifest: Option<&str>,
                        attempt_status: Option<&str>|
          -> Result<Value, String> {
@@ -1702,8 +1731,10 @@ impl LocalProductStore {
                 || persisted_manifest != Some(manifest_json.as_str())
                 || attempt_status != Some("admitted")
                 || manifest.get("delegation_sha256").and_then(Value::as_str) != Some(delegation_sha)
-                || confirmer_id
-                    != delegated_authority_id(DELEGATED_ARTIFACT_CONFIRMER_ROLE, delegation_sha)
+                || activator_id.is_none()
+                || activator_id == Some(principal.principal_id())
+                || approver_id == principal.principal_id()
+                || !confirmer_id.is_empty() && confirmer_id != principal.principal_id()
             {
                 return Err("delegated artifact confirmer authority is stale or mismatched".into());
             }
@@ -1725,7 +1756,7 @@ impl LocalProductStore {
                 .ok_or("delegated artifact confirmation must be an object")?;
             object.insert("delegation_id".into(), json!(delegation_id));
             object.insert("delegation_sha256".into(), json!(delegation_sha));
-            object.insert("confirmer_id".into(), json!(confirmer_id));
+            object.insert("confirmer_id".into(), json!(principal.principal_id()));
             object.insert("confirmed_at".into(), json!(now));
             object.insert("one_use".into(), json!(true));
             let confirmation_sha256 =
@@ -1740,9 +1771,9 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?;
                 let row: DelegatedArtifactConfirmationSqliteRow = tx
                     .query_row(
-                        "SELECT delegation_sha256, body_json, status, expires_at, artifact_confirmer_id, manifest_json, attempt_status, artifact_confirmation_sha256, artifact_confirmation_json FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        "SELECT delegation_sha256, body_json, status, expires_at, artifact_confirmer_id, manifest_json, attempt_status, artifact_confirmation_sha256, artifact_confirmation_json, attempt_activator_id, manifest_approver_id FROM managed_acceptance_delegations WHERE delegation_id=?1",
                         params![delegation_id],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?)),
                     )
                     .map_err(|e| e.to_string())?;
                 let confirmation = confirm(
@@ -1751,6 +1782,8 @@ impl LocalProductStore {
                     &row.2,
                     &row.3,
                     &row.4,
+                    row.9.as_deref(),
+                    &row.10,
                     row.5.as_deref(),
                     row.6.as_deref(),
                 )?;
@@ -1768,8 +1801,8 @@ impl LocalProductStore {
                     return Ok(replay);
                 }
                 tx.execute(
-                    "UPDATE managed_acceptance_delegations SET artifact_confirmation_sha256=?1, artifact_confirmation_json=?2, updated_at=?3 WHERE delegation_id=?4 AND artifact_confirmation_sha256 IS NULL",
-                    params![confirmation_sha256, confirmation.to_string(), now, delegation_id],
+                    "UPDATE managed_acceptance_delegations SET artifact_confirmation_sha256=?1, artifact_confirmation_json=?2, artifact_confirmer_id=?3, updated_at=?4 WHERE delegation_id=?5 AND artifact_confirmation_sha256 IS NULL",
+                    params![confirmation_sha256, confirmation.to_string(), principal.principal_id(), now, delegation_id],
                 )
                 .map_err(|e| e.to_string())?;
                 tx.commit().map_err(|e| e.to_string())?;
@@ -1780,7 +1813,7 @@ impl LocalProductStore {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
                 let row = tx
                     .query_one(
-                        "SELECT delegation_sha256, body_json, status, expires_at, artifact_confirmer_id, manifest_json, attempt_status, artifact_confirmation_sha256, artifact_confirmation_json FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                        "SELECT delegation_sha256, body_json, status, expires_at, artifact_confirmer_id, manifest_json, attempt_status, artifact_confirmation_sha256, artifact_confirmation_json, attempt_activator_id, manifest_approver_id FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
                         &[&delegation_id],
                     )
                     .map_err(|e| e.to_string())?;
@@ -1791,12 +1824,16 @@ impl LocalProductStore {
                 let confirmer_id: String = row.get(4);
                 let persisted_manifest: Option<String> = row.get(5);
                 let attempt_status: Option<String> = row.get(6);
+                let activator_id: Option<String> = row.get(9);
+                let approver_id: String = row.get(10);
                 let confirmation = confirm(
                     &delegation_sha,
                     &body_json,
                     &status,
                     &expires_at,
                     &confirmer_id,
+                    activator_id.as_deref(),
+                    &approver_id,
                     persisted_manifest.as_deref(),
                     attempt_status.as_deref(),
                 )?;
@@ -1818,8 +1855,8 @@ impl LocalProductStore {
                     return Ok(replay);
                 }
                 tx.execute(
-                    "UPDATE managed_acceptance_delegations SET artifact_confirmation_sha256=$1, artifact_confirmation_json=$2, updated_at=$3 WHERE delegation_id=$4 AND artifact_confirmation_sha256 IS NULL",
-                    &[&confirmation_sha256, &confirmation.to_string(), &now, &delegation_id],
+                    "UPDATE managed_acceptance_delegations SET artifact_confirmation_sha256=$1, artifact_confirmation_json=$2, artifact_confirmer_id=$3, updated_at=$4 WHERE delegation_id=$5 AND artifact_confirmation_sha256 IS NULL",
+                    &[&confirmation_sha256, &confirmation.to_string(), &principal.principal_id(), &now, &delegation_id],
                 )
                 .map_err(|e| e.to_string())?;
                 tx.commit().map_err(|e| e.to_string())?;
@@ -1909,7 +1946,7 @@ impl LocalProductStore {
                     return Err("delegated cumulative cost ceiling exceeded".into());
                 }
                 tx.execute(
-                    "UPDATE managed_acceptance_delegations SET status='expired', total_cost_usd=?1, spend_status='expired', attempt_status='closed', terminal_receipt_json=?2, terminal_at=?3, updated_at=?3 WHERE delegation_id=?4 AND attempt_id=?5 AND attempt_lease_token=?6",
+                    "UPDATE managed_acceptance_delegations SET status=CASE WHEN status='revoked' THEN 'revoked' ELSE 'expired' END, total_cost_usd=?1, spend_status=CASE WHEN status='revoked' THEN 'revoked' ELSE 'expired' END, attempt_status='closed', terminal_receipt_json=?2, terminal_at=?3, updated_at=?3 WHERE delegation_id=?4 AND attempt_id=?5 AND attempt_lease_token=?6",
                     params![realized_cost_usd, receipt_json, now, delegation_id, attempt_id, lease_token],
                 )
                 .map_err(|e| e.to_string())?;
@@ -1940,7 +1977,7 @@ impl LocalProductStore {
                     return Err("late or conflicting delegated terminal write".into());
                 }
                 if realized_cost_usd > max_cost { return Err("delegated cumulative cost ceiling exceeded".into()); }
-                tx.execute("UPDATE managed_acceptance_delegations SET status='expired', total_cost_usd=$1, spend_status='expired', attempt_status='closed', terminal_receipt_json=$2, terminal_at=$3, updated_at=$3 WHERE delegation_id=$4 AND attempt_id=$5 AND attempt_lease_token=$6", &[&realized_cost_usd, &receipt_json, &now, &delegation_id, &attempt_id, &lease_token]).map_err(|e| e.to_string())?;
+                tx.execute("UPDATE managed_acceptance_delegations SET status=CASE WHEN status='revoked' THEN 'revoked' ELSE 'expired' END, total_cost_usd=$1, spend_status=CASE WHEN status='revoked' THEN 'revoked' ELSE 'expired' END, attempt_status='closed', terminal_receipt_json=$2, terminal_at=$3, updated_at=$3 WHERE delegation_id=$4 AND attempt_id=$5 AND attempt_lease_token=$6", &[&realized_cost_usd, &receipt_json, &now, &delegation_id, &attempt_id, &lease_token]).map_err(|e| e.to_string())?;
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(json!({"status":"closed","terminal_class":status,"spend_authorization_state":"expired","attempt_lease_state":"closed","delegation_state":"expired","receipt_sha256":receipt_sha256,"replayed":false}))
             }),
@@ -2124,7 +2161,7 @@ impl LocalProductStore {
                         "SELECT delegation_id, attempt_id, attempt_lease_token, manifest_json,
                                 provider_request_journal_json
                          FROM managed_acceptance_delegations
-                         WHERE status='active' AND attempt_status='admitted'",
+                         WHERE status IN ('active','revoked') AND attempt_status='admitted'",
                     )
                     .map_err(|error| error.to_string())?;
                 let rows = statement
@@ -2149,7 +2186,7 @@ impl LocalProductStore {
                         "SELECT delegation_id, attempt_id, attempt_lease_token, manifest_json,
                                 provider_request_journal_json
                          FROM managed_acceptance_delegations
-                         WHERE status='active' AND attempt_status='admitted'",
+                         WHERE status IN ('active','revoked') AND attempt_status='admitted'",
                         &[],
                     )
                     .map(|rows| {
@@ -2278,6 +2315,112 @@ impl LocalProductStore {
         })))
     }
 
+    fn close_revoked_delegation_attempt(
+        &self,
+        delegation_id: &str,
+        actor: &str,
+    ) -> Result<Option<Value>, String> {
+        let row: Option<(String, String, String)> = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT attempt_id, manifest_json, provider_request_journal_json
+                         FROM managed_acceptance_delegations
+                         WHERE delegation_id=?1 AND status='revoked'
+                           AND attempt_status='admitted'",
+                        params![delegation_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT attempt_id, manifest_json, provider_request_journal_json
+                         FROM managed_acceptance_delegations
+                         WHERE delegation_id=$1 AND status='revoked'
+                           AND attempt_status='admitted'",
+                        &[&delegation_id],
+                    )
+                    .map(|row| row.map(|row| (row.get(0), row.get(1), row.get(2))))
+                    .map_err(|error| error.to_string())
+            })?,
+        };
+        let Some((attempt_id, manifest_json, journal_json)) = row else {
+            return Ok(None);
+        };
+        let manifest: Value = serde_json::from_str(&manifest_json)
+            .map_err(|_| "revoked delegation final manifest is invalid")?;
+        let product_task_id = manifest
+            .pointer("/execution/product_task_id")
+            .and_then(Value::as_str)
+            .ok_or("revoked delegation ProductTask binding is missing")?;
+        let task = self
+            .get_product_task(product_task_id)?
+            .ok_or("revoked delegation ProductTask is missing")?;
+        let workspace_id = task
+            .get("workspace_record_id")
+            .and_then(Value::as_str)
+            .ok_or("revoked delegation workspace identity is missing")?;
+        let cleanup = self.cleanup_workspace(workspace_id, actor)?;
+        if cleanup.get("status").and_then(Value::as_str) != Some("cleaned") {
+            return Err("revoked delegation workspace cleanup is incomplete".into());
+        }
+        let journal: Vec<Value> = serde_json::from_str(&journal_json)
+            .map_err(|_| "revoked delegation provider journal is invalid")?;
+        let receipt = sort_value(&json!({
+            "schema_version": "managed_delegated_revocation_terminal_evidence.v1",
+            "delegation_id": delegation_id,
+            "attempt_id": attempt_id,
+            "product_task_id": product_task_id,
+            "manifest_sha256": manifest.get("manifest_sha256"),
+            "provider_request_journal_sha256":
+                sha256_hex(canonical_json(&sort_value(&Value::Array(journal)))?.as_bytes()),
+            "cleanup": cleanup,
+            "rollback_evidence": {
+                "workspace_status": "cleaned",
+                "target_main_write": false
+            },
+            "terminal_class": "revoked"
+        }));
+        let now = self.now();
+        let receipt_json = receipt.to_string();
+        let changed = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET attempt_status='closed', spend_status='revoked',
+                             terminal_receipt_json=?1, terminal_at=?2, updated_at=?2
+                         WHERE delegation_id=?3 AND status='revoked'
+                           AND attempt_id=?4 AND attempt_status='admitted'",
+                        params![receipt_json, now, delegation_id, attempt_id],
+                    )
+                    .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET attempt_status='closed', spend_status='revoked',
+                             terminal_receipt_json=$1, terminal_at=$2, updated_at=$2
+                         WHERE delegation_id=$3 AND status='revoked'
+                           AND attempt_id=$4 AND attempt_status='admitted'",
+                        &[&receipt_json, &now, &delegation_id, &attempt_id],
+                    )
+                    .map(|changed| changed as usize)
+                    .map_err(|error| error.to_string())
+            })?,
+        };
+        if changed != 1 {
+            return Err("revoked delegation terminal closure lost its lease state".into());
+        }
+        Ok(Some(json!({"terminal": receipt, "cleanup": cleanup})))
+    }
+
     pub fn revoke_delegation(
         &self,
         principal: &AuthenticatedPrincipal,
@@ -2350,7 +2493,62 @@ impl LocalProductStore {
                 }
                 tx.commit().map_err(|error| error.to_string())
             }),
-        }
+        }?;
+        self.close_revoked_delegation_attempt(delegation_id, principal.principal_id())?;
+        Ok(())
+    }
+
+    pub fn delegated_authority_state(&self, delegation_id: &str) -> Result<Value, String> {
+        let row: (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT status, spend_status, attempt_status,
+                                    terminal_receipt_json, terminal_at
+                             FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )
+                    .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT status, spend_status, attempt_status,
+                                    terminal_receipt_json, terminal_at
+                             FROM managed_acceptance_delegations WHERE delegation_id=$1",
+                        &[&delegation_id],
+                    )
+                    .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
+                    .map_err(|error| error.to_string())
+            })?,
+        };
+        Ok(json!({
+            "delegation_id": delegation_id,
+            "delegation_state": row.0,
+            "spend_authorization_state": row.1,
+            "attempt_lease_state": row.2,
+            "terminal_evidence": row.3
+                .as_deref()
+                .and_then(|receipt| serde_json::from_str::<Value>(receipt).ok())
+                .map(redact_lease_fields),
+            "terminal_at": row.4
+        }))
     }
 }
 
@@ -7327,6 +7525,52 @@ fn redact_lease_fields(mut value: Value) -> Value {
     value
 }
 
+fn open_absolute_path_without_symlinks(
+    path: &Path,
+    final_access_flags: libc::c_int,
+) -> Result<std::fs::File, String> {
+    if !path.is_absolute() {
+        return Err("managed workspace path must be absolute".into());
+    }
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            Component::RootDir => None,
+            Component::Normal(value) => Some(Ok(value)),
+            _ => Some(Err(
+                "managed workspace path contains a non-normal component".to_string(),
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if components.is_empty() {
+        return Err("managed workspace target cannot be the filesystem root".into());
+    }
+    let mut current = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open("/")
+        .map_err(|error| format!("managed workspace root open failed: {error}"))?;
+    for (index, component) in components.iter().enumerate() {
+        let component = CString::new(component.as_bytes())
+            .map_err(|_| "managed workspace path contains NUL".to_string())?;
+        let is_final = index + 1 == components.len();
+        let flags = if is_final {
+            final_access_flags | libc::O_NOFOLLOW | libc::O_CLOEXEC
+        } else {
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC
+        };
+        let fd = unsafe { libc::openat(current.as_raw_fd(), component.as_ptr(), flags, 0) };
+        if fd < 0 {
+            return Err(format!(
+                "managed workspace descriptor traversal failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        current = unsafe { std::fs::File::from_raw_fd(fd) };
+    }
+    Ok(current)
+}
+
 /// Adapter from the existing store-owned managed-acceptance authority to the
 /// protocol-neutral provider-call boundary. It reloads persisted attempt/spend
 /// rows on every check; the provider layer never accepts caller assertions as
@@ -7371,15 +7615,13 @@ impl LocalProductStore {
             .get("path")
             .and_then(Value::as_str)
             .ok_or("workspace action path is required")?;
-        let relative = std::path::Path::new(path);
+        let relative = Path::new(path);
         if path.is_empty()
             || relative.is_absolute()
             || relative.components().any(|component| {
                 matches!(
                     component,
-                    std::path::Component::ParentDir
-                        | std::path::Component::RootDir
-                        | std::path::Component::Prefix(_)
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
                 )
             })
         {
@@ -7391,19 +7633,9 @@ impl LocalProductStore {
         if allowed.len() != 1 || allowed[0].as_str() != Some(path) {
             return Err("workspace action path is outside the exact allowed path".to_string());
         }
-        let root = std::fs::canonicalize(owner_workspace)
-            .map_err(|error| format!("workspace action workspace is unavailable: {error}"))?;
-        let target = root.join(relative);
-        let canonical_target = std::fs::canonicalize(&target)
-            .map_err(|_| "workspace action target must already exist".to_string())?;
-        if canonical_target != target || !canonical_target.starts_with(&root) {
-            return Err("workspace action target escapes workspace root".to_string());
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&target)
+        let workspace = Path::new(owner_workspace);
+        let target = workspace.join(relative);
+        let mut file = open_absolute_path_without_symlinks(&target, libc::O_RDWR)
             .map_err(|error| format!("workspace action target open failed: {error}"))?;
         if !file
             .metadata()
@@ -8042,20 +8274,17 @@ impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductS
             .pointer("/workspace_binding/workspace_path")
             .and_then(Value::as_str)
             .ok_or("managed stage context workspace path is missing")?;
-        let workspace_root = std::fs::canonicalize(workspace_path)
-            .map_err(|_| "managed stage context workspace is unavailable")?;
-        let file_path = workspace_root.join("docs/USER_GUIDE.md");
-        let canonical_file = std::fs::canonicalize(&file_path)
+        let file_path = Path::new(workspace_path).join("docs/USER_GUIDE.md");
+        let mut file = open_absolute_path_without_symlinks(&file_path, libc::O_RDONLY)
             .map_err(|_| "managed stage context allowed file is unavailable")?;
-        if !canonical_file.starts_with(&workspace_root) || canonical_file != file_path {
-            return Err("managed stage context allowed file escapes through a symlink".into());
-        }
-        let metadata = std::fs::metadata(&canonical_file)
+        let metadata = file
+            .metadata()
             .map_err(|_| "managed stage context allowed file metadata is unavailable")?;
         if !metadata.is_file() || metadata.len() > 64 * 1024 {
             return Err("managed stage context allowed file exceeds its bounded input".into());
         }
-        let content = std::fs::read_to_string(&canonical_file)
+        let mut content = String::new();
+        file.read_to_string(&mut content)
             .map_err(|_| "managed stage context allowed file is not UTF-8")?;
         if crate::provider::redaction::contains_sensitive_patterns(&content) {
             return Err("managed stage context secret scan failed before provider request".into());
@@ -8630,7 +8859,6 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(spend["status"], "active");
-
         let attempt_body = attempt_body_for(&spend_request);
         let unauthorized =
             AuthenticatedPrincipal::fixture_for_tests("tenant-a", "fixture-principal-mallory")
@@ -10467,6 +10695,70 @@ mod tests {
         })
     }
 
+    fn delegated_test_principal(principal_id: &str) -> AuthenticatedPrincipal {
+        AuthenticatedPrincipal {
+            tenant_id: "tenant-a".into(),
+            principal_id: principal_id.into(),
+            principal_kind: PrincipalKind::OperatorApiKey,
+            scopes: ALL_MANAGED_ACCEPTANCE_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect(),
+            user_id: format!("user-{principal_id}"),
+            role: "owner".into(),
+        }
+    }
+
+    #[test]
+    fn managed_workspace_descriptor_traversal_rejects_symlinks_and_directory_swap_races() {
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(workspace.join("docs")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(workspace.join("docs/USER_GUIDE.md"), "safe").unwrap();
+        std::fs::write(outside.join("USER_GUIDE.md"), "outside").unwrap();
+
+        let final_link = workspace.join("docs/FINAL_LINK.md");
+        symlink(outside.join("USER_GUIDE.md"), &final_link).unwrap();
+        assert!(open_absolute_path_without_symlinks(&final_link, libc::O_RDONLY).is_err());
+        std::fs::remove_file(final_link).unwrap();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let running_swapper = running.clone();
+        let workspace_swapper = workspace.clone();
+        let outside_swapper = outside.clone();
+        let swapper = std::thread::spawn(move || {
+            let docs = workspace_swapper.join("docs");
+            let real = workspace_swapper.join("docs.real");
+            while running_swapper.load(Ordering::SeqCst) {
+                if std::fs::rename(&docs, &real).is_ok() {
+                    let _ = symlink(&outside_swapper, &docs);
+                    let _ = std::fs::remove_file(&docs);
+                    let _ = std::fs::rename(&real, &docs);
+                }
+            }
+            let _ = std::fs::remove_file(&docs);
+            let _ = std::fs::rename(&real, &docs);
+        });
+        for _ in 0..1_000 {
+            if let Ok(mut file) = open_absolute_path_without_symlinks(
+                &workspace.join("docs/USER_GUIDE.md"),
+                libc::O_RDONLY,
+            ) {
+                let mut content = String::new();
+                file.read_to_string(&mut content).unwrap();
+                assert_eq!(content, "safe");
+            }
+        }
+        running.store(false, Ordering::SeqCst);
+        swapper.join().unwrap();
+    }
+
     #[test]
     fn delegated_manifest_spend_lease_and_terminal_are_restart_safe() {
         let dir = tempdir().unwrap();
@@ -10498,21 +10790,22 @@ mod tests {
             derive_final_execution_manifest(&mutated_proposal, &delegation, &mutated_execution)
                 .unwrap();
         assert!(store
-            .approve_delegated_manifest(&delegation.delegation_id, &mutated_manifest)
+            .approve_delegated_manifest(&principal, &delegation.delegation_id, &mutated_manifest,)
             .unwrap_err()
             .contains("approved proposal"));
         let manifest =
             derive_final_execution_manifest(&proposal, &delegation, &delegated_execution())
                 .unwrap();
         let approval = store
-            .approve_delegated_manifest(&delegation.delegation_id, &manifest)
+            .approve_delegated_manifest(&principal, &delegation.delegation_id, &manifest)
             .unwrap();
         let replayed_approval = store
-            .approve_delegated_manifest(&delegation.delegation_id, &manifest)
+            .approve_delegated_manifest(&principal, &delegation.delegation_id, &manifest)
             .unwrap();
         assert_eq!(approval, replayed_approval);
         let spend = store
             .issue_delegated_spend(
+                &principal,
                 &delegation.delegation_id,
                 approval["approval_receipt_sha256"].as_str().unwrap(),
                 &manifest,
@@ -10520,9 +10813,19 @@ mod tests {
             .unwrap();
         assert_eq!(persisted["status"], "active");
         assert_eq!(spend["status"], "active");
+        assert!(store
+            .admit_delegated_attempt(
+                &principal,
+                &delegation.delegation_id,
+                "attempt-golden-path-1",
+                &manifest,
+            )
+            .unwrap_err()
+            .contains("stale or mismatched"));
         assert_eq!(
             store
                 .issue_delegated_spend(
+                    &principal,
                     &delegation.delegation_id,
                     approval["approval_receipt_sha256"].as_str().unwrap(),
                     &manifest,
@@ -10530,8 +10833,10 @@ mod tests {
                 .unwrap(),
             spend
         );
+        let activator = delegated_test_principal("delegated-activator");
         let lease = store
             .admit_delegated_attempt(
+                &activator,
                 &delegation.delegation_id,
                 "attempt-golden-path-1",
                 &manifest,
@@ -10540,6 +10845,7 @@ mod tests {
         assert_eq!(lease["status"], "admitted");
         assert!(store
             .admit_delegated_attempt(
+                &delegated_test_principal("delegated-activator"),
                 &delegation.delegation_id,
                 "attempt-golden-path-2",
                 &manifest,
@@ -10617,6 +10923,7 @@ mod tests {
         assert!(journal.contains("\"status\":\"outcome_unknown\""));
         let replay = restarted
             .admit_delegated_attempt(
+                &delegated_test_principal("delegated-activator"),
                 &delegation.delegation_id,
                 "attempt-golden-path-1",
                 &manifest,
@@ -10658,6 +10965,7 @@ mod tests {
             )
             .is_err());
         let retry = restarted.issue_delegated_spend(
+            &principal,
             &delegation.delegation_id,
             approval["approval_receipt_sha256"].as_str().unwrap(),
             &manifest,
@@ -10697,17 +11005,20 @@ mod tests {
             derive_final_execution_manifest(&proposal, &delegation, &delegated_execution())
                 .unwrap();
         let approval = store
-            .approve_delegated_manifest(&delegation.delegation_id, &manifest)
+            .approve_delegated_manifest(&principal, &delegation.delegation_id, &manifest)
             .unwrap();
         let spend = store
             .issue_delegated_spend(
+                &principal,
                 &delegation.delegation_id,
                 approval["approval_receipt_sha256"].as_str().unwrap(),
                 &manifest,
             )
             .unwrap();
+        let activator = delegated_test_principal("delegated-activator");
         let lease = store
             .admit_delegated_attempt(
+                &activator,
                 &delegation.delegation_id,
                 "attempt-golden-path-1",
                 &manifest,
@@ -10721,9 +11032,26 @@ mod tests {
             spend_authorization_id: spend["spend_authorization_id"].as_str().unwrap().into(),
             attempt_lease_id: lease["attempt_lease_id"].as_str().unwrap().into(),
         };
-        store
+        assert!(store
             .revoke_delegation(&principal, &delegation.delegation_id)
+            .unwrap_err()
+            .contains("ProductTask is missing"));
+        let recoverable: (String, String, String, Option<String>) = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT status, spend_status, attempt_status, terminal_receipt_json
+                         FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation.delegation_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .map_err(|error| error.to_string())
+            })
             .unwrap();
+        assert_eq!(recoverable.0, "revoked");
+        assert_eq!(recoverable.1, "revoked");
+        assert_eq!(recoverable.2, "admitted");
+        assert!(recoverable.3.is_none());
         assert!(<LocalProductStore as crate::provider::managed_deepseek::ManagedAuthoritySource>::current_authority(&store, &binding).is_err());
     }
 
@@ -11041,12 +11369,26 @@ mod tests {
         let delegation = delegated_contract();
         store.persist_delegation(&principal, &delegation).unwrap();
         let mut proposal = json!({
-            "schema_version": "managed_proposal_manifest.v1",
-            "target_repository": "Igzela/alters-lab",
-            "target_main_sha": revision,
-            "mutable_paths": ["docs/USER_GUIDE.md"],
-            "max_cost_usd": null,
-            "verifier": "deterministic_docs_health_check_v1"
+            "schema_version": "pe7_product_golden_path_live_seal_manifest.v1",
+            "target": {
+                "repository": "Igzela/alters-lab",
+                "default_branch": "main",
+                "default_branch_sha": revision,
+                "allowed_mutable_paths": ["docs/USER_GUIDE.md"],
+                "target_main_must_remain_unchanged": true,
+                "output": "one_unmerged_acp_draft_pr_only"
+            },
+            "provider": {
+                "protocol": "openai_compatible"
+            },
+            "role_models": {
+                "planner": "deepseek-v4-pro",
+                "implementer": "deepseek-v4-flash",
+                "reviewer": "deepseek-v4-pro"
+            },
+            "limits": {
+                "max_cost_usd": null
+            }
         });
         proposal["manifest_sha256"] = json!(compute_attempt_manifest_sha256(&proposal).unwrap());
         store
@@ -11107,19 +11449,69 @@ mod tests {
             replayed_prepare["final_manifest"]["manifest_sha256"],
             prepared["final_manifest"]["manifest_sha256"]
         );
+        let orphan_plan_id = prepared["plan"]["plan_id"].as_str().unwrap().to_string();
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE product_tasks SET plan_id=NULL WHERE task_id=?1",
+                        params![task_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let recovered_store = LocalProductStore::new_with_clock(store.db_path(), || {
+            "2026-07-25T12:00:00Z".to_string()
+        })
+        .unwrap();
+        let recovered_prepare = recovered_store
+            .prepare_delegated_managed_product_task(
+                task_id,
+                "recovery-owner",
+                &["managed_deepseek".into()],
+                &proposal,
+                &delegation,
+                "attempt-golden-path-1",
+            )
+            .unwrap();
+        assert_eq!(
+            recovered_prepare["plan"]["plan_id"].as_str(),
+            Some(orphan_plan_id.as_str())
+        );
+        assert_eq!(
+            recovered_prepare["final_manifest"]["manifest_sha256"],
+            prepared["final_manifest"]["manifest_sha256"]
+        );
+        assert_eq!(
+            recovered_store
+                .list_workflow_plans_with_offset(10_000, 0)
+                .unwrap()
+                .iter()
+                .filter(|plan| {
+                    plan.pointer("/advisory/product_task_id")
+                        .and_then(Value::as_str)
+                        == Some(task_id)
+                })
+                .count(),
+            1
+        );
         let manifest = prepared["final_manifest"].clone();
         let approval = store
-            .approve_delegated_manifest(&delegation.delegation_id, &manifest)
+            .approve_delegated_manifest(&principal, &delegation.delegation_id, &manifest)
             .unwrap();
         let spend = store
             .issue_delegated_spend(
+                &principal,
                 &delegation.delegation_id,
                 approval["approval_receipt_sha256"].as_str().unwrap(),
                 &manifest,
             )
             .unwrap();
+        let activator = delegated_test_principal("delegated-activator");
         let lease = store
             .admit_delegated_attempt(
+                &activator,
                 &delegation.delegation_id,
                 "attempt-golden-path-1",
                 &manifest,
@@ -11174,6 +11566,101 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap()
             .to_string();
+        let revocation_db = dir.path().join("delegated-revocation.db");
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "VACUUM INTO ?1",
+                        params![revocation_db.to_string_lossy().as_ref()],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let revocation_workspace = dir.path().join("delegated-revocation-workspace");
+        std::fs::create_dir_all(revocation_workspace.join("docs")).unwrap();
+        std::fs::copy(
+            PathBuf::from(&activated_workspace_path).join("docs/USER_GUIDE.md"),
+            revocation_workspace.join("docs/USER_GUIDE.md"),
+        )
+        .unwrap();
+        let revocation_workspace = std::fs::canonicalize(revocation_workspace).unwrap();
+        let revocation_store = LocalProductStore::new_with_clock(&revocation_db, || {
+            "2026-07-25T12:00:00Z".to_string()
+        })
+        .unwrap();
+        let revocation_workspace_id = activated["task"]["workspace_record_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut revocation_binding = revocation_store.get_product_task(task_id).unwrap().unwrap()
+            ["workspace_binding"]
+            .clone();
+        revocation_binding["workspace_path"] = json!(revocation_workspace);
+        revocation_binding["workspace_root"] = json!(revocation_workspace);
+        revocation_store
+            .with_conn(|connection| {
+                let workspace_json: String = connection
+                    .query_row(
+                        "SELECT workspace_json FROM supervised_patch_workspaces
+                         WHERE workspace_id=?1",
+                        params![revocation_workspace_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut workspace_json: Value =
+                    serde_json::from_str(&workspace_json).map_err(|error| error.to_string())?;
+                workspace_json["workspace_mode"] = json!("copy");
+                workspace_json["workspace_path"] = json!(revocation_workspace);
+                connection
+                    .execute(
+                        "UPDATE product_tasks SET workspace_binding_json=?1 WHERE task_id=?2",
+                        params![revocation_binding.to_string(), task_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        "UPDATE supervised_patch_workspaces
+                         SET workspace_path=?1, workspace_canonical_path=?1, workspace_json=?2
+                         WHERE workspace_id=?3",
+                        params![
+                            revocation_workspace.to_string_lossy().as_ref(),
+                            workspace_json.to_string(),
+                            revocation_workspace_id
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        revocation_store
+            .revoke_delegation(&principal, &delegation.delegation_id)
+            .unwrap();
+        let revoked_terminal: (String, String, String, String) = revocation_store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT status, spend_status, attempt_status, terminal_receipt_json
+                         FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation.delegation_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(
+            (
+                &revoked_terminal.0[..],
+                &revoked_terminal.1[..],
+                &revoked_terminal.2[..]
+            ),
+            ("revoked", "revoked", "closed")
+        );
+        assert!(revoked_terminal
+            .3
+            .contains("managed_delegated_revocation_terminal_evidence.v1"));
+        assert!(!revocation_workspace.exists());
         let failure_db = dir.path().join("delegated-outcome-unknown.db");
         store
             .with_conn(|connection| {
@@ -11413,8 +11900,87 @@ mod tests {
             .unwrap();
         assert_eq!(finalized["task"]["status"], "awaiting_approval");
         let task_version = finalized["task"]["version"].as_u64().unwrap();
+        let original_provider_journal = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations WHERE attempt_id=?1",
+                        params!["attempt-golden-path-1"],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(store
+            .approve_delegated_product_task(
+                &principal,
+                task_id,
+                "artifact-confirmer",
+                task_version,
+                &delegation.delegation_id,
+                &manifest,
+                &revision,
+            )
+            .unwrap_err()
+            .contains("confirmer authority"));
+        assert!(store
+            .approve_delegated_product_task(
+                &activator,
+                task_id,
+                "artifact-confirmer",
+                task_version,
+                &delegation.delegation_id,
+                &manifest,
+                &revision,
+            )
+            .unwrap_err()
+            .contains("confirmer authority"));
+        let mut tampered_provider_journal: Value =
+            serde_json::from_str(&original_provider_journal).unwrap();
+        tampered_provider_journal[0]["request_id"] = json!("tampered-request-id");
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET provider_request_journal_json=?1 WHERE attempt_id=?2",
+                        params![
+                            tampered_provider_journal.to_string(),
+                            "attempt-golden-path-1"
+                        ],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(store
+            .approve_delegated_product_task(
+                &delegated_test_principal("artifact-confirmer"),
+                task_id,
+                "artifact-confirmer",
+                task_version,
+                &delegation.delegation_id,
+                &manifest,
+                &revision,
+            )
+            .unwrap_err()
+            .contains("journal"));
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET provider_request_journal_json=?1 WHERE attempt_id=?2",
+                        params![original_provider_journal, "attempt-golden-path-1"],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
         let delegated_approval = store
             .approve_delegated_product_task(
+                &delegated_test_principal("artifact-confirmer"),
                 task_id,
                 "artifact-confirmer",
                 task_version,
@@ -11430,6 +11996,7 @@ mod tests {
         assert_eq!(delegated_approval["replayed"], false);
         let replayed_approval = store
             .approve_delegated_product_task(
+                &delegated_test_principal("artifact-confirmer"),
                 task_id,
                 "artifact-confirmer",
                 task_version,

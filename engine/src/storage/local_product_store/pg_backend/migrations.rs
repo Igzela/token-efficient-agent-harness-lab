@@ -640,6 +640,10 @@ fn validate_pg_v35_schema(client: &mut impl postgres::GenericClient) -> Result<(
     if version != super::super::migrations::V35_SCHEMA_VERSION {
         return Err(format!("PostgreSQL v35 schema version mismatch: {version}"));
     }
+    validate_pg_v35_structure(client)
+}
+
+fn validate_pg_v35_structure(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     for table in super::super::migrations::V35_TABLES {
         if !pg_table_present(client, table)? {
             return Err(format!("PostgreSQL v35 schema missing table {table}"));
@@ -698,7 +702,7 @@ fn validate_pg_v36_schema(client: &mut impl postgres::GenericClient) -> Result<(
             return Err(format!("PostgreSQL v36 schema missing index {index}"));
         }
     }
-    validate_pg_v35_schema(client)
+    validate_pg_v35_structure(client)
 }
 
 fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
@@ -1780,6 +1784,7 @@ impl LocalProductStore {
                 &[&super::super::migrations::V36_SCHEMA_VERSION],
             )
             .map_err(|e| e.to_string())?;
+            validate_pg_v35_schema(&mut tx)?;
             tx.execute(
                 "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
                  VALUES ($1,$2,'schema.rollback.v36_to_v35','local_product_store',$3)",
@@ -3050,6 +3055,26 @@ mod tests {
                 "tables": ["product_task_workspace_preparations"],
             })
         );
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn pg_v35_and_v36_validate_their_own_versions_with_shared_structure() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        let store = &fixture.store;
+
+        store
+            .with_pg_conn(validate_pg_v36_schema)
+            .expect("a fully migrated v36 schema must validate");
+
+        store
+            .rollback_v36_to_v35("migration-test", true)
+            .expect("empty v36 delegation table must roll back");
+        store
+            .with_pg_conn(validate_pg_v35_schema)
+            .expect("the rolled-back v35 schema must validate");
     }
 
     #[test]

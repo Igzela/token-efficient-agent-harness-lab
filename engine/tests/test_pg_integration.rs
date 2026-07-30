@@ -3187,6 +3187,22 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
     let principal = store
         .authenticate_managed_acceptance_principal("tenant-a", &key_id, Some(1.0))
         .unwrap();
+    let activator_key_id = format!("delegated-pg-activator-{tag}");
+    store
+        .record_api_key_metadata(
+            &activator_key_id,
+            &format!("delegated-pg-activator-user-{tag}"),
+            "operator",
+            &ALL_MANAGED_ACCEPTANCE_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "pg-test-setup",
+        )
+        .unwrap();
+    let activator = store
+        .authenticate_managed_acceptance_principal("tenant-a", &activator_key_id, Some(1.0))
+        .unwrap();
     let created_at = utc_now_string();
     let expires_at = (chrono::DateTime::parse_from_rfc3339(&created_at)
         .unwrap()
@@ -3275,24 +3291,25 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
     )
     .unwrap();
     let approval = store
-        .approve_delegated_manifest(&delegation_id, &manifest)
+        .approve_delegated_manifest(&principal, &delegation_id, &manifest)
         .unwrap();
     let spend = store
         .issue_delegated_spend(
+            &principal,
             &delegation_id,
             approval["approval_receipt_sha256"].as_str().unwrap(),
             &manifest,
         )
         .unwrap();
     let lease = store
-        .admit_delegated_attempt(&delegation_id, &attempt_id, &manifest)
+        .admit_delegated_attempt(&activator, &delegation_id, &attempt_id, &manifest)
         .unwrap();
 
     let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
     let restarted = LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
     assert_eq!(
         restarted
-            .admit_delegated_attempt(&delegation_id, &attempt_id, &manifest)
+            .admit_delegated_attempt(&activator, &delegation_id, &attempt_id, &manifest)
             .unwrap()["replayed"],
         true
     );

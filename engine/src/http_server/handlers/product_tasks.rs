@@ -356,10 +356,11 @@ pub(crate) async fn api_prepare_delegated_product_task(
         .cloned()
         .ok_or_else(|| internal_error("delegated final manifest missing".to_string()))?;
     let approval = store
-        .approve_delegated_manifest(&delegation.delegation_id, &manifest)
+        .approve_delegated_manifest(&principal, &delegation.delegation_id, &manifest)
         .map_err(|error| delegated_api_error(&error, "delegated_manifest_approval_failed"))?;
     let spend = store
         .issue_delegated_spend(
+            &principal,
             &delegation.delegation_id,
             approval
                 .get("approval_receipt_sha256")
@@ -436,8 +437,17 @@ pub(crate) async fn api_activate_delegated_product_task(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| delegated_request_error("spend_authorization_id is required"))?;
     let store = require_store(&state)?;
+    let principal = store
+        .authenticate_managed_acceptance_principal(
+            &context.tenant_id,
+            &context.api_key_id,
+            Some(0.50),
+        )
+        .map_err(|error| {
+            delegated_api_error(&error, "delegated_activator_authentication_failed")
+        })?;
     let lease = store
-        .admit_delegated_attempt(delegation_id, attempt_id, manifest)
+        .admit_delegated_attempt(&principal, delegation_id, attempt_id, manifest)
         .map_err(|error| delegated_api_error(&error, "delegated_attempt_admission_failed"))?;
     let activated = store
         .activate_delegated_managed_product_task(
@@ -489,8 +499,18 @@ pub(crate) async fn api_approve_delegated_product_task(
         .filter(|value| value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
         .ok_or_else(|| delegated_request_error("current_target_main_sha must be 40 hex"))?;
     let store = require_store(&state)?;
+    let principal = store
+        .authenticate_managed_acceptance_principal(
+            &context.tenant_id,
+            &context.api_key_id,
+            Some(0.50),
+        )
+        .map_err(|error| {
+            delegated_api_error(&error, "delegated_confirmer_authentication_failed")
+        })?;
     let result = store
         .approve_delegated_product_task(
+            &principal,
             &task_id,
             &context.api_key_id,
             expected_task_version,
@@ -762,6 +782,10 @@ pub(crate) async fn api_output_product_task(
                     base_branch: required_output_request_string(request, "base_branch")?,
                     title: required_output_request_string(request, "pr_title")?,
                     body: required_output_request_string(request, "pr_body")?,
+                    expected_base_sha: operation
+                        .get("source_revision")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
                     expected_head_sha: operation
                         .pointer("/branch_push/commit_sha")
                         .and_then(|value| value.as_str())

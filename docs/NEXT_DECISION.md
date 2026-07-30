@@ -38,12 +38,13 @@ The owner has authorized the production runner repair, delegated autonomous auth
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `READY_FOR_EXECUTION` only after PR #323 acceptance and fresh exact-state checks; exactly one attempt is authorized.
-2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
-3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-DELEGATED-AUTONOMOUS-GOLDEN-PATH-1` — `IN_PROGRESS` in Draft PR #323.
+2. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on accepted PR #323; exactly one later attempt is authorized.
+3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
+4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
 ## Packet States
 
@@ -66,7 +67,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, and delegated autonomous authority through PR #323. After PR #323 acceptance, the sole active frontier is the owner's exact one-use live seal. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, and live-runner wiring through PR #322. Delegated autonomous authority is in progress in Draft PR #323. After its acceptance, the sole active frontier is the owner's exact one-use live seal. Do not begin that live seal, RWE, Architecture Convergence, or later stages before their named prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -176,7 +177,7 @@ Stop before any of the following:
 
 ## Packet PE7-OBSERVATION-RESTACK-1 — observation-only PR #301 reconciliation
 
-**State:** `COMPLETE`
+**State:** `IN_PROGRESS`
 
 **Owned PR:** #301
 
@@ -271,7 +272,7 @@ Wire the existing `ManagedDeepSeekProvider::invoke_with_authority` into the exis
 
 ## Packet PE7-DELEGATED-AUTONOMOUS-GOLDEN-PATH-1
 
-**State:** `COMPLETE`
+**State:** `IN_PROGRESS`
 
 **Owned PR:** #323
 
@@ -285,7 +286,7 @@ Deterministic local transports prove the complete success route and runner absen
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1
 
-**State:** `READY_FOR_EXECUTION` after PR #323 acceptance
+**State:** `BLOCKED_PREREQUISITE`
 
 **Authority:** the owner's exact one-use documentation delegation and `MAX_COST_USD=0.50`
 

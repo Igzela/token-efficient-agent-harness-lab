@@ -66,13 +66,14 @@ pub(super) const V34_TABLES: [&str; 3] =
     ["rwe_run_authorizations", "rwe_runs", "rwe_task_attempts"];
 pub(super) const V35_TABLES: [&str; 1] = ["product_task_workspace_preparations"];
 pub(super) const V36_TABLES: [&str; 1] = ["managed_acceptance_delegations"];
-pub(super) const V36_COLUMNS: [&str; 35] = [
+pub(super) const V36_COLUMNS: [&str; 36] = [
     "delegation_id",
     "tenant_id",
     "principal_kind",
     "principal_id",
     "manifest_approver_id",
     "artifact_confirmer_id",
+    "attempt_activator_id",
     "delegation_sha256",
     "body_json",
     "proposal_sha256",

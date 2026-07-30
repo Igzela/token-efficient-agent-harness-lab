@@ -206,6 +206,7 @@ pub struct GitHubPullRequestRequest {
     pub title: String,
     pub body: String,
     pub expected_head_sha: Option<String>,
+    pub expected_base_sha: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -219,6 +220,7 @@ pub struct GitHubPullRequestOutput {
     pub base_branch: String,
     pub head_branch: String,
     pub head_sha: Option<String>,
+    pub base_sha: Option<String>,
 }
 
 pub fn parse_github_repository_url(url: &str) -> Result<GitHubRepository, String> {
@@ -417,6 +419,11 @@ fn github_pull_request_output(
             return Err("GitHub PR response head commit changed".to_string());
         }
     }
+    if let Some(expected_base_sha) = request.expected_base_sha.as_deref() {
+        if value.pointer("/base/sha").and_then(Value::as_str) != Some(expected_base_sha) {
+            return Err("GitHub PR response base commit changed".to_string());
+        }
+    }
     Ok(GitHubPullRequestOutput {
         number,
         url: redact_sensitive_patterns(url),
@@ -428,6 +435,10 @@ fn github_pull_request_output(
         head_branch: request.head_branch.clone(),
         head_sha: value
             .pointer("/head/sha")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        base_sha: value
+            .pointer("/base/sha")
             .and_then(Value::as_str)
             .map(str::to_string),
     })
@@ -881,6 +892,13 @@ pub fn push_approved_branch(
     let workspace = canonical_existing_dir(&request.workspace_path, "workspace_path")?;
     if workspace.starts_with(&target_repo) {
         return Err("workspace must be outside target repository".to_string());
+    }
+    let (_, _, current_default_branch_sha) = inspect_git_source_identity(config, &target_repo)?;
+    if current_default_branch_sha != request.source_revision {
+        return Err(format!(
+            "target default branch changed before branch publication: expected={} actual={current_default_branch_sha}",
+            request.source_revision
+        ));
     }
     let current_source = run_git(config, &workspace, &["rev-parse", "HEAD"])?
         .stdout
@@ -1625,6 +1643,7 @@ mod tests {
             title: "Bounded change".to_string(),
             body: "Approved artifact".to_string(),
             expected_head_sha: Some("a".repeat(40)),
+            expected_base_sha: Some("b".repeat(40)),
         }
     }
 
@@ -1684,7 +1703,10 @@ mod tests {
             "html_url": "https://github.com/acme/widgets/pull/7",
             "state": "open",
             "draft": true,
-            "base": {"ref": "main"},
+            "base": {
+                "ref": "main",
+                "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
             "head": {
                 "ref": "acp/product-1",
                 "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1700,6 +1722,10 @@ mod tests {
         assert_eq!(
             output.head_sha.as_deref(),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            output.base_sha.as_deref(),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         );
 
         let mut not_draft = valid.clone();
@@ -1721,5 +1747,25 @@ mod tests {
         let mut wrong_sha = valid;
         wrong_sha["head"]["sha"] = serde_json::json!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert!(github_pull_request_output(&wrong_sha, &request, false).is_err());
+
+        let mut wrong_base_sha = serde_json::json!({
+            "number": 7,
+            "html_url": "https://github.com/acme/widgets/pull/7",
+            "state": "open",
+            "draft": true,
+            "base": {
+                "ref": "main",
+                "sha": "cccccccccccccccccccccccccccccccccccccccc"
+            },
+            "head": {
+                "ref": "acp/product-1",
+                "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "repo": {"full_name": "acme/widgets"}
+            },
+        });
+        assert!(github_pull_request_output(&wrong_base_sha, &request, false).is_err());
+        wrong_base_sha["base"]["sha"] =
+            serde_json::json!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert!(github_pull_request_output(&wrong_base_sha, &request, false).is_ok());
     }
 }
