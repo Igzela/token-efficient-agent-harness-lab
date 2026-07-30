@@ -64,6 +64,7 @@ fn sample_intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskI
         objective: "Add a short docs note for golden path acceptance.".to_string(),
         target_id: "disposable-target".to_string(),
         target_repo_path: target.to_string_lossy().into_owned(),
+        source_kind: None,
         source_revision: rev.to_string(),
         source_tree_hash: None,
         allowed_paths: vec!["README.md".to_string(), "docs/note.md".to_string()],

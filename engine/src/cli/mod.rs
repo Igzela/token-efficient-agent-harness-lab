@@ -8,6 +8,7 @@ pub mod codex_residual_admission;
 pub mod codex_session_usage;
 pub mod codex_usage_journal;
 pub mod config;
+pub mod managed_coding_profile;
 
 pub use cli_node_executor::CliNodeExecutor;
 pub use config::CliConfig;

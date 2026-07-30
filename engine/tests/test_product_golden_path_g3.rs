@@ -68,6 +68,7 @@ fn intake(
         objective: "Create fixture note via golden path.".to_string(),
         target_id: "disposable".to_string(),
         target_repo_path: target.to_string_lossy().into_owned(),
+        source_kind: None,
         source_revision: rev.to_string(),
         source_tree_hash: None,
         allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],

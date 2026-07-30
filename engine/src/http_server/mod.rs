@@ -175,6 +175,7 @@ pub struct ProductTaskIntakeApiRequest {
     pub objective: String,
     pub target_id: String,
     pub target_repo_path: String,
+    pub source_kind: Option<String>,
     pub source_revision: String,
     pub source_tree_hash: Option<String>,
     pub allowed_paths: Vec<String>,

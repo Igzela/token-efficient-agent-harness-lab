@@ -1044,6 +1044,36 @@ fn execute_product_codex_with_budget_gateway(
             );
         }
     };
+    let runtime_profile_sha256 = match admission.runtime_profile_sha256() {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                "new product-managed Codex execution requires a runtime profile".to_string(),
+                start.elapsed().as_millis() as i64,
+            );
+        }
+        Err(error) => {
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                format!("Codex runtime profile is invalid: {error}"),
+                start.elapsed().as_millis() as i64,
+            );
+        }
+    };
+    let capability_probe_sha256 = match admission.capability_probe_sha256() {
+        Some(value) => value.to_string(),
+        None => {
+            return failed_without_process(
+                "codex_cli",
+                "cli_execution_authority_invalid",
+                "Codex runtime profile capability evidence is missing".to_string(),
+                start.elapsed().as_millis() as i64,
+            );
+        }
+    };
     let executable = CodexExecutableIdentity {
         binary_path: admission.binary_path.clone(),
         binary_version: admission.binary_version.clone(),
@@ -1078,6 +1108,8 @@ fn execute_product_codex_with_budget_gateway(
         executable_path: executable.binary_path,
         executable_version: executable.binary_version,
         executable_sha256: executable.binary_sha256,
+        runtime_profile_sha256: Some(runtime_profile_sha256),
+        capability_probe_sha256: Some(capability_probe_sha256),
         model: admission.model.clone(),
     };
     let lease = match store.admit_managed_codex_spawn(&facts) {
@@ -1354,6 +1386,20 @@ fn execute_product_codex_after_store_admission(
             &ephemeral_home,
             &journal_path,
             "final_store_confirmation",
+            error,
+            start,
+        );
+    }
+    // The profile observation is sampled before store admission and must be
+    // sampled again immediately before the child is created.  A compatible
+    // version range never permits a replacement, a changed capability set, or
+    // a profile mutation between those two points.
+    if let Err(error) = admission.revalidate_before_spawn() {
+        return failed_after_pre_child_managed_codex_cleanup(
+            gateway,
+            &ephemeral_home,
+            &journal_path,
+            "runtime_profile_revalidation",
             error,
             start,
         );
@@ -2045,6 +2091,13 @@ mod tests {
         product_task_gate: Option<std::ffi::OsString>,
         target_output_enabled: Option<std::ffi::OsString>,
         target_output_kill_switch: Option<std::ffi::OsString>,
+        cli_execution_enabled: Option<std::ffi::OsString>,
+        codex_bin: Option<std::ffi::OsString>,
+        codex_sha256: Option<std::ffi::OsString>,
+        codex_version_policy: Option<std::ffi::OsString>,
+        codex_model: Option<std::ffi::OsString>,
+        codex_runtime_profile_id: Option<std::ffi::OsString>,
+        codex_required_capabilities: Option<std::ffi::OsString>,
         upstream_api_key: Option<std::ffi::OsString>,
         fallback_upstream_api_key: Option<std::ffi::OsString>,
     }
@@ -2056,12 +2109,20 @@ mod tests {
                 product_task_gate: std::env::var_os(PRODUCT_TASK_GATE),
                 target_output_enabled: std::env::var_os("ACP_ENABLE_TARGET_REPO_OUTPUT"),
                 target_output_kill_switch: std::env::var_os("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH"),
+                cli_execution_enabled: std::env::var_os("ACP_ENABLE_CLI_EXECUTION"),
+                codex_bin: std::env::var_os("ACP_CODEX_BIN"),
+                codex_sha256: std::env::var_os("ACP_CODEX_SHA256"),
+                codex_version_policy: std::env::var_os("ACP_CODEX_VERSION_POLICY"),
+                codex_model: std::env::var_os("ACP_CODEX_MODEL"),
+                codex_runtime_profile_id: std::env::var_os("ACP_CODEX_RUNTIME_PROFILE_ID"),
+                codex_required_capabilities: std::env::var_os("ACP_CODEX_REQUIRED_CAPABILITIES"),
                 upstream_api_key: std::env::var_os("ACP_CODEX_UPSTREAM_API_KEY"),
                 fallback_upstream_api_key: std::env::var_os("OPENAI_API_KEY"),
             };
             std::env::set_var(PRODUCT_TASK_GATE, "1");
             std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
             std::env::set_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH", "0");
+            std::env::set_var("ACP_ENABLE_CLI_EXECUTION", "1");
             std::env::set_var(
                 "ACP_CODEX_UPSTREAM_API_KEY",
                 "provider-free-test-parent-key",
@@ -2082,6 +2143,22 @@ mod tests {
             restore_test_env(
                 "ACP_TARGET_REPO_OUTPUT_KILL_SWITCH",
                 self.target_output_kill_switch.take(),
+            );
+            restore_test_env(
+                "ACP_ENABLE_CLI_EXECUTION",
+                self.cli_execution_enabled.take(),
+            );
+            restore_test_env("ACP_CODEX_BIN", self.codex_bin.take());
+            restore_test_env("ACP_CODEX_SHA256", self.codex_sha256.take());
+            restore_test_env("ACP_CODEX_VERSION_POLICY", self.codex_version_policy.take());
+            restore_test_env("ACP_CODEX_MODEL", self.codex_model.take());
+            restore_test_env(
+                "ACP_CODEX_RUNTIME_PROFILE_ID",
+                self.codex_runtime_profile_id.take(),
+            );
+            restore_test_env(
+                "ACP_CODEX_REQUIRED_CAPABILITIES",
+                self.codex_required_capabilities.take(),
             );
             restore_test_env("ACP_CODEX_UPSTREAM_API_KEY", self.upstream_api_key.take());
             restore_test_env("OPENAI_API_KEY", self.fallback_upstream_api_key.take());
@@ -2227,7 +2304,7 @@ mod tests {
         std::fs::write(
             &binary,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  if [ -n \"${{ACP_CODEX_UPSTREAM_API_KEY:-}}\" ] || [ -n \"${{OPENAI_API_KEY:-}}\" ]; then\n    printf parent-credential-visible > {}\n    exit 91\n  fi\n  printf 'codex-cli 0.145.0\\n'\n  exit 0\nfi\nprintf child-spawned > {}\nexit 0\n",
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  if [ -n \"${{ACP_CODEX_UPSTREAM_API_KEY:-}}\" ] || [ -n \"${{OPENAI_API_KEY:-}}\" ]; then\n    printf parent-credential-visible > {}\n    exit 91\n  fi\n  printf 'codex-cli 0.145.0\\n'\n  exit 0\nfi\nif [ \"$1\" = \"exec\" ] && [ \"$2\" = \"--help\" ]; then\n  printf '%s\\n' '--json --sandbox workspace-write --ask-for-approval --model'\n  exit 0\nfi\nprintf child-spawned > {}\nexit 0\n",
                 version_probe_credential_marker.to_string_lossy(),
                 marker.to_string_lossy(),
             ),
@@ -2235,7 +2312,15 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let digest = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
-        CodexAdmission::validate(&binary, "0.145.0", &digest, "gpt-5.6-luna").unwrap()
+        std::env::set_var("ACP_CODEX_BIN", &binary);
+        std::env::set_var("ACP_CODEX_SHA256", digest);
+        std::env::set_var("ACP_CODEX_VERSION_POLICY", "=0.145.0");
+        std::env::set_var("ACP_CODEX_MODEL", "gpt-5.6-luna");
+        std::env::set_var("ACP_CODEX_RUNTIME_PROFILE_ID", "test-codex-runtime-profile");
+        std::env::set_var("ACP_CODEX_REQUIRED_CAPABILITIES", "--json");
+        crate::cli::config::CliConfig::from_env()
+            .codex_admission
+            .expect("fixture Codex runtime profile must admit")
     }
 
     #[cfg(unix)]
@@ -2264,6 +2349,8 @@ mod tests {
                 "max_wall_time_ms": 300_000,
                 "exact_codex_version": admission.binary_version,
                 "exact_codex_sha_required": true,
+                "runtime_profile_sha256": admission.runtime_profile_sha256().unwrap(),
+                "capability_probe_sha256": admission.capability_probe_sha256(),
                 "provider_kind": "openai_compatible",
                 "provider_host": "api.openai.com",
                 "provider_base_url": "https://api.openai.com/v1",
@@ -2320,6 +2407,7 @@ mod tests {
             objective: "managed Codex executor authority fixture".to_string(),
             target_id: "managed-codex-target".to_string(),
             target_repo_path: repo.to_string_lossy().into_owned(),
+            source_kind: None,
             source_revision: revision.clone(),
             source_tree_hash: None,
             allowed_paths: vec!["docs/managed.md".to_string()],
@@ -2441,6 +2529,10 @@ mod tests {
                     binary_path: admission.binary_path.to_string_lossy().into_owned(),
                     binary_version: admission.binary_version.clone(),
                     binary_sha256: admission.binary_sha256.clone(),
+                    runtime_profile_sha256: admission.runtime_profile_sha256().unwrap(),
+                    capability_probe_sha256: admission
+                        .capability_probe_sha256()
+                        .map(str::to_string),
                     provider_kind: "openai_compatible".to_string(),
                     provider_host: "api.openai.com".to_string(),
                     provider_base_url: "https://api.openai.com/v1".to_string(),
@@ -2544,6 +2636,11 @@ mod tests {
             executable_path: fixture.admission.binary_path.clone(),
             executable_version: fixture.admission.binary_version.clone(),
             executable_sha256: fixture.admission.binary_sha256.clone(),
+            runtime_profile_sha256: fixture.admission.runtime_profile_sha256().unwrap(),
+            capability_probe_sha256: fixture
+                .admission
+                .capability_probe_sha256()
+                .map(str::to_string),
             model: fixture.admission.model.clone(),
         };
         let lease = fixture.store.admit_managed_codex_spawn(&facts).unwrap();
@@ -2624,6 +2721,11 @@ mod tests {
             executable_path: fixture.admission.binary_path.clone(),
             executable_version: fixture.admission.binary_version.clone(),
             executable_sha256: fixture.admission.binary_sha256.clone(),
+            runtime_profile_sha256: fixture.admission.runtime_profile_sha256().unwrap(),
+            capability_probe_sha256: fixture
+                .admission
+                .capability_probe_sha256()
+                .map(str::to_string),
             model: fixture.admission.model.clone(),
         };
         let lease = fixture.store.admit_managed_codex_spawn(&facts).unwrap();
@@ -2672,6 +2774,11 @@ mod tests {
             executable_path: fixture.admission.binary_path.clone(),
             executable_version: fixture.admission.binary_version.clone(),
             executable_sha256: fixture.admission.binary_sha256.clone(),
+            runtime_profile_sha256: fixture.admission.runtime_profile_sha256().unwrap(),
+            capability_probe_sha256: fixture
+                .admission
+                .capability_probe_sha256()
+                .map(str::to_string),
             model: fixture.admission.model.clone(),
         };
         let lease = fixture.store.admit_managed_codex_spawn(&facts).unwrap();
@@ -2745,6 +2852,11 @@ mod tests {
             executable_path: fixture.admission.binary_path.clone(),
             executable_version: fixture.admission.binary_version.clone(),
             executable_sha256: fixture.admission.binary_sha256.clone(),
+            runtime_profile_sha256: fixture.admission.runtime_profile_sha256().unwrap(),
+            capability_probe_sha256: fixture
+                .admission
+                .capability_probe_sha256()
+                .map(str::to_string),
             model: fixture.admission.model.clone(),
         };
         let lease = fixture.store.admit_managed_codex_spawn(&facts).unwrap();
@@ -2805,14 +2917,15 @@ mod tests {
             let database_path = root.path().join("store.db");
             let store = Arc::new(LocalProductStore::new(&database_path).unwrap());
             let marker = root.path().join("generic-codex-child-spawned");
-            let binary = fake_codex(
-                root.path(),
-                &format!("printf child-spawned > {}", marker.to_string_lossy()),
-            );
+            let version_probe_marker = root.path().join("generic-codex-version-probe");
+            let admission =
+                admitted_fake_codex_with_child_marker(root.path(), &marker, &version_probe_marker);
+            let binary = admission.binary_path.clone();
             let intake = ProductTaskIntakeRequest {
                 objective: "ProductTask run-owner routing regression".to_string(),
                 target_id: "managed-codex-target".to_string(),
                 target_repo_path: repo.to_string_lossy().into_owned(),
+                source_kind: None,
                 source_revision: revision,
                 source_tree_hash: None,
                 allowed_paths: vec!["docs/managed.md".to_string()],

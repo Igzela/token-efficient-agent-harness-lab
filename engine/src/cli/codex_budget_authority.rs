@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::config::{validate_binary_file_identity, ADMITTED_CODEX_VERSION};
+use super::config::validate_binary_file_identity;
 
 pub const CODEX_BUDGET_AUTHORITY_SCHEMA: &str = "codex_budget_authority.v2";
 pub const CODEX_BUDGET_GATEWAY_SCHEMA: &str = "codex_budget_gateway.v2";
@@ -37,7 +37,9 @@ pub const CODEX_SESSION_TOKEN_PREFIX: &str = "acp-codex-budget-";
 pub const CODEX_PROVIDER_KIND_OPENAI_COMPATIBLE: &str = "openai_compatible";
 
 /// Admitted product-managed Codex CLI identity (exact version pin).
-pub const ADMITTED_CODEX_CLI_VERSION: &str = ADMITTED_CODEX_VERSION;
+/// Compatibility fixture value retained for historical dry-run evidence. New
+/// product admission is controlled by a versioned runtime profile instead.
+pub const ADMITTED_CODEX_CLI_VERSION: &str = "0.145.0";
 
 /// Default per-request provider output ceiling when the product budget does not
 /// pin a lower value. Kept deliberately below common model maxima so product
@@ -133,10 +135,8 @@ impl CodexExecutableIdentity {
         let expected_sha256 = expected_sha256.trim().to_ascii_lowercase();
         let binary_sha256 = validate_binary_file_identity(binary_path, &expected_sha256)?;
         let expected_version = expected_version.trim();
-        if expected_version != ADMITTED_CODEX_CLI_VERSION {
-            return Err(format!(
-                "Codex binary version is not the admitted version {ADMITTED_CODEX_CLI_VERSION}"
-            ));
+        if !is_semver(expected_version) {
+            return Err("Codex binary version must be major.minor.patch".to_string());
         }
         Ok(Self {
             binary_path: binary_path.to_path_buf(),
@@ -144,6 +144,13 @@ impl CodexExecutableIdentity {
             binary_sha256,
         })
     }
+}
+
+fn is_semver(value: &str) -> bool {
+    value.split('.').count() == 3
+        && value
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// Pre-launch authority binding for one product-managed Codex execution.

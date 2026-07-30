@@ -46,6 +46,7 @@ pub(crate) async fn api_create_product_task(
         objective: request.objective,
         target_id: request.target_id,
         target_repo_path: request.target_repo_path,
+        source_kind: request.source_kind,
         source_revision: request.source_revision,
         source_tree_hash: request.source_tree_hash,
         allowed_paths: request.allowed_paths,
