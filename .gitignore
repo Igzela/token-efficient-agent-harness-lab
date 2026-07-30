@@ -39,3 +39,4 @@ site/.vercel
 /tmp/agent-orchestrator-locks/
 /tmp/agent-worktrees/
 /tmp/codex-*.log
+.codegraph/
