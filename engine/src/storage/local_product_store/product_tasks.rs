@@ -107,6 +107,87 @@ fn remove_product_task_git_worktree_or_reconcile(
     })
 }
 
+/// Remove only an exact receipt-owned local-folder staging directory.  Unlike
+/// a Git worktree this path has no external metadata to reconcile, but it is
+/// still never removed by a broad cleanup: it must be the deterministic child
+/// of the receipt root, be a real directory (not a replacement symlink), and
+/// be absent after removal.  Anything ambiguous is retained for operator
+/// reconciliation rather than risking a path-following delete.
+fn remove_product_task_local_folder_stage_or_reconcile(
+    receipt: &ProductTaskWorkspacePreparationReceipt,
+    task_id: &str,
+) -> Result<(), String> {
+    let expected = receipt
+        .workspace_root
+        .join(product_task_workspace_fs_id(task_id));
+    if receipt.workspace_path != expected {
+        return Err(product_task_workspace_preparation_reconciliation_error(
+            "local-folder staging receipt path is invalid",
+        ));
+    }
+    match std::fs::symlink_metadata(&receipt.workspace_path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(product_task_workspace_preparation_reconciliation_error(
+                    "local-folder staging path is not an app-owned directory",
+                ));
+            }
+            let canonical = std::fs::canonicalize(&receipt.workspace_path).map_err(|_| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "local-folder staging identity is unavailable",
+                )
+            })?;
+            if canonical != receipt.workspace_path {
+                return Err(product_task_workspace_preparation_reconciliation_error(
+                    "local-folder staging path drifted",
+                ));
+            }
+            std::fs::remove_dir_all(&receipt.workspace_path).map_err(|_| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "local-folder staging cleanup is unavailable",
+                )
+            })?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            return Err(product_task_workspace_preparation_reconciliation_error(
+                "local-folder staging identity is unavailable",
+            ));
+        }
+    }
+    if receipt.workspace_path.exists() {
+        return Err(product_task_workspace_preparation_reconciliation_error(
+            "local-folder staging remains after cleanup",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_product_task_workspace_or_reconcile(
+    intake: &ValidatedProductTaskIntake,
+    receipt: &ProductTaskWorkspacePreparationReceipt,
+    target_canonical: &Path,
+    task_id: &str,
+) -> Result<(), String> {
+    if intake.workspace_mode == "local_folder" {
+        // The local source was captured through the safe manifest boundary
+        // above. Its canonical path must remain the exact supervised-workspace
+        // target before the staging copy can be cleaned.
+        if target_canonical != Path::new(&intake.target_repo_path) {
+            return Err(product_task_workspace_preparation_reconciliation_error(
+                "local-folder source path drifted",
+            ));
+        }
+        return remove_product_task_local_folder_stage_or_reconcile(receipt, task_id);
+    }
+    let config = TargetRepoOutputConfig::from_env();
+    remove_product_task_git_worktree_or_reconcile(
+        &config,
+        target_canonical,
+        &receipt.workspace_path,
+    )
+}
+
 fn classify_product_task_git_worktree_prepare_error(error: String) -> String {
     if error.starts_with(GIT_WORKTREE_ADD_OUTCOME_UNKNOWN) {
         product_task_workspace_preparation_reconciliation_error(
@@ -1062,7 +1143,7 @@ impl LocalProductStore {
                         output_record.get("state").and_then(Value::as_str),
                         Some("active" | "completed")
                     ) => {}
-            Some("artifact_only" | "export_patch")
+            Some("artifact_only" | "export_patch" | "apply_local_changes")
                 if output_record.get("schema_version").and_then(Value::as_str)
                     == Some("product_output_receipt.v1")
                     && output_record.get("state").and_then(Value::as_str) == Some("completed")
@@ -1166,7 +1247,7 @@ impl LocalProductStore {
                     != output_record.get("operation_id").and_then(Value::as_str))
             || (matches!(
                 task.get("output_intent").and_then(Value::as_str),
-                Some("artifact_only" | "export_patch")
+                Some("artifact_only" | "export_patch" | "apply_local_changes")
             ) && terminal_evidence
                 .pointer("/output/receipt_id")
                 .and_then(Value::as_str)
@@ -2450,6 +2531,15 @@ impl LocalProductStore {
         receipt: &ProductTaskWorkspacePreparationReceipt,
         workspace_path: PathBuf,
     ) -> Result<Value, String> {
+        if intake.workspace_mode == "local_folder" {
+            return self.prepare_product_task_local_folder_locked(
+                task_id,
+                intake,
+                actor,
+                receipt,
+                workspace_path,
+            );
+        }
         // Configuration and target state can change after the initial
         // preflight. Recheck while holding the pinned receipt guard, but keep
         // a pre-effect failure recoverable rather than compensating an
@@ -2535,6 +2625,9 @@ impl LocalProductStore {
             "workspace_mode": "git_worktree",
             "git": {
                 "default_branch": prepared.default_branch,
+                "default_branch_sha": prepared.default_branch_sha,
+                "origin_remote": prepared.origin_remote,
+                "origin_remote_fingerprint": prepared.origin_remote_fingerprint,
                 "source_revision": prepared.source_revision,
             },
             "status": "workspace_created",
@@ -2566,6 +2659,11 @@ impl LocalProductStore {
             source_tree_hash: Some(content_hash.clone()),
             workspace_content_hash: content_hash,
             workspace_mode: "git_worktree".to_string(),
+            local_folder_exclusions_sha256: None,
+            git_origin_remote: Some(prepared.origin_remote.clone()),
+            git_origin_remote_fingerprint: Some(prepared.origin_remote_fingerprint.clone()),
+            git_default_branch: Some(prepared.default_branch.clone()),
+            git_default_branch_sha: Some(prepared.default_branch_sha.clone()),
             provisional_run_id: provisional_run_id.clone(),
             allowed_paths: intake.allowed_paths.clone(),
             bound_at: self.now(),
@@ -2664,18 +2762,17 @@ impl LocalProductStore {
         self.validate_product_task_workspace_preparation_target_boundary(intake, &receipt)?;
 
         // A receipt-owned path can only be terminalized after the current
-        // target boundary is still usable and Git has removed that exact
-        // worktree. Direct filesystem deletion is insufficient because a
-        // timed-out `git worktree` child can leave registered metadata behind.
+        // target boundary is still usable. Git worktrees require both Git
+        // metadata and path reconciliation; local-folder staging copies have
+        // no Git metadata, but still require exact app-owned path proof.
         validate_product_task_workspace_prerequisites(intake).map_err(|_| {
             product_task_workspace_preparation_reconciliation_error(
-                "pinned git worktree removal precondition is unavailable",
+                "pinned workspace removal precondition is unavailable",
             )
         })?;
-        let config = TargetRepoOutputConfig::from_env();
         let target_canonical = std::fs::canonicalize(&intake.target_repo_path).map_err(|_| {
             product_task_workspace_preparation_reconciliation_error(
-                "pinned target repository is unavailable for worktree removal",
+                "pinned target source is unavailable for workspace removal",
             )
         })?;
 
@@ -2750,14 +2847,11 @@ impl LocalProductStore {
                     "supervised workspace target does not match the pinned target",
                 ));
             }
-            // Never let a metadata-only `cleaned` status substitute for proof
-            // that Git has removed its exact registered worktree. The
-            // ProductTask receipt pins this path; the target-output owner
-            // performs the physical operation and verification.
-            remove_product_task_git_worktree_or_reconcile(
-                &config,
+            remove_product_task_workspace_or_reconcile(
+                intake,
+                &receipt,
                 &target_canonical,
-                &receipt.workspace_path,
+                task_id,
             )?;
             if ws.get("status").and_then(Value::as_str) != Some("cleaned") {
                 self.update_workspace_status(workspace_id, "cleaned", actor)
@@ -2768,10 +2862,11 @@ impl LocalProductStore {
                     })?;
             }
         } else {
-            remove_product_task_git_worktree_or_reconcile(
-                &config,
+            remove_product_task_workspace_or_reconcile(
+                intake,
+                &receipt,
                 &target_canonical,
-                &receipt.workspace_path,
+                task_id,
             )?;
         }
 
@@ -4156,6 +4251,29 @@ impl LocalProductStore {
         {
             return Err("workspace_canonical_path_superseded".to_string());
         }
+        if workspace.get("workspace_mode").and_then(Value::as_str) == Some("copy") {
+            let source_path = workspace
+                .get("target_repo_path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "workspace_source_path_unavailable".to_string())?;
+            let exclusions = crate::local_folder_source::configured_local_folder_exclusions()
+                .map_err(|_| "workspace_exclusion_policy_unavailable".to_string())?;
+            let source_manifest = crate::local_folder_source::capture_local_folder_manifest(
+                Path::new(source_path),
+                &exclusions,
+            )
+            .map_err(|_| "workspace_source_revision_unavailable".to_string())?;
+            if source_manifest.tree_sha256 != source_revision {
+                return Err("workspace_source_revision_superseded".to_string());
+            }
+            let summary = crate::local_folder_source::summarize_local_folder_changes(
+                &source_manifest,
+                Path::new(workspace_path),
+                &exclusions,
+            )
+            .map_err(|_| "workspace_patch_identity_unavailable".to_string())?;
+            return Ok(summary.change_sha256);
+        }
         let current_revision = current_workspace_revision(
             &TargetRepoOutputConfig::from_env(),
             Path::new(workspace_path),
@@ -4400,6 +4518,31 @@ impl LocalProductStore {
         }
 
         let output_intent = required_product_task_string(&task, "output_intent")?;
+        if output_intent == "apply_local_changes" && status == ProductTaskStatus::OutcomeUnknown {
+            // A local mutation may already have reached the operator source
+            // while its receipt outcome is uncertain. Never retry or infer a
+            // second apply; the app-owned rollback bundle must be reconciled
+            // through explicit recovery evidence instead.
+            return Err(
+                "apply_local_changes refuses an outcome-unknown effect; reconciliation required"
+                    .to_string(),
+            );
+        }
+        if output_intent == "apply_local_changes" {
+            let claim = self.claim_product_local_apply_effect(
+                &artifact_id,
+                task_id,
+                approval_id,
+                expected_task_version,
+                actor,
+            )?;
+            if claim.get("claim_action").and_then(Value::as_str) != Some("apply_local_changes") {
+                return Err(
+                    "apply_local_changes has a prior effect claim; reconciliation required"
+                        .to_string(),
+                );
+            }
+        }
         let output_result = if output_intent == "artifact_only" {
             json!({
                 "mode": "artifact_only",
@@ -4421,7 +4564,7 @@ impl LocalProductStore {
                 "output_intent": output_intent,
                 "export_eligible": true,
             });
-            self.execute_product_task_output(
+            match self.execute_product_task_output(
                 task_id,
                 &output_intent,
                 &run_id,
@@ -4432,7 +4575,21 @@ impl LocalProductStore {
                 &approval_binding,
                 expected_task_version,
                 actor,
-            )?
+            ) {
+                Ok(output) => output,
+                Err(_error) if output_intent == "apply_local_changes" => {
+                    let _ = self.mark_product_task_output_outcome_unknown(
+                        task_id,
+                        actor,
+                        "local_apply_execution_unconfirmed",
+                    );
+                    return Err(
+                        "apply_local_changes effect is unconfirmed; reconciliation required"
+                            .to_string(),
+                    );
+                }
+                Err(error) => return Err(error),
+            }
         };
 
         let output_status = output_result
@@ -4443,7 +4600,10 @@ impl LocalProductStore {
         // winner may commit receipt+terminal (advancing ProductTask version) before
         // this caller rebinds; recover by reconstructing the canonical completed
         // outcome rather than failing solely on the advanced version.
-        let output_receipt = if matches!(output_intent.as_str(), "artifact_only" | "export_patch") {
+        let output_receipt = if matches!(
+            output_intent.as_str(),
+            "artifact_only" | "export_patch" | "apply_local_changes"
+        ) {
             match self.record_product_nonnetwork_output_receipt(
                 &artifact_id,
                 task_id,
@@ -4463,19 +4623,32 @@ impl LocalProductStore {
                         &error,
                     );
                 }
+                Err(_error) if output_intent == "apply_local_changes" => {
+                    let _ = self.mark_product_task_output_outcome_unknown(
+                        task_id,
+                        actor,
+                        "local_apply_receipt_completion_unconfirmed",
+                    );
+                    return Err(
+                        "apply_local_changes receipt completion is unconfirmed; reconciliation required"
+                            .to_string(),
+                    );
+                }
                 Err(error) => return Err(error),
             }
         } else {
             None
         };
-        let terminal_success =
-            matches!(
-                (output_intent.as_str(), output_status),
-                ("artifact_only", "artifact_only")
-                    | ("export_patch", "exported")
-                    | ("draft_pr", "draft_pr_created")
-            ) && (!matches!(output_intent.as_str(), "artifact_only" | "export_patch")
-                || output_receipt.is_some());
+        let terminal_success = matches!(
+            (output_intent.as_str(), output_status),
+            ("artifact_only", "artifact_only")
+                | ("export_patch", "exported")
+                | ("apply_local_changes", "applied_local_changes")
+                | ("draft_pr", "draft_pr_created")
+        ) && (!matches!(
+            output_intent.as_str(),
+            "artifact_only" | "export_patch" | "apply_local_changes"
+        ) || output_receipt.is_some());
         let next_status = if terminal_success {
             ProductTaskStatus::Completed
         } else if output_status == "outcome_unknown" {
@@ -4488,6 +4661,14 @@ impl LocalProductStore {
         let current = self.get_product_task(task_id)?.unwrap_or(task);
         let current_status =
             ProductTaskStatus::parse(current.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        if output_intent == "apply_local_changes"
+            && current_status == ProductTaskStatus::OutcomeUnknown
+        {
+            return Err(
+                "apply_local_changes effect became outcome-unknown; reconciliation required"
+                    .to_string(),
+            );
+        }
         if current_status == ProductTaskStatus::Completed {
             return self.reuse_completed_product_output_response(
                 task_id,
@@ -4761,9 +4942,12 @@ impl LocalProductStore {
         if status == ProductTaskStatus::OutcomeUnknown {
             return Ok(task);
         }
-        if status != ProductTaskStatus::OutputPending {
+        if !matches!(
+            status,
+            ProductTaskStatus::AwaitingApproval | ProductTaskStatus::OutputPending
+        ) {
             return Err(format!(
-                "output outcome_unknown requires output_pending; status={}",
+                "output outcome_unknown requires awaiting_approval or output_pending; status={}",
                 status.as_str()
             ));
         }
@@ -4776,6 +4960,99 @@ impl LocalProductStore {
             None,
             Some("product_output_outcome_unknown"),
             Some(reason),
+            None,
+        )
+    }
+
+    fn prepare_product_task_local_folder_locked(
+        &self,
+        task_id: &str,
+        intake: &ValidatedProductTaskIntake,
+        actor: &str,
+        receipt: &ProductTaskWorkspacePreparationReceipt,
+        workspace_path: PathBuf,
+    ) -> Result<Value, String> {
+        if workspace_path != receipt.workspace_path {
+            return Err(
+                "local-folder staging path does not match the persisted receipt".to_string(),
+            );
+        }
+        let source_root = Path::new(&intake.target_repo_path);
+        let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
+        let source_manifest = crate::local_folder_source::stage_local_folder(
+            source_root,
+            &workspace_path,
+            &exclusions,
+        )?;
+        if intake.source_revision != source_manifest.tree_sha256
+            || intake.source_tree_hash.as_deref() != Some(source_manifest.tree_sha256.as_str())
+        {
+            let _ = std::fs::remove_dir_all(&workspace_path);
+            return Err("local-folder source identity changed before staging".to_string());
+        }
+        let provisional_run_id = provisional_run_id_for_task(task_id);
+        let workspace_request = json!({
+            "run_id": provisional_run_id,
+            "plan_id": Value::Null,
+            "target_id": intake.target_id,
+            "target_repo_path": source_manifest.canonical_root,
+            "workspace_path": workspace_path,
+            "source_revision": source_manifest.tree_sha256,
+            "source_tree_hash": source_manifest.tree_sha256,
+            "workspace_mode": "copy",
+            "git": Value::Null,
+            "status": "workspace_created",
+            "product_task_id": task_id,
+            "allowed_paths": intake.allowed_paths,
+        });
+        let workspace = self.record_supervised_patch_workspace(&workspace_request, actor)?;
+        let workspace_record_id = workspace
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "local-folder supervised workspace identity is missing".to_string())?
+            .to_string();
+        let workspace_canonical_path = workspace
+            .get("workspace_canonical_path")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "local-folder supervised workspace path is missing".to_string())?
+            .to_string();
+        let binding = ProductWorkspaceBinding {
+            schema_version: PRODUCT_TASK_WORKSPACE_BINDING_SCHEMA_VERSION.to_string(),
+            workspace_id: workspace_record_id.clone(),
+            workspace_path: workspace_path.to_string_lossy().into_owned(),
+            workspace_canonical_path,
+            target_repo_canonical_path: source_manifest
+                .canonical_root
+                .to_string_lossy()
+                .into_owned(),
+            source_revision: source_manifest.tree_sha256.clone(),
+            source_tree_hash: Some(source_manifest.tree_sha256.clone()),
+            workspace_content_hash: source_manifest.tree_sha256,
+            workspace_mode: "local_folder".to_string(),
+            local_folder_exclusions_sha256: Some(source_manifest.excluded_paths_sha256),
+            git_origin_remote: None,
+            git_origin_remote_fingerprint: None,
+            git_default_branch: None,
+            git_default_branch_sha: None,
+            provisional_run_id,
+            allowed_paths: intake.allowed_paths.clone(),
+            bound_at: self.now(),
+        };
+        let current = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "task missing before local-folder finalize".to_string())?;
+        let version = current.get("version").and_then(Value::as_u64).unwrap_or(0);
+        self.transition_product_task(
+            task_id,
+            ProductTaskStatus::WorkspaceBound,
+            Some(version),
+            actor,
+            Some(&binding),
+            Some(&workspace_record_id),
+            None,
+            None,
             None,
         )
     }
@@ -4935,7 +5212,7 @@ impl LocalProductStore {
         let receipt = artifact.get("product_output_receipt");
         let operation = artifact.get("product_output_operation");
         let (output_receipt_id, output_operation_id) = match output_intent.as_str() {
-            "artifact_only" | "export_patch" => (
+            "artifact_only" | "export_patch" | "apply_local_changes" => (
                 Some(required_product_task_string(
                     receipt.ok_or_else(|| "terminal output receipt missing".to_string())?,
                     "receipt_id",
@@ -5204,8 +5481,69 @@ impl LocalProductStore {
             .and_then(Value::as_str)
             .unwrap_or("");
         let config = TargetRepoOutputConfig::from_env();
+        if workspace.get("workspace_mode").and_then(Value::as_str) != Some("copy") {
+            let task = self
+                .get_product_task(task_id)?
+                .ok_or_else(|| "product task missing before git output".to_string())?;
+            validate_bound_git_output_source(
+                &config,
+                &task,
+                Path::new(target_repo_path),
+                Path::new(workspace_path),
+                source_revision,
+            )?;
+        }
 
         if output_intent == "export_patch" {
+            if workspace.get("workspace_mode").and_then(Value::as_str) == Some("copy") {
+                let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
+                let source_manifest = crate::local_folder_source::capture_local_folder_manifest(
+                    Path::new(target_repo_path),
+                    &exclusions,
+                )?;
+                if source_manifest.tree_sha256 != source_revision {
+                    return Err("local-folder source changed before export".to_string());
+                }
+                let summary = crate::local_folder_source::summarize_local_folder_changes(
+                    &source_manifest,
+                    Path::new(workspace_path),
+                    &exclusions,
+                )?;
+                if summary.change_sha256 != patch_hash {
+                    return Err(
+                        "local-folder change bundle identity changed before export".to_string()
+                    );
+                }
+                let export_dir = product_export_root(self)?.join(task_id);
+                std::fs::create_dir_all(&export_dir).map_err(|e| e.to_string())?;
+                let export_path =
+                    export_dir.join(format!("{artifact_id}.local-folder-change-bundle.json"));
+                let bundle = json!({
+                    "schema_version": "local_folder_change_bundle.v1",
+                    "source_tree_sha256": summary.source_tree_sha256,
+                    "staged_tree_sha256": summary.staged_tree_sha256,
+                    "change_sha256": summary.change_sha256,
+                    "changed_relative_paths": summary.changed_relative_paths,
+                    "added_relative_paths": summary.added_relative_paths,
+                    "modified_relative_paths": summary.modified_relative_paths,
+                    "deleted_relative_paths": summary.deleted_relative_paths,
+                });
+                std::fs::write(
+                    &export_path,
+                    serde_json::to_vec(&bundle).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                return Ok(json!({
+                    "mode": "export_patch",
+                    "status": "exported",
+                    "artifact_id": artifact_id,
+                    "patch_hash": patch_hash,
+                    "change_bundle_sha256": product_json_sha256(&bundle)?,
+                    "approval_id": approval_binding.get("approval_id"),
+                    "approval_binding": approval_binding,
+                    "product_task_id": task_id,
+                }));
+            }
             let exported = crate::target_repo_output::export_patch(
                 &config,
                 Path::new(workspace_path),
@@ -5231,6 +5569,67 @@ impl LocalProductStore {
                 "approval_id": approval_binding.get("approval_id"),
                 "approval_binding": approval_binding,
                 "product_task_id": task_id,
+            }));
+        }
+
+        if output_intent == "apply_local_changes" {
+            if workspace.get("workspace_mode").and_then(Value::as_str) != Some("copy") {
+                return Err(
+                    "apply_local_changes requires a staged local-folder workspace".to_string(),
+                );
+            }
+            let source = Path::new(target_repo_path);
+            let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
+            let current =
+                crate::local_folder_source::capture_local_folder_manifest(source, &exclusions)?;
+            if current.tree_sha256 != source_revision {
+                return Err("local-folder source changed before confirmed output".to_string());
+            }
+            let task = self
+                .get_product_task(task_id)?
+                .ok_or_else(|| "local-folder ProductTask disappeared before output".to_string())?;
+            let allowed_paths = task
+                .pointer("/intake/allowed_paths")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "local-folder workspace allowed paths are missing".to_string())?
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            let expected_exclusion_hash = task
+                .pointer("/workspace_binding/local_folder_exclusions_sha256")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "local-folder exclusion policy binding is missing".to_string())?;
+            if current.excluded_paths_sha256 != expected_exclusion_hash {
+                return Err(
+                    "local-folder exclusion policy changed before confirmed output".to_string(),
+                );
+            }
+            let rollback_root = product_export_root(self)?
+                .join("local-folder-rollbacks")
+                .join(task_id)
+                .join(artifact_id);
+            let receipt = crate::local_folder_source::apply_local_folder_changes(
+                &current,
+                Path::new(workspace_path),
+                &rollback_root,
+                &allowed_paths,
+                &exclusions,
+                patch_hash,
+            )?;
+            return Ok(json!({
+                "mode": "apply_local_changes",
+                "status": "applied_local_changes",
+                "artifact_id": artifact_id,
+                "patch_hash": patch_hash,
+                "approval_id": approval_binding.get("approval_id"),
+                "approval_binding": approval_binding,
+                "product_task_id": task_id,
+                "changed_relative_paths": receipt.changed_relative_paths,
+                "source_tree_sha256": receipt.source_tree_sha256,
+                "staged_tree_sha256": receipt.staged_tree_sha256,
+                "rollback_bundle_present": true,
+                "rollback_root_fingerprint": hex::encode(Sha256::digest(rollback_root.to_string_lossy().as_bytes())),
             }));
         }
 
@@ -5698,6 +6097,153 @@ impl LocalProductStore {
                 .to_string(),
         )
     }
+
+    /// Execute the receipt-bound compensation path for a completed local
+    /// apply. The rollback locator never crosses a public projection; only the
+    /// artifact receipt may supply it. A crash after the claim is deliberately
+    /// reconciliation-only rather than a second filesystem mutation.
+    pub fn rollback_product_task_local_folder_apply(
+        &self,
+        task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if !product_gate_enabled() {
+            return Err("product golden path intake is disabled".to_string());
+        }
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        if task.get("status").and_then(Value::as_str) != Some(ProductTaskStatus::Completed.as_str())
+            || task.get("output_intent").and_then(Value::as_str) != Some("apply_local_changes")
+        {
+            return Err(
+                "local-folder rollback requires a completed apply_local_changes task".to_string(),
+            );
+        }
+        let run_id = required_product_task_string(&task, "run_id")?;
+        let workspace_record_id = required_product_task_string(&task, "workspace_record_id")?;
+        let source_revision = task
+            .pointer("/workspace_binding/source_revision")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "local-folder rollback source identity is missing".to_string())?;
+        let artifact = self.current_product_task_artifact(
+            task_id,
+            &run_id,
+            &workspace_record_id,
+            source_revision,
+        )?;
+        let artifact_id = required_product_task_string(&artifact, "artifact_id")?;
+        let output = artifact
+            .pointer("/product_output_receipt/output")
+            .ok_or_else(|| "local-folder rollback output receipt is missing".to_string())?;
+        let changed_paths = output
+            .get("changed_relative_paths")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "local-folder rollback paths are missing".to_string())?
+            .iter()
+            .map(|path| {
+                path.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| "local-folder rollback path is invalid".to_string())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let source = task
+            .get("target_repo_path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "local-folder rollback source is missing".to_string())?;
+        let expected_rollback_root = product_export_root(self)?
+            .join("local-folder-rollbacks")
+            .join(task_id)
+            .join(&artifact_id);
+        let expected_rollback_root_fingerprint = hex::encode(Sha256::digest(
+            expected_rollback_root.to_string_lossy().as_bytes(),
+        ));
+        if output
+            .get("rollback_root_fingerprint")
+            .and_then(Value::as_str)
+            != Some(expected_rollback_root_fingerprint.as_str())
+        {
+            return Err(
+                "local-folder rollback proof does not match its artifact binding".to_string(),
+            );
+        }
+        let claim = self.claim_product_local_apply_rollback(&artifact_id, task_id, actor)?;
+        if claim.get("reused").and_then(Value::as_bool) == Some(true) {
+            return Ok(json!({"task": task, "rollback": claim.get("rollback"), "reused": true}));
+        }
+        if let Err(_error) = crate::local_folder_source::rollback_local_folder_changes(
+            Path::new(source),
+            &expected_rollback_root,
+            &changed_paths,
+        ) {
+            let _ = self.mark_product_local_apply_rollback_outcome_unknown(
+                &artifact_id,
+                task_id,
+                actor,
+            );
+            return Err(
+                "local-folder rollback effect is unconfirmed; reconciliation required".to_string(),
+            );
+        }
+        let rollback = match self.complete_product_local_apply_rollback(
+            &artifact_id,
+            task_id,
+            actor,
+        ) {
+            Ok(result) => result,
+            Err(_error) => {
+                let _ = self.mark_product_local_apply_rollback_outcome_unknown(
+                    &artifact_id,
+                    task_id,
+                    actor,
+                );
+                return Err("local-folder rollback receipt completion is unconfirmed; reconciliation required".to_string());
+            }
+        };
+        Ok(json!({"task": task, "rollback": rollback.get("rollback"), "reused": false}))
+    }
+}
+
+/// Git output is allowed only while the repository identity captured at
+/// worktree binding is unchanged.  The source commit alone is insufficient:
+/// an operator could otherwise retarget `origin` or advance the default branch
+/// after review but before export/publish.
+fn validate_bound_git_output_source(
+    config: &TargetRepoOutputConfig,
+    task: &Value,
+    target_repo_path: &Path,
+    workspace_path: &Path,
+    source_revision: &str,
+) -> Result<(), String> {
+    let binding = task
+        .get("workspace_binding")
+        .ok_or_else(|| "git output workspace binding is missing".to_string())?;
+    let expected_remote = binding
+        .get("git_origin_remote")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "git output origin identity is missing".to_string())?;
+    let expected_fingerprint = binding
+        .get("git_origin_remote_fingerprint")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "git output origin fingerprint is missing".to_string())?;
+    let expected_branch = binding
+        .get("git_default_branch")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "git output default branch identity is missing".to_string())?;
+    let expected_branch_sha = binding
+        .get("git_default_branch_sha")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "git output default branch SHA is missing".to_string())?;
+    let observed =
+        inspect_registered_git_worktree(config, target_repo_path, workspace_path, source_revision)?;
+    if observed.origin_remote != expected_remote
+        || observed.origin_remote_fingerprint != expected_fingerprint
+        || observed.default_branch != expected_branch
+        || observed.default_branch_sha != expected_branch_sha
+    {
+        return Err("git source identity changed before output".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -5919,6 +6465,14 @@ fn product_task_workspace_root_for_preparation(
 fn validate_product_task_workspace_prerequisites(
     intake: &ValidatedProductTaskIntake,
 ) -> Result<(), String> {
+    if intake.workspace_mode == "local_folder" {
+        let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
+        crate::local_folder_source::capture_local_folder_manifest(
+            Path::new(&intake.target_repo_path),
+            &exclusions,
+        )?;
+        return Ok(());
+    }
     let config = TargetRepoOutputConfig::from_env();
     config.require_enabled()?;
     let target_repo = Path::new(&intake.target_repo_path);
@@ -6510,6 +7064,22 @@ fn validate_completed_product_output_binding(
     {
         return Err("completed output receipt content hash changed".to_string());
     }
+    if (output_intent == "artifact_only"
+        && (output.get("status").and_then(Value::as_str) != Some("artifact_only")
+            || output.get("target_mutation").and_then(Value::as_bool) != Some(false)))
+        || (output_intent == "export_patch"
+            && (output.get("status").and_then(Value::as_str) != Some("exported")
+                || output.get("patch_hash") != Some(&Value::String(patch_hash.clone()))))
+        || (output_intent == "apply_local_changes"
+            && (output.get("status").and_then(Value::as_str) != Some("applied_local_changes")
+                || output.get("patch_hash") != Some(&Value::String(patch_hash.clone()))
+                || output
+                    .get("rollback_bundle_present")
+                    .and_then(Value::as_bool)
+                    != Some(true)))
+    {
+        return Err("completed output receipt result does not match its output intent".to_string());
+    }
     Ok(json!({"receipt": receipt, "output": output}))
 }
 
@@ -6531,6 +7101,97 @@ fn public_product_intake_json(encoded: &str) -> Result<Value, String> {
         object.remove("_execution_objective_v1");
     }
     Ok(intake)
+}
+
+/// Convert an internal ProductTask record into an API/evidence-safe
+/// projection. Local filesystem paths remain available only to the owning
+/// store methods; callers outside that boundary receive stable fingerprints.
+pub(crate) fn public_product_task_projection(task: &Value) -> Value {
+    use crate::product_golden_path::fingerprint_private_path;
+
+    let mut public = task.clone();
+    let redact_path = |object: &mut serde_json::Map<String, Value>, field: &str| {
+        if let Some(path) = object
+            .remove(field)
+            .and_then(|value| value.as_str().map(str::to_string))
+        {
+            object.insert(
+                format!("{field}_fingerprint"),
+                Value::String(fingerprint_private_path(&path)),
+            );
+        }
+    };
+    if let Some(object) = public.as_object_mut() {
+        redact_path(object, "target_repo_path");
+        if let Some(intake) = object.get_mut("intake").and_then(Value::as_object_mut) {
+            // New records already store only the fingerprint, while the
+            // adapter prevents historical redacted-intake fixtures leaking a
+            // legacy raw field.
+            redact_path(intake, "target_repo_path");
+        }
+        if let Some(binding) = object
+            .get_mut("workspace_binding")
+            .and_then(Value::as_object_mut)
+        {
+            for field in [
+                "workspace_path",
+                "workspace_canonical_path",
+                "target_repo_canonical_path",
+            ] {
+                redact_path(binding, field);
+            }
+        }
+    }
+    public
+}
+
+/// Redact every ProductTask response crossing the HTTP/evidence boundary.
+/// Internal store records retain the minimum local path identity needed for
+/// reconciliation; public responses use stable fingerprints only.
+pub(crate) fn public_product_task_result_projection(result: &Value) -> Value {
+    use crate::product_golden_path::fingerprint_private_path;
+
+    fn redact(value: &mut Value) {
+        const PRIVATE_PATH_FIELDS: &[&str] = &[
+            "target_repo_path",
+            "workspace_path",
+            "workspace_canonical_path",
+            "target_repo_canonical_path",
+            "origin_remote",
+            "git_origin_remote",
+            "canonical_root",
+            "rollback_root",
+            "export_path",
+        ];
+        match value {
+            Value::Object(object) => {
+                for field in PRIVATE_PATH_FIELDS {
+                    if let Some(path) = object
+                        .remove(*field)
+                        .and_then(|value| value.as_str().map(str::to_string))
+                    {
+                        object.insert(
+                            format!("{field}_fingerprint"),
+                            Value::String(fingerprint_private_path(&path)),
+                        );
+                    }
+                }
+                for nested in object.values_mut() {
+                    redact(nested);
+                }
+            }
+            Value::Array(values) => {
+                for nested in values {
+                    redact(nested);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut public = result.clone();
+    redact(&mut public);
+    public
 }
 
 fn map_product_task_row(row: &Row<'_>) -> rusqlite::Result<Value> {
@@ -6727,6 +7388,17 @@ fn reconstruct_intake_from_task(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        source_kind: intake
+            .get("source_kind")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| {
+                if intake.get("workspace_mode").and_then(Value::as_str) == Some("local_folder") {
+                    "local_folder"
+                } else {
+                    "git_repository"
+                }
+            })
+            .to_string(),
         source_revision: task
             .get("source_revision")
             .and_then(Value::as_str)
@@ -6771,7 +7443,12 @@ fn reconstruct_intake_from_task(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
-        workspace_mode: "git_worktree".to_string(),
+        workspace_mode: intake
+            .get("workspace_mode")
+            .and_then(Value::as_str)
+            .filter(|mode| matches!(*mode, "git_worktree" | "local_folder"))
+            .unwrap_or("git_worktree")
+            .to_string(),
         intake_contract_sha256: task
             .get("intake_contract_sha256")
             .and_then(Value::as_str)
@@ -7136,6 +7813,475 @@ mod product_verification_failure_tests {
         assert_eq!(
             output.process_outcome.and_then(|outcome| outcome.exit_code),
             Some(0)
+        );
+    }
+}
+
+#[cfg(test)]
+mod local_folder_product_task_tests {
+    use super::*;
+    use crate::product_golden_path::{
+        validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest,
+        ProductVerificationCommand, PRODUCT_TASK_GATE,
+    };
+
+    struct ProductGateGuard {
+        previous: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ProductGateGuard {
+        fn enable() -> Self {
+            let lock = crate::cli::config::cli_env_test_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = std::env::var_os(PRODUCT_TASK_GATE);
+            std::env::set_var(PRODUCT_TASK_GATE, "1");
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ProductGateGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.previous.take() {
+                std::env::set_var(PRODUCT_TASK_GATE, value);
+            } else {
+                std::env::remove_var(PRODUCT_TASK_GATE);
+            }
+        }
+    }
+
+    #[test]
+    fn local_folder_intake_stages_a_non_git_source_without_mutating_original() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("operator-folder");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("README.md"), b"original").unwrap();
+        let _gate_guard = ProductGateGuard::enable();
+        let source = std::fs::canonicalize(&source).unwrap();
+        let request = ProductTaskIntakeRequest {
+            objective: "Update a bounded local document".to_string(),
+            target_id: "local-folder-fixture".to_string(),
+            target_repo_path: source.to_string_lossy().into_owned(),
+            source_kind: Some("local_folder".to_string()),
+            source_revision: "operator-supplied-placeholder".to_string(),
+            source_tree_hash: None,
+            allowed_paths: vec!["README.md".to_string()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "test -f README.md".to_string(),
+                timeout_ms: 1_000,
+            }],
+            output_intent: "artifact_only".to_string(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["deterministic".to_string()],
+                prefer: Some("deterministic".to_string()),
+            },
+            budget: None,
+            risk_class: "low".to_string(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(false),
+            idempotency_key: "local-folder-staging".to_string(),
+            expected_version: None,
+            tenant_id: Some("tenant-local".to_string()),
+            workspace_id: Some("workspace-local".to_string()),
+            workspace_mode: Some("local_folder".to_string()),
+        };
+        let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
+        let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
+        let task = store.admit_product_task(&intake, "operator").unwrap();
+        assert_eq!(task["status"], "workspace_bound");
+        assert_eq!(task["workspace_binding"]["workspace_mode"], "local_folder");
+        let staged = task["workspace_binding"]["workspace_canonical_path"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            std::fs::read(Path::new(staged).join("README.md")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(source.join("README.md")).unwrap(),
+            b"original"
+        );
+        let public = public_product_task_projection(&task);
+        let encoded = public.to_string();
+        assert!(!encoded.contains(source.to_string_lossy().as_ref()));
+        assert!(public["target_repo_path_fingerprint"].is_string());
+        assert!(public["workspace_binding"]["workspace_path_fingerprint"].is_string());
+        assert!(public["workspace_binding"]["target_repo_canonical_path_fingerprint"].is_string());
+    }
+
+    #[test]
+    fn public_result_projection_removes_nested_private_paths() {
+        let private_path = "/operator/private/source";
+        let private_remote = "https://git.example.invalid/operator/private-repository";
+        let result = json!({
+            "task": {"target_repo_path": private_path, "git_origin_remote": private_remote},
+            "approval": {"output_target": {"target_repo_path": private_path}},
+            "output": {"rollback_root": private_path, "export_path": private_path},
+        });
+        let public = public_product_task_result_projection(&result);
+        assert!(!public.to_string().contains(private_path));
+        assert!(!public.to_string().contains(private_remote));
+        assert!(public
+            .pointer("/task/target_repo_path_fingerprint")
+            .is_some());
+        assert!(public
+            .pointer("/task/git_origin_remote_fingerprint")
+            .is_some());
+        assert!(public
+            .pointer("/approval/output_target/target_repo_path_fingerprint")
+            .is_some());
+        assert!(public
+            .pointer("/output/rollback_root_fingerprint")
+            .is_some());
+        assert!(public.pointer("/output/export_path_fingerprint").is_some());
+    }
+
+    fn prepare_local_folder_apply_task(
+        root: &tempfile::TempDir,
+        idempotency_key: &str,
+    ) -> (
+        std::path::PathBuf,
+        LocalProductStore,
+        String,
+        u64,
+        String,
+        String,
+    ) {
+        let source = root.path().join("operator-folder");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("README.md"), b"original").unwrap();
+        let source = std::fs::canonicalize(&source).unwrap();
+        let request = ProductTaskIntakeRequest {
+            objective: "Create the approved bounded local document".to_string(),
+            target_id: "local-folder-apply-fixture".to_string(),
+            target_repo_path: source.to_string_lossy().into_owned(),
+            source_kind: Some("local_folder".to_string()),
+            source_revision: "operator-supplied-placeholder".to_string(),
+            source_tree_hash: None,
+            allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "test -f docs/product_golden_path_fixture.md".to_string(),
+                timeout_ms: 1_000,
+            }],
+            output_intent: "apply_local_changes".to_string(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["command".to_string()],
+                prefer: Some("command".to_string()),
+            },
+            budget: None,
+            risk_class: "low".to_string(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(false),
+            idempotency_key: idempotency_key.to_string(),
+            expected_version: None,
+            tenant_id: Some("tenant-local".to_string()),
+            workspace_id: Some("workspace-local".to_string()),
+            workspace_mode: Some("local_folder".to_string()),
+        };
+        let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
+        let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
+        let task = store.admit_product_task(&intake, "operator").unwrap();
+        let task_id = task["task_id"].as_str().unwrap().to_string();
+        let compiled = store
+            .compile_and_schedule_product_task(&task_id, "operator", &["command".to_string()])
+            .unwrap();
+        let run_id = compiled["task"]["run_id"].as_str().unwrap();
+        let executor = crate::node_executor::CommandNodeExecutor::default();
+        for _ in 0..8 {
+            let tick = store
+                .tick_with_executor(run_id, "scheduler", 1, &executor)
+                .unwrap();
+            if tick.pointer("/run/status").and_then(Value::as_str) == Some("completed") {
+                break;
+            }
+            assert_ne!(
+                tick.pointer("/run/status").and_then(Value::as_str),
+                Some("failed")
+            );
+        }
+        assert_eq!(
+            store.get_workflow_run(run_id).unwrap().unwrap()["status"],
+            "completed"
+        );
+        let finalized = store
+            .finalize_product_task_after_execution(&task_id, "scheduler")
+            .expect("local folder finalization must succeed");
+        let version = finalized["task"]["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(&task_id, "independent-operator", version)
+            .expect("local folder approval must succeed");
+        let approval_id = approval["approval_id"].as_str().unwrap().to_string();
+        let artifact_id = approval["artifact_id"].as_str().unwrap().to_string();
+        (source, store, task_id, version, approval_id, artifact_id)
+    }
+
+    #[test]
+    fn local_folder_confirmed_output_applies_once_through_existing_receipt_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("operator-folder");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("README.md"), b"original").unwrap();
+        let _gate_guard = ProductGateGuard::enable();
+        let source = std::fs::canonicalize(&source).unwrap();
+        let request = ProductTaskIntakeRequest {
+            objective: "Create the approved bounded local document".to_string(),
+            target_id: "local-folder-apply-fixture".to_string(),
+            target_repo_path: source.to_string_lossy().into_owned(),
+            source_kind: Some("local_folder".to_string()),
+            source_revision: "operator-supplied-placeholder".to_string(),
+            source_tree_hash: None,
+            allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "test -f docs/product_golden_path_fixture.md".to_string(),
+                timeout_ms: 1_000,
+            }],
+            output_intent: "apply_local_changes".to_string(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["command".to_string()],
+                prefer: Some("command".to_string()),
+            },
+            budget: None,
+            risk_class: "low".to_string(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(false),
+            idempotency_key: "local-folder-apply".to_string(),
+            expected_version: None,
+            tenant_id: Some("tenant-local".to_string()),
+            workspace_id: Some("workspace-local".to_string()),
+            workspace_mode: Some("local_folder".to_string()),
+        };
+        let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
+        let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
+        let task = store.admit_product_task(&intake, "operator").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        let compiled = store
+            .compile_and_schedule_product_task(task_id, "operator", &["command".to_string()])
+            .unwrap();
+        let run_id = compiled["task"]["run_id"].as_str().unwrap();
+        let executor = crate::node_executor::CommandNodeExecutor::default();
+        for _ in 0..8 {
+            let tick = store
+                .tick_with_executor(run_id, "scheduler", 1, &executor)
+                .unwrap();
+            if tick.pointer("/run/status").and_then(Value::as_str) == Some("completed") {
+                break;
+            }
+            assert_ne!(
+                tick.pointer("/run/status").and_then(Value::as_str),
+                Some("failed")
+            );
+        }
+        assert_eq!(
+            store.get_workflow_run(run_id).unwrap().unwrap()["status"],
+            "completed"
+        );
+        let finalized = store
+            .finalize_product_task_after_execution(task_id, "scheduler")
+            .expect("local folder finalization must succeed");
+        let version = finalized["task"]["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .expect("local folder approval must succeed");
+        let completed = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(completed["task"]["status"], "completed");
+        assert_eq!(
+            std::fs::read_to_string(source.join("docs/product_golden_path_fixture.md")).unwrap(),
+            FIXTURE_DETERMINISTIC_NOTE_CONTENT
+        );
+        let repeated = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                completed["task"]["version"].as_u64().unwrap(),
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(repeated["reused"], true);
+        let rolled_back = store
+            .rollback_product_task_local_folder_apply(task_id, "rollback-operator")
+            .unwrap();
+        assert_eq!(rolled_back["rollback"]["state"], "completed");
+        assert!(!source.join("docs/product_golden_path_fixture.md").exists());
+        let rollback_repeated = store
+            .rollback_product_task_local_folder_apply(task_id, "rollback-operator")
+            .unwrap();
+        assert_eq!(rollback_repeated["reused"], true);
+    }
+
+    #[test]
+    fn local_folder_apply_claim_survives_restart_and_refuses_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let _gate_guard = ProductGateGuard::enable();
+        let (source, store, task_id, version, approval_id, artifact_id) =
+            prepare_local_folder_apply_task(&root, "local-folder-apply-restart");
+        let claim = store
+            .claim_product_local_apply_effect(
+                &artifact_id,
+                &task_id,
+                &approval_id,
+                version,
+                "output-operator",
+            )
+            .unwrap();
+        assert_eq!(claim["state"], "effect_started");
+        assert_eq!(claim["claim_action"], "apply_local_changes");
+        drop(store);
+
+        let restarted = LocalProductStore::new(root.path().join("store.db")).unwrap();
+        let error = restarted
+            .output_product_task(
+                &task_id,
+                "output-operator",
+                version,
+                Some(&approval_id),
+                true,
+            )
+            .unwrap_err();
+        assert!(error.contains("prior effect claim"));
+        assert_eq!(
+            restarted.get_product_task(&task_id).unwrap().unwrap()["status"],
+            "awaiting_approval"
+        );
+        assert!(!source.join("docs/product_golden_path_fixture.md").exists());
+    }
+
+    #[test]
+    fn local_folder_export_emits_a_redacted_change_bundle_without_mutating_source() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("operator-folder");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("README.md"), b"original").unwrap();
+        let _gate_guard = ProductGateGuard::enable();
+        let source = std::fs::canonicalize(&source).unwrap();
+        let request = ProductTaskIntakeRequest {
+            objective: "Create the approved bounded local document".to_string(),
+            target_id: "local-folder-export-fixture".to_string(),
+            target_repo_path: source.to_string_lossy().into_owned(),
+            source_kind: Some("local_folder".to_string()),
+            source_revision: "operator-supplied-placeholder".to_string(),
+            source_tree_hash: None,
+            allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "test -f docs/product_golden_path_fixture.md".to_string(),
+                timeout_ms: 1_000,
+            }],
+            output_intent: "export_patch".to_string(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["command".to_string()],
+                prefer: Some("command".to_string()),
+            },
+            budget: None,
+            risk_class: "low".to_string(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(false),
+            idempotency_key: "local-folder-export".to_string(),
+            expected_version: None,
+            tenant_id: Some("tenant-local".to_string()),
+            workspace_id: Some("workspace-local".to_string()),
+            workspace_mode: Some("local_folder".to_string()),
+        };
+        let intake = validate_intake(&request, "tenant-local", "workspace-local").unwrap();
+        let store = LocalProductStore::new(root.path().join("store.db")).unwrap();
+        let task = store.admit_product_task(&intake, "operator").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        let compiled = store
+            .compile_and_schedule_product_task(task_id, "operator", &["command".to_string()])
+            .unwrap();
+        let run_id = compiled["task"]["run_id"].as_str().unwrap();
+        let executor = crate::node_executor::CommandNodeExecutor::default();
+        for _ in 0..8 {
+            let tick = store
+                .tick_with_executor(run_id, "scheduler", 1, &executor)
+                .unwrap();
+            if tick.pointer("/run/status").and_then(Value::as_str) == Some("completed") {
+                break;
+            }
+            assert_ne!(
+                tick.pointer("/run/status").and_then(Value::as_str),
+                Some("failed")
+            );
+        }
+        let finalized = store
+            .finalize_product_task_after_execution(task_id, "scheduler")
+            .expect("local folder finalization must succeed");
+        let version = finalized["task"]["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .expect("local folder approval must succeed");
+        let completed = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(completed["task"]["status"], "completed");
+        assert_eq!(completed["output"]["status"], "exported");
+        assert!(completed["output"]["change_bundle_sha256"].is_string());
+        assert!(completed["output"].get("export_path").is_none());
+        assert!(!source.join("docs/product_golden_path_fixture.md").exists());
+    }
+
+    #[test]
+    fn local_folder_compensation_removes_only_the_receipt_owned_staging_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace_root = std::fs::canonicalize(root.path()).unwrap();
+        let task_id = "ptask-local-cleanup";
+        let workspace_path = workspace_root.join(product_task_workspace_fs_id(task_id));
+        std::fs::create_dir(&workspace_path).unwrap();
+        std::fs::write(workspace_path.join("staged.txt"), b"staged").unwrap();
+        let unrelated = workspace_root.join("unrelated");
+        std::fs::create_dir(&unrelated).unwrap();
+
+        let receipt =
+            ProductTaskWorkspacePreparationReceipt::planned(task_id, workspace_root.clone())
+                .unwrap();
+        assert_eq!(receipt.workspace_path, workspace_path);
+        remove_product_task_local_folder_stage_or_reconcile(&receipt, task_id).unwrap();
+        assert!(!workspace_path.exists());
+        assert!(unrelated.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_folder_compensation_rejects_a_replaced_staging_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace_root = std::fs::canonicalize(root.path()).unwrap();
+        let task_id = "ptask-local-symlink";
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("must-remain"), b"safe").unwrap();
+        let receipt =
+            ProductTaskWorkspacePreparationReceipt::planned(task_id, workspace_root).unwrap();
+        symlink(outside.path(), &receipt.workspace_path).unwrap();
+
+        let error =
+            remove_product_task_local_folder_stage_or_reconcile(&receipt, task_id).unwrap_err();
+        assert!(error.starts_with(PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED));
+        assert!(receipt.workspace_path.is_symlink());
+        assert_eq!(
+            std::fs::read(outside.path().join("must-remain")).unwrap(),
+            b"safe"
         );
     }
 }

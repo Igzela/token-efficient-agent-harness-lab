@@ -233,11 +233,16 @@ export interface ProductTaskIntakeRequest {
   objective: string;
   target_id: string;
   target_repo_path: string;
+  source_kind?: "git_repository" | "local_folder";
   source_revision: string;
   source_tree_hash?: string;
   allowed_paths: string[];
   verification_commands: Array<{ command: string; timeout_ms: number }>;
-  output_intent: "artifact_only" | "export_patch" | "draft_pr";
+  output_intent:
+    | "artifact_only"
+    | "export_patch"
+    | "draft_pr"
+    | "apply_local_changes";
   executor_policy: {
     allowed_executors: string[];
     prefer?: string;

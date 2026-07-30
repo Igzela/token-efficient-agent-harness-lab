@@ -15,7 +15,9 @@ fn env_lock() -> &'static Mutex<()> {
 }
 
 fn with_gates<R>(f: impl FnOnce() -> R) -> R {
-    let _guard = env_lock().lock().unwrap();
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::env::set_var(PRODUCT_TASK_GATE, "1");
     std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
     std::env::set_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH", "0");
@@ -39,6 +41,15 @@ fn init_git_repo(root: &std::path::Path) -> String {
     run_git(root, &["config", "user.name", "G1 Tester"]);
     run_git(root, &["add", "README.md"]);
     run_git(root, &["commit", "-m", "init"]);
+    run_git(
+        root,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/g1-product.git",
+        ],
+    );
     let rev = run_git(root, &["rev-parse", "HEAD"]);
     rev.trim().to_string()
 }
@@ -64,6 +75,7 @@ fn sample_intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskI
         objective: "Add a short docs note for golden path acceptance.".to_string(),
         target_id: "disposable-target".to_string(),
         target_repo_path: target.to_string_lossy().into_owned(),
+        source_kind: None,
         source_revision: rev.to_string(),
         source_tree_hash: None,
         allowed_paths: vec!["README.md".to_string(), "docs/note.md".to_string()],
@@ -97,7 +109,9 @@ fn schema_includes_product_tasks_at_v30() {
 
 #[test]
 fn gate_defaults_off() {
-    let _guard = env_lock().lock().unwrap();
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::env::remove_var(PRODUCT_TASK_GATE);
     assert!(!product_gate_enabled());
 }

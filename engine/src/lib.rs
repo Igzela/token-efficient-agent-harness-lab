@@ -29,6 +29,7 @@ pub mod harness_evolution_eval;
 pub mod harness_evolution_pr_ready;
 pub mod http_server;
 pub mod infrastructure;
+pub(crate) mod local_folder_source;
 pub mod local_runner_provider;
 pub mod local_scorecard_import;
 pub mod model_selector;

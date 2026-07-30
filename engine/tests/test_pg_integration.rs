@@ -244,6 +244,8 @@ fn pg_managed_acceptance_spend_request(
         binary_path: "/usr/bin/codex".to_string(),
         binary_version: "0.145.0".to_string(),
         binary_sha256: "ab".repeat(32),
+        runtime_profile_sha256: None,
+        capability_probe_sha256: None,
         provider_kind: "openai_compatible".to_string(),
         provider_host: "api.openai.com".to_string(),
         provider_base_url: "https://api.openai.com/v1".to_string(),
@@ -358,6 +360,7 @@ fn pg_product_task_to_approval(
         objective: format!("postgres {output_intent} authority fixture"),
         target_id: format!("pg-product-{tag}"),
         target_repo_path: repo.to_string_lossy().into_owned(),
+        source_kind: None,
         source_revision: revision.to_string(),
         source_tree_hash: None,
         allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
@@ -423,6 +426,108 @@ fn pg_product_task_to_approval(
         "PostgreSQL product artifacts must exclude fixture control files"
     );
     (task, approval, artifact)
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_local_folder_apply_and_rollback_are_staged_and_idempotent() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("operator-folder");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("README.md"), b"original").unwrap();
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let source = std::fs::canonicalize(source).unwrap();
+    let tag = uuid_tag();
+    let request = ProductTaskIntakeRequest {
+        objective: "postgres local-folder apply fixture".to_string(),
+        target_id: format!("pg-local-folder-{tag}"),
+        target_repo_path: source.to_string_lossy().into_owned(),
+        source_kind: Some("local_folder".to_string()),
+        source_revision: "operator-supplied-placeholder".to_string(),
+        source_tree_hash: None,
+        allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f docs/product_golden_path_fixture.md".to_string(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: "apply_local_changes".to_string(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["command".to_string()],
+            prefer: Some("command".to_string()),
+        },
+        budget: None,
+        risk_class: "low".to_string(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: Some(false),
+        idempotency_key: format!("pg-local-folder-{tag}"),
+        expected_version: None,
+        tenant_id: Some("local".to_string()),
+        workspace_id: Some("default".to_string()),
+        workspace_mode: Some("local_folder".to_string()),
+    };
+    let validated = validate_intake(&request, "local", "default").unwrap();
+    let task = store
+        .admit_product_task(&validated, "pg-local-folder")
+        .unwrap();
+    let task_id = task["task_id"].as_str().unwrap();
+    let compiled = store
+        .compile_and_schedule_product_task(task_id, "pg-local-folder", &["command".to_string()])
+        .unwrap();
+    let run_id = compiled["task"]["run_id"].as_str().unwrap();
+    let executor = engine::node_executor::CommandNodeExecutor::default();
+    for _ in 0..8 {
+        let tick = store
+            .tick_with_executor(run_id, "pg-local-folder", 1, &executor)
+            .unwrap();
+        if tick.pointer("/run/status").and_then(Value::as_str) == Some("completed") {
+            break;
+        }
+    }
+    let finalized = store
+        .finalize_product_task_after_execution(task_id, "pg-local-folder")
+        .unwrap();
+    let approval = store
+        .approve_product_task(
+            task_id,
+            "pg-independent-operator",
+            finalized["task"]["version"].as_u64().unwrap(),
+        )
+        .unwrap();
+    let completed = store
+        .output_product_task(
+            task_id,
+            "pg-output-operator",
+            finalized["task"]["version"].as_u64().unwrap(),
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(completed["task"]["status"], "completed");
+    assert_eq!(completed["output"]["status"], "applied_local_changes");
+    assert!(source.join("docs/product_golden_path_fixture.md").exists());
+    let replay = store
+        .output_product_task(
+            task_id,
+            "pg-output-operator",
+            completed["task"]["version"].as_u64().unwrap(),
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(replay["reused"], true);
+    let rolled_back = store
+        .rollback_product_task_local_folder_apply(task_id, "pg-rollback-operator")
+        .unwrap();
+    assert_eq!(rolled_back["rollback"]["state"], "completed");
+    assert!(!source.join("docs/product_golden_path_fixture.md").exists());
+    let rollback_replay = store
+        .rollback_product_task_local_folder_apply(task_id, "pg-rollback-operator")
+        .unwrap();
+    assert_eq!(rollback_replay["reused"], true);
 }
 
 #[test]
@@ -942,6 +1047,7 @@ fn pg_product_artifact_rejects_changes_outside_allowed_paths() {
         objective: "postgres allowed-path artifact boundary".to_string(),
         target_id: format!("pg-product-{tag}"),
         target_repo_path: repo.path().to_string_lossy().into_owned(),
+        source_kind: None,
         source_revision: revision,
         source_tree_hash: None,
         allowed_paths: vec![
@@ -1043,6 +1149,12 @@ fn pg_product_repo(label: &str) -> (tempfile::TempDir, String) {
         &["config", "user.name", "PG Product Test"][..],
         &["add", "README.md"][..],
         &["commit", "-m", "init"][..],
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/pg-product.git",
+        ][..],
     ] {
         let output = Command::new("git")
             .args(args)
@@ -1086,6 +1198,7 @@ fn pg_ready_for_verification_with_budget(
         objective: format!("postgres verification authority {tag}"),
         target_id: format!("pg-verification-{tag}"),
         target_repo_path: repo.to_string_lossy().into_owned(),
+        source_kind: None,
         source_revision: revision.to_string(),
         source_tree_hash: None,
         allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
@@ -1856,6 +1969,12 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         &["config", "user.name", "PG Product Test"][..],
         &["add", "README.md"][..],
         &["commit", "-m", "init"][..],
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/pg-product-approval.git",
+        ][..],
     ] {
         let output = Command::new("git")
             .args(args)
@@ -1875,6 +1994,7 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         objective: "postgres approval authority fixture".to_string(),
         target_id: format!("pg-product-{tag}"),
         target_repo_path: repo.path().to_string_lossy().into_owned(),
+        source_kind: None,
         source_revision: revision.clone(),
         source_tree_hash: None,
         allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],

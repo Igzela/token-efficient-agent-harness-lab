@@ -4,6 +4,11 @@ use std::process::{Command, Stdio};
 
 use sha2::{Digest, Sha256};
 
+use super::managed_coding_profile::{
+    admit_binary_runtime, revalidate_binary_runtime, ManagedCodingExecutorKind,
+    ManagedCodingProtocolKind, ManagedCodingRuntimeProfile, ObservedManagedCodingRuntime,
+    RequiredCapabilityProbe, RuntimeVersionPolicy, MANAGED_CODING_RUNTIME_PROFILE_SCHEMA,
+};
 use super::{spawn_with_timeout_with_limits, OutputLimits, SpawnWithTimeoutError};
 
 pub const DEFAULT_CLI_TIMEOUT_MS: u64 = 300_000;
@@ -17,7 +22,7 @@ pub const CLAUDE_VERSION_PROBE_OUTPUT_LIMITS: OutputLimits = OutputLimits {
 
 pub const ADMITTED_CLAUDE_CODE_VERSION: &str = "2.1.217";
 pub const ADMITTED_CLAUDE_CODE_MODEL: &str = "claude-haiku-4-5-20251001";
-/// Exact product-managed Codex CLI version pin. Do not silently upgrade.
+/// Historical Codex fixture version. New product admission is profile-governed.
 pub const ADMITTED_CODEX_VERSION: &str = "0.145.0";
 /// Default exact model pin for product-managed Codex budget mediation.
 pub const ADMITTED_CODEX_MODEL: &str = "gpt-5.6-luna";
@@ -295,9 +300,26 @@ pub struct CodexAdmission {
     pub binary_version: String,
     pub binary_sha256: String,
     pub model: String,
+    /// Present for runtime-profile admission.  The legacy fields above remain
+    /// readable for historical fixtures and persisted Codex evidence.
+    pub runtime_profile: Option<ManagedCodingRuntimeProfile>,
+    pub observed_runtime: Option<ObservedManagedCodingRuntime>,
 }
 
 impl CodexAdmission {
+    pub fn runtime_profile_sha256(&self) -> Result<Option<String>, String> {
+        self.runtime_profile
+            .as_ref()
+            .map(ManagedCodingRuntimeProfile::profile_sha256)
+            .transpose()
+    }
+
+    pub fn capability_probe_sha256(&self) -> Option<&str> {
+        self.observed_runtime
+            .as_ref()
+            .map(|observed| observed.capability_probe_sha256.as_str())
+    }
+
     pub fn validate(
         binary_path: &Path,
         expected_version: &str,
@@ -316,10 +338,8 @@ impl CodexAdmission {
             );
         }
         let expected_version = expected_version.trim();
-        if expected_version != ADMITTED_CODEX_VERSION {
-            return Err(format!(
-                "Codex binary version is not the admitted version {ADMITTED_CODEX_VERSION}"
-            ));
+        if validate_semver_string(expected_version).is_err() {
+            return Err("Codex binary version must use major.minor.patch".to_string());
         }
         let model = model.trim();
         if model.is_empty() {
@@ -340,7 +360,52 @@ impl CodexAdmission {
             binary_version: expected_version.to_string(),
             binary_sha256,
             model: model.to_string(),
+            runtime_profile: None,
+            observed_runtime: None,
         })
+    }
+
+    /// Admit Codex through an immutable runtime profile rather than a
+    /// compile-time release pin.  The profile owns compatible-version policy;
+    /// this adapter retains the legacy identity fields for existing callers.
+    pub fn validate_runtime_profile(profile: ManagedCodingRuntimeProfile) -> Result<Self, String> {
+        if profile.executor_kind != ManagedCodingExecutorKind::CodexCli
+            || profile.protocol_kind != ManagedCodingProtocolKind::OpenaiCompatible
+        {
+            return Err("Codex runtime profile has incompatible executor or protocol".to_string());
+        }
+        let observed = admit_binary_runtime(&profile)?;
+        let model = profile
+            .requested_model
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "Codex runtime profile requires requested_model".to_string())?
+            .to_string();
+        Ok(Self {
+            binary_path: observed.canonical_executable_path.clone(),
+            binary_version: observed.observed_version.clone(),
+            binary_sha256: observed.binary_sha256.clone(),
+            model,
+            runtime_profile: Some(profile),
+            observed_runtime: Some(observed),
+        })
+    }
+
+    pub fn revalidate_before_spawn(&self) -> Result<(), String> {
+        match (&self.runtime_profile, &self.observed_runtime) {
+            (Some(profile), Some(observed)) => revalidate_binary_runtime(profile, observed),
+            (None, None) => {
+                let current =
+                    validate_binary_file_identity(&self.binary_path, &self.binary_sha256)?;
+                if current != self.binary_sha256
+                    || probe_codex_version(&self.binary_path)? != self.binary_version
+                {
+                    return Err("Codex legacy runtime identity changed before spawn".to_string());
+                }
+                Ok(())
+            }
+            _ => Err("Codex runtime profile evidence is incomplete".to_string()),
+        }
     }
 }
 
@@ -451,7 +516,7 @@ impl CliConfig {
             eprintln!("[acp-cli] codex binary not found; codex_cli executor disabled");
         } else if codex_admission.is_none() {
             eprintln!(
-                "[acp-cli] codex binary present but product budget mediation is not admitted (set ACP_CODEX_BIN to a canonical file, ACP_CODEX_SHA256, ACP_CODEX_VERSION={ADMITTED_CODEX_VERSION}, ACP_CODEX_MODEL)"
+                "[acp-cli] codex binary present but product budget mediation is not admitted (set ACP_CODEX_BIN, ACP_CODEX_SHA256, ACP_CODEX_VERSION_POLICY, ACP_CODEX_MODEL, and capability profile values)"
             );
         }
 
@@ -478,15 +543,120 @@ fn admit_codex_from_env(detected_bin: Option<&str>) -> Result<Option<CodexAdmiss
     let binary = env_opt("ACP_CODEX_BIN")
         .or_else(|| detected_bin.map(str::to_string))
         .ok_or_else(|| "ACP_CODEX_BIN is required for product Codex admission".to_string())?;
-    let version =
-        env_opt("ACP_CODEX_VERSION").unwrap_or_else(|| ADMITTED_CODEX_VERSION.to_string());
+    let version_policy = env_opt("ACP_CODEX_VERSION_POLICY")
+        .or_else(|| env_opt("ACP_CODEX_VERSION").map(|version| format!("={version}")))
+        .ok_or_else(|| {
+            "ACP_CODEX_VERSION_POLICY is required for runtime Codex admission".to_string()
+        })?;
     let model = env_opt("ACP_CODEX_MODEL").unwrap_or_else(|| ADMITTED_CODEX_MODEL.to_string());
-    Ok(Some(CodexAdmission::validate(
-        Path::new(&binary),
-        &version,
-        &sha256,
-        &model,
-    )?))
+    let profile =
+        codex_runtime_profile_from_env(PathBuf::from(binary), sha256, version_policy, model)?;
+    Ok(Some(CodexAdmission::validate_runtime_profile(profile)?))
+}
+
+fn codex_runtime_profile_from_env(
+    binary_path: PathBuf,
+    sha256: String,
+    version_policy: String,
+    model: String,
+) -> Result<ManagedCodingRuntimeProfile, String> {
+    let (allowed_versions, minimum_inclusive, maximum_exclusive) =
+        parse_runtime_version_policy(&version_policy)?;
+    let capability_fragments = env_opt("ACP_CODEX_REQUIRED_CAPABILITIES")
+        .unwrap_or_else(|| {
+            "--json,--sandbox,workspace-write,--ask-for-approval,--model".to_string()
+        })
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if capability_fragments.is_empty() {
+        return Err("ACP_CODEX_REQUIRED_CAPABILITIES must not be empty".to_string());
+    }
+    Ok(ManagedCodingRuntimeProfile {
+        schema_version: MANAGED_CODING_RUNTIME_PROFILE_SCHEMA.to_string(),
+        profile_id: env_opt("ACP_CODEX_RUNTIME_PROFILE_ID")
+            .unwrap_or_else(|| "codex-runtime-profile-env.v1".to_string()),
+        executor_kind: ManagedCodingExecutorKind::CodexCli,
+        protocol_kind: ManagedCodingProtocolKind::OpenaiCompatible,
+        canonical_executable_path: Some(binary_path),
+        expected_binary_sha256: Some(sha256),
+        version_probe_argv: vec!["--version".to_string()],
+        version_policy: RuntimeVersionPolicy {
+            allowed_versions,
+            minimum_inclusive,
+            maximum_exclusive,
+            denied_versions: vec![],
+        },
+        required_capability_probes: capability_fragments
+            .into_iter()
+            .map(|required_stdout_fragment| RequiredCapabilityProbe {
+                argv: vec!["exec".to_string(), "--help".to_string()],
+                required_stdout_fragment,
+            })
+            .collect(),
+        requested_model: Some(model),
+        resolved_model: None,
+        thinking_configuration: env_opt("ACP_CODEX_THINKING_CONFIGURATION"),
+        provider_identity: "openai_compatible".to_string(),
+        credential_reference: Some("ACP_CODEX_UPSTREAM_API_KEY".to_string()),
+        endpoint_allowlist: vec![
+            "/v1/responses".to_string(),
+            "/responses".to_string(),
+            "/v1/chat/completions".to_string(),
+            "/chat/completions".to_string(),
+        ],
+        usage_parser_version: "codex_session_usage.v1".to_string(),
+        pricing_source_version: "operator-bound".to_string(),
+        admission_classification: "mediation_hardened_partial".to_string(),
+    })
+}
+
+type ParsedRuntimeVersionPolicy = (Vec<String>, Option<String>, Option<String>);
+
+fn parse_runtime_version_policy(policy: &str) -> Result<ParsedRuntimeVersionPolicy, String> {
+    let policy = policy.trim();
+    if let Some(version) = policy.strip_prefix('=') {
+        validate_semver_string(version)?;
+        return Ok((vec![version.to_string()], None, None));
+    }
+    let mut minimum = None;
+    let mut maximum = None;
+    for clause in policy
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(version) = clause.strip_prefix(">=") {
+            validate_semver_string(version)?;
+            minimum = Some(version.to_string());
+        } else if let Some(version) = clause.strip_prefix('<') {
+            validate_semver_string(version)?;
+            maximum = Some(version.to_string());
+        } else {
+            return Err("ACP_CODEX_VERSION_POLICY must be =x.y.z or >=x.y.z,<x.y.z".to_string());
+        }
+    }
+    if minimum.is_none() || maximum.is_none() {
+        return Err(
+            "ACP_CODEX_VERSION_POLICY must be =x.y.z or a bounded >=x.y.z,<x.y.z range".to_string(),
+        );
+    }
+    Ok((vec![], minimum, maximum))
+}
+
+fn validate_semver_string(value: &str) -> Result<(), String> {
+    let parts = value.split('.').collect::<Vec<_>>();
+    if parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|char| char.is_ascii_digit()))
+    {
+        Ok(())
+    } else {
+        Err("Codex runtime version policy must use major.minor.patch values".to_string())
+    }
 }
 
 fn admit_claude_code_from_env() -> Result<ClaudeCodeAdmission, String> {
@@ -561,16 +731,19 @@ fn env_required_f64(key: &str) -> Result<f64, String> {
         .map_err(|_| format!("{key} must be a number"))
 }
 
+/// Process environments are shared by all lib tests. Keep CLI profile tests
+/// serialized across modules so a temporary admission fixture cannot race a
+/// concurrent configuration test.
+#[cfg(test)]
+pub(crate) fn cli_env_test_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::OutputStream;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     fn clear_claude_admission_env() {
         for key in [
@@ -852,7 +1025,9 @@ mod tests {
     fn cli_config_keeps_claude_disabled_without_filesystem_confinement() {
         use sha2::{Digest, Sha256};
 
-        let _guard = env_lock().lock().unwrap();
+        let _guard = cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_claude_admission_env();
         let dir = tempfile::tempdir().unwrap();
         let binary = fake_claude_binary(dir.path());
@@ -880,7 +1055,9 @@ mod tests {
     fn cli_config_keeps_subscription_default_claude_disabled_without_confinement() {
         use sha2::{Digest, Sha256};
 
-        let _guard = env_lock().lock().unwrap();
+        let _guard = cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_claude_admission_env();
         let dir = tempfile::tempdir().unwrap();
         let binary = fake_claude_binary(dir.path());

@@ -265,6 +265,10 @@ pub struct SpendAuthorizationRequest {
     pub binary_path: String,
     pub binary_version: String,
     pub binary_sha256: String,
+    /// Required for a newly issued runtime-profile-backed attempt. `None`
+    /// remains readable only for historical Codex receipts.
+    pub runtime_profile_sha256: Option<String>,
+    pub capability_probe_sha256: Option<String>,
     pub provider_kind: String,
     pub provider_host: String,
     pub provider_base_url: String,
@@ -298,6 +302,8 @@ pub struct ManagedCodexLaunchFacts {
     pub executable_path: PathBuf,
     pub executable_version: String,
     pub executable_sha256: String,
+    pub runtime_profile_sha256: Option<String>,
+    pub capability_probe_sha256: Option<String>,
     pub model: String,
 }
 
@@ -484,6 +490,8 @@ pub fn build_attempt_authority_manifest(spend_body: &Value) -> Result<Value, Str
         "binary_path": require("binary_path")?,
         "binary_version": require("binary_version")?,
         "binary_sha256": require("binary_sha256")?,
+        "runtime_profile_sha256": spend_body.get("runtime_profile_sha256").cloned().unwrap_or(Value::Null),
+        "capability_probe_sha256": spend_body.get("capability_probe_sha256").cloned().unwrap_or(Value::Null),
         "provider_kind": require("provider_kind")?,
         "provider_host": require("provider_host")?,
         "provider_base_url": require("provider_base_url")?,
@@ -2004,6 +2012,7 @@ impl LocalProductStore {
             );
         }
         validate_bindable_managed_codex_node(&node, &task_id, &node_id)?;
+        validate_managed_codex_runtime_profile_node(&node, &spend_body)?;
         let binding = managed_codex_spawn_binding(
             &spend,
             &spend_body,
@@ -2569,6 +2578,8 @@ fn managed_codex_spawn_binding(
         "attempt_id": attempt_id,
         "target_repo": required_str(spend_body, "target_repo")?,
         "target_main_sha": required_str(spend_body, "target_main_sha")?,
+        "runtime_profile_sha256": spend_body.get("runtime_profile_sha256").cloned().unwrap_or(Value::Null),
+        "capability_probe_sha256": spend_body.get("capability_probe_sha256").cloned().unwrap_or(Value::Null),
     }));
     let binding_sha256 = managed_codex_spawn_binding_sha256(&binding)?;
     binding
@@ -2633,6 +2644,22 @@ fn validate_managed_codex_launch_facts(facts: &ManagedCodexLaunchFacts) -> Resul
             .all(|byte| byte.is_ascii_hexdigit())
     {
         return Err("managed Codex runtime executable SHA-256 is invalid".to_string());
+    }
+    for (name, value) in [
+        (
+            "runtime_profile_sha256",
+            facts.runtime_profile_sha256.as_deref(),
+        ),
+        (
+            "capability_probe_sha256",
+            facts.capability_probe_sha256.as_deref(),
+        ),
+    ] {
+        if let Some(value) = value {
+            if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(format!("managed Codex runtime {name} is invalid"));
+            }
+        }
     }
     let canonical_workspace = std::fs::canonicalize(&facts.workspace_path)
         .map_err(|error| format!("managed Codex runtime workspace is unreadable: {error}"))?;
@@ -2710,6 +2737,21 @@ fn validate_managed_codex_spawn_binding(
             return Err(format!("managed Codex spawn binding {field} is stale"));
         }
     }
+    for (field, observed) in [
+        (
+            "runtime_profile_sha256",
+            facts.runtime_profile_sha256.as_deref(),
+        ),
+        (
+            "capability_probe_sha256",
+            facts.capability_probe_sha256.as_deref(),
+        ),
+    ] {
+        let bound = binding.get(field).and_then(Value::as_str);
+        if bound != observed {
+            return Err(format!("managed Codex spawn binding {field} is stale"));
+        }
+    }
     let task_id = required_str(spend_body, "product_task_id")?;
     validate_bindable_managed_codex_node(node, &task_id, &facts.node_id)
 }
@@ -2729,6 +2771,14 @@ fn validate_managed_codex_runtime_identity(
         || spend_body.get("binary_sha256").and_then(Value::as_str)
             != Some(facts.executable_sha256.as_str())
         || spend_body.get("model").and_then(Value::as_str) != Some(facts.model.as_str())
+        || spend_body
+            .get("runtime_profile_sha256")
+            .and_then(Value::as_str)
+            != facts.runtime_profile_sha256.as_deref()
+        || spend_body
+            .get("capability_probe_sha256")
+            .and_then(Value::as_str)
+            != facts.capability_probe_sha256.as_deref()
     {
         return Err("managed Codex runtime identity does not match bound spend".to_string());
     }
@@ -2754,6 +2804,53 @@ fn validate_managed_codex_runtime_identity(
         if spend_body.get(field).is_none() || spend_body.get(field) == Some(&Value::Null) {
             return Err(format!("managed Codex spend {field} owner is missing"));
         }
+    }
+    Ok(())
+}
+
+/// New runtime-profile-backed spends must agree with the immutable graph node
+/// selected by the scheduler. Historical Codex fixtures have no profile and
+/// remain readable through the compatibility path above; they cannot be used
+/// by the production launcher, which requires profile observations.
+fn validate_managed_codex_runtime_profile_node(
+    node: &Value,
+    spend_body: &Value,
+) -> Result<(), String> {
+    let Some(profile_sha) = spend_body
+        .get("runtime_profile_sha256")
+        .and_then(Value::as_str)
+    else {
+        return Ok(());
+    };
+    let identity = node
+        .get("managed_executor_identity")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "managed Codex runtime profile node identity is missing".to_string())?;
+    if identity.get("schema_version").and_then(Value::as_str)
+        != Some("managed_executor_identity.v1")
+        || identity.get("executor_type").and_then(Value::as_str) != Some("codex_cli")
+        || identity
+            .get("runtime_profile_sha256")
+            .and_then(Value::as_str)
+            != Some(profile_sha)
+        || identity
+            .get("capability_probe_sha256")
+            .and_then(Value::as_str)
+            != spend_body
+                .get("capability_probe_sha256")
+                .and_then(Value::as_str)
+        || identity.get("binary_path").and_then(Value::as_str)
+            != spend_body.get("binary_path").and_then(Value::as_str)
+        || identity.get("binary_version").and_then(Value::as_str)
+            != spend_body.get("binary_version").and_then(Value::as_str)
+        || identity.get("binary_sha256").and_then(Value::as_str)
+            != spend_body.get("binary_sha256").and_then(Value::as_str)
+        || identity.get("model").and_then(Value::as_str)
+            != spend_body.get("model").and_then(Value::as_str)
+    {
+        return Err(
+            "managed Codex runtime profile identity does not match the scheduler node".to_string(),
+        );
     }
     Ok(())
 }
@@ -3540,6 +3637,14 @@ fn validate_spend_against_decision(
         return Err("trial_envelope.admitted_endpoint_paths required".into());
     }
     eq_str_field(&trial, "exact_codex_version", &request.binary_version)?;
+    if let Some(profile_sha) = request.runtime_profile_sha256.as_deref() {
+        eq_str_field(&trial, "runtime_profile_sha256", profile_sha)?;
+        let capability_sha = request
+            .capability_probe_sha256
+            .as_deref()
+            .ok_or("runtime-profile spend requires capability_probe_sha256")?;
+        eq_str_field(&trial, "capability_probe_sha256", capability_sha)?;
+    }
     if trial
         .get("exact_codex_sha_required")
         .and_then(Value::as_bool)
@@ -3688,6 +3793,8 @@ fn build_spend_body(
         "binary_path": request.binary_path,
         "binary_version": request.binary_version,
         "binary_sha256": request.binary_sha256,
+        "runtime_profile_sha256": request.runtime_profile_sha256,
+        "capability_probe_sha256": request.capability_probe_sha256,
         "provider_kind": request.provider_kind,
         "provider_host": request.provider_host,
         "provider_base_url": request.provider_base_url,
@@ -3749,6 +3856,8 @@ fn validate_attempt_body_matches_spend(
         "binary_path",
         "binary_version",
         "binary_sha256",
+        "runtime_profile_sha256",
+        "capability_probe_sha256",
         "provider_kind",
         "provider_host",
         "provider_base_url",
@@ -3793,6 +3902,8 @@ fn validate_attempt_body_matches_spend(
         "binary_path",
         "binary_version",
         "binary_sha256",
+        "runtime_profile_sha256",
+        "capability_probe_sha256",
         "provider_kind",
         "provider_host",
         "provider_base_url",
@@ -4982,6 +5093,8 @@ mod tests {
             binary_path: "/usr/bin/codex".into(),
             binary_version: "0.145.0".into(),
             binary_sha256: "ab".repeat(32),
+            runtime_profile_sha256: None,
+            capability_probe_sha256: None,
             provider_kind: "openai_compatible".into(),
             provider_host: "api.openai.com".into(),
             provider_base_url: "https://api.openai.com/v1".into(),
@@ -5014,6 +5127,8 @@ mod tests {
             "binary_path": req.binary_path,
             "binary_version": req.binary_version,
             "binary_sha256": req.binary_sha256,
+            "runtime_profile_sha256": req.runtime_profile_sha256,
+            "capability_probe_sha256": req.capability_probe_sha256,
             "provider_kind": req.provider_kind,
             "provider_host": req.provider_host,
             "provider_base_url": req.provider_base_url,

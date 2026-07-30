@@ -10,6 +10,8 @@ use engine::product_golden_path::{
     PRODUCT_TASK_GATE,
 };
 use engine::storage::local_product_store::LocalProductStore;
+use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -20,7 +22,11 @@ fn env_lock() -> &'static Mutex<()> {
 }
 
 fn with_gates<R>(f: impl FnOnce() -> R) -> R {
-    let _guard = env_lock().lock().unwrap();
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let runtime_dir = tempfile::tempdir().expect("runtime fixture directory");
+    let _runtime = admit_fake_codex_runtime(runtime_dir.path());
     std::env::set_var(PRODUCT_TASK_GATE, "1");
     std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
     std::env::set_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH", "0");
@@ -36,6 +42,59 @@ fn temp_store() -> (tempfile::TempDir, LocalProductStore) {
     (dir, store)
 }
 
+struct EnvironmentGuard(Vec<(&'static str, Option<OsString>)>);
+
+impl EnvironmentGuard {
+    fn set(values: &[(&'static str, String)]) -> Self {
+        let prior = values
+            .iter()
+            .map(|(key, _)| (*key, std::env::var_os(key)))
+            .collect();
+        for (key, value) in values {
+            std::env::set_var(key, value);
+        }
+        Self(prior)
+    }
+}
+
+impl Drop for EnvironmentGuard {
+    fn drop(&mut self) {
+        for (key, value) in self.0.drain(..) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
+fn admit_fake_codex_runtime(root: &std::path::Path) -> EnvironmentGuard {
+    let binary = root.join("codex-fixture");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex-cli 0.146.7'; else echo '--json --sandbox workspace-write --ask-for-approval --model'; fi\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let binary_sha256 = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+    EnvironmentGuard::set(&[
+        ("ACP_ENABLE_CLI_EXECUTION", "1".to_string()),
+        ("ACP_CODEX_BIN", binary.to_string_lossy().into_owned()),
+        ("ACP_CODEX_SHA256", binary_sha256),
+        ("ACP_CODEX_VERSION_POLICY", ">=0.146.0,<0.147.0".to_string()),
+        ("ACP_CODEX_REQUIRED_CAPABILITIES", "--sandbox".to_string()),
+        (
+            "ACP_CODEX_RUNTIME_PROFILE_ID",
+            "codex-g2-fixture.v1".to_string(),
+        ),
+        ("ACP_CODEX_MODEL", "gpt-5.6-luna".to_string()),
+    ])
+}
+
 fn init_git_repo(root: &std::path::Path) -> String {
     std::fs::create_dir_all(root).unwrap();
     // Base tree has only README — expected mutation path must not pre-exist.
@@ -45,6 +104,15 @@ fn init_git_repo(root: &std::path::Path) -> String {
     run_git(root, &["config", "user.name", "G2 Tester"]);
     run_git(root, &["add", "README.md"]);
     run_git(root, &["commit", "-m", "init"]);
+    run_git(
+        root,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/g2-product.git",
+        ],
+    );
     run_git(root, &["rev-parse", "HEAD"]).trim().to_string()
 }
 
@@ -67,6 +135,7 @@ fn sample_intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskI
         objective: "Create docs/product_golden_path_fixture.md via fixture executor.".to_string(),
         target_id: "disposable-target".to_string(),
         target_repo_path: target.to_string_lossy().into_owned(),
+        source_kind: None,
         source_revision: rev.to_string(),
         source_tree_hash: None,
         allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],

@@ -51,6 +51,17 @@ fn init_git_repo(root: &std::path::Path) -> String {
         assert!(out.status.success(), "{args:?} {:?}", out);
     }
     let out = Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/g3-product.git",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(root)
         .output()
@@ -68,6 +79,7 @@ fn intake(
         objective: "Create fixture note via golden path.".to_string(),
         target_id: "disposable".to_string(),
         target_repo_path: target.to_string_lossy().into_owned(),
+        source_kind: None,
         source_revision: rev.to_string(),
         source_tree_hash: None,
         allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],

@@ -14,6 +14,9 @@ use crate::product_golden_path::{
     ProductTaskBudget, ProductTaskIntakeRequest, ProductVerificationCommand,
     ProductVerificationRuntimeAuthority, PRODUCT_TASK_GATE,
 };
+use crate::storage::local_product_store::product_tasks::{
+    public_product_task_projection, public_product_task_result_projection,
+};
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, GitHubPullRequestConfig, GitHubPullRequestRequest,
     GitHubRepository,
@@ -46,6 +49,7 @@ pub(crate) async fn api_create_product_task(
         objective: request.objective,
         target_id: request.target_id,
         target_repo_path: request.target_repo_path,
+        source_kind: request.source_kind,
         source_revision: request.source_revision,
         source_tree_hash: request.source_tree_hash,
         allowed_paths: request.allowed_paths,
@@ -113,7 +117,7 @@ pub(crate) async fn api_create_product_task(
                 Json(json!({
                     "schema_version": AXUM_API_SCHEMA_VERSION,
                     "task_id": task_id,
-                    "task": task,
+                    "task": public_product_task_projection(&task),
                     "execution_admitted": task.get("execution_admitted").and_then(|v| v.as_bool()).unwrap_or(false),
                 })),
             ))
@@ -158,7 +162,7 @@ pub(crate) async fn api_product_task_detail(
                 cors_headers(),
                 Json(json!({
                     "schema_version": AXUM_API_SCHEMA_VERSION,
-                    "task": task,
+                    "task": public_product_task_projection(&task),
                 })),
             ))
         }
@@ -206,7 +210,7 @@ pub(crate) async fn api_compile_and_schedule_product_task(
             cors_headers(),
             Json(json!({
                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                "result": result,
+                "result": public_product_task_result_projection(&result),
             })),
         )),
         Err(error) => {
@@ -265,7 +269,7 @@ pub(crate) async fn api_finalize_product_task(
             cors_headers(),
             Json(json!({
                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                "result": result,
+                "result": public_product_task_result_projection(&result),
             })),
         )),
         Err(error) => Err(ApiError::with_code(
@@ -313,7 +317,7 @@ pub(crate) async fn api_approve_and_output_product_task(
             cors_headers(),
             Json(json!({
                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                "result": result,
+                "result": public_product_task_result_projection(&result),
             })),
         )),
         Err(error) => Err(ApiError::with_code(
@@ -356,7 +360,7 @@ pub(crate) async fn api_approve_product_task(
             cors_headers(),
             Json(json!({
                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                "approval": approval,
+                "approval": public_product_task_result_projection(&approval),
             })),
         )),
         Err(error) => {
@@ -516,7 +520,7 @@ pub(crate) async fn api_output_product_task(
                             cors_headers(),
                             Json(json!({
                                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                                "result": completed,
+                                "result": public_product_task_result_projection(&completed),
                             })),
                         ));
                     }
@@ -565,7 +569,7 @@ pub(crate) async fn api_output_product_task(
                 cors_headers(),
                 Json(json!({
                     "schema_version": AXUM_API_SCHEMA_VERSION,
-                    "result": result,
+                    "result": public_product_task_result_projection(&result),
                 })),
             ))
         }
@@ -633,7 +637,7 @@ pub(crate) async fn api_recover_product_task_workspace(
             cors_headers(),
             Json(json!({
                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                "task": task,
+                "task": public_product_task_projection(&task),
             })),
         )),
         Err(error) => {

@@ -397,6 +397,7 @@ pub enum ProductOutputIntent {
     ArtifactOnly,
     ExportPatch,
     DraftPr,
+    ApplyLocalChanges,
 }
 
 impl ProductOutputIntent {
@@ -405,6 +406,7 @@ impl ProductOutputIntent {
             Self::ArtifactOnly => "artifact_only",
             Self::ExportPatch => "export_patch",
             Self::DraftPr => "draft_pr",
+            Self::ApplyLocalChanges => "apply_local_changes",
         }
     }
 
@@ -413,8 +415,9 @@ impl ProductOutputIntent {
             "artifact_only" => Ok(Self::ArtifactOnly),
             "export_patch" => Ok(Self::ExportPatch),
             "draft_pr" => Ok(Self::DraftPr),
+            "apply_local_changes" => Ok(Self::ApplyLocalChanges),
             other => Err(format!(
-                "output_intent must be artifact_only, export_patch, or draft_pr; got {other}"
+                "output_intent must be artifact_only, export_patch, draft_pr, or apply_local_changes; got {other}"
             )),
         }
     }
@@ -467,6 +470,9 @@ pub struct ProductTaskIntakeRequest {
     pub objective: String,
     pub target_id: String,
     pub target_repo_path: String,
+    /// `git_repository` or `local_folder`; defaults from `workspace_mode` for
+    /// compatibility with pre-PE7 callers.
+    pub source_kind: Option<String>,
     pub source_revision: String,
     pub source_tree_hash: Option<String>,
     pub allowed_paths: Vec<String>,
@@ -493,6 +499,7 @@ pub struct ValidatedProductTaskIntake {
     pub objective_fingerprint: String,
     pub target_id: String,
     pub target_repo_path: String,
+    pub source_kind: String,
     pub source_revision: String,
     pub source_tree_hash: Option<String>,
     pub allowed_paths: Vec<String>,
@@ -523,6 +530,18 @@ pub struct ProductWorkspaceBinding {
     pub source_tree_hash: Option<String>,
     pub workspace_content_hash: String,
     pub workspace_mode: String,
+    /// Digest-only binding for a local source's configured private-path
+    /// exclusions. `None` preserves existing git and historical records.
+    #[serde(default)]
+    pub local_folder_exclusions_sha256: Option<String>,
+    #[serde(default)]
+    pub git_origin_remote: Option<String>,
+    #[serde(default)]
+    pub git_origin_remote_fingerprint: Option<String>,
+    #[serde(default)]
+    pub git_default_branch: Option<String>,
+    #[serde(default)]
+    pub git_default_branch_sha: Option<String>,
     pub provisional_run_id: String,
     pub allowed_paths: Vec<String>,
     pub bound_at: String,
@@ -750,9 +769,47 @@ pub fn validate_intake(
         .unwrap_or("git_worktree")
         .trim()
         .to_string();
-    if workspace_mode != "git_worktree" {
-        return Err("product golden path requires workspace_mode=git_worktree".to_string());
+    if !matches!(workspace_mode.as_str(), "git_worktree" | "local_folder") {
+        return Err("workspace_mode must be git_worktree or local_folder".to_string());
     }
+    let source_kind = request
+        .source_kind
+        .as_deref()
+        .unwrap_or(if workspace_mode == "local_folder" {
+            "local_folder"
+        } else {
+            "git_repository"
+        })
+        .trim()
+        .to_string();
+    if !matches!(source_kind.as_str(), "git_repository" | "local_folder")
+        || (source_kind == "local_folder") != (workspace_mode == "local_folder")
+    {
+        return Err("source_kind must match workspace_mode".to_string());
+    }
+    let local_source_manifest = if workspace_mode == "local_folder" {
+        if matches!(output_intent, ProductOutputIntent::DraftPr) {
+            return Err("local_folder source cannot use draft_pr output".to_string());
+        }
+        let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
+        let manifest =
+            crate::local_folder_source::capture_local_folder_manifest(target_path, &exclusions)?;
+        if let Some(expected) = request
+            .source_tree_hash
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if expected != manifest.tree_sha256 {
+                return Err(
+                    "local-folder source_tree_hash does not match current manifest".to_string(),
+                );
+            }
+        }
+        Some(manifest)
+    } else {
+        None
+    };
 
     let objective_fingerprint = fingerprint_objective(objective);
     let validated = ValidatedProductTaskIntake {
@@ -761,13 +818,32 @@ pub fn validate_intake(
         objective_fingerprint,
         target_id: target_id.to_string(),
         target_repo_path: target_repo_path.to_string(),
-        source_revision: source_revision.to_string(),
-        source_tree_hash: request
-            .source_tree_hash
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string),
+        source_kind,
+        source_revision: if workspace_mode == "local_folder" {
+            local_source_manifest
+                .as_ref()
+                .expect("local folder manifest established")
+                .tree_sha256
+                .clone()
+        } else {
+            source_revision.to_string()
+        },
+        source_tree_hash: if workspace_mode == "local_folder" {
+            Some(
+                local_source_manifest
+                    .as_ref()
+                    .expect("local folder manifest established")
+                    .tree_sha256
+                    .clone(),
+            )
+        } else {
+            request
+                .source_tree_hash
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        },
         allowed_paths,
         verification_commands,
         output_intent,
@@ -796,6 +872,7 @@ pub fn intake_contract_sha256(intake: &ValidatedProductTaskIntake) -> String {
         "objective_fingerprint": intake.objective_fingerprint,
         "target_id": intake.target_id,
         "target_repo_path": intake.target_repo_path,
+        "source_kind": intake.source_kind,
         "source_revision": intake.source_revision,
         "source_tree_hash": intake.source_tree_hash,
         "allowed_paths": intake.allowed_paths,
@@ -824,7 +901,8 @@ pub fn redacted_intake_json(intake: &ValidatedProductTaskIntake) -> Value {
         // full body is not a durable evidence corpus.
         "objective_preview": truncate_utf8_bytes(&intake.objective, 256, "…"),
         "target_id": intake.target_id,
-        "target_repo_path": intake.target_repo_path,
+        "target_repo_path_fingerprint": fingerprint_private_path(&intake.target_repo_path),
+        "source_kind": intake.source_kind,
         "source_revision": intake.source_revision,
         "source_tree_hash": intake.source_tree_hash,
         "allowed_paths": intake.allowed_paths,
@@ -843,6 +921,12 @@ pub fn redacted_intake_json(intake: &ValidatedProductTaskIntake) -> Value {
         "workspace_mode": intake.workspace_mode,
         "intake_contract_sha256": intake.intake_contract_sha256,
     })
+}
+
+/// Stable evidence identity for a local filesystem path. The operational
+/// owner retains the path separately; public/audit projections do not.
+pub fn fingerprint_private_path(path: &str) -> String {
+    hex::encode(Sha256::digest(path.as_bytes()))
 }
 
 fn validate_allowed_path(path: &str) -> Result<String, String> {
@@ -1265,6 +1349,43 @@ pub fn compile_product_executable_graph(
             "pricing_source": admission.pricing_source,
             "pricing_verified_at": admission.pricing_verified_at,
         })
+    } else if resolved_executor == "codex_cli" {
+        let config = crate::cli::CliConfig::from_env();
+        let admission = config.codex_admission.ok_or_else(|| {
+            "Codex executor requires a current managed coding runtime profile at graph compile"
+                .to_string()
+        })?;
+        let profile = admission.runtime_profile.as_ref().ok_or_else(|| {
+            "legacy Codex identity cannot compile a new managed product graph".to_string()
+        })?;
+        let observed = admission.observed_runtime.as_ref().ok_or_else(|| {
+            "Codex runtime profile observation is incomplete at graph compile".to_string()
+        })?;
+        let profile_sha256 = profile.profile_sha256()?;
+        json!({
+            "schema_version": "managed_executor_identity.v1",
+            "executor_type": "codex_cli",
+            "executor_class": "managed_coding",
+            "runtime_profile_schema_version": profile.schema_version,
+            "runtime_profile_id": profile.profile_id,
+            "runtime_profile_sha256": profile_sha256,
+            "capability_probe_sha256": observed.capability_probe_sha256,
+            "binary_path": observed.canonical_executable_path,
+            "binary_version": observed.observed_version,
+            "binary_sha256": observed.binary_sha256,
+            "executor_kind": profile.executor_kind,
+            "protocol_kind": profile.protocol_kind,
+            "requested_model": profile.requested_model,
+            "resolved_model": profile.resolved_model,
+            "model": admission.model,
+            "thinking_configuration": profile.thinking_configuration,
+            "provider_identity": profile.provider_identity,
+            "credential_reference": profile.credential_reference,
+            "endpoint_allowlist": profile.endpoint_allowlist,
+            "usage_parser_version": profile.usage_parser_version,
+            "pricing_source_version": profile.pricing_source_version,
+            "admission_classification": profile.admission_classification,
+        })
     } else {
         Value::Null
     };
@@ -1346,11 +1467,10 @@ pub fn compile_product_executable_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
 
     fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        crate::cli::config::cli_env_test_lock()
     }
 
     fn sample_request() -> ProductTaskIntakeRequest {
@@ -1358,6 +1478,7 @@ mod tests {
             objective: "Add a README section describing the golden path.".to_string(),
             target_id: "demo-repo".to_string(),
             target_repo_path: "/tmp/demo-repo".to_string(),
+            source_kind: None,
             source_revision: "abc1234".to_string(),
             source_tree_hash: None,
             allowed_paths: vec!["README.md".to_string()],
@@ -1385,7 +1506,9 @@ mod tests {
 
     #[test]
     fn rejects_when_gate_disabled() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::remove_var(PRODUCT_TASK_GATE);
         let err = validate_intake(&sample_request(), "local", "default").unwrap_err();
         assert!(err.contains("disabled"));
@@ -1393,7 +1516,9 @@ mod tests {
 
     #[test]
     fn accepts_valid_intake_when_gate_enabled() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         let validated = validate_intake(&sample_request(), "local", "default").unwrap();
         assert_eq!(validated.tenant_id, "local");
@@ -1405,7 +1530,9 @@ mod tests {
 
     #[test]
     fn objective_preview_is_utf8_bounded_and_hash_stable() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         let mut request = sample_request();
         request.objective = format!("前{}🙂", "界".repeat(100));
@@ -1430,7 +1557,9 @@ mod tests {
 
     #[test]
     fn rejects_noop_only_executor_policy() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         let mut req = sample_request();
         req.executor_policy.allowed_executors = vec!["noop".to_string()];
@@ -1442,7 +1571,9 @@ mod tests {
 
     #[test]
     fn rejects_path_escape_in_allowed_paths() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         let mut req = sample_request();
         req.allowed_paths = vec!["../secret".to_string()];
@@ -1452,7 +1583,9 @@ mod tests {
 
     #[test]
     fn rejects_absolute_verification_binary() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         let mut req = sample_request();
         req.verification_commands = vec![ProductVerificationCommand {
@@ -1465,7 +1598,9 @@ mod tests {
 
     #[test]
     fn rejects_option_attached_absolute_verification_paths() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         for command in [
             "grep -f/etc/shadow README.md",
@@ -1487,7 +1622,9 @@ mod tests {
 
     #[test]
     fn rejects_verification_paths_excluded_from_workspace_observation() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         for command in [
             "cat .git/config",
@@ -1510,7 +1647,9 @@ mod tests {
 
     #[test]
     fn rejects_recursive_or_indirect_verification_traversal() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         for command in [
             "grep -R needle .",
@@ -1546,7 +1685,9 @@ mod tests {
 
     #[test]
     fn accepts_nonrecursive_options_with_recursive_letters_in_values() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         for command in [
             "grep -eerror README.md",

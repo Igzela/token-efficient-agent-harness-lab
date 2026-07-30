@@ -11,6 +11,8 @@ use engine::product_golden_path::{
 use engine::storage::local_product_store::LocalProductStore;
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
 #[cfg(unix)]
+use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::ffi::OsString;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -124,6 +126,40 @@ fn temp_store() -> (tempfile::TempDir, LocalProductStore) {
 }
 
 #[cfg(unix)]
+fn admit_fake_codex_runtime(root: &std::path::Path) -> ScopedEnv {
+    let binary = root.join("codex-fixture");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex-cli 0.146.7'; else echo '--json --sandbox workspace-write --ask-for-approval --model'; fi\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let binary_sha256 = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
+    ScopedEnv::set(vec![
+        ("ACP_ENABLE_CLI_EXECUTION", OsString::from("1")),
+        (
+            "ACP_CODEX_BIN",
+            OsString::from(binary.to_string_lossy().into_owned()),
+        ),
+        ("ACP_CODEX_SHA256", OsString::from(binary_sha256)),
+        (
+            "ACP_CODEX_VERSION_POLICY",
+            OsString::from(">=0.146.0,<0.147.0"),
+        ),
+        (
+            "ACP_CODEX_REQUIRED_CAPABILITIES",
+            OsString::from("--sandbox"),
+        ),
+        (
+            "ACP_CODEX_RUNTIME_PROFILE_ID",
+            OsString::from("codex-recovery-fixture.v1"),
+        ),
+        ("ACP_CODEX_MODEL", OsString::from("gpt-5.6-luna")),
+    ])
+}
+
+#[cfg(unix)]
 fn workspace_preparation_receipt_sha256(
     task_id: &str,
     workspace_root: &std::path::Path,
@@ -187,6 +223,17 @@ fn init_git_repo(root: &std::path::Path) -> String {
         assert!(out.status.success());
     }
     let out = Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/recovery-product.git",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(root)
         .output()
@@ -222,6 +269,7 @@ fn intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskIntakeRe
         objective: "recovery matrix fixture task".to_string(),
         target_id: "disposable".to_string(),
         target_repo_path: target.to_string_lossy().into_owned(),
+        source_kind: None,
         source_revision: rev.to_string(),
         source_tree_hash: None,
         allowed_paths: vec!["docs/product_golden_path_fixture.md".to_string()],
@@ -424,6 +472,8 @@ fn prepare_cumulative_managed_task(
     rev: &str,
     key: &str,
 ) -> (String, String) {
+    #[cfg(unix)]
+    let _runtime = admit_fake_codex_runtime(repo.parent().expect("repo parent"));
     let mut request = intake(repo, rev, key);
     request.executor_policy = ProductExecutorPolicy {
         allowed_executors: vec!["codex_cli".to_string()],
@@ -487,6 +537,8 @@ fn assert_managed_token_budget_exhaustion(
     rev: &str,
     key: &str,
 ) {
+    #[cfg(unix)]
+    let _runtime = admit_fake_codex_runtime(repo.parent().expect("repo parent"));
     let mut request = intake(repo, rev, key);
     request.executor_policy = ProductExecutorPolicy {
         allowed_executors: vec!["codex_cli".to_string()],
@@ -539,6 +591,8 @@ fn prepare_managed_negative_task(
     total_calls: u64,
     max_retries: u64,
 ) -> (String, String) {
+    #[cfg(unix)]
+    let _runtime = admit_fake_codex_runtime(repo.parent().expect("repo parent"));
     let mut request = intake(repo, rev, key);
     request.executor_policy = ProductExecutorPolicy {
         allowed_executors: vec!["codex_cli".to_string()],

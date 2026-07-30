@@ -2583,7 +2583,10 @@ impl LocalProductStore {
         output: &Value,
         actor: &str,
     ) -> Result<Value, String> {
-        if !matches!(output_intent, "artifact_only" | "export_patch") {
+        if !matches!(
+            output_intent,
+            "artifact_only" | "export_patch" | "apply_local_changes"
+        ) {
             return Err("nonnetwork output receipt intent is invalid".to_string());
         }
         // Create/reuse path keeps strict expected-current authority. A concurrent
@@ -2637,6 +2640,196 @@ impl LocalProductStore {
                 }),
             Err(error) => Err(error),
         }
+    }
+
+    /// Persist the local-folder effect identity before the original source can
+    /// be mutated.  A restart that observes this claim cannot safely infer
+    /// whether the filesystem effect happened, so the caller must reconcile
+    /// rather than retrying the apply.
+    pub fn claim_product_local_apply_effect(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        approval_id: &str,
+        expected_task_version: u64,
+        actor: &str,
+    ) -> Result<Value, String> {
+        let authority_request = json!({
+            "schema_version": "product_output_authority_request.v1",
+            "product_task_id": product_task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval_id,
+            "output_intent": "apply_local_changes",
+            "expected_task_version": expected_task_version,
+        });
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.local_apply_effect_claimed",
+            Some(&authority_request),
+            |artifact, now| {
+                let request = json!({
+                    "schema_version": "product_nonnetwork_output_request.v1",
+                    "product_task_id": product_task_id,
+                    "artifact_id": artifact_id,
+                    "approval_id": approval_id,
+                    "output_intent": "apply_local_changes",
+                    "expected_task_version": expected_task_version,
+                    "source_revision": artifact.get("source_revision"),
+                    "patch_hash": artifact.get("patch_hash"),
+                });
+                let request_sha256 = target_output_json_sha256(&request)?;
+                if let Some(existing) = artifact.get("product_output_receipt") {
+                    if existing.get("request") == Some(&request)
+                        && existing.get("request_sha256").and_then(Value::as_str)
+                            == Some(request_sha256.as_str())
+                        && existing.get("state").and_then(Value::as_str)
+                            == Some("effect_started")
+                    {
+                        let mut replay = existing.clone();
+                        replay
+                            .as_object_mut()
+                            .expect("product output receipt is an object")
+                            .insert("claim_action".to_string(), json!("reconciliation_required"));
+                        return Ok(replay);
+                    }
+                    return Err("local apply output receipt already exists with another binding".to_string());
+                }
+                let receipt = json!({
+                    "schema_version": "product_output_receipt.v1",
+                    "receipt_id": format!("product-output-receipt-{artifact_id}-{}", &request_sha256[..12]),
+                    "state": "effect_started",
+                    "product_task_id": product_task_id,
+                    "artifact_id": artifact_id,
+                    "approval_id": approval_id,
+                    "output_intent": "apply_local_changes",
+                    "expected_task_version": expected_task_version,
+                    "source_revision": artifact.get("source_revision"),
+                    "patch_hash": artifact.get("patch_hash"),
+                    "request": request,
+                    "request_sha256": request_sha256,
+                    "effect_started_at": now,
+                    "effect_started_by": actor,
+                });
+                artifact
+                    .as_object_mut()
+                    .ok_or_else(|| "supervised patch artifact must be an object".to_string())?
+                    .insert("product_output_receipt".to_string(), receipt.clone());
+                let mut response = receipt;
+                response
+                    .as_object_mut()
+                    .expect("product output receipt is an object")
+                    .insert("claim_action".to_string(), json!("apply_local_changes"));
+                Ok(response)
+            },
+        )
+    }
+
+    /// Persist an explicit rollback claim before touching an operator's local
+    /// source. The completed ProductTask remains immutable; this is a
+    /// separately auditable compensation receipt owned by its artifact.
+    pub fn claim_product_local_apply_rollback(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.local_apply_rollback_claimed",
+            None,
+            |artifact, now| {
+                let receipt = artifact
+                    .get_mut("product_output_receipt")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| "local apply output receipt is missing".to_string())?;
+                if receipt.get("product_task_id").and_then(Value::as_str) != Some(product_task_id)
+                    || receipt.get("output_intent").and_then(Value::as_str)
+                        != Some("apply_local_changes")
+                    || receipt.get("state").and_then(Value::as_str) != Some("completed")
+                {
+                    return Err("local apply receipt does not authorize rollback".to_string());
+                }
+                if let Some(existing) = receipt.get("rollback") {
+                    return match existing.get("state").and_then(Value::as_str) {
+                        Some("completed") => Ok(json!({"rollback": existing, "reused": true})),
+                        Some("effect_started" | "outcome_unknown") => Err(
+                            "local-folder rollback already has an unconfirmed effect; reconciliation required"
+                                .to_string(),
+                        ),
+                        _ => Err("local-folder rollback receipt is invalid".to_string()),
+                    };
+                }
+                let rollback = json!({
+                    "schema_version": "local_folder_rollback_receipt.v1",
+                    "rollback_id": format!("local-rollback-{artifact_id}"),
+                    "state": "effect_started",
+                    "product_task_id": product_task_id,
+                    "effect_started_at": now,
+                    "effect_started_by": actor,
+                });
+                receipt.insert("rollback".to_string(), rollback.clone());
+                Ok(json!({"rollback": rollback, "reused": false}))
+            },
+        )
+    }
+
+    pub fn complete_product_local_apply_rollback(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.finish_product_local_apply_rollback(artifact_id, product_task_id, actor, "completed")
+    }
+
+    pub fn mark_product_local_apply_rollback_outcome_unknown(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.finish_product_local_apply_rollback(
+            artifact_id,
+            product_task_id,
+            actor,
+            "outcome_unknown",
+        )
+    }
+
+    fn finish_product_local_apply_rollback(
+        &self,
+        artifact_id: &str,
+        product_task_id: &str,
+        actor: &str,
+        state: &str,
+    ) -> Result<Value, String> {
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            if state == "completed" {
+                "product_task.local_apply_rollback_completed"
+            } else {
+                "product_task.local_apply_rollback_outcome_unknown"
+            },
+            None,
+            |artifact, now| {
+                let rollback = artifact
+                    .pointer_mut("/product_output_receipt/rollback")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| "local-folder rollback receipt is missing".to_string())?;
+                if rollback.get("product_task_id").and_then(Value::as_str) != Some(product_task_id)
+                    || rollback.get("state").and_then(Value::as_str) != Some("effect_started")
+                {
+                    return Err("local-folder rollback receipt is not active".to_string());
+                }
+                rollback.insert("state".to_string(), json!(state));
+                rollback.insert("completed_at".to_string(), json!(now));
+                rollback.insert("completed_by".to_string(), json!(actor));
+                Ok(json!({"rollback": rollback, "reused": false}))
+            },
+        )
     }
 
     /// Replay a non-network receipt after another caller already won terminal CAS.
@@ -4329,7 +4522,10 @@ fn prepare_product_artifact_fields(
     expected_patch_hash: &str,
 ) -> Result<PreparedProductArtifact, String> {
     if workspace.get("workspace_id").and_then(Value::as_str) != Some(workspace_id)
-        || workspace.get("workspace_mode").and_then(Value::as_str) != Some("git_worktree")
+        || !matches!(
+            workspace.get("workspace_mode").and_then(Value::as_str),
+            Some("git_worktree" | "copy")
+        )
         || matches!(
             workspace.get("status").and_then(Value::as_str),
             Some("rejected" | "quarantined" | "cleaned") | None
@@ -4339,6 +4535,96 @@ fn prepare_product_artifact_fields(
     }
     let workspace_path = required_str(workspace, "workspace_path")?;
     let path = Path::new(workspace_path);
+    if workspace.get("workspace_mode").and_then(Value::as_str) == Some("copy") {
+        let source_path = required_str(workspace, "target_repo_path")?;
+        let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
+        let source_manifest = crate::local_folder_source::capture_local_folder_manifest(
+            Path::new(source_path),
+            &exclusions,
+        )?;
+        if source_manifest.tree_sha256 != required_str(workspace, "source_revision")? {
+            return Err("local-folder source revision changed before artifact capture".to_string());
+        }
+        let summary = crate::local_folder_source::summarize_local_folder_changes(
+            &source_manifest,
+            path,
+            &exclusions,
+        )?;
+        if summary.changed_relative_paths.is_empty() {
+            return Err("no changes detected against source revision".to_string());
+        }
+        if summary.change_sha256 != expected_patch_hash {
+            return Err(
+                "verified patch identity changed before atomic artifact commit".to_string(),
+            );
+        }
+        let secret_findings = scan_for_secrets(path)?;
+        if !secret_findings.is_empty() {
+            return Err("local-folder artifact secret scan failed".to_string());
+        }
+        let confirmed = crate::local_folder_source::summarize_local_folder_changes(
+            &source_manifest,
+            path,
+            &exclusions,
+        )?;
+        if confirmed != summary {
+            return Err(
+                "verified patch identity changed during atomic artifact commit".to_string(),
+            );
+        }
+        let verification = workspace
+            .get("verification")
+            .cloned()
+            .ok_or_else(|| "product artifact workspace verification is missing".to_string())?;
+        if verification.get("status").and_then(Value::as_str) != Some("evidence_recorded")
+            || verification.get("trustworthy").and_then(Value::as_bool) != Some(true)
+        {
+            return Err("product artifact workspace verification is not trustworthy".to_string());
+        }
+        let review_diff = truncate_text(
+            format!(
+                "local-folder change bundle: added={} modified={} deleted={}",
+                summary.added_relative_paths.len(),
+                summary.modified_relative_paths.len(),
+                summary.deleted_relative_paths.len()
+            ),
+            MAX_REVIEW_DIFF_BYTES,
+        );
+        let changed_files = summary
+            .added_relative_paths
+            .iter()
+            .map(|path| format!("+{path}"))
+            .chain(
+                summary
+                    .modified_relative_paths
+                    .iter()
+                    .map(|path| format!("~{path}")),
+            )
+            .chain(
+                summary
+                    .deleted_relative_paths
+                    .iter()
+                    .map(|path| format!("-{path}")),
+            )
+            .collect::<Vec<_>>();
+        return Ok(PreparedProductArtifact {
+            workspace_id: workspace_id.to_string(),
+            run_id: required_str(workspace, "run_id")?.to_string(),
+            plan_id: optional_str(workspace, "plan_id").map(str::to_string),
+            target_id: required_str(workspace, "target_id")?.to_string(),
+            source_revision: required_str(workspace, "source_revision")?.to_string(),
+            patch_hash: summary.change_sha256,
+            changed_files: json!(changed_files),
+            review_diff,
+            verification,
+            redaction_status: "redacted".to_string(),
+            secret_scan_status: "passed".to_string(),
+            secret_findings: json!([]),
+            added: json!(summary.added_relative_paths),
+            modified: json!(summary.modified_relative_paths),
+            deleted: json!(summary.deleted_relative_paths),
+        });
+    }
     let config = TargetRepoOutputConfig::from_env();
     let changes = staged_changed_files(&config, path)?;
     if changes.changed_files.is_empty() {
@@ -4659,7 +4945,7 @@ fn validate_product_terminal_evidence_candidate(
         return Err("terminal evidence deterministic identity mismatch".to_string());
     }
     match required_str(task, "output_intent")? {
-        "artifact_only" | "export_patch" => {
+        "artifact_only" | "export_patch" | "apply_local_changes" => {
             let receipt = artifact
                 .get("product_output_receipt")
                 .ok_or_else(|| "terminal evidence output receipt missing".to_string())?;
@@ -5020,6 +5306,16 @@ fn record_or_reuse_nonnetwork_output_receipt(
         {
             return Err("artifact-only output result is not non-mutating".to_string());
         }
+    } else if output_intent == "apply_local_changes" {
+        if output.get("status").and_then(Value::as_str) != Some("applied_local_changes")
+            || output.get("patch_hash") != artifact.get("patch_hash")
+            || output
+                .get("rollback_bundle_present")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err("local apply output result does not match approved artifact".to_string());
+        }
     } else if output.get("status").and_then(Value::as_str) != Some("exported")
         || output.get("patch_hash") != artifact.get("patch_hash")
     {
@@ -5049,6 +5345,27 @@ fn record_or_reuse_nonnetwork_output_receipt(
             && existing.get("state").and_then(Value::as_str) == Some("completed")
         {
             return Ok(existing.clone());
+        }
+        if output_intent == "apply_local_changes"
+            && existing.get("request") == Some(&request)
+            && existing.get("request_sha256").and_then(Value::as_str)
+                == Some(request_sha256.as_str())
+            && existing.get("state").and_then(Value::as_str) == Some("effect_started")
+        {
+            let mut completed = existing.clone();
+            let receipt = completed
+                .as_object_mut()
+                .ok_or_else(|| "product output receipt must be an object".to_string())?;
+            receipt.insert("state".to_string(), json!("completed"));
+            receipt.insert("output".to_string(), output.clone());
+            receipt.insert("output_sha256".to_string(), json!(output_sha256));
+            receipt.insert("completed_at".to_string(), json!(now));
+            receipt.insert("completed_by".to_string(), json!(actor));
+            artifact
+                .as_object_mut()
+                .ok_or_else(|| "supervised patch artifact must be an object".to_string())?
+                .insert("product_output_receipt".to_string(), completed.clone());
+            return Ok(completed);
         }
         return Err("nonnetwork output receipt already exists with another binding".to_string());
     }
@@ -5285,6 +5602,13 @@ fn validate_terminal_product_output_record(
     let output_status = output.get("status").and_then(Value::as_str);
     if (output_intent == "artifact_only" && output_status != Some("artifact_only"))
         || (output_intent == "export_patch" && output_status != Some("exported"))
+        || (output_intent == "apply_local_changes"
+            && (output_status != Some("applied_local_changes")
+                || output.get("patch_hash") != artifact.get("patch_hash")
+                || output
+                    .get("rollback_bundle_present")
+                    .and_then(Value::as_bool)
+                    != Some(true)))
     {
         return Err("nonnetwork output receipt status changed at terminal CAS".to_string());
     }

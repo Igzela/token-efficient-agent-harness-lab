@@ -29,6 +29,17 @@ use super::config::{ADMITTED_CODEX_MODEL, ADMITTED_CODEX_VERSION};
 pub const MANAGED_ACCEPTANCE_PREFLIGHT_SCHEMA: &str = "codex_managed_acceptance_preflight.v1";
 pub const MANAGED_ACCEPTANCE_MANIFEST_SCHEMA: &str = "codex_managed_acceptance_manifest.v1";
 
+fn is_semver(value: &str) -> bool {
+    value.split('.').count() == 3
+        && value
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 /// Typed preflight result (fail closed on missing/contradictory state).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagedAcceptancePreflightResult {
@@ -77,6 +88,8 @@ pub struct ManagedAcceptancePreflightInput {
     pub codex_binary_path: Option<PathBuf>,
     pub codex_version: Option<String>,
     pub codex_sha256: Option<String>,
+    pub runtime_profile_sha256: Option<String>,
+    pub capability_probe_sha256: Option<String>,
     pub admitted_model: Option<String>,
     pub provider_kind: Option<String>,
     pub provider_host: Option<String>,
@@ -125,6 +138,8 @@ impl Default for ManagedAcceptancePreflightInput {
             codex_binary_path: None,
             codex_version: None,
             codex_sha256: None,
+            runtime_profile_sha256: None,
+            capability_probe_sha256: None,
             admitted_model: None,
             provider_kind: None,
             provider_host: None,
@@ -315,16 +330,13 @@ pub fn run_managed_acceptance_preflight_fixture_only(
     );
 
     // Identity
-    let version_ok = input.codex_version.as_deref() == Some(ADMITTED_CODEX_VERSION);
+    let version_ok = input.codex_version.as_deref().is_some_and(is_semver);
     check(
         &mut checks,
         &mut blockers,
-        "exact_codex_version",
+        "runtime_profile_version",
         version_ok,
-        format!(
-            "expected={ADMITTED_CODEX_VERSION} observed={:?}",
-            input.codex_version
-        ),
+        format!("profile-governed semver observed={:?}", input.codex_version),
         Some("blocked_identity"),
     );
     let sha_ok = input
@@ -341,6 +353,22 @@ pub fn run_managed_acceptance_preflight_fixture_only(
         } else {
             "codex sha256 missing or malformed".to_string()
         },
+        Some("blocked_identity"),
+    );
+    let profile_ok = input
+        .runtime_profile_sha256
+        .as_deref()
+        .is_some_and(is_sha256)
+        && input
+            .capability_probe_sha256
+            .as_deref()
+            .is_some_and(is_sha256);
+    check(
+        &mut checks,
+        &mut blockers,
+        "runtime_profile_and_capability_hashes",
+        profile_ok,
+        "runtime profile and capability probe hashes are required",
         Some("blocked_identity"),
     );
     let path_ok = input
@@ -668,8 +696,10 @@ pub fn run_managed_acceptance_preflight_fixture_only(
     // Build redacted hash-bound manifest (no secrets).
     let manifest_body = json!({
         "schema_version": MANAGED_ACCEPTANCE_MANIFEST_SCHEMA,
-        "admitted_codex_version": ADMITTED_CODEX_VERSION,
+        "observed_codex_version": input.codex_version,
         "codex_sha256": input.codex_sha256,
+        "runtime_profile_sha256": input.runtime_profile_sha256,
+        "capability_probe_sha256": input.capability_probe_sha256,
         "codex_path_set": path_ok,
         "model": input.admitted_model,
         "provider_kind": input.provider_kind,
@@ -826,6 +856,8 @@ pub fn fixture_ready_pending_operator_input(
         codex_binary_path: Some(PathBuf::from("/opt/acp/managed-codex")),
         codex_version: Some(ADMITTED_CODEX_VERSION.into()),
         codex_sha256: Some("a".repeat(64)),
+        runtime_profile_sha256: Some("b".repeat(64)),
+        capability_probe_sha256: Some("c".repeat(64)),
         admitted_model: Some(ADMITTED_CODEX_MODEL.into()),
         provider_kind: Some("openai_compatible".into()),
         provider_host: Some("api.openai.com".into()),
@@ -1302,6 +1334,27 @@ fn run_owner_derived_managed_acceptance_preflight_with_binding(
     input.codex_binary_path = Some(path);
     input.codex_sha256 = Some(actual_sha);
     input.codex_version = Some(bound_version);
+    let profile_sha = spend_body
+        .get("runtime_profile_sha256")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("spend missing runtime_profile_sha256")?;
+    let capability_sha = spend_body
+        .get("capability_probe_sha256")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("spend missing capability_probe_sha256")?;
+    if !is_sha256(profile_sha) || !is_sha256(capability_sha) {
+        return Err("spend runtime profile identity is malformed".into());
+    }
+    if let ManagedAcceptancePreflightSpendBinding::CurrentSpawnLease(lease) = &spend_binding {
+        let facts = lease.facts();
+        if facts.runtime_profile_sha256.as_deref() != Some(profile_sha)
+            || facts.capability_probe_sha256.as_deref() != Some(capability_sha)
+        {
+            return Err("managed Codex runtime profile lease binding is stale or invalid".into());
+        }
+    }
+    input.runtime_profile_sha256 = Some(profile_sha.to_string());
+    input.capability_probe_sha256 = Some(capability_sha.to_string());
 
     input.cancellation_cleanup_rollback_ready = spend_body
         .get("cancellation_identity")
