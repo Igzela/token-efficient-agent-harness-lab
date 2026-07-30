@@ -14,6 +14,7 @@ fn task_type_requires_exact_capability(task_type: &str) -> bool {
         task_type,
         "agent_step"
             | "adaptive_provider"
+            | "managed_deepseek"
             | "command"
             | "claude_code_cli"
             | "codex_cli"
@@ -472,9 +473,54 @@ pub fn register_default_executors(
         metrics: ExecutorMetrics::default(),
     });
 
+    register_managed_deepseek_executor(pool, store.clone());
+
     if cli_enabled {
         register_cli_executors(pool, &crate::cli::CliConfig::from_env(), store);
     }
+}
+
+/// Register the managed DeepSeek route only behind its explicit default-off
+/// gate. Configuration errors become a typed fail-closed executor rather than
+/// silently removing the capability from the pool.
+pub fn register_managed_deepseek_executor(pool: &ExecutorPool, store: Arc<LocalProductStore>) {
+    let enabled = std::env::var("ACP_ENABLE_MANAGED_DEEPSEEK")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+    let executor =
+        match crate::provider::managed_deepseek_executor::ManagedDeepSeekNodeExecutor::from_env(
+            store,
+        ) {
+            Ok(executor) => Arc::new(executor) as Arc<dyn NodeExecutor>,
+            Err(error) => Arc::new(crate::node_executor::FailNodeExecutor {
+                error_domain: "managed_deepseek_configuration".to_string(),
+                error_message: error,
+            }) as Arc<dyn NodeExecutor>,
+        };
+    pool.register(ExecutorEntry {
+        executor_type: crate::provider::managed_deepseek_executor::MANAGED_DEEPSEEK_EXECUTOR_TYPE
+            .to_string(),
+        executor,
+        capabilities: ExecutorCapabilities {
+            supported_task_types: vec![
+                crate::provider::managed_deepseek_executor::MANAGED_DEEPSEEK_EXECUTOR_TYPE
+                    .to_string(),
+            ],
+            supported_task_domains: vec!["product_golden_path".to_string()],
+            requires_auth: true,
+            requires_cli: false,
+            max_timeout_ms: 30_000,
+        },
+        status: ExecutorStatus {
+            concurrency_limit: 1,
+            ..Default::default()
+        },
+        cost_profile: CostProfile::default(),
+        metrics: ExecutorMetrics::default(),
+    });
 }
 
 pub fn register_cli_executors(
