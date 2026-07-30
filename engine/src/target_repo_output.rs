@@ -264,6 +264,21 @@ pub async fn create_or_reuse_github_pull_request(
     config: &GitHubPullRequestConfig,
     request: &GitHubPullRequestRequest,
 ) -> Result<GitHubPullRequestOutput, String> {
+    create_or_reconcile_github_pull_request(config, request, true).await
+}
+
+pub async fn reconcile_existing_github_pull_request(
+    config: &GitHubPullRequestConfig,
+    request: &GitHubPullRequestRequest,
+) -> Result<GitHubPullRequestOutput, String> {
+    create_or_reconcile_github_pull_request(config, request, false).await
+}
+
+async fn create_or_reconcile_github_pull_request(
+    config: &GitHubPullRequestConfig,
+    request: &GitHubPullRequestRequest,
+    allow_create: bool,
+) -> Result<GitHubPullRequestOutput, String> {
     config.require_repository(&request.repository)?;
     authority::validate_github_pr_request(request)?;
 
@@ -309,6 +324,7 @@ pub async fn create_or_reuse_github_pull_request(
         return github_pull_request_output(pull_request, request, true)
             .map_err(|error| format!("github_pr_lookup_failed_known: {error}"));
     }
+    require_missing_pr_create_authority(allow_create)?;
 
     let created = client
         .post(&endpoint)
@@ -335,6 +351,17 @@ pub async fn create_or_reuse_github_pull_request(
         .map_err(|error| format!("github_pr_create_outcome_unknown: invalid response: {error}"))?;
     github_pull_request_output(&created_body, request, false)
         .map_err(|error| format!("github_pr_create_outcome_unknown: {error}"))
+}
+
+fn require_missing_pr_create_authority(allow_create: bool) -> Result<(), String> {
+    if allow_create {
+        Ok(())
+    } else {
+        Err(
+            "github_pr_create_outcome_unknown: reconciliation found no matching Draft PR; automatic replay is forbidden"
+                .to_string(),
+        )
+    }
 }
 
 fn github_draft_pull_request_payload(request: &GitHubPullRequestRequest) -> Value {
@@ -576,7 +603,7 @@ pub fn inspect_registered_git_worktree(
 
 /// Capture the stable target identity used both at workspace admission and
 /// immediately before Git output/recovery.
-fn inspect_git_source_identity(
+pub(crate) fn inspect_git_source_identity(
     config: &TargetRepoOutputConfig,
     target_repo: &Path,
 ) -> Result<(String, String, String), String> {
@@ -1607,6 +1634,13 @@ mod tests {
         assert_eq!(payload["draft"], true);
         assert_eq!(payload["head"], "acp/product-1");
         assert_eq!(payload["base"], "main");
+    }
+
+    #[test]
+    fn outcome_unknown_reconciliation_cannot_authorize_another_pr_post() {
+        assert!(require_missing_pr_create_authority(true).is_ok());
+        let error = require_missing_pr_create_authority(false).unwrap_err();
+        assert!(error.contains("automatic replay is forbidden"));
     }
 
     #[test]

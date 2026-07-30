@@ -93,9 +93,11 @@ pub use external_runtime::{
 };
 pub use integrity::{IntegrityReport, TableIntegrity};
 pub use managed_acceptance::{
-    build_attempt_authority_manifest, AuthenticatedPrincipal, CostAuthority,
-    ManagedCodexLaunchFacts, ManagedCodexSpawnLease, PrincipalKind, RiskAcknowledgementRequest,
-    SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_REVOKE,
+    build_attempt_authority_manifest, compute_attempt_manifest_sha256,
+    confirm_delegated_artifact_output, derive_final_execution_manifest, AuthenticatedPrincipal,
+    CostAuthority, DelegationContract, ManagedCodexLaunchFacts, ManagedCodexSpawnLease,
+    PrincipalKind, RiskAcknowledgementRequest, SpendAuthorizationRequest,
+    ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_DELEGATED_AUTONOMY, SCOPE_REVOKE,
     SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
 };
 pub use policy_replay_producer::{

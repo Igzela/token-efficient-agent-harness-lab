@@ -280,6 +280,277 @@ pub(crate) async fn api_finalize_product_task(
     }
 }
 
+pub(crate) async fn api_prepare_delegated_product_task(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(task_id): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    if !product_gate_enabled() {
+        return Err(ApiError::with_code(
+            StatusCode::FORBIDDEN,
+            "product_golden_path_disabled",
+            format!("set {PRODUCT_TASK_GATE}=1 to enable product golden path intake"),
+        ));
+    }
+    let store = require_store(&state)?;
+    let delegation: crate::storage::local_product_store::DelegationContract =
+        serde_json::from_value(
+            body.get("delegation")
+                .cloned()
+                .ok_or_else(|| delegated_request_error("delegation is required"))?,
+        )
+        .map_err(|_| delegated_request_error("delegation is malformed"))?;
+    let proposal = body
+        .get("proposal_manifest")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| delegated_request_error("proposal_manifest is required"))?;
+    let approved_proposal_sha256 = body
+        .get("approved_proposal_sha256")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| delegated_request_error("approved_proposal_sha256 is required"))?;
+    let attempt_id = body
+        .get("attempt_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| delegated_request_error("attempt_id is required"))?;
+    let principal = store
+        .authenticate_managed_acceptance_principal(
+            &context.tenant_id,
+            &context.api_key_id,
+            Some(0.50),
+        )
+        .map_err(|error| delegated_api_error(&error, "delegated_operator_authentication_failed"))?;
+    let available = live_available_executor_types(&state).map_err(|error| {
+        ApiError::with_code(
+            StatusCode::CONFLICT,
+            "delegated_scheduler_unavailable",
+            error,
+        )
+    })?;
+    let persisted = store
+        .persist_delegation(&principal, &delegation)
+        .map_err(|error| delegated_api_error(&error, "delegation_persist_failed"))?;
+    let proposal_receipt = store
+        .persist_approved_delegated_proposal(
+            &delegation.delegation_id,
+            proposal,
+            approved_proposal_sha256,
+        )
+        .map_err(|error| delegated_api_error(&error, "delegated_proposal_persist_failed"))?;
+    let prepared = store
+        .prepare_delegated_managed_product_task(
+            &task_id,
+            &context.api_key_id,
+            &available,
+            proposal,
+            &delegation,
+            attempt_id,
+        )
+        .map_err(|error| delegated_api_error(&error, "delegated_product_prepare_failed"))?;
+    let manifest = prepared
+        .get("final_manifest")
+        .cloned()
+        .ok_or_else(|| internal_error("delegated final manifest missing".to_string()))?;
+    let approval = store
+        .approve_delegated_manifest(&delegation.delegation_id, &manifest)
+        .map_err(|error| delegated_api_error(&error, "delegated_manifest_approval_failed"))?;
+    let spend = store
+        .issue_delegated_spend(
+            &delegation.delegation_id,
+            approval
+                .get("approval_receipt_sha256")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| internal_error("delegated approval hash missing".to_string()))?,
+            &manifest,
+        )
+        .map_err(|error| delegated_api_error(&error, "delegated_spend_issue_failed"))?;
+    Ok((
+        cors_headers(),
+        Json(delegated_prepare_response(
+            &persisted,
+            &proposal_receipt,
+            &manifest,
+            &approval,
+            &spend,
+            &prepared,
+        )),
+    ))
+}
+
+fn delegated_prepare_response(
+    persisted: &serde_json::Value,
+    proposal_receipt: &serde_json::Value,
+    manifest: &serde_json::Value,
+    approval: &serde_json::Value,
+    spend: &serde_json::Value,
+    prepared: &serde_json::Value,
+) -> serde_json::Value {
+    json!({
+        "schema_version": AXUM_API_SCHEMA_VERSION,
+        "delegation_sha256": persisted.get("delegation_sha256"),
+        "approved_proposal_sha256": proposal_receipt.get("proposal_manifest_sha256"),
+        "final_manifest": manifest,
+        "manifest_approval_receipt_sha256": approval.get("approval_receipt_sha256"),
+        "spend_authorization_id": spend.get("spend_authorization_id"),
+        "execution_activated": false,
+        "result": public_product_task_result_projection(prepared),
+    })
+}
+
+pub(crate) async fn api_activate_delegated_product_task(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(task_id): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    let delegation_id = body
+        .get("delegation_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| delegated_request_error("delegation_id is required"))?;
+    let attempt_id = body
+        .get("attempt_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| delegated_request_error("attempt_id is required"))?;
+    let manifest = body
+        .get("final_manifest")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| delegated_request_error("final_manifest is required"))?;
+    let spend_authorization_id = body
+        .get("spend_authorization_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| delegated_request_error("spend_authorization_id is required"))?;
+    let store = require_store(&state)?;
+    let lease = store
+        .admit_delegated_attempt(delegation_id, attempt_id, manifest)
+        .map_err(|error| delegated_api_error(&error, "delegated_attempt_admission_failed"))?;
+    let activated = store
+        .activate_delegated_managed_product_task(
+            &task_id,
+            &context.api_key_id,
+            manifest,
+            spend_authorization_id,
+            lease
+                .get("attempt_lease_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| internal_error("delegated lease identity missing".to_string()))?,
+        )
+        .map_err(|error| delegated_api_error(&error, "delegated_activation_failed"))?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "attempt_lease_id": lease.get("attempt_lease_id"),
+            "result": public_product_task_result_projection(&activated),
+        })),
+    ))
+}
+
+pub(crate) async fn api_approve_delegated_product_task(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(task_id): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    let expected_task_version = body
+        .get("expected_task_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| delegated_request_error("expected_task_version is required"))?;
+    let delegation_id = body
+        .get("delegation_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| delegated_request_error("delegation_id is required"))?;
+    let manifest = body
+        .get("final_manifest")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| delegated_request_error("final_manifest is required"))?;
+    let target_main_sha = body
+        .get("current_target_main_sha")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .ok_or_else(|| delegated_request_error("current_target_main_sha must be 40 hex"))?;
+    let store = require_store(&state)?;
+    let result = store
+        .approve_delegated_product_task(
+            &task_id,
+            &context.api_key_id,
+            expected_task_version,
+            delegation_id,
+            manifest,
+            target_main_sha,
+        )
+        .map_err(|error| delegated_api_error(&error, "delegated_artifact_approval_failed"))?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "result": public_product_task_result_projection(&result),
+        })),
+    ))
+}
+
+pub(crate) async fn api_terminal_delegated_product_task(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(task_id): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    let delegation_id = body
+        .get("delegation_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| delegated_request_error("delegation_id is required"))?;
+    let attempt_id = body
+        .get("attempt_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| delegated_request_error("attempt_id is required"))?;
+    let store = require_store(&state)?;
+    let result = store
+        .complete_delegated_product_task_terminal(
+            delegation_id,
+            attempt_id,
+            &task_id,
+            &context.api_key_id,
+        )
+        .map_err(|error| delegated_api_error(&error, "delegated_terminal_failed"))?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "result": public_product_task_result_projection(&result),
+        })),
+    ))
+}
+
 pub(crate) async fn api_approve_and_output_product_task(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
@@ -496,12 +767,24 @@ pub(crate) async fn api_output_product_task(
                         .and_then(|value| value.as_str())
                         .map(str::to_string),
                 };
-                match create_or_reuse_github_pull_request(
-                    &GitHubPullRequestConfig::from_env(),
-                    &pull_request_request,
-                )
-                .await
-                {
+                let reconciliation_only = operation
+                    .get("claim_action")
+                    .and_then(|value| value.as_str())
+                    == Some("reconcile_pr_only");
+                let pull_request_result = if reconciliation_only {
+                    crate::target_repo_output::reconcile_existing_github_pull_request(
+                        &GitHubPullRequestConfig::from_env(),
+                        &pull_request_request,
+                    )
+                    .await
+                } else {
+                    create_or_reuse_github_pull_request(
+                        &GitHubPullRequestConfig::from_env(),
+                        &pull_request_request,
+                    )
+                    .await
+                };
+                match pull_request_result {
                     Ok(pull_request) => {
                         let pull_request = serde_json::to_value(pull_request)
                             .map_err(|error| internal_error(error.to_string()))?;
@@ -608,6 +891,36 @@ fn product_output_error(error: &str, fallback: &'static str) -> (StatusCode, &'s
     } else {
         (StatusCode::BAD_REQUEST, fallback)
     }
+}
+
+fn delegated_request_error(message: &str) -> ApiError {
+    ApiError::with_code(
+        StatusCode::BAD_REQUEST,
+        "delegated_product_request_invalid",
+        message,
+    )
+}
+
+fn delegated_api_error(error: &str, fallback: &'static str) -> ApiError {
+    let (status, code) = if error.contains("expired")
+        || error.contains("revoked")
+        || error.contains("authority")
+        || error.contains("principal")
+    {
+        (StatusCode::FORBIDDEN, "delegated_authority_invalid")
+    } else if error.contains("stale")
+        || error.contains("mismatch")
+        || error.contains("conflict")
+        || error.contains("drift")
+        || error.contains("replay")
+    {
+        (StatusCode::CONFLICT, "delegated_state_conflict")
+    } else if error.contains("missing") || error.contains("not found") {
+        (StatusCode::NOT_FOUND, "delegated_binding_not_found")
+    } else {
+        (StatusCode::BAD_REQUEST, fallback)
+    };
+    ApiError::with_code(status, code, error)
 }
 
 pub(crate) async fn api_recover_product_task_workspace(
@@ -780,6 +1093,21 @@ mod tests {
     use crate::scheduler::{SchedulerConfig, WorkflowScheduler};
     use crate::storage::local_product_store::LocalProductStore;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn delegated_prepare_response_never_admits_or_exposes_an_attempt_lease() {
+        let response = delegated_prepare_response(
+            &json!({"delegation_sha256": "d".repeat(64)}),
+            &json!({"proposal_manifest_sha256": "p".repeat(64)}),
+            &json!({"schema_version": "managed_final_execution_manifest.v1"}),
+            &json!({"approval_receipt_sha256": "a".repeat(64)}),
+            &json!({"spend_authorization_id": "spend-1"}),
+            &json!({"task": {"status": "workspace_bound"}}),
+        );
+        assert_eq!(response["execution_activated"], false);
+        assert!(response.get("attempt_lease_id").is_none());
+        assert!(response.get("attempt_lease_token").is_none());
+    }
 
     #[test]
     fn automatic_product_admission_requires_attached_running_scheduler() {

@@ -1363,7 +1363,133 @@ pub fn openapi_document() -> serde_json::Value {
     append_scorecard_openapi_paths(&mut doc);
     append_memory_openapi_paths(&mut doc);
     append_tool_policy_openapi_paths(&mut doc);
+    append_delegated_product_task_openapi_paths(&mut doc);
     doc
+}
+
+fn append_delegated_product_task_openapi_paths(doc: &mut Value) {
+    let Some(paths) = doc.get_mut("paths").and_then(Value::as_object_mut) else {
+        return;
+    };
+    paths.insert(
+        "/api/v1/product/tasks/{task_id}/delegated/prepare".to_string(),
+        json!({
+            "post": {
+                "summary": "Approve and prepare one delegated managed ProductTask attempt",
+                "description": "Requires team:admin plus the Product Golden Path gate. Persists the exact externally approved proposal and its expected hash, persists the delegation, derives and approves the immutable final manifest, and issues one-use spend authority. It does not admit a lease, activate execution, or call a provider.",
+                "parameters": [path_parameter("task_id")],
+                "requestBody": json_request_body(
+                    &[
+                        "delegation",
+                        "proposal_manifest",
+                        "approved_proposal_sha256",
+                        "attempt_id"
+                    ],
+                    json!({
+                        "delegation": {"type": "object"},
+                        "proposal_manifest": {"type": "object"},
+                        "approved_proposal_sha256": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$"
+                        },
+                        "attempt_id": {"type": "string"}
+                    }),
+                ),
+                "responses": {
+                    "200": {"description": "Persisted proposal/delegation approval and one-use spend authority; execution_activated is false"},
+                    "400": {"description": "Malformed or out-of-policy authority"},
+                    "403": {"description": "Missing team:admin scope or disabled Product Golden Path"},
+                    "409": {"description": "Scheduler, replay, or authority conflict"}
+                }
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/product/tasks/{task_id}/delegated/activate".to_string(),
+        json!({
+            "post": {
+                "summary": "Consume delegated spend and activate the exact ProductTask attempt",
+                "description": "Requires dispatch:execute. Rechecks the persisted final manifest and one-use spend identity, atomically admits the current attempt lease, and activates the existing scheduler graph. It cannot issue delegation, proposal, manifest-approval, spend, or artifact-confirmation authority. The lease token is never returned.",
+                "parameters": [path_parameter("task_id")],
+                "requestBody": json_request_body(
+                    &[
+                        "delegation_id",
+                        "attempt_id",
+                        "final_manifest",
+                        "spend_authorization_id"
+                    ],
+                    json!({
+                        "delegation_id": {"type": "string"},
+                        "attempt_id": {"type": "string"},
+                        "final_manifest": {"type": "object"},
+                        "spend_authorization_id": {"type": "string"}
+                    }),
+                ),
+                "responses": {
+                    "200": {"description": "Current attempt lease admitted and exact ProductTask graph activated"},
+                    "400": {"description": "Malformed or mismatched activation binding"},
+                    "403": {"description": "Missing dispatch:execute scope"},
+                    "409": {"description": "Spend, lease, scheduler, replay, or authority conflict"}
+                }
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/product/tasks/{task_id}/delegated/approve".to_string(),
+        json!({
+            "post": {
+                "summary": "Independently approve a delegated ProductTask artifact",
+                "description": "Requires team:admin scope. Rechecks the exact artifact, verifier and Pro review evidence, cost, target SHA, final manifest, and current delegation before authorizing one Draft-PR-only output.",
+                "parameters": [path_parameter("task_id")],
+                "requestBody": json_request_body(
+                    &[
+                        "expected_task_version",
+                        "delegation_id",
+                        "final_manifest",
+                        "current_target_main_sha"
+                    ],
+                    json!({
+                        "expected_task_version": {"type": "integer", "minimum": 0},
+                        "delegation_id": {"type": "string"},
+                        "final_manifest": {"type": "object"},
+                        "current_target_main_sha": {
+                            "type": "string",
+                            "pattern": "^[0-9a-fA-F]{40}$"
+                        }
+                    }),
+                ),
+                "responses": {
+                    "200": {"description": "Artifact/output confirmation persisted"},
+                    "400": {"description": "Malformed, stale, or out-of-policy artifact"},
+                    "403": {"description": "Missing team:admin scope"},
+                    "409": {"description": "Replay or authority conflict"}
+                }
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/product/tasks/{task_id}/delegated/terminal".to_string(),
+        json!({
+            "post": {
+                "summary": "Close one delegated ProductTask attempt",
+                "description": "Requires dispatch:execute scope. Rechecks Draft PR output and cleanup evidence, expires spend and delegation authority, closes the attempt lease, and persists terminal evidence.",
+                "parameters": [path_parameter("task_id")],
+                "requestBody": json_request_body(
+                    &["delegation_id", "attempt_id"],
+                    json!({
+                        "delegation_id": {"type": "string"},
+                        "attempt_id": {"type": "string"}
+                    }),
+                ),
+                "responses": {
+                    "200": {"description": "Terminal delegated evidence persisted"},
+                    "400": {"description": "Missing or conflicting terminal evidence"},
+                    "403": {"description": "Missing dispatch:execute scope"},
+                    "409": {"description": "Late, duplicate, or conflicting terminal write"}
+                }
+            }
+        }),
+    );
 }
 
 fn append_provider_endpoint_openapi_paths(doc: &mut Value) {
@@ -2009,6 +2135,14 @@ mod tests {
             "post",
             "memory_id",
         );
+        for path in [
+            "/api/v1/product/tasks/{task_id}/delegated/prepare",
+            "/api/v1/product/tasks/{task_id}/delegated/activate",
+            "/api/v1/product/tasks/{task_id}/delegated/approve",
+            "/api/v1/product/tasks/{task_id}/delegated/terminal",
+        ] {
+            assert_path_parameter(&doc, path, "post", "task_id");
+        }
     }
 
     #[test]
@@ -2115,6 +2249,45 @@ mod tests {
             "/api/v1/offline-replays/production-profile",
             "put",
             &["profile", "confirm_profile"],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/product/tasks/{task_id}/delegated/prepare",
+            "post",
+            &[
+                "delegation",
+                "proposal_manifest",
+                "approved_proposal_sha256",
+                "attempt_id",
+            ],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/product/tasks/{task_id}/delegated/activate",
+            "post",
+            &[
+                "delegation_id",
+                "attempt_id",
+                "final_manifest",
+                "spend_authorization_id",
+            ],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/product/tasks/{task_id}/delegated/approve",
+            "post",
+            &[
+                "expected_task_version",
+                "delegation_id",
+                "final_manifest",
+                "current_target_main_sha",
+            ],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/product/tasks/{task_id}/delegated/terminal",
+            "post",
+            &["delegation_id", "attempt_id"],
         );
     }
 

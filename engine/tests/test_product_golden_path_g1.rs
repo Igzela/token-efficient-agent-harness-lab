@@ -104,7 +104,7 @@ fn sample_intake(target: &std::path::Path, rev: &str, key: &str) -> ProductTaskI
 #[test]
 fn schema_includes_product_tasks_at_v30() {
     let (_dir, store) = temp_store();
-    assert_eq!(store.schema_version().unwrap(), 35);
+    assert_eq!(store.schema_version().unwrap(), 36);
 }
 
 #[test]
@@ -278,7 +278,8 @@ fn rejects_absolute_verification_binary() {
 #[test]
 fn empty_v30_rollback_works() {
     let (_dir, store) = temp_store();
-    assert_eq!(store.schema_version().unwrap(), 35);
+    assert_eq!(store.schema_version().unwrap(), 36);
+    store.rollback_v36_to_v35("tester", true).unwrap();
     store.rollback_v35_to_v34("tester", true).unwrap();
     store.rollback_v34_to_v33("tester", true).unwrap();
     store.rollback_v33_to_v32("tester", true).unwrap();
@@ -298,6 +299,9 @@ fn empty_v30_rollback_works() {
 fn v35_rollback_requires_drained_receipts_and_records_redacted_audit() {
     with_gates(|| {
         let (store_dir, store) = temp_store();
+        store
+            .rollback_v36_to_v35("rollback-operator", true)
+            .unwrap();
         let repo = store_dir.path().join("target-repo");
         let rev = init_git_repo(&repo);
         let validated = validate_intake(
@@ -370,6 +374,7 @@ fn occupied_v30_rollback_blocked() {
         let intake = sample_intake(&repo, &rev, "idem-rollback-block");
         let validated = validate_intake(&intake, "local", "default").unwrap();
         store.admit_product_task(&validated, "tester").unwrap();
+        store.rollback_v36_to_v35("tester", true).unwrap();
         store.rollback_v35_to_v34("tester", true).unwrap();
         store.rollback_v34_to_v33("tester", true).unwrap();
         store.rollback_v33_to_v32("tester", true).unwrap();

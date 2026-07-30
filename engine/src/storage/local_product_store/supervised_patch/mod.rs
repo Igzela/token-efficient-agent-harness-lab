@@ -2467,7 +2467,8 @@ impl LocalProductStore {
                     let pr_status = operation
                         .pointer("/pr_create/status")
                         .and_then(Value::as_str)
-                        .unwrap_or("pending");
+                        .unwrap_or("pending")
+                        .to_string();
                     let action = if operation.get("state").and_then(Value::as_str)
                         == Some("completed")
                     {
@@ -2484,7 +2485,11 @@ impl LocalProductStore {
                             "operation_in_progress"
                         } else {
                             claim_product_output_phase(&mut operation, "pr_create", actor, now)?;
-                            "create_or_reconcile_pr"
+                            if pr_status == "outcome_unknown" {
+                                "reconcile_pr_only"
+                            } else {
+                                "create_or_reconcile_pr"
+                            }
                         }
                     } else if matches!(
                         branch_status,
@@ -2506,7 +2511,7 @@ impl LocalProductStore {
                     };
                     if matches!(
                         action,
-                        "create_or_reconcile_pr" | "push_or_reconcile_branch"
+                        "create_or_reconcile_pr" | "reconcile_pr_only" | "push_or_reconcile_branch"
                     ) {
                         artifact
                             .as_object_mut()

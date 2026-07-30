@@ -95,6 +95,7 @@ const INTEGRITY_TABLES: &[&str] = &[
     "rwe_runs",
     "rwe_task_attempts",
     "product_task_workspace_preparations",
+    "managed_acceptance_delegations",
 ];
 
 #[derive(Debug)]

@@ -6,8 +6,11 @@
 //! authorize production live starts.
 
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::io::{Read, Seek, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -18,13 +21,2338 @@ pub const SCOPE_RISK_ACKNOWLEDGE: &str = "managed_acceptance:risk_acknowledge";
 pub const SCOPE_SPEND_AUTHORIZE: &str = "managed_acceptance:spend_authorize";
 pub const SCOPE_ATTEMPT_ADMIT: &str = "managed_acceptance:attempt_admit";
 pub const SCOPE_REVOKE: &str = "managed_acceptance:revoke";
+pub const SCOPE_DELEGATED_AUTONOMY: &str = "managed_acceptance:delegated_autonomy";
 
 pub const ALL_MANAGED_ACCEPTANCE_SCOPES: &[&str] = &[
     SCOPE_RISK_ACKNOWLEDGE,
     SCOPE_SPEND_AUTHORIZE,
     SCOPE_ATTEMPT_ADMIT,
     SCOPE_REVOKE,
+    SCOPE_DELEGATED_AUTONOMY,
 ];
+
+pub const DELEGATION_SCHEMA_VERSION: &str = "managed_autonomous_delegation.v1";
+pub const FINAL_MANIFEST_SCHEMA_VERSION: &str = "managed_final_execution_manifest.v1";
+pub const DELEGATED_ARTIFACT_CONFIRMATION_SCHEMA_VERSION: &str =
+    "managed_delegated_artifact_confirmation.v1";
+const DELEGATED_MANIFEST_APPROVAL_SCHEMA_VERSION: &str = "managed_delegated_manifest_approval.v1";
+const DELEGATED_MANIFEST_APPROVER_ROLE: &str =
+    "LocalProductStore.managed_acceptance.delegated_manifest_approver.v1";
+const DELEGATED_ARTIFACT_CONFIRMER_ROLE: &str =
+    "LocalProductStore.managed_acceptance.delegated_artifact_confirmer.v1";
+
+type DelegatedSpendSqliteRow = (
+    String,
+    String,
+    String,
+    i64,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+type DelegatedAttemptSqliteRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+);
+
+type DelegatedArtifactConfirmationSqliteRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+/// Hash-bound policy delegated by an authenticated operator. This is a policy
+/// receipt, not an execution or output authority; both are issued separately
+/// and only after the exact derived manifest is checked.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DelegationContract {
+    pub schema_version: String,
+    pub delegation_id: String,
+    pub created_at: String,
+    pub expires_at: String,
+    pub executions: u64,
+    pub repositories: Vec<String>,
+    pub task_classes: Vec<String>,
+    pub allowed_paths: Vec<String>,
+    pub max_changed_files: u64,
+    pub max_changed_lines: u64,
+    pub max_cost_usd_per_run: f64,
+    pub max_total_cost_usd: f64,
+    pub protocol: String,
+    pub models: Value,
+    pub output: Value,
+    pub forbidden: Vec<String>,
+}
+
+impl DelegationContract {
+    pub fn validate(&self, now: &str) -> Result<(), String> {
+        if self.schema_version != DELEGATION_SCHEMA_VERSION {
+            return Err("unsupported delegation schema_version".into());
+        }
+        if self.delegation_id.trim().is_empty() || self.executions != 1 {
+            return Err("delegation must contain one execution and an id".into());
+        }
+        if self.repositories != ["Igzela/alters-lab"]
+            || self.task_classes != ["documentation"]
+            || self.allowed_paths != ["docs/USER_GUIDE.md"]
+        {
+            return Err("delegation scope is outside the bounded documentation policy".into());
+        }
+        if self.max_changed_files != 1 || self.max_changed_lines != 100 {
+            return Err("delegation change limits are not the bounded policy".into());
+        }
+        if self.protocol != "openai_compatible"
+            || (self.max_cost_usd_per_run - 0.50).abs() > f64::EPSILON
+            || (self.max_total_cost_usd - 0.50).abs() > f64::EPSILON
+        {
+            return Err("delegation spend policy is invalid".into());
+        }
+        if self.models
+            != json!({
+                "planner": "deepseek-v4-pro",
+                "implementer": "deepseek-v4-flash",
+                "reviewer": "deepseek-v4-pro"
+            })
+            || self.output
+                != json!({
+                    "draft_pr_only": true,
+                    "target_main_write": false,
+                    "merge": false,
+                    "auto_merge": false
+                })
+        {
+            return Err("delegation model or output policy is invalid".into());
+        }
+        if self.forbidden
+            != vec![
+                "credential changes",
+                "authentication or permission changes",
+                "schema or database migrations",
+                "dependency changes",
+                "executable or workflow changes",
+                "destructive operations",
+                "release",
+                "deployment",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+        {
+            return Err("delegation forbidden-action policy is invalid".into());
+        }
+        if is_at_or_before(&self.expires_at, now)?
+            || !is_strictly_after(&self.expires_at, &self.created_at)?
+        {
+            return Err("delegation expiry is not finite and future-dated".into());
+        }
+        let created = parse_rfc3339_utc("created_at", &self.created_at)?;
+        let expires = parse_rfc3339_utc("expires_at", &self.expires_at)?;
+        if expires - created != chrono::Duration::hours(24) {
+            return Err("delegation expiry must be exactly 24 hours after creation".into());
+        }
+        if !self.max_cost_usd_per_run.is_finite() || !self.max_total_cost_usd.is_finite() {
+            return Err("delegation cost limits must be finite".into());
+        }
+        Ok(())
+    }
+
+    pub fn body(&self) -> Value {
+        sort_value(&serde_json::to_value(self).expect("delegation serializes"))
+    }
+
+    pub fn sha256(&self) -> Result<String, String> {
+        Ok(sha256_hex(canonical_json(&self.body())?.as_bytes()))
+    }
+}
+
+/// Derive an executable manifest from an immutable proposal. The proposal is
+/// re-hashed before use, and only the explicitly permitted non-null cap is
+/// added; all execution and recovery identities must be supplied by the owner.
+pub fn derive_final_execution_manifest(
+    proposal: &Value,
+    delegation: &DelegationContract,
+    execution: &Value,
+) -> Result<Value, String> {
+    let proposal_sha = proposal
+        .get("manifest_sha256")
+        .and_then(Value::as_str)
+        .ok_or("proposal manifest_sha256 is required")?;
+    if proposal_sha != compute_attempt_manifest_sha256(proposal)? {
+        return Err("immutable proposal manifest hash mismatch".into());
+    }
+    let now = execution
+        .get("observed_at")
+        .and_then(Value::as_str)
+        .ok_or("execution observed_at is required")?;
+    delegation.validate(now)?;
+    for key in [
+        "target_repository",
+        "target_main_sha",
+        "tenant_id",
+        "product_task_id",
+        "workflow_id",
+        "workflow_node_ids",
+        "attempt_id",
+        "verifier",
+        "mutable_paths",
+        "cancellation_identity",
+        "rollback_identity",
+    ] {
+        if execution.get(key).is_none() {
+            return Err(format!("execution identity {key} is required"));
+        }
+    }
+    if execution.get("target_repository").and_then(Value::as_str) != Some("Igzela/alters-lab")
+        || execution.get("mutable_paths") != Some(&json!(["docs/USER_GUIDE.md"]))
+        || execution.get("verifier").and_then(Value::as_str)
+            != Some("deterministic_docs_health_check_v1")
+    {
+        return Err("execution identity is outside the delegation".into());
+    }
+    let (proposal_repository, proposal_main_sha, proposal_paths, proposal_cap, proposal_verifier) =
+        match proposal.get("schema_version").and_then(Value::as_str) {
+            Some("managed_proposal_manifest.v1") => (
+                proposal.get("target_repository"),
+                proposal.get("target_main_sha"),
+                proposal.get("mutable_paths"),
+                proposal.get("max_cost_usd"),
+                proposal.get("verifier"),
+            ),
+            Some("pe7_product_golden_path_live_seal_manifest.v1") => {
+                if proposal
+                    .pointer("/provider/protocol")
+                    .and_then(Value::as_str)
+                    != Some("openai_compatible")
+                    || proposal
+                        .pointer("/role_models/planner")
+                        .and_then(Value::as_str)
+                        != Some("deepseek-v4-pro")
+                    || proposal
+                        .pointer("/role_models/implementer")
+                        .and_then(Value::as_str)
+                        != Some("deepseek-v4-flash")
+                    || proposal
+                        .pointer("/role_models/reviewer")
+                        .and_then(Value::as_str)
+                        != Some("deepseek-v4-pro")
+                {
+                    return Err("immutable legacy proposal provider route is not exact".into());
+                }
+                (
+                    proposal.pointer("/target/repository"),
+                    proposal.pointer("/target/default_branch_sha"),
+                    proposal.pointer("/target/allowed_mutable_paths"),
+                    proposal.pointer("/limits/max_cost_usd"),
+                    None,
+                )
+            }
+            _ => return Err("immutable proposal schema is not admitted".into()),
+        };
+    if proposal_cap != Some(&Value::Null)
+        || proposal_repository != execution.get("target_repository")
+        || proposal_main_sha != execution.get("target_main_sha")
+        || proposal_paths != execution.get("mutable_paths")
+        || proposal_verifier.is_some_and(|verifier| Some(verifier) != execution.get("verifier"))
+    {
+        return Err("immutable proposal does not exactly bind the final execution".into());
+    }
+    let mut manifest = sort_value(&json!({
+        "schema_version": FINAL_MANIFEST_SCHEMA_VERSION,
+        "proposal_manifest_sha256": proposal_sha,
+        "delegation_sha256": delegation.sha256()?,
+        "delegation": {
+            "delegation_id": delegation.delegation_id,
+            "expires_at": delegation.expires_at
+        },
+        "execution": execution,
+        "target": {
+            "repository": "Igzela/alters-lab",
+            "main_sha": execution.get("target_main_sha"),
+            "mutable_paths": ["docs/USER_GUIDE.md"]
+        },
+        "models": delegation.models.clone(),
+        "protocol": delegation.protocol.clone(),
+        "provider": {
+            "kind": crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND,
+            "host": "api.deepseek.com",
+            "base_url": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_BASE_URL,
+            "endpoint_path": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_PATH,
+            "request_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_CALL_SCHEMA,
+            "response_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_RESPONSE_SCHEMA,
+            "usage_parser_version": crate::provider::managed_deepseek::DEEPSEEK_USAGE_PARSER_VERSION,
+            "price_profile": crate::provider::managed_deepseek::DeepSeekPriceProfile::default()
+        },
+        "verifier": execution.get("verifier"),
+        "limits": {
+            "max_changed_files": delegation.max_changed_files,
+            "max_changed_lines": delegation.max_changed_lines,
+            "max_cost_usd": delegation.max_cost_usd_per_run,
+            "max_total_cost_usd": delegation.max_total_cost_usd,
+            "max_provider_requests": 3,
+            "max_retries": 0,
+            "max_input_tokens": 8000,
+            "max_output_tokens": 4000,
+            "max_cumulative_tokens": 24000,
+            "timeout_ms": 30000
+        },
+        "output": delegation.output,
+        "recovery": {
+            "cancellation_identity": execution.get("cancellation_identity"),
+            "rollback_identity": execution.get("rollback_identity"),
+            "cleanup_owner": "LocalProductStore.managed_acceptance"
+        }
+    }));
+    let sha = compute_attempt_manifest_sha256(&manifest)?;
+    manifest["manifest_sha256"] = json!(sha);
+    Ok(manifest)
+}
+
+/// Independent artifact/output authority. It accepts only redacted hashes and
+/// deterministic results; it cannot execute a provider or merge a PR.
+pub fn confirm_delegated_artifact_output(
+    delegation: &DelegationContract,
+    manifest: &Value,
+    artifact: &Value,
+    verification: &Value,
+    review: &Value,
+    provider_execution: &Value,
+    target_main_sha: &str,
+    realized_cost_usd: f64,
+) -> Result<Value, String> {
+    delegation.validate(
+        manifest
+            .pointer("/execution/observed_at")
+            .and_then(Value::as_str)
+            .ok_or("manifest observed_at is required")?,
+    )?;
+    let expected_manifest_sha = compute_attempt_manifest_sha256(manifest)?;
+    if manifest.get("manifest_sha256").and_then(Value::as_str)
+        != Some(expected_manifest_sha.as_str())
+        || manifest.pointer("/target/main_sha").and_then(Value::as_str) != Some(target_main_sha)
+    {
+        return Err("artifact confirmation target or manifest hash is stale".into());
+    }
+    if verification.get("status").and_then(Value::as_str) != Some("succeeded")
+        || verification
+            .get("verification_sha256")
+            .and_then(Value::as_str)
+            .is_none_or(|sha| sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()))
+        || review.get("schema_version").and_then(Value::as_str)
+            != Some("managed_deepseek_review_receipt.v1")
+        || review.get("status").and_then(Value::as_str) != Some("accepted")
+        || review
+            .get("material_objection_count")
+            .and_then(Value::as_u64)
+            != Some(0)
+        || review.get("resolved_model").and_then(Value::as_str) != Some("deepseek-v4-pro")
+    {
+        return Err("deterministic verification and bounded Pro review are required".into());
+    }
+    let provider_requests = provider_execution
+        .get("requests")
+        .and_then(Value::as_array)
+        .ok_or("provider execution requests are required")?;
+    let expected_route = [
+        ("planning", "planner", "deepseek-v4-pro"),
+        ("implementation", "implementer", "deepseek-v4-flash"),
+        ("review", "reviewer", "deepseek-v4-pro"),
+    ];
+    let mut request_ids = std::collections::HashSet::new();
+    let mut summed_request_cost_usd = 0.0;
+    let mut summed_cumulative_tokens = 0_u64;
+    let requests_valid =
+        provider_requests
+            .iter()
+            .zip(expected_route)
+            .all(|(request, (stage, role, model))| {
+                let request_id = request
+                    .get("request_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty());
+                let Ok(usage) =
+                    serde_json::from_value::<crate::provider::managed_deepseek::ManagedUsage>(
+                        request.get("usage").cloned().unwrap_or(Value::Null),
+                    )
+                else {
+                    return false;
+                };
+                let Some(request_cost) = request
+                    .get("realized_cost_usd")
+                    .and_then(Value::as_f64)
+                    .filter(|cost| cost.is_finite() && *cost >= 0.0)
+                else {
+                    return false;
+                };
+                let Some(new_cumulative_tokens) =
+                    summed_cumulative_tokens.checked_add(usage.cumulative_tokens)
+                else {
+                    return false;
+                };
+                summed_cumulative_tokens = new_cumulative_tokens;
+                summed_request_cost_usd += request_cost;
+                request.get("stage").and_then(Value::as_str) == Some(stage)
+                    && request.get("role").and_then(Value::as_str) == Some(role)
+                    && request.get("protocol").and_then(Value::as_str) == Some("openai_compatible")
+                    && request.get("requested_model").and_then(Value::as_str) == Some(model)
+                    && request.get("resolved_model").and_then(Value::as_str) == Some(model)
+                    && usage.model == model
+                    && request_id == Some(usage.request_id.as_str())
+                    && request_id.is_some_and(|value| request_ids.insert(value.to_string()))
+            });
+    let provider_identity_valid = provider_execution
+        .get("schema_version")
+        .and_then(Value::as_str)
+        == Some("managed_deepseek_execution_evidence.v1")
+        && provider_execution
+            .get("provider_request_count")
+            .and_then(Value::as_u64)
+            == Some(3)
+        && provider_requests.len() == 3
+        && provider_execution
+            .get("cumulative_tokens")
+            .and_then(Value::as_u64)
+            .is_some_and(|tokens| tokens <= 24_000)
+        && provider_execution
+            .get("realized_cost_usd")
+            .and_then(Value::as_f64)
+            .is_some_and(|cost| (cost - realized_cost_usd).abs() <= 1e-12)
+        && provider_execution
+            .get("cumulative_tokens")
+            .and_then(Value::as_u64)
+            == Some(summed_cumulative_tokens)
+        && (summed_request_cost_usd - realized_cost_usd).abs() <= 1e-12
+        && requests_valid;
+    if !provider_identity_valid {
+        return Err("exact provider request, usage, and cost evidence is required".into());
+    }
+    let changed_files = artifact
+        .get("changed_files")
+        .and_then(Value::as_array)
+        .ok_or("artifact changed_files is required")?;
+    if changed_files.len() as u64 > delegation.max_changed_files
+        || changed_files
+            .iter()
+            .any(|path| path.as_str() != Some("docs/USER_GUIDE.md"))
+    {
+        return Err("artifact path or file-count policy failed".into());
+    }
+    let changed_lines = artifact
+        .get("changed_lines")
+        .and_then(Value::as_u64)
+        .ok_or("artifact changed_lines is required")?;
+    if changed_lines > delegation.max_changed_lines
+        || !realized_cost_usd.is_finite()
+        || realized_cost_usd > delegation.max_cost_usd_per_run
+    {
+        return Err("artifact cost or line-count policy failed".into());
+    }
+    let artifact_sha = artifact
+        .get("artifact_sha256")
+        .and_then(Value::as_str)
+        .ok_or("artifact_sha256 is required")?;
+    if artifact_sha.len() != 64 || !artifact_sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("artifact_sha256 must be 64 hex characters".into());
+    }
+    Ok(sort_value(&json!({
+        "schema_version": DELEGATED_ARTIFACT_CONFIRMATION_SCHEMA_VERSION,
+        "manifest_sha256": manifest.get("manifest_sha256"),
+        "artifact_sha256": artifact_sha,
+        "verification": verification,
+        "review": review,
+        "provider_execution": provider_execution,
+        "target_main_sha": target_main_sha,
+        "realized_cost_usd": realized_cost_usd,
+        "output": {"draft_pr_only": true, "merged": false, "authorized": true}
+    })))
+}
+
+fn delegated_authority_id(role: &str, delegation_sha256: &str) -> String {
+    sha256_hex(format!("{role}:{delegation_sha256}").as_bytes())
+}
+
+fn replay_delegated_artifact_confirmation(
+    existing_sha: &str,
+    existing_json: &str,
+    candidate: &Value,
+) -> Result<Value, String> {
+    let existing: Value = serde_json::from_str(existing_json).map_err(|error| {
+        format!("persisted delegated artifact confirmation is invalid: {error}")
+    })?;
+    if existing
+        .get("artifact_confirmation_sha256")
+        .and_then(Value::as_str)
+        != Some(existing_sha)
+    {
+        return Err("persisted delegated artifact confirmation hash is invalid".into());
+    }
+    let confirmed_at = existing
+        .get("confirmed_at")
+        .cloned()
+        .ok_or("persisted delegated artifact confirmation time is missing")?;
+    let mut replay = candidate.clone();
+    let object = replay
+        .as_object_mut()
+        .ok_or("delegated artifact confirmation must be an object")?;
+    object.insert("confirmed_at".into(), confirmed_at);
+    object.remove("artifact_confirmation_sha256");
+    let replay_sha = sha256_hex(canonical_json(&sort_value(&replay))?.as_bytes());
+    replay["artifact_confirmation_sha256"] = json!(replay_sha);
+    let replay = sort_value(&replay);
+    if replay != existing || replay_sha != existing_sha {
+        return Err("delegated artifact confirmation replay conflicts".into());
+    }
+    Ok(existing)
+}
+
+fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> {
+    let manifest_sha256 = manifest
+        .get("manifest_sha256")
+        .and_then(Value::as_str)
+        .ok_or("final manifest hash is required")?;
+    if manifest_sha256 != compute_attempt_manifest_sha256(manifest)? {
+        return Err("final manifest hash mismatch".into());
+    }
+    let expected_models = json!({
+        "planner": "deepseek-v4-pro",
+        "implementer": "deepseek-v4-flash",
+        "reviewer": "deepseek-v4-pro"
+    });
+    let expected_output = json!({
+        "draft_pr_only": true,
+        "target_main_write": false,
+        "merge": false,
+        "auto_merge": false
+    });
+    let expected_provider = json!({
+        "kind": crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND,
+        "host": "api.deepseek.com",
+        "base_url": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_BASE_URL,
+        "endpoint_path": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_PATH,
+        "request_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_CALL_SCHEMA,
+        "response_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_RESPONSE_SCHEMA,
+        "usage_parser_version": crate::provider::managed_deepseek::DEEPSEEK_USAGE_PARSER_VERSION,
+        "price_profile": crate::provider::managed_deepseek::DeepSeekPriceProfile::default()
+    });
+    let policy_matches = manifest
+        .pointer("/target/repository")
+        .and_then(Value::as_str)
+        == Some("Igzela/alters-lab")
+        && manifest.pointer("/target/mutable_paths") == Some(&json!(["docs/USER_GUIDE.md"]))
+        && manifest.get("protocol").and_then(Value::as_str) == Some("openai_compatible")
+        && manifest.get("models") == Some(&expected_models)
+        && manifest.get("provider") == Some(&expected_provider)
+        && manifest.pointer("/verifier").and_then(Value::as_str)
+            == Some("deterministic_docs_health_check_v1")
+        && manifest
+            .pointer("/limits/max_changed_files")
+            .and_then(Value::as_u64)
+            == Some(1)
+        && manifest
+            .pointer("/limits/max_changed_lines")
+            .and_then(Value::as_u64)
+            == Some(100)
+        && manifest
+            .pointer("/limits/max_cost_usd")
+            .and_then(Value::as_f64)
+            == Some(0.50)
+        && manifest
+            .pointer("/limits/max_total_cost_usd")
+            .and_then(Value::as_f64)
+            == Some(0.50)
+        && manifest
+            .pointer("/limits/max_provider_requests")
+            .and_then(Value::as_u64)
+            == Some(3)
+        && manifest
+            .pointer("/limits/max_retries")
+            .and_then(Value::as_u64)
+            == Some(0)
+        && manifest
+            .pointer("/limits/max_input_tokens")
+            .and_then(Value::as_u64)
+            == Some(8_000)
+        && manifest
+            .pointer("/limits/max_output_tokens")
+            .and_then(Value::as_u64)
+            == Some(4_000)
+        && manifest
+            .pointer("/limits/max_cumulative_tokens")
+            .and_then(Value::as_u64)
+            == Some(24_000)
+        && manifest
+            .pointer("/limits/timeout_ms")
+            .and_then(Value::as_u64)
+            == Some(30_000)
+        && manifest.get("output") == Some(&expected_output);
+    if !policy_matches {
+        return Err("final manifest is outside the persisted delegation policy".into());
+    }
+    Ok(manifest_sha256)
+}
+
+fn delegated_execution_contract(
+    manifest: &Value,
+    node_id: &str,
+) -> Result<crate::provider::managed_deepseek::PersistedManagedExecutionContract, String> {
+    validate_delegated_manifest_policy(manifest)?;
+    let node_ids = manifest
+        .pointer("/execution/workflow_node_ids")
+        .and_then(Value::as_array)
+        .ok_or("delegated manifest workflow_node_ids is missing")?;
+    if node_ids.len() != 4 {
+        return Err("delegated manifest must bind the exact four-stage route".into());
+    }
+    let position = node_ids
+        .iter()
+        .position(|value| value.as_str() == Some(node_id))
+        .ok_or("delegated provider node is not manifest-bound")?;
+    let model_key = match position {
+        0 => "planner",
+        1 => "implementer",
+        2 => return Err("deterministic verifier cannot receive provider authority".into()),
+        3 => "reviewer",
+        _ => return Err("delegated provider route position is invalid".into()),
+    };
+    let requested_model = manifest
+        .pointer(&format!("/models/{model_key}"))
+        .and_then(Value::as_str)
+        .ok_or("delegated manifest model binding is missing")?;
+    let price_profile = serde_json::from_value(
+        manifest
+            .pointer("/provider/price_profile")
+            .cloned()
+            .ok_or("delegated manifest price profile is missing")?,
+    )
+    .map_err(|_| "delegated manifest price profile is malformed")?;
+    Ok(
+        crate::provider::managed_deepseek::PersistedManagedExecutionContract {
+            provider_kind: manifest
+                .pointer("/provider/kind")
+                .and_then(Value::as_str)
+                .ok_or("delegated manifest provider kind is missing")?
+                .into(),
+            protocol: crate::provider::managed_deepseek::DeepSeekProtocol::OpenAiCompatible,
+            host: manifest
+                .pointer("/provider/host")
+                .and_then(Value::as_str)
+                .ok_or("delegated manifest provider host is missing")?
+                .into(),
+            base_url: manifest
+                .pointer("/provider/base_url")
+                .and_then(Value::as_str)
+                .ok_or("delegated manifest provider base URL is missing")?
+                .into(),
+            endpoint_path: manifest
+                .pointer("/provider/endpoint_path")
+                .and_then(Value::as_str)
+                .ok_or("delegated manifest endpoint path is missing")?
+                .into(),
+            request_schema_version: manifest
+                .pointer("/provider/request_schema_version")
+                .and_then(Value::as_str)
+                .ok_or("delegated manifest request schema is missing")?
+                .into(),
+            response_schema_version: manifest
+                .pointer("/provider/response_schema_version")
+                .and_then(Value::as_str)
+                .ok_or("delegated manifest response schema is missing")?
+                .into(),
+            usage_parser_version: manifest
+                .pointer("/provider/usage_parser_version")
+                .and_then(Value::as_str)
+                .ok_or("delegated manifest usage parser is missing")?
+                .into(),
+            requested_model: requested_model.into(),
+            limits: crate::provider::managed_deepseek::ManagedCallLimits {
+                max_requests: 3,
+                max_retries: 0,
+                max_input_tokens: 8_000,
+                max_output_tokens: 4_000,
+                max_cumulative_tokens: 24_000,
+                timeout_ms: 30_000,
+                max_cost_usd: Some(0.50),
+            },
+            price_profile,
+        },
+    )
+}
+
+fn validate_manifest_approval_row(
+    manifest: &Value,
+    now: &str,
+    delegation_sha256: &str,
+    status: &str,
+    expires_at: &str,
+    approver_id: &str,
+) -> Result<(), String> {
+    if status != "active" || is_at_or_before(expires_at, now)? {
+        return Err("delegation is not active".into());
+    }
+    if manifest.get("delegation_sha256").and_then(Value::as_str) != Some(delegation_sha256)
+        || approver_id
+            != delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, delegation_sha256)
+    {
+        return Err("delegated manifest approver authority is stale or mismatched".into());
+    }
+    Ok(())
+}
+
+fn delegated_manifest_approval_receipt(
+    delegation_id: &str,
+    manifest_sha256: &str,
+    delegation_sha256: &str,
+    approver_id: &str,
+    created_at: &str,
+    expires_at: &str,
+) -> Result<Value, String> {
+    let mut receipt = sort_value(&json!({
+        "schema_version": DELEGATED_MANIFEST_APPROVAL_SCHEMA_VERSION,
+        "approval_id": format!("delegated-manifest-approval-{}", &manifest_sha256[..16]),
+        "delegation_id": delegation_id,
+        "delegation_sha256": delegation_sha256,
+        "manifest_sha256": manifest_sha256,
+        "approver_id": approver_id,
+        "decision": "approved",
+        "one_use": true,
+        "created_at": created_at,
+        "expires_at": expires_at
+    }));
+    let receipt_sha256 = sha256_hex(canonical_json(&receipt)?.as_bytes());
+    receipt["approval_receipt_sha256"] = json!(receipt_sha256);
+    Ok(sort_value(&receipt))
+}
+
+fn validate_existing_manifest_approval(
+    receipt_sha256: &str,
+    receipt_json: &str,
+    delegation_id: &str,
+    manifest_sha256: &str,
+    approver_id: &str,
+) -> Result<Value, String> {
+    let receipt: Value = serde_json::from_str(receipt_json)
+        .map_err(|_| "persisted delegated manifest approval is invalid JSON".to_string())?;
+    let mut unhashed = receipt.clone();
+    unhashed
+        .as_object_mut()
+        .ok_or("persisted delegated manifest approval must be an object")?
+        .remove("approval_receipt_sha256");
+    let computed = sha256_hex(canonical_json(&unhashed)?.as_bytes());
+    if computed != receipt_sha256
+        || receipt
+            .get("approval_receipt_sha256")
+            .and_then(Value::as_str)
+            != Some(receipt_sha256)
+        || receipt.get("delegation_id").and_then(Value::as_str) != Some(delegation_id)
+        || receipt.get("manifest_sha256").and_then(Value::as_str) != Some(manifest_sha256)
+        || receipt.get("approver_id").and_then(Value::as_str) != Some(approver_id)
+        || receipt.get("decision").and_then(Value::as_str) != Some("approved")
+    {
+        return Err("persisted delegated manifest approval receipt is stale or malformed".into());
+    }
+    Ok(receipt)
+}
+
+impl LocalProductStore {
+    pub(crate) fn require_delegation_tenant(
+        &self,
+        delegation_id: &str,
+        expected_tenant_id: &str,
+    ) -> Result<(), String> {
+        let persisted_tenant = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT tenant_id FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                    params![delegation_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT tenant_id FROM managed_acceptance_delegations WHERE delegation_id=$1",
+                        &[&delegation_id],
+                    )
+                    .map(|row| row.map(|row| row.get::<_, String>(0)))
+                    .map_err(|error| error.to_string())
+            })?,
+        }
+        .ok_or("delegation is not persisted")?;
+        if persisted_tenant != expected_tenant_id {
+            return Err("delegation tenant does not match ProductTask tenant".into());
+        }
+        Ok(())
+    }
+
+    /// Persist the operator-issued delegation. Re-submitting the identical
+    /// body is an idempotent replay; any same-id/hash conflict fails closed.
+    pub fn persist_delegation(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        delegation: &DelegationContract,
+    ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_DELEGATED_AUTONOMY)?;
+        if !principal.may_authorize_production_live_start()
+            || matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal)
+        {
+            return Err("delegation requires an authenticated non-fixture operator".into());
+        }
+        let now = self.now();
+        delegation.validate(&now)?;
+        let delegation_sha256 = delegation.sha256()?;
+        let manifest_approver_id =
+            delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, &delegation_sha256);
+        let artifact_confirmer_id =
+            delegated_authority_id(DELEGATED_ARTIFACT_CONFIRMER_ROLE, &delegation_sha256);
+        let body = delegation.body();
+        let body_json = body.to_string();
+        let existing = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT delegation_sha256, body_json, status, manifest_approver_id, artifact_confirmer_id FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                    params![delegation.delegation_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .map(|(sha, body_json, status, manifest_approver_id, artifact_confirmer_id)| json!({
+                    "schema_version": DELEGATION_SCHEMA_VERSION,
+                    "delegation_id": delegation.delegation_id,
+                    "delegation_sha256": sha,
+                    "body_json": serde_json::from_str::<Value>(&body_json).unwrap_or(Value::Null),
+                    "status": status,
+                    "manifest_approver_id": manifest_approver_id,
+                    "artifact_confirmer_id": artifact_confirmer_id,
+                    "replayed": true
+                })))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT delegation_sha256, body_json, status, manifest_approver_id, artifact_confirmer_id FROM managed_acceptance_delegations WHERE delegation_id=$1",
+                        &[&delegation.delegation_id],
+                    )
+                    .map(|row| {
+                        row.map(|row| {
+                            let body_json: String = row.get(1);
+                            json!({
+                                "schema_version": DELEGATION_SCHEMA_VERSION,
+                                "delegation_id": delegation.delegation_id,
+                                "delegation_sha256": row.get::<_, String>(0),
+                                "body_json": serde_json::from_str::<Value>(&body_json).unwrap_or(Value::Null),
+                                "status": row.get::<_, String>(2),
+                                "manifest_approver_id": row.get::<_, String>(3),
+                                "artifact_confirmer_id": row.get::<_, String>(4),
+                                "replayed": true
+                            })
+                        })
+                    })
+                    .map_err(|e| e.to_string())
+            }),
+        };
+        if let Some(existing) = existing? {
+            if existing.get("delegation_sha256").and_then(Value::as_str)
+                != Some(delegation_sha256.as_str())
+                || existing.get("body_json") != Some(&body)
+                || existing.get("manifest_approver_id").and_then(Value::as_str)
+                    != Some(manifest_approver_id.as_str())
+                || existing
+                    .get("artifact_confirmer_id")
+                    .and_then(Value::as_str)
+                    != Some(artifact_confirmer_id.as_str())
+            {
+                return Err("delegation replay conflicts with persisted immutable body".into());
+            }
+            return Ok(existing);
+        }
+        let inserted = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|e| e.to_string())?;
+                let inserted = tx.execute(
+                    "INSERT OR IGNORE INTO managed_acceptance_delegations (
+                        delegation_id, tenant_id, principal_kind, principal_id, manifest_approver_id,
+                        artifact_confirmer_id,
+                        delegation_sha256, body_json, status, executions_allowed, executions_used,
+                        max_total_cost_usd, total_cost_usd, created_at, updated_at, expires_at,
+                        terminal_at, revoked_at
+                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'active',?9,0,?10,0,?11,?11,?12,NULL,NULL)",
+                    params![
+                        delegation.delegation_id,
+                        principal.tenant_id(),
+                        principal.principal_kind().as_str(),
+                        principal.principal_id(),
+                        manifest_approver_id,
+                        artifact_confirmer_id,
+                        delegation_sha256,
+                        body_json,
+                        delegation.executions as i64,
+                        delegation.max_total_cost_usd,
+                        now,
+                        delegation.expires_at,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                if inserted == 0 {
+                    let row: (String, String, String, String) = tx
+                        .query_row(
+                            "SELECT delegation_sha256, body_json, manifest_approver_id, artifact_confirmer_id
+                             FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                            params![delegation.delegation_id],
+                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if row.0 != delegation_sha256
+                        || row.1 != body_json
+                        || row.2 != manifest_approver_id
+                        || row.3 != artifact_confirmer_id
+                    {
+                        return Err(
+                            "delegation replay conflicts with persisted immutable body".into()
+                        );
+                    }
+                }
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(inserted == 1)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                let inserted = tx.execute(
+                    "INSERT INTO managed_acceptance_delegations (
+                        delegation_id, tenant_id, principal_kind, principal_id, manifest_approver_id,
+                        artifact_confirmer_id,
+                        delegation_sha256, body_json, status, executions_allowed, executions_used,
+                        max_total_cost_usd, total_cost_usd, created_at, updated_at, expires_at,
+                        terminal_at, revoked_at
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,0,$10,0,$11,$11,$12,NULL,NULL)
+                     ON CONFLICT DO NOTHING",
+                    &[
+                        &delegation.delegation_id,
+                        &principal.tenant_id(),
+                        &principal.principal_kind().as_str(),
+                        &principal.principal_id(),
+                        &manifest_approver_id,
+                        &artifact_confirmer_id,
+                        &delegation_sha256,
+                        &body_json,
+                        &(delegation.executions as i64),
+                        &delegation.max_total_cost_usd,
+                        &now,
+                        &delegation.expires_at,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                if inserted == 0 {
+                    let row = tx
+                        .query_one(
+                            "SELECT delegation_sha256, body_json, manifest_approver_id, artifact_confirmer_id
+                             FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                            &[&delegation.delegation_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if row.get::<_, String>(0) != delegation_sha256
+                        || row.get::<_, String>(1) != body_json
+                        || row.get::<_, String>(2) != manifest_approver_id
+                        || row.get::<_, String>(3) != artifact_confirmer_id
+                    {
+                        return Err(
+                            "delegation replay conflicts with persisted immutable body".into()
+                        );
+                    }
+                }
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(inserted == 1)
+            }),
+        }?;
+        Ok(json!({
+            "schema_version": DELEGATION_SCHEMA_VERSION,
+            "delegation_id": delegation.delegation_id,
+            "delegation_sha256": delegation_sha256,
+            "status": "active",
+            "manifest_approver_id": manifest_approver_id,
+            "artifact_confirmer_id": artifact_confirmer_id,
+            "execution_granted": false,
+            "replayed": !inserted
+        }))
+    }
+
+    /// Bind the separately owner-approved proposal to this delegation exactly
+    /// once. A self-consistent replacement proposal is still rejected because
+    /// the approved external hash is a fixed authority input.
+    pub fn persist_approved_delegated_proposal(
+        &self,
+        delegation_id: &str,
+        proposal: &Value,
+        expected_approved_sha256: &str,
+    ) -> Result<Value, String> {
+        if proposal.get("manifest_sha256").and_then(Value::as_str) != Some(expected_approved_sha256)
+            || compute_attempt_manifest_sha256(proposal)? != expected_approved_sha256
+        {
+            return Err("delegated proposal does not match the owner-approved manifest".into());
+        }
+        let proposal_json = proposal.to_string();
+        let now = self.now();
+        let replayed = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let row: (String, Option<String>, Option<String>) = tx
+                    .query_row(
+                        "SELECT status, proposal_sha256, proposal_json
+                         FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if let (Some(stored_sha), Some(stored_json)) = (row.1, row.2) {
+                    if stored_sha != expected_approved_sha256 || stored_json != proposal_json {
+                        return Err(
+                            "delegated proposal conflicts with persisted immutable proposal".into()
+                        );
+                    }
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(true);
+                }
+                if row.0 != "active" {
+                    return Err("delegation is not active for proposal binding".into());
+                }
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET proposal_sha256=?1, proposal_json=?2, updated_at=?3
+                         WHERE delegation_id=?4 AND proposal_sha256 IS NULL AND proposal_json IS NULL",
+                        params![
+                            expected_approved_sha256,
+                            proposal_json,
+                            now,
+                            delegation_id
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("delegated proposal binding lost its one-use authority".into());
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(false)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let row = tx
+                    .query_one(
+                        "SELECT status, proposal_sha256, proposal_json
+                         FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                        &[&delegation_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let status: String = row.get(0);
+                let stored_sha: Option<String> = row.get(1);
+                let stored_json: Option<String> = row.get(2);
+                if let (Some(stored_sha), Some(stored_json)) = (stored_sha, stored_json) {
+                    if stored_sha != expected_approved_sha256 || stored_json != proposal_json {
+                        return Err(
+                            "delegated proposal conflicts with persisted immutable proposal".into()
+                        );
+                    }
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(true);
+                }
+                if status != "active" {
+                    return Err("delegation is not active for proposal binding".into());
+                }
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET proposal_sha256=$1, proposal_json=$2, updated_at=$3
+                         WHERE delegation_id=$4 AND proposal_sha256 IS NULL AND proposal_json IS NULL",
+                        &[
+                            &expected_approved_sha256,
+                            &proposal_json,
+                            &now,
+                            &delegation_id,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("delegated proposal binding lost its one-use authority".into());
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(false)
+            }),
+        }?;
+        Ok(json!({
+            "schema_version": "managed_approved_proposal_receipt.v1",
+            "delegation_id": delegation_id,
+            "proposal_manifest_sha256": expected_approved_sha256,
+            "replayed": replayed,
+        }))
+    }
+
+    pub(crate) fn require_approved_delegated_proposal(
+        &self,
+        delegation_id: &str,
+        proposal: &Value,
+    ) -> Result<(), String> {
+        let stored: (String, String) = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT proposal_sha256, proposal_json
+                     FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                    params![delegation_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT proposal_sha256, proposal_json
+                         FROM managed_acceptance_delegations WHERE delegation_id=$1",
+                        &[&delegation_id],
+                    )
+                    .map(|row| (row.get(0), row.get(1)))
+                    .map_err(|error| error.to_string())
+            }),
+        }?;
+        let proposal_json = proposal.to_string();
+        if proposal.get("manifest_sha256").and_then(Value::as_str) != Some(stored.0.as_str())
+            || compute_attempt_manifest_sha256(proposal)? != stored.0
+            || stored.1.as_bytes() != proposal_json.as_bytes()
+        {
+            return Err("delegated proposal is not the immutable approved proposal".into());
+        }
+        Ok(())
+    }
+
+    /// The separated delegated manifest approver checks the exact final
+    /// manifest against the immutable persisted delegation and records a
+    /// hash-bound approval receipt. It cannot admit an attempt or confirm an
+    /// output artifact.
+    pub fn approve_delegated_manifest(
+        &self,
+        delegation_id: &str,
+        manifest: &Value,
+    ) -> Result<Value, String> {
+        let manifest_sha256 = validate_delegated_manifest_policy(manifest)?;
+        self.require_final_manifest_approved_proposal(delegation_id, manifest)?;
+        let now = self.now();
+        let receipt = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|e| e.to_string())?;
+                let row: (String, String, String, String, Option<String>, Option<String>) = tx
+                    .query_row(
+                        "SELECT delegation_sha256, status, expires_at, manifest_approver_id, manifest_approval_sha256, manifest_approval_json FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation_id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                    )
+                    .map_err(|e| e.to_string())?;
+                validate_manifest_approval_row(
+                    manifest,
+                    &now,
+                    &row.0,
+                    &row.1,
+                    &row.2,
+                    &row.3,
+                )?;
+                if let (Some(existing_sha), Some(existing_json)) = (&row.4, &row.5) {
+                    let receipt = validate_existing_manifest_approval(
+                        existing_sha,
+                        existing_json,
+                        delegation_id,
+                        manifest_sha256,
+                        &row.3,
+                    )?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(receipt);
+                }
+                let receipt = delegated_manifest_approval_receipt(
+                    delegation_id,
+                    manifest_sha256,
+                    &row.0,
+                    &row.3,
+                    &now,
+                    &row.2,
+                )?;
+                let receipt_sha256 = receipt
+                    .get("approval_receipt_sha256")
+                    .and_then(Value::as_str)
+                    .ok_or("delegated approval receipt hash missing")?;
+                tx.execute(
+                    "UPDATE managed_acceptance_delegations SET manifest_approval_sha256=?1, manifest_approval_json=?2, updated_at=?3 WHERE delegation_id=?4 AND manifest_approval_sha256 IS NULL",
+                    params![receipt_sha256, receipt.to_string(), now, delegation_id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(receipt)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                let row = tx
+                    .query_one(
+                        "SELECT delegation_sha256, status, expires_at, manifest_approver_id, manifest_approval_sha256, manifest_approval_json FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                        &[&delegation_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let delegation_sha: String = row.get(0);
+                let status: String = row.get(1);
+                let expires_at: String = row.get(2);
+                let approver_id: String = row.get(3);
+                validate_manifest_approval_row(
+                    manifest,
+                    &now,
+                    &delegation_sha,
+                    &status,
+                    &expires_at,
+                    &approver_id,
+                )?;
+                let existing_sha: Option<String> = row.get(4);
+                let existing_json: Option<String> = row.get(5);
+                if let (Some(existing_sha), Some(existing_json)) =
+                    (&existing_sha, &existing_json)
+                {
+                    let receipt = validate_existing_manifest_approval(
+                        existing_sha,
+                        existing_json,
+                        delegation_id,
+                        manifest_sha256,
+                        &approver_id,
+                    )?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(receipt);
+                }
+                let receipt = delegated_manifest_approval_receipt(
+                    delegation_id,
+                    manifest_sha256,
+                    &delegation_sha,
+                    &approver_id,
+                    &now,
+                    &expires_at,
+                )?;
+                let receipt_sha256 = receipt
+                    .get("approval_receipt_sha256")
+                    .and_then(Value::as_str)
+                    .ok_or("delegated approval receipt hash missing")?;
+                tx.execute(
+                    "UPDATE managed_acceptance_delegations SET manifest_approval_sha256=$1, manifest_approval_json=$2, updated_at=$3 WHERE delegation_id=$4 AND manifest_approval_sha256 IS NULL",
+                    &[&receipt_sha256, &receipt.to_string(), &now, &delegation_id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(receipt)
+            }),
+        }?;
+        Ok(receipt)
+    }
+
+    fn require_final_manifest_approved_proposal(
+        &self,
+        delegation_id: &str,
+        manifest: &Value,
+    ) -> Result<(), String> {
+        let approved_sha: String = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT proposal_sha256 FROM managed_acceptance_delegations
+                     WHERE delegation_id=?1",
+                    params![delegation_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT proposal_sha256 FROM managed_acceptance_delegations
+                         WHERE delegation_id=$1",
+                        &[&delegation_id],
+                    )
+                    .map(|row| row.get(0))
+                    .map_err(|error| error.to_string())
+            }),
+        }?;
+        if manifest
+            .get("proposal_manifest_sha256")
+            .and_then(Value::as_str)
+            != Some(approved_sha.as_str())
+        {
+            return Err("final manifest is not derived from the approved proposal".into());
+        }
+        Ok(())
+    }
+
+    /// Issue the distinct one-use spend receipt, atomically reserving the
+    /// delegation's single execution. It consumes the exact separate manifest
+    /// approval receipt and never accepts a caller-provided cap.
+    pub fn issue_delegated_spend(
+        &self,
+        delegation_id: &str,
+        approval_receipt_sha256: &str,
+        manifest: &Value,
+    ) -> Result<Value, String> {
+        let manifest_sha256 = validate_delegated_manifest_policy(manifest)?;
+        let now = self.now();
+        let spend_id = format!("mds-{}", Uuid::new_v4());
+        let body = sort_value(&json!({
+            "schema_version": "managed_delegated_spend_authorization.v1",
+            "spend_authorization_id": spend_id,
+            "delegation_id": delegation_id,
+            "delegation_sha256": manifest.get("delegation_sha256"),
+            "manifest_sha256": manifest_sha256,
+            "max_cost_usd": manifest.pointer("/limits/max_cost_usd"),
+            "one_use": true,
+            "approval_receipt_sha256": approval_receipt_sha256,
+            "issued_by": manifest.get("delegation_sha256").and_then(Value::as_str)
+                .map(|sha| delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, sha)),
+            "created_at": now,
+            "expires_at": manifest.pointer("/delegation/expires_at"),
+            "manifest": manifest
+        }));
+        let body_sha256 = sha256_hex(canonical_json(&body)?.as_bytes());
+        let body_json = body.to_string();
+        let (issued_spend_id, issued_body_sha256, issued_status) = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|e| e.to_string())?;
+                let row: DelegatedSpendSqliteRow = tx
+                    .query_row(
+                        "SELECT delegation_sha256, status, COALESCE(spend_status,''), executions_used, expires_at, manifest_approver_id, manifest_approval_sha256, manifest_approval_json, spend_authorization_id, spend_body_sha256, spend_body_json, manifest_json FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation_id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?)),
+                    )
+                    .map_err(|e| e.to_string())?;
+                if row.1 != "active"
+                    || row.2 == "revoked"
+                    || row.2 == "expired"
+                    || is_at_or_before(&row.4, &now)?
+                {
+                    return Err("delegation is not active".into());
+                }
+                if manifest.get("delegation_sha256").and_then(Value::as_str) != Some(row.0.as_str()) {
+                    return Err("manifest delegation hash does not match persisted delegation".into());
+                }
+                if row.5 != delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, &row.0)
+                    || row.6.as_deref() != Some(approval_receipt_sha256)
+                {
+                    return Err("delegated spend requires the exact separated manifest approval".into());
+                }
+                validate_existing_manifest_approval(
+                    approval_receipt_sha256,
+                    row.7.as_deref().ok_or("delegated manifest approval receipt missing")?,
+                    delegation_id,
+                    manifest_sha256,
+                    &row.5,
+                )?;
+                if row.3 >= 1 {
+                    if row.2 != "active" {
+                        return Err("delegation execution budget is already reserved".into());
+                    }
+                    let existing_spend_id = row
+                        .8
+                        .as_deref()
+                        .ok_or("reserved delegation is missing spend authorization id")?;
+                    let existing_body_sha256 = row
+                        .9
+                        .as_deref()
+                        .ok_or("reserved delegation is missing spend body hash")?;
+                    let existing_body: Value = serde_json::from_str(
+                        row.10
+                            .as_deref()
+                            .ok_or("reserved delegation is missing spend body")?,
+                    )
+                    .map_err(|e| format!("persisted delegated spend body is invalid: {e}"))?;
+                    let existing_manifest: Value = serde_json::from_str(
+                        row.11
+                            .as_deref()
+                            .ok_or("reserved delegation is missing final manifest")?,
+                    )
+                    .map_err(|e| format!("persisted delegated final manifest is invalid: {e}"))?;
+                    if existing_manifest != *manifest
+                        || existing_body.get("manifest") != Some(manifest)
+                        || existing_body
+                            .get("approval_receipt_sha256")
+                            .and_then(Value::as_str)
+                            != Some(approval_receipt_sha256)
+                        || existing_body
+                            .get("manifest_sha256")
+                            .and_then(Value::as_str)
+                            != Some(manifest_sha256)
+                        || existing_body
+                            .get("spend_authorization_id")
+                            .and_then(Value::as_str)
+                            != Some(existing_spend_id)
+                        || sha256_hex(canonical_json(&existing_body)?.as_bytes())
+                            != existing_body_sha256
+                    {
+                        return Err(
+                            "delegation execution budget is reserved for a conflicting request"
+                                .into(),
+                        );
+                    }
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok((
+                        existing_spend_id.to_string(),
+                        existing_body_sha256.to_string(),
+                        "active".to_string(),
+                    ));
+                }
+                tx.execute(
+                    "UPDATE managed_acceptance_delegations SET executions_used=1, spend_authorization_id=?1, spend_body_sha256=?2, spend_status='active', spend_body_json=?3, manifest_json=?4, updated_at=?5 WHERE delegation_id=?6 AND executions_used=0",
+                    params![spend_id, body_sha256, body_json, manifest.to_string(), now, delegation_id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok((spend_id.clone(), body_sha256.clone(), "active".to_string()))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                let row = tx
+                    .query_one(
+                        "SELECT delegation_sha256, status, COALESCE(spend_status,''), executions_used, expires_at, manifest_approver_id, manifest_approval_sha256, manifest_approval_json, spend_authorization_id, spend_body_sha256, spend_body_json, manifest_json FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                        &[&delegation_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let stored_sha: String = row.get(0);
+                let status: String = row.get(1);
+                let spend_status: String = row.get(2);
+                let executions_used: i64 = row.get(3);
+                let expires_at: String = row.get(4);
+                let approver_id: String = row.get(5);
+                let approval_sha: Option<String> = row.get(6);
+                let approval_json: Option<String> = row.get(7);
+                let existing_spend_id: Option<String> = row.get(8);
+                let existing_body_sha256: Option<String> = row.get(9);
+                let existing_body_json: Option<String> = row.get(10);
+                let existing_manifest_json: Option<String> = row.get(11);
+                if status != "active"
+                    || spend_status == "revoked"
+                    || spend_status == "expired"
+                    || is_at_or_before(&expires_at, &now)?
+                {
+                    return Err("delegation is not active".into());
+                }
+                if manifest.get("delegation_sha256").and_then(Value::as_str) != Some(stored_sha.as_str()) {
+                    return Err("manifest delegation hash does not match persisted delegation".into());
+                }
+                if approver_id
+                    != delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, &stored_sha)
+                    || approval_sha.as_deref() != Some(approval_receipt_sha256)
+                {
+                    return Err("delegated spend requires the exact separated manifest approval".into());
+                }
+                validate_existing_manifest_approval(
+                    approval_receipt_sha256,
+                    approval_json
+                        .as_deref()
+                        .ok_or("delegated manifest approval receipt missing")?,
+                    delegation_id,
+                    manifest_sha256,
+                    &approver_id,
+                )?;
+                if executions_used >= 1 {
+                    if spend_status != "active" {
+                        return Err("delegation execution budget is already reserved".into());
+                    }
+                    let existing_spend_id = existing_spend_id
+                        .as_deref()
+                        .ok_or("reserved delegation is missing spend authorization id")?;
+                    let existing_body_sha256 = existing_body_sha256
+                        .as_deref()
+                        .ok_or("reserved delegation is missing spend body hash")?;
+                    let existing_body: Value = serde_json::from_str(
+                        existing_body_json
+                            .as_deref()
+                            .ok_or("reserved delegation is missing spend body")?,
+                    )
+                    .map_err(|e| format!("persisted delegated spend body is invalid: {e}"))?;
+                    let existing_manifest: Value = serde_json::from_str(
+                        existing_manifest_json
+                            .as_deref()
+                            .ok_or("reserved delegation is missing final manifest")?,
+                    )
+                    .map_err(|e| format!("persisted delegated final manifest is invalid: {e}"))?;
+                    if existing_manifest != *manifest
+                        || existing_body.get("manifest") != Some(manifest)
+                        || existing_body
+                            .get("approval_receipt_sha256")
+                            .and_then(Value::as_str)
+                            != Some(approval_receipt_sha256)
+                        || existing_body
+                            .get("manifest_sha256")
+                            .and_then(Value::as_str)
+                            != Some(manifest_sha256)
+                        || existing_body
+                            .get("spend_authorization_id")
+                            .and_then(Value::as_str)
+                            != Some(existing_spend_id)
+                        || sha256_hex(canonical_json(&existing_body)?.as_bytes())
+                            != existing_body_sha256
+                    {
+                        return Err(
+                            "delegation execution budget is reserved for a conflicting request"
+                                .into(),
+                        );
+                    }
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok((
+                        existing_spend_id.to_string(),
+                        existing_body_sha256.to_string(),
+                        "active".to_string(),
+                    ));
+                }
+                tx.execute(
+                    "UPDATE managed_acceptance_delegations SET executions_used=1, spend_authorization_id=$1, spend_body_sha256=$2, spend_status='active', spend_body_json=$3, manifest_json=$4, updated_at=$5 WHERE delegation_id=$6 AND executions_used=0",
+                    &[&spend_id, &body_sha256, &body_json, &manifest.to_string(), &now, &delegation_id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok((spend_id.clone(), body_sha256.clone(), "active".to_string()))
+            }),
+        }?;
+        Ok(json!({
+            "schema_version": "managed_delegated_spend_authorization.v1",
+            "spend_authorization_id": issued_spend_id,
+            "delegation_id": delegation_id,
+            "manifest_sha256": manifest_sha256,
+            "spend_body_sha256": issued_body_sha256,
+            "status": issued_status,
+            "one_use": true
+        }))
+    }
+
+    /// Consume the one-use delegated attempt lease. A duplicate exact request
+    /// returns the same lease; a different attempt or manifest is rejected.
+    pub fn admit_delegated_attempt(
+        &self,
+        delegation_id: &str,
+        attempt_id: &str,
+        manifest: &Value,
+    ) -> Result<Value, String> {
+        let manifest_sha256 = manifest
+            .get("manifest_sha256")
+            .and_then(Value::as_str)
+            .ok_or("final manifest hash is required")?;
+        if manifest_sha256 != compute_attempt_manifest_sha256(manifest)? {
+            return Err("final manifest hash mismatch".into());
+        }
+        let manifest_json = manifest.to_string();
+        let now = self.now();
+        let lease_token = format!("lease-{}", Uuid::new_v4());
+        let lease_id = crate::provider::managed_deepseek::managed_attempt_lease_id(&lease_token);
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|e| e.to_string())?;
+                let row: DelegatedAttemptSqliteRow = tx
+                    .query_row(
+                        "SELECT delegation_sha256, COALESCE(spend_status,''), attempt_id, attempt_lease_id, attempt_lease_token, expires_at, manifest_approver_id, status, manifest_json FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation_id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
+                    )
+                    .map_err(|e| e.to_string())?;
+                if row.7 != "active"
+                    || row.6
+                        != delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, &row.0)
+                    || is_at_or_before(&row.5, &now)?
+                    || row.8.as_deref() != Some(manifest_json.as_str())
+                    || manifest.get("delegation_sha256").and_then(Value::as_str)
+                        != Some(row.0.as_str())
+                {
+                    return Err("delegated attempt authority is stale or mismatched".into());
+                }
+                if let Some(existing_attempt) = row.2 {
+                    if existing_attempt == attempt_id {
+                        return Ok(json!({
+                            "schema_version": "managed_delegated_attempt_lease.v1",
+                            "delegation_id": delegation_id,
+                            "manifest_sha256": manifest_sha256,
+                            "attempt_id": existing_attempt,
+                            "attempt_lease_id": row.3,
+                            "attempt_lease_token": row.4,
+                            "status": "admitted",
+                            "replayed": true
+                        }));
+                    }
+                    return Err("delegated attempt already leased by another attempt".into());
+                }
+                if row.1 != "active" {
+                    return Err("delegated spend is not active".into());
+                }
+                tx.execute(
+                    "UPDATE managed_acceptance_delegations SET attempt_id=?1, attempt_lease_id=?2, attempt_lease_token=?3, attempt_status='admitted', spend_status='consumed', updated_at=?4 WHERE delegation_id=?5 AND attempt_id IS NULL AND spend_status='active'",
+                    params![attempt_id, lease_id, lease_token, now, delegation_id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(json!({
+                    "schema_version": "managed_delegated_attempt_lease.v1",
+                    "delegation_id": delegation_id,
+                    "manifest_sha256": manifest_sha256,
+                    "attempt_id": attempt_id,
+                    "attempt_lease_id": lease_id,
+                    "attempt_lease_token": lease_token,
+                    "status": "admitted",
+                    "replayed": false
+                }))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                let row = tx
+                    .query_one(
+                        "SELECT delegation_sha256, COALESCE(spend_status,''), attempt_id, attempt_lease_id, attempt_lease_token, expires_at, manifest_approver_id, status, manifest_json FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                        &[&delegation_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let stored_sha: String = row.get(0);
+                let spend_status: String = row.get(1);
+                let existing_attempt: Option<String> = row.get(2);
+                let existing_lease_id: Option<String> = row.get(3);
+                let existing_token: Option<String> = row.get(4);
+                let expires_at: String = row.get(5);
+                let approver_id: String = row.get(6);
+                let status: String = row.get(7);
+                let persisted_manifest: Option<String> = row.get(8);
+                if status != "active"
+                    || approver_id
+                        != delegated_authority_id(DELEGATED_MANIFEST_APPROVER_ROLE, &stored_sha)
+                    || is_at_or_before(&expires_at, &now)?
+                    || persisted_manifest.as_deref() != Some(manifest_json.as_str())
+                    || manifest.get("delegation_sha256").and_then(Value::as_str)
+                        != Some(stored_sha.as_str())
+                {
+                    return Err("delegated attempt authority is stale or mismatched".into());
+                }
+                if let Some(existing_attempt) = existing_attempt {
+                    if existing_attempt == attempt_id {
+                        tx.commit().map_err(|e| e.to_string())?;
+                        return Ok(json!({"schema_version":"managed_delegated_attempt_lease.v1","delegation_id":delegation_id,"manifest_sha256":manifest_sha256,"attempt_id":existing_attempt,"attempt_lease_id":existing_lease_id,"attempt_lease_token":existing_token,"status":"admitted","replayed":true}));
+                    }
+                    return Err("delegated attempt already leased by another attempt".into());
+                }
+                if spend_status != "active" {
+                    return Err("delegated spend is not active".into());
+                }
+                tx.execute(
+                    "UPDATE managed_acceptance_delegations SET attempt_id=$1, attempt_lease_id=$2, attempt_lease_token=$3, attempt_status='admitted', spend_status='consumed', updated_at=$4 WHERE delegation_id=$5 AND attempt_id IS NULL AND spend_status='active'",
+                    &[&attempt_id, &lease_id, &lease_token, &now, &delegation_id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(json!({"schema_version":"managed_delegated_attempt_lease.v1","delegation_id":delegation_id,"manifest_sha256":manifest_sha256,"attempt_id":attempt_id,"attempt_lease_id":lease_id,"attempt_lease_token":lease_token,"status":"admitted","replayed":false}))
+            }),
+        }
+    }
+
+    /// Persist the separated artifact/output confirmer receipt. This authority
+    /// can authorize one Draft-PR output only; it cannot execute a provider,
+    /// admit spend, merge, release, or deploy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn persist_delegated_artifact_confirmation(
+        &self,
+        delegation_id: &str,
+        manifest: &Value,
+        artifact: &Value,
+        verification: &Value,
+        review: &Value,
+        provider_execution: &Value,
+        target_main_sha: &str,
+        realized_cost_usd: f64,
+    ) -> Result<Value, String> {
+        let _manifest_sha256 = validate_delegated_manifest_policy(manifest)?;
+        let manifest_json = manifest.to_string();
+        let now = self.now();
+        let confirm = |delegation_sha: &str,
+                       body_json: &str,
+                       status: &str,
+                       expires_at: &str,
+                       confirmer_id: &str,
+                       persisted_manifest: Option<&str>,
+                       attempt_status: Option<&str>|
+         -> Result<Value, String> {
+            if status != "active"
+                || is_at_or_before(expires_at, &now)?
+                || persisted_manifest != Some(manifest_json.as_str())
+                || attempt_status != Some("admitted")
+                || manifest.get("delegation_sha256").and_then(Value::as_str) != Some(delegation_sha)
+                || confirmer_id
+                    != delegated_authority_id(DELEGATED_ARTIFACT_CONFIRMER_ROLE, delegation_sha)
+            {
+                return Err("delegated artifact confirmer authority is stale or mismatched".into());
+            }
+            let delegation: DelegationContract = serde_json::from_str(body_json)
+                .map_err(|_| "persisted delegation body is invalid")?;
+            delegation.validate(&now)?;
+            let mut confirmation = confirm_delegated_artifact_output(
+                &delegation,
+                manifest,
+                artifact,
+                verification,
+                review,
+                provider_execution,
+                target_main_sha,
+                realized_cost_usd,
+            )?;
+            let object = confirmation
+                .as_object_mut()
+                .ok_or("delegated artifact confirmation must be an object")?;
+            object.insert("delegation_id".into(), json!(delegation_id));
+            object.insert("delegation_sha256".into(), json!(delegation_sha));
+            object.insert("confirmer_id".into(), json!(confirmer_id));
+            object.insert("confirmed_at".into(), json!(now));
+            object.insert("one_use".into(), json!(true));
+            let confirmation_sha256 =
+                sha256_hex(canonical_json(&sort_value(&confirmation))?.as_bytes());
+            confirmation["artifact_confirmation_sha256"] = json!(confirmation_sha256);
+            Ok(sort_value(&confirmation))
+        };
+
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|e| e.to_string())?;
+                let row: DelegatedArtifactConfirmationSqliteRow = tx
+                    .query_row(
+                        "SELECT delegation_sha256, body_json, status, expires_at, artifact_confirmer_id, manifest_json, attempt_status, artifact_confirmation_sha256, artifact_confirmation_json FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation_id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
+                    )
+                    .map_err(|e| e.to_string())?;
+                let confirmation = confirm(
+                    &row.0,
+                    &row.1,
+                    &row.2,
+                    &row.3,
+                    &row.4,
+                    row.5.as_deref(),
+                    row.6.as_deref(),
+                )?;
+                let confirmation_sha256 = confirmation
+                    .get("artifact_confirmation_sha256")
+                    .and_then(Value::as_str)
+                    .ok_or("delegated artifact confirmation hash missing")?;
+                if let (Some(existing_sha), Some(existing_json)) = (row.7, row.8) {
+                    let replay = replay_delegated_artifact_confirmation(
+                        &existing_sha,
+                        &existing_json,
+                        &confirmation,
+                    )?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(replay);
+                }
+                tx.execute(
+                    "UPDATE managed_acceptance_delegations SET artifact_confirmation_sha256=?1, artifact_confirmation_json=?2, updated_at=?3 WHERE delegation_id=?4 AND artifact_confirmation_sha256 IS NULL",
+                    params![confirmation_sha256, confirmation.to_string(), now, delegation_id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(confirmation)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                let row = tx
+                    .query_one(
+                        "SELECT delegation_sha256, body_json, status, expires_at, artifact_confirmer_id, manifest_json, attempt_status, artifact_confirmation_sha256, artifact_confirmation_json FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                        &[&delegation_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let delegation_sha: String = row.get(0);
+                let body_json: String = row.get(1);
+                let status: String = row.get(2);
+                let expires_at: String = row.get(3);
+                let confirmer_id: String = row.get(4);
+                let persisted_manifest: Option<String> = row.get(5);
+                let attempt_status: Option<String> = row.get(6);
+                let confirmation = confirm(
+                    &delegation_sha,
+                    &body_json,
+                    &status,
+                    &expires_at,
+                    &confirmer_id,
+                    persisted_manifest.as_deref(),
+                    attempt_status.as_deref(),
+                )?;
+                let confirmation_sha256 = confirmation
+                    .get("artifact_confirmation_sha256")
+                    .and_then(Value::as_str)
+                    .ok_or("delegated artifact confirmation hash missing")?;
+                let existing_sha: Option<String> = row.get(7);
+                let existing_json: Option<String> = row.get(8);
+                if let (Some(existing_sha), Some(existing_json)) =
+                    (existing_sha, existing_json)
+                {
+                    let replay = replay_delegated_artifact_confirmation(
+                        &existing_sha,
+                        &existing_json,
+                        &confirmation,
+                    )?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(replay);
+                }
+                tx.execute(
+                    "UPDATE managed_acceptance_delegations SET artifact_confirmation_sha256=$1, artifact_confirmation_json=$2, updated_at=$3 WHERE delegation_id=$4 AND artifact_confirmation_sha256 IS NULL",
+                    &[&confirmation_sha256, &confirmation.to_string(), &now, &delegation_id],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(confirmation)
+            }),
+        }
+    }
+
+    /// Persist terminal evidence and close the delegated spend/lease. Unknown
+    /// outcomes remain terminal and never become retryable.
+    pub fn complete_delegated_attempt(
+        &self,
+        delegation_id: &str,
+        attempt_id: &str,
+        lease_token: &str,
+        status: &str,
+        receipt: &Value,
+        realized_cost_usd: f64,
+    ) -> Result<Value, String> {
+        validate_attempt_terminal_status(status)?;
+        if !realized_cost_usd.is_finite() || realized_cost_usd < 0.0 {
+            return Err("realized delegated cost is invalid".into());
+        }
+        let mut receipt = sort_value(receipt);
+        let receipt_object = receipt
+            .as_object_mut()
+            .ok_or("delegated terminal receipt must be an object")?;
+        if receipt_object.contains_key("terminal_class")
+            || receipt_object.contains_key("spend_authorization_state")
+            || receipt_object.contains_key("attempt_lease_state")
+            || receipt_object.contains_key("delegation_state")
+            || receipt_object.contains_key("realized_cost_usd")
+        {
+            return Err("delegated terminal receipt contains store-owned state fields".into());
+        }
+        receipt_object.insert("terminal_class".into(), json!(status));
+        receipt_object.insert("spend_authorization_state".into(), json!("expired"));
+        receipt_object.insert("attempt_lease_state".into(), json!("closed"));
+        receipt_object.insert("delegation_state".into(), json!("expired"));
+        receipt_object.insert("realized_cost_usd".into(), json!(realized_cost_usd));
+        let receipt = sort_value(&receipt);
+        let receipt_sha256 = sha256_hex(canonical_json(&receipt)?.as_bytes());
+        let receipt_json = receipt.to_string();
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|e| e.to_string())?;
+                let row: (
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    String,
+                    f64,
+                    f64,
+                ) = tx
+                    .query_row(
+                        "SELECT attempt_id, attempt_lease_token, terminal_receipt_json, status,
+                                max_total_cost_usd, total_cost_usd
+                         FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation_id],
+                        |r| {
+                            Ok((
+                                r.get(0)?,
+                                r.get(1)?,
+                                r.get(2)?,
+                                r.get(3)?,
+                                r.get(4)?,
+                                r.get(5)?,
+                            ))
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
+                if row.0.as_deref() != Some(attempt_id) || row.1.as_deref() != Some(lease_token) {
+                    return Err("delegated attempt lease ownership mismatch".into());
+                }
+                if let Some(existing) = row.2 {
+                    if existing == receipt_json
+                        && row.3 == "expired"
+                        && (row.5 - realized_cost_usd).abs() <= 1e-12
+                    {
+                        return Ok(json!({"status":"closed","terminal_class":status,"spend_authorization_state":"expired","attempt_lease_state":"closed","delegation_state":"expired","receipt_sha256":receipt_sha256,"replayed":true}));
+                    }
+                    return Err("late or conflicting delegated terminal write".into());
+                }
+                if realized_cost_usd > row.4 {
+                    return Err("delegated cumulative cost ceiling exceeded".into());
+                }
+                tx.execute(
+                    "UPDATE managed_acceptance_delegations SET status='expired', total_cost_usd=?1, spend_status='expired', attempt_status='closed', terminal_receipt_json=?2, terminal_at=?3, updated_at=?3 WHERE delegation_id=?4 AND attempt_id=?5 AND attempt_lease_token=?6",
+                    params![realized_cost_usd, receipt_json, now, delegation_id, attempt_id, lease_token],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(json!({"status":"closed","terminal_class":status,"spend_authorization_state":"expired","attempt_lease_state":"closed","delegation_state":"expired","receipt_sha256":receipt_sha256,"replayed":false}))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                let row = tx.query_one("SELECT attempt_id, attempt_lease_token, terminal_receipt_json, status, max_total_cost_usd, total_cost_usd FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE", &[&delegation_id]).map_err(|e| e.to_string())?;
+                let stored_attempt: Option<String> = row.get(0);
+                let stored_token: Option<String> = row.get(1);
+                let existing: Option<String> = row.get(2);
+                let stored_status: String = row.get(3);
+                let max_cost: f64 = row.get(4);
+                let stored_cost: f64 = row.get(5);
+                if stored_attempt.as_deref() != Some(attempt_id) || stored_token.as_deref() != Some(lease_token) {
+                    return Err("delegated attempt lease ownership mismatch".into());
+                }
+                if let Some(existing) = existing {
+                    if existing == receipt_json
+                        && stored_status == "expired"
+                        && (stored_cost - realized_cost_usd).abs() <= 1e-12
+                    {
+                        tx.commit().map_err(|e| e.to_string())?;
+                        return Ok(json!({"status":"closed","terminal_class":status,"spend_authorization_state":"expired","attempt_lease_state":"closed","delegation_state":"expired","receipt_sha256":receipt_sha256,"replayed":true}));
+                    }
+                    return Err("late or conflicting delegated terminal write".into());
+                }
+                if realized_cost_usd > max_cost { return Err("delegated cumulative cost ceiling exceeded".into()); }
+                tx.execute("UPDATE managed_acceptance_delegations SET status='expired', total_cost_usd=$1, spend_status='expired', attempt_status='closed', terminal_receipt_json=$2, terminal_at=$3, updated_at=$3 WHERE delegation_id=$4 AND attempt_id=$5 AND attempt_lease_token=$6", &[&realized_cost_usd, &receipt_json, &now, &delegation_id, &attempt_id, &lease_token]).map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(json!({"status":"closed","terminal_class":status,"spend_authorization_state":"expired","attempt_lease_state":"closed","delegation_state":"expired","receipt_sha256":receipt_sha256,"replayed":false}))
+            }),
+        }
+    }
+
+    /// Close a successful delegated ProductTask using only store-owned
+    /// evidence and the current persisted lease. The caller cannot supply a
+    /// cost, lease token, output receipt, or terminal class.
+    pub fn complete_delegated_product_task_terminal(
+        &self,
+        delegation_id: &str,
+        attempt_id: &str,
+        product_task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        let row: (String, String, String, String) = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT attempt_lease_token, artifact_confirmation_json, tenant_id, manifest_json
+                     FROM managed_acceptance_delegations
+                     WHERE delegation_id=?1 AND attempt_id=?2",
+                    params![delegation_id, attempt_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT attempt_lease_token, artifact_confirmation_json, tenant_id, manifest_json
+                         FROM managed_acceptance_delegations
+                         WHERE delegation_id=$1 AND attempt_id=$2",
+                        &[&delegation_id, &attempt_id],
+                    )
+                    .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3)))
+                    .map_err(|error| error.to_string())
+            }),
+        }?;
+        let (lease_token, confirmation_json, tenant_id, manifest_json) = row;
+        let confirmation: Value = serde_json::from_str(&confirmation_json)
+            .map_err(|_| "persisted delegated artifact confirmation is invalid")?;
+        let manifest: Value = serde_json::from_str(&manifest_json)
+            .map_err(|_| "persisted delegated manifest is invalid")?;
+        validate_delegated_manifest_policy(&manifest)?;
+        let task = self
+            .get_product_task(product_task_id)?
+            .ok_or("delegated terminal ProductTask is missing")?;
+        if task.get("status").and_then(Value::as_str) != Some("completed")
+            || task.get("tenant_id").and_then(Value::as_str) != Some(tenant_id.as_str())
+            || task
+                .pointer("/workspace_binding/source_revision")
+                .and_then(Value::as_str)
+                != confirmation.get("target_main_sha").and_then(Value::as_str)
+            || manifest
+                .pointer("/execution/product_task_id")
+                .and_then(Value::as_str)
+                != Some(product_task_id)
+            || manifest
+                .pointer("/execution/attempt_id")
+                .and_then(Value::as_str)
+                != Some(attempt_id)
+        {
+            return Err("delegated terminal ProductTask binding is stale or mismatched".into());
+        }
+        let terminal_evidence = self.get_product_task_terminal_evidence(product_task_id)?;
+        let evidence_id = terminal_evidence
+            .get("evidence_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated ProductTask terminal evidence identity is missing")?;
+        let run_id = terminal_evidence
+            .get("run_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated ProductTask terminal run identity is missing")?;
+        let approval_id = terminal_evidence
+            .pointer("/approval/approval_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated ProductTask terminal approval is missing")?;
+        let approval = self
+            .workflow_run_approvals(run_id, 10_000)?
+            .into_iter()
+            .find(|approval| {
+                approval.get("approval_id").and_then(Value::as_str) == Some(approval_id)
+            })
+            .ok_or("delegated ProductTask terminal approval disappeared")?;
+        let confirmation_sha256 = confirmation
+            .get("artifact_confirmation_sha256")
+            .and_then(Value::as_str)
+            .ok_or("delegated artifact confirmation hash is missing")?;
+        let draft_pr = terminal_evidence
+            .pointer("/output/draft_pr")
+            .filter(|value| value.is_object())
+            .ok_or("delegated terminal evidence requires a Draft PR")?;
+        if approval
+            .get("artifact_confirmation_sha256")
+            .and_then(Value::as_str)
+            != Some(confirmation_sha256)
+            || confirmation
+                .pointer("/provider_execution/provider_request_count")
+                .and_then(Value::as_u64)
+                != Some(3)
+            || confirmation
+                .pointer("/output/draft_pr_only")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || draft_pr.get("draft").and_then(Value::as_bool) != Some(true)
+            || draft_pr
+                .get("head_branch")
+                .and_then(Value::as_str)
+                .is_none_or(|branch| !branch.starts_with("acp/"))
+        {
+            return Err("delegated terminal output evidence is stale or outside policy".into());
+        }
+        let workspace_id = task
+            .get("workspace_record_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated terminal workspace identity is missing")?;
+        let cleanup = self.cleanup_workspace(workspace_id, actor)?;
+        if cleanup.get("status").and_then(Value::as_str) != Some("cleaned") {
+            return Err("delegated terminal workspace cleanup is incomplete".into());
+        }
+        let realized_cost_usd = confirmation
+            .get("realized_cost_usd")
+            .and_then(Value::as_f64)
+            .ok_or("delegated artifact confirmation realized cost is missing")?;
+        let receipt = json!({
+            "schema_version": "managed_delegated_terminal_evidence.v1",
+            "product_task_id": product_task_id,
+            "workflow_run_id": run_id,
+            "manifest_sha256": manifest.get("manifest_sha256"),
+            "artifact_confirmation_sha256": confirmation_sha256,
+            "product_terminal_evidence_id": evidence_id,
+            "provider_requests": 3,
+            "draft_pr": draft_pr,
+            "cleanup_status": cleanup.get("status"),
+            "target_main_sha": confirmation.get("target_main_sha"),
+        });
+        let terminal = self.complete_delegated_attempt(
+            delegation_id,
+            attempt_id,
+            &lease_token,
+            "succeeded",
+            &receipt,
+            realized_cost_usd,
+        )?;
+        Ok(json!({
+            "terminal": terminal,
+            "cleanup": cleanup,
+            "product_terminal_evidence": terminal_evidence,
+            "artifact_confirmation": confirmation,
+        }))
+    }
+
+    /// Close a delegated non-success ProductTask from store-owned task,
+    /// provider-journal, workspace, and lease evidence. This is called by the
+    /// existing ProductTask finalizer/recovery path and cannot be used to turn
+    /// a failed task into a successful output.
+    pub(crate) fn close_delegated_failure_if_bound(
+        &self,
+        product_task_id: &str,
+        actor: &str,
+    ) -> Result<Option<Value>, String> {
+        let task = self
+            .get_product_task(product_task_id)?
+            .ok_or("delegated failure ProductTask is missing")?;
+        let task_status = task
+            .get("status")
+            .and_then(Value::as_str)
+            .ok_or("delegated failure ProductTask status is missing")?;
+        if !matches!(
+            task_status,
+            "failed" | "killed" | "blocked" | "budget_exhausted" | "outcome_unknown"
+        ) {
+            return Ok(None);
+        }
+        let rows: Vec<(String, String, String, String, String)> = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|connection| {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT delegation_id, attempt_id, attempt_lease_token, manifest_json,
+                                provider_request_journal_json
+                         FROM managed_acceptance_delegations
+                         WHERE status='active' AND attempt_status='admitted'",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    })
+                    .map_err(|error| error.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?;
+                Ok(rows)
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query(
+                        "SELECT delegation_id, attempt_id, attempt_lease_token, manifest_json,
+                                provider_request_journal_json
+                         FROM managed_acceptance_delegations
+                         WHERE status='active' AND attempt_status='admitted'",
+                        &[],
+                    )
+                    .map(|rows| {
+                        rows.into_iter()
+                            .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)))
+                            .collect()
+                    })
+                    .map_err(|error| error.to_string())
+            })?,
+        };
+        let mut matched = rows
+            .into_iter()
+            .filter_map(|row| {
+                let manifest = serde_json::from_str::<Value>(&row.3).ok()?;
+                (manifest
+                    .pointer("/execution/product_task_id")
+                    .and_then(Value::as_str)
+                    == Some(product_task_id))
+                .then_some((row, manifest))
+            })
+            .collect::<Vec<_>>();
+        if matched.is_empty() {
+            return Ok(None);
+        }
+        if matched.len() != 1 {
+            return Err("multiple delegated attempts bind the same failed ProductTask".into());
+        }
+        let ((delegation_id, attempt_id, lease_token, _manifest_json, journal_json), manifest) =
+            matched.pop().expect("one matched delegated attempt");
+        validate_delegated_manifest_policy(&manifest)?;
+        if manifest
+            .pointer("/execution/attempt_id")
+            .and_then(Value::as_str)
+            != Some(attempt_id.as_str())
+        {
+            return Err("delegated failure manifest attempt binding is stale".into());
+        }
+        let journal: Vec<Value> = serde_json::from_str(&journal_json)
+            .map_err(|_| "delegated failure provider journal is invalid")?;
+        let mut realized_or_reserved_cost_usd = 0.0_f64;
+        let mut uncertain_provider_effect = false;
+        let mut provider_states = Vec::with_capacity(journal.len());
+        for entry in &journal {
+            let status = entry
+                .get("status")
+                .and_then(Value::as_str)
+                .ok_or("delegated failure provider journal status is missing")?;
+            if !matches!(
+                status,
+                "sending"
+                    | "succeeded"
+                    | "failed_before_send"
+                    | "failed_known_outcome"
+                    | "outcome_unknown"
+            ) {
+                return Err("delegated failure provider journal status is invalid".into());
+            }
+            uncertain_provider_effect |= matches!(status, "sending" | "outcome_unknown");
+            let cost = entry
+                .get("effective_cost_usd")
+                .and_then(Value::as_f64)
+                .ok_or("delegated failure provider journal cost is missing")?;
+            if !cost.is_finite() || cost < 0.0 {
+                return Err("delegated failure provider journal cost is invalid".into());
+            }
+            realized_or_reserved_cost_usd += cost;
+            provider_states.push(json!({
+                "ordinal": entry.get("ordinal"),
+                "node_id": entry.get("node_id"),
+                "status": status,
+                "request_sha256": entry.get("request_sha256"),
+                "effective_cost_usd": cost,
+            }));
+        }
+        let terminal_class = if task_status == "outcome_unknown" || uncertain_provider_effect {
+            "outcome_unknown"
+        } else if task_status == "killed"
+            || task
+                .get("error_detail")
+                .and_then(Value::as_str)
+                .is_some_and(|detail| detail == "cancelled")
+        {
+            "cancelled"
+        } else {
+            "failed"
+        };
+        let workspace_id = task
+            .get("workspace_record_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated failure workspace identity is missing")?;
+        let cleanup = self.cleanup_workspace(workspace_id, actor)?;
+        if cleanup.get("status").and_then(Value::as_str) != Some("cleaned") {
+            return Err("delegated failure workspace cleanup is incomplete".into());
+        }
+        let provider_journal_sha256 =
+            sha256_hex(canonical_json(&sort_value(&Value::Array(journal)))?.as_bytes());
+        let receipt = json!({
+            "schema_version": "managed_delegated_failure_terminal_evidence.v1",
+            "product_task_id": product_task_id,
+            "workflow_run_id": task.get("run_id"),
+            "manifest_sha256": manifest.get("manifest_sha256"),
+            "provider_request_count": provider_states.len(),
+            "provider_request_journal_sha256": provider_journal_sha256,
+            "provider_request_states": provider_states,
+            "cleanup_status": cleanup.get("status"),
+            "product_task_status": task_status,
+            "target_main_sha": manifest.pointer("/target/main_sha"),
+            "cost_evidence": if uncertain_provider_effect {
+                "conservative_reservation"
+            } else {
+                "reconciled"
+            },
+        });
+        let terminal = self.complete_delegated_attempt(
+            &delegation_id,
+            &attempt_id,
+            &lease_token,
+            terminal_class,
+            &receipt,
+            realized_or_reserved_cost_usd,
+        )?;
+        Ok(Some(json!({
+            "terminal": terminal,
+            "cleanup": cleanup,
+            "failure_terminal_evidence": receipt,
+        })))
+    }
+
+    pub fn revoke_delegation(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        delegation_id: &str,
+    ) -> Result<(), String> {
+        principal.require_scope(SCOPE_REVOKE)?;
+        principal.require_scope(SCOPE_DELEGATED_AUTONOMY)?;
+        if matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal) {
+            return Err("fixture principal cannot revoke production delegation".into());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let row: Option<(String, String, String)> = tx
+                    .query_row(
+                        "SELECT tenant_id, principal_id, status
+                         FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                let (tenant_id, principal_id, status) =
+                    row.ok_or("delegation to revoke does not exist")?;
+                if tenant_id != principal.tenant_id() || principal_id != principal.principal_id() {
+                    return Err("delegation revocation ownership mismatch".into());
+                }
+                if status == "revoked" {
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(());
+                }
+                if status != "active" {
+                    return Err("delegation is not revocable in its current state".into());
+                }
+                let changed = tx.execute("UPDATE managed_acceptance_delegations SET status='revoked', spend_status='revoked', revoked_at=?1, updated_at=?1 WHERE delegation_id=?2 AND tenant_id=?3 AND principal_id=?4 AND status='active'", params![now, delegation_id, principal.tenant_id(), principal.principal_id()]).map_err(|e| e.to_string())?;
+                if changed != 1 {
+                    return Err("delegation revocation lost its current authority".into());
+                }
+                tx.commit().map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let row = tx
+                    .query_opt(
+                        "SELECT tenant_id, principal_id, status
+                         FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                        &[&delegation_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .ok_or("delegation to revoke does not exist")?;
+                let tenant_id: String = row.get(0);
+                let principal_id: String = row.get(1);
+                let status: String = row.get(2);
+                if tenant_id != principal.tenant_id() || principal_id != principal.principal_id() {
+                    return Err("delegation revocation ownership mismatch".into());
+                }
+                if status == "revoked" {
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(());
+                }
+                if status != "active" {
+                    return Err("delegation is not revocable in its current state".into());
+                }
+                let changed = tx.execute("UPDATE managed_acceptance_delegations SET status='revoked', spend_status='revoked', revoked_at=$1, updated_at=$1 WHERE delegation_id=$2 AND tenant_id=$3 AND principal_id=$4 AND status='active'", &[&now, &delegation_id, &principal.tenant_id(), &principal.principal_id()]).map_err(|e| e.to_string())?;
+                if changed != 1 {
+                    return Err("delegation revocation lost its current authority".into());
+                }
+                tx.commit().map_err(|error| error.to_string())
+            }),
+        }
+    }
+}
 
 /// Kind of authenticated principal. Fixture is test-only.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4375,9 +6703,7 @@ pub fn canonical_decision_authority_hash(
 
 fn validate_attempt_terminal_status(status: &str) -> Result<(), String> {
     match status {
-        "in_flight" | "succeeded" | "failed" | "cancelled" | "outcome_unknown" | "replayed" => {
-            Ok(())
-        }
+        "succeeded" | "failed" | "cancelled" | "outcome_unknown" | "replayed" => Ok(()),
         other => Err(format!("invalid attempt status {other}")),
     }
 }
@@ -5005,11 +7331,817 @@ fn redact_lease_fields(mut value: Value) -> Value {
 /// protocol-neutral provider-call boundary. It reloads persisted attempt/spend
 /// rows on every check; the provider layer never accepts caller assertions as
 /// authority and never persists a second lease or budget.
+impl LocalProductStore {
+    fn apply_managed_workspace_action(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+        node_metadata: &Value,
+        model_output: &str,
+    ) -> Result<Value, String> {
+        if self
+            .current_delegated_provider_authority(binding)?
+            .is_none()
+        {
+            return Err("workspace action requires current delegated authority".into());
+        }
+        let task = self
+            .get_product_task(&binding.product_task_id)?
+            .ok_or("workspace action ProductTask is missing")?;
+        let owner_allowed = task
+            .pointer("/workspace_binding/allowed_paths")
+            .ok_or("workspace action owner allowed paths are missing")?;
+        let owner_workspace = task
+            .pointer("/workspace_binding/workspace_path")
+            .and_then(Value::as_str)
+            .ok_or("workspace action owner workspace is missing")?;
+        if node_metadata.get("allowed_paths") != Some(owner_allowed)
+            || node_metadata.get("workspace_path").and_then(Value::as_str) != Some(owner_workspace)
+            || node_metadata.get("workspace_root").and_then(Value::as_str) != Some(owner_workspace)
+        {
+            return Err("workspace action metadata does not match persisted ProductTask".into());
+        }
+        let action: Value = serde_json::from_str(model_output)
+            .map_err(|_| "implementer output must be one JSON workspace action".to_string())?;
+        if action.get("schema_version").and_then(Value::as_str)
+            != Some("managed_workspace_action.v1")
+        {
+            return Err("workspace action schema is not canonical".to_string());
+        }
+        let path = action
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or("workspace action path is required")?;
+        let relative = std::path::Path::new(path);
+        if path.is_empty()
+            || relative.is_absolute()
+            || relative.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return Err("workspace action path is not a clean relative path".to_string());
+        }
+        let allowed = owner_allowed
+            .as_array()
+            .ok_or("workspace action allowed_paths are missing")?;
+        if allowed.len() != 1 || allowed[0].as_str() != Some(path) {
+            return Err("workspace action path is outside the exact allowed path".to_string());
+        }
+        let root = std::fs::canonicalize(owner_workspace)
+            .map_err(|error| format!("workspace action workspace is unavailable: {error}"))?;
+        let target = root.join(relative);
+        let canonical_target = std::fs::canonicalize(&target)
+            .map_err(|_| "workspace action target must already exist".to_string())?;
+        if canonical_target != target || !canonical_target.starts_with(&root) {
+            return Err("workspace action target escapes workspace root".to_string());
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&target)
+            .map_err(|error| format!("workspace action target open failed: {error}"))?;
+        if !file
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
+            return Err("workspace action target is not a regular file".into());
+        }
+        let mut before = Vec::new();
+        file.read_to_end(&mut before)
+            .map_err(|error| error.to_string())?;
+        let before_sha256 = Some(hex::encode(Sha256::digest(&before)));
+        let before_text = Some(
+            String::from_utf8(before)
+                .map_err(|_| "workspace action target is not UTF-8".to_string())?,
+        );
+        let operation = action
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or("workspace action kind is required")?;
+        let (after_text, changed_line_budget) = match operation {
+            "replace_text" => {
+                let current = before_text
+                    .as_deref()
+                    .ok_or("replace_text target file does not exist")?;
+                let old = action
+                    .get("old_text")
+                    .and_then(Value::as_str)
+                    .ok_or("replace_text old_text is required")?;
+                let new = action
+                    .get("new_text")
+                    .and_then(Value::as_str)
+                    .ok_or("replace_text new_text is required")?;
+                if old.is_empty() || current.matches(old).count() != 1 {
+                    return Err("replace_text requires exactly one existing match".to_string());
+                }
+                (
+                    current.replacen(old, new, 1),
+                    old.lines().count().max(new.lines().count()),
+                )
+            }
+            _ => return Err("workspace action kind is not permitted".to_string()),
+        };
+        let lowered = after_text.to_ascii_lowercase();
+        for pattern in [
+            "-----begin ",
+            "api_key=",
+            "apikey=",
+            "secret=",
+            "password=",
+            "authorization: bearer ",
+            "x-api-key",
+        ] {
+            if lowered.contains(pattern) {
+                return Err("workspace action contains a sensitive literal".to_string());
+            }
+        }
+        if changed_line_budget > 100 || after_text.len() > 1_048_576 {
+            return Err("workspace action exceeds the delegated change bounds".to_string());
+        }
+        file.rewind().map_err(|error| error.to_string())?;
+        file.set_len(0).map_err(|error| error.to_string())?;
+        file.write_all(after_text.as_bytes())
+            .map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        let after_sha256 = hex::encode(Sha256::digest(after_text.as_bytes()));
+        Ok(json!({
+            "schema_version": "managed_workspace_action_receipt.v1",
+            "product_task_id": binding.product_task_id,
+            "workflow_id": binding.workflow_id,
+            "node_id": binding.node_id,
+            "action": operation,
+            "path": path,
+            "before_sha256": before_sha256,
+            "after_sha256": after_sha256,
+            "bytes": after_text.len(),
+            "changed_line_budget": changed_line_budget,
+        }))
+    }
+
+    pub(crate) fn claim_delegated_provider_request(
+        &self,
+        request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
+    ) -> Result<(), String> {
+        if self
+            .current_delegated_provider_authority(&request.binding)?
+            .is_none()
+        {
+            return Err("durable provider request requires delegated authority".into());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let row: (
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                ) = tx
+                    .query_row(
+                        "SELECT status, expires_at, spend_status, attempt_status,
+                                spend_authorization_id, attempt_lease_token, manifest_json,
+                                provider_request_journal_json
+                         FROM managed_acceptance_delegations WHERE attempt_id=?1",
+                        params![request.binding.attempt_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                                row.get(6)?,
+                                row.get(7)?,
+                            ))
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                validate_provider_journal_authority(
+                    request, &now, &row.0, &row.1, &row.2, &row.3, &row.4, &row.5, &row.6,
+                )?;
+                let journal = claim_provider_journal_entry(&row.7, request, &now)?;
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET provider_request_journal_json=?1, updated_at=?2
+                         WHERE attempt_id=?3 AND provider_request_journal_json=?4",
+                        params![journal, now, request.binding.attempt_id, row.7],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("durable provider request claim lost its authority".into());
+                }
+                tx.commit().map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let row = tx
+                    .query_one(
+                        "SELECT status, expires_at, spend_status, attempt_status,
+                                spend_authorization_id, attempt_lease_token, manifest_json,
+                                provider_request_journal_json
+                         FROM managed_acceptance_delegations
+                         WHERE attempt_id=$1 FOR UPDATE",
+                        &[&request.binding.attempt_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let status: String = row.get(0);
+                let expires_at: String = row.get(1);
+                let spend_status: String = row.get(2);
+                let attempt_status: String = row.get(3);
+                let spend_id: String = row.get(4);
+                let lease_token: String = row.get(5);
+                let manifest_json: String = row.get(6);
+                let journal_json: String = row.get(7);
+                validate_provider_journal_authority(
+                    request,
+                    &now,
+                    &status,
+                    &expires_at,
+                    &spend_status,
+                    &attempt_status,
+                    &spend_id,
+                    &lease_token,
+                    &manifest_json,
+                )?;
+                let journal = claim_provider_journal_entry(&journal_json, request, &now)?;
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET provider_request_journal_json=$1, updated_at=$2
+                         WHERE attempt_id=$3 AND provider_request_journal_json=$4",
+                        &[&journal, &now, &request.binding.attempt_id, &journal_json],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("durable provider request claim lost its authority".into());
+                }
+                tx.commit().map_err(|error| error.to_string())
+            }),
+        }
+    }
+
+    pub(crate) fn reconcile_delegated_provider_request(
+        &self,
+        request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
+        response: Option<&crate::provider::managed_deepseek::ManagedProviderResponse>,
+        effect: crate::provider::managed_deepseek::ManagedFailureEffect,
+    ) -> Result<(), String> {
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let journal_json: String = tx
+                    .query_row(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations
+                         WHERE attempt_id=?1 AND spend_authorization_id=?2
+                           AND attempt_status='admitted'",
+                        params![
+                            request.binding.attempt_id,
+                            request.binding.spend_authorization_id
+                        ],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let journal = reconcile_provider_journal_entry(
+                    &journal_json,
+                    request,
+                    response,
+                    effect,
+                    &now,
+                )?;
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET provider_request_journal_json=?1, updated_at=?2
+                         WHERE attempt_id=?3 AND provider_request_journal_json=?4",
+                        params![journal, now, request.binding.attempt_id, journal_json],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("durable provider reconciliation lost its claim".into());
+                }
+                tx.commit().map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let row = tx
+                    .query_one(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations
+                         WHERE attempt_id=$1 AND spend_authorization_id=$2
+                           AND attempt_status='admitted' FOR UPDATE",
+                        &[
+                            &request.binding.attempt_id,
+                            &request.binding.spend_authorization_id,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let journal_json: String = row.get(0);
+                let journal = reconcile_provider_journal_entry(
+                    &journal_json,
+                    request,
+                    response,
+                    effect,
+                    &now,
+                )?;
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET provider_request_journal_json=$1, updated_at=$2
+                         WHERE attempt_id=$3 AND provider_request_journal_json=$4",
+                        &[&journal, &now, &request.binding.attempt_id, &journal_json],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("durable provider reconciliation lost its claim".into());
+                }
+                tx.commit().map_err(|error| error.to_string())
+            }),
+        }
+    }
+
+    pub(crate) fn current_delegated_provider_authority(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    ) -> Result<Option<crate::provider::managed_deepseek::PersistedAuthoritySnapshot>, String> {
+        let now = self.now();
+        let row = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT delegation_sha256, spend_authorization_id, spend_status, attempt_id, attempt_lease_id, attempt_lease_token, attempt_status, manifest_json, status, expires_at FROM managed_acceptance_delegations WHERE attempt_id=?1",
+                    params![binding.attempt_id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<String>>(5)?, r.get::<_, Option<String>>(6)?, r.get::<_, Option<String>>(7)?, r.get::<_, String>(8)?, r.get::<_, String>(9)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client.query_opt(
+                    "SELECT delegation_sha256, spend_authorization_id, spend_status, attempt_id, attempt_lease_id, attempt_lease_token, attempt_status, manifest_json, status, expires_at FROM managed_acceptance_delegations WHERE attempt_id=$1",
+                    &[&binding.attempt_id],
+                )
+                .map(|row| row.map(|r| (r.get::<_, String>(0), r.get::<_, Option<String>>(1), r.get::<_, Option<String>>(2), r.get::<_, Option<String>>(3), r.get::<_, Option<String>>(4), r.get::<_, Option<String>>(5), r.get::<_, Option<String>>(6), r.get::<_, Option<String>>(7), r.get::<_, String>(8), r.get::<_, String>(9))))
+                .map_err(|e| e.to_string())
+            }),
+        }?;
+        let Some((
+            delegation_sha,
+            spend_id,
+            spend_status,
+            attempt_id,
+            lease_id,
+            lease_token,
+            attempt_status,
+            manifest_json,
+            delegation_status,
+            expires_at,
+        )) = row
+        else {
+            return Ok(None);
+        };
+        let spend_id = spend_id.ok_or("delegated spend identity is missing")?;
+        let spend_status = spend_status.ok_or("delegated spend status is missing")?;
+        let attempt_id = attempt_id.ok_or("delegated attempt identity is missing")?;
+        let lease_id = lease_id.ok_or("delegated lease identity is missing")?;
+        let lease_token = lease_token.ok_or("delegated lease token is missing")?;
+        let attempt_status = attempt_status.ok_or("delegated attempt status is missing")?;
+        let manifest: Value =
+            serde_json::from_str(&manifest_json.ok_or("delegated manifest is missing")?)
+                .map_err(|e| format!("delegated manifest JSON is invalid: {e}"))?;
+        let delegation_id = manifest
+            .pointer("/delegation/delegation_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated manifest delegation_id is missing")?;
+        let manifest_tenant = manifest
+            .pointer("/execution/tenant_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated manifest tenant_id is missing")?;
+        self.require_delegation_tenant(delegation_id, manifest_tenant)?;
+        if delegation_status != "active" || is_at_or_before(&expires_at, &now)? {
+            return Err("delegated provider authority is expired or revoked".into());
+        }
+        let execution = manifest
+            .get("execution")
+            .ok_or("delegated manifest execution is missing")?;
+        let node_ids = execution
+            .get("workflow_node_ids")
+            .and_then(Value::as_array)
+            .ok_or("delegated manifest workflow_node_ids is missing")?;
+        if attempt_id != binding.attempt_id
+            || spend_id != binding.spend_authorization_id
+            || attempt_status != "admitted"
+            || spend_status != "consumed"
+            || lease_id.trim().is_empty()
+            || execution.get("product_task_id").and_then(Value::as_str)
+                != Some(binding.product_task_id.as_str())
+            || execution.get("workflow_id").and_then(Value::as_str)
+                != Some(binding.workflow_id.as_str())
+            || execution.get("attempt_id").and_then(Value::as_str)
+                != Some(binding.attempt_id.as_str())
+            || !node_ids
+                .iter()
+                .any(|node| node.as_str() == Some(binding.node_id.as_str()))
+            || manifest.get("delegation_sha256").and_then(Value::as_str)
+                != Some(delegation_sha.as_str())
+            || manifest.get("manifest_sha256").and_then(Value::as_str)
+                != Some(compute_attempt_manifest_sha256(&manifest)?.as_str())
+            || crate::provider::managed_deepseek::managed_attempt_lease_id(&lease_token)
+                != binding.attempt_lease_id
+        {
+            return Err("delegated provider authority is stale or mismatched".into());
+        }
+        Ok(Some(
+            crate::provider::managed_deepseek::PersistedAuthoritySnapshot {
+                product_task_id: binding.product_task_id.clone(),
+                workflow_id: binding.workflow_id.clone(),
+                node_id: binding.node_id.clone(),
+                attempt_id: binding.attempt_id.clone(),
+                spend_authorization_id: binding.spend_authorization_id.clone(),
+                attempt_lease_id: binding.attempt_lease_id.clone(),
+                spend_status,
+                consumed_by_attempt_id: Some(binding.attempt_id.clone()),
+                lease_status: "current".into(),
+                execution_contract: Some(delegated_execution_contract(
+                    &manifest,
+                    &binding.node_id,
+                )?),
+            },
+        ))
+    }
+}
+
+fn managed_provider_request_sha256(
+    request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
+) -> Result<String, String> {
+    let value = serde_json::to_value(request)
+        .map_err(|error| format!("managed provider request cannot be fingerprinted: {error}"))?;
+    Ok(sha256_hex(canonical_json(&sort_value(&value))?.as_bytes()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_provider_journal_authority(
+    request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
+    now: &str,
+    status: &str,
+    expires_at: &str,
+    spend_status: &str,
+    attempt_status: &str,
+    spend_id: &str,
+    lease_token: &str,
+    manifest_json: &str,
+) -> Result<(), String> {
+    if status != "active"
+        || spend_status != "consumed"
+        || attempt_status != "admitted"
+        || spend_id != request.binding.spend_authorization_id
+        || crate::provider::managed_deepseek::managed_attempt_lease_id(lease_token)
+            != request.binding.attempt_lease_id
+        || is_at_or_before(expires_at, now)?
+    {
+        return Err("durable provider request authority is stale or closed".into());
+    }
+    let manifest: Value = serde_json::from_str(manifest_json)
+        .map_err(|_| "durable provider request manifest is invalid")?;
+    if manifest.get("manifest_sha256").and_then(Value::as_str)
+        != Some(compute_attempt_manifest_sha256(&manifest)?.as_str())
+        || manifest
+            .pointer("/execution/product_task_id")
+            .and_then(Value::as_str)
+            != Some(request.binding.product_task_id.as_str())
+        || manifest
+            .pointer("/execution/workflow_id")
+            .and_then(Value::as_str)
+            != Some(request.binding.workflow_id.as_str())
+        || manifest
+            .pointer("/execution/attempt_id")
+            .and_then(Value::as_str)
+            != Some(request.binding.attempt_id.as_str())
+        || !manifest
+            .pointer("/execution/workflow_node_ids")
+            .and_then(Value::as_array)
+            .is_some_and(|nodes| {
+                nodes
+                    .iter()
+                    .any(|node| node.as_str() == Some(request.binding.node_id.as_str()))
+            })
+    {
+        return Err("durable provider request manifest binding is stale or mismatched".into());
+    }
+    Ok(())
+}
+
+fn claim_provider_journal_entry(
+    journal_json: &str,
+    request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
+    now: &str,
+) -> Result<String, String> {
+    let mut journal: Vec<Value> = serde_json::from_str(journal_json)
+        .map_err(|_| "durable provider request journal is invalid")?;
+    let request_sha256 = managed_provider_request_sha256(request)?;
+    if journal.iter().any(|entry| {
+        entry.get("node_id").and_then(Value::as_str) == Some(request.binding.node_id.as_str())
+            || entry.get("request_sha256").and_then(Value::as_str) == Some(request_sha256.as_str())
+    }) {
+        return Err("durable provider request was already claimed; replay is forbidden".into());
+    }
+    if journal.len() as u64 >= request.limits.max_requests {
+        return Err("durable provider request ceiling exhausted".into());
+    }
+    let reserved_input_tokens = request.estimated_input_tokens();
+    let reserved_output_tokens = request.max_output_tokens;
+    let reserved_tokens = reserved_input_tokens.saturating_add(reserved_output_tokens);
+    let prior_tokens = journal.iter().try_fold(0_u64, |total, entry| {
+        let value = entry
+            .get("effective_tokens")
+            .and_then(Value::as_u64)
+            .ok_or("durable provider journal token reservation is missing")?;
+        Ok::<u64, String>(total.saturating_add(value))
+    })?;
+    if reserved_input_tokens == 0
+        || reserved_input_tokens > request.limits.max_input_tokens
+        || reserved_output_tokens == 0
+        || reserved_output_tokens > request.limits.max_output_tokens
+        || prior_tokens.saturating_add(reserved_tokens) > request.limits.max_cumulative_tokens
+    {
+        return Err("durable provider token reservation exceeds the execution manifest".into());
+    }
+    let reserved_cost_usd = request.conservative_reserved_cost_usd()?;
+    let prior_cost_usd = journal.iter().try_fold(0.0_f64, |total, entry| {
+        let value = entry
+            .get("effective_cost_usd")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| "durable provider journal cost reservation is missing".to_string())?;
+        if !value.is_finite() || value < 0.0 {
+            return Err("durable provider journal cost reservation is invalid".to_string());
+        }
+        Ok::<f64, String>(total + value)
+    })?;
+    if request
+        .limits
+        .max_cost_usd
+        .is_some_and(|maximum| prior_cost_usd + reserved_cost_usd > maximum + 1e-12)
+    {
+        return Err("durable provider cost reservation exceeds the execution manifest".into());
+    }
+    journal.push(sort_value(&json!({
+        "schema_version": "managed_provider_request_claim.v1",
+        "ordinal": journal.len() + 1,
+        "node_id": request.binding.node_id,
+        "role": request.role,
+        "protocol": request.protocol,
+        "requested_model": request.requested_model,
+        "request_sha256": request_sha256,
+        "status": "sending",
+        "reserved_input_tokens": reserved_input_tokens,
+        "reserved_output_tokens": reserved_output_tokens,
+        "conservative_reserved_cost_usd": reserved_cost_usd,
+        "effective_tokens": reserved_tokens,
+        "effective_cost_usd": reserved_cost_usd,
+        "claimed_at": now,
+    })));
+    Ok(sort_value(&Value::Array(journal)).to_string())
+}
+
+fn reconcile_provider_journal_entry(
+    journal_json: &str,
+    request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
+    response: Option<&crate::provider::managed_deepseek::ManagedProviderResponse>,
+    effect: crate::provider::managed_deepseek::ManagedFailureEffect,
+    now: &str,
+) -> Result<String, String> {
+    let mut journal: Vec<Value> = serde_json::from_str(journal_json)
+        .map_err(|_| "durable provider request journal is invalid")?;
+    let request_sha256 = managed_provider_request_sha256(request)?;
+    let entry = journal
+        .iter_mut()
+        .find(|entry| {
+            entry.get("node_id").and_then(Value::as_str) == Some(request.binding.node_id.as_str())
+                && entry.get("request_sha256").and_then(Value::as_str)
+                    == Some(request_sha256.as_str())
+        })
+        .ok_or("durable provider request claim is missing")?;
+    if entry.get("status").and_then(Value::as_str) != Some("sending") {
+        return Err("durable provider request claim is already reconciled".into());
+    }
+    let object = entry
+        .as_object_mut()
+        .ok_or("durable provider request claim is not an object")?;
+    object.insert("reconciled_at".into(), json!(now));
+    if let Some(response) = response {
+        if effect != crate::provider::managed_deepseek::ManagedFailureEffect::NoExternalEffect
+            || response.requested_model != request.requested_model
+            || response.resolved_model != request.requested_model
+            || response.usage.model != request.requested_model
+            || response.usage.request_id != response.request_id
+        {
+            return Err("durable provider response identity is mismatched".into());
+        }
+        let actual_cost = response
+            .estimated_cost_usd
+            .or_else(|| request.limits.max_cost_usd.is_none().then_some(0.0))
+            .ok_or("durable provider response cost is missing")?;
+        if !actual_cost.is_finite() || actual_cost < 0.0 {
+            return Err("durable provider response cost is invalid".into());
+        }
+        object.insert("status".into(), json!("succeeded"));
+        object.insert("request_id".into(), json!(response.request_id));
+        object.insert("resolved_model".into(), json!(response.resolved_model));
+        object.insert(
+            "usage".into(),
+            serde_json::to_value(&response.usage)
+                .map_err(|error| format!("durable provider usage cannot be persisted: {error}"))?,
+        );
+        object.insert(
+            "effective_tokens".into(),
+            json!(response.usage.cumulative_tokens),
+        );
+        object.insert("effective_cost_usd".into(), json!(actual_cost));
+    } else {
+        let (status, retain_reservation) = match effect {
+            crate::provider::managed_deepseek::ManagedFailureEffect::PreSend => {
+                ("failed_before_send", false)
+            }
+            crate::provider::managed_deepseek::ManagedFailureEffect::NoExternalEffect => {
+                ("failed_known_outcome", false)
+            }
+            crate::provider::managed_deepseek::ManagedFailureEffect::OutcomeUnknown => {
+                ("outcome_unknown", true)
+            }
+        };
+        object.insert("status".into(), json!(status));
+        if !retain_reservation {
+            object.insert("effective_tokens".into(), json!(0));
+            object.insert("effective_cost_usd".into(), json!(0.0));
+        }
+    }
+    Ok(sort_value(&Value::Array(journal)).to_string())
+}
+
 impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductStore {
+    fn claim_provider_request(
+        &self,
+        request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
+    ) -> Result<(), String> {
+        self.claim_delegated_provider_request(request)
+    }
+
+    fn reconcile_provider_request(
+        &self,
+        request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
+        response: Option<&crate::provider::managed_deepseek::ManagedProviderResponse>,
+        effect: crate::provider::managed_deepseek::ManagedFailureEffect,
+    ) -> Result<(), String> {
+        self.reconcile_delegated_provider_request(request, response, effect)
+    }
+
+    fn stage_context(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+        node_metadata: &Value,
+    ) -> Result<Option<Value>, String> {
+        if self
+            .current_delegated_provider_authority(binding)?
+            .is_none()
+        {
+            return Err("managed stage context requires a current delegated authority".into());
+        }
+        let stage = node_metadata
+            .pointer("/managed_deepseek/stage")
+            .and_then(Value::as_str)
+            .ok_or("managed stage context is missing its route stage")?;
+        if !matches!(stage, "planning" | "implementation" | "review") {
+            return Err("managed stage context is not a provider route stage".into());
+        }
+        let task = self
+            .get_product_task(&binding.product_task_id)?
+            .ok_or("managed stage context ProductTask is missing")?;
+        if task.pointer("/workspace_binding/allowed_paths") != Some(&json!(["docs/USER_GUIDE.md"]))
+        {
+            return Err("managed stage context allowed path binding changed".into());
+        }
+        let workspace_path = task
+            .pointer("/workspace_binding/workspace_path")
+            .and_then(Value::as_str)
+            .ok_or("managed stage context workspace path is missing")?;
+        let workspace_root = std::fs::canonicalize(workspace_path)
+            .map_err(|_| "managed stage context workspace is unavailable")?;
+        let file_path = workspace_root.join("docs/USER_GUIDE.md");
+        let canonical_file = std::fs::canonicalize(&file_path)
+            .map_err(|_| "managed stage context allowed file is unavailable")?;
+        if !canonical_file.starts_with(&workspace_root) || canonical_file != file_path {
+            return Err("managed stage context allowed file escapes through a symlink".into());
+        }
+        let metadata = std::fs::metadata(&canonical_file)
+            .map_err(|_| "managed stage context allowed file metadata is unavailable")?;
+        if !metadata.is_file() || metadata.len() > 64 * 1024 {
+            return Err("managed stage context allowed file exceeds its bounded input".into());
+        }
+        let content = std::fs::read_to_string(&canonical_file)
+            .map_err(|_| "managed stage context allowed file is not UTF-8")?;
+        if crate::provider::redaction::contains_sensitive_patterns(&content) {
+            return Err("managed stage context secret scan failed before provider request".into());
+        }
+        let run_id = task
+            .get("run_id")
+            .and_then(Value::as_str)
+            .ok_or("managed stage context ProductTask run is missing")?;
+        let run = self
+            .get_workflow_run(run_id)?
+            .ok_or("managed stage context workflow run is missing")?;
+        let planner_receipt = if matches!(stage, "implementation" | "review") {
+            Some(managed_deepseek_stage_receipt(
+                &run,
+                &format!("{}-planning", binding.workflow_id),
+                "managed_deepseek_plan.v1",
+            )?)
+        } else {
+            None
+        };
+        let verification = if stage == "review" {
+            let node = managed_deepseek_run_node(
+                &run,
+                &format!("{}-deterministic_verification", binding.workflow_id),
+            )?;
+            let result = node
+                .get("result")
+                .ok_or("managed reviewer deterministic verifier result is missing")?;
+            if node.get("status").and_then(Value::as_str) != Some("completed")
+                || result.get("status").and_then(Value::as_str) != Some("completed")
+                || result
+                    .pointer("/process_outcome/state")
+                    .and_then(Value::as_str)
+                    != Some("exited")
+                || result
+                    .pointer("/process_outcome/exit_code")
+                    .and_then(Value::as_i64)
+                    != Some(0)
+            {
+                return Err(
+                    "managed reviewer requires successful deterministic verification".into(),
+                );
+            }
+            Some(json!({
+                "schema_version": "managed_deterministic_verification_receipt.v1",
+                "status": "succeeded",
+                "node_id": node.get("node_id"),
+                "result_sha256": sha256_hex(canonical_json(result)?.as_bytes())
+            }))
+        } else {
+            None
+        };
+        Ok(Some(sort_value(&json!({
+            "schema_version": "managed_deepseek_stage_context.v1",
+            "stage": stage,
+            "planner_receipt": planner_receipt,
+            "deterministic_verification": verification,
+            "allowed_file": {
+                "path": "docs/USER_GUIDE.md",
+                "content": content
+            }
+        }))))
+    }
+
+    fn apply_workspace_action(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+        node_metadata: &Value,
+        model_output: &str,
+    ) -> Result<Value, String> {
+        if self
+            .current_delegated_provider_authority(binding)?
+            .is_none()
+        {
+            return Err("managed workspace action requires a current delegated authority".into());
+        }
+        self.apply_managed_workspace_action(binding, node_metadata, model_output)
+    }
+
     fn current_authority(
         &self,
         binding: &crate::provider::managed_deepseek::ManagedCallBinding,
     ) -> Result<crate::provider::managed_deepseek::PersistedAuthoritySnapshot, String> {
+        if let Some(authority) = self.current_delegated_provider_authority(binding)? {
+            return Ok(authority);
+        }
         let attempt = self
             .get_managed_acceptance_attempt(&binding.attempt_id)?
             .ok_or_else(|| "managed provider attempt is missing".to_string())?;
@@ -5078,16 +8210,72 @@ impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductS
                 spend_status,
                 consumed_by_attempt_id,
                 lease_status: "current".to_string(),
+                execution_contract: None,
             },
         )
     }
+}
+
+fn managed_deepseek_run_node<'a>(run: &'a Value, node_id: &str) -> Result<&'a Value, String> {
+    run.get("nodes")
+        .and_then(Value::as_array)
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| node.get("node_id").and_then(Value::as_str) == Some(node_id))
+        })
+        .ok_or_else(|| format!("managed route predecessor node is missing: {node_id}"))
+}
+
+pub(super) fn managed_deepseek_stage_receipt(
+    run: &Value,
+    node_id: &str,
+    schema_version: &str,
+) -> Result<Value, String> {
+    let node = managed_deepseek_run_node(run, node_id)?;
+    if node.get("status").and_then(Value::as_str) != Some("completed") {
+        return Err(format!(
+            "managed route predecessor is incomplete: {node_id}"
+        ));
+    }
+    let output = node
+        .pointer("/result/output")
+        .and_then(Value::as_str)
+        .ok_or("managed route predecessor output receipt is missing")?;
+    let output: Value = serde_json::from_str(output)
+        .map_err(|_| "managed route predecessor output receipt is invalid JSON")?;
+    let receipt = output
+        .get("stage_receipt")
+        .filter(|value| value.is_object())
+        .cloned()
+        .ok_or("managed route predecessor typed receipt is missing")?;
+    if receipt.get("schema_version").and_then(Value::as_str) != Some(schema_version) {
+        return Err("managed route predecessor typed receipt schema is invalid".into());
+    }
+    Ok(receipt)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::codex_partial_mediation_authority_decision::OPERATOR_RISK_ACCEPTANCE_PHRASE;
-    use std::sync::{Arc, Barrier};
+    use crate::product_golden_path::{
+        validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest,
+        ProductVerificationCommand, PRODUCT_TASK_GATE,
+    };
+    use crate::provider::config::{CredentialRef, ProviderConfig};
+    use crate::provider::credential::CredentialBoundary;
+    use crate::provider::managed_deepseek::{
+        DeepSeekPriceProfile, DeepSeekProtocol, ManagedCallLimits, ManagedDeepSeekProvider,
+        DEEPSEEK_CREDENTIAL_REFERENCE,
+    };
+    use crate::provider::managed_deepseek_executor::{
+        ManagedDeepSeekExecutorConfig, ManagedDeepSeekNodeExecutor,
+    };
+    use crate::provider::transport::{HttpError, HttpRequest, HttpResponse, HttpTransport};
+    use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
     use tempfile::tempdir;
 
@@ -5097,6 +8285,90 @@ mod tests {
         let store = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
             .unwrap();
         (dir, store)
+    }
+
+    struct DelegatedRouteMockTransport {
+        responses: Mutex<Vec<HttpResponse>>,
+        sends: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for DelegatedRouteMockTransport {
+        async fn send(&self, _request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            let mut responses = self
+                .responses
+                .lock()
+                .map_err(|_| HttpError::Connection("mock transport poisoned".into()))?;
+            if responses.is_empty() {
+                Err(HttpError::Connection(
+                    "unexpected fourth provider request".into(),
+                ))
+            } else {
+                Ok(responses.remove(0))
+            }
+        }
+    }
+
+    struct DelegatedOutcomeUnknownTransport {
+        sends: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for DelegatedOutcomeUnknownTransport {
+        async fn send(&self, _request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            Err(HttpError::Connection(
+                "mock post-send connection outcome is unknown".into(),
+            ))
+        }
+    }
+
+    fn delegated_openai_response(id: &str, model: &str, content: Value) -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            body: json!({
+                "id": id,
+                "model": model,
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": content.to_string()
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 10}
+            })
+            .to_string()
+            .into_bytes(),
+        }
+    }
+
+    fn delegated_mock_provider(
+        model: &str,
+        transport: Arc<dyn HttpTransport>,
+    ) -> Arc<ManagedDeepSeekProvider> {
+        let config = ProviderConfig::new(
+            "deepseek-managed-test",
+            "openai_compatible",
+            "https://api.deepseek.com",
+            model,
+            DEEPSEEK_CREDENTIAL_REFERENCE,
+            "2026-07-30T00:00:00Z",
+        );
+        let credential = CredentialRef::new(
+            DEEPSEEK_CREDENTIAL_REFERENCE,
+            "env",
+            "***",
+            "provider:deepseek",
+            "2026-07-30T00:00:00Z",
+        );
+        Arc::new(ManagedDeepSeekProvider::new_openai(
+            config,
+            CredentialBoundary::for_test(),
+            credential,
+            transport,
+        ))
     }
 
     fn decision_body(decision_id: &str) -> Value {
@@ -7124,5 +10396,1142 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("expir"), "{err}");
+    }
+
+    fn delegated_contract() -> DelegationContract {
+        DelegationContract {
+            schema_version: DELEGATION_SCHEMA_VERSION.into(),
+            delegation_id: "delegation-golden-path-1".into(),
+            created_at: "2026-07-25T12:00:00Z".into(),
+            expires_at: "2026-07-26T12:00:00Z".into(),
+            executions: 1,
+            repositories: vec!["Igzela/alters-lab".into()],
+            task_classes: vec!["documentation".into()],
+            allowed_paths: vec!["docs/USER_GUIDE.md".into()],
+            max_changed_files: 1,
+            max_changed_lines: 100,
+            max_cost_usd_per_run: 0.50,
+            max_total_cost_usd: 0.50,
+            protocol: "openai_compatible".into(),
+            models: json!({
+                "planner": "deepseek-v4-pro",
+                "implementer": "deepseek-v4-flash",
+                "reviewer": "deepseek-v4-pro"
+            }),
+            output: json!({
+                "draft_pr_only": true,
+                "target_main_write": false,
+                "merge": false,
+                "auto_merge": false
+            }),
+            forbidden: vec![
+                "credential changes".into(),
+                "authentication or permission changes".into(),
+                "schema or database migrations".into(),
+                "dependency changes".into(),
+                "executable or workflow changes".into(),
+                "destructive operations".into(),
+                "release".into(),
+                "deployment".into(),
+            ],
+        }
+    }
+
+    fn delegated_proposal() -> Value {
+        let mut proposal = json!({
+            "schema_version": "managed_proposal_manifest.v1",
+            "target_repository": "Igzela/alters-lab",
+            "target_main_sha": "6".repeat(40),
+            "mutable_paths": ["docs/USER_GUIDE.md"],
+            "max_cost_usd": null,
+            "verifier": "deterministic_docs_health_check_v1"
+        });
+        proposal["manifest_sha256"] = json!(compute_attempt_manifest_sha256(&proposal).unwrap());
+        proposal
+    }
+
+    fn delegated_execution() -> Value {
+        json!({
+            "observed_at": "2026-07-25T12:00:00Z",
+            "target_repository": "Igzela/alters-lab",
+            "target_main_sha": "6".repeat(40),
+            "tenant_id": "tenant-a",
+            "product_task_id": "product-task-golden-path-1",
+            "workflow_id": "workflow-golden-path-1",
+            "workflow_node_ids": ["planning", "implementation", "verification", "review"],
+            "attempt_id": "attempt-golden-path-1",
+            "verifier": "deterministic_docs_health_check_v1",
+            "mutable_paths": ["docs/USER_GUIDE.md"],
+            "cancellation_identity": "cancel-golden-path-1",
+            "rollback_identity": "rollback-golden-path-1"
+        })
+    }
+
+    #[test]
+    fn delegated_manifest_spend_lease_and_terminal_are_restart_safe() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("delegated.db");
+        let store =
+            LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".into()).unwrap();
+        seed_key(&store, "delegated-operator");
+        let principal = store
+            .authenticate_managed_acceptance_principal("tenant-a", "delegated-operator", Some(1.0))
+            .unwrap();
+        let delegation = delegated_contract();
+        let persisted = store.persist_delegation(&principal, &delegation).unwrap();
+        let proposal = delegated_proposal();
+        store
+            .persist_approved_delegated_proposal(
+                &delegation.delegation_id,
+                &proposal,
+                proposal["manifest_sha256"].as_str().unwrap(),
+            )
+            .unwrap();
+        let mut mutated_proposal = proposal.clone();
+        mutated_proposal["target_main_sha"] = json!("7".repeat(40));
+        mutated_proposal["manifest_sha256"] = Value::Null;
+        mutated_proposal["manifest_sha256"] =
+            json!(compute_attempt_manifest_sha256(&mutated_proposal).unwrap());
+        let mut mutated_execution = delegated_execution();
+        mutated_execution["target_main_sha"] = json!("7".repeat(40));
+        let mutated_manifest =
+            derive_final_execution_manifest(&mutated_proposal, &delegation, &mutated_execution)
+                .unwrap();
+        assert!(store
+            .approve_delegated_manifest(&delegation.delegation_id, &mutated_manifest)
+            .unwrap_err()
+            .contains("approved proposal"));
+        let manifest =
+            derive_final_execution_manifest(&proposal, &delegation, &delegated_execution())
+                .unwrap();
+        let approval = store
+            .approve_delegated_manifest(&delegation.delegation_id, &manifest)
+            .unwrap();
+        let replayed_approval = store
+            .approve_delegated_manifest(&delegation.delegation_id, &manifest)
+            .unwrap();
+        assert_eq!(approval, replayed_approval);
+        let spend = store
+            .issue_delegated_spend(
+                &delegation.delegation_id,
+                approval["approval_receipt_sha256"].as_str().unwrap(),
+                &manifest,
+            )
+            .unwrap();
+        assert_eq!(persisted["status"], "active");
+        assert_eq!(spend["status"], "active");
+        assert_eq!(
+            store
+                .issue_delegated_spend(
+                    &delegation.delegation_id,
+                    approval["approval_receipt_sha256"].as_str().unwrap(),
+                    &manifest,
+                )
+                .unwrap(),
+            spend
+        );
+        let lease = store
+            .admit_delegated_attempt(
+                &delegation.delegation_id,
+                "attempt-golden-path-1",
+                &manifest,
+            )
+            .unwrap();
+        assert_eq!(lease["status"], "admitted");
+        assert!(store
+            .admit_delegated_attempt(
+                &delegation.delegation_id,
+                "attempt-golden-path-2",
+                &manifest,
+            )
+            .is_err());
+        let delegated_binding = crate::provider::managed_deepseek::ManagedCallBinding {
+            product_task_id: "product-task-golden-path-1".into(),
+            workflow_id: "workflow-golden-path-1".into(),
+            node_id: "planning".into(),
+            attempt_id: "attempt-golden-path-1".into(),
+            spend_authorization_id: spend["spend_authorization_id"].as_str().unwrap().into(),
+            attempt_lease_id: lease["attempt_lease_id"].as_str().unwrap().into(),
+        };
+        let authority = <LocalProductStore as crate::provider::managed_deepseek::ManagedAuthoritySource>::current_authority(
+            &store,
+            &delegated_binding,
+        )
+        .unwrap();
+        assert_eq!(authority.lease_status, "current");
+        assert_eq!(authority.spend_status, "consumed");
+        let contract = authority.execution_contract.clone().unwrap();
+        let mut request = crate::provider::managed_deepseek::ManagedProviderCallRequest::for_role(
+            crate::provider::managed_deepseek::ManagedModelRole::Planner,
+            contract.protocol,
+            delegated_binding.clone(),
+        );
+        request.limits = contract.limits;
+        request.price_profile = contract.price_profile;
+        request.max_output_tokens = request.limits.max_output_tokens;
+        request.messages = vec![crate::provider::managed_deepseek::ManagedMessage::text(
+            "user",
+            "DO_NOT_PERSIST_PROVIDER_PROMPT_CONTENT",
+        )];
+        store.claim_delegated_provider_request(&request).unwrap();
+        assert!(store
+            .complete_delegated_attempt(
+                &delegation.delegation_id,
+                "attempt-golden-path-1",
+                lease["attempt_lease_token"].as_str().unwrap(),
+                "in_flight",
+                &json!({"provider_requests": 0}),
+                0.0,
+            )
+            .is_err());
+        let restarted =
+            LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".into()).unwrap();
+        let replay_error = restarted
+            .claim_delegated_provider_request(&request)
+            .unwrap_err();
+        assert!(replay_error.contains("replay is forbidden"));
+        restarted
+            .reconcile_delegated_provider_request(
+                &request,
+                None,
+                crate::provider::managed_deepseek::ManagedFailureEffect::OutcomeUnknown,
+            )
+            .unwrap();
+        assert!(restarted
+            .claim_delegated_provider_request(&request)
+            .unwrap_err()
+            .contains("replay is forbidden"));
+        let journal: String = restarted
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation.delegation_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(!journal.contains("DO_NOT_PERSIST_PROVIDER_PROMPT_CONTENT"));
+        assert!(journal.contains("\"status\":\"outcome_unknown\""));
+        let replay = restarted
+            .admit_delegated_attempt(
+                &delegation.delegation_id,
+                "attempt-golden-path-1",
+                &manifest,
+            )
+            .unwrap();
+        assert_eq!(replay["replayed"], true);
+        assert!(restarted
+            .complete_delegated_attempt(
+                &delegation.delegation_id,
+                "attempt-golden-path-1",
+                lease["attempt_lease_token"].as_str().unwrap(),
+                "failed",
+                &json!({"provider_requests": 1, "raw_output": "[redacted]"}),
+                0.51,
+            )
+            .is_err());
+        let terminal = restarted
+            .complete_delegated_attempt(
+                &delegation.delegation_id,
+                "attempt-golden-path-1",
+                lease["attempt_lease_token"].as_str().unwrap(),
+                "outcome_unknown",
+                &json!({"provider_requests": 1, "raw_output": "[redacted]"}),
+                0.10,
+            )
+            .unwrap();
+        assert_eq!(terminal["status"], "closed");
+        assert_eq!(terminal["spend_authorization_state"], "expired");
+        assert_eq!(terminal["attempt_lease_state"], "closed");
+        assert_eq!(terminal["delegation_state"], "expired");
+        assert!(restarted
+            .complete_delegated_attempt(
+                &delegation.delegation_id,
+                "attempt-golden-path-1",
+                lease["attempt_lease_token"].as_str().unwrap(),
+                "failed",
+                &json!({"provider_requests": 1, "raw_output": "[redacted]"}),
+                0.10,
+            )
+            .is_err());
+        let retry = restarted.issue_delegated_spend(
+            &delegation.delegation_id,
+            approval["approval_receipt_sha256"].as_str().unwrap(),
+            &manifest,
+        );
+        assert!(retry.is_err(), "outcome_unknown must not permit a retry");
+    }
+
+    #[test]
+    fn delegated_authority_rechecks_revocation_before_provider_or_workspace_effect() {
+        let (_dir, store) = store();
+        let now = "2026-07-25T12:00:00Z";
+        let delegation = delegated_contract();
+        let principal = AuthenticatedPrincipal {
+            tenant_id: "tenant-a".into(),
+            principal_id: "delegated-operator".into(),
+            principal_kind: PrincipalKind::OperatorApiKey,
+            scopes: ALL_MANAGED_ACCEPTANCE_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect(),
+            user_id: "operator".into(),
+            role: "owner".into(),
+        };
+        // The test store clock is fixed before the delegation expiry and this
+        // direct authenticated principal is deliberately non-fixture.
+        assert!(delegation.validate(now).is_ok());
+        store.persist_delegation(&principal, &delegation).unwrap();
+        let proposal = delegated_proposal();
+        store
+            .persist_approved_delegated_proposal(
+                &delegation.delegation_id,
+                &proposal,
+                proposal["manifest_sha256"].as_str().unwrap(),
+            )
+            .unwrap();
+        let manifest =
+            derive_final_execution_manifest(&proposal, &delegation, &delegated_execution())
+                .unwrap();
+        let approval = store
+            .approve_delegated_manifest(&delegation.delegation_id, &manifest)
+            .unwrap();
+        let spend = store
+            .issue_delegated_spend(
+                &delegation.delegation_id,
+                approval["approval_receipt_sha256"].as_str().unwrap(),
+                &manifest,
+            )
+            .unwrap();
+        let lease = store
+            .admit_delegated_attempt(
+                &delegation.delegation_id,
+                "attempt-golden-path-1",
+                &manifest,
+            )
+            .unwrap();
+        let binding = crate::provider::managed_deepseek::ManagedCallBinding {
+            product_task_id: "product-task-golden-path-1".into(),
+            workflow_id: "workflow-golden-path-1".into(),
+            node_id: "planning".into(),
+            attempt_id: "attempt-golden-path-1".into(),
+            spend_authorization_id: spend["spend_authorization_id"].as_str().unwrap().into(),
+            attempt_lease_id: lease["attempt_lease_id"].as_str().unwrap().into(),
+        };
+        store
+            .revoke_delegation(&principal, &delegation.delegation_id)
+            .unwrap();
+        assert!(<LocalProductStore as crate::provider::managed_deepseek::ManagedAuthoritySource>::current_authority(&store, &binding).is_err());
+    }
+
+    #[test]
+    fn delegated_authority_rejects_mutation_revocation_expiry_and_output_escape() {
+        let delegation = delegated_contract();
+        let mut proposal = delegated_proposal();
+        proposal["max_cost_usd"] = json!(0.50);
+        assert!(
+            derive_final_execution_manifest(&proposal, &delegation, &delegated_execution())
+                .is_err()
+        );
+        let mut expired = delegation.clone();
+        expired.expires_at = "2026-07-25T11:59:59Z".into();
+        assert!(expired.validate("2026-07-25T12:00:00Z").is_err());
+        let manifest = derive_final_execution_manifest(
+            &delegated_proposal(),
+            &delegation,
+            &delegated_execution(),
+        )
+        .unwrap();
+        let bad_artifact = json!({
+            "artifact_sha256": "a".repeat(64),
+            "changed_files": ["../outside"],
+            "changed_lines": 1
+        });
+        let verification = json!({"status": "succeeded", "verification_sha256": "b".repeat(64)});
+        let review = json!({
+            "schema_version": "managed_deepseek_review_receipt.v1",
+            "status": "accepted",
+            "material_objection_count": 0,
+            "resolved_model": "deepseek-v4-pro"
+        });
+        let provider_execution = json!({
+            "schema_version": "managed_deepseek_execution_evidence.v1",
+            "provider_request_count": 3,
+            "cumulative_tokens": 18,
+            "realized_cost_usd": 0.01,
+            "requests": [
+                {"stage":"planning","role":"planner","protocol":"openai_compatible","requested_model":"deepseek-v4-pro","resolved_model":"deepseek-v4-pro","request_id":"request-1","usage":{"input_tokens":4,"output_tokens":2,"cache_read_tokens":0,"cache_creation_tokens":0,"reasoning_output_tokens":0,"fresh_input_tokens":4,"cumulative_tokens":6,"model":"deepseek-v4-pro","request_id":"request-1"},"realized_cost_usd":0.004},
+                {"stage":"implementation","role":"implementer","protocol":"openai_compatible","requested_model":"deepseek-v4-flash","resolved_model":"deepseek-v4-flash","request_id":"request-2","usage":{"input_tokens":4,"output_tokens":2,"cache_read_tokens":0,"cache_creation_tokens":0,"reasoning_output_tokens":0,"fresh_input_tokens":4,"cumulative_tokens":6,"model":"deepseek-v4-flash","request_id":"request-2"},"realized_cost_usd":0.002},
+                {"stage":"review","role":"reviewer","protocol":"openai_compatible","requested_model":"deepseek-v4-pro","resolved_model":"deepseek-v4-pro","request_id":"request-3","usage":{"input_tokens":4,"output_tokens":2,"cache_read_tokens":0,"cache_creation_tokens":0,"reasoning_output_tokens":0,"fresh_input_tokens":4,"cumulative_tokens":6,"model":"deepseek-v4-pro","request_id":"request-3"},"realized_cost_usd":0.004}
+            ]
+        });
+        let err = confirm_delegated_artifact_output(
+            &delegation,
+            &manifest,
+            &bad_artifact,
+            &verification,
+            &review,
+            &provider_execution,
+            "6".repeat(40).as_str(),
+            0.01,
+        )
+        .unwrap_err();
+        assert!(err.contains("path"));
+
+        let artifact = json!({
+            "artifact_sha256": "a".repeat(64),
+            "changed_files": ["docs/USER_GUIDE.md"],
+            "changed_lines": 1
+        });
+        let mut failed_verification = verification.clone();
+        failed_verification["status"] = json!("failed");
+        assert!(confirm_delegated_artifact_output(
+            &delegation,
+            &manifest,
+            &artifact,
+            &failed_verification,
+            &review,
+            &provider_execution,
+            "6".repeat(40).as_str(),
+            0.01,
+        )
+        .unwrap_err()
+        .contains("verification"));
+        assert!(confirm_delegated_artifact_output(
+            &delegation,
+            &manifest,
+            &artifact,
+            &verification,
+            &review,
+            &provider_execution,
+            "7".repeat(40).as_str(),
+            0.01,
+        )
+        .unwrap_err()
+        .contains("target"));
+        let mut mismatched_usage = provider_execution.clone();
+        mismatched_usage["requests"][1]["usage"]["model"] = json!("deepseek-v4-pro");
+        assert!(confirm_delegated_artifact_output(
+            &delegation,
+            &manifest,
+            &artifact,
+            &verification,
+            &review,
+            &mismatched_usage,
+            "6".repeat(40).as_str(),
+            0.01,
+        )
+        .unwrap_err()
+        .contains("provider request"));
+        let mut mismatched_cost = provider_execution.clone();
+        mismatched_cost["requests"][0]["realized_cost_usd"] = json!(0.005);
+        assert!(confirm_delegated_artifact_output(
+            &delegation,
+            &manifest,
+            &artifact,
+            &verification,
+            &review,
+            &mismatched_cost,
+            "6".repeat(40).as_str(),
+            0.01,
+        )
+        .unwrap_err()
+        .contains("provider request"));
+    }
+
+    #[test]
+    fn managed_workspace_action_requires_store_owned_current_authority() {
+        let (_dir, store) = store();
+        let workspace = tempdir().unwrap();
+        let docs = workspace.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        let target = docs.join("USER_GUIDE.md");
+        let long_prefix = (0..120)
+            .map(|line| format!("guide line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(
+            &target,
+            format!("# Guide\n{long_prefix}\nalters-lab doctor checks health.\n"),
+        )
+        .unwrap();
+        let binding = crate::provider::managed_deepseek::ManagedCallBinding {
+            product_task_id: "product-task-golden-path-1".into(),
+            workflow_id: "workflow-golden-path-1".into(),
+            node_id: "implementation".into(),
+            attempt_id: "attempt-golden-path-1".into(),
+            spend_authorization_id: "spend-golden-path-1".into(),
+            attempt_lease_id: "lease-golden-path-1".into(),
+        };
+        let metadata = json!({
+            "workspace_path": workspace.path(),
+            "workspace_root": workspace.path(),
+            "allowed_paths": ["docs/USER_GUIDE.md"]
+        });
+        let action = json!({
+            "schema_version": "managed_workspace_action.v1",
+            "action": "replace_text",
+            "path": "docs/USER_GUIDE.md",
+            "old_text": "alters-lab doctor checks health.",
+            "new_text": "alters-lab doctor performs a read-only health check."
+        });
+        assert!(store
+            .apply_managed_workspace_action(&binding, &metadata, &action.to_string())
+            .unwrap_err()
+            .contains("current delegated authority"));
+        assert!(std::fs::read_to_string(&target)
+            .unwrap()
+            .contains("checks health"));
+
+        let escape = json!({
+            "schema_version": "managed_workspace_action.v1",
+            "action": "write_file",
+            "path": "../outside.md",
+            "content": "unsafe"
+        });
+        assert!(store
+            .apply_managed_workspace_action(&binding, &metadata, &escape.to_string())
+            .is_err());
+        assert!(store
+            .apply_managed_workspace_action(&binding, &metadata, "{malformed")
+            .is_err());
+        assert!(<LocalProductStore as crate::provider::managed_deepseek::ManagedAuthoritySource>::apply_workspace_action(
+            &store,
+            &binding,
+            &metadata,
+            &action.to_string(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn delegated_product_task_prepare_approve_lease_and_activate_is_provider_free() {
+        struct DelegatedGoldenPathEnvGuard {
+            values: Vec<(&'static str, Option<std::ffi::OsString>)>,
+            _lock: std::sync::MutexGuard<'static, ()>,
+        }
+
+        impl DelegatedGoldenPathEnvGuard {
+            fn enable() -> Self {
+                let lock = crate::cli::config::cli_env_test_lock()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let names = [
+                    PRODUCT_TASK_GATE,
+                    "ACP_ENABLE_TARGET_REPO_OUTPUT",
+                    "ACP_TARGET_REPO_OUTPUT_KILL_SWITCH",
+                    "ACP_TARGET_REPO_REMOTE_HOST_ALLOWLIST",
+                ];
+                let values = names
+                    .into_iter()
+                    .map(|name| (name, std::env::var_os(name)))
+                    .collect();
+                std::env::set_var(PRODUCT_TASK_GATE, "1");
+                std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+                std::env::set_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH", "0");
+                std::env::set_var("ACP_TARGET_REPO_REMOTE_HOST_ALLOWLIST", "github.com");
+                Self {
+                    values,
+                    _lock: lock,
+                }
+            }
+        }
+
+        impl Drop for DelegatedGoldenPathEnvGuard {
+            fn drop(&mut self) {
+                for (name, value) in self.values.drain(..) {
+                    if let Some(value) = value {
+                        std::env::set_var(name, value);
+                    } else {
+                        std::env::remove_var(name);
+                    }
+                }
+            }
+        }
+
+        let _env = DelegatedGoldenPathEnvGuard::enable();
+
+        let (dir, store) = store();
+        let store = Arc::new(store);
+        let repo = dir.path().join("target");
+        std::fs::create_dir_all(repo.join("docs")).unwrap();
+        std::fs::write(
+            repo.join("docs/USER_GUIDE.md"),
+            "# User guide\n\n`alters-lab doctor` checks health.\n",
+        )
+        .unwrap();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "delegated@example.invalid"],
+            vec!["config", "user.name", "Delegated Test"],
+            vec!["add", "docs/USER_GUIDE.md"],
+            vec!["commit", "-m", "initial"],
+            vec![
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/Igzela/alters-lab.git",
+            ],
+        ] {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let revision = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let intake = ProductTaskIntakeRequest {
+            objective: "Clarify that alters-lab doctor performs a read-only health check.".into(),
+            target_id: "alters-lab-docs".into(),
+            target_repo_path: repo.to_string_lossy().into_owned(),
+            source_kind: None,
+            source_revision: revision.clone(),
+            source_tree_hash: None,
+            allowed_paths: vec!["docs/USER_GUIDE.md".into()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md"
+                    .into(),
+                timeout_ms: 5_000,
+            }],
+            output_intent: "draft_pr".into(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["managed_deepseek".into()],
+                prefer: Some("managed_deepseek".into()),
+            },
+            budget: None,
+            risk_class: "low".into(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(true),
+            idempotency_key: "delegated-product-route-1".into(),
+            expected_version: None,
+            tenant_id: Some("tenant-a".into()),
+            workspace_id: Some("default".into()),
+            workspace_mode: Some("git_worktree".into()),
+        };
+        let mut foreign_intake = intake.clone();
+        foreign_intake.idempotency_key = "delegated-product-route-foreign-tenant".into();
+        foreign_intake.tenant_id = Some("local".into());
+        let foreign_validated = validate_intake(&foreign_intake, "local", "default").unwrap();
+        let foreign_task = store
+            .admit_product_task(&foreign_validated, "executor")
+            .unwrap();
+        let validated = validate_intake(&intake, "tenant-a", "default").unwrap();
+        let task = store.admit_product_task(&validated, "executor").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+
+        seed_key(&store, "delegated-operator");
+        let principal = store
+            .authenticate_managed_acceptance_principal("tenant-a", "delegated-operator", Some(1.0))
+            .unwrap();
+        let delegation = delegated_contract();
+        store.persist_delegation(&principal, &delegation).unwrap();
+        let mut proposal = json!({
+            "schema_version": "managed_proposal_manifest.v1",
+            "target_repository": "Igzela/alters-lab",
+            "target_main_sha": revision,
+            "mutable_paths": ["docs/USER_GUIDE.md"],
+            "max_cost_usd": null,
+            "verifier": "deterministic_docs_health_check_v1"
+        });
+        proposal["manifest_sha256"] = json!(compute_attempt_manifest_sha256(&proposal).unwrap());
+        store
+            .persist_approved_delegated_proposal(
+                &delegation.delegation_id,
+                &proposal,
+                proposal["manifest_sha256"].as_str().unwrap(),
+            )
+            .unwrap();
+        let runner_absence = store
+            .prepare_delegated_managed_product_task(
+                task_id,
+                "executor",
+                &[],
+                &proposal,
+                &delegation,
+                "attempt-runner-absent",
+            )
+            .unwrap_err();
+        assert!(runner_absence.contains("available managed_deepseek executor"));
+        let foreign_error = store
+            .prepare_delegated_managed_product_task(
+                foreign_task["task_id"].as_str().unwrap(),
+                "executor",
+                &["managed_deepseek".into()],
+                &proposal,
+                &delegation,
+                "attempt-foreign-tenant",
+            )
+            .unwrap_err();
+        assert!(foreign_error.contains("tenant"));
+        let prepared = store
+            .prepare_delegated_managed_product_task(
+                task_id,
+                "executor",
+                &["managed_deepseek".into()],
+                &proposal,
+                &delegation,
+                "attempt-golden-path-1",
+            )
+            .unwrap();
+        assert_eq!(prepared["scheduler_eligible"], false);
+        let replayed_prepare = store
+            .prepare_delegated_managed_product_task(
+                task_id,
+                "executor",
+                &["managed_deepseek".into()],
+                &proposal,
+                &delegation,
+                "attempt-golden-path-1",
+            )
+            .unwrap();
+        assert_eq!(
+            replayed_prepare["plan"]["plan_id"],
+            prepared["plan"]["plan_id"]
+        );
+        assert_eq!(
+            replayed_prepare["final_manifest"]["manifest_sha256"],
+            prepared["final_manifest"]["manifest_sha256"]
+        );
+        let manifest = prepared["final_manifest"].clone();
+        let approval = store
+            .approve_delegated_manifest(&delegation.delegation_id, &manifest)
+            .unwrap();
+        let spend = store
+            .issue_delegated_spend(
+                &delegation.delegation_id,
+                approval["approval_receipt_sha256"].as_str().unwrap(),
+                &manifest,
+            )
+            .unwrap();
+        let lease = store
+            .admit_delegated_attempt(
+                &delegation.delegation_id,
+                "attempt-golden-path-1",
+                &manifest,
+            )
+            .unwrap();
+        let activated = store
+            .activate_delegated_managed_product_task(
+                task_id,
+                "executor",
+                &manifest,
+                spend["spend_authorization_id"].as_str().unwrap(),
+                lease["attempt_lease_id"].as_str().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(activated["task"]["status"], "graph_ready");
+        assert_eq!(activated["scheduler_eligible"], true);
+        let nodes = activated["run"]["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(
+            nodes[0]["managed_deepseek"]["binding"]["attempt_id"],
+            "attempt-golden-path-1"
+        );
+        let replayed_activation = store
+            .activate_delegated_managed_product_task(
+                task_id,
+                "executor",
+                &manifest,
+                spend["spend_authorization_id"].as_str().unwrap(),
+                lease["attempt_lease_id"].as_str().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(replayed_activation["replayed"], true);
+        assert_eq!(
+            replayed_activation["run"]["run_id"],
+            activated["run"]["run_id"]
+        );
+        assert_eq!(
+            store
+                .search_workflow_runs(100, 0, None)
+                .unwrap()
+                .iter()
+                .filter(|run| run.get("plan_id") == activated["run"].get("plan_id"))
+                .count(),
+            1
+        );
+
+        // Fork a crash-safe local database snapshot at the exact activated
+        // frontier, then prove an unknown provider effect closes all delegated
+        // authority through the ordinary finalizer without a second send.
+        let activated_workspace_path = activated["task"]
+            .pointer("/workspace_binding/workspace_path")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
+        let failure_db = dir.path().join("delegated-outcome-unknown.db");
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "VACUUM INTO ?1",
+                        params![failure_db.to_string_lossy().as_ref()],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let failure_workspace = dir.path().join("delegated-outcome-unknown-workspace");
+        std::fs::create_dir_all(failure_workspace.join("docs")).unwrap();
+        std::fs::copy(
+            PathBuf::from(&activated_workspace_path).join("docs/USER_GUIDE.md"),
+            failure_workspace.join("docs/USER_GUIDE.md"),
+        )
+        .unwrap();
+        let failure_workspace = std::fs::canonicalize(failure_workspace).unwrap();
+        let failure_store = Arc::new(
+            LocalProductStore::new_with_clock(&failure_db, || "2026-07-25T12:00:00Z".to_string())
+                .unwrap(),
+        );
+        let mut failure_binding =
+            failure_store.get_product_task(task_id).unwrap().unwrap()["workspace_binding"].clone();
+        failure_binding["workspace_path"] = json!(failure_workspace);
+        failure_binding["workspace_root"] = json!(failure_workspace);
+        let workspace_record_id = activated["task"]["workspace_record_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        failure_store
+            .with_conn(|connection| {
+                let workspace_json: String = connection
+                    .query_row(
+                        "SELECT workspace_json FROM supervised_patch_workspaces
+                         WHERE workspace_id=?1",
+                        params![workspace_record_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut workspace_json: Value =
+                    serde_json::from_str(&workspace_json).map_err(|error| error.to_string())?;
+                workspace_json["workspace_mode"] = json!("copy");
+                workspace_json["workspace_path"] = json!(failure_workspace);
+                connection
+                    .execute(
+                        "UPDATE product_tasks SET workspace_binding_json=?1
+                         WHERE task_id=?2",
+                        params![failure_binding.to_string(), task_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        "UPDATE supervised_patch_workspaces
+                         SET workspace_path=?1, workspace_canonical_path=?1,
+                             workspace_json=?2
+                         WHERE workspace_id=?3",
+                        params![
+                            failure_workspace.to_string_lossy().as_ref(),
+                            workspace_json.to_string(),
+                            workspace_record_id
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let unknown_transport = Arc::new(DelegatedOutcomeUnknownTransport {
+            sends: AtomicUsize::new(0),
+        });
+        let unknown_transport_trait: Arc<dyn HttpTransport> = unknown_transport.clone();
+        let unknown_source: Arc<dyn crate::provider::managed_deepseek::ManagedAuthoritySource> =
+            failure_store.clone();
+        let unknown_executor = ManagedDeepSeekNodeExecutor::new(
+            delegated_mock_provider("deepseek-v4-pro", unknown_transport_trait.clone()),
+            delegated_mock_provider("deepseek-v4-flash", unknown_transport_trait.clone()),
+            delegated_mock_provider("deepseek-v4-pro", unknown_transport_trait),
+            unknown_source,
+            ManagedDeepSeekExecutorConfig {
+                protocol: DeepSeekProtocol::OpenAiCompatible,
+                limits: ManagedCallLimits {
+                    max_requests: 3,
+                    max_retries: 0,
+                    max_input_tokens: 8_000,
+                    max_output_tokens: 4_000,
+                    max_cumulative_tokens: 24_000,
+                    timeout_ms: 30_000,
+                    max_cost_usd: Some(0.50),
+                },
+                price_profile: DeepSeekPriceProfile::default(),
+            },
+        )
+        .unwrap();
+        let failure_run_id = activated["run"]["run_id"].as_str().unwrap();
+        let mut failure_tick = Value::Null;
+        for _ in 0..12 {
+            failure_tick = failure_store
+                .tick_with_executor(failure_run_id, "executor", 0, &unknown_executor)
+                .unwrap();
+            if failure_tick["run"]["status"] == "failed" {
+                break;
+            }
+        }
+        assert_eq!(unknown_transport.sends.load(Ordering::SeqCst), 1);
+        let failed_run = failure_store
+            .get_workflow_run(failure_run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            failure_tick["run"]["status"], "failed",
+            "run={failed_run:#} tick={failure_tick:#}"
+        );
+        assert_eq!(
+            failed_run["nodes"][0]["result"]["error_domain"],
+            "provider_outcome_unknown"
+        );
+        let failure_terminal = failure_store
+            .finalize_product_task_after_execution(task_id, "recovery-owner")
+            .unwrap();
+        assert_eq!(
+            failure_terminal["delegated_terminal"]["terminal"]["terminal_class"],
+            "outcome_unknown"
+        );
+        assert_eq!(
+            failure_terminal["delegated_terminal"]["terminal"]["spend_authorization_state"],
+            "expired"
+        );
+        assert_eq!(
+            failure_terminal["delegated_terminal"]["terminal"]["attempt_lease_state"],
+            "closed"
+        );
+        assert_eq!(
+            failure_terminal["delegated_terminal"]["terminal"]["delegation_state"],
+            "expired"
+        );
+        assert!(!failure_workspace.exists());
+        let recovered_failure_store =
+            LocalProductStore::new_with_clock(&failure_db, || "2026-07-25T12:00:00Z".into())
+                .unwrap();
+        let recovered = recovered_failure_store
+            .finalize_product_task_after_execution(task_id, "recovery-owner")
+            .unwrap();
+        assert_eq!(recovered["phase"], "terminal_failure");
+        assert!(recovered["delegated_terminal"].is_null());
+        assert_eq!(unknown_transport.sends.load(Ordering::SeqCst), 1);
+
+        let transport = Arc::new(DelegatedRouteMockTransport {
+            responses: Mutex::new(vec![
+                delegated_openai_response(
+                    "mock-plan-1",
+                    "deepseek-v4-pro",
+                    json!({
+                        "schema_version": "managed_deepseek_plan.v1",
+                        "status": "planned",
+                        "path": "docs/USER_GUIDE.md",
+                        "intent": "clarify_doctor_read_only_health_check"
+                    }),
+                ),
+                delegated_openai_response(
+                    "mock-implementation-1",
+                    "deepseek-v4-flash",
+                    json!({
+                        "schema_version": "managed_workspace_action.v1",
+                        "action": "replace_text",
+                        "path": "docs/USER_GUIDE.md",
+                        "old_text": "`alters-lab doctor` checks health.",
+                        "new_text": "`alters-lab doctor` performs a read-only health check."
+                    }),
+                ),
+                delegated_openai_response(
+                    "mock-review-1",
+                    "deepseek-v4-pro",
+                    json!({
+                        "schema_version": "managed_deepseek_review.v1",
+                        "status": "accepted",
+                        "material_objections": []
+                    }),
+                ),
+            ]),
+            sends: AtomicUsize::new(0),
+        });
+        let transport_trait: Arc<dyn HttpTransport> = transport.clone();
+        let source: Arc<dyn crate::provider::managed_deepseek::ManagedAuthoritySource> =
+            store.clone();
+        let executor = ManagedDeepSeekNodeExecutor::new(
+            delegated_mock_provider("deepseek-v4-pro", transport_trait.clone()),
+            delegated_mock_provider("deepseek-v4-flash", transport_trait.clone()),
+            delegated_mock_provider("deepseek-v4-pro", transport_trait),
+            source,
+            ManagedDeepSeekExecutorConfig {
+                protocol: DeepSeekProtocol::OpenAiCompatible,
+                limits: ManagedCallLimits {
+                    max_requests: 3,
+                    max_retries: 0,
+                    max_input_tokens: 8_000,
+                    max_output_tokens: 4_000,
+                    max_cumulative_tokens: 24_000,
+                    timeout_ms: 30_000,
+                    max_cost_usd: Some(0.50),
+                },
+                price_profile: DeepSeekPriceProfile::default(),
+            },
+        )
+        .unwrap();
+        let run_id = activated["run"]["run_id"].as_str().unwrap();
+        let mut tick_results = Vec::new();
+        for _ in 0..8 {
+            let tick = store
+                .tick_with_executor(run_id, "executor", 0, &executor)
+                .unwrap();
+            tick_results.push(tick.clone());
+            if tick
+                .pointer("/run/status")
+                .and_then(Value::as_str)
+                .is_some_and(|status| {
+                    matches!(status, "completed" | "failed" | "cancelled" | "killed")
+                })
+            {
+                break;
+            }
+        }
+        let completed_run = store.get_workflow_run(run_id).unwrap().unwrap();
+        assert_eq!(
+            completed_run["status"], "completed",
+            "run={completed_run:#} ticks={tick_results:#?}"
+        );
+        assert_eq!(transport.sends.load(Ordering::SeqCst), 3);
+        let workspace_path = activated_workspace_path.as_str();
+        let guide =
+            std::fs::read_to_string(PathBuf::from(workspace_path).join("docs/USER_GUIDE.md"))
+                .unwrap();
+        assert!(guide.contains("performs a read-only health check"));
+        let finalized = store
+            .finalize_product_task_after_execution(task_id, "executor")
+            .unwrap();
+        assert_eq!(finalized["task"]["status"], "awaiting_approval");
+        let task_version = finalized["task"]["version"].as_u64().unwrap();
+        let delegated_approval = store
+            .approve_delegated_product_task(
+                task_id,
+                "artifact-confirmer",
+                task_version,
+                &delegation.delegation_id,
+                &manifest,
+                &revision,
+            )
+            .unwrap();
+        assert_eq!(
+            delegated_approval["artifact_confirmation"]["schema_version"],
+            "managed_delegated_artifact_confirmation.v1"
+        );
+        assert_eq!(delegated_approval["replayed"], false);
+        let replayed_approval = store
+            .approve_delegated_product_task(
+                task_id,
+                "artifact-confirmer",
+                task_version,
+                &delegation.delegation_id,
+                &manifest,
+                &revision,
+            )
+            .unwrap();
+        assert_eq!(replayed_approval["replayed"], true);
+        assert_eq!(
+            replayed_approval["approval"]["approval_id"],
+            delegated_approval["approval"]["approval_id"]
+        );
+        let output = store
+            .output_product_task(
+                task_id,
+                "output-owner",
+                task_version,
+                delegated_approval["approval"]["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(output["output"]["mode"], "draft_pr");
+        assert_eq!(output["output"]["status"], "planned", "output={output:#}");
+        assert_eq!(output["output"]["network_effect"], false);
+        assert_eq!(output["output"]["target_repository"], "Igzela/alters-lab");
+        assert!(output["output"]["head_branch"]
+            .as_str()
+            .is_some_and(|branch| branch.starts_with("acp/")));
+        assert_eq!(
+            output["output"]["operation"]["request"]["source_revision"],
+            revision
+        );
+        assert_eq!(output["task"]["status"], "output_pending");
+        assert_eq!(transport.sends.load(Ordering::SeqCst), 3);
+        assert!(store
+            .complete_delegated_product_task_terminal(
+                &delegation.delegation_id,
+                "attempt-golden-path-1",
+                task_id,
+                "cleanup-owner",
+            )
+            .is_err());
+        assert!(PathBuf::from(workspace_path).exists());
+        let target_main_after = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "main"])
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        assert_eq!(target_main_after, revision);
+        let workspace_record_id = finalized["task"]["workspace_record_id"].as_str().unwrap();
+        let cleaned = store
+            .cleanup_workspace(workspace_record_id, "cleanup-owner")
+            .unwrap();
+        assert_eq!(cleaned["status"], "cleaned");
+        assert!(!PathBuf::from(workspace_path).exists());
+        let terminal_receipt = json!({
+            "schema_version": "managed_delegated_terminal_evidence.v1",
+            "product_task_id": task_id,
+            "workflow_run_id": run_id,
+            "manifest_sha256": manifest["manifest_sha256"],
+            "artifact_confirmation_sha256": delegated_approval["artifact_confirmation"]["artifact_confirmation_sha256"],
+            "output_mode": output["output"]["mode"],
+            "output_status": output["output"]["status"],
+            "provider_requests": transport.sends.load(Ordering::SeqCst),
+            "cleanup_status": cleaned["status"],
+            "target_main_sha": target_main_after,
+        });
+        let realized_cost_usd = delegated_approval["realized_cost_usd"].as_f64().unwrap();
+        let terminal = store
+            .complete_delegated_attempt(
+                &delegation.delegation_id,
+                "attempt-golden-path-1",
+                lease["attempt_lease_token"].as_str().unwrap(),
+                "succeeded",
+                &terminal_receipt,
+                realized_cost_usd,
+            )
+            .unwrap();
+        assert_eq!(terminal["status"], "closed");
+        assert_eq!(terminal["terminal_class"], "succeeded");
+        assert_eq!(terminal["spend_authorization_state"], "expired");
+        assert_eq!(terminal["attempt_lease_state"], "closed");
+        assert_eq!(terminal["delegation_state"], "expired");
+        assert_eq!(
+            store
+                .complete_delegated_attempt(
+                    &delegation.delegation_id,
+                    "attempt-golden-path-1",
+                    lease["attempt_lease_token"].as_str().unwrap(),
+                    "succeeded",
+                    &terminal_receipt,
+                    realized_cost_usd,
+                )
+                .unwrap()["replayed"],
+            true
+        );
     }
 }

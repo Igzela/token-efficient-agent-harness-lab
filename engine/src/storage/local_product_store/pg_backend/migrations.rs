@@ -591,6 +591,35 @@ fn apply_pg_v35_migration(client: &mut postgres::Client) -> Result<(), String> {
     tx.commit().map_err(|e| e.to_string())
 }
 
+fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
+    let version = super::super::migrations::V36_SCHEMA_VERSION;
+    let mut tx = client.transaction().map_err(|e| format!("m36 tx: {e}"))?;
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(hashtext(current_database()), hashtext(current_schema()))",
+        &[],
+    )
+    .map_err(|e| e.to_string())?;
+    let current_version = tx
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map(|r| r.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?;
+    if current_version >= version {
+        tx.commit().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    tx.batch_execute(schema::V36_DDL)
+        .map_err(|e| format!("m36: {e}"))?;
+    tx.execute(
+        "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&version],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
 fn validate_pg_v34_tables(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     for table in super::super::migrations::V34_TABLES {
         if !pg_table_present(client, table)? {
@@ -617,6 +646,59 @@ fn validate_pg_v35_schema(client: &mut impl postgres::GenericClient) -> Result<(
         }
     }
     validate_pg_v34_tables(client)
+}
+
+fn validate_pg_v36_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
+    let version = client
+        .query_one(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+        .get::<_, i64>(0);
+    if version != super::super::migrations::V36_SCHEMA_VERSION {
+        return Err(format!("PostgreSQL v36 schema version mismatch: {version}"));
+    }
+    for table in super::super::migrations::V36_TABLES {
+        if !pg_table_present(client, table)? {
+            return Err(format!("PostgreSQL v36 schema missing table {table}"));
+        }
+    }
+    for column in super::super::migrations::V36_COLUMNS {
+        let present = client
+            .query_one(
+                "SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema=current_schema()
+                      AND table_name='managed_acceptance_delegations'
+                      AND column_name=$1
+                 )",
+                &[&column],
+            )
+            .map_err(|error| error.to_string())?
+            .get::<_, bool>(0);
+        if !present {
+            return Err(format!("PostgreSQL v36 schema missing column {column}"));
+        }
+    }
+    for index in super::super::migrations::V36_INDEXES {
+        let present = client
+            .query_one(
+                "SELECT EXISTS (
+                    SELECT 1 FROM pg_indexes
+                    WHERE schemaname=current_schema()
+                      AND tablename='managed_acceptance_delegations'
+                      AND indexname=$1
+                 )",
+                &[&index],
+            )
+            .map_err(|error| error.to_string())?
+            .get::<_, bool>(0);
+        if !present {
+            return Err(format!("PostgreSQL v36 schema missing index {index}"));
+        }
+    }
+    validate_pg_v35_schema(client)
 }
 
 fn apply_pg_v33_migration(client: &mut postgres::Client) -> Result<(), String> {
@@ -1653,6 +1735,61 @@ fn pg_v25_operation_schema_valid(
 }
 
 impl LocalProductStore {
+    pub(crate) fn rollback_pg_v36_to_v35(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_pg_conn(|client| {
+            let mut tx = client.transaction().map_err(|e| e.to_string())?;
+            tx.query_one(
+                "SELECT pg_advisory_xact_lock(hashtext(current_database()), hashtext(current_schema()))",
+                &[],
+            )
+            .map_err(|e| e.to_string())?;
+            let version: i64 = tx
+                .query_one("SELECT COALESCE(MAX(version),0) FROM schema_migrations", &[])
+                .map_err(|e| e.to_string())?
+                .get(0);
+            if version != super::super::migrations::V36_SCHEMA_VERSION {
+                return Err(format!("v36 rollback requires current schema version 36; found {version}"));
+            }
+            tx.batch_execute(
+                "LOCK TABLE managed_acceptance_delegations IN ACCESS EXCLUSIVE MODE",
+            )
+            .map_err(|e| e.to_string())?;
+            let count: i64 = tx
+                .query_one("SELECT COUNT(*) FROM managed_acceptance_delegations", &[])
+                .map_err(|e| e.to_string())?
+                .get(0);
+            if count != 0 {
+                return Err("v36 rollback blocked: delegated authority rows exist".into());
+            }
+            tx.batch_execute(
+                "DROP INDEX IF EXISTS idx_managed_acceptance_delegations_lease;
+                 DROP INDEX IF EXISTS idx_managed_acceptance_delegations_attempt;
+                 DROP INDEX IF EXISTS idx_managed_acceptance_delegations_spend;
+                 DROP INDEX IF EXISTS idx_managed_acceptance_delegations_status;
+                 DROP TABLE IF EXISTS managed_acceptance_delegations;",
+            )
+            .map_err(|e| e.to_string())?;
+            let details = serde_json::json!({
+                "from_version": 36,
+                "to_version": 35,
+                "tables": super::super::migrations::V36_TABLES
+            })
+            .to_string();
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version=$1",
+                &[&super::super::migrations::V36_SCHEMA_VERSION],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1,$2,'schema.rollback.v36_to_v35','local_product_store',$3)",
+                &[&now, &actor, &details],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())
+        })
+    }
+
     pub(crate) fn rollback_pg_v35_to_v34_internal(
         &self,
         actor: &str,
@@ -2265,6 +2402,10 @@ impl LocalProductStore {
                     apply_pg_v35_migration(client)?;
                     continue;
                 }
+                if migration.version == 36 {
+                    apply_pg_v36_migration(client)?;
+                    continue;
+                }
                 if migration.version <= current {
                     continue;
                 }
@@ -2373,7 +2514,7 @@ impl LocalProductStore {
                 }
             }
 
-            validate_pg_v35_schema(client)?;
+            validate_pg_v36_schema(client)?;
 
             // Seed the scheduler_heartbeat singleton row.
             client
@@ -2814,6 +2955,10 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     fn prepare_v25_rollback_fixture(store: &LocalProductStore) {
+        assert_eq!(store.schema_version().unwrap(), 36);
+        store
+            .rollback_v36_to_v35("migration-test-setup", true)
+            .unwrap();
         assert_eq!(store.schema_version().unwrap(), 35);
         store
             .rollback_v35_to_v34("migration-test-setup", true)
@@ -2865,6 +3010,10 @@ mod tests {
         };
         let store = &fixture.store;
         store
+            .rollback_v36_to_v35("migration-test", true)
+            .expect("empty v36 delegation table must roll back");
+        assert_eq!(store.schema_version().unwrap(), 35);
+        store
             .rollback_v35_to_v34("migration-test", true)
             .expect("empty v35 receipt table must roll back");
         assert_eq!(store.schema_version().unwrap(), 34);
@@ -2910,6 +3059,9 @@ mod tests {
             return;
         };
         let store = &fixture.store;
+        store
+            .rollback_v36_to_v35("migration-test", true)
+            .expect("empty v36 delegation table must roll back");
         store
             .with_pg_conn(|client| {
                 let mut publisher = client.transaction().map_err(|error| error.to_string())?;

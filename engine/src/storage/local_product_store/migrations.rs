@@ -1,5 +1,5 @@
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
-use serde_json::Value;
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use serde_json::{json, Value};
 
 use super::{schema, DatabaseConnection, LocalProductStore};
 
@@ -17,6 +17,7 @@ pub(super) const V32_SCHEMA_VERSION: i64 = 32;
 pub(super) const V33_SCHEMA_VERSION: i64 = 33;
 pub(super) const V34_SCHEMA_VERSION: i64 = 34;
 pub(super) const V35_SCHEMA_VERSION: i64 = 35;
+pub(super) const V36_SCHEMA_VERSION: i64 = 36;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -64,11 +65,77 @@ pub(super) const V33_TABLES: [&str; 1] = ["managed_acceptance_spend_authorizatio
 pub(super) const V34_TABLES: [&str; 3] =
     ["rwe_run_authorizations", "rwe_runs", "rwe_task_attempts"];
 pub(super) const V35_TABLES: [&str; 1] = ["product_task_workspace_preparations"];
+pub(super) const V36_TABLES: [&str; 1] = ["managed_acceptance_delegations"];
+pub(super) const V36_COLUMNS: [&str; 35] = [
+    "delegation_id",
+    "tenant_id",
+    "principal_kind",
+    "principal_id",
+    "manifest_approver_id",
+    "artifact_confirmer_id",
+    "delegation_sha256",
+    "body_json",
+    "proposal_sha256",
+    "proposal_json",
+    "status",
+    "executions_allowed",
+    "executions_used",
+    "max_total_cost_usd",
+    "total_cost_usd",
+    "spend_authorization_id",
+    "manifest_approval_sha256",
+    "manifest_approval_json",
+    "spend_body_sha256",
+    "spend_status",
+    "spend_body_json",
+    "manifest_json",
+    "attempt_id",
+    "attempt_lease_id",
+    "attempt_lease_token",
+    "attempt_status",
+    "artifact_confirmation_sha256",
+    "artifact_confirmation_json",
+    "provider_request_journal_json",
+    "terminal_receipt_json",
+    "created_at",
+    "updated_at",
+    "expires_at",
+    "terminal_at",
+    "revoked_at",
+];
+pub(super) const V36_INDEXES: [&str; 4] = [
+    "idx_managed_acceptance_delegations_status",
+    "idx_managed_acceptance_delegations_spend",
+    "idx_managed_acceptance_delegations_attempt",
+    "idx_managed_acceptance_delegations_lease",
+];
 
 #[allow(dead_code)]
 pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
 
 impl LocalProductStore {
+    /// Roll back only an empty delegated-authority table. Delegation rows are
+    /// durable authority evidence, so rollback refuses to erase any row.
+    pub fn rollback_v36_to_v35(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err("v36 rollback requires explicit destructive rollback confirmation".into());
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v36 rollback actor must be between 1 and 128 bytes".into());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v36_to_v35(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v36_to_v35(actor, &now),
+        }
+    }
+
     pub(super) fn run_migrations(&self) -> Result<(), String> {
         self.with_conn(|conn| {
             for migration in schema::SQLITE_MIGRATIONS {
@@ -126,6 +193,7 @@ impl LocalProductStore {
                     V35_SCHEMA_VERSION => {
                         Self::migrate_v35_add_product_workspace_preparations(conn)?
                     }
+                    V36_SCHEMA_VERSION => Self::migrate_v36_add_delegations(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -134,7 +202,9 @@ impl LocalProductStore {
             let final_version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if final_version == V35_SCHEMA_VERSION {
+            if final_version == V36_SCHEMA_VERSION {
+                validate_sqlite_v36_schema(conn)?;
+            } else if final_version == V35_SCHEMA_VERSION {
                 validate_sqlite_v35_schema(conn)?;
             } else if final_version == V34_SCHEMA_VERSION {
                 validate_sqlite_v34_schema(conn)?;
@@ -838,6 +908,52 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                 .map_err(|error| error.to_string())?;
             tx.commit().map_err(|error| error.to_string())?;
             Ok(())
+        })
+    }
+
+    fn rollback_sqlite_v36_to_v35(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            if version != V36_SCHEMA_VERSION {
+                return Err(format!(
+                    "v36 rollback requires current schema version 36; found {version}"
+                ));
+            }
+            let count: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM managed_acceptance_delegations",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if count != 0 {
+                return Err("v36 rollback blocked: delegated authority rows exist".into());
+            }
+            tx.execute_batch(
+                "DROP INDEX IF EXISTS idx_managed_acceptance_delegations_lease;
+                 DROP INDEX IF EXISTS idx_managed_acceptance_delegations_attempt;
+                 DROP INDEX IF EXISTS idx_managed_acceptance_delegations_spend;
+                 DROP INDEX IF EXISTS idx_managed_acceptance_delegations_status;
+                 DROP TABLE IF EXISTS managed_acceptance_delegations;",
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1,?2,'schema.rollback.v36_to_v35','local_product_store',?3)",
+                params![
+                    now,
+                    actor,
+                    json!({"from_version": 36, "to_version": 35, "tables": V36_TABLES}).to_string()
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.pragma_update(None, "user_version", V35_SCHEMA_VERSION)
+                .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())
         })
     }
 
@@ -1918,6 +2034,11 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
             .map_err(|error| error.to_string())
     }
 
+    fn migrate_v36_add_delegations(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(schema::V36_DDL)
+            .map_err(|error| error.to_string())
+    }
+
     fn migrate_v33_add_managed_acceptance_spend(conn: &Connection) -> Result<(), String> {
         repair_sqlite_v32_transition_schema(conn)?;
         let spend_table_exists =
@@ -2171,6 +2292,48 @@ fn validate_sqlite_v35_schema(conn: &Connection) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         if exists != 1 {
             return Err(format!("SQLite v35 schema missing table {table}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_sqlite_v36_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v35_schema(conn)?;
+    for table in V36_TABLES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v36 schema missing table {table}"));
+        }
+    }
+    let mut statement = conn
+        .prepare("PRAGMA table_info(managed_acceptance_delegations)")
+        .map_err(|error| error.to_string())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    for column in V36_COLUMNS {
+        if !columns.contains(column) {
+            return Err(format!("SQLite v36 schema missing column {column}"));
+        }
+    }
+    for index in V36_INDEXES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                [index],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v36 schema missing index {index}"));
         }
     }
     Ok(())
@@ -2993,6 +3156,7 @@ mod tests {
 
     fn store_at_v25(path: impl AsRef<std::path::Path>) -> LocalProductStore {
         let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v36_to_v35("migration-test", true).unwrap();
         store.rollback_v35_to_v34("migration-test", true).unwrap();
         store.rollback_v34_to_v33("migration-test", true).unwrap();
         store.rollback_v33_to_v32("migration-test", true).unwrap();

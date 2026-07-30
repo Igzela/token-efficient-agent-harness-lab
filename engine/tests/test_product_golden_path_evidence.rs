@@ -334,6 +334,9 @@ fn terminal_evidence_links_task_owners_without_fabricated_cost() {
         assert_eq!(emitted_again, again);
         assert_eq!(store.audit_events(10_000).unwrap(), audit_before_reads);
         store
+            .rollback_v36_to_v35("rollback-operator", true)
+            .unwrap();
+        store
             .rollback_v35_to_v34("rollback-operator", true)
             .unwrap();
         store
@@ -901,12 +904,23 @@ fn export_patch_refuses_default_branch_drift_after_workspace_binding() {
 }
 
 #[test]
-fn draft_pr_without_network_gate_is_explicitly_unavailable() {
+fn draft_pr_without_network_gate_persists_an_exact_provider_free_plan() {
     with_gates(|| {
         std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
         let (dir, store) = temp_store();
         let repo = dir.path().join("repo");
         let rev = init_git_repo(&repo);
+        let remote = Command::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/Igzela/alters-lab.git",
+            ])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(remote.status.success(), "{remote:?}");
         let validated = validate_intake(
             &intake(&repo, &rev, "ev-draft-1", "draft_pr"),
             "local",
@@ -920,10 +934,15 @@ fn draft_pr_without_network_gate_is_explicitly_unavailable() {
             .approve_and_output_product_task(task_id, "tester", true)
             .expect("draft unavailable path");
         assert_eq!(done["output"]["mode"], "draft_pr");
-        assert_eq!(done["output"]["status"], "network_output_unavailable");
-        assert!(done["output"]["reason"].as_str().is_some());
-        assert_eq!(done["output"]["export_eligible"], true);
-        // Network unavailability is not successful Draft PR completion.
+        assert_eq!(done["output"]["status"], "planned");
+        assert_eq!(done["output"]["network_effect"], false);
+        assert_eq!(done["output"]["target_repository"], "Igzela/alters-lab");
+        assert_eq!(done["output"]["base_branch"], "main");
+        assert!(done["output"]["head_branch"]
+            .as_str()
+            .is_some_and(|branch| branch.starts_with("acp/")));
+        assert!(done["output"]["request_sha256"].as_str().is_some());
+        // Provider-free planning is not successful Draft PR completion.
         assert_eq!(
             done["task"]["status"].as_str(),
             Some(ProductTaskStatus::OutputPending.as_str())
@@ -1029,6 +1048,17 @@ fn draft_pr_network_gate_disabled_remains_output_pending() {
         let (dir, store) = temp_store();
         let repo = dir.path().join("repo");
         let rev = init_git_repo(&repo);
+        let remote = Command::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/Igzela/alters-lab.git",
+            ])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(remote.status.success(), "{remote:?}");
         let task =
             drive_to_awaiting_approval(&store, &repo, &rev, "ev-draft-disabled-2", "draft_pr");
         let task_id = task["task_id"].as_str().unwrap();
@@ -1046,7 +1076,9 @@ fn draft_pr_network_gate_disabled_remains_output_pending() {
                 true,
             )
             .expect("accurate non-terminal result");
-        assert_eq!(result["output"]["status"], "network_output_unavailable");
+        assert_eq!(result["output"]["status"], "planned");
+        assert_eq!(result["output"]["network_effect"], false);
+        assert_eq!(result["output"]["target_repository"], "Igzela/alters-lab");
         assert_eq!(result["task"]["status"], "output_pending");
         assert_ne!(result["task"]["status"], "completed");
     });
@@ -1301,12 +1333,31 @@ fn progressive_output_operation_survives_restart_and_retries_only_pr_phase() {
         assert_eq!(concurrent["current_version"], pr_claim["current_version"]);
         let reopened = LocalProductStore::new(dir.path().join("store.db")).unwrap();
         reopened
-            .mark_product_output_pr_failed_known(
+            .mark_product_output_pr_outcome_unknown(
                 artifact_id,
                 &operation_id,
                 pr_claim["current_version"].as_u64().unwrap(),
                 "output-operator",
-                "github_pr_create_failed_known: status 422",
+                "github_pr_create_outcome_unknown: mock connection loss",
+            )
+            .unwrap();
+        let reconciliation = reopened
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha256,
+                task_version,
+                "output-operator",
+            )
+            .unwrap();
+        assert_eq!(reconciliation["claim_action"], "reconcile_pr_only");
+        reopened
+            .mark_product_output_pr_failed_known(
+                artifact_id,
+                &operation_id,
+                reconciliation["current_version"].as_u64().unwrap(),
+                "output-operator",
+                "github_pr_create_failed_known: reconciliation proved no PR",
             )
             .unwrap();
         let retry = reopened

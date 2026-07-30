@@ -15,7 +15,9 @@ use super::managed_deepseek::{
     ManagedProviderResponse,
 };
 use super::transport::ReqwestTransport;
-use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
+use crate::node_executor::{
+    CommandNodeExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor,
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -54,11 +56,11 @@ impl Default for ManagedDeepSeekExecutorConfig {
         Self {
             protocol: DeepSeekProtocol::OpenAiCompatible,
             limits: ManagedCallLimits {
-                max_requests: 4,
+                max_requests: 3,
                 max_retries: 0,
                 max_input_tokens: 8_000,
                 max_output_tokens: 4_000,
-                max_cumulative_tokens: 12_000,
+                max_cumulative_tokens: 24_000,
                 timeout_ms: 30_000,
                 max_cost_usd: None,
             },
@@ -130,7 +132,7 @@ impl ManagedDeepSeekNodeExecutor {
             "env",
             "***",
             "provider:deepseek",
-            "2026-07-30T00:00:00Z",
+            "2026-07-31T00:00:00Z",
         );
         let make = |role: ManagedModelRole| {
             let mut provider_config = ProviderConfig::new(
@@ -142,7 +144,7 @@ impl ManagedDeepSeekNodeExecutor {
                 protocol.base_url(),
                 role.default_model(),
                 super::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE,
-                "2026-07-30T00:00:00Z",
+                "2026-07-31T00:00:00Z",
             );
             provider_config.timeout_ms = config.limits.timeout_ms as i64;
             provider_config.max_retries = config.limits.max_retries as i64;
@@ -283,6 +285,18 @@ impl ManagedDeepSeekNodeExecutor {
                         .unwrap_or("bounded ProductTask stage"),
                 )]
             });
+        if let Some(context) = self
+            .source
+            .stage_context(&request.binding, &input.node_metadata)?
+        {
+            request.messages.push(ManagedMessage::text(
+                "user",
+                &format!(
+                    "Bound request-time context (do not reproduce secrets or unrelated content): {}",
+                    context
+                ),
+            ));
+        }
         request.validate()?;
         Ok((request, role))
     }
@@ -309,7 +323,7 @@ impl ManagedDeepSeekNodeExecutor {
             domain: "provider_runtime".to_string(),
             message: "managed DeepSeek runtime thread panicked".to_string(),
             retryable: false,
-            effect: super::managed_deepseek::ManagedFailureEffect::NoExternalEffect,
+            effect: super::managed_deepseek::ManagedFailureEffect::OutcomeUnknown,
         })?
     }
 
@@ -317,19 +331,77 @@ impl ManagedDeepSeekNodeExecutor {
         &self,
         request: &ManagedProviderCallRequest,
         response: &ManagedProviderResponse,
-    ) -> String {
-        json!({
+        action_receipt: Option<Value>,
+    ) -> Result<String, String> {
+        let stage_receipt = match request.role {
+            ManagedModelRole::Planner => {
+                let value: Value = serde_json::from_str(&response.output_text)
+                    .map_err(|_| "managed planner output is not the required JSON object")?;
+                if value
+                    != json!({
+                        "schema_version": "managed_deepseek_plan.v1",
+                        "status": "planned",
+                        "path": "docs/USER_GUIDE.md",
+                        "intent": "clarify_doctor_read_only_health_check"
+                    })
+                {
+                    return Err("managed planner output is outside the bounded plan schema".into());
+                }
+                Some(value)
+            }
+            ManagedModelRole::Implementer => action_receipt.clone(),
+            ManagedModelRole::Reviewer => {
+                let value: Value = serde_json::from_str(&response.output_text)
+                    .map_err(|_| "managed reviewer output is not the required JSON object")?;
+                let status = value.get("status").and_then(Value::as_str);
+                let objections = value
+                    .get("material_objections")
+                    .and_then(Value::as_array)
+                    .ok_or("managed reviewer material_objections must be an array")?;
+                if value.get("schema_version").and_then(Value::as_str)
+                    != Some("managed_deepseek_review.v1")
+                    || !matches!(status, Some("accepted" | "rejected"))
+                    || objections.len() > 10
+                    || objections.iter().any(|item| {
+                        item.as_str()
+                            .is_none_or(|text| text.is_empty() || text.len() > 512)
+                    })
+                    || (status == Some("accepted") && !objections.is_empty())
+                    || (status == Some("rejected") && objections.is_empty())
+                {
+                    return Err(
+                        "managed reviewer output is outside the bounded review schema".into(),
+                    );
+                }
+                let objections_sha256 = hex::encode(Sha256::digest(
+                    serde_json::to_vec(objections)
+                        .map_err(|_| "managed reviewer objections cannot be hashed")?,
+                ));
+                Some(json!({
+                    "schema_version": "managed_deepseek_review_receipt.v1",
+                    "status": status,
+                    "material_objection_count": objections.len(),
+                    "material_objections_sha256": objections_sha256,
+                    "resolved_model": response.resolved_model,
+                }))
+            }
+        };
+        Ok(json!({
             "schema_version": "managed_deepseek_node_output.v1",
             "provider_kind": response.provider_kind,
             "protocol": response.protocol,
             "requested_model": response.requested_model,
             "resolved_model": response.resolved_model,
             "request_id": response.request_id,
+            "usage": response.usage,
+            "estimated_cost_usd": response.estimated_cost_usd,
             "output_sha256": hex::encode(Sha256::digest(response.output_text.as_bytes())),
             "output_bytes": response.output_text.len(),
             "route_stage": request.role,
+            "workspace_action": action_receipt,
+            "stage_receipt": stage_receipt,
         })
-        .to_string()
+        .to_string())
     }
 }
 
@@ -340,6 +412,30 @@ impl NodeExecutor for ManagedDeepSeekNodeExecutor {
 
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
         let started = std::time::Instant::now();
+        if input.task_type == "command" {
+            let expected = "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md";
+            if input
+                .node_metadata
+                .get("executor_class")
+                .and_then(Value::as_str)
+                != Some("deterministic_verifier")
+                || input.node_metadata.get("command").and_then(Value::as_str) != Some(expected)
+                || input.node_metadata.get(MANAGED_DEEPSEEK_NODE_METADATA) != Some(&Value::Null)
+            {
+                return failed(
+                    "managed DeepSeek route verifier is not the exact deterministic docs check"
+                        .to_string(),
+                    started.elapsed().as_millis() as i64,
+                );
+            }
+            return CommandNodeExecutor {
+                timeout_ms: 5_000,
+                allowed_commands: vec!["grep".into()],
+                allowed_binaries: vec!["grep".into()],
+                env_vars: Vec::new(),
+            }
+            .execute_node(input);
+        }
         let (request, role) = match self.request(input) {
             Ok(request) => request,
             Err(error) => return failed(error, started.elapsed().as_millis() as i64),
@@ -350,21 +446,75 @@ impl NodeExecutor for ManagedDeepSeekNodeExecutor {
         };
         let provider = self.providers.for_role(role);
         match Self::execute_blocking(provider, authority, request.clone()) {
-            Ok(response) => NodeExecutionOutput {
-                status: "completed".to_string(),
-                executor_type: MANAGED_DEEPSEEK_EXECUTOR_TYPE.to_string(),
-                output: Some(self.output(&request, &response)),
-                error_domain: None,
-                error_message: None,
-                input_tokens: i64::try_from(response.usage.input_tokens).ok(),
-                output_tokens: i64::try_from(response.usage.output_tokens).ok(),
-                estimated_cost: response.estimated_cost_usd,
-                latency_ms: Some(started.elapsed().as_millis() as i64),
-                process_outcome: None,
-                resolved_model: Some(response.resolved_model),
-            },
-            Err(error) => failed(error.to_string(), started.elapsed().as_millis() as i64),
+            Ok(response) => {
+                let action_receipt = if role == ManagedModelRole::Implementer {
+                    if let Err(error) = self.source.current_authority(&request.binding) {
+                        return failed(
+                            format!("managed workspace authority changed before apply: {error}"),
+                            started.elapsed().as_millis() as i64,
+                        );
+                    }
+                    match self.source.apply_workspace_action(
+                        &request.binding,
+                        &input.node_metadata,
+                        &response.output_text,
+                    ) {
+                        Ok(receipt) => Some(receipt),
+                        Err(error) => {
+                            return failed(
+                                format!("managed workspace action rejected: {error}"),
+                                started.elapsed().as_millis() as i64,
+                            )
+                        }
+                    }
+                } else {
+                    None
+                };
+                let output = match self.output(&request, &response, action_receipt) {
+                    Ok(output) => output,
+                    Err(error) => return failed(error, started.elapsed().as_millis() as i64),
+                };
+                NodeExecutionOutput {
+                    status: "completed".to_string(),
+                    executor_type: MANAGED_DEEPSEEK_EXECUTOR_TYPE.to_string(),
+                    output: Some(output),
+                    error_domain: None,
+                    error_message: None,
+                    input_tokens: i64::try_from(response.usage.input_tokens).ok(),
+                    output_tokens: i64::try_from(response.usage.output_tokens).ok(),
+                    estimated_cost: response.estimated_cost_usd,
+                    latency_ms: Some(started.elapsed().as_millis() as i64),
+                    process_outcome: None,
+                    resolved_model: Some(response.resolved_model),
+                }
+            }
+            Err(error) => failed_provider(error, started.elapsed().as_millis() as i64),
         }
+    }
+}
+
+fn failed_provider(error: ManagedProviderCallError, latency_ms: i64) -> NodeExecutionOutput {
+    let error_domain = match error.effect {
+        super::managed_deepseek::ManagedFailureEffect::OutcomeUnknown => "provider_outcome_unknown",
+        super::managed_deepseek::ManagedFailureEffect::PreSend
+        | super::managed_deepseek::ManagedFailureEffect::NoExternalEffect => {
+            "provider_terminal_failure"
+        }
+    };
+    NodeExecutionOutput {
+        status: "failed".to_string(),
+        executor_type: MANAGED_DEEPSEEK_EXECUTOR_TYPE.to_string(),
+        output: None,
+        error_domain: Some(error_domain.to_string()),
+        error_message: Some(super::redaction::redact_sensitive_patterns(
+            &error.to_string(),
+        )),
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost: None,
+        latency_ms: Some(latency_ms),
+        process_outcome: None,
+        resolved_model: None,
     }
 }
 
@@ -394,7 +544,10 @@ fn boundary_for_clone(boundary: &CredentialBoundary) -> CredentialBoundary {
 #[cfg(test)]
 mod tests {
     use super::super::managed_deepseek::{
-        PersistedAuthoritySnapshot, DEEPSEEK_CREDENTIAL_REFERENCE,
+        PersistedAuthoritySnapshot, PersistedManagedExecutionContract,
+        DEEPSEEK_CREDENTIAL_REFERENCE, DEEPSEEK_OPENAI_BASE_URL, DEEPSEEK_OPENAI_PATH,
+        DEEPSEEK_PROVIDER_KIND, DEEPSEEK_USAGE_PARSER_VERSION, MANAGED_PROVIDER_CALL_SCHEMA,
+        MANAGED_PROVIDER_RESPONSE_SCHEMA,
     };
     use super::super::transport::{HttpError, HttpRequest, HttpResponse, HttpTransport};
     use super::*;
@@ -426,6 +579,22 @@ mod tests {
         ) -> Result<PersistedAuthoritySnapshot, String> {
             Ok(self.snapshot.clone())
         }
+
+        fn claim_provider_request(
+            &self,
+            _request: &ManagedProviderCallRequest,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn reconcile_provider_request(
+            &self,
+            _request: &ManagedProviderCallRequest,
+            _response: Option<&ManagedProviderResponse>,
+            _effect: super::super::managed_deepseek::ManagedFailureEffect,
+        ) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     fn binding() -> ManagedCallBinding {
@@ -436,6 +605,22 @@ mod tests {
             attempt_id: "attempt-1".to_string(),
             spend_authorization_id: "spend-1".to_string(),
             attempt_lease_id: "lease-hash".to_string(),
+        }
+    }
+
+    fn test_execution_contract() -> PersistedManagedExecutionContract {
+        PersistedManagedExecutionContract {
+            provider_kind: DEEPSEEK_PROVIDER_KIND.into(),
+            protocol: DeepSeekProtocol::OpenAiCompatible,
+            host: "api.deepseek.com".into(),
+            base_url: DEEPSEEK_OPENAI_BASE_URL.into(),
+            endpoint_path: DEEPSEEK_OPENAI_PATH.into(),
+            request_schema_version: MANAGED_PROVIDER_CALL_SCHEMA.into(),
+            response_schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.into(),
+            usage_parser_version: DEEPSEEK_USAGE_PARSER_VERSION.into(),
+            requested_model: "deepseek-v4-pro".into(),
+            limits: ManagedDeepSeekExecutorConfig::default().limits,
+            price_profile: DeepSeekPriceProfile::default(),
         }
     }
 
@@ -481,6 +666,7 @@ mod tests {
                 "managed_deepseek": {
                     "stage": stage,
                     "role": "planner",
+                    "protocol": "openai_compatible",
                     "binding": binding,
                     "prompt": "bounded planning request"
                 }
@@ -505,6 +691,7 @@ mod tests {
                 spend_status: "consumed".to_string(),
                 consumed_by_attempt_id: Some("attempt-1".to_string()),
                 lease_status: "current".to_string(),
+                execution_contract: Some(test_execution_contract()),
             },
         });
         let p = providers(transport);
@@ -538,6 +725,7 @@ mod tests {
                 spend_status: "consumed".to_string(),
                 consumed_by_attempt_id: Some("attempt-1".to_string()),
                 lease_status: "current".to_string(),
+                execution_contract: Some(test_execution_contract()),
             },
         });
         let p = providers(transport);
@@ -552,6 +740,46 @@ mod tests {
         let output = executor.execute_node(&input("planning"));
         assert_eq!(output.status, "failed");
         assert!(output.error_message.is_some());
+        assert_eq!(sends.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn immutable_execution_contract_drift_fails_before_provider_request() {
+        let sends = Arc::new(AtomicUsize::new(0));
+        let transport = Arc::new(CountingTransport {
+            sends: Arc::clone(&sends),
+        });
+        let mut contract = test_execution_contract();
+        contract.limits.timeout_ms -= 1;
+        let source = Arc::new(StaticAuthority {
+            snapshot: PersistedAuthoritySnapshot {
+                product_task_id: binding().product_task_id,
+                workflow_id: binding().workflow_id,
+                node_id: binding().node_id,
+                attempt_id: binding().attempt_id,
+                spend_authorization_id: binding().spend_authorization_id,
+                attempt_lease_id: binding().attempt_lease_id,
+                spend_status: "consumed".to_string(),
+                consumed_by_attempt_id: Some("attempt-1".to_string()),
+                lease_status: "current".to_string(),
+                execution_contract: Some(contract),
+            },
+        });
+        let p = providers(transport);
+        let executor = ManagedDeepSeekNodeExecutor::new(
+            p.planner,
+            p.implementer,
+            p.reviewer,
+            source,
+            ManagedDeepSeekExecutorConfig::default(),
+        )
+        .unwrap();
+        let output = executor.execute_node(&input("planning"));
+        assert_eq!(output.status, "failed");
+        assert!(output
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("stale or mismatched")));
         assert_eq!(sends.load(Ordering::SeqCst), 0);
     }
 
@@ -572,6 +800,7 @@ mod tests {
                 spend_status: "consumed".to_string(),
                 consumed_by_attempt_id: Some("attempt-1".to_string()),
                 lease_status: "current".to_string(),
+                execution_contract: Some(test_execution_contract()),
             },
         });
         let p = providers(transport);

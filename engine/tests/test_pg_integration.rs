@@ -50,11 +50,12 @@ use engine::rwe::runner::{persist_rwe_run_authorization, RweRunAuthorizationBody
 use engine::storage::local_product_store::BudgetAutoPausePolicy;
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::{
-    AuthenticatedPrincipal, CostAuthority, DurableMemoryCreate, DurableMemoryRevision,
+    compute_attempt_manifest_sha256, derive_final_execution_manifest, AuthenticatedPrincipal,
+    CostAuthority, DelegationContract, DurableMemoryCreate, DurableMemoryRevision,
     ExternalRuntimeInvocationClaim, ExternalRuntimeScope, LocalProductStore,
     MemoryRetrievalRequest, MemoryScope, ProviderEmbeddingResolutionAction,
     ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, RwePerTaskBudget,
-    SpendAuthorizationRequest,
+    SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -1937,6 +1938,9 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_preserves_spend_rollback_gua
     assert_eq!(output_audits, 1);
 
     store
+        .rollback_v36_to_v35("pg-rollback-operator", true)
+        .unwrap();
+    store
         .rollback_v35_to_v34("pg-rollback-operator", true)
         .unwrap();
     store
@@ -2184,6 +2188,25 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             .count(),
         1
     );
+    store
+        .mark_product_output_pr_outcome_unknown(
+            artifact_id,
+            &operation_id,
+            pr_claim["current_version"].as_u64().unwrap(),
+            "pg-output-operator",
+            "github_pr_create_outcome_unknown: mock connection loss",
+        )
+        .unwrap();
+    let reconciliation = store
+        .claim_product_output_operation(
+            artifact_id,
+            &output_request,
+            &output_request_sha,
+            pending_version,
+            "pg-output-operator",
+        )
+        .unwrap();
+    assert_eq!(reconciliation["claim_action"], "reconcile_pr_only");
     let pull_request = json!({
         "number": 23,
         "url": "https://github.com/disposable/pg-acceptance/pull/23",
@@ -2199,7 +2222,7 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         .complete_product_output_draft_pr(
             artifact_id,
             &operation_id,
-            pr_claim["current_version"].as_u64().unwrap(),
+            reconciliation["current_version"].as_u64().unwrap(),
             &pull_request,
             "pg-output-operator",
         )
@@ -3140,6 +3163,187 @@ fn pg_managed_acceptance_attempt_replay_lease_terminal_restart_and_principal_par
             .unwrap()["status"],
         "consumed",
         "terminal PostgreSQL attempts must never reactivate a spend"
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let key_id = format!("delegated-pg-operator-{tag}");
+    store
+        .record_api_key_metadata(
+            &key_id,
+            &format!("delegated-pg-user-{tag}"),
+            "operator",
+            &ALL_MANAGED_ACCEPTANCE_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "pg-test-setup",
+        )
+        .unwrap();
+    let principal = store
+        .authenticate_managed_acceptance_principal("tenant-a", &key_id, Some(1.0))
+        .unwrap();
+    let created_at = utc_now_string();
+    let expires_at = (chrono::DateTime::parse_from_rfc3339(&created_at)
+        .unwrap()
+        .with_timezone(&chrono::Utc)
+        + chrono::Duration::hours(24))
+    .format("%Y-%m-%dT%H:%M:%SZ")
+    .to_string();
+    let delegation_id = format!("delegation-pg-{tag}");
+    let delegation = DelegationContract {
+        schema_version: "managed_autonomous_delegation.v1".into(),
+        delegation_id: delegation_id.clone(),
+        created_at: created_at.clone(),
+        expires_at,
+        executions: 1,
+        repositories: vec!["Igzela/alters-lab".into()],
+        task_classes: vec!["documentation".into()],
+        allowed_paths: vec!["docs/USER_GUIDE.md".into()],
+        max_changed_files: 1,
+        max_changed_lines: 100,
+        max_cost_usd_per_run: 0.50,
+        max_total_cost_usd: 0.50,
+        protocol: "openai_compatible".into(),
+        models: json!({
+            "planner": "deepseek-v4-pro",
+            "implementer": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro"
+        }),
+        output: json!({
+            "draft_pr_only": true,
+            "target_main_write": false,
+            "merge": false,
+            "auto_merge": false
+        }),
+        forbidden: vec![
+            "credential changes",
+            "authentication or permission changes",
+            "schema or database migrations",
+            "dependency changes",
+            "executable or workflow changes",
+            "destructive operations",
+            "release",
+            "deployment",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+    };
+    store.persist_delegation(&principal, &delegation).unwrap();
+    let target_sha = "6".repeat(40);
+    let mut proposal = json!({
+        "schema_version": "managed_proposal_manifest.v1",
+        "target_repository": "Igzela/alters-lab",
+        "target_main_sha": target_sha,
+        "mutable_paths": ["docs/USER_GUIDE.md"],
+        "max_cost_usd": null,
+        "verifier": "deterministic_docs_health_check_v1"
+    });
+    proposal["manifest_sha256"] = json!(compute_attempt_manifest_sha256(&proposal).unwrap());
+    store
+        .persist_approved_delegated_proposal(
+            &delegation_id,
+            &proposal,
+            proposal["manifest_sha256"].as_str().unwrap(),
+        )
+        .unwrap();
+    let product_task_id = format!("product-task-pg-{tag}");
+    let workflow_id = format!("workflow-pg-{tag}");
+    let attempt_id = format!("attempt-pg-{tag}");
+    let manifest = derive_final_execution_manifest(
+        &proposal,
+        &delegation,
+        &json!({
+            "observed_at": created_at,
+            "target_repository": "Igzela/alters-lab",
+            "target_main_sha": target_sha,
+            "tenant_id": "tenant-a",
+            "product_task_id": product_task_id,
+            "workflow_id": workflow_id,
+            "workflow_node_ids": ["planning", "implementation", "verification", "review"],
+            "attempt_id": attempt_id,
+            "verifier": "deterministic_docs_health_check_v1",
+            "mutable_paths": ["docs/USER_GUIDE.md"],
+            "cancellation_identity": format!("cancel-pg-{tag}"),
+            "rollback_identity": format!("rollback-pg-{tag}")
+        }),
+    )
+    .unwrap();
+    let approval = store
+        .approve_delegated_manifest(&delegation_id, &manifest)
+        .unwrap();
+    let spend = store
+        .issue_delegated_spend(
+            &delegation_id,
+            approval["approval_receipt_sha256"].as_str().unwrap(),
+            &manifest,
+        )
+        .unwrap();
+    let lease = store
+        .admit_delegated_attempt(&delegation_id, &attempt_id, &manifest)
+        .unwrap();
+
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    let restarted = LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
+    assert_eq!(
+        restarted
+            .admit_delegated_attempt(&delegation_id, &attempt_id, &manifest)
+            .unwrap()["replayed"],
+        true
+    );
+    let binding = engine::provider::managed_deepseek::ManagedCallBinding {
+        product_task_id,
+        workflow_id,
+        node_id: "planning".into(),
+        attempt_id: attempt_id.clone(),
+        spend_authorization_id: spend["spend_authorization_id"].as_str().unwrap().into(),
+        attempt_lease_id: lease["attempt_lease_id"].as_str().unwrap().into(),
+    };
+    let authority =
+        <LocalProductStore as engine::provider::managed_deepseek::ManagedAuthoritySource>::current_authority(
+            &restarted,
+            &binding,
+        )
+        .unwrap();
+    assert!(authority.execution_contract.is_some());
+    let terminal_receipt = json!({
+        "schema_version": "managed_delegated_terminal_evidence.v1",
+        "provider_requests": 0,
+        "cancellation_identity": format!("cancel-pg-{tag}"),
+        "content_excluded": true
+    });
+    let terminal = restarted
+        .complete_delegated_attempt(
+            &delegation_id,
+            &attempt_id,
+            lease["attempt_lease_token"].as_str().unwrap(),
+            "cancelled",
+            &terminal_receipt,
+            0.0,
+        )
+        .unwrap();
+    assert_eq!(terminal["spend_authorization_state"], "expired");
+    assert_eq!(terminal["attempt_lease_state"], "closed");
+    assert_eq!(terminal["delegation_state"], "expired");
+
+    let resumed = LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
+    assert_eq!(
+        resumed
+            .complete_delegated_attempt(
+                &delegation_id,
+                &attempt_id,
+                lease["attempt_lease_token"].as_str().unwrap(),
+                "cancelled",
+                &terminal_receipt,
+                0.0,
+            )
+            .unwrap()["replayed"],
+        true
     );
 }
 

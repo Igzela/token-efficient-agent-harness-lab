@@ -161,6 +161,31 @@ fn target_repo_output_env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn product_golden_path_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct ProductGoldenPathDisabledEnvGuard(Option<std::ffi::OsString>);
+
+impl ProductGoldenPathDisabledEnvGuard {
+    fn disable() -> Self {
+        let previous = std::env::var_os("ACP_PRODUCT_GOLDEN_PATH");
+        std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH");
+        Self(previous)
+    }
+}
+
+impl Drop for ProductGoldenPathDisabledEnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.0.take() {
+            std::env::set_var("ACP_PRODUCT_GOLDEN_PATH", previous);
+        } else {
+            std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH");
+        }
+    }
+}
+
 struct TargetRepoOutputEnvGuard;
 
 impl TargetRepoOutputEnvGuard {
@@ -12812,6 +12837,122 @@ async fn axum_target_repo_output_requires_execute_scope() {
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(response_json(response).await["code"], "missing_scope");
+}
+
+#[tokio::test]
+async fn axum_delegated_product_task_endpoints_enforce_separated_scopes_before_body_parsing() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("delegated-product-auth.db")).unwrap();
+    let available_scopes =
+        HashSet::from(["team:admin".to_string(), "dispatch:execute".to_string()]);
+    let mut resolver = TenantResolver::new();
+    resolver.add_tenant(Tenant {
+        tenant_id: "delegated-product".to_string(),
+        name: "Delegated Product".to_string(),
+        scopes: available_scopes,
+        rate_limit: Some(100),
+    });
+    let (_, admin_only_key) = resolver
+        .create_api_key(
+            "delegated-product",
+            Some(HashSet::from(["team:admin".to_string()])),
+            None,
+            1.0,
+        )
+        .unwrap();
+    let (_, execute_only_key) = resolver
+        .create_api_key(
+            "delegated-product",
+            Some(HashSet::from(["dispatch:execute".to_string()])),
+            None,
+            1.0,
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+
+    for (path, raw_key) in [
+        (
+            "/api/v1/product/tasks/missing/delegated/prepare",
+            &execute_only_key,
+        ),
+        (
+            "/api/v1/product/tasks/missing/delegated/activate",
+            &admin_only_key,
+        ),
+        (
+            "/api/v1/product/tasks/missing/delegated/approve",
+            &execute_only_key,
+        ),
+        (
+            "/api/v1/product/tasks/missing/delegated/terminal",
+            &admin_only_key,
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(path)
+                    .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+        assert_eq!(response_json(response).await["code"], "missing_scope");
+    }
+}
+
+#[tokio::test]
+async fn axum_delegated_prepare_is_default_off_after_admin_authorization() {
+    let _env_lock = product_golden_path_env_lock().lock().await;
+    let _env = ProductGoldenPathDisabledEnvGuard::disable();
+
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("delegated-product-gate.db")).unwrap();
+    let scopes = HashSet::from(["team:admin".to_string()]);
+    let mut resolver = TenantResolver::new();
+    resolver.add_tenant(Tenant {
+        tenant_id: "delegated-product".to_string(),
+        name: "Delegated Product".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_, raw_key) = resolver
+        .create_api_key("delegated-product", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/product/tasks/missing/delegated/prepare")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(response).await["code"],
+        "product_golden_path_disabled"
+    );
 }
 
 #[tokio::test]

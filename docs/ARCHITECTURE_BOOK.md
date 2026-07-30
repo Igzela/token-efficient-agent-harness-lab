@@ -2,11 +2,11 @@
 
 Last updated: 2026-07-28.
 
-Current version: v35 accepted through PR #308. Accepted-main version: v35.
+Current version: v36.
 
 This is the durable architecture and safety baseline for the Token-Efficient Agent Harness Lab. Current facts live in `docs/CURRENT_STATUS.md`; routing and gates live in `docs/NEXT_DECISION.md`; concrete owners live in `docs/MODULE_MAP.md`. Historical packet details remain available in git history.
 
-The accepted schema carries **v32** hash-linked decision-transition receipts, **v33** managed-acceptance spend/lease logical authorization, **v34** RWE authority rows, and **v35** ProductTask workspace-preparation receipts for provider-free recovery preparation. PR #308 accepted the v35 change: it pins one local physical-worktree plan before mutation, but does not authorize a provider call, live Golden Path task, RWE, Level-2, Meta, or Dashboard #225.
+The schema carries **v32** hash-linked decision-transition receipts, **v33** managed-acceptance spend/lease logical authorization, **v34** RWE authority rows, **v35** ProductTask workspace-preparation receipts, and **v36** immutable proposal/final-manifest delegation state plus the durable managed-provider request journal. v36 reuses `LocalProductStore`, ProductTask budget, attempt, approval, output, audit, and rollback owners; it does not create another scheduler, runtime, store, budget, workspace, evaluator, or target-output owner.
 
 ## Mission
 
@@ -251,6 +251,14 @@ Protocol adapters are evidence and transport adapters beneath one ProductTask-ow
 The initial admitted DeepSeek profiles are exact: `deepseek-v4-flash` and `deepseek-v4-pro`; OpenAI-compatible Chat Completions at `https://api.deepseek.com/chat/completions`; and Anthropic-compatible Messages at `https://api.deepseek.com/anthropic/v1/messages`. Unsupported-name fallback or alias mapping is not resolved-model evidence. Missing, ambiguous, conflicting, or untrusted returned model/usage evidence is fail-closed for an admitted class. Both protocols share the same ProductTask spend envelope; planner/implementer/reviewer sublimits never become spend owners.
 
 The parent-owned journal conservatively reserves before send, retains consumption after failed, killed, cancelled, timed-out, or outcome-unknown effects, and never retries an outcome-unknown request. Protocol-specific parsers normalize stream/non-stream text and tool semantics, request identity, stop status, cache and reasoning buckets, and usage into `execution_usage_event.v1`; they never substitute a second journal or budget owner. A dollar-denominated live gate requires current, versioned, source-labeled conservative pricing. Token-only fixture limits remain allowed, but unknown/stale price is unavailable rather than zero.
+
+### Delegated autonomous Golden Path
+
+A proposal manifest is immutable after persistence. Execution derives a separate final manifest containing the non-null cost cap and exact target SHA, mutable paths, verifier, provider, protocol, role/model, request, usage, retry, recovery, and output limits before canonical hashing. Approval is a separate hash-bound receipt; changing any execution fact requires a new final-manifest hash. A one-use spend authorization and attempt lease then bind that exact hash.
+
+Delegation is versioned, hash-bound, revocable, expiring, replay-protected, and cumulatively budgeted. The delegated manifest/spend approver may approve only a final manifest entirely inside a current authenticated operator delegation. The independently separated artifact/output confirmer rechecks the current delegation, target SHA, exact artifact/diff, paths, verifier result, reviewer result, realized cost, and output restrictions before authorizing one unmerged `acp/*` Draft PR. Execution and model outputs cannot issue either receipt, and no component may execute and approve the same attempt.
+
+The production DeepSeek route is one ProductTask graph: Pro planning, Flash typed bounded workspace actions, deterministic verification, then Pro review. The deterministic verifier—not a model—decides verification success. Each provider request is claimed in the existing store-owned journal before send and reconciled with exact model/protocol/request/usage identity afterward. A crash-left `sending` or outcome-unknown record is permanently non-retryable across restart. Success reconciles actual usage/cost; failure conservatively retains reservation when actual usage is unknown. Every terminal path performs bounded cleanup, expires spend and delegation, closes the attempt lease, and persists rollback/terminal evidence with SQLite/PostgreSQL parity.
 
 ## Evidence and Lifecycle Cost
 
