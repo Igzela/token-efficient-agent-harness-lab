@@ -256,6 +256,7 @@ fn as_u64_tok(v: &Value) -> Option<u64> {
 fn openai_cache_read_tokens(usage: &Value) -> u64 {
     usage
         .get("cache_read_input_tokens")
+        .or_else(|| usage.get("prompt_cache_hit_tokens"))
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens"))
         .or_else(|| usage.pointer("/prompt_tokens_details/cached_tokens"))
         .and_then(as_u64_tok)
@@ -274,6 +275,11 @@ fn openai_cache_write_tokens(usage: &Value) -> u64 {
 /// Anthropic Messages non-stream body.
 pub fn from_anthropic_response(body: &Value) -> Option<ProtocolTokenUsage> {
     let usage = body.get("usage")?;
+    let reasoning = usage
+        .get("reasoning_tokens")
+        .or_else(|| usage.pointer("/output_tokens_details/reasoning_tokens"))
+        .and_then(as_u64_tok)
+        .unwrap_or(0);
     Some(ProtocolTokenUsage {
         input_tokens: usage.get("input_tokens").and_then(as_u64_tok)?,
         output_tokens: usage.get("output_tokens").and_then(as_u64_tok)?,
@@ -285,11 +291,11 @@ pub fn from_anthropic_response(body: &Value) -> Option<ProtocolTokenUsage> {
             .get("cache_creation_input_tokens")
             .and_then(as_u64_tok)
             .unwrap_or(0),
-        reasoning_output_tokens: 0,
+        reasoning_output_tokens: reasoning,
         model: body.get("model").and_then(Value::as_str).map(str::to_owned),
         message_or_response_id: response_id(body, "id"),
         input_semantics: Some(InputTokenSemantics::InputExcludesCache),
-        output_includes_reasoning: false,
+        output_includes_reasoning: reasoning > 0,
     })
 }
 

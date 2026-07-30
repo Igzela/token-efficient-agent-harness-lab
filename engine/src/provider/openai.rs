@@ -63,6 +63,26 @@ impl OpenAiProvider {
             retryable,
         }
     }
+
+    /// DeepSeek managed calls reuse this provider's existing credential boundary
+    /// and transport.  Budget, lease, journal, and ProductTask authority stay
+    /// with the managed-call/store owner.
+    pub(crate) async fn invoke_managed_deepseek(
+        &self,
+        request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
+    ) -> Result<
+        crate::provider::managed_deepseek::ManagedProviderResponse,
+        crate::provider::managed_deepseek::ManagedProviderCallError,
+    > {
+        crate::provider::managed_deepseek::invoke_openai_wire(
+            &self.config,
+            &self.boundary,
+            &self.cred_ref,
+            &self.transport,
+            request,
+        )
+        .await
+    }
 }
 
 #[async_trait::async_trait]
