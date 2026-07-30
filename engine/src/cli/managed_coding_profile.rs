@@ -429,7 +429,7 @@ struct Semver(u64, u64, u64);
 
 impl Semver {
     fn parse(value: &str) -> Result<Self, String> {
-        let value = value.trim().trim_start_matches('v');
+        let value = value.trim();
         let mut parts = value.split('.');
         let parse_part = |part: Option<&str>| {
             part.ok_or_else(|| "managed coding version must be major.minor.patch".to_string())?
@@ -590,6 +590,14 @@ mod tests {
     fn arbitrary_output_cannot_smuggle_a_semantic_version() {
         let (_directory, path, sha256) = script(
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'unexpected 0.146.7 text'; else echo '--sandbox'; fi\n",
+        );
+        assert!(admit_binary_runtime(&profile(path, sha256)).is_err());
+    }
+
+    #[test]
+    fn version_prefix_is_not_an_admitted_codex_form() {
+        let (_directory, path, sha256) = script(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'v0.146.7'; else echo '--sandbox'; fi\n",
         );
         assert!(admit_binary_runtime(&profile(path, sha256)).is_err());
     }
