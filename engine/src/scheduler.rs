@@ -206,6 +206,7 @@ impl SchedulerConfig {
                 | "claude_code_cli"
                 | "codex_cli"
                 | "adaptive_provider"
+                | "managed_deepseek"
                 | "dynamic"
                 | "dynamic_noop"
                 | "dynamic_workflow"
@@ -265,6 +266,17 @@ fn create_scheduler_executor(
             Arc::new(crate::node_executor::CommandNodeExecutor::default()),
             store,
         )),
+        "managed_deepseek" => {
+            match crate::provider::managed_deepseek_executor::ManagedDeepSeekNodeExecutor::from_env(
+                Arc::clone(&store)
+                    as Arc<dyn crate::provider::managed_deepseek::ManagedAuthoritySource>,
+            ) {
+                Ok(executor) => Arc::new(executor),
+                Err(error) => {
+                    unavailable(format!("managed DeepSeek executor unavailable: {error}"))
+                }
+            }
+        }
         "claude_code_cli" | "codex_cli" => {
             let config = crate::cli::CliConfig::from_env();
             match CliNodeExecutor::from_config_for(&config, executor_type) {

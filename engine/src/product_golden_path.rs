@@ -1269,6 +1269,10 @@ pub fn compile_product_executable_graph(
         .ok_or_else(|| "workspace_binding missing source_revision".to_string())?;
     let allowed_paths = binding.get("allowed_paths").cloned().unwrap_or(json!([]));
     let intake = task.get("intake").cloned().unwrap_or(json!({}));
+    let objective_preview = intake
+        .get("objective_preview")
+        .cloned()
+        .unwrap_or_else(|| json!("bounded ProductTask stage"));
     let budget = intake.get("budget").cloned().unwrap_or(json!({}));
     let effective_total_tokens = budget
         .get("total_tokens")
@@ -1290,6 +1294,7 @@ pub fn compile_product_executable_graph(
         "local_runner_validation" => "local_runner_validation",
         "claude_code_cli" => "claude_code_cli",
         "codex_cli" => "codex_cli",
+        "managed_deepseek" => "managed_deepseek",
         "opencode" => crate::opencode_runtime::OPENCODE_TASK_TYPE,
         other => {
             return Err(format!(
@@ -1386,6 +1391,22 @@ pub fn compile_product_executable_graph(
             "pricing_source_version": profile.pricing_source_version,
             "admission_classification": profile.admission_classification,
         })
+    } else if resolved_executor == "managed_deepseek" {
+        json!({
+            "schema_version": "managed_executor_identity.v1",
+            "executor_type": "managed_deepseek",
+            "executor_class": "managed_coding",
+            "provider_kind": "deepseek",
+            "protocol": "openai_compatible",
+            "credential_reference": "DEEPSEEK_API_KEY",
+            "planner_model": "deepseek-v4-pro",
+            "implementer_model": "deepseek-v4-flash",
+            "reviewer_model": "deepseek-v4-pro",
+            "route_schema_version": "managed_deepseek_route.v1",
+            "usage_parser_version": "protocol_usage.v1",
+            "authority_source": "LocalProductStore.managed_acceptance",
+            "output_policy": "redacted_digest_only"
+        })
     } else {
         Value::Null
     };
@@ -1431,6 +1452,19 @@ pub fn compile_product_executable_graph(
         "product_budget": product_budget,
         "product_graph_schema_version": PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
         "managed_supervised_patch": Value::Null,
+        "managed_deepseek": if resolved_executor == "managed_deepseek" {
+            json!({
+                "schema_version": "managed_deepseek_node.v1",
+                "stage": "planning",
+                "role": "planner",
+                "protocol": "openai_compatible",
+                "binding": Value::Null,
+                "prompt": objective_preview,
+                "authority_binding_source": "LocalProductStore.managed_acceptance"
+            })
+        } else {
+            Value::Null
+        },
     });
     let binding_sha256 = product_apply_binding_sha256(workspace_id, &apply_node)?;
     apply_node["managed_supervised_patch"] = json!({
@@ -1502,6 +1536,47 @@ mod tests {
             workspace_id: None,
             workspace_mode: Some("git_worktree".to_string()),
         }
+    }
+
+    #[test]
+    fn managed_deepseek_executor_compiles_as_an_explicit_product_node() {
+        let task = json!({
+            "task_id": "product-task-deepseek",
+            "status": "workspace_bound",
+            "tenant_id": "tenant-1",
+            "workspace_id": "workspace-1",
+            "objective_fingerprint": "a".repeat(64),
+            "intake_contract_sha256": "b".repeat(64),
+            "output_intent": "draft_pr",
+            "workspace_binding": {
+                "workspace_path": "/tmp/product-workspace",
+                "workspace_id": "workspace-1",
+                "source_revision": "c".repeat(40),
+                "allowed_paths": ["docs/USER_GUIDE.md"]
+            },
+            "intake": {
+                "objective_preview": "Clarify the read-only doctor health check.",
+                "budget": {"total_tokens": 12000},
+                "verification_commands": []
+            }
+        });
+        let graph = compile_product_executable_graph(
+            &task,
+            "2026-07-30T00:00:00Z",
+            &crate::read_only_planner::WorkflowPlanIds::for_sequence(1),
+            "managed_deepseek",
+        )
+        .unwrap();
+        let node = &graph["nodes"][0];
+        assert_eq!(node["task_type"], "managed_deepseek");
+        assert_eq!(node["executor"], "managed_deepseek");
+        assert_eq!(node["managed_deepseek"]["stage"], "planning");
+        assert_eq!(node["managed_deepseek"]["role"], "planner");
+        assert!(node["managed_deepseek"]["binding"].is_null());
+        assert_eq!(
+            node["managed_executor_identity"]["planner_model"],
+            "deepseek-v4-pro"
+        );
     }
 
     #[test]

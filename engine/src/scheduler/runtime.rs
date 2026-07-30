@@ -886,7 +886,7 @@ fn scheduler_route_for_run(
         Some(crate::opencode_runtime::OPENCODE_EXECUTOR_TYPE.to_string())
     } else if matches!(
         task_type.as_str(),
-        "adaptive_provider" | "claude_code_cli" | "codex_cli"
+        "adaptive_provider" | "managed_deepseek" | "claude_code_cli" | "codex_cli"
     ) {
         required = true;
         Some(task_type.clone())

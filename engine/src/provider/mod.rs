@@ -11,6 +11,7 @@ pub mod embedding;
 pub mod executor;
 pub mod fake;
 pub mod managed_deepseek;
+pub mod managed_deepseek_executor;
 pub mod openai;
 pub mod redaction;
 pub mod retry;
