@@ -107,6 +107,87 @@ fn remove_product_task_git_worktree_or_reconcile(
     })
 }
 
+/// Remove only an exact receipt-owned local-folder staging directory.  Unlike
+/// a Git worktree this path has no external metadata to reconcile, but it is
+/// still never removed by a broad cleanup: it must be the deterministic child
+/// of the receipt root, be a real directory (not a replacement symlink), and
+/// be absent after removal.  Anything ambiguous is retained for operator
+/// reconciliation rather than risking a path-following delete.
+fn remove_product_task_local_folder_stage_or_reconcile(
+    receipt: &ProductTaskWorkspacePreparationReceipt,
+    task_id: &str,
+) -> Result<(), String> {
+    let expected = receipt
+        .workspace_root
+        .join(product_task_workspace_fs_id(task_id));
+    if receipt.workspace_path != expected {
+        return Err(product_task_workspace_preparation_reconciliation_error(
+            "local-folder staging receipt path is invalid",
+        ));
+    }
+    match std::fs::symlink_metadata(&receipt.workspace_path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(product_task_workspace_preparation_reconciliation_error(
+                    "local-folder staging path is not an app-owned directory",
+                ));
+            }
+            let canonical = std::fs::canonicalize(&receipt.workspace_path).map_err(|_| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "local-folder staging identity is unavailable",
+                )
+            })?;
+            if canonical != receipt.workspace_path {
+                return Err(product_task_workspace_preparation_reconciliation_error(
+                    "local-folder staging path drifted",
+                ));
+            }
+            std::fs::remove_dir_all(&receipt.workspace_path).map_err(|_| {
+                product_task_workspace_preparation_reconciliation_error(
+                    "local-folder staging cleanup is unavailable",
+                )
+            })?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            return Err(product_task_workspace_preparation_reconciliation_error(
+                "local-folder staging identity is unavailable",
+            ));
+        }
+    }
+    if receipt.workspace_path.exists() {
+        return Err(product_task_workspace_preparation_reconciliation_error(
+            "local-folder staging remains after cleanup",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_product_task_workspace_or_reconcile(
+    intake: &ValidatedProductTaskIntake,
+    receipt: &ProductTaskWorkspacePreparationReceipt,
+    target_canonical: &Path,
+    task_id: &str,
+) -> Result<(), String> {
+    if intake.workspace_mode == "local_folder" {
+        // The local source was captured through the safe manifest boundary
+        // above. Its canonical path must remain the exact supervised-workspace
+        // target before the staging copy can be cleaned.
+        if target_canonical != Path::new(&intake.target_repo_path) {
+            return Err(product_task_workspace_preparation_reconciliation_error(
+                "local-folder source path drifted",
+            ));
+        }
+        return remove_product_task_local_folder_stage_or_reconcile(receipt, task_id);
+    }
+    let config = TargetRepoOutputConfig::from_env();
+    remove_product_task_git_worktree_or_reconcile(
+        &config,
+        target_canonical,
+        &receipt.workspace_path,
+    )
+}
+
 fn classify_product_task_git_worktree_prepare_error(error: String) -> String {
     if error.starts_with(GIT_WORKTREE_ADD_OUTCOME_UNKNOWN) {
         product_task_workspace_preparation_reconciliation_error(
@@ -2575,6 +2656,7 @@ impl LocalProductStore {
             source_tree_hash: Some(content_hash.clone()),
             workspace_content_hash: content_hash,
             workspace_mode: "git_worktree".to_string(),
+            local_folder_exclusions_sha256: None,
             provisional_run_id: provisional_run_id.clone(),
             allowed_paths: intake.allowed_paths.clone(),
             bound_at: self.now(),
@@ -2673,18 +2755,17 @@ impl LocalProductStore {
         self.validate_product_task_workspace_preparation_target_boundary(intake, &receipt)?;
 
         // A receipt-owned path can only be terminalized after the current
-        // target boundary is still usable and Git has removed that exact
-        // worktree. Direct filesystem deletion is insufficient because a
-        // timed-out `git worktree` child can leave registered metadata behind.
+        // target boundary is still usable. Git worktrees require both Git
+        // metadata and path reconciliation; local-folder staging copies have
+        // no Git metadata, but still require exact app-owned path proof.
         validate_product_task_workspace_prerequisites(intake).map_err(|_| {
             product_task_workspace_preparation_reconciliation_error(
-                "pinned git worktree removal precondition is unavailable",
+                "pinned workspace removal precondition is unavailable",
             )
         })?;
-        let config = TargetRepoOutputConfig::from_env();
         let target_canonical = std::fs::canonicalize(&intake.target_repo_path).map_err(|_| {
             product_task_workspace_preparation_reconciliation_error(
-                "pinned target repository is unavailable for worktree removal",
+                "pinned target source is unavailable for workspace removal",
             )
         })?;
 
@@ -2759,14 +2840,11 @@ impl LocalProductStore {
                     "supervised workspace target does not match the pinned target",
                 ));
             }
-            // Never let a metadata-only `cleaned` status substitute for proof
-            // that Git has removed its exact registered worktree. The
-            // ProductTask receipt pins this path; the target-output owner
-            // performs the physical operation and verification.
-            remove_product_task_git_worktree_or_reconcile(
-                &config,
+            remove_product_task_workspace_or_reconcile(
+                intake,
+                &receipt,
                 &target_canonical,
-                &receipt.workspace_path,
+                task_id,
             )?;
             if ws.get("status").and_then(Value::as_str) != Some("cleaned") {
                 self.update_workspace_status(workspace_id, "cleaned", actor)
@@ -2777,10 +2855,11 @@ impl LocalProductStore {
                     })?;
             }
         } else {
-            remove_product_task_git_worktree_or_reconcile(
-                &config,
+            remove_product_task_workspace_or_reconcile(
+                intake,
+                &receipt,
                 &target_canonical,
-                &receipt.workspace_path,
+                task_id,
             )?;
         }
 
@@ -4808,8 +4887,12 @@ impl LocalProductStore {
             );
         }
         let source_root = Path::new(&intake.target_repo_path);
-        let source_manifest =
-            crate::local_folder_source::stage_local_folder(source_root, &workspace_path, &[])?;
+        let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
+        let source_manifest = crate::local_folder_source::stage_local_folder(
+            source_root,
+            &workspace_path,
+            &exclusions,
+        )?;
         if intake.source_revision != source_manifest.tree_sha256
             || intake.source_tree_hash.as_deref() != Some(source_manifest.tree_sha256.as_str())
         {
@@ -4857,6 +4940,7 @@ impl LocalProductStore {
             source_tree_hash: Some(source_manifest.tree_sha256.clone()),
             workspace_content_hash: source_manifest.tree_sha256,
             workspace_mode: "local_folder".to_string(),
+            local_folder_exclusions_sha256: Some(source_manifest.excluded_paths_sha256),
             provisional_run_id,
             allowed_paths: intake.allowed_paths.clone(),
             bound_at: self.now(),
@@ -5339,7 +5423,9 @@ impl LocalProductStore {
                 );
             }
             let source = Path::new(target_repo_path);
-            let current = crate::local_folder_source::capture_local_folder_manifest(source, &[])?;
+            let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
+            let current =
+                crate::local_folder_source::capture_local_folder_manifest(source, &exclusions)?;
             if current.tree_sha256 != source_revision {
                 return Err("local-folder source changed before confirmed output".to_string());
             }
@@ -5354,6 +5440,15 @@ impl LocalProductStore {
                 .filter_map(Value::as_str)
                 .map(str::to_string)
                 .collect::<Vec<_>>();
+            let expected_exclusion_hash = task
+                .pointer("/workspace_binding/local_folder_exclusions_sha256")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "local-folder exclusion policy binding is missing".to_string())?;
+            if current.excluded_paths_sha256 != expected_exclusion_hash {
+                return Err(
+                    "local-folder exclusion policy changed before confirmed output".to_string(),
+                );
+            }
             let rollback_root = product_export_root(self)?
                 .join("local-folder-rollbacks")
                 .join(task_id)
@@ -5363,7 +5458,7 @@ impl LocalProductStore {
                 Path::new(workspace_path),
                 &rollback_root,
                 &allowed_paths,
-                &[],
+                &exclusions,
             )?;
             return Ok(json!({
                 "mode": "apply_local_changes",
@@ -6067,9 +6162,10 @@ fn validate_product_task_workspace_prerequisites(
     intake: &ValidatedProductTaskIntake,
 ) -> Result<(), String> {
     if intake.workspace_mode == "local_folder" {
+        let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
         crate::local_folder_source::capture_local_folder_manifest(
             Path::new(&intake.target_repo_path),
-            &[],
+            &exclusions,
         )?;
         return Ok(());
     }
@@ -6685,6 +6781,48 @@ fn public_product_intake_json(encoded: &str) -> Result<Value, String> {
         object.remove("_execution_objective_v1");
     }
     Ok(intake)
+}
+
+/// Convert an internal ProductTask record into an API/evidence-safe
+/// projection. Local filesystem paths remain available only to the owning
+/// store methods; callers outside that boundary receive stable fingerprints.
+pub(crate) fn public_product_task_projection(task: &Value) -> Value {
+    use crate::product_golden_path::fingerprint_private_path;
+
+    let mut public = task.clone();
+    let redact_path = |object: &mut serde_json::Map<String, Value>, field: &str| {
+        if let Some(path) = object
+            .remove(field)
+            .and_then(|value| value.as_str().map(str::to_string))
+        {
+            object.insert(
+                format!("{field}_fingerprint"),
+                Value::String(fingerprint_private_path(&path)),
+            );
+        }
+    };
+    if let Some(object) = public.as_object_mut() {
+        redact_path(object, "target_repo_path");
+        if let Some(intake) = object.get_mut("intake").and_then(Value::as_object_mut) {
+            // New records already store only the fingerprint, while the
+            // adapter prevents historical redacted-intake fixtures leaking a
+            // legacy raw field.
+            redact_path(intake, "target_repo_path");
+        }
+        if let Some(binding) = object
+            .get_mut("workspace_binding")
+            .and_then(Value::as_object_mut)
+        {
+            for field in [
+                "workspace_path",
+                "workspace_canonical_path",
+                "target_repo_canonical_path",
+            ] {
+                redact_path(binding, field);
+            }
+        }
+    }
+    public
 }
 
 fn map_product_task_row(row: &Row<'_>) -> rusqlite::Result<Value> {
@@ -7382,6 +7520,56 @@ mod local_folder_product_task_tests {
         assert_eq!(
             std::fs::read(source.join("README.md")).unwrap(),
             b"original"
+        );
+        let public = public_product_task_projection(&task);
+        let encoded = public.to_string();
+        assert!(!encoded.contains(source.to_string_lossy().as_ref()));
+        assert!(public["target_repo_path_fingerprint"].is_string());
+        assert!(public["workspace_binding"]["workspace_path_fingerprint"].is_string());
+        assert!(public["workspace_binding"]["target_repo_canonical_path_fingerprint"].is_string());
+    }
+
+    #[test]
+    fn local_folder_compensation_removes_only_the_receipt_owned_staging_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace_root = std::fs::canonicalize(root.path()).unwrap();
+        let task_id = "ptask-local-cleanup";
+        let workspace_path = workspace_root.join(product_task_workspace_fs_id(task_id));
+        std::fs::create_dir(&workspace_path).unwrap();
+        std::fs::write(workspace_path.join("staged.txt"), b"staged").unwrap();
+        let unrelated = workspace_root.join("unrelated");
+        std::fs::create_dir(&unrelated).unwrap();
+
+        let receipt =
+            ProductTaskWorkspacePreparationReceipt::planned(task_id, workspace_root.clone())
+                .unwrap();
+        assert_eq!(receipt.workspace_path, workspace_path);
+        remove_product_task_local_folder_stage_or_reconcile(&receipt, task_id).unwrap();
+        assert!(!workspace_path.exists());
+        assert!(unrelated.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_folder_compensation_rejects_a_replaced_staging_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace_root = std::fs::canonicalize(root.path()).unwrap();
+        let task_id = "ptask-local-symlink";
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("must-remain"), b"safe").unwrap();
+        let receipt =
+            ProductTaskWorkspacePreparationReceipt::planned(task_id, workspace_root).unwrap();
+        symlink(outside.path(), &receipt.workspace_path).unwrap();
+
+        let error =
+            remove_product_task_local_folder_stage_or_reconcile(&receipt, task_id).unwrap_err();
+        assert!(error.starts_with(PRODUCT_TASK_WORKSPACE_PREPARATION_RECONCILIATION_REQUIRED));
+        assert!(receipt.workspace_path.is_symlink());
+        assert_eq!(
+            std::fs::read(outside.path().join("must-remain")).unwrap(),
+            b"safe"
         );
     }
 }

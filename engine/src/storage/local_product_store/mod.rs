@@ -33,7 +33,7 @@ pub mod pg_backend;
 mod plans;
 mod policy_proposals;
 mod policy_replay_producer;
-mod product_tasks;
+pub(crate) mod product_tasks;
 mod provider_audit;
 mod recursive_execution;
 mod regression_report_artifacts;

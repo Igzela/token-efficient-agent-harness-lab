@@ -530,6 +530,10 @@ pub struct ProductWorkspaceBinding {
     pub source_tree_hash: Option<String>,
     pub workspace_content_hash: String,
     pub workspace_mode: String,
+    /// Digest-only binding for a local source's configured private-path
+    /// exclusions. `None` preserves existing git and historical records.
+    #[serde(default)]
+    pub local_folder_exclusions_sha256: Option<String>,
     pub provisional_run_id: String,
     pub allowed_paths: Vec<String>,
     pub bound_at: String,
@@ -775,11 +779,13 @@ pub fn validate_intake(
     {
         return Err("source_kind must match workspace_mode".to_string());
     }
-    if workspace_mode == "local_folder" {
+    let local_source_manifest = if workspace_mode == "local_folder" {
         if matches!(output_intent, ProductOutputIntent::DraftPr) {
             return Err("local_folder source cannot use draft_pr output".to_string());
         }
-        let manifest = crate::local_folder_source::capture_local_folder_manifest(target_path, &[])?;
+        let exclusions = crate::local_folder_source::configured_local_folder_exclusions()?;
+        let manifest =
+            crate::local_folder_source::capture_local_folder_manifest(target_path, &exclusions)?;
         if let Some(expected) = request
             .source_tree_hash
             .as_deref()
@@ -792,7 +798,10 @@ pub fn validate_intake(
                 );
             }
         }
-    }
+        Some(manifest)
+    } else {
+        None
+    };
 
     let objective_fingerprint = fingerprint_objective(objective);
     let validated = ValidatedProductTaskIntake {
@@ -803,14 +812,21 @@ pub fn validate_intake(
         target_repo_path: target_repo_path.to_string(),
         source_kind,
         source_revision: if workspace_mode == "local_folder" {
-            crate::local_folder_source::capture_local_folder_manifest(target_path, &[])?.tree_sha256
+            local_source_manifest
+                .as_ref()
+                .expect("local folder manifest established")
+                .tree_sha256
+                .clone()
         } else {
             source_revision.to_string()
         },
         source_tree_hash: if workspace_mode == "local_folder" {
             Some(
-                crate::local_folder_source::capture_local_folder_manifest(target_path, &[])?
-                    .tree_sha256,
+                local_source_manifest
+                    .as_ref()
+                    .expect("local folder manifest established")
+                    .tree_sha256
+                    .clone(),
             )
         } else {
             request
@@ -877,7 +893,7 @@ pub fn redacted_intake_json(intake: &ValidatedProductTaskIntake) -> Value {
         // full body is not a durable evidence corpus.
         "objective_preview": truncate_utf8_bytes(&intake.objective, 256, "…"),
         "target_id": intake.target_id,
-        "target_repo_path": intake.target_repo_path,
+        "target_repo_path_fingerprint": fingerprint_private_path(&intake.target_repo_path),
         "source_kind": intake.source_kind,
         "source_revision": intake.source_revision,
         "source_tree_hash": intake.source_tree_hash,
@@ -897,6 +913,12 @@ pub fn redacted_intake_json(intake: &ValidatedProductTaskIntake) -> Value {
         "workspace_mode": intake.workspace_mode,
         "intake_contract_sha256": intake.intake_contract_sha256,
     })
+}
+
+/// Stable evidence identity for a local filesystem path. The operational
+/// owner retains the path separately; public/audit projections do not.
+pub fn fingerprint_private_path(path: &str) -> String {
+    hex::encode(Sha256::digest(path.as_bytes()))
 }
 
 fn validate_allowed_path(path: &str) -> Result<String, String> {

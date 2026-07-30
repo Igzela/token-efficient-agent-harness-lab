@@ -15,6 +15,10 @@ use sha2::{Digest, Sha256};
 
 pub const LOCAL_FOLDER_MANIFEST_SCHEMA: &str = "local_folder_source_manifest.v1";
 pub const LOCAL_FOLDER_APPLY_RECEIPT_SCHEMA: &str = "local_folder_apply_receipt.v1";
+/// Comma-separated bounded relative paths kept out of a local-folder source.
+/// The values are runtime-local only; task and terminal evidence retain their
+/// digest, never the private path names.
+pub const LOCAL_FOLDER_EXCLUDED_PATHS_ENV: &str = "ACP_PRODUCT_LOCAL_FOLDER_EXCLUDED_PATHS";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalFolderEntry {
@@ -31,6 +35,10 @@ pub struct LocalFolderManifest {
     pub canonical_root: PathBuf,
     pub entries: Vec<LocalFolderEntry>,
     pub tree_sha256: String,
+    /// Binds the manifest to the exact configured exclusion policy without
+    /// persisting the excluded private path names in public evidence.
+    #[serde(default)]
+    pub excluded_paths_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +81,23 @@ pub fn stage_local_folder(
     Ok(manifest)
 }
 
+/// Read the local-only exclusion policy. Empty segments are ignored, while
+/// every supplied path is normalized and de-duplicated before use.
+pub fn configured_local_folder_exclusions() -> Result<Vec<String>, String> {
+    let configured = std::env::var(LOCAL_FOLDER_EXCLUDED_PATHS_ENV).unwrap_or_default();
+    let raw = configured
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let normalized = normalize_exclusions(&raw)?;
+    if normalized.len() > 128 {
+        return Err("local-folder exclusion policy exceeds 128 paths".to_string());
+    }
+    Ok(normalized.into_iter().collect())
+}
+
 pub fn capture_local_folder_manifest(
     source_root: &Path,
     excluded_paths: &[String],
@@ -86,7 +111,10 @@ pub fn verify_local_folder_manifest_current(
     excluded_paths: &[String],
 ) -> Result<(), String> {
     let actual = capture_local_folder_manifest(&expected.canonical_root, excluded_paths)?;
-    if actual.entries != expected.entries || actual.tree_sha256 != expected.tree_sha256 {
+    if actual.entries != expected.entries
+        || actual.tree_sha256 != expected.tree_sha256
+        || actual.excluded_paths_sha256 != expected.excluded_paths_sha256
+    {
         return Err("local-folder original source manifest is stale".to_string());
     }
     Ok(())
@@ -104,6 +132,9 @@ pub fn apply_local_folder_changes(
     excluded_paths: &[String],
 ) -> Result<LocalFolderApplyReceipt, String> {
     let exclusions = normalize_exclusions(excluded_paths)?;
+    if exclusion_paths_sha256(&exclusions) != source_manifest.excluded_paths_sha256 {
+        return Err("local-folder exclusion policy changed after staging".to_string());
+    }
     verify_local_folder_manifest_current(source_manifest, excluded_paths)?;
     let staged = capture_local_folder_manifest_inner(staged_root, &BTreeSet::new())?;
     let allowed = normalize_exclusions(allowed_paths)?;
@@ -214,6 +245,11 @@ fn normalize_exclusions(paths: &[String]) -> Result<BTreeSet<String>, String> {
     paths.iter().map(|path| normalize_relative(path)).collect()
 }
 
+fn exclusion_paths_sha256(paths: &BTreeSet<String>) -> String {
+    let payload = paths.iter().cloned().collect::<Vec<_>>().join("\n");
+    hex::encode(Sha256::digest(payload.as_bytes()))
+}
+
 fn normalize_relative(value: &str) -> Result<String, String> {
     let path = Path::new(value);
     if value.is_empty()
@@ -254,6 +290,7 @@ fn capture_local_folder_manifest_inner(
         canonical_root: root.to_path_buf(),
         entries,
         tree_sha256,
+        excluded_paths_sha256: exclusion_paths_sha256(exclusions),
     })
 }
 
@@ -500,5 +537,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fs::read(source.join("a.txt")).unwrap(), b"before");
+    }
+
+    #[test]
+    fn apply_fails_closed_when_exclusion_policy_changes_after_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("public.txt"), b"before").unwrap();
+        fs::write(source.join("private.txt"), b"private").unwrap();
+        let stage = root.path().join("stage");
+        let exclusions = vec!["private.txt".to_string()];
+        let manifest = stage_local_folder(&source, &stage, &exclusions).unwrap();
+        fs::write(stage.join("public.txt"), b"after").unwrap();
+
+        let error = apply_local_folder_changes(
+            &manifest,
+            &stage,
+            &root.path().join("rollback"),
+            &["public.txt".to_string()],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(error, "local-folder exclusion policy changed after staging");
+        assert_eq!(fs::read(source.join("public.txt")).unwrap(), b"before");
+        assert_eq!(fs::read(source.join("private.txt")).unwrap(), b"private");
     }
 }

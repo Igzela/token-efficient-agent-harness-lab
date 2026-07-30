@@ -14,6 +14,7 @@ use crate::product_golden_path::{
     ProductTaskBudget, ProductTaskIntakeRequest, ProductVerificationCommand,
     ProductVerificationRuntimeAuthority, PRODUCT_TASK_GATE,
 };
+use crate::storage::local_product_store::product_tasks::public_product_task_projection;
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, GitHubPullRequestConfig, GitHubPullRequestRequest,
     GitHubRepository,
@@ -114,7 +115,7 @@ pub(crate) async fn api_create_product_task(
                 Json(json!({
                     "schema_version": AXUM_API_SCHEMA_VERSION,
                     "task_id": task_id,
-                    "task": task,
+                    "task": public_product_task_projection(&task),
                     "execution_admitted": task.get("execution_admitted").and_then(|v| v.as_bool()).unwrap_or(false),
                 })),
             ))
@@ -159,7 +160,7 @@ pub(crate) async fn api_product_task_detail(
                 cors_headers(),
                 Json(json!({
                     "schema_version": AXUM_API_SCHEMA_VERSION,
-                    "task": task,
+                    "task": public_product_task_projection(&task),
                 })),
             ))
         }
@@ -634,7 +635,7 @@ pub(crate) async fn api_recover_product_task_workspace(
             cors_headers(),
             Json(json!({
                 "schema_version": AXUM_API_SCHEMA_VERSION,
-                "task": task,
+                "task": public_product_task_projection(&task),
             })),
         )),
         Err(error) => {
