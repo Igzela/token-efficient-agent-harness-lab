@@ -222,6 +222,10 @@ function OutputActionRail({
   const [targetRepoPath, setTargetRepoPath] = useState("");
   const [targetId, setTargetId] = useState("local-target");
   const [sourceRevision, setSourceRevision] = useState("HEAD");
+  const [productSourceKind, setProductSourceKind] = useState<"git_repository" | "local_folder">("git_repository");
+  const [productAllowedPaths, setProductAllowedPaths] = useState("README.md");
+  const [productVerificationCommand, setProductVerificationCommand] = useState("test -f README.md");
+  const [productOutputIntent, setProductOutputIntent] = useState<"artifact_only" | "export_patch" | "draft_pr" | "apply_local_changes">("artifact_only");
   const [executor, setExecutor] = useState("codex_cli");
   const [verificationCommand, setVerificationCommand] = useState("");
   const [outputMode, setOutputMode] = useState<"export_patch" | "push_branch">("export_patch");
@@ -285,6 +289,18 @@ function OutputActionRail({
       setError("Product golden path requires prompt, target repo path, and source revision.");
       return;
     }
+    const allowedPaths = productAllowedPaths
+      .split(",")
+      .map((path) => path.trim())
+      .filter(Boolean);
+    if (allowedPaths.length === 0 || !productVerificationCommand.trim()) {
+      setError("Product golden path requires bounded allowed paths and a verification command.");
+      return;
+    }
+    if (productSourceKind === "local_folder" && productOutputIntent === "draft_pr") {
+      setError("Local-folder tasks cannot request draft-pr output.");
+      return;
+    }
     runMutation(
       async () => {
         const admit = await createProductTask({
@@ -292,9 +308,10 @@ function OutputActionRail({
           target_id: targetId.trim() || "dashboard-target",
           target_repo_path: targetRepoPath.trim(),
           source_revision: sourceRevision.trim(),
-          allowed_paths: ["README.md"],
-          verification_commands: [{ command: "test -f README.md", timeout_ms: 5000 }],
-          output_intent: "artifact_only",
+          source_kind: productSourceKind,
+          allowed_paths: allowedPaths,
+          verification_commands: [{ command: productVerificationCommand.trim(), timeout_ms: 5000 }],
+          output_intent: productOutputIntent,
           executor_policy: {
             allowed_executors: [executor === "noop" ? "command" : executor],
             prefer: executor === "noop" ? "command" : executor,
@@ -303,7 +320,7 @@ function OutputActionRail({
           approval_required: true,
           confirm_execution: true,
           idempotency_key: `dashboard-${Date.now()}`,
-          workspace_mode: "git_worktree",
+          workspace_mode: productSourceKind === "local_folder" ? "local_folder" : "git_worktree",
         });
         const taskId = String(
           (admit as { task_id?: string; task?: { task_id?: string } }).task_id
@@ -501,6 +518,54 @@ function OutputActionRail({
             <label className="stack" style={{ gap: 4 }}>
               <span className="muted">Source ref</span>
               <input value={sourceRevision} onChange={(event) => setSourceRevision(event.target.value)} />
+            </label>
+          </div>
+          <div className="split-row">
+            <label className="stack" style={{ gap: 4 }}>
+              <span className="muted">Product source</span>
+              <select
+                value={productSourceKind}
+                onChange={(event) => {
+                  const next = event.target.value as "git_repository" | "local_folder";
+                  setProductSourceKind(next);
+                  if (next === "local_folder" && productOutputIntent === "draft_pr") {
+                    setProductOutputIntent("artifact_only");
+                  }
+                }}
+              >
+                <option value="git_repository">git repository</option>
+                <option value="local_folder">local folder</option>
+              </select>
+            </label>
+            <label className="stack" style={{ gap: 4 }}>
+              <span className="muted">Allowed paths</span>
+              <input
+                value={productAllowedPaths}
+                onChange={(event) => setProductAllowedPaths(event.target.value)}
+                placeholder="README.md, docs/guide.md"
+              />
+            </label>
+          </div>
+          <div className="split-row">
+            <label className="stack" style={{ gap: 4 }}>
+              <span className="muted">Product verification</span>
+              <input
+                value={productVerificationCommand}
+                onChange={(event) => setProductVerificationCommand(event.target.value)}
+                placeholder="test -f README.md"
+              />
+            </label>
+            <label className="stack" style={{ gap: 4 }}>
+              <span className="muted">Product output</span>
+              <select
+                value={productOutputIntent}
+                onChange={(event) => setProductOutputIntent(event.target.value as typeof productOutputIntent)}
+              >
+                <option value="artifact_only">artifact only</option>
+                <option value="export_patch">export patch</option>
+                {productSourceKind === "git_repository" && <option value="draft_pr">draft PR</option>}
+                <option value="apply_local_changes">apply local changes</option>
+              </select>
             </label>
           </div>
         </div>

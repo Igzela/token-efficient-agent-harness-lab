@@ -7825,11 +7825,28 @@ mod local_folder_product_task_tests {
         ProductVerificationCommand, PRODUCT_TASK_GATE,
     };
 
-    struct ProductGateGuard(Option<std::ffi::OsString>);
+    struct ProductGateGuard {
+        previous: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ProductGateGuard {
+        fn enable() -> Self {
+            let lock = crate::cli::config::cli_env_test_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = std::env::var_os(PRODUCT_TASK_GATE);
+            std::env::set_var(PRODUCT_TASK_GATE, "1");
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
 
     impl Drop for ProductGateGuard {
         fn drop(&mut self) {
-            if let Some(value) = self.0.take() {
+            if let Some(value) = self.previous.take() {
                 std::env::set_var(PRODUCT_TASK_GATE, value);
             } else {
                 std::env::remove_var(PRODUCT_TASK_GATE);
@@ -7843,8 +7860,7 @@ mod local_folder_product_task_tests {
         let source = root.path().join("operator-folder");
         std::fs::create_dir(&source).unwrap();
         std::fs::write(source.join("README.md"), b"original").unwrap();
-        let _gate_guard = ProductGateGuard(std::env::var_os(PRODUCT_TASK_GATE));
-        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        let _gate_guard = ProductGateGuard::enable();
         let source = std::fs::canonicalize(&source).unwrap();
         let request = ProductTaskIntakeRequest {
             objective: "Update a bounded local document".to_string(),
@@ -8011,8 +8027,7 @@ mod local_folder_product_task_tests {
         let source = root.path().join("operator-folder");
         std::fs::create_dir(&source).unwrap();
         std::fs::write(source.join("README.md"), b"original").unwrap();
-        let _gate_guard = ProductGateGuard(std::env::var_os(PRODUCT_TASK_GATE));
-        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        let _gate_guard = ProductGateGuard::enable();
         let source = std::fs::canonicalize(&source).unwrap();
         let request = ProductTaskIntakeRequest {
             objective: "Create the approved bounded local document".to_string(),
@@ -8112,8 +8127,7 @@ mod local_folder_product_task_tests {
     #[test]
     fn local_folder_apply_claim_survives_restart_and_refuses_retry() {
         let root = tempfile::tempdir().unwrap();
-        let _gate_guard = ProductGateGuard(std::env::var_os(PRODUCT_TASK_GATE));
-        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        let _gate_guard = ProductGateGuard::enable();
         let (source, store, task_id, version, approval_id, artifact_id) =
             prepare_local_folder_apply_task(&root, "local-folder-apply-restart");
         let claim = store
@@ -8153,8 +8167,7 @@ mod local_folder_product_task_tests {
         let source = root.path().join("operator-folder");
         std::fs::create_dir(&source).unwrap();
         std::fs::write(source.join("README.md"), b"original").unwrap();
-        let _gate_guard = ProductGateGuard(std::env::var_os(PRODUCT_TASK_GATE));
-        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        let _gate_guard = ProductGateGuard::enable();
         let source = std::fs::canonicalize(&source).unwrap();
         let request = ProductTaskIntakeRequest {
             objective: "Create the approved bounded local document".to_string(),

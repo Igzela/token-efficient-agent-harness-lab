@@ -15,7 +15,9 @@ fn env_lock() -> &'static Mutex<()> {
 }
 
 fn with_gates<R>(f: impl FnOnce() -> R) -> R {
-    let _guard = env_lock().lock().unwrap();
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::env::set_var(PRODUCT_TASK_GATE, "1");
     std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
     std::env::set_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH", "0");
@@ -107,7 +109,9 @@ fn schema_includes_product_tasks_at_v30() {
 
 #[test]
 fn gate_defaults_off() {
-    let _guard = env_lock().lock().unwrap();
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::env::remove_var(PRODUCT_TASK_GATE);
     assert!(!product_gate_enabled());
 }

@@ -22,7 +22,11 @@ fn env_lock() -> &'static Mutex<()> {
 }
 
 fn with_gates<R>(f: impl FnOnce() -> R) -> R {
-    let _guard = env_lock().lock().unwrap();
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let runtime_dir = tempfile::tempdir().expect("runtime fixture directory");
+    let _runtime = admit_fake_codex_runtime(runtime_dir.path());
     std::env::set_var(PRODUCT_TASK_GATE, "1");
     std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
     std::env::set_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH", "0");
@@ -313,7 +317,6 @@ fn assert_managed_long_objective_delivery(
 fn managed_executor_receives_exact_long_objective_without_public_persistence() {
     with_gates(|| {
         let dir = tempfile::tempdir().unwrap();
-        let _runtime = admit_fake_codex_runtime(dir.path());
         let db_path = dir.path().join("store.db");
         let store = LocalProductStore::new(&db_path).unwrap();
         let repo = dir.path().join("repo");
@@ -337,7 +340,6 @@ fn postgres_managed_executor_receives_exact_long_objective_without_public_persis
     };
     with_gates(|| {
         let dir = tempfile::tempdir().unwrap();
-        let _runtime = admit_fake_codex_runtime(dir.path());
         let workspace_root = dir.path().join("product-workspaces");
         std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", &workspace_root);
         let repo = dir.path().join("repo");

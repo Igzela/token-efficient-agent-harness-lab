@@ -1467,11 +1467,10 @@ pub fn compile_product_executable_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
 
     fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        crate::cli::config::cli_env_test_lock()
     }
 
     fn sample_request() -> ProductTaskIntakeRequest {
@@ -1507,7 +1506,9 @@ mod tests {
 
     #[test]
     fn rejects_when_gate_disabled() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::remove_var(PRODUCT_TASK_GATE);
         let err = validate_intake(&sample_request(), "local", "default").unwrap_err();
         assert!(err.contains("disabled"));
@@ -1515,7 +1516,9 @@ mod tests {
 
     #[test]
     fn accepts_valid_intake_when_gate_enabled() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         let validated = validate_intake(&sample_request(), "local", "default").unwrap();
         assert_eq!(validated.tenant_id, "local");
@@ -1527,7 +1530,9 @@ mod tests {
 
     #[test]
     fn objective_preview_is_utf8_bounded_and_hash_stable() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         let mut request = sample_request();
         request.objective = format!("前{}🙂", "界".repeat(100));
@@ -1552,7 +1557,9 @@ mod tests {
 
     #[test]
     fn rejects_noop_only_executor_policy() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         let mut req = sample_request();
         req.executor_policy.allowed_executors = vec!["noop".to_string()];
@@ -1564,7 +1571,9 @@ mod tests {
 
     #[test]
     fn rejects_path_escape_in_allowed_paths() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         let mut req = sample_request();
         req.allowed_paths = vec!["../secret".to_string()];
@@ -1574,7 +1583,9 @@ mod tests {
 
     #[test]
     fn rejects_absolute_verification_binary() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         let mut req = sample_request();
         req.verification_commands = vec![ProductVerificationCommand {
@@ -1587,7 +1598,9 @@ mod tests {
 
     #[test]
     fn rejects_option_attached_absolute_verification_paths() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         for command in [
             "grep -f/etc/shadow README.md",
@@ -1609,7 +1622,9 @@ mod tests {
 
     #[test]
     fn rejects_verification_paths_excluded_from_workspace_observation() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         for command in [
             "cat .git/config",
@@ -1632,7 +1647,9 @@ mod tests {
 
     #[test]
     fn rejects_recursive_or_indirect_verification_traversal() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         for command in [
             "grep -R needle .",
@@ -1668,7 +1685,9 @@ mod tests {
 
     #[test]
     fn accepts_nonrecursive_options_with_recursive_letters_in_values() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(PRODUCT_TASK_GATE, "1");
         for command in [
             "grep -eerror README.md",
