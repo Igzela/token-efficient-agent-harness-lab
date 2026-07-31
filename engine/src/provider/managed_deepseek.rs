@@ -538,9 +538,9 @@ impl ManagedProviderCallRequest {
     }
 
     pub(crate) fn estimated_input_tokens(&self) -> u64 {
-        // Conservative UTF-8 byte → token estimate for reservation only.
-        // Using raw bytes here over-reserved multi-stage routes and tripped the
-        // cumulative ceiling before the final review send on live docs tasks.
+        // Conservative pre-send upper bound: count UTF-8 bytes of the request
+        // body surfaces. Bytes are never smaller than token counts for admitted
+        // text, so this cannot under-reserve max_input_tokens.
         let mut bytes = self
             .system
             .as_deref()
@@ -553,13 +553,7 @@ impl ManagedProviderCallRequest {
                 .and_then(|v| serde_json::to_vec(v).ok())
                 .map_or(0, |v| v.len()),
         );
-        // ceil(bytes / 4), at least 1 when any content is present.
-        let bytes = bytes as u64;
-        if bytes == 0 {
-            0
-        } else {
-            bytes.div_ceil(4).max(1)
-        }
+        bytes as u64
     }
 
     pub(crate) fn conservative_reserved_cost_usd(&self) -> Result<f64, String> {
@@ -1170,9 +1164,11 @@ impl ManagedProviderCallAuthority {
                     return Ok(response);
                 }
                 Err(error) => {
-                    // A failed call retains its reservation. A timeout,
-                    // connection, or malformed-response result is unknown and
-                    // is never retried because the provider effect may land.
+                    // Release the in-flight reservation on every attempt outcome.
+                    // Pre-send failures may retry under max_retries; timeout,
+                    // connection, or malformed-response results are outcome-
+                    // unknown and are never retried because the provider effect
+                    // may already have landed.
                     let _ = self.budget.reconcile(None);
                     self.source
                         .reconcile_provider_request(request, None, error.effect)
@@ -2261,6 +2257,144 @@ mod tests {
         assert!(ledger.reserve_before_send(1, 1).is_err());
     }
 
+    #[test]
+    fn three_sequential_stages_release_reservations_and_charge_actual_usage() {
+        // Accepted live-seal envelope: three Pro/Flash/Pro stages under 24k
+        // cumulative when actual usage is low; full release after each stage.
+        let ledger = ManagedBudgetLedger::new(ManagedCallLimits {
+            max_requests: 3,
+            max_retries: 0,
+            max_input_tokens: 8_000,
+            max_output_tokens: 4_000,
+            max_cumulative_tokens: 24_000,
+            timeout_ms: 30_000,
+            max_cost_usd: Some(0.50),
+        })
+        .unwrap();
+        let mut charged = 0u64;
+        for (stage_input, stage_output, stage_cumulative) in [
+            (1_900u64, 4_000u64, 2_100u64),
+            (2_000, 4_000, 2_900),
+            (2_000, 4_000, 2_300),
+        ] {
+            ledger
+                .reserve_before_send(stage_input, stage_output)
+                .unwrap_or_else(|error| panic!("stage reserve failed: {error:?}"));
+            let snap = ledger.snapshot().unwrap();
+            assert_eq!(snap.reserved_input_tokens, stage_input);
+            assert_eq!(snap.reserved_output_tokens, stage_output);
+            let mut usage = manual_response().usage;
+            usage.input_tokens = stage_input.min(2_000);
+            usage.output_tokens = 200;
+            usage.cumulative_tokens = stage_cumulative;
+            charged = charged.saturating_add(stage_cumulative);
+            let mut response = manual_response();
+            response.usage = usage;
+            ledger.reconcile(Some(&response)).unwrap();
+            let after = ledger.snapshot().unwrap();
+            assert_eq!(
+                after.reserved_input_tokens, 0,
+                "reconcile must release transient input reservation"
+            );
+            assert_eq!(
+                after.reserved_output_tokens, 0,
+                "reconcile must release transient output reservation"
+            );
+            assert_eq!(after.cumulative_tokens, charged);
+        }
+        assert_eq!(ledger.snapshot().unwrap().observed_requests, 3);
+        // Actual cumulative remains charged and constrains a later oversized reserve.
+        let err = ledger.reserve_before_send(8_000, 4_000).unwrap_err();
+        assert!(
+            err.message.contains("cumulative token ceiling")
+                || err.message.contains("request ceiling"),
+            "expected cumulative/request constraint, got {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn failed_reconcile_releases_reservation_without_charging_usage() {
+        let ledger = ManagedBudgetLedger::new(ManagedCallLimits {
+            max_requests: 3,
+            max_retries: 1,
+            max_input_tokens: 8_000,
+            max_output_tokens: 4_000,
+            max_cumulative_tokens: 24_000,
+            ..ManagedCallLimits::default()
+        })
+        .unwrap();
+        ledger.reserve_before_send(1_000, 4_000).unwrap();
+        ledger.reconcile(None).unwrap();
+        let snap = ledger.snapshot().unwrap();
+        assert_eq!(snap.reserved_input_tokens, 0);
+        assert_eq!(snap.reserved_output_tokens, 0);
+        assert_eq!(snap.cumulative_tokens, 0);
+        assert_eq!(snap.observed_requests, 1);
+        // A later stage can still reserve after a failed attempt released headroom.
+        ledger.reserve_before_send(1_000, 4_000).unwrap();
+        ledger.reconcile(Some(&manual_response())).unwrap();
+        assert_eq!(ledger.snapshot().unwrap().cumulative_tokens, 13);
+    }
+
+    #[test]
+    fn estimated_input_uses_byte_upper_bound_for_non_ascii_json_and_code() {
+        let binding = ManagedCallBinding {
+            product_task_id: "pt".into(),
+            workflow_id: "wf".into(),
+            node_id: "n".into(),
+            attempt_id: "a".into(),
+            spend_authorization_id: "s".into(),
+            attempt_lease_id: "l".into(),
+        };
+        let mut req = ManagedProviderCallRequest::for_role(
+            ManagedModelRole::Planner,
+            DeepSeekProtocol::OpenAiCompatible,
+            binding,
+        );
+        req.limits = ManagedCallLimits {
+            max_requests: 3,
+            max_retries: 0,
+            max_input_tokens: 8_000,
+            max_output_tokens: 4_000,
+            max_cumulative_tokens: 24_000,
+            timeout_ms: 30_000,
+            max_cost_usd: None,
+        };
+        // Non-ASCII prose, JSON structure, code, and identifier-heavy tokens.
+        let payload = format!(
+            "{}\n{}\n{}\n{}",
+            "日本語の識別子と絵文字🚀".repeat(20),
+            r#"{"schema_version":"managed_deepseek_plan.v1","path":"docs/USER_GUIDE.md"}"#,
+            "fn compute_sha256(input: &[u8]) -> String { hex::encode(Sha256::digest(input)) }",
+            "Igzela_token_efficient_agent_harness_lab_product_task_id_abcdefghijklmnopqrstuvwxyz",
+        );
+        req.messages = vec![ManagedMessage::text("user", &payload)];
+        req.system = Some("system preamble for bounded docs planning".into());
+        let estimated = req.estimated_input_tokens();
+        let expected_bytes = req.system.as_ref().map(|s| s.len() as u64).unwrap_or(0)
+            + serde_json::to_vec(&req.messages).unwrap().len() as u64
+            + serde_json::to_vec(&req.tools).unwrap().len() as u64
+            + req
+                .tool_choice
+                .as_ref()
+                .and_then(|v| serde_json::to_vec(v).ok())
+                .map(|v| v.len() as u64)
+                .unwrap_or(0);
+        assert_eq!(
+            estimated, expected_bytes,
+            "estimator must retain the prior safe byte upper bound"
+        );
+        assert!(estimated >= payload.len() as u64);
+        // Over-size the bound so max_input_tokens rejects before send.
+        req.limits.max_input_tokens = estimated.saturating_sub(1).max(1);
+        let err = req.validate().unwrap_err();
+        assert!(
+            err.contains("input ceiling"),
+            "byte-bound inputs must not escape max_input_tokens: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn openai_messages_tools_and_tool_result_round_trip_are_bounded() {
         let _lock = key_lock().lock().await;
@@ -2503,6 +2637,13 @@ mod tests {
             .unwrap();
         assert_eq!(result.request_id, "r-1");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        // Pre-send retry reuses request slots only after each attempt releases
+        // its transient reservation; actual success still charges usage once.
+        let snap = authority.budget().snapshot().unwrap();
+        assert_eq!(snap.reserved_input_tokens, 0);
+        assert_eq!(snap.reserved_output_tokens, 0);
+        assert_eq!(snap.cumulative_tokens, 13);
+        assert_eq!(snap.observed_requests, 2);
 
         let unknown_limits = ManagedCallLimits {
             max_requests: 1,
@@ -2540,6 +2681,57 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.effect, ManagedFailureEffect::OutcomeUnknown);
         assert_eq!(unknown_attempts.load(Ordering::SeqCst), 1);
+        let unknown_snap = unknown_authority.budget().snapshot().unwrap();
+        assert_eq!(unknown_snap.reserved_input_tokens, 0);
+        assert_eq!(unknown_snap.reserved_output_tokens, 0);
+        assert_eq!(
+            unknown_snap.cumulative_tokens, 0,
+            "outcome-unknown must not charge usage or retain reservation"
+        );
+        assert_eq!(unknown_snap.observed_requests, 1);
+
+        // Failed-known (non-retryable pre-send) also releases reservation and
+        // does not duplicate provider attempts.
+        let failed_limits = ManagedCallLimits {
+            max_requests: 2,
+            max_retries: 1,
+            max_input_tokens: 1024,
+            max_output_tokens: 1024,
+            max_cumulative_tokens: 4096,
+            ..ManagedCallLimits::default()
+        };
+        let failed_authority = ManagedProviderCallAuthority::new(
+            Arc::new(StaticAuthority {
+                limits: failed_limits.clone(),
+            }),
+            failed_limits.clone(),
+        )
+        .unwrap();
+        let mut failed_req = request(DeepSeekProtocol::OpenAiCompatible);
+        failed_req.limits = failed_limits;
+        failed_req.max_output_tokens = failed_req.limits.max_output_tokens;
+        let failed_attempts = Arc::new(AtomicUsize::new(0));
+        let failed_count = failed_attempts.clone();
+        let failed = failed_authority
+            .invoke_with_retry(&failed_req, || {
+                failed_count.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Err(ManagedProviderCallError {
+                        domain: "provider_auth".into(),
+                        message: "mock failed known".into(),
+                        retryable: false,
+                        effect: ManagedFailureEffect::PreSend,
+                    })
+                }
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(failed.effect, ManagedFailureEffect::PreSend);
+        assert_eq!(failed_attempts.load(Ordering::SeqCst), 1);
+        let failed_snap = failed_authority.budget().snapshot().unwrap();
+        assert_eq!(failed_snap.reserved_input_tokens, 0);
+        assert_eq!(failed_snap.reserved_output_tokens, 0);
+        assert_eq!(failed_snap.cumulative_tokens, 0);
     }
 
     #[tokio::test]

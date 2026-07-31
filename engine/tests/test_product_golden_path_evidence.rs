@@ -1637,3 +1637,230 @@ fn terminal_completion_revalidates_workspace_verification_atomically() {
         std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
     });
 }
+
+#[test]
+fn progressive_draft_pr_terminal_cas_uses_current_task_version_with_original_operation_binding() {
+    with_gates(|| {
+        std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "0");
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let task = drive_to_awaiting_approval(
+            &store,
+            &repo,
+            &rev,
+            "ev-progressive-terminal-cas-1",
+            "draft_pr",
+        );
+        let task_id = task["task_id"].as_str().unwrap();
+        let approval = store
+            .approve_product_task(
+                task_id,
+                "independent-operator",
+                task["version"].as_u64().unwrap(),
+            )
+            .unwrap();
+        let pending = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                task["version"].as_u64().unwrap(),
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        let claim_version = pending["task"]["version"].as_u64().unwrap();
+        assert_eq!(pending["task"]["status"], "output_pending");
+        let artifact = store
+            .get_supervised_patch_artifact(approval["artifact_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let artifact_id = artifact["artifact_id"].as_str().unwrap();
+        let request = serde_json::json!({
+            "schema_version": "product_draft_pr_output_request.v1",
+            "product_task_id": task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval["approval_id"],
+            "output_intent": "draft_pr",
+            "expected_task_version": claim_version,
+            "workspace_id": artifact["workspace_id"],
+            "run_id": artifact["run_id"],
+            "target_id": artifact["target_id"],
+            "patch_hash": artifact["patch_hash"],
+            "source_revision": artifact["source_revision"],
+            "target_repository": "disposable/acceptance",
+            "repository_host": "github.com",
+            "base_branch": "main",
+            "head_branch": format!("acp/product-{task_id}"),
+            "remote": "origin",
+            "commit_message": "bounded progressive terminal cas",
+            "pr_title": "Draft: progressive terminal cas",
+            "pr_body": "Do not merge automatically.",
+        });
+        let request_sha256 = sha256_json(&request);
+        let claimed = store
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha256,
+                claim_version,
+                "output-operator",
+            )
+            .unwrap();
+        let operation_id = claimed["operation_id"].as_str().unwrap();
+        let commit_sha = "c".repeat(40);
+        store
+            .record_product_output_branch_pushed(
+                artifact_id,
+                operation_id,
+                claimed["current_version"].as_u64().unwrap(),
+                &commit_sha,
+                "output-operator",
+            )
+            .unwrap();
+        let pr_claim = store
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha256,
+                claim_version,
+                "output-operator",
+            )
+            .unwrap();
+        let pull_request = serde_json::json!({
+            "number": 42,
+            "url": "https://github.com/disposable/acceptance/pull/42",
+            "state": "open",
+            "draft": true,
+            "reused": false,
+            "repository": "disposable/acceptance",
+            "base_branch": "main",
+            "head_branch": format!("acp/product-{task_id}"),
+            "head_sha": commit_sha,
+        });
+        store
+            .complete_product_output_draft_pr(
+                artifact_id,
+                operation_id,
+                pr_claim["current_version"].as_u64().unwrap(),
+                &pull_request,
+                "output-operator",
+            )
+            .unwrap();
+        // Advance ProductTask past the claim version while the durable operation
+        // retains the original request expected_task_version binding.
+        let advanced = store
+            .mark_product_task_output_outcome_unknown(
+                task_id,
+                "output-operator",
+                "simulate progressive version advance before terminal CAS",
+            )
+            .unwrap();
+        let current_version = advanced["version"].as_u64().unwrap();
+        assert!(
+            current_version > claim_version,
+            "progressive path must advance task version beyond claim version"
+        );
+        assert_eq!(advanced["status"], "outcome_unknown");
+        let durable = store
+            .get_supervised_patch_artifact(artifact_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            durable["product_output_operation"]["expected_task_version"],
+            claim_version
+        );
+        assert_eq!(
+            durable["product_output_operation"]["request"]["expected_task_version"],
+            claim_version
+        );
+        assert_eq!(durable["product_output_operation"]["request_sha256"], request_sha256);
+
+        // Stale claim version is rejected after the task advanced.
+        let stale = store
+            .complete_product_task_draft_pr_output(
+                task_id,
+                artifact_id,
+                operation_id,
+                pr_claim["current_version"].as_u64().unwrap(),
+                claim_version,
+                &pull_request,
+                "output-operator",
+            )
+            .unwrap_err();
+        assert!(
+            stale.contains("stale product task version"),
+            "unexpected stale rejection: {stale}"
+        );
+
+        // Conflicting PR receipt remains rejected.
+        let mut bad_pr = pull_request.clone();
+        bad_pr["number"] = serde_json::json!(99);
+        let conflict = store
+            .complete_product_task_draft_pr_output(
+                task_id,
+                artifact_id,
+                operation_id,
+                pr_claim["current_version"].as_u64().unwrap(),
+                current_version,
+                &bad_pr,
+                "output-operator",
+            )
+            .unwrap_err();
+        assert!(
+            conflict.contains("stale")
+                || conflict.contains("mismatch")
+                || conflict.contains("incomplete")
+                || conflict.contains("does not match"),
+            "unexpected PR conflict rejection: {conflict}"
+        );
+
+        // Current ProductTask version terminal-CAS succeeds while operation keeps
+        // the original claim/request version binding.
+        let completed = store
+            .complete_product_task_draft_pr_output(
+                task_id,
+                artifact_id,
+                operation_id,
+                pr_claim["current_version"].as_u64().unwrap(),
+                current_version,
+                &pull_request,
+                "output-operator",
+            )
+            .unwrap();
+        assert_eq!(completed["task"]["status"], "completed");
+        assert_eq!(
+            completed["operation"]["expected_task_version"],
+            claim_version
+        );
+        assert_eq!(
+            completed["operation"]["request"]["expected_task_version"],
+            claim_version
+        );
+        assert_eq!(completed["operation"]["request_sha256"], request_sha256);
+        assert_eq!(completed["operation"]["pr_create"]["number"], 42);
+        assert_eq!(completed["output"]["status"], "draft_pr_created");
+
+        // After completion, a conflicting request hash is rejected with zero
+        // second effect (existing claim path).
+        let mut mismatched = request.clone();
+        mismatched["pr_title"] = serde_json::json!("hostile retitle");
+        let mismatched_sha = sha256_json(&mismatched);
+        let hash_conflict = store
+            .claim_product_output_operation(
+                artifact_id,
+                &mismatched,
+                &mismatched_sha,
+                completed["task"]["version"].as_u64().unwrap(),
+                "hostile-operator",
+            )
+            .unwrap_err();
+        assert!(
+            hash_conflict.contains("does not match durable operation")
+                || hash_conflict.contains("stale product task version")
+                || hash_conflict.contains("task state"),
+            "unexpected hash-conflict rejection: {hash_conflict}"
+        );
+        std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
+    });
+}
