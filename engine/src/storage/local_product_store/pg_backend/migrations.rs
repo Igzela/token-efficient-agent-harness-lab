@@ -3397,6 +3397,9 @@ mod tests {
         let store = std::sync::Arc::new(store);
         store
             .with_pg_conn(|client| {
+                // product_tasks stores approval flags as INTEGER (0/1), matching
+                // the production admit path — not PostgreSQL BOOLEAN TRUE.
+                let one: i32 = 1;
                 client
                     .execute(
                         "INSERT INTO product_tasks (
@@ -3411,13 +3414,13 @@ mod tests {
                             'task-concurrent','product_task.v1','tenant-a','workspace-a',
                             'delegated-plan-concurrency','workspace_bound',1,$1,
                             'target-a','/redacted/target',$2,NULL,'draft_pr','low',
-                            TRUE,TRUE,TRUE,$3,'{}','{}',NULL,NULL,NULL,NULL,NULL,
+                            $4,$4,$4,$3,'{}','{}',NULL,NULL,NULL,NULL,NULL,
                             '2026-07-31T00:00:00Z','2026-07-31T00:00:00Z','test'
                          )",
-                        &[&"a".repeat(64), &"b".repeat(40), &"c".repeat(64)],
+                        &[&"a".repeat(64), &"b".repeat(40), &"c".repeat(64), &one],
                     )
                     .map(|_| ())
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| format!("product_tasks seed failed: {error}"))
             })
             .unwrap();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
