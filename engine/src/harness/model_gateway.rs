@@ -1,7 +1,5 @@
-use std::collections::HashMap;
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 
 // ---------------------------------------------------------------------------
@@ -55,29 +53,6 @@ impl Default for ModelResponse {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct ModelCapability {
-    pub tier: String,
-    pub supports_tools: bool,
-    pub supports_thinking: bool,
-    pub supports_caching: bool,
-    pub max_context_tokens: i64,
-    pub cost_per_1k_tokens: f64,
-}
-
-impl Default for ModelCapability {
-    fn default() -> Self {
-        Self {
-            tier: String::new(),
-            supports_tools: false,
-            supports_thinking: false,
-            supports_caching: false,
-            max_context_tokens: 4096,
-            cost_per_1k_tokens: 0.001,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
@@ -87,45 +62,27 @@ pub trait ModelProvider: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// Error
+// StubModelProvider (test fixture)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub struct ModelGatewayUnknownTier {
-    pub tier: String,
-    pub available: Vec<String>,
-}
-
-impl fmt::Display for ModelGatewayUnknownTier {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "unknown tier: {:?}; available: {:?}",
-            self.tier, self.available
-        )
-    }
-}
-
-impl std::error::Error for ModelGatewayUnknownTier {}
-
-// ---------------------------------------------------------------------------
-// StubModelProvider
-// ---------------------------------------------------------------------------
-
+#[cfg(test)]
 pub struct StubModelProvider;
 
+#[cfg(test)]
 impl StubModelProvider {
     pub fn new() -> Self {
         Self
     }
 }
 
+#[cfg(test)]
 impl Default for StubModelProvider {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl ModelProvider for StubModelProvider {
     fn invoke(&self, tier: &ModelTier, prompt: &str, max_tokens: i64) -> ModelResponse {
         let prompt_hash = {
@@ -169,210 +126,12 @@ impl ModelProvider for StubModelProvider {
 }
 
 // ---------------------------------------------------------------------------
-// ModelCapabilityRegistry
-// ---------------------------------------------------------------------------
-
-pub struct ModelCapabilityRegistry {
-    tiers: HashMap<String, ModelTier>,
-    capabilities: HashMap<String, ModelCapability>,
-}
-
-impl ModelCapabilityRegistry {
-    pub fn new() -> Self {
-        Self {
-            tiers: HashMap::new(),
-            capabilities: HashMap::new(),
-        }
-    }
-
-    pub fn register(&mut self, tier: ModelTier, capability: ModelCapability) {
-        self.tiers.insert(tier.name.clone(), tier);
-        self.capabilities
-            .insert(capability.tier.clone(), capability);
-    }
-
-    pub fn get_tier(&self, name: &str) -> Result<&ModelTier, ModelGatewayUnknownTier> {
-        self.tiers.get(name).ok_or_else(|| ModelGatewayUnknownTier {
-            tier: name.to_string(),
-            available: self.tiers.keys().cloned().collect(),
-        })
-    }
-
-    pub fn get_capability(&self, name: &str) -> Result<&ModelCapability, ModelGatewayUnknownTier> {
-        self.capabilities
-            .get(name)
-            .ok_or_else(|| ModelGatewayUnknownTier {
-                tier: name.to_string(),
-                available: self.capabilities.keys().cloned().collect(),
-            })
-    }
-
-    pub fn list_tiers(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.tiers.keys().cloned().collect();
-        names.sort();
-        names
-    }
-}
-
-impl Default for ModelCapabilityRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ModelGateway
-// ---------------------------------------------------------------------------
-
-pub struct ModelGateway {
-    registry: ModelCapabilityRegistry,
-    provider: Box<dyn ModelProvider>,
-}
-
-impl ModelGateway {
-    pub fn new(registry: ModelCapabilityRegistry, provider: Box<dyn ModelProvider>) -> Self {
-        Self { registry, provider }
-    }
-
-    pub fn registry(&self) -> &ModelCapabilityRegistry {
-        &self.registry
-    }
-
-    pub fn invoke(&self, tier: &str, prompt: &str, max_tokens: i64) -> ModelResponse {
-        let model_tier = self
-            .registry
-            .get_tier(tier)
-            .unwrap_or_else(|e| panic!("ModelGateway::invoke called with unknown tier: {}", e));
-        self.provider.invoke(model_tier, prompt, max_tokens)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Default factory
-// ---------------------------------------------------------------------------
-
-fn init_default_tiers() -> Vec<(ModelTier, ModelCapability)> {
-    vec![
-        (
-            ModelTier {
-                name: "strong_planner".to_string(),
-                provider: "stub".to_string(),
-                model_id: "stub-planner".to_string(),
-                max_tokens: 4096,
-                cost_per_1k_tokens: 0.015,
-            },
-            ModelCapability {
-                tier: "strong_planner".to_string(),
-                supports_tools: true,
-                supports_thinking: true,
-                supports_caching: true,
-                max_context_tokens: 200000,
-                cost_per_1k_tokens: 0.015,
-            },
-        ),
-        (
-            ModelTier {
-                name: "cheap_executor".to_string(),
-                provider: "stub".to_string(),
-                model_id: "stub-executor".to_string(),
-                max_tokens: 2048,
-                cost_per_1k_tokens: 0.001,
-            },
-            ModelCapability {
-                tier: "cheap_executor".to_string(),
-                supports_tools: true,
-                supports_thinking: false,
-                supports_caching: true,
-                max_context_tokens: 100000,
-                cost_per_1k_tokens: 0.001,
-            },
-        ),
-        (
-            ModelTier {
-                name: "verifier".to_string(),
-                provider: "stub".to_string(),
-                model_id: "stub-verifier".to_string(),
-                max_tokens: 1024,
-                cost_per_1k_tokens: 0.003,
-            },
-            ModelCapability {
-                tier: "verifier".to_string(),
-                supports_tools: false,
-                supports_thinking: false,
-                supports_caching: true,
-                max_context_tokens: 50000,
-                cost_per_1k_tokens: 0.003,
-            },
-        ),
-        (
-            ModelTier {
-                name: "advisor".to_string(),
-                provider: "stub".to_string(),
-                model_id: "stub-advisor".to_string(),
-                max_tokens: 2048,
-                cost_per_1k_tokens: 0.01,
-            },
-            ModelCapability {
-                tier: "advisor".to_string(),
-                supports_tools: false,
-                supports_thinking: true,
-                supports_caching: false,
-                max_context_tokens: 100000,
-                cost_per_1k_tokens: 0.01,
-            },
-        ),
-    ]
-}
-
-pub fn create_default_registry() -> ModelCapabilityRegistry {
-    let mut registry = ModelCapabilityRegistry::new();
-    for (tier, capability) in init_default_tiers() {
-        registry.register(tier, capability);
-    }
-    registry
-}
-
-pub fn create_default_gateway() -> ModelGateway {
-    ModelGateway::new(
-        create_default_registry(),
-        Box::new(StubModelProvider::new()),
-    )
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_registry_has_four_tiers() {
-        let registry = create_default_registry();
-        let tiers = registry.list_tiers();
-        assert_eq!(tiers.len(), 4);
-        assert!(tiers.contains(&"strong_planner".to_string()));
-        assert!(tiers.contains(&"cheap_executor".to_string()));
-        assert!(tiers.contains(&"verifier".to_string()));
-        assert!(tiers.contains(&"advisor".to_string()));
-    }
-
-    #[test]
-    fn get_tier_returns_correct_tier() {
-        let registry = create_default_registry();
-        let tier = registry.get_tier("strong_planner").unwrap();
-        assert_eq!(tier.model_id, "stub-planner");
-        assert_eq!(tier.max_tokens, 4096);
-    }
-
-    #[test]
-    fn get_tier_unknown_returns_error() {
-        let registry = create_default_registry();
-        let err = registry.get_tier("nonexistent").unwrap_err();
-        assert_eq!(err.tier, "nonexistent");
-        assert!(!err.available.is_empty());
-    }
 
     #[test]
     fn stub_provider_deterministic() {
@@ -423,66 +182,10 @@ mod tests {
     }
 
     #[test]
-    fn gateway_invoke_uses_registry_and_provider() {
-        let gw = create_default_gateway();
-        let r = gw.invoke("verifier", "check this code", 512);
-        assert_eq!(r.tier, "verifier");
-        assert_eq!(r.provider, "stub");
-        assert!(r.token_usage >= 1);
-        assert!(r.token_usage <= 512);
-    }
-
-    #[test]
-    fn gateway_capability_registry_get_capability() {
-        let registry = create_default_registry();
-        let cap = registry.get_capability("advisor").unwrap();
-        assert!(cap.supports_thinking);
-        assert!(!cap.supports_tools);
-        assert_eq!(cap.max_context_tokens, 100000);
-    }
-
-    #[test]
     fn model_response_default() {
         let r = ModelResponse::default();
         assert_eq!(r.provider, "stub");
         assert_eq!(r.token_usage, 0);
         assert!(r.raw_response.is_none());
-    }
-
-    #[test]
-    fn model_gateway_unknown_tier_display() {
-        let err = ModelGatewayUnknownTier {
-            tier: "bad".to_string(),
-            available: vec!["a".to_string(), "b".to_string()],
-        };
-        let msg = format!("{}", err);
-        assert!(msg.contains("bad"));
-        assert!(msg.contains("a"));
-    }
-
-    #[test]
-    fn register_custom_tier_and_invoke() {
-        let mut registry = ModelCapabilityRegistry::new();
-        registry.register(
-            ModelTier {
-                name: "custom".to_string(),
-                provider: "stub".to_string(),
-                model_id: "custom-model".to_string(),
-                max_tokens: 1024,
-                cost_per_1k_tokens: 0.005,
-            },
-            ModelCapability {
-                tier: "custom".to_string(),
-                supports_tools: true,
-                supports_thinking: false,
-                supports_caching: false,
-                max_context_tokens: 32000,
-                cost_per_1k_tokens: 0.005,
-            },
-        );
-        let gw = ModelGateway::new(registry, Box::new(StubModelProvider::new()));
-        let r = gw.invoke("custom", "test prompt", 256);
-        assert_eq!(r.tier, "custom");
-        assert_eq!(r.model_id, "custom-model");
     }
 }
