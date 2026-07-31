@@ -2086,7 +2086,7 @@ impl LocalProductStore {
                         ))
                     })?
                     .get(0);
-                if schema_version != super::migrations::V35_SCHEMA_VERSION {
+                if schema_version != super::schema::CURRENT_POSTGRES_SCHEMA_VERSION {
                     return Err(product_task_workspace_preparation_reconciliation_error(
                         "workspace preparation schema is not current",
                     ));
