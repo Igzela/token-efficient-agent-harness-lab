@@ -3037,8 +3037,11 @@ mod tests {
             let mut config: postgres::Config = url.parse().expect("parse PostgreSQL test URL");
             config.options(&format!("-c search_path={schema_name}"));
             let manager = PostgresConnectionManager::new(config, NoTls);
+            // Concurrent plan-prepare and migration races need more than two
+            // clients; undersizing the pool turns those tests into deadlocks
+            // that surface as opaque "db error" timeouts.
             let pool = Pool::builder()
-                .max_size(2)
+                .max_size(8)
                 .build(manager)
                 .expect("create isolated PostgreSQL pool");
             {
@@ -3434,6 +3437,7 @@ mod tests {
                         &format!("pg-concurrent-{index}"),
                         |ids, created_at| {
                             Ok(serde_json::json!({
+                                "schema_version": "read_only_plan.v1",
                                 "status": "planned_executable",
                                 "graph": {
                                     "nodes": [],
@@ -3457,7 +3461,14 @@ mod tests {
             }
             handles
                 .into_iter()
-                .map(|handle| handle.join().unwrap().unwrap())
+                .map(|handle| {
+                    handle
+                        .join()
+                        .expect("pg concurrent plan worker panicked")
+                        .unwrap_or_else(|error| {
+                            panic!("pg concurrent delegated plan prepare failed: {error}")
+                        })
+                })
                 .collect::<Vec<_>>()
         });
         let plan_id = plans[0]["plan_id"].as_str().unwrap();
@@ -3562,7 +3573,10 @@ mod tests {
             error.contains("missing primary key for recursive_execution_nodes"),
             "unexpected error: {error}"
         );
-        assert_eq!(fixture.store.schema_version().expect("version"), 35);
+        assert_eq!(
+            fixture.store.schema_version().expect("version"),
+            CURRENT_PG_VERSION
+        );
     }
 
     #[test]
@@ -3592,7 +3606,10 @@ mod tests {
             ),
             "unexpected error: {error}"
         );
-        assert_eq!(fixture.store.schema_version().expect("version"), 35);
+        assert_eq!(
+            fixture.store.schema_version().expect("version"),
+            CURRENT_PG_VERSION
+        );
     }
 
     #[test]
@@ -3642,7 +3659,10 @@ mod tests {
                 .run_pg_migrations_internal()
                 .expect_err("weakened v26 schema must fail closed");
             assert!(error.contains(expected), "unexpected error: {error}");
-            assert_eq!(fixture.store.schema_version().expect("version"), 35);
+            assert_eq!(
+                fixture.store.schema_version().expect("version"),
+                CURRENT_PG_VERSION
+            );
         }
     }
 
@@ -3741,7 +3761,7 @@ mod tests {
         left.unwrap();
         right.unwrap();
 
-        assert_eq!(store.schema_version().unwrap(), 35);
+        assert_eq!(store.schema_version().unwrap(), CURRENT_PG_VERSION);
         store
             .with_pg_conn(|client| {
                 assert!(pg_column_exists(
@@ -3779,7 +3799,7 @@ mod tests {
             .unwrap();
         store.run_pg_migrations_internal().unwrap();
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 35);
+        assert_eq!(store.schema_version().unwrap(), CURRENT_PG_VERSION);
 
         store
             .with_pg_conn(|client| {
@@ -3804,7 +3824,7 @@ mod tests {
         );
         // The refusal is atomic: deleting only the v25 marker does not move or
         // silently rewrite the existing v26 marker.
-        assert_eq!(store.schema_version().unwrap(), 35);
+        assert_eq!(store.schema_version().unwrap(), CURRENT_PG_VERSION);
     }
 
     #[test]
@@ -3901,7 +3921,7 @@ mod tests {
             })
         );
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 35);
+        assert_eq!(store.schema_version().unwrap(), CURRENT_PG_VERSION);
         for table in super::super::super::migrations::V24_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -3951,7 +3971,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 35);
+        assert_eq!(store.schema_version().unwrap(), CURRENT_PG_VERSION);
         for table in super::super::super::migrations::V23_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
@@ -4060,7 +4080,7 @@ mod tests {
         );
 
         store.run_pg_migrations_internal().unwrap();
-        assert_eq!(store.schema_version().unwrap(), 35);
+        assert_eq!(store.schema_version().unwrap(), CURRENT_PG_VERSION);
         for table in super::super::super::migrations::V22_TABLES {
             assert!(pg_table_exists(store, table), "{table} should be restored");
         }
