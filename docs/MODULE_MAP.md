@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-07-31.
+Last updated: 2026-08-01.
 
 This is the concise ownership map for accepted `main`. Current facts are in `docs/CURRENT_STATUS.md`; execution order and gates are in `docs/NEXT_DECISION.md`; architecture invariants are in `docs/ARCHITECTURE_BOOK.md`.
 
@@ -35,7 +35,7 @@ Full Agent Autonomy Mode permits repository-scoped work that is testable, observ
 | Harness Evolution Level-1 | `engine/src/harness_evolution*.rs` plus existing store owners | Default-off one-generation fixture laboratory; active Harness immutable |
 | SDK and Dashboard | `sdk/`, `dashboard/` | Typed interaction and projection only; no backend authority |
 | Wire contracts | `wire_contract/`, `codegen/` | Shared cross-language schemas; drift checked by `scripts/check_wire_codegen_drift.sh` |
-| CI and repository automation | `.github/`, `scripts/`, `tools/`, `scripts/agent-control/` | Verification and optional/parked repository automation; no implicit product/release authority |
+| CI and repository automation | `.github/`, `scripts/`, `tools/`, `scripts/agent-control/` | Verification and optional/parked repository automation; no implicit product/release authority. `tools/check_security_baseline.py` is the sole fail-closed guard owner for unattended-automation patterns (`dangerously-skip-permissions`, unbound `gh run list`/`gh run watch`) in repository-controlled automation (PR #326); no second CI policy owner exists |
 
 ## Product Data Flow
 
