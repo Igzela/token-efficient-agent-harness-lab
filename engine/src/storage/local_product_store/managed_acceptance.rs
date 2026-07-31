@@ -9181,6 +9181,43 @@ mod tests {
     }
 
     #[test]
+    fn expired_api_key_principal_is_rejected_against_wall_clock() {
+        let (_dir, store) = store();
+        // Key expired at unix 100. A mistaken cost-cap "now" of 0.50 never exceeds
+        // real production expiry timestamps and would keep keys alive forever.
+        store
+            .record_api_key_metadata_with_expiry(
+                "key_expired",
+                "operator",
+                "operator",
+                &ALL_MANAGED_ACCEPTANCE_SCOPES
+                    .iter()
+                    .map(|scope| (*scope).to_string())
+                    .collect::<Vec<_>>(),
+                Some(100.0),
+                "test",
+            )
+            .unwrap();
+        // Mistaken cost-as-clock still sees the key as live (0.50 < 100).
+        store
+            .authenticate_managed_acceptance_principal("tenant-a", "key_expired", Some(0.50))
+            .expect("cost-as-clock incorrectly keeps the key live");
+        // Production callers must use wall clock (None) and reject after expiry.
+        let wall_clock = store
+            .authenticate_managed_acceptance_principal("tenant-a", "key_expired", None)
+            .unwrap_err();
+        assert!(wall_clock.contains("expired"), "{wall_clock}");
+        // Explicit frozen "now" after expiry fails; before expiry still works.
+        let after = store
+            .authenticate_managed_acceptance_principal("tenant-a", "key_expired", Some(100.5))
+            .unwrap_err();
+        assert!(after.contains("expired"), "{after}");
+        store
+            .authenticate_managed_acceptance_principal("tenant-a", "key_expired", Some(50.0))
+            .unwrap();
+    }
+
+    #[test]
     fn decision_creation_rejects_non_draft_status_without_transition_receipt() {
         let (_dir, store) = store();
         let residual = "a9".repeat(32);

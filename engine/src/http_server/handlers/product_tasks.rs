@@ -321,7 +321,7 @@ pub(crate) async fn api_prepare_delegated_product_task(
         .authenticate_managed_acceptance_principal(
             &context.tenant_id,
             &context.api_key_id,
-            Some(0.50),
+            None, // wall-clock expiry; never pass cost caps as now_unix
         )
         .map_err(|error| delegated_api_error(&error, "delegated_operator_authentication_failed"))?;
     let available = live_available_executor_types(&state).map_err(|error| {
@@ -441,7 +441,7 @@ pub(crate) async fn api_activate_delegated_product_task(
         .authenticate_managed_acceptance_principal(
             &context.tenant_id,
             &context.api_key_id,
-            Some(0.50),
+            None, // wall-clock expiry; never pass cost caps as now_unix
         )
         .map_err(|error| {
             delegated_api_error(&error, "delegated_activator_authentication_failed")
@@ -503,7 +503,7 @@ pub(crate) async fn api_approve_delegated_product_task(
         .authenticate_managed_acceptance_principal(
             &context.tenant_id,
             &context.api_key_id,
-            Some(0.50),
+            None, // wall-clock expiry; never pass cost caps as now_unix
         )
         .map_err(|error| {
             delegated_api_error(&error, "delegated_confirmer_authentication_failed")

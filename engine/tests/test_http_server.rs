@@ -12962,6 +12962,116 @@ async fn axum_delegated_prepare_is_default_off_after_admin_authorization() {
 }
 
 #[tokio::test]
+async fn axum_delegated_prepare_rejects_expired_api_key_metadata() {
+    use engine::executor_pool::{
+        CostProfile, ExecutorCapabilities, ExecutorEntry, ExecutorMetrics, ExecutorStatus,
+    };
+    use engine::node_executor::FailNodeExecutor;
+    use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
+    use engine::storage::local_product_store::ALL_MANAGED_ACCEPTANCE_SCOPES;
+    use std::sync::Mutex as StdMutex;
+
+    let _product_env_lock = product_golden_path_env_lock().lock().await;
+    let _product_env = ProductGoldenPathDisabledEnvGuard::enable();
+
+    let dir = tempdir().unwrap();
+    let store =
+        Arc::new(LocalProductStore::new(dir.path().join("delegated-expired-key.db")).unwrap());
+    let mut resolver = TenantResolver::new();
+    let scopes = HashSet::from(["team:admin".to_string(), "dispatch:execute".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "tenant-a".to_string(),
+        name: "Expired Key".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (key, raw) = resolver
+        .create_api_key("tenant-a", Some(scopes), None, 1.0)
+        .unwrap();
+    store
+        .record_api_key_metadata_with_expiry(
+            &key.key_id,
+            "expired-operator",
+            "operator",
+            &ALL_MANAGED_ACCEPTANCE_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            Some(1.0),
+            "delegated-expired-http-test",
+        )
+        .unwrap();
+
+    let mut scheduler = WorkflowScheduler::new(
+        store.clone(),
+        SchedulerConfig {
+            executor_type: "managed_deepseek".into(),
+            supervised_workers_enabled: true,
+            interval_ms: 60_000,
+            ..Default::default()
+        },
+    );
+    scheduler.executor_pool().register(ExecutorEntry {
+        executor_type: "managed_deepseek".into(),
+        executor: Arc::new(FailNodeExecutor {
+            error_domain: "provider_free_test".into(),
+            error_message: "provider transport is intentionally absent".into(),
+        }),
+        capabilities: ExecutorCapabilities {
+            supported_task_types: vec!["managed_deepseek".into()],
+            supported_task_domains: vec!["product_golden_path".into()],
+            requires_auth: true,
+            requires_cli: false,
+            max_timeout_ms: 30_000,
+        },
+        status: ExecutorStatus::default(),
+        cost_profile: CostProfile::default(),
+        metrics: ExecutorMetrics::default(),
+    });
+    scheduler.start().unwrap();
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store)
+            .with_scheduler(Arc::new(StdMutex::new(scheduler)))
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/product/tasks/missing/delegated/prepare")
+                .header(header::AUTHORIZATION, format!("Bearer {raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "delegation": {"schema_version": "managed_autonomous_delegation.v1"},
+                        "proposal_manifest": {},
+                        "approved_proposal_sha256": "0".repeat(64),
+                        "attempt_id": "attempt-expired"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let message = body["error"]
+        .as_str()
+        .or_else(|| body["message"].as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("expired")
+            || body["code"]
+                .as_str()
+                .is_some_and(|code| code.contains("authentication") || code.contains("delegated")),
+        "body={body:#}"
+    );
+}
+
+#[tokio::test]
 async fn axum_delegated_prepare_activate_and_revocation_terminal_are_provider_free() {
     use engine::executor_pool::{
         CostProfile, ExecutorCapabilities, ExecutorEntry, ExecutorMetrics, ExecutorStatus,
@@ -13256,7 +13366,7 @@ async fn axum_delegated_prepare_activate_and_revocation_terminal_are_provider_fr
     assert_eq!(activated.status(), StatusCode::OK);
 
     let approver = store
-        .authenticate_managed_acceptance_principal("tenant-a", &approver_key.key_id, Some(0.50))
+        .authenticate_managed_acceptance_principal("tenant-a", &approver_key.key_id, None)
         .unwrap();
     store.revoke_delegation(&approver, &delegation_id).unwrap();
     let terminal = store.delegated_authority_state(&delegation_id).unwrap();
