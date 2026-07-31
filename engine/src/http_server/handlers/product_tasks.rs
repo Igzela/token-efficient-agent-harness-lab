@@ -768,6 +768,9 @@ pub(crate) async fn api_output_product_task(
                     .ok_or_else(|| {
                         internal_error("product output task version missing".to_string())
                     })?;
+                // Prefer the current ProductTask version for terminal CAS. The
+                // durable operation may still carry the earlier claim version
+                // from the first progressive output phase.
                 let pull_request_request = GitHubPullRequestRequest {
                     repository: GitHubRepository {
                         host: request

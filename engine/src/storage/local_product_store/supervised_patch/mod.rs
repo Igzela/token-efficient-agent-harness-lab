@@ -5547,18 +5547,18 @@ fn validate_terminal_product_output_record(
             .get("product_output_operation")
             .ok_or_else(|| "completed Draft PR operation missing at terminal CAS".to_string())?;
         validate_product_output_operation(artifact, operation)?;
+        // Progressive Draft PR completion may advance ProductTask version when the
+        // branch/PR phases land before terminal CAS. The durable operation keeps
+        // the original claim version; terminal CAS must rebind on the current
+        // ProductTask version while still verifying the completed PR receipt.
         if operation.get("state").and_then(Value::as_str) != Some("completed")
             || operation.get("product_task_id") != authority_request.get("product_task_id")
             || operation.get("artifact_id") != authority_request.get("artifact_id")
             || operation.get("approval_id") != authority_request.get("approval_id")
-            || operation.get("expected_task_version")
-                != authority_request.get("expected_task_version")
             || operation
                 .pointer("/request/output_intent")
                 .and_then(Value::as_str)
                 != Some("draft_pr")
-            || operation.pointer("/request/expected_task_version")
-                != authority_request.get("expected_task_version")
             || operation
                 .pointer("/branch_push/status")
                 .and_then(Value::as_str)
