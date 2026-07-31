@@ -25,6 +25,7 @@ pub const ADMITTED_EXECUTOR_IDENTIFIERS: &[&str] = &[
     "local_runner_validation",
     "claude_code_cli",
     "codex_cli",
+    "managed_deepseek",
     "opencode",
     // Alias retained for readability; resolved to `command` at compile time.
     "deterministic",
@@ -38,6 +39,9 @@ pub const MAX_VERIFICATION_COMMAND_BYTES: usize = 512;
 pub const PRODUCT_VERIFICATION_READ_ONLY_COMMANDS: &[&str] = &[
     "echo", "cat", "ls", "head", "tail", "grep", "wc", "true", "false", "test",
 ];
+const MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND: &str =
+    "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md";
+const MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS: u64 = 5_000;
 
 fn grep_short_option_recurses(argument: &str) -> bool {
     let mut flags = argument.trim_start_matches('-').chars().peekable();
@@ -159,6 +163,33 @@ fn validate_product_verification_command_argv(argv: &[&str]) -> Result<(), Strin
     }
     Ok(())
 }
+
+fn exact_managed_deepseek_verifier_command(
+    verification_commands: &Value,
+) -> Result<&'static str, String> {
+    let commands = verification_commands.as_array().ok_or_else(|| {
+        "managed DeepSeek verifier is not the exact bounded docs check".to_string()
+    })?;
+    let command = commands
+        .first()
+        .filter(|_| commands.len() == 1)
+        .ok_or_else(|| {
+            "managed DeepSeek verifier is not the exact bounded docs check".to_string()
+        })?;
+    if command.get("command").and_then(Value::as_str)
+        != Some(MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND)
+        || command
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .is_none_or(|timeout| {
+                timeout == 0 || timeout > MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS
+            })
+    {
+        return Err("managed DeepSeek verifier is not the exact bounded docs check".to_string());
+    }
+    Ok(MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND)
+}
+
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 pub const MAX_TARGET_ID_BYTES: usize = 128;
 pub const MAX_EXECUTOR_SET: usize = 16;
@@ -1484,6 +1515,119 @@ pub fn compile_product_executable_graph(
             .insert("command".to_string(), json!(command));
     }
 
+    if resolved_executor == "managed_deepseek" {
+        let verifier_command = exact_managed_deepseek_verifier_command(&verification_commands)?;
+        let deferred_binding = task
+            .get("managed_deepseek_deferred_binding")
+            .and_then(Value::as_bool)
+            == Some(true);
+        let binding = task
+            .get("managed_deepseek_binding")
+            .cloned()
+            .filter(|value| value.is_object());
+        if binding.is_none() && !deferred_binding {
+            return Err("managed DeepSeek graph requires a store-issued binding".to_string());
+        }
+        let stages = [
+            (
+                "planning",
+                "planner",
+                "managed_deepseek",
+                Vec::<String>::new(),
+            ),
+            (
+                "implementation",
+                "implementer",
+                "managed_deepseek",
+                vec![format!("{}-planning", plan_ids.workflow_id)],
+            ),
+            (
+                "deterministic_verification",
+                "deterministic",
+                "command",
+                vec![format!("{}-implementation", plan_ids.workflow_id)],
+            ),
+            (
+                "review",
+                "reviewer",
+                "managed_deepseek",
+                vec![format!(
+                    "{}-deterministic_verification",
+                    plan_ids.workflow_id
+                )],
+            ),
+        ];
+        let mut route_nodes = Vec::with_capacity(stages.len());
+        for (stage, role, executor, input_refs) in &stages {
+            let node_id = format!("{}-{stage}", plan_ids.workflow_id);
+            let mut node = apply_node.clone();
+            node["node_id"] = json!(node_id);
+            node["task_type"] = json!(executor);
+            node["executor"] = json!(executor);
+            node["suggested_executor"] = json!(executor);
+            node["input_refs"] = json!(input_refs);
+            node["managed_supervised_patch"] = Value::Null;
+            if *stage == "deterministic_verification" {
+                node["managed_deepseek"] = Value::Null;
+                node["command"] = json!(verifier_command);
+                node["executor_class"] = json!("deterministic_verifier");
+            } else {
+                let mut stage_binding = binding.clone().unwrap_or_else(|| json!({}));
+                stage_binding["node_id"] = json!(node_id);
+                let prompt = match *stage {
+                    "planning" => format!(
+                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_deepseek_plan.v1\",\"status\":\"planned\",\"path\":\"docs/USER_GUIDE.md\",\"intent\":\"clarify_doctor_read_only_health_check\"}}.",
+                        objective_preview
+                    ),
+                    "implementation" => format!(
+                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_workspace_action.v1\",\"action\":\"replace_text\",\"path\":\"docs/USER_GUIDE.md\",\"old_text\":\"...\",\"new_text\":\"...\"}}. Use only the exact allowed path and make one bounded replacement.",
+                        objective_preview
+                    ),
+                    "review" => format!(
+                        "{}\nReturn exactly one JSON object and no markdown: {{\"schema_version\":\"managed_deepseek_review.v1\",\"status\":\"accepted\",\"material_objections\":[]}}. Use status rejected when any material objection remains.",
+                        objective_preview
+                    ),
+                    _ => objective_preview.to_string(),
+                };
+                node["managed_deepseek"] = json!({
+                    "schema_version": "managed_deepseek_node.v1",
+                    "stage": stage,
+                    "role": role,
+                    "protocol": "openai_compatible",
+                    "binding": stage_binding,
+                    "binding_status": if deferred_binding { "deferred" } else { "bound" },
+                    "prompt": prompt,
+                    "authority_binding_source": "LocalProductStore.managed_acceptance"
+                });
+            }
+            route_nodes.push(node);
+        }
+        let edges = stages
+            .windows(2)
+            .map(|window| {
+                json!({
+                    "edge_id": format!("edge-{}-{}", window[0].0, window[1].0),
+                    "from_node_id": format!("{}-{}", plan_ids.workflow_id, window[0].0),
+                    "to_node_id": format!("{}-{}", plan_ids.workflow_id, window[1].0),
+                    "edge_type": "dependency"
+                })
+            })
+            .collect::<Vec<_>>();
+        return Ok(json!({
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": plan_ids.workflow_id,
+            "dispatch_id": plan_ids.dispatch_id,
+            "nodes": route_nodes,
+            "edges": edges,
+            "status": "executable",
+            "created_at": created_at,
+            "updated_at": created_at,
+            "product_task_id": task_id,
+            "product_graph_schema_version": PRODUCT_EXECUTABLE_GRAPH_SCHEMA_VERSION,
+            "managed_route": "deepseek_pro_flash_verify_pro.v1"
+        }));
+    }
+
     Ok(json!({
         "schema_version": "workflow_graph.v1",
         "workflow_id": plan_ids.workflow_id,
@@ -1538,9 +1682,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn managed_deepseek_executor_compiles_as_an_explicit_product_node() {
-        let task = json!({
+    fn managed_deepseek_graph_task(verification_commands: Value) -> Value {
+        json!({
             "task_id": "product-task-deepseek",
             "status": "workspace_bound",
             "tenant_id": "tenant-1",
@@ -1554,12 +1697,28 @@ mod tests {
                 "source_revision": "c".repeat(40),
                 "allowed_paths": ["docs/USER_GUIDE.md"]
             },
+            "managed_deepseek_binding": {
+                "product_task_id": "product-task-deepseek",
+                "workflow_id": "wf-plan-0001",
+                "node_id": "wf-plan-0001-planning",
+                "attempt_id": "attempt-1",
+                "spend_authorization_id": "spend-1",
+                "attempt_lease_id": "lease-1"
+            },
             "intake": {
                 "objective_preview": "Clarify the read-only doctor health check.",
                 "budget": {"total_tokens": 12000},
-                "verification_commands": []
+                "verification_commands": verification_commands
             }
-        });
+        })
+    }
+
+    #[test]
+    fn managed_deepseek_executor_compiles_as_an_explicit_product_node() {
+        let task = managed_deepseek_graph_task(json!([{
+            "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+            "timeout_ms": 5_000
+        }]));
         let graph = compile_product_executable_graph(
             &task,
             "2026-07-30T00:00:00Z",
@@ -1567,16 +1726,94 @@ mod tests {
             "managed_deepseek",
         )
         .unwrap();
+        assert_eq!(graph["nodes"].as_array().unwrap().len(), 4);
         let node = &graph["nodes"][0];
         assert_eq!(node["task_type"], "managed_deepseek");
         assert_eq!(node["executor"], "managed_deepseek");
         assert_eq!(node["managed_deepseek"]["stage"], "planning");
         assert_eq!(node["managed_deepseek"]["role"], "planner");
-        assert!(node["managed_deepseek"]["binding"].is_null());
+        assert_eq!(
+            node["managed_deepseek"]["binding"]["node_id"],
+            "wf-plan-0001-planning"
+        );
+        assert_eq!(graph["nodes"][2]["task_type"], "command");
+        assert_eq!(
+            graph["nodes"][2]["command"],
+            "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md"
+        );
+        assert_eq!(graph["nodes"][3]["managed_deepseek"]["role"], "reviewer");
         assert_eq!(
             node["managed_executor_identity"]["planner_model"],
             "deepseek-v4-pro"
         );
+    }
+
+    #[test]
+    fn managed_deepseek_graph_rejects_damaged_verifier_shapes() {
+        let cases = [
+            ("missing", None),
+            ("malformed_collection", Some(json!({"command": "true"}))),
+            ("empty", Some(json!([]))),
+            ("malformed_entry", Some(json!(["not-an-object"]))),
+            ("missing_command", Some(json!([{"timeout_ms": 5_000}]))),
+            (
+                "malformed_command",
+                Some(json!([{"command": 7, "timeout_ms": 5_000}])),
+            ),
+            (
+                "empty_command",
+                Some(json!([{"command": "", "timeout_ms": 5_000}])),
+            ),
+            (
+                "different_command",
+                Some(json!([{"command": "true", "timeout_ms": 5_000}])),
+            ),
+            (
+                "missing_timeout",
+                Some(json!([{
+                    "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md"
+                }])),
+            ),
+            (
+                "excessive_timeout",
+                Some(json!([{
+                    "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+                    "timeout_ms": 5_001
+                }])),
+            ),
+            (
+                "multiple_commands",
+                Some(json!([
+                    {
+                        "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+                        "timeout_ms": 5_000
+                    },
+                    {"command": "true", "timeout_ms": 1}
+                ])),
+            ),
+        ];
+        for (name, verification_commands) in cases {
+            let mut task = managed_deepseek_graph_task(json!([]));
+            if let Some(verification_commands) = verification_commands {
+                task["intake"]["verification_commands"] = verification_commands;
+            } else {
+                task["intake"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("verification_commands");
+            }
+            let error = compile_product_executable_graph(
+                &task,
+                "2026-07-30T00:00:00Z",
+                &crate::read_only_planner::WorkflowPlanIds::for_sequence(1),
+                "managed_deepseek",
+            )
+            .expect_err(name);
+            assert!(
+                error.contains("exact bounded docs check"),
+                "{name}: {error}"
+            );
+        }
     }
 
     #[test]

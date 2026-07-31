@@ -3,6 +3,8 @@ use std::env;
 pub struct CredentialBoundary {
     #[allow(dead_code)]
     backend: String,
+    #[cfg(test)]
+    fixture_secret: Option<String>,
 }
 
 impl CredentialBoundary {
@@ -12,12 +14,27 @@ impl CredentialBoundary {
         }
         Ok(Self {
             backend: backend.to_string(),
+            #[cfg(test)]
+            fixture_secret: None,
         })
     }
 
     pub fn resolve(&self, ref_id: &str) -> Result<String, String> {
+        #[cfg(test)]
+        if let Some(secret) = &self.fixture_secret {
+            let _ = ref_id;
+            return Ok(secret.clone());
+        }
         env::var(ref_id)
             .map_err(|_| format!("Credential environment variable '{ref_id}' is not set"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            backend: "test-memory".to_string(),
+            fixture_secret: Some("fixture-provider-credential".to_string()),
+        }
     }
 
     pub fn validate(&self, ref_id: &str) -> bool {

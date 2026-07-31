@@ -4055,13 +4055,12 @@ fn context_assembly_failed_predecessor_not_injected() {
         .tick_with_executor("run-0001", "actor", 0, &fail)
         .unwrap();
 
-    let result = store
+    let error = store
         .tick_with_executor("run-0001", "actor", 0, &executor)
-        .unwrap();
-    assert_eq!(
-        result["action"].as_str().unwrap(),
-        "no_ready_node",
-        "node-c should not be ready when predecessor node-b failed"
+        .unwrap_err();
+    assert!(
+        error.contains("workflow run run-0001 is terminal: failed"),
+        "node-c must not execute after predecessor node-b failed: {error}"
     );
 }
 

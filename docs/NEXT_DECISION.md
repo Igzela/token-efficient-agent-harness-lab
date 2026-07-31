@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-07-30.
+Last updated: 2026-07-31.
 
 ## Current Direction
 
@@ -21,8 +21,9 @@ provider-free RWE authority reconciliation (#300)
 → provider-free RWE economic protocol and VDE artifact contracts
 → managed-coding boundary generalization
 → provider-free DeepSeek dual-protocol integration
-→ one bounded DeepSeek Golden Path managed acceptance (`AUTHORIZATION_REQUIRED`
-  remains unresolved)
+→ production DeepSeek ProductTask runner wiring (#322 accepted)
+→ delegated autonomous Golden Path authority and provider-free proof (#323)
+→ exactly one owner-authorized bounded DeepSeek Golden Path live seal
 → freeze one operator-supplied real RWE corpus under the accepted protocol
 → first frozen Real Workload Evidence baseline
 → Architecture Convergence AC1–AC7
@@ -33,16 +34,17 @@ provider-free RWE authority reconciliation (#300)
 → Dashboard #225 last
 ```
 
-The owner has explicitly authorized the two provider-free packets below. They generalize the existing ProductTask-owned managed-coding path and add deterministic mock-only DeepSeek protocol coverage; neither authorizes a provider request, credential disclosure, target output, target-main mutation, automatic merge, release, deployment, RWE, or economic claim. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
+The owner has authorized the production runner repair, delegated autonomous authority packet, and exactly one subsequent bounded documentation live seal. The two implementation packets remain provider-free; no provider request or target mutation is permitted before both are accepted. The live authorization permits only its exact final manifest, one ProductTask budget, one unmerged `acp/*` Draft PR, and mandatory terminal expiry/cleanup. It grants no credential disclosure, target-main mutation, merge, automatic merge, release, deployment, RWE, or economic claim. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `AUTHORIZATION_REQUIRED` after accepted Packets 1 and 2; provider-free manifest preparation may proceed, but no live request is authorized.
-2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
-3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-DELEGATED-AUTONOMOUS-GOLDEN-PATH-1` — `IN_PROGRESS` in Draft PR #323.
+2. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on accepted PR #323; exactly one later attempt is authorized.
+3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
+4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
 ## Packet States
 
@@ -65,7 +67,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, Packet 1 is complete through PR #320, and Packet 2 is complete through PR #321. Packet 3 is now the active frontier but remains authorization-gated: only provider-free manifest and dry-run preparation is permitted. Do not make a provider request or begin RWE/Architecture Convergence/later stages before their named prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, and live-runner wiring through PR #322. Delegated autonomous authority is in progress in Draft PR #323. After its acceptance, the sole active frontier is the owner's exact one-use live seal. Do not begin that live seal, RWE, Architecture Convergence, or later stages before their named prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -175,7 +177,7 @@ Stop before any of the following:
 
 ## Packet PE7-OBSERVATION-RESTACK-1 — observation-only PR #301 reconciliation
 
-**State:** `COMPLETE`
+**State:** `IN_PROGRESS`
 
 **Owned PR:** #301
 
@@ -258,17 +260,39 @@ Default roles are Pro planner, Flash implementer, deterministic verification, th
 
 Required evidence is deterministic local mock-provider coverage for both models and both protocols, role routing, tools/malformed tools, identity and alias rejection, usage conflicts, cache/reasoning accounting, all limits, pre-send versus outcome-unknown behavior, malformed/truncated streams, credential redaction, cancellation/restart/duplicate/lease/late-response handling, existing-provider/Codex compatibility, and SQLite/PostgreSQL parity. Canonical CI never calls DeepSeek.
 
+## Packet PE7-DEEPSEEK-LIVE-RUNNER-WIRING-REPAIR-1
+
+**State:** `COMPLETE`
+
+**Owned PR:** #322, merged as `13f725f949684d179593a6559d8600a5b5d47edf`
+
+**Prerequisite:** PR #321 accepted and merged. Satisfied.
+
+Wire the existing `ManagedDeepSeekProvider::invoke_with_authority` into the existing ProductTask scheduler/executor path as Pro planning, Flash bounded implementation, deterministic verification, and Pro review. Preserve one ProductTask budget and the existing store, scheduler, workspace, approval, output, audit, rollback, and terminal-evidence owners. Deterministic verification decides success. Exact request/model/protocol/usage identity, conservative reservation, no retry after outcome unknown, cleanup, and restart behavior remain fail closed.
+
+## Packet PE7-DELEGATED-AUTONOMOUS-GOLDEN-PATH-1
+
+**State:** `IN_PROGRESS`
+
+**Owned PR:** #323
+
+**Prerequisite:** PR #322 accepted and merged. Satisfied.
+
+Derive an immutable final execution manifest from the immutable proposal, then bind a separate approval receipt, one-use spend authorization, and attempt lease. A versioned, hash-bound, revocable delegation enforces expiry, replay protection, cumulative budget, repository/task/path/file/line/model/protocol/output limits, and forbidden surfaces.
+
+The delegated manifest/spend approver and delegated artifact/output confirmer are separate authenticated authorities. The execution agent and models issue neither receipt. The confirmer independently rechecks the exact artifact/diff, allowed paths, deterministic verifier, Pro review, realized cost, target SHA, delegation, and one unmerged `acp/*` Draft-PR output. Missing, stale, conflicting, revoked, expired, replayed, over-budget, or outcome-unknown state fails closed.
+
+Deterministic local transports prove the complete success route and runner absence, manifest mutation, expiry/revocation, replay, budget accumulation, target drift, path escape, malformed tools, verification failure, model/usage mismatch, cancellation, restart, duplicate, late response, outcome unknown, credential redaction, and SQLite/PostgreSQL parity. Canonical CI performs no provider request or target mutation.
+
 ## Packet PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1
 
-**State:** `BLOCKED_PREREQUISITE` / `AUTHORIZATION_REQUIRED`
+**State:** `BLOCKED_PREREQUISITE`
 
-**Owned PR:** TBD (one focused Draft PR)
+**Authority:** the owner's exact one-use documentation delegation and `MAX_COST_USD=0.50`
 
-**Prerequisite:** Packets 1 and 2 accepted and merged; refreshed main/capsule; no unresolved objection; exact live manifest; parent-only credential presence; and an owner-supplied one-use `MAX_COST_USD`.
+Before any provider request, persist and display the complete derived final manifest, recalculate its SHA-256, verify the delegated approval/spend receipt binds that exact hash, confirm accepted Harness and target main SHAs are unchanged, and report only that the parent-held credential is present. Never print, persist, request, unset, rotate, or forward it to a child.
 
-Before any provider request, display the exact manifest: accepted main and decision/residual-risk hashes; authenticated non-fixture principal/scopes; credential reference and presence only; protocol/provider/base/path; role-model profiles; hard request/retry/token/time/cost limits; ProductTask/workflow/node/attempt IDs; source identity and mutable paths; verifier; approval/output/cleanup/rollback/evidence owners; and Draft-PR-only target restriction. Ask only for the cost cap, confirmation of parent-environment credential presence, and final acceptance of that manifest.
-
-The sole first target is `Igzela/alters-lab`. Refresh and bind its current default-branch SHA, reject overlapping assumptions, and select only a tiny deterministic task touching at most three bounded files. Execute Pro planning, Flash implementation, deterministic verification, and Pro review; neither model receives spend, approval, output, or merge authority. The only target output is an unmerged `acp/*` Draft PR and target main must remain unchanged. If the target is unsuitable, return `DECISION_REQUIRED`; do not substitute another target.
+The sole target is `Igzela/alters-lab` at the freshly verified default-branch SHA. The task only clarifies in `docs/USER_GUIDE.md` that `alters-lab doctor` is a read-only health check, with at most one changed file and 100 changed lines. Execute Pro planning, Flash bounded implementation, deterministic verification, and Pro review; neither model receives spend, approval, output, merge, release, or deployment authority. The only target output is one unmerged `acp/*` Draft PR and target main must remain unchanged.
 
 Completion requires reconciled redacted usage/cost evidence, expired one-use spend, closed attempt lease, cleanup and rollback receipts, independently reviewed terminal evidence, exactly one realized workflow sample labeled `INSUFFICIENT_REPETITIONS`, and post-observation canonical-document updates. It authorizes neither RWE nor economic, reliability, learning, ROI, success-probability, release, deployment, installation, target-main, or auto-merge claims.
 

@@ -5,7 +5,7 @@
 //! state, spend, leases, journal rows, approval, output, or audit authority;
 //! those facts are supplied and revalidated by the existing store/runtime owner.
 //!
-//! Official protocol sources, verified 2026-07-30:
+//! Official protocol sources, verified 2026-07-31:
 //! - https://api-docs.deepseek.com/api/create-chat-completion
 //! - https://api-docs.deepseek.com/guides/anthropic_api
 //! - https://api-docs.deepseek.com/quick_start/pricing/
@@ -31,13 +31,14 @@ use super::transport::{HttpError, HttpRequest, HttpResponse, HttpTransport};
 pub const MANAGED_DEEPSEEK_PROFILE_SCHEMA: &str = "managed_deepseek_profile.v1";
 pub const MANAGED_PROVIDER_CALL_SCHEMA: &str = "managed_provider_call.v1";
 pub const MANAGED_PROVIDER_RESPONSE_SCHEMA: &str = "managed_provider_response.v1";
+pub const DEEPSEEK_USAGE_PARSER_VERSION: &str = "deepseek_usage_parser.v1";
 pub const DEEPSEEK_PROVIDER_KIND: &str = "deepseek";
 pub const DEEPSEEK_OPENAI_BASE_URL: &str = "https://api.deepseek.com";
 pub const DEEPSEEK_ANTHROPIC_BASE_URL: &str = "https://api.deepseek.com/anthropic";
 pub const DEEPSEEK_OPENAI_PATH: &str = "/chat/completions";
 pub const DEEPSEEK_ANTHROPIC_PATH: &str = "/v1/messages";
 pub const DEEPSEEK_CREDENTIAL_REFERENCE: &str = "DEEPSEEK_API_KEY";
-pub const DEEPSEEK_PROFILE_VERIFIED_AT: &str = "2026-07-30";
+pub const DEEPSEEK_PROFILE_VERIFIED_AT: &str = "2026-07-31";
 
 pub const DEEPSEEK_PROTOCOL_SOURCES: &[&str] = &[
     "https://api-docs.deepseek.com/api/create-chat-completion",
@@ -156,7 +157,7 @@ impl Default for DeepSeekVersionedProfile {
                 .map(|v| (*v).to_string())
                 .collect(),
             verified_at: DEEPSEEK_PROFILE_VERIFIED_AT.to_string(),
-            price_profile_id: "deepseek-v4-usd-2026-07-30".to_string(),
+            price_profile_id: "deepseek-v4-usd-2026-07-31".to_string(),
             usage_parser_version: "protocol_usage.v1".to_string(),
         }
     }
@@ -338,7 +339,7 @@ pub struct DeepSeekPriceProfile {
 impl Default for DeepSeekPriceProfile {
     fn default() -> Self {
         Self {
-            profile_id: "deepseek-v4-usd-2026-07-30".to_string(),
+            profile_id: "deepseek-v4-usd-2026-07-31".to_string(),
             source_url: "https://api-docs.deepseek.com/quick_start/pricing/".to_string(),
             verified_at: DEEPSEEK_PROFILE_VERIFIED_AT.to_string(),
             current: true,
@@ -536,7 +537,7 @@ impl ManagedProviderCallRequest {
         )
     }
 
-    fn estimated_input_tokens(&self) -> u64 {
+    pub(crate) fn estimated_input_tokens(&self) -> u64 {
         let mut bytes = self
             .system
             .as_deref()
@@ -550,6 +551,28 @@ impl ManagedProviderCallRequest {
                 .map_or(0, |v| v.len()),
         );
         bytes as u64
+    }
+
+    pub(crate) fn conservative_reserved_cost_usd(&self) -> Result<f64, String> {
+        if self.limits.max_cost_usd.is_none() {
+            return Ok(0.0);
+        }
+        self.price_profile
+            .validate_for(&self.requested_model, true)?;
+        let worst_case_rate = if self.requested_model == "deepseek-v4-pro" {
+            self.price_profile
+                .pro_cache_miss_per_million_usd
+                .max(self.price_profile.pro_output_per_million_usd)
+        } else {
+            self.price_profile
+                .flash_cache_miss_per_million_usd
+                .max(self.price_profile.flash_output_per_million_usd)
+        };
+        Ok((self
+            .estimated_input_tokens()
+            .saturating_add(self.max_output_tokens)) as f64
+            * worst_case_rate
+            / 1_000_000.0)
     }
 }
 
@@ -952,7 +975,7 @@ impl ManagedBudgetLedger {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PersistedAuthoritySnapshot {
     pub product_task_id: String,
     pub workflow_id: String,
@@ -963,6 +986,25 @@ pub struct PersistedAuthoritySnapshot {
     pub spend_status: String,
     pub consumed_by_attempt_id: Option<String>,
     pub lease_status: String,
+    /// Present only when an immutable final execution manifest binds the
+    /// complete provider request contract. A status-only legacy authority
+    /// remains inspectable but cannot authorize a managed DeepSeek send.
+    pub execution_contract: Option<PersistedManagedExecutionContract>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PersistedManagedExecutionContract {
+    pub provider_kind: String,
+    pub protocol: DeepSeekProtocol,
+    pub host: String,
+    pub base_url: String,
+    pub endpoint_path: String,
+    pub request_schema_version: String,
+    pub response_schema_version: String,
+    pub usage_parser_version: String,
+    pub requested_model: String,
+    pub limits: ManagedCallLimits,
+    pub price_profile: DeepSeekPriceProfile,
 }
 
 pub trait ManagedAuthoritySource: Send + Sync {
@@ -970,6 +1012,46 @@ pub trait ManagedAuthoritySource: Send + Sync {
         &self,
         binding: &ManagedCallBinding,
     ) -> Result<PersistedAuthoritySnapshot, String>;
+
+    /// Atomically persist a redacted pre-send network-effect claim through the
+    /// existing authority owner. A production source must reject duplicate,
+    /// recovered, or outcome-unknown claims before transport.
+    fn claim_provider_request(&self, _request: &ManagedProviderCallRequest) -> Result<(), String> {
+        Err("durable managed provider request journal is unavailable".into())
+    }
+
+    /// Reconcile the exact durable claim without persisting prompt or output
+    /// content. Failure to reconcile leaves the claim non-retryable.
+    fn reconcile_provider_request(
+        &self,
+        _request: &ManagedProviderCallRequest,
+        _response: Option<&ManagedProviderResponse>,
+        _effect: ManagedFailureEffect,
+    ) -> Result<(), String> {
+        Err("durable managed provider request reconciliation is unavailable".into())
+    }
+
+    /// Build bounded, request-time-only stage context from persisted typed
+    /// receipts and the currently bound workspace. Implementations must not
+    /// persist raw repository content or provider request bodies.
+    fn stage_context(
+        &self,
+        _binding: &ManagedCallBinding,
+        _node_metadata: &Value,
+    ) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
+    /// Apply a typed implementer action through the existing ProductTask
+    /// workspace owner. Provider adapters never mutate a workspace directly.
+    fn apply_workspace_action(
+        &self,
+        _binding: &ManagedCallBinding,
+        _node_metadata: &Value,
+        _model_output: &str,
+    ) -> Result<Value, String> {
+        Err("managed workspace action sink is unavailable".to_string())
+    }
 }
 
 #[derive(Clone)]
@@ -1004,6 +1086,11 @@ impl ManagedProviderCallAuthority {
             .source
             .current_authority(&request.binding)
             .map_err(ManagedProviderCallError::invalid_request)?;
+        let contract = current.execution_contract.as_ref().ok_or_else(|| {
+            ManagedProviderCallError::invalid_request(
+                "persisted managed authority lacks an immutable execution contract",
+            )
+        })?;
         if current.product_task_id != request.binding.product_task_id
             || current.workflow_id != request.binding.workflow_id
             || current.node_id != request.binding.node_id
@@ -1014,6 +1101,17 @@ impl ManagedProviderCallAuthority {
             || current.consumed_by_attempt_id.as_deref()
                 != Some(request.binding.attempt_id.as_str())
             || current.lease_status != "current"
+            || contract.provider_kind != request.provider_kind
+            || contract.protocol != request.protocol
+            || contract.host != request.host
+            || contract.base_url != request.base_url
+            || contract.endpoint_path != request.endpoint_path
+            || contract.request_schema_version != request.schema_version
+            || contract.response_schema_version != MANAGED_PROVIDER_RESPONSE_SCHEMA
+            || contract.usage_parser_version != DEEPSEEK_USAGE_PARSER_VERSION
+            || contract.requested_model != request.requested_model
+            || contract.limits != request.limits
+            || contract.price_profile != request.price_profile
         {
             return Err(ManagedProviderCallError::invalid_request(
                 "persisted managed authority is stale or mismatched",
@@ -1042,9 +1140,24 @@ impl ManagedProviderCallAuthority {
             self.validate_current_authority(request)?;
             self.budget
                 .reserve_before_send(request.estimated_input_tokens(), request.max_output_tokens)?;
+            self.source
+                .claim_provider_request(request)
+                .map_err(ManagedProviderCallError::invalid_request)?;
             attempts += 1;
             match send().await {
                 Ok(response) => {
+                    self.source
+                        .reconcile_provider_request(
+                            request,
+                            Some(&response),
+                            ManagedFailureEffect::NoExternalEffect,
+                        )
+                        .map_err(|error| ManagedProviderCallError {
+                            domain: "provider_reconciliation".into(),
+                            message: sanitize_error(&error),
+                            retryable: false,
+                            effect: ManagedFailureEffect::OutcomeUnknown,
+                        })?;
                     self.budget.reconcile(Some(&response))?;
                     return Ok(response);
                 }
@@ -1053,6 +1166,14 @@ impl ManagedProviderCallAuthority {
                     // connection, or malformed-response result is unknown and
                     // is never retried because the provider effect may land.
                     let _ = self.budget.reconcile(None);
+                    self.source
+                        .reconcile_provider_request(request, None, error.effect)
+                        .map_err(|reconcile_error| ManagedProviderCallError {
+                            domain: "provider_reconciliation".into(),
+                            message: sanitize_error(&reconcile_error),
+                            retryable: false,
+                            effect: ManagedFailureEffect::OutcomeUnknown,
+                        })?;
                     let retryable_pre_send = error.effect == ManagedFailureEffect::PreSend
                         && error.retryable
                         && attempts <= request.limits.max_retries
@@ -2253,7 +2374,9 @@ mod tests {
         std::env::remove_var(DEEPSEEK_CREDENTIAL_REFERENCE);
     }
 
-    struct StaticAuthority;
+    struct StaticAuthority {
+        limits: ManagedCallLimits,
+    }
 
     impl ManagedAuthoritySource for StaticAuthority {
         fn current_authority(
@@ -2270,7 +2393,36 @@ mod tests {
                 spend_status: "consumed".into(),
                 consumed_by_attempt_id: Some(binding.attempt_id.clone()),
                 lease_status: "current".into(),
+                execution_contract: Some(PersistedManagedExecutionContract {
+                    provider_kind: DEEPSEEK_PROVIDER_KIND.into(),
+                    protocol: DeepSeekProtocol::OpenAiCompatible,
+                    host: "api.deepseek.com".into(),
+                    base_url: DEEPSEEK_OPENAI_BASE_URL.into(),
+                    endpoint_path: DEEPSEEK_OPENAI_PATH.into(),
+                    request_schema_version: MANAGED_PROVIDER_CALL_SCHEMA.into(),
+                    response_schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.into(),
+                    usage_parser_version: DEEPSEEK_USAGE_PARSER_VERSION.into(),
+                    requested_model: "deepseek-v4-pro".into(),
+                    limits: self.limits.clone(),
+                    price_profile: DeepSeekPriceProfile::default(),
+                }),
             })
+        }
+
+        fn claim_provider_request(
+            &self,
+            _request: &ManagedProviderCallRequest,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn reconcile_provider_request(
+            &self,
+            _request: &ManagedProviderCallRequest,
+            _response: Option<&ManagedProviderResponse>,
+            _effect: ManagedFailureEffect,
+        ) -> Result<(), String> {
+            Ok(())
         }
     }
 
@@ -2303,23 +2455,24 @@ mod tests {
 
     #[tokio::test]
     async fn pre_send_retry_is_bounded_but_outcome_unknown_is_not_retried() {
+        let limits = ManagedCallLimits {
+            max_requests: 2,
+            max_retries: 1,
+            max_input_tokens: 1024,
+            max_output_tokens: 1024,
+            max_cumulative_tokens: 4096,
+            ..ManagedCallLimits::default()
+        };
         let authority = ManagedProviderCallAuthority::new(
-            Arc::new(StaticAuthority),
-            ManagedCallLimits {
-                max_requests: 2,
-                max_retries: 1,
-                max_input_tokens: 1024,
-                max_output_tokens: 1024,
-                max_cumulative_tokens: 4096,
-                ..ManagedCallLimits::default()
-            },
+            Arc::new(StaticAuthority {
+                limits: limits.clone(),
+            }),
+            limits.clone(),
         )
         .unwrap();
         let mut req = request(DeepSeekProtocol::OpenAiCompatible);
-        req.limits.max_requests = 2;
-        req.limits.max_retries = 1;
-        req.limits.max_input_tokens = 1024;
-        req.limits.max_cumulative_tokens = 4096;
+        req.limits = limits;
+        req.max_output_tokens = req.limits.max_output_tokens;
         let attempts = Arc::new(AtomicUsize::new(0));
         let retry_attempts = attempts.clone();
         let result = authority
@@ -2343,22 +2496,28 @@ mod tests {
         assert_eq!(result.request_id, "r-1");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
 
+        let unknown_limits = ManagedCallLimits {
+            max_requests: 1,
+            max_retries: 1,
+            max_input_tokens: 1024,
+            max_output_tokens: 1024,
+            max_cumulative_tokens: 4096,
+            ..ManagedCallLimits::default()
+        };
         let unknown_authority = ManagedProviderCallAuthority::new(
-            Arc::new(StaticAuthority),
-            ManagedCallLimits {
-                max_requests: 1,
-                max_retries: 1,
-                max_input_tokens: 1024,
-                max_output_tokens: 1024,
-                max_cumulative_tokens: 4096,
-                ..ManagedCallLimits::default()
-            },
+            Arc::new(StaticAuthority {
+                limits: unknown_limits.clone(),
+            }),
+            unknown_limits.clone(),
         )
         .unwrap();
+        let mut unknown_req = request(DeepSeekProtocol::OpenAiCompatible);
+        unknown_req.limits = unknown_limits;
+        unknown_req.max_output_tokens = unknown_req.limits.max_output_tokens;
         let unknown_attempts = Arc::new(AtomicUsize::new(0));
         let count = unknown_attempts.clone();
         let error = unknown_authority
-            .invoke_with_retry(&req, || {
+            .invoke_with_retry(&unknown_req, || {
                 count.fetch_add(1, Ordering::SeqCst);
                 async {
                     Err(ManagedProviderCallError {
@@ -2391,18 +2550,24 @@ mod tests {
                     .into_bytes(),
             })])),
         );
+        let limits = ManagedCallLimits {
+            max_input_tokens: 1024,
+            max_output_tokens: 1024,
+            max_cumulative_tokens: 4096,
+            ..ManagedCallLimits::default()
+        };
         let authority = ManagedProviderCallAuthority::new(
-            Arc::new(StaticAuthority),
-            ManagedCallLimits {
-                max_input_tokens: 1024,
-                max_output_tokens: 1024,
-                max_cumulative_tokens: 4096,
-                ..ManagedCallLimits::default()
-            },
+            Arc::new(StaticAuthority {
+                limits: limits.clone(),
+            }),
+            limits.clone(),
         )
         .unwrap();
+        let mut req = request(DeepSeekProtocol::OpenAiCompatible);
+        req.limits = limits;
+        req.max_output_tokens = req.limits.max_output_tokens;
         let result = provider
-            .invoke_with_authority(&authority, &request(DeepSeekProtocol::OpenAiCompatible))
+            .invoke_with_authority(&authority, &req)
             .await
             .unwrap();
         assert_eq!(result.request_id, "req-1");

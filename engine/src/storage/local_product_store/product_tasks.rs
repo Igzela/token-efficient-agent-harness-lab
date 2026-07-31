@@ -37,6 +37,7 @@ use crate::target_repo_output::{
 };
 use crate::tool_policy_executor::{managed_tool_binding_sha256, ToolPolicyNodeExecutor};
 
+use super::managed_acceptance::{derive_final_execution_manifest, DelegationContract};
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 
 pub(crate) type ProductArtifactCommitResult = Result<(Value, Value), String>;
@@ -83,6 +84,84 @@ const PRODUCT_TASK_WORKSPACE_PREPARATION_PRECONDITION_UNAVAILABLE: &str =
     "product task workspace preparation precondition is unavailable";
 const PRODUCT_TASK_WORKSPACE_PREPARATION_RECEIPT_SCHEMA_VERSION: &str =
     "product_task_workspace_preparation.v1";
+const DELEGATED_PRODUCT_PLAN_OWNER_SCHEMA_VERSION: &str = "delegated_product_plan_owner.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DelegatedProposalTargetIdentity {
+    repository: String,
+    main_sha: String,
+    mutable_paths: Vec<String>,
+}
+
+fn normalize_delegated_proposal_target_identity(
+    proposal: &Value,
+) -> Result<DelegatedProposalTargetIdentity, String> {
+    let (repository, main_sha, mutable_paths) =
+        match proposal.get("schema_version").and_then(Value::as_str) {
+            Some("managed_proposal_manifest.v1") => (
+                proposal.get("target_repository"),
+                proposal.get("target_main_sha"),
+                proposal.get("mutable_paths"),
+            ),
+            Some("pe7_product_golden_path_live_seal_manifest.v1") => (
+                proposal.pointer("/target/repository"),
+                proposal.pointer("/target/default_branch_sha"),
+                proposal.pointer("/target/allowed_mutable_paths"),
+            ),
+            _ => return Err("delegated proposal schema is not admitted".into()),
+        };
+    let repository = repository
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("delegated proposal target repository is missing")?
+        .to_string();
+    let main_sha = main_sha
+        .and_then(Value::as_str)
+        .filter(|value| validate_source_revision_format(value).is_ok())
+        .ok_or("delegated proposal target main SHA is missing or malformed")?
+        .to_string();
+    let mutable_paths = mutable_paths
+        .and_then(Value::as_array)
+        .ok_or("delegated proposal mutable paths are missing")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| "delegated proposal mutable path is malformed".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if mutable_paths.is_empty() {
+        return Err("delegated proposal mutable paths are empty".into());
+    }
+    Ok(DelegatedProposalTargetIdentity {
+        repository,
+        main_sha,
+        mutable_paths,
+    })
+}
+
+fn delegated_product_plan_owner_id(task_id: &str) -> String {
+    hex::encode(Sha256::digest(
+        format!("{DELEGATED_PRODUCT_PLAN_OWNER_SCHEMA_VERSION}:{task_id}").as_bytes(),
+    ))
+}
+
+fn count_unified_diff_changed_lines(review_diff: &str) -> u64 {
+    let mut in_hunk = false;
+    let mut changed_lines = 0_u64;
+    for line in review_diff.lines() {
+        if line.starts_with("diff --git ") {
+            in_hunk = false;
+        } else if line.starts_with("@@ ") {
+            in_hunk = true;
+        } else if in_hunk && (line.starts_with('+') || line.starts_with('-')) {
+            changed_lines = changed_lines.saturating_add(1);
+        }
+    }
+    changed_lines
+}
 
 fn product_task_workspace_preparation_reconciliation_error(detail: impl AsRef<str>) -> String {
     format!(
@@ -2007,7 +2086,7 @@ impl LocalProductStore {
                         ))
                     })?
                     .get(0);
-                if schema_version != super::migrations::V35_SCHEMA_VERSION {
+                if schema_version != super::schema::CURRENT_POSTGRES_SCHEMA_VERSION {
                     return Err(product_task_workspace_preparation_reconciliation_error(
                         "workspace preparation schema is not current",
                     ));
@@ -3110,6 +3189,330 @@ impl LocalProductStore {
         }))
     }
 
+    /// Prepare the exact, but still non-runnable, managed-DeepSeek plan used by
+    /// delegated autonomy. Approval and spend issuance deliberately happen
+    /// outside this method after the final manifest is returned.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_delegated_managed_product_task(
+        &self,
+        task_id: &str,
+        actor: &str,
+        available_executors: &[String],
+        proposal: &Value,
+        delegation: &DelegationContract,
+        attempt_id: &str,
+    ) -> Result<Value, String> {
+        if !product_gate_enabled() {
+            return Err("product golden path intake is disabled".into());
+        }
+        if attempt_id.trim().is_empty() {
+            return Err("delegated attempt_id is required".into());
+        }
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        let tenant_id = task
+            .get("tenant_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated ProductTask tenant_id is missing")?;
+        self.require_delegation_tenant(&delegation.delegation_id, tenant_id)?;
+        self.require_approved_delegated_proposal(&delegation.delegation_id, proposal)?;
+        let status =
+            ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        if status != ProductTaskStatus::WorkspaceBound {
+            return Err(format!(
+                "delegated prepare requires workspace_bound task; status={}",
+                status.as_str()
+            ));
+        }
+        let workspace_binding = task
+            .get("workspace_binding")
+            .ok_or("workspace_binding missing")?;
+        let proposal_target = normalize_delegated_proposal_target_identity(proposal)?;
+        if proposal_target.repository != "Igzela/alters-lab"
+            || Some(proposal_target.main_sha.as_str())
+                != task.get("source_revision").and_then(Value::as_str)
+            || Some(&json!(&proposal_target.mutable_paths))
+                != workspace_binding.get("allowed_paths")
+        {
+            return Err("delegated proposal does not match the bound ProductTask target".into());
+        }
+        let verification_commands = task
+            .pointer("/intake/verification_commands")
+            .and_then(Value::as_array)
+            .ok_or("delegated ProductTask verification commands are missing")?;
+        if verification_commands.len() != 1
+            || verification_commands[0]
+                .get("command")
+                .and_then(Value::as_str)
+                != Some("grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md")
+            || verification_commands[0]
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .is_none_or(|timeout| timeout == 0 || timeout > 5_000)
+        {
+            return Err(
+                "delegated ProductTask verifier is not the exact bounded docs check".into(),
+            );
+        }
+        let workspace_path = workspace_binding
+            .pointer("/workspace_path")
+            .and_then(Value::as_str)
+            .ok_or("workspace_path missing")?;
+        if !Path::new(workspace_path).is_dir() {
+            return Err("bound worktree is missing; zero execution effect".into());
+        }
+        let workspace_record_id = task
+            .get("workspace_record_id")
+            .and_then(Value::as_str)
+            .ok_or("workspace_record_id missing")?;
+        let workspace = self
+            .get_supervised_patch_workspace(workspace_record_id)?
+            .ok_or("supervised workspace record missing")?;
+        if matches!(
+            workspace.get("status").and_then(Value::as_str),
+            Some("quarantined" | "cleaned" | "rejected")
+        ) {
+            return Err(
+                "workspace status blocks delegated preparation; zero execution effect".into(),
+            );
+        }
+        let executor_policy: ProductExecutorPolicy = serde_json::from_value(
+            task.pointer("/intake/executor_policy")
+                .cloned()
+                .unwrap_or(json!({"allowed_executors":["command"]})),
+        )
+        .map_err(|e| format!("executor_policy malformed: {e}"))?;
+        let resolved = resolve_admitted_executor(&executor_policy)?;
+        if resolved != "managed_deepseek"
+            || !available_executors.iter().any(|value| value == &resolved)
+        {
+            return Err("delegated route requires an available managed_deepseek executor".into());
+        }
+        self.product_execution_objective(
+            task_id,
+            task.get("objective_fingerprint")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        )?;
+        let objective_preview = task
+            .pointer("/intake/objective_preview")
+            .and_then(Value::as_str)
+            .unwrap_or("product golden path task");
+        let mut deferred_task = task.clone();
+        deferred_task["managed_deepseek_deferred_binding"] = json!(true);
+        let planner = ReadOnlyPlanner::new();
+        let plan_owner_id = delegated_product_plan_owner_id(task_id);
+        let plan = self.create_or_recover_delegated_workflow_plan(
+            task_id,
+            &plan_owner_id,
+            objective_preview,
+            actor,
+            |ids, created_at| {
+                let graph = compile_product_executable_graph(&deferred_task, created_at, ids, &resolved)?;
+                let analysis = planner.create_plan(ids, objective_preview, "product_golden_path_delegated", created_at)?
+                    .get("analysis").cloned().unwrap_or(json!({}));
+                Ok(json!({
+                    "schema_version": READ_ONLY_PLAN_SCHEMA_VERSION,
+                    "plan_id": ids.plan_id,
+                    "plan_sequence": ids.sequence,
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                    "raw_request": objective_preview,
+                    "request_source": "product_golden_path_delegated",
+                    "status": "planned_executable",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "analysis": analysis,
+                    "graph": graph,
+                    "validation": {"valid": true, "errors": []},
+                    "execution_order": graph.get("nodes").and_then(Value::as_array).map(|nodes| nodes.iter().filter_map(|node| node.get("node_id").cloned()).collect::<Vec<_>>()).unwrap_or_default(),
+                    "advisory": {"schema_version":"plan_advisory.v1","requires_executor":"managed_deepseek","product_task_id":task_id,"delegated_binding":"required","delegated_plan_owner_id":plan_owner_id},
+                    "boundaries": {"execution_authority":"delegated_product_golden_path","provider_calls":"not_invoked","target_repository_writes":"disabled","approval_execution_authority":"separate","product_task_id":task_id,"workspace_id":workspace_record_id,"source_revision":workspace_binding.get("source_revision")}
+                }))
+            },
+        )?;
+        validate_deferred_delegated_product_plan(&plan, task_id)?;
+        let workflow_id = plan
+            .get("workflow_id")
+            .and_then(Value::as_str)
+            .ok_or("plan missing workflow_id")?;
+        let node_ids = plan
+            .pointer("/graph/nodes")
+            .and_then(Value::as_array)
+            .ok_or("delegated plan nodes missing")?
+            .iter()
+            .filter_map(|node| node.get("node_id").cloned())
+            .collect::<Vec<_>>();
+        let execution = json!({
+            "observed_at": plan.get("created_at"),
+            "target_repository": proposal_target.repository,
+            "target_main_sha": task.get("source_revision"),
+            "tenant_id": tenant_id,
+            "product_task_id": task_id,
+            "workflow_id": workflow_id,
+            "workflow_node_ids": node_ids,
+            "attempt_id": attempt_id,
+            "verifier": "deterministic_docs_health_check_v1",
+            "mutable_paths": workspace_binding.get("allowed_paths"),
+            "cancellation_identity": format!("product-task:{task_id}:attempt:{attempt_id}:cancel"),
+            "rollback_identity": format!("product-task:{task_id}:workspace:{workspace_record_id}:rollback")
+        });
+        let manifest = derive_final_execution_manifest(proposal, delegation, &execution)?;
+        Ok(
+            json!({"task": self.get_product_task(task_id)?, "plan": plan, "final_manifest": manifest, "scheduler_eligible": false}),
+        )
+    }
+
+    /// Consume already-issued delegated receipts, bind the exact graph, then
+    /// create the existing scheduler-owned run. This method cannot issue or
+    /// renew an approval, spend receipt, or attempt lease.
+    pub fn activate_delegated_managed_product_task(
+        &self,
+        task_id: &str,
+        actor: &str,
+        manifest: &Value,
+        spend_authorization_id: &str,
+        attempt_lease_id: &str,
+    ) -> Result<Value, String> {
+        if !product_gate_enabled() {
+            return Err("product golden path intake is disabled".into());
+        }
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        let tenant_id = task
+            .get("tenant_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated ProductTask tenant_id is missing")?;
+        let delegation_id = manifest
+            .pointer("/delegation/delegation_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated manifest delegation_id is missing")?;
+        self.require_delegation_tenant(delegation_id, tenant_id)?;
+        let task_status =
+            ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
+        if !matches!(
+            task_status,
+            ProductTaskStatus::WorkspaceBound | ProductTaskStatus::GraphReady
+        ) {
+            return Err(
+                "delegated activation requires workspace_bound or exact graph_ready replay".into(),
+            );
+        }
+        let plan_id = task
+            .get("plan_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated plan is missing")?;
+        let manifest_sha256 = manifest
+            .get("manifest_sha256")
+            .and_then(Value::as_str)
+            .ok_or("delegated manifest hash is missing")?;
+        if manifest_sha256 != super::managed_acceptance::compute_attempt_manifest_sha256(manifest)?
+        {
+            return Err("delegated manifest hash is stale or malformed".into());
+        }
+        let execution = manifest
+            .get("execution")
+            .ok_or("delegated manifest execution is missing")?;
+        if execution.get("product_task_id").and_then(Value::as_str) != Some(task_id)
+            || execution.get("tenant_id").and_then(Value::as_str) != Some(tenant_id)
+            || execution.get("target_main_sha") != task.get("source_revision")
+        {
+            return Err("delegated manifest task identity is stale or mismatched".into());
+        }
+        let binding = crate::provider::managed_deepseek::ManagedCallBinding {
+            product_task_id: task_id.into(),
+            workflow_id: execution
+                .get("workflow_id")
+                .and_then(Value::as_str)
+                .ok_or("delegated workflow_id missing")?
+                .into(),
+            node_id: format!(
+                "{}-planning",
+                execution
+                    .get("workflow_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            ),
+            attempt_id: execution
+                .get("attempt_id")
+                .and_then(Value::as_str)
+                .ok_or("delegated attempt_id missing")?
+                .into(),
+            spend_authorization_id: spend_authorization_id.into(),
+            attempt_lease_id: attempt_lease_id.into(),
+        };
+        if self
+            .current_delegated_provider_authority(&binding)?
+            .is_none()
+        {
+            return Err("delegated activation requires a current persisted authority".into());
+        }
+        let plan = self.bind_delegated_managed_deepseek_plan(plan_id, &binding, actor)?;
+        if task_status == ProductTaskStatus::GraphReady {
+            let run_id = task
+                .get("run_id")
+                .and_then(Value::as_str)
+                .ok_or("delegated graph_ready replay is missing its run")?;
+            let run = self
+                .get_workflow_run(run_id)?
+                .ok_or("delegated graph_ready replay run disappeared")?;
+            if run.get("plan_id").and_then(Value::as_str) != Some(plan_id)
+                || run.get("workflow_id").and_then(Value::as_str)
+                    != Some(binding.workflow_id.as_str())
+            {
+                return Err("delegated graph_ready replay run binding changed".into());
+            }
+            return Ok(json!({
+                "task": task,
+                "plan": plan,
+                "run": run,
+                "scheduler_eligible": true,
+                "replayed": true,
+            }));
+        }
+        let tenant_id = task
+            .get("tenant_id")
+            .and_then(Value::as_str)
+            .unwrap_or("local");
+        let workspace_scope = task
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        let run = self.create_or_reuse_delegated_workflow_run(
+            plan_id,
+            actor,
+            tenant_id,
+            workspace_scope,
+        )?;
+        let run_id = run
+            .get("run_id")
+            .and_then(Value::as_str)
+            .ok_or("run missing run_id")?
+            .to_string();
+        let workspace_record_id = task
+            .get("workspace_record_id")
+            .and_then(Value::as_str)
+            .ok_or("workspace_record_id missing")?;
+        self.rebind_supervised_workspace_run_id(workspace_record_id, &run_id, actor)?;
+        self.bind_product_task_plan_run(task_id, plan_id, &run_id, actor)?;
+        let transitioned = self.transition_product_task(
+            task_id,
+            ProductTaskStatus::GraphReady,
+            task.get("version").and_then(Value::as_u64),
+            actor,
+            None,
+            None,
+            None,
+            None,
+            Some(&run_id),
+        )?;
+        Ok(
+            json!({"task": transitioned, "plan": plan, "run": run, "scheduler_eligible": true, "replayed": false}),
+        )
+    }
+
     pub(super) fn product_execution_objective(
         &self,
         task_id: &str,
@@ -3330,10 +3733,12 @@ impl LocalProductStore {
                 | ProductTaskStatus::BudgetExhausted
                 | ProductTaskStatus::OutcomeUnknown
         ) {
+            let delegated_terminal = self.close_delegated_failure_if_bound(task_id, actor)?;
             return Ok(json!({
                 "task": task,
                 "reused": true,
                 "phase": "terminal_failure",
+                "delegated_terminal": delegated_terminal,
             }));
         }
         if !matches!(
@@ -3396,11 +3801,13 @@ impl LocalProductStore {
                 Some(detail),
                 None,
             )?;
+            let delegated_terminal = self.close_delegated_failure_if_bound(task_id, actor)?;
             return Ok(json!({
                 "task": failed,
                 "run": run,
                 "phase": "execution_failed",
                 "reused": false,
+                "delegated_terminal": delegated_terminal,
             }));
         }
 
@@ -3517,6 +3924,16 @@ impl LocalProductStore {
             } else {
                 current
             };
+            let delegated_terminal = if matches!(
+                target_status,
+                ProductTaskStatus::Killed
+                    | ProductTaskStatus::Blocked
+                    | ProductTaskStatus::BudgetExhausted
+            ) {
+                self.close_delegated_failure_if_bound(task_id, actor)?
+            } else {
+                None
+            };
             return Ok(json!({
                 "task": task,
                 "run": run,
@@ -3524,6 +3941,7 @@ impl LocalProductStore {
                 "phase": "verification_authority_lost",
                 "reused": false,
                 "artifact_id": Value::Null,
+                "delegated_terminal": delegated_terminal,
             }));
         }
         if verification_status != "evidence_recorded" {
@@ -3550,6 +3968,7 @@ impl LocalProductStore {
                 Some(verification_status),
                 None,
             )?;
+            let delegated_terminal = self.close_delegated_failure_if_bound(task_id, actor)?;
             return Ok(json!({
                 "task": failed,
                 "run": run,
@@ -3557,6 +3976,7 @@ impl LocalProductStore {
                 "phase": if outcome_unknown { "verification_outcome_unknown" } else { "verification_failed" },
                 "reused": false,
                 "artifact_id": Value::Null,
+                "delegated_terminal": delegated_terminal,
             }));
         }
 
@@ -3665,6 +4085,14 @@ impl LocalProductStore {
                 } else {
                     current
                 };
+                let delegated_terminal = if matches!(
+                    target_status,
+                    ProductTaskStatus::Killed | ProductTaskStatus::Blocked
+                ) {
+                    self.close_delegated_failure_if_bound(task_id, actor)?
+                } else {
+                    None
+                };
                 return Ok(json!({
                     "task": task,
                     "run": run,
@@ -3672,6 +4100,7 @@ impl LocalProductStore {
                     "phase": "verification_authority_lost",
                     "reused": false,
                     "artifact_id": Value::Null,
+                    "delegated_terminal": delegated_terminal,
                 }));
             }
             Err(error) => return Err(error),
@@ -4332,6 +4761,437 @@ impl LocalProductStore {
         actor: &str,
         expected_task_version: u64,
     ) -> Result<Value, String> {
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        if let Some(plan_id) = task.get("plan_id").and_then(Value::as_str) {
+            let plan = self
+                .get_workflow_plan(plan_id)?
+                .ok_or("product output approval plan is missing")?;
+            if plan
+                .pointer("/advisory/delegated_binding")
+                .and_then(Value::as_str)
+                == Some("required")
+            {
+                return Err(
+                    "delegated ProductTask requires the independent artifact confirmer".into(),
+                );
+            }
+        }
+        let evidence =
+            self.product_task_output_approval_evidence(task_id, expected_task_version)?;
+        self.record_product_output_approval(
+            required_product_task_string(&evidence, "run_id")?.as_str(),
+            required_product_task_string(&evidence, "node_id")?.as_str(),
+            actor,
+            evidence
+                .get("binding")
+                .ok_or("product output approval binding missing")?,
+        )
+    }
+
+    /// The delegated artifact confirmer independently binds the exact
+    /// ProductTask artifact, deterministic verification, Pro review, realized
+    /// cost, target SHA, and delegation before the existing output owner gains
+    /// one Draft-PR-only approval.
+    fn delegated_provider_request_journal(
+        &self,
+        delegation_id: &str,
+        attempt_id: &str,
+    ) -> Result<Vec<Value>, String> {
+        let encoded = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations
+                         WHERE delegation_id=?1 AND attempt_id=?2",
+                        params![delegation_id, attempt_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations
+                         WHERE delegation_id=$1 AND attempt_id=$2",
+                        &[&delegation_id, &attempt_id],
+                    )
+                    .map(|row| row.map(|row| row.get::<_, String>(0)))
+                    .map_err(|error| error.to_string())
+            })?,
+        }
+        .ok_or("delegated provider request journal is missing")?;
+        let journal: Vec<Value> = serde_json::from_str(&encoded)
+            .map_err(|_| "delegated provider request journal is malformed")?;
+        if journal.len() != 3 || journal.iter().any(|entry| !entry.is_object()) {
+            return Err(
+                "delegated provider request journal must contain exactly three receipts".into(),
+            );
+        }
+        Ok(journal)
+    }
+
+    pub fn approve_delegated_product_task(
+        &self,
+        confirmer: &super::managed_acceptance::AuthenticatedPrincipal,
+        task_id: &str,
+        actor: &str,
+        expected_task_version: u64,
+        delegation_id: &str,
+        manifest: &Value,
+        current_target_main_sha: &str,
+    ) -> Result<Value, String> {
+        let evidence =
+            self.product_task_output_approval_evidence(task_id, expected_task_version)?;
+        let run_id = required_product_task_string(&evidence, "run_id")?;
+        let node_id = required_product_task_string(&evidence, "node_id")?;
+        let run = evidence
+            .get("run")
+            .ok_or("delegated output evidence run missing")?;
+        let workflow_id = manifest
+            .pointer("/execution/workflow_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated output manifest workflow_id missing")?;
+        let attempt_id = manifest
+            .pointer("/execution/attempt_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated output manifest attempt_id missing")?;
+        let provider_journal =
+            self.delegated_provider_request_journal(delegation_id, attempt_id)?;
+        let review = super::managed_acceptance::managed_deepseek_stage_receipt(
+            run,
+            &format!("{workflow_id}-review"),
+            "managed_deepseek_review_receipt.v1",
+        )?;
+        let provider_nodes = run
+            .get("nodes")
+            .and_then(Value::as_array)
+            .ok_or("delegated output run nodes missing")?
+            .iter()
+            .filter(|node| node.get("managed_deepseek").is_some_and(Value::is_object))
+            .collect::<Vec<_>>();
+        if provider_nodes.len() != 3 {
+            return Err("delegated output requires exactly three provider requests".into());
+        }
+        let manifest_node_ids = manifest
+            .pointer("/execution/workflow_node_ids")
+            .and_then(Value::as_array)
+            .ok_or("delegated output manifest route nodes missing")?;
+        if manifest_node_ids.len() != 4 {
+            return Err("delegated output manifest route is not exact".into());
+        }
+        let price_profile: crate::provider::managed_deepseek::DeepSeekPriceProfile =
+            serde_json::from_value(
+                manifest
+                    .pointer("/provider/price_profile")
+                    .cloned()
+                    .ok_or("delegated output price profile missing")?,
+            )
+            .map_err(|_| "delegated output price profile is malformed")?;
+        let mut request_ids = std::collections::HashSet::new();
+        let mut request_sha256s = std::collections::HashSet::new();
+        let mut provider_requests = Vec::with_capacity(3);
+        let mut realized_cost_usd = 0.0;
+        let mut cumulative_tokens = 0_u64;
+        for (index, (stage, role, model)) in [
+            ("planning", "planner", "deepseek-v4-pro"),
+            ("implementation", "implementer", "deepseek-v4-flash"),
+            ("review", "reviewer", "deepseek-v4-pro"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let node = provider_nodes[index];
+            let manifest_index = if index == 2 { 3 } else { index };
+            if node.get("node_id") != manifest_node_ids.get(manifest_index)
+                || node
+                    .pointer("/managed_deepseek/stage")
+                    .and_then(Value::as_str)
+                    != Some(stage)
+            {
+                return Err("delegated provider route identity mismatched the manifest".into());
+            }
+            let result = node
+                .get("result")
+                .filter(|value| value.is_object())
+                .ok_or("delegated provider node result missing")?;
+            if node.get("status").and_then(Value::as_str) != Some("completed")
+                || result.get("status").and_then(Value::as_str) != Some("completed")
+                || result.get("resolved_model").and_then(Value::as_str) != Some(model)
+            {
+                return Err("delegated provider node did not complete with the exact model".into());
+            }
+            let output: Value = serde_json::from_str(
+                result
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .ok_or("delegated provider output receipt missing")?,
+            )
+            .map_err(|_| "delegated provider output receipt is malformed")?;
+            let request_id = output
+                .get("request_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or("delegated provider request identity missing")?;
+            let usage: crate::provider::managed_deepseek::ManagedUsage = serde_json::from_value(
+                output
+                    .get("usage")
+                    .cloned()
+                    .ok_or("delegated provider usage receipt missing")?,
+            )
+            .map_err(|_| "delegated provider usage receipt is malformed")?;
+            let observed_cost = result
+                .get("estimated_cost")
+                .and_then(Value::as_f64)
+                .ok_or("delegated provider realized cost missing")?;
+            let receipt_cost = output
+                .get("estimated_cost_usd")
+                .and_then(Value::as_f64)
+                .ok_or("delegated provider receipt cost missing")?;
+            let recomputed_cost = price_profile.estimate_usd(model, &usage)?;
+            let input_tokens = result
+                .get("input_tokens")
+                .and_then(Value::as_i64)
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or("delegated provider input usage missing")?;
+            let output_tokens = result
+                .get("output_tokens")
+                .and_then(Value::as_i64)
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or("delegated provider output usage missing")?;
+            if output.get("schema_version").and_then(Value::as_str)
+                != Some("managed_deepseek_node_output.v1")
+                || output.get("provider_kind").and_then(Value::as_str) != Some("deepseek")
+                || output.get("protocol").and_then(Value::as_str) != Some("open_ai_compatible")
+                || output.get("route_stage").and_then(Value::as_str) != Some(role)
+                || output.get("requested_model").and_then(Value::as_str) != Some(model)
+                || output.get("resolved_model").and_then(Value::as_str) != Some(model)
+                || usage.model != model
+                || usage.request_id != request_id
+                || input_tokens != usage.input_tokens
+                || output_tokens != usage.output_tokens
+                || input_tokens > 8_000
+                || output_tokens > 4_000
+                || !request_ids.insert(request_id.to_string())
+                || (observed_cost - receipt_cost).abs() > 1e-12
+                || (observed_cost - recomputed_cost).abs() > 1e-12
+            {
+                return Err(
+                    "delegated provider request, usage, or cost identity mismatched".into(),
+                );
+            }
+            let journal_entry = provider_journal
+                .iter()
+                .find(|entry| entry.get("node_id") == node.get("node_id"))
+                .ok_or("delegated provider journal lacks the exact node request")?;
+            let request_sha256 = journal_entry
+                .get("request_sha256")
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    value.len() == 64
+                        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        && request_sha256s.insert((*value).to_string())
+                })
+                .ok_or("delegated provider journal request hash is missing or replayed")?;
+            let journal_usage = journal_entry
+                .get("usage")
+                .ok_or("delegated provider journal usage is missing")?;
+            let expected_usage = serde_json::to_value(&usage)
+                .map_err(|_| "delegated provider usage cannot be reconciled")?;
+            if journal_entry.get("schema_version").and_then(Value::as_str)
+                != Some("managed_provider_request_claim.v1")
+                || journal_entry.get("ordinal").and_then(Value::as_u64) != Some((index + 1) as u64)
+                || journal_entry.get("role").and_then(Value::as_str) != Some(role)
+                || journal_entry.get("protocol").and_then(Value::as_str)
+                    != Some("open_ai_compatible")
+                || journal_entry.get("requested_model").and_then(Value::as_str) != Some(model)
+                || journal_entry.get("resolved_model").and_then(Value::as_str) != Some(model)
+                || journal_entry.get("status").and_then(Value::as_str) != Some("succeeded")
+                || journal_entry.get("request_id").and_then(Value::as_str) != Some(request_id)
+                || journal_usage != &expected_usage
+                || journal_entry
+                    .get("effective_tokens")
+                    .and_then(Value::as_u64)
+                    != Some(usage.cumulative_tokens)
+                || journal_entry
+                    .get("effective_cost_usd")
+                    .and_then(Value::as_f64)
+                    .is_none_or(|cost| (cost - observed_cost).abs() > 1e-12)
+                || journal_entry
+                    .get("conservative_reserved_cost_usd")
+                    .and_then(Value::as_f64)
+                    .is_none_or(|reserved| reserved + 1e-12 < observed_cost)
+            {
+                return Err(
+                    "delegated provider node receipt conflicts with the durable journal".into(),
+                );
+            }
+            realized_cost_usd += observed_cost;
+            cumulative_tokens = cumulative_tokens
+                .checked_add(usage.cumulative_tokens)
+                .ok_or("delegated provider cumulative usage overflow")?;
+            provider_requests.push(json!({
+                "node_id": node.get("node_id"),
+                "stage": stage,
+                "role": role,
+                "protocol": "openai_compatible",
+                "requested_model": model,
+                "resolved_model": model,
+                "request_id": request_id,
+                "request_sha256": request_sha256,
+                "usage": usage,
+                "realized_cost_usd": observed_cost,
+                "output_sha256": output.get("output_sha256"),
+            }));
+        }
+        if cumulative_tokens > 24_000 || realized_cost_usd > 0.50 {
+            return Err("delegated provider cumulative budget exceeded".into());
+        }
+        let provider_execution = json!({
+            "schema_version": "managed_deepseek_execution_evidence.v1",
+            "provider_request_count": provider_requests.len(),
+            "requests": provider_requests,
+            "cumulative_tokens": cumulative_tokens,
+            "realized_cost_usd": realized_cost_usd,
+        });
+        let source_revision = evidence
+            .pointer("/binding/source_revision")
+            .and_then(Value::as_str)
+            .ok_or("delegated output source revision missing")?;
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or("delegated output ProductTask disappeared")?;
+        let target_repo_path = task
+            .get("target_repo_path")
+            .and_then(Value::as_str)
+            .ok_or("delegated output target repository path missing")?;
+        let (default_branch, origin_remote, observed_main_sha) =
+            crate::target_repo_output::inspect_git_source_identity(
+                &TargetRepoOutputConfig::from_env(),
+                Path::new(target_repo_path),
+            )?;
+        let origin_fingerprint = hex::encode(Sha256::digest(origin_remote.as_bytes()));
+        if default_branch
+            != task
+                .pointer("/workspace_binding/git_default_branch")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+            || origin_fingerprint
+                != task
+                    .pointer("/workspace_binding/git_origin_remote_fingerprint")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            || observed_main_sha != source_revision
+            || source_revision != current_target_main_sha
+        {
+            return Err("delegated output target main drifted".into());
+        }
+        let artifact = evidence
+            .get("artifact")
+            .ok_or("delegated output artifact missing")?;
+        let changed_files = artifact
+            .get("changed_files")
+            .and_then(Value::as_array)
+            .ok_or("delegated output changed files missing")?
+            .iter()
+            .map(|path| {
+                let path = path
+                    .as_str()
+                    .ok_or("delegated output changed file is not a string")?;
+                path.strip_prefix(['+', '~', '-'])
+                    .ok_or("delegated output changed file lacks a canonical change prefix")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let review_diff = artifact
+            .get("review_diff")
+            .and_then(Value::as_str)
+            .ok_or("delegated output review diff missing")?;
+        let changed_lines = count_unified_diff_changed_lines(review_diff);
+        let artifact_sha256 = artifact
+            .get("patch_hash")
+            .and_then(Value::as_str)
+            .and_then(|hash| hash.strip_prefix("sha256:"))
+            .ok_or("delegated output artifact lacks canonical sha256 patch hash")?;
+        let artifact_summary = json!({
+            "artifact_sha256": artifact_sha256,
+            "changed_files": changed_files,
+            "changed_lines": changed_lines,
+        });
+        let verification = evidence
+            .get("verification")
+            .ok_or("delegated output deterministic verification missing")?;
+        let verification_summary = json!({
+            "status": "succeeded",
+            "verification_sha256": product_json_sha256(verification)?,
+        });
+        let confirmation = self.persist_delegated_artifact_confirmation(
+            confirmer,
+            delegation_id,
+            manifest,
+            &artifact_summary,
+            &verification_summary,
+            &review,
+            &provider_execution,
+            current_target_main_sha,
+            realized_cost_usd,
+        )?;
+        let confirmation_sha256 =
+            required_product_task_string(&confirmation, "artifact_confirmation_sha256")?;
+        if let Some(existing) = self
+            .workflow_run_approvals(&run_id, 10_000)?
+            .into_iter()
+            .find(|approval| {
+                approval
+                    .get("artifact_confirmation_sha256")
+                    .and_then(Value::as_str)
+                    == Some(confirmation_sha256.as_str())
+            })
+        {
+            return Ok(json!({
+                "approval": existing,
+                "artifact_confirmation": confirmation,
+                "realized_cost_usd": realized_cost_usd,
+                "replayed": true,
+            }));
+        }
+        let mut binding = evidence
+            .get("binding")
+            .cloned()
+            .ok_or("delegated output approval binding missing")?;
+        let object = binding
+            .as_object_mut()
+            .ok_or("delegated output approval binding must be an object")?;
+        object.insert(
+            "artifact_confirmation_sha256".into(),
+            json!(confirmation_sha256),
+        );
+        object.insert(
+            "delegation_sha256".into(),
+            confirmation
+                .get("delegation_sha256")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        object.insert("output_mode".into(), json!("draft_pr_only"));
+        let approval = self.record_product_output_approval(&run_id, &node_id, actor, &binding)?;
+        Ok(json!({
+            "approval": approval,
+            "artifact_confirmation": confirmation,
+            "realized_cost_usd": realized_cost_usd,
+            "replayed": false,
+        }))
+    }
+
+    fn product_task_output_approval_evidence(
+        &self,
+        task_id: &str,
+        expected_task_version: u64,
+    ) -> Result<Value, String> {
         if !product_gate_enabled() {
             return Err("product golden path intake is disabled".to_string());
         }
@@ -4413,7 +5273,14 @@ impl LocalProductStore {
                 "target_repo_path": task.get("target_repo_path"),
             },
         });
-        self.record_product_output_approval(&run_id, &node_id, actor, &binding)
+        Ok(json!({
+            "run_id": run_id,
+            "node_id": node_id,
+            "binding": binding,
+            "artifact": artifact,
+            "verification": verification,
+            "run": run,
+        }))
     }
 
     /// Consume one exact persisted product-output approval after an explicit
@@ -5633,20 +6500,12 @@ impl LocalProductStore {
             }));
         }
 
-        // draft_pr: require explicit network gate; reuse existing target-output claim/receipt.
+        // draft_pr: always persist the exact hash-bound output plan first.
+        // The explicit network gate controls only execution of that same
+        // operation; planning cannot push a branch or create a pull request.
         let allow_network = std::env::var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT")
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
-        if !allow_network {
-            return Ok(json!({
-                "mode": "draft_pr",
-                "status": "network_output_unavailable",
-                "reason": "set ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT=1 with existing target-output gates and credentials for acp/* push + Draft PR",
-                "approval_binding": approval_binding,
-                "export_eligible": true,
-                "product_task_id": task_id,
-            }));
-        }
 
         self.prepare_product_draft_pr_output(
             task_id,
@@ -5659,6 +6518,7 @@ impl LocalProductStore {
             expected_task_version,
             actor,
             &config,
+            allow_network,
         )
     }
 
@@ -5675,16 +6535,26 @@ impl LocalProductStore {
         expected_task_version: u64,
         actor: &str,
         config: &TargetRepoOutputConfig,
+        allow_network: bool,
     ) -> Result<Value, String> {
         let branch_name = format!("acp/product-{task_id}");
         let artifact = self
             .get_supervised_patch_artifact(artifact_id)?
             .ok_or_else(|| "artifact missing for draft_pr".to_string())?;
-        let repository = match crate::target_repo_output::github_repository_for_remote(
-            config,
-            Path::new(workspace_path),
-            "origin",
-        ) {
+        let artifact_workspace = self
+            .get_supervised_patch_workspace(
+                artifact
+                    .get("workspace_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "artifact workspace binding missing".to_string())?,
+            )?
+            .ok_or_else(|| "artifact workspace is missing for draft_pr".to_string())?;
+        let bound_origin = artifact_workspace
+            .pointer("/git/origin_remote")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "workspace is missing its credential-free bound origin".to_string())?;
+        let repository = match crate::target_repo_output::parse_github_repository_url(bound_origin)
+        {
             Ok(repository) => repository,
             Err(error) => {
                 return Ok(json!({
@@ -5696,32 +6566,12 @@ impl LocalProductStore {
                 }));
             }
         };
-        if let Err(error) = crate::target_repo_output::GitHubPullRequestConfig::from_env()
-            .require_repository(&repository)
-        {
-            return Ok(json!({
-                "mode": "draft_pr",
-                "status": "blocked",
-                "reason": error,
-                "product_task_id": task_id,
-                "artifact_id": artifact_id,
-            }));
-        }
         let target_repository = format!("{}/{}", repository.owner, repository.repository);
-        let base_branch = self
-            .get_supervised_patch_workspace(
-                artifact
-                    .get("workspace_id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| "artifact workspace binding missing".to_string())?,
-            )?
-            .and_then(|workspace| {
-                workspace
-                    .pointer("/git/default_branch")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.trim().is_empty())
-                    .map(str::to_string)
-            })
+        let base_branch = artifact_workspace
+            .pointer("/git/default_branch")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
             .ok_or_else(|| "workspace is missing the bound target default branch".to_string())?;
         let request = json!({
             "schema_version": "product_draft_pr_output_request.v1",
@@ -5761,7 +6611,7 @@ impl LocalProductStore {
         if action == "reused" {
             return Ok(product_draft_pr_output_from_operation(task_id, &operation));
         }
-        if action == "create_or_reconcile_pr" {
+        if matches!(action, "create_or_reconcile_pr" | "reconcile_pr_only") {
             return Ok(product_draft_pr_pending_output(task_id, &operation));
         }
         if action == "operation_in_progress" {
@@ -5779,6 +6629,32 @@ impl LocalProductStore {
                 "reconciliation_required": true,
                 "operation": operation,
                 "product_task_id": task_id,
+            }));
+        }
+        if !allow_network {
+            return Ok(json!({
+                "mode": "draft_pr",
+                "status": "planned",
+                "network_effect": false,
+                "request_sha256": request_sha256,
+                "operation": operation,
+                "target_repository": target_repository,
+                "base_branch": base_branch,
+                "head_branch": branch_name,
+                "approval_binding": approval_binding,
+                "product_task_id": task_id,
+            }));
+        }
+        if let Err(error) = crate::target_repo_output::GitHubPullRequestConfig::from_env()
+            .require_repository(&repository)
+        {
+            return Ok(json!({
+                "mode": "draft_pr",
+                "status": "blocked",
+                "reason": error,
+                "operation": operation,
+                "product_task_id": task_id,
+                "artifact_id": artifact_id,
             }));
         }
         let publish = crate::target_repo_output::BranchPublishRequest {
@@ -6673,6 +7549,68 @@ fn product_run_failure_transition<'a>(
     } else {
         (ProductTaskStatus::Failed, "execution_failed", run_status)
     }
+}
+
+fn validate_deferred_delegated_product_plan(plan: &Value, task_id: &str) -> Result<(), String> {
+    let expected_plan_owner_id = delegated_product_plan_owner_id(task_id);
+    if plan.get("request_source").and_then(Value::as_str) != Some("product_golden_path_delegated")
+        || plan
+            .pointer("/advisory/product_task_id")
+            .and_then(Value::as_str)
+            != Some(task_id)
+        || plan
+            .pointer("/advisory/requires_executor")
+            .and_then(Value::as_str)
+            != Some("managed_deepseek")
+        || plan
+            .pointer("/advisory/delegated_plan_owner_id")
+            .and_then(Value::as_str)
+            != Some(expected_plan_owner_id.as_str())
+    {
+        return Err("persisted delegated plan is stale or owned by another task".into());
+    }
+    let nodes = plan
+        .pointer("/graph/nodes")
+        .and_then(Value::as_array)
+        .ok_or("persisted delegated plan nodes are missing")?;
+    if nodes.len() != 4 {
+        return Err("persisted delegated plan must contain exactly four nodes".into());
+    }
+    let expected = [
+        ("planner", "planning"),
+        ("implementer", "implementation"),
+        ("reviewer", "review"),
+    ];
+    for (role, stage) in expected {
+        let node = nodes
+            .iter()
+            .find(|node| {
+                node.pointer("/managed_deepseek/role")
+                    .and_then(Value::as_str)
+                    == Some(role)
+            })
+            .ok_or("persisted delegated plan is missing a managed stage")?;
+        if node
+            .pointer("/managed_deepseek/stage")
+            .and_then(Value::as_str)
+            != Some(stage)
+            || node
+                .pointer("/managed_deepseek/binding_status")
+                .and_then(Value::as_str)
+                != Some("deferred")
+        {
+            return Err("persisted delegated plan is no longer an exact deferred route".into());
+        }
+    }
+    if nodes
+        .iter()
+        .filter(|node| node.get("managed_deepseek").is_some_and(Value::is_object))
+        .count()
+        != 3
+    {
+        return Err("persisted delegated plan has unexpected managed nodes".into());
+    }
+    Ok(())
 }
 
 fn product_task_remaining_elapsed_ms(task: &Value, now: &str) -> Result<u64, String> {
@@ -7743,6 +8681,71 @@ fn product_task_row_to_json_pg(row: &postgres::Row) -> Result<Value, String> {
         "created_by": row.get::<_, String>("created_by"),
         "execution_admitted": admits,
     }))
+}
+
+#[cfg(test)]
+mod delegated_product_task_contract_tests {
+    use super::{count_unified_diff_changed_lines, normalize_delegated_proposal_target_identity};
+    use serde_json::json;
+
+    #[test]
+    fn legacy_live_seal_proposal_normalizes_the_nested_target_identity() {
+        let proposal = json!({
+            "schema_version": "pe7_product_golden_path_live_seal_manifest.v1",
+            "target": {
+                "repository": "Igzela/alters-lab",
+                "default_branch": "main",
+                "default_branch_sha": "6240768506320a324d68787b9eaa86971c8c930c",
+                "allowed_mutable_paths": ["docs/USER_GUIDE.md"],
+                "target_main_must_remain_unchanged": true,
+                "output": "one_unmerged_acp_draft_pr_only"
+            },
+            "provider": {
+                "protocol": "openai_compatible"
+            },
+            "role_models": {
+                "planner": "deepseek-v4-pro",
+                "implementer": "deepseek-v4-flash",
+                "reviewer": "deepseek-v4-pro"
+            },
+            "limits": {
+                "max_cost_usd": null
+            }
+        });
+
+        let normalized = normalize_delegated_proposal_target_identity(&proposal).unwrap();
+        assert_eq!(normalized.repository, "Igzela/alters-lab");
+        assert_eq!(
+            normalized.main_sha,
+            "6240768506320a324d68787b9eaa86971c8c930c"
+        );
+        assert_eq!(normalized.mutable_paths, vec!["docs/USER_GUIDE.md"]);
+
+        let current = json!({
+            "schema_version": "managed_proposal_manifest.v1",
+            "target_repository": "Igzela/alters-lab",
+            "target_main_sha": "6240768506320a324d68787b9eaa86971c8c930c",
+            "mutable_paths": ["docs/USER_GUIDE.md"]
+        });
+        assert_eq!(
+            normalize_delegated_proposal_target_identity(&current).unwrap(),
+            normalized
+        );
+    }
+
+    #[test]
+    fn unified_diff_line_count_does_not_confuse_hunk_content_with_file_headers() {
+        let diff = "\
+diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
+--- a/docs/USER_GUIDE.md
++++ b/docs/USER_GUIDE.md
+@@ -1,3 +1,3 @@
+ context
+---deleted content beginning with two minuses
++++added content beginning with two pluses
+";
+        assert_eq!(count_unified_diff_changed_lines(diff), 2);
+    }
 }
 
 #[cfg(test)]

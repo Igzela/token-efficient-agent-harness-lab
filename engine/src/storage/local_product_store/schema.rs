@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 35;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 35;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 36;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 36;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -158,6 +158,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 35,
         description: "pin ProductTask worktree preparation to a durable pre-effect receipt",
+    },
+    SchemaMigration {
+        version: 36,
+        description: "add hash-bound delegated autonomous execution authority",
     },
 ];
 
@@ -797,6 +801,61 @@ CREATE TABLE IF NOT EXISTS product_task_workspace_preparations (
 );
 CREATE INDEX IF NOT EXISTS idx_product_task_workspace_preparations_state
     ON product_task_workspace_preparations(marker_state, updated_at);
+";
+
+pub(super) const V36_DDL: &str = "
+CREATE TABLE IF NOT EXISTS managed_acceptance_delegations (
+    delegation_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
+    principal_id TEXT NOT NULL,
+    manifest_approver_id TEXT NOT NULL,
+    artifact_confirmer_id TEXT NOT NULL,
+    attempt_activator_id TEXT,
+    delegation_sha256 TEXT NOT NULL CHECK (length(delegation_sha256) = 64),
+    body_json TEXT NOT NULL,
+    proposal_sha256 TEXT CHECK (proposal_sha256 IS NULL OR length(proposal_sha256) = 64),
+    proposal_json TEXT,
+    status TEXT NOT NULL CHECK (status IN ('active','revoked','expired')),
+    executions_allowed BIGINT NOT NULL CHECK (executions_allowed >= 1),
+    executions_used BIGINT NOT NULL CHECK (executions_used >= 0),
+    max_total_cost_usd DOUBLE PRECISION NOT NULL CHECK (max_total_cost_usd >= 0),
+    total_cost_usd DOUBLE PRECISION NOT NULL CHECK (total_cost_usd >= 0),
+    spend_authorization_id TEXT,
+    manifest_approval_sha256 TEXT CHECK (manifest_approval_sha256 IS NULL OR length(manifest_approval_sha256) = 64),
+    manifest_approval_json TEXT,
+    spend_body_sha256 TEXT CHECK (spend_body_sha256 IS NULL OR length(spend_body_sha256) = 64),
+    spend_status TEXT CHECK (spend_status IS NULL OR spend_status IN ('active','consumed','revoked','expired')),
+    spend_body_json TEXT,
+    manifest_json TEXT,
+    attempt_id TEXT,
+    attempt_lease_id TEXT,
+    attempt_lease_token TEXT,
+    attempt_status TEXT CHECK (attempt_status IS NULL OR attempt_status IN ('admitted','closed')),
+    artifact_confirmation_sha256 TEXT CHECK (artifact_confirmation_sha256 IS NULL OR length(artifact_confirmation_sha256) = 64),
+    artifact_confirmation_json TEXT,
+    provider_request_journal_json TEXT NOT NULL DEFAULT '[]',
+    terminal_receipt_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    terminal_at TEXT,
+    revoked_at TEXT,
+    UNIQUE (tenant_id, delegation_sha256),
+    CHECK (executions_used <= executions_allowed),
+    CHECK (total_cost_usd <= max_total_cost_usd)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_status
+    ON managed_acceptance_delegations(tenant_id, status, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_spend
+    ON managed_acceptance_delegations(spend_authorization_id)
+    WHERE spend_authorization_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_attempt
+    ON managed_acceptance_delegations(attempt_id)
+    WHERE attempt_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_lease
+    ON managed_acceptance_delegations(attempt_lease_id)
+    WHERE attempt_lease_id IS NOT NULL;
 ";
 
 pub(super) const V28_DDL: &str = "
@@ -1966,6 +2025,58 @@ CREATE TABLE IF NOT EXISTS product_task_workspace_preparations (
 );
 CREATE INDEX IF NOT EXISTS idx_product_task_workspace_preparations_state
     ON product_task_workspace_preparations(marker_state, updated_at);
+CREATE TABLE IF NOT EXISTS managed_acceptance_delegations (
+    delegation_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
+    principal_id TEXT NOT NULL,
+    manifest_approver_id TEXT NOT NULL,
+    artifact_confirmer_id TEXT NOT NULL,
+    attempt_activator_id TEXT,
+    delegation_sha256 TEXT NOT NULL CHECK (length(delegation_sha256) = 64),
+    body_json TEXT NOT NULL,
+    proposal_sha256 TEXT CHECK (proposal_sha256 IS NULL OR length(proposal_sha256) = 64),
+    proposal_json TEXT,
+    status TEXT NOT NULL CHECK (status IN ('active','revoked','expired')),
+    executions_allowed INTEGER NOT NULL CHECK (executions_allowed >= 1),
+    executions_used INTEGER NOT NULL CHECK (executions_used >= 0),
+    max_total_cost_usd REAL NOT NULL CHECK (max_total_cost_usd >= 0),
+    total_cost_usd REAL NOT NULL CHECK (total_cost_usd >= 0),
+    spend_authorization_id TEXT,
+    manifest_approval_sha256 TEXT CHECK (manifest_approval_sha256 IS NULL OR length(manifest_approval_sha256) = 64),
+    manifest_approval_json TEXT,
+    spend_body_sha256 TEXT CHECK (spend_body_sha256 IS NULL OR length(spend_body_sha256) = 64),
+    spend_status TEXT CHECK (spend_status IS NULL OR spend_status IN ('active','consumed','revoked','expired')),
+    spend_body_json TEXT,
+    manifest_json TEXT,
+    attempt_id TEXT,
+    attempt_lease_id TEXT,
+    attempt_lease_token TEXT,
+    attempt_status TEXT CHECK (attempt_status IS NULL OR attempt_status IN ('admitted','closed')),
+    artifact_confirmation_sha256 TEXT CHECK (artifact_confirmation_sha256 IS NULL OR length(artifact_confirmation_sha256) = 64),
+    artifact_confirmation_json TEXT,
+    provider_request_journal_json TEXT NOT NULL DEFAULT '[]',
+    terminal_receipt_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    terminal_at TEXT,
+    revoked_at TEXT,
+    UNIQUE (tenant_id, delegation_sha256),
+    CHECK (executions_used <= executions_allowed),
+    CHECK (total_cost_usd <= max_total_cost_usd)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_status
+    ON managed_acceptance_delegations(tenant_id, status, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_spend
+    ON managed_acceptance_delegations(spend_authorization_id)
+    WHERE spend_authorization_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_attempt
+    ON managed_acceptance_delegations(attempt_id)
+    WHERE attempt_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_lease
+    ON managed_acceptance_delegations(attempt_lease_id)
+    WHERE attempt_lease_id IS NOT NULL;
 ";
 pub(crate) const POSTGRES_DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatch_history (
@@ -3107,6 +3218,58 @@ CREATE TABLE IF NOT EXISTS product_task_workspace_preparations (
 );
 CREATE INDEX IF NOT EXISTS idx_product_task_workspace_preparations_state
     ON product_task_workspace_preparations(marker_state, updated_at);
+CREATE TABLE IF NOT EXISTS managed_acceptance_delegations (
+    delegation_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
+    principal_id TEXT NOT NULL,
+    manifest_approver_id TEXT NOT NULL,
+    artifact_confirmer_id TEXT NOT NULL,
+    attempt_activator_id TEXT,
+    delegation_sha256 TEXT NOT NULL CHECK (length(delegation_sha256) = 64),
+    body_json TEXT NOT NULL,
+    proposal_sha256 TEXT CHECK (proposal_sha256 IS NULL OR length(proposal_sha256) = 64),
+    proposal_json TEXT,
+    status TEXT NOT NULL CHECK (status IN ('active','revoked','expired')),
+    executions_allowed BIGINT NOT NULL CHECK (executions_allowed >= 1),
+    executions_used BIGINT NOT NULL CHECK (executions_used >= 0),
+    max_total_cost_usd DOUBLE PRECISION NOT NULL CHECK (max_total_cost_usd >= 0),
+    total_cost_usd DOUBLE PRECISION NOT NULL CHECK (total_cost_usd >= 0),
+    spend_authorization_id TEXT,
+    manifest_approval_sha256 TEXT CHECK (manifest_approval_sha256 IS NULL OR length(manifest_approval_sha256) = 64),
+    manifest_approval_json TEXT,
+    spend_body_sha256 TEXT CHECK (spend_body_sha256 IS NULL OR length(spend_body_sha256) = 64),
+    spend_status TEXT CHECK (spend_status IS NULL OR spend_status IN ('active','consumed','revoked','expired')),
+    spend_body_json TEXT,
+    manifest_json TEXT,
+    attempt_id TEXT,
+    attempt_lease_id TEXT,
+    attempt_lease_token TEXT,
+    attempt_status TEXT CHECK (attempt_status IS NULL OR attempt_status IN ('admitted','closed')),
+    artifact_confirmation_sha256 TEXT CHECK (artifact_confirmation_sha256 IS NULL OR length(artifact_confirmation_sha256) = 64),
+    artifact_confirmation_json TEXT,
+    provider_request_journal_json TEXT NOT NULL DEFAULT '[]',
+    terminal_receipt_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    terminal_at TEXT,
+    revoked_at TEXT,
+    UNIQUE (tenant_id, delegation_sha256),
+    CHECK (executions_used <= executions_allowed),
+    CHECK (total_cost_usd <= max_total_cost_usd)
+);
+CREATE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_status
+    ON managed_acceptance_delegations(tenant_id, status, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_spend
+    ON managed_acceptance_delegations(spend_authorization_id)
+    WHERE spend_authorization_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_attempt
+    ON managed_acceptance_delegations(attempt_id)
+    WHERE attempt_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_acceptance_delegations_lease
+    ON managed_acceptance_delegations(attempt_lease_id)
+    WHERE attempt_lease_id IS NOT NULL;
 ";
 
 #[cfg(test)]

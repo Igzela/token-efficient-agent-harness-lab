@@ -81,6 +81,39 @@ impl LocalProductStore {
         tenant_id: &str,
         workspace_id: &str,
     ) -> Result<Value, String> {
+        self.create_workflow_run_from_plan_scoped_inner(
+            plan_id,
+            actor,
+            tenant_id,
+            workspace_id,
+            false,
+        )
+    }
+
+    pub(super) fn create_or_reuse_delegated_workflow_run(
+        &self,
+        plan_id: &str,
+        actor: &str,
+        tenant_id: &str,
+        workspace_id: &str,
+    ) -> Result<Value, String> {
+        self.create_workflow_run_from_plan_scoped_inner(
+            plan_id,
+            actor,
+            tenant_id,
+            workspace_id,
+            true,
+        )
+    }
+
+    fn create_workflow_run_from_plan_scoped_inner(
+        &self,
+        plan_id: &str,
+        actor: &str,
+        tenant_id: &str,
+        workspace_id: &str,
+        singleton_per_plan: bool,
+    ) -> Result<Value, String> {
         if !valid_scope_identifier(tenant_id) || !valid_scope_identifier(workspace_id) {
             return Err("workflow run tenant/workspace scope is invalid".to_string());
         }
@@ -121,9 +154,59 @@ impl LocalProductStore {
 
         let run_id = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let tx = conn
-                    .unchecked_transaction()
-                    .map_err(|error| error.to_string())?;
+                let tx = if singleton_per_plan {
+                    rusqlite::Transaction::new_unchecked(
+                        conn,
+                        rusqlite::TransactionBehavior::Immediate,
+                    )
+                } else {
+                    conn.unchecked_transaction()
+                }
+                .map_err(|error| error.to_string())?;
+                if singleton_per_plan {
+                    let mut statement = tx
+                        .prepare(
+                            "SELECT run_id, tenant_id, boundaries_json FROM workflow_runs WHERE plan_id=?1 ORDER BY run_sequence",
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let rows = statement
+                        .query_map(params![plan_id], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                            ))
+                        })
+                        .map_err(|error| error.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| error.to_string())?;
+                    drop(statement);
+                    match rows.as_slice() {
+                        [] => {}
+                        [(run_id, existing_tenant, boundaries_json)] => {
+                            let boundaries: Value = serde_json::from_str(boundaries_json)
+                                .map_err(|_| "delegated workflow run boundaries are invalid")?;
+                            if existing_tenant != tenant_id
+                                || boundaries
+                                    .get("workspace_id")
+                                    .and_then(Value::as_str)
+                                    != Some(workspace_id)
+                            {
+                                return Err(
+                                    "delegated workflow run scope changed during restart".into()
+                                );
+                            }
+                            let run_id = run_id.clone();
+                            tx.commit().map_err(|error| error.to_string())?;
+                            return Ok(run_id);
+                        }
+                        _ => {
+                            return Err(
+                                "multiple workflow runs exist for delegated singleton plan".into()
+                            )
+                        }
+                    }
+                }
                 let sequence = next_sequence(&tx, "workflow_runs", "run_sequence")?;
                 let run_id = format!("run-{sequence:04}");
                 let created_at = self.now();
@@ -215,6 +298,46 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                if singleton_per_plan {
+                    tx.query_one(
+                        "SELECT plan_id FROM workflow_plans WHERE plan_id=$1 FOR UPDATE",
+                        &[&plan_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let rows = tx
+                        .query(
+                            "SELECT run_id, tenant_id, boundaries_json FROM workflow_runs WHERE plan_id=$1 ORDER BY run_sequence",
+                            &[&plan_id],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    match rows.as_slice() {
+                        [] => {}
+                        [row] => {
+                            let run_id: String = row.get(0);
+                            let existing_tenant: String = row.get(1);
+                            let boundaries_json: String = row.get(2);
+                            let boundaries: Value = serde_json::from_str(&boundaries_json)
+                                .map_err(|_| "delegated workflow run boundaries are invalid")?;
+                            if existing_tenant != tenant_id
+                                || boundaries
+                                    .get("workspace_id")
+                                    .and_then(Value::as_str)
+                                    != Some(workspace_id)
+                            {
+                                return Err(
+                                    "delegated workflow run scope changed during restart".into()
+                                );
+                            }
+                            tx.commit().map_err(|error| error.to_string())?;
+                            return Ok(run_id);
+                        }
+                        _ => {
+                            return Err(
+                                "multiple workflow runs exist for delegated singleton plan".into()
+                            )
+                        }
+                    }
+                }
                 let sequence: i64 = pg_next_sequence(&mut tx, "workflow_runs", "run_sequence")?;
                 let run_id = format!("run-{sequence:04}");
                 let created_at = self.now();
@@ -1082,6 +1205,12 @@ impl LocalProductStore {
                         matching_node
                     };
                     let Some(nid) = candidate else {
+                        propagate_failed_dependencies_locked(
+                            conn,
+                            run_id,
+                            actor,
+                            &self.now(),
+                        )?;
                         let (all_done, has_failure) = check_run_completion_locked(conn, run_id)?;
                         if all_done {
                             let terminal_status = if has_failure { "failed" } else { "completed" };
@@ -1495,6 +1624,12 @@ impl LocalProductStore {
                         matching_node
                     };
                     let Some(nid) = candidate else {
+                        pg_propagate_failed_dependencies(
+                            &mut tx,
+                            run_id,
+                            actor,
+                            &self.now(),
+                        )?;
                         let (all_done, has_failure) = pg_check_run_completion(&mut tx, run_id)?;
                         if all_done {
                             let terminal_status = if has_failure { "failed" } else { "completed" };
@@ -2390,6 +2525,12 @@ impl LocalProductStore {
                             }
                         }
 
+                        propagate_failed_dependencies_locked(
+                            conn,
+                            run_id,
+                            actor,
+                            &self.now(),
+                        )?;
                         let (all_done, has_failure) = check_run_completion_locked(conn, run_id)?;
                         if all_done {
                             let terminal_status = if has_failure { "failed" } else { "completed" };
@@ -2826,6 +2967,12 @@ impl LocalProductStore {
                             }
                         }
 
+                        pg_propagate_failed_dependencies(
+                            &mut tx,
+                            run_id,
+                            actor,
+                            &self.now(),
+                        )?;
                         let (all_done, has_failure) = pg_check_run_completion(&mut tx, run_id)?;
                         if all_done {
                             let terminal_status = if has_failure { "failed" } else { "completed" };
@@ -6303,6 +6450,57 @@ fn next_ready_task_type_sqlite(
     }
 }
 
+fn propagate_failed_dependencies_locked(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    actor: &str,
+    now: &str,
+) -> Result<(), String> {
+    loop {
+        let mut statement = conn
+            .prepare(
+                "SELECT DISTINCT child.node_id
+                 FROM workflow_run_nodes child
+                 JOIN workflow_run_edges edge
+                   ON edge.run_id=child.run_id AND edge.to_node_id=child.node_id
+                 JOIN workflow_run_nodes parent
+                   ON parent.run_id=edge.run_id AND parent.node_id=edge.from_node_id
+                 WHERE child.run_id=?1 AND child.status='pending'
+                   AND parent.status IN ('failed','cancelled','blocked')",
+            )
+            .map_err(|error| error.to_string())?;
+        let blocked = statement
+            .query_map(params![run_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        if blocked.is_empty() {
+            return Ok(());
+        }
+        for node_id in blocked {
+            let changed = conn
+                .execute(
+                    "UPDATE workflow_run_nodes
+                     SET status='blocked', blocked_reason='failed_dependency', completed_at=?1
+                     WHERE run_id=?2 AND node_id=?3 AND status='pending'",
+                    params![now, run_id, node_id],
+                )
+                .map_err(|error| error.to_string())?;
+            if changed == 1 {
+                insert_workflow_run_event_locked(
+                    conn,
+                    run_id,
+                    Some(&node_id),
+                    "node.blocked",
+                    actor,
+                    &json!({"reason":"failed_dependency"}),
+                    now,
+                )?;
+            }
+        }
+    }
+}
+
 fn check_run_completion_locked(
     conn: &rusqlite::Connection,
     run_id: &str,
@@ -6322,10 +6520,12 @@ fn check_run_completion_locked(
     let all_done = statuses.iter().all(|s| {
         matches!(
             s.as_str(),
-            "completed" | "failed" | "cancelled" | "recovered"
+            "completed" | "failed" | "cancelled" | "blocked" | "recovered"
         )
     });
-    let has_failure = statuses.iter().any(|s| s == "failed");
+    let has_failure = statuses
+        .iter()
+        .any(|s| matches!(s.as_str(), "failed" | "blocked"));
     Ok((all_done, has_failure))
 }
 
@@ -6346,6 +6546,7 @@ fn retryable_node_failure(output: &crate::node_executor::NodeExecutionOutput) ->
                 | "tool_execution_receipt_invalid"
                 | "tool_execution_receipt_error"
                 | "provider_outcome_unknown"
+                | "provider_terminal_failure"
                 | "product_token_budget_exhausted"
                 | "product_call_budget_exhausted"
                 | "product_token_usage_unavailable"
@@ -7173,6 +7374,55 @@ fn pg_next_ready_task_type(
 }
 
 #[cfg(feature = "pg")]
+fn pg_propagate_failed_dependencies(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+    actor: &str,
+    now: &str,
+) -> Result<(), String> {
+    loop {
+        let rows = client
+            .query(
+                "SELECT DISTINCT child.node_id
+                 FROM workflow_run_nodes child
+                 JOIN workflow_run_edges edge
+                   ON edge.run_id=child.run_id AND edge.to_node_id=child.node_id
+                 JOIN workflow_run_nodes parent
+                   ON parent.run_id=edge.run_id AND parent.node_id=edge.from_node_id
+                 WHERE child.run_id=$1 AND child.status='pending'
+                   AND parent.status IN ('failed','cancelled','blocked')",
+                &[&run_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        for row in rows {
+            let node_id: String = row.get(0);
+            let changed = client
+                .execute(
+                    "UPDATE workflow_run_nodes
+                     SET status='blocked', blocked_reason='failed_dependency', completed_at=$1
+                     WHERE run_id=$2 AND node_id=$3 AND status='pending'",
+                    &[&now, &run_id, &node_id],
+                )
+                .map_err(|error| error.to_string())?;
+            if changed == 1 {
+                pg_insert_workflow_run_event(
+                    client,
+                    run_id,
+                    Some(&node_id),
+                    "node.blocked",
+                    actor,
+                    &json!({"reason":"failed_dependency"}),
+                    now,
+                )?;
+            }
+        }
+    }
+}
+
+#[cfg(feature = "pg")]
 fn pg_check_run_completion(
     client: &mut impl postgres::GenericClient,
     run_id: &str,
@@ -7191,10 +7441,12 @@ fn pg_check_run_completion(
     let all_done = statuses.iter().all(|s| {
         matches!(
             s.as_str(),
-            "completed" | "failed" | "cancelled" | "recovered"
+            "completed" | "failed" | "cancelled" | "blocked" | "recovered"
         )
     });
-    let has_failure = statuses.iter().any(|s| s == "failed");
+    let has_failure = statuses
+        .iter()
+        .any(|s| matches!(s.as_str(), "failed" | "blocked"));
     Ok((all_done, has_failure))
 }
 

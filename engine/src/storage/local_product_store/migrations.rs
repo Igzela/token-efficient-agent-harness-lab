@@ -1,5 +1,5 @@
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
-use serde_json::Value;
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use serde_json::{json, Value};
 
 use super::{schema, DatabaseConnection, LocalProductStore};
 
@@ -17,6 +17,7 @@ pub(super) const V32_SCHEMA_VERSION: i64 = 32;
 pub(super) const V33_SCHEMA_VERSION: i64 = 33;
 pub(super) const V34_SCHEMA_VERSION: i64 = 34;
 pub(super) const V35_SCHEMA_VERSION: i64 = 35;
+pub(super) const V36_SCHEMA_VERSION: i64 = 36;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -64,11 +65,397 @@ pub(super) const V33_TABLES: [&str; 1] = ["managed_acceptance_spend_authorizatio
 pub(super) const V34_TABLES: [&str; 3] =
     ["rwe_run_authorizations", "rwe_runs", "rwe_task_attempts"];
 pub(super) const V35_TABLES: [&str; 1] = ["product_task_workspace_preparations"];
+pub(super) const V36_TABLES: [&str; 1] = ["managed_acceptance_delegations"];
+pub(super) const V36_DELEGATED_PLAN_OWNER_COLUMN: &str = "delegated_plan_owner_id";
+pub(super) const V36_DELEGATED_PLAN_OWNER_INDEX: &str = "idx_workflow_plans_delegated_owner";
+pub(super) const V36_COLUMNS: [&str; 36] = [
+    "delegation_id",
+    "tenant_id",
+    "principal_kind",
+    "principal_id",
+    "manifest_approver_id",
+    "artifact_confirmer_id",
+    "attempt_activator_id",
+    "delegation_sha256",
+    "body_json",
+    "proposal_sha256",
+    "proposal_json",
+    "status",
+    "executions_allowed",
+    "executions_used",
+    "max_total_cost_usd",
+    "total_cost_usd",
+    "spend_authorization_id",
+    "manifest_approval_sha256",
+    "manifest_approval_json",
+    "spend_body_sha256",
+    "spend_status",
+    "spend_body_json",
+    "manifest_json",
+    "attempt_id",
+    "attempt_lease_id",
+    "attempt_lease_token",
+    "attempt_status",
+    "artifact_confirmation_sha256",
+    "artifact_confirmation_json",
+    "provider_request_journal_json",
+    "terminal_receipt_json",
+    "created_at",
+    "updated_at",
+    "expires_at",
+    "terminal_at",
+    "revoked_at",
+];
+pub(super) const V36_INDEXES: [&str; 4] = [
+    "idx_managed_acceptance_delegations_status",
+    "idx_managed_acceptance_delegations_spend",
+    "idx_managed_acceptance_delegations_attempt",
+    "idx_managed_acceptance_delegations_lease",
+];
+
+pub(super) struct V36DelegationArchiveSource {
+    pub delegation_sha256: String,
+    pub body_json: String,
+    pub proposal_sha256: Option<String>,
+    pub proposal_json: Option<String>,
+    pub status: String,
+    pub total_cost_usd: f64,
+    pub manifest_approval_sha256: Option<String>,
+    pub manifest_approval_json: Option<String>,
+    pub spend_body_sha256: Option<String>,
+    pub spend_body_json: Option<String>,
+    pub spend_status: Option<String>,
+    pub manifest_json: Option<String>,
+    pub attempt_id: Option<String>,
+    pub attempt_lease_id: Option<String>,
+    pub attempt_lease_token: Option<String>,
+    pub attempt_status: Option<String>,
+    pub artifact_confirmation_sha256: Option<String>,
+    pub artifact_confirmation_json: Option<String>,
+    pub provider_request_journal_json: String,
+    pub terminal_receipt_json: Option<String>,
+    pub terminal_at: Option<String>,
+}
+
+pub(super) fn build_v36_delegation_downgrade_archive(
+    source: V36DelegationArchiveSource,
+) -> Result<Value, String> {
+    if !matches!(source.status.as_str(), "expired" | "revoked")
+        || !matches!(source.spend_status.as_deref(), Some("expired" | "revoked"))
+        || source.attempt_status.as_deref() != Some("closed")
+        || source
+            .attempt_id
+            .as_deref()
+            .is_none_or(|value| value.is_empty())
+        || source
+            .attempt_lease_id
+            .as_deref()
+            .is_none_or(|value| value.is_empty())
+        || source
+            .attempt_lease_token
+            .as_deref()
+            .is_none_or(|value| value.is_empty())
+        || source
+            .terminal_at
+            .as_deref()
+            .is_none_or(|value| value.is_empty())
+    {
+        return Err(
+            "v36 rollback blocked: delegated authority is not fully terminal and closed".into(),
+        );
+    }
+    if !source.total_cost_usd.is_finite() || source.total_cost_usd < 0.0 {
+        return Err("v36 rollback blocked: delegated realized cost is invalid".into());
+    }
+
+    let delegation_body = parse_archive_json("delegation body", &source.body_json)?;
+    require_archive_hash(
+        "delegation body",
+        &source.delegation_sha256,
+        &delegation_body,
+    )?;
+    let proposal_sha256 = source
+        .proposal_sha256
+        .as_deref()
+        .ok_or("v36 rollback blocked: delegated proposal hash is missing")?;
+    let proposal = parse_archive_json(
+        "proposal",
+        source
+            .proposal_json
+            .as_deref()
+            .ok_or("v36 rollback blocked: delegated proposal body is missing")?,
+    )?;
+    if super::managed_acceptance::compute_attempt_manifest_sha256(&proposal)? != proposal_sha256
+        || proposal.get("manifest_sha256").and_then(Value::as_str) != Some(proposal_sha256)
+    {
+        return Err("v36 rollback blocked: delegated proposal hash is inconsistent".into());
+    }
+    let manifest_raw = source
+        .manifest_json
+        .as_deref()
+        .ok_or("v36 rollback blocked: delegated final manifest is missing")?;
+    let manifest = parse_archive_json("final manifest", manifest_raw)?;
+    let final_manifest_sha256 =
+        super::managed_acceptance::compute_attempt_manifest_sha256(&manifest)?;
+    if manifest.get("manifest_sha256").and_then(Value::as_str)
+        != Some(final_manifest_sha256.as_str())
+    {
+        return Err("v36 rollback blocked: delegated final manifest hash is invalid".into());
+    }
+    let manifest_approval_sha256 = verified_embedded_archive_json_hash(
+        "manifest approval",
+        source.manifest_approval_sha256.as_deref(),
+        source.manifest_approval_json.as_deref(),
+        "approval_receipt_sha256",
+    )?
+    .ok_or("v36 rollback blocked: delegated manifest approval evidence is missing")?;
+    let spend_body_sha256 = verified_optional_archive_json_hash(
+        "spend authorization",
+        source.spend_body_sha256.as_deref(),
+        source.spend_body_json.as_deref(),
+        true,
+    )?;
+    let artifact_confirmation_sha256 = verified_embedded_archive_json_hash(
+        "artifact confirmation",
+        source.artifact_confirmation_sha256.as_deref(),
+        source.artifact_confirmation_json.as_deref(),
+        "artifact_confirmation_sha256",
+    )?;
+    let provider_journal = parse_archive_json(
+        "provider request journal",
+        &source.provider_request_journal_json,
+    )?;
+    if !provider_journal.is_array() {
+        return Err("v36 rollback blocked: provider request journal must be an array".into());
+    }
+    let provider_entries = provider_journal
+        .as_array()
+        .expect("provider journal was checked as an array");
+    let mut provider_status_counts = std::collections::BTreeMap::<String, u64>::new();
+    for entry in provider_entries {
+        let status = entry
+            .get("status")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or("v36 rollback blocked: provider request status is missing")?;
+        *provider_status_counts
+            .entry(status.to_string())
+            .or_default() += 1;
+    }
+    let provider_request_journal_sha256 = archive_value_sha256(&provider_journal)?;
+    let terminal_receipt_raw = source
+        .terminal_receipt_json
+        .as_deref()
+        .ok_or("v36 rollback blocked: delegated terminal receipt is missing")?;
+    let terminal_receipt = parse_archive_json("terminal receipt", terminal_receipt_raw)?;
+    let rollback_evidence = if let Some(evidence) = terminal_receipt
+        .get("rollback_evidence")
+        .filter(|value| value.is_object())
+    {
+        evidence.clone()
+    } else {
+        let cleanup_status = terminal_receipt
+            .get("cleanup_status")
+            .and_then(Value::as_str)
+            .ok_or("v36 rollback blocked: terminal cleanup evidence is missing")?;
+        let target_main_sha = terminal_receipt
+            .get("target_main_sha")
+            .filter(|value| !value.is_null())
+            .ok_or("v36 rollback blocked: terminal target-main evidence is missing")?;
+        json!({
+            "workspace_status": cleanup_status,
+            "target_main_write": false,
+            "target_main_sha256": archive_value_sha256(target_main_sha)?,
+        })
+    };
+    if rollback_evidence
+        .get("workspace_status")
+        .and_then(Value::as_str)
+        != Some("cleaned")
+        || rollback_evidence
+            .get("target_main_write")
+            .and_then(Value::as_bool)
+            != Some(false)
+    {
+        return Err("v36 rollback blocked: terminal rollback evidence is incomplete".into());
+    }
+    let terminal_class = terminal_receipt
+        .get("terminal_class")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("v36 rollback blocked: terminal class is missing")?;
+    if !matches!(
+        terminal_class,
+        "succeeded" | "failed" | "cancelled" | "outcome_unknown" | "replayed" | "revoked"
+    ) {
+        return Err("v36 rollback blocked: terminal class is ambiguous".into());
+    }
+    if terminal_class != "revoked"
+        && (terminal_receipt
+            .get("delegation_state")
+            .and_then(Value::as_str)
+            != Some(source.status.as_str())
+            || terminal_receipt
+                .get("spend_authorization_state")
+                .and_then(Value::as_str)
+                != source.spend_status.as_deref()
+            || terminal_receipt
+                .get("attempt_lease_state")
+                .and_then(Value::as_str)
+                != source.attempt_status.as_deref())
+    {
+        return Err("v36 rollback blocked: terminal authority states are inconsistent".into());
+    }
+    let receipt_cost = terminal_receipt
+        .get("realized_cost_usd")
+        .and_then(Value::as_f64);
+    if receipt_cost.is_some_and(|cost| (cost - source.total_cost_usd).abs() > 1e-12) {
+        return Err("v36 rollback blocked: terminal realized cost is inconsistent".into());
+    }
+    let terminal_receipt_sha256 = archive_value_sha256(&terminal_receipt)?;
+    let rollback_evidence_sha256 = archive_value_sha256(&rollback_evidence)?;
+    let execution_identity_sha256 = archive_value_sha256(&json!({
+        "attempt_id": source.attempt_id,
+        "attempt_lease_id": source.attempt_lease_id,
+        "attempt_lease_token": source.attempt_lease_token,
+    }))?;
+    let source_evidence = json!({
+        "delegation_sha256": source.delegation_sha256,
+        "proposal_sha256": proposal_sha256,
+        "final_manifest_sha256": final_manifest_sha256,
+        "manifest_approval_sha256": manifest_approval_sha256,
+        "spend_body_sha256": spend_body_sha256,
+        "artifact_confirmation_sha256": artifact_confirmation_sha256,
+        "provider_request_journal_sha256": provider_request_journal_sha256,
+        "provider_request_count": provider_entries.len(),
+        "provider_request_status_counts": provider_status_counts,
+        "terminal_receipt_sha256": terminal_receipt_sha256,
+        "rollback_evidence_sha256": rollback_evidence_sha256,
+        "rollback_summary": {
+            "workspace_status": "cleaned",
+            "target_main_write": false,
+            "target_main_sha256": rollback_evidence.get("target_main_sha256"),
+        },
+        "execution_identity_sha256": execution_identity_sha256,
+        "terminal_class": terminal_class,
+        "delegation_state": source.status,
+        "spend_authorization_state": source.spend_status,
+        "attempt_lease_state": source.attempt_status,
+        "realized_cost_usd": source.total_cost_usd,
+        "terminal_at": source.terminal_at,
+    });
+    let source_evidence_sha256 = archive_value_sha256(&source_evidence)?;
+    let mut archive = json!({
+        "schema_version": "managed_delegation_downgrade_archive.v1",
+        "source_schema_version": 36,
+        "source_evidence": source_evidence,
+        "source_evidence_sha256": source_evidence_sha256,
+    });
+    let archive_sha256 = archive_value_sha256(&archive)?;
+    archive["archive_sha256"] = json!(archive_sha256);
+    Ok(archive)
+}
+
+fn parse_archive_json(label: &str, raw: &str) -> Result<Value, String> {
+    serde_json::from_str(raw)
+        .map_err(|error| format!("v36 rollback blocked: {label} JSON is invalid: {error}"))
+}
+
+fn archive_value_sha256(value: &Value) -> Result<String, String> {
+    Ok(super::managed_acceptance::sha256_hex(
+        super::managed_acceptance::canonical_json(value)?.as_bytes(),
+    ))
+}
+
+fn require_archive_hash(label: &str, stored: &str, value: &Value) -> Result<(), String> {
+    if stored.len() != 64
+        || !stored
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+        || archive_value_sha256(value)? != stored
+    {
+        return Err(format!(
+            "v36 rollback blocked: {label} hash is inconsistent"
+        ));
+    }
+    Ok(())
+}
+
+fn verified_optional_archive_json_hash(
+    label: &str,
+    stored_hash: Option<&str>,
+    raw_json: Option<&str>,
+    required: bool,
+) -> Result<Option<String>, String> {
+    match (stored_hash, raw_json) {
+        (Some(stored), Some(raw)) => {
+            let value = parse_archive_json(label, raw)?;
+            require_archive_hash(label, stored, &value)?;
+            Ok(Some(stored.to_string()))
+        }
+        (None, None) if !required => Ok(None),
+        _ => Err(format!(
+            "v36 rollback blocked: {label} hash/body evidence is incomplete"
+        )),
+    }
+}
+
+fn verified_embedded_archive_json_hash(
+    label: &str,
+    stored_hash: Option<&str>,
+    raw_json: Option<&str>,
+    embedded_field: &str,
+) -> Result<Option<String>, String> {
+    match (stored_hash, raw_json) {
+        (Some(stored), Some(raw)) => {
+            let value = parse_archive_json(label, raw)?;
+            if value.get(embedded_field).and_then(Value::as_str) != Some(stored) {
+                return Err(format!(
+                    "v36 rollback blocked: {label} embedded hash is inconsistent"
+                ));
+            }
+            let mut unhashed = value;
+            unhashed
+                .as_object_mut()
+                .ok_or_else(|| format!("v36 rollback blocked: {label} must be an object"))?
+                .remove(embedded_field);
+            require_archive_hash(label, stored, &unhashed)?;
+            Ok(Some(stored.to_string()))
+        }
+        (None, None) => Ok(None),
+        _ => Err(format!(
+            "v36 rollback blocked: {label} hash/body evidence is incomplete"
+        )),
+    }
+}
 
 #[allow(dead_code)]
 pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
 
 impl LocalProductStore {
+    /// Roll back v36 only after every delegation row is terminal and closed.
+    /// Redacted, hash-bound evidence is archived in the existing v35 audit log
+    /// before the v36 authority structures are removed.
+    pub fn rollback_v36_to_v35(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err("v36 rollback requires explicit destructive rollback confirmation".into());
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v36 rollback actor must be between 1 and 128 bytes".into());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v36_to_v35(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v36_to_v35(actor, &now),
+        }
+    }
+
     pub(super) fn run_migrations(&self) -> Result<(), String> {
         self.with_conn(|conn| {
             for migration in schema::SQLITE_MIGRATIONS {
@@ -78,6 +465,12 @@ impl LocalProductStore {
                 if migration.version == V25_SCHEMA_VERSION && current_version >= V25_SCHEMA_VERSION
                 {
                     Self::migrate_v25_add_provider_embedding_bindings(conn)?;
+                    continue;
+                }
+                if migration.version == V36_SCHEMA_VERSION && current_version >= V36_SCHEMA_VERSION
+                {
+                    Self::migrate_v36_add_delegations(conn)?;
+                    validate_sqlite_v36_schema(conn)?;
                     continue;
                 }
                 if migration.version <= current_version {
@@ -126,6 +519,7 @@ impl LocalProductStore {
                     V35_SCHEMA_VERSION => {
                         Self::migrate_v35_add_product_workspace_preparations(conn)?
                     }
+                    V36_SCHEMA_VERSION => Self::migrate_v36_add_delegations(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -134,7 +528,9 @@ impl LocalProductStore {
             let final_version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if final_version == V35_SCHEMA_VERSION {
+            if final_version == V36_SCHEMA_VERSION {
+                validate_sqlite_v36_schema(conn)?;
+            } else if final_version == V35_SCHEMA_VERSION {
                 validate_sqlite_v35_schema(conn)?;
             } else if final_version == V34_SCHEMA_VERSION {
                 validate_sqlite_v34_schema(conn)?;
@@ -838,6 +1234,125 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                 .map_err(|error| error.to_string())?;
             tx.commit().map_err(|error| error.to_string())?;
             Ok(())
+        })
+    }
+
+    fn rollback_sqlite_v36_to_v35(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
+            let version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            if version != V36_SCHEMA_VERSION {
+                return Err(format!(
+                    "v36 rollback requires current schema version 36; found {version}"
+                ));
+            }
+            let archives = {
+                let mut statement = tx
+                    .prepare(
+                        "SELECT delegation_sha256, body_json, proposal_sha256, proposal_json,
+                                status, total_cost_usd, manifest_approval_sha256,
+                                manifest_approval_json, spend_body_sha256, spend_body_json,
+                                spend_status, manifest_json, attempt_id, attempt_lease_id,
+                                attempt_lease_token, attempt_status,
+                                artifact_confirmation_sha256, artifact_confirmation_json,
+                                provider_request_journal_json, terminal_receipt_json, terminal_at
+                         FROM managed_acceptance_delegations
+                         ORDER BY delegation_sha256",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok(V36DelegationArchiveSource {
+                            delegation_sha256: row.get(0)?,
+                            body_json: row.get(1)?,
+                            proposal_sha256: row.get(2)?,
+                            proposal_json: row.get(3)?,
+                            status: row.get(4)?,
+                            total_cost_usd: row.get(5)?,
+                            manifest_approval_sha256: row.get(6)?,
+                            manifest_approval_json: row.get(7)?,
+                            spend_body_sha256: row.get(8)?,
+                            spend_body_json: row.get(9)?,
+                            spend_status: row.get(10)?,
+                            manifest_json: row.get(11)?,
+                            attempt_id: row.get(12)?,
+                            attempt_lease_id: row.get(13)?,
+                            attempt_lease_token: row.get(14)?,
+                            attempt_status: row.get(15)?,
+                            artifact_confirmation_sha256: row.get(16)?,
+                            artifact_confirmation_json: row.get(17)?,
+                            provider_request_journal_json: row.get(18)?,
+                            terminal_receipt_json: row.get(19)?,
+                            terminal_at: row.get(20)?,
+                        })
+                    })
+                    .map_err(|error| error.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?;
+                rows
+            };
+            let archives = archives
+                .into_iter()
+                .map(build_v36_delegation_downgrade_archive)
+                .collect::<Result<Vec<_>, _>>()?;
+            for archive in &archives {
+                let delegation_sha = archive
+                    .pointer("/source_evidence/delegation_sha256")
+                    .and_then(Value::as_str)
+                    .ok_or("v36 downgrade archive delegation hash is missing")?;
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES (?1,?2,'schema.rollback.v36_delegation_archived',?3,?4)",
+                    params![
+                        now,
+                        actor,
+                        format!("managed_delegation_archive:{}", &delegation_sha[..16]),
+                        super::managed_acceptance::canonical_json(archive)?,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            let archive_hashes = Value::Array(
+                archives
+                    .iter()
+                    .filter_map(|archive| archive.get("archive_sha256").cloned())
+                    .collect(),
+            );
+            let archive_set_sha256 = archive_value_sha256(&archive_hashes)?;
+            tx.execute_batch(
+                "DROP INDEX IF EXISTS idx_workflow_plans_delegated_owner;
+                 ALTER TABLE workflow_plans DROP COLUMN delegated_plan_owner_id;
+                 DROP INDEX IF EXISTS idx_managed_acceptance_delegations_lease;
+                 DROP INDEX IF EXISTS idx_managed_acceptance_delegations_attempt;
+                 DROP INDEX IF EXISTS idx_managed_acceptance_delegations_spend;
+                 DROP INDEX IF EXISTS idx_managed_acceptance_delegations_status;
+                 DROP TABLE IF EXISTS managed_acceptance_delegations;",
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1,?2,'schema.rollback.v36_to_v35','local_product_store',?3)",
+                params![
+                    now,
+                    actor,
+                    json!({
+                        "from_version": 36,
+                        "to_version": 35,
+                        "tables": V36_TABLES,
+                        "archived_delegations": archives.len(),
+                        "archive_set_sha256": archive_set_sha256,
+                    })
+                    .to_string()
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.pragma_update(None, "user_version", V35_SCHEMA_VERSION)
+                .map_err(|e| e.to_string())?;
+            validate_sqlite_v35_schema(&tx)?;
+            tx.commit().map_err(|e| e.to_string())
         })
     }
 
@@ -1918,6 +2433,12 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
             .map_err(|error| error.to_string())
     }
 
+    fn migrate_v36_add_delegations(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(schema::V36_DDL)
+            .map_err(|error| error.to_string())?;
+        repair_sqlite_v36_delegated_plan_owner(conn)
+    }
+
     fn migrate_v33_add_managed_acceptance_spend(conn: &Connection) -> Result<(), String> {
         repair_sqlite_v32_transition_schema(conn)?;
         let spend_table_exists =
@@ -2174,6 +2695,110 @@ fn validate_sqlite_v35_schema(conn: &Connection) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn validate_sqlite_v36_schema(conn: &Connection) -> Result<(), String> {
+    validate_sqlite_v35_schema(conn)?;
+    for table in V36_TABLES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v36 schema missing table {table}"));
+        }
+    }
+    let mut statement = conn
+        .prepare("PRAGMA table_info(managed_acceptance_delegations)")
+        .map_err(|error| error.to_string())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    for column in V36_COLUMNS {
+        if !columns.contains(column) {
+            return Err(format!("SQLite v36 schema missing column {column}"));
+        }
+    }
+    for index in V36_INDEXES {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                [index],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists != 1 {
+            return Err(format!("SQLite v36 schema missing index {index}"));
+        }
+    }
+    if !column_exists(conn, "workflow_plans", V36_DELEGATED_PLAN_OWNER_COLUMN)? {
+        return Err(format!(
+            "SQLite v36 schema missing workflow_plans column {}",
+            V36_DELEGATED_PLAN_OWNER_COLUMN
+        ));
+    }
+    let owner_index_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+            [V36_DELEGATED_PLAN_OWNER_INDEX],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if owner_index_exists != 1 {
+        return Err(format!(
+            "SQLite v36 schema missing index {}",
+            V36_DELEGATED_PLAN_OWNER_INDEX
+        ));
+    }
+    Ok(())
+}
+
+fn repair_sqlite_v36_delegated_plan_owner(conn: &Connection) -> Result<(), String> {
+    if !column_exists(conn, "workflow_plans", V36_DELEGATED_PLAN_OWNER_COLUMN)? {
+        conn.execute(
+            "ALTER TABLE workflow_plans ADD COLUMN delegated_plan_owner_id TEXT",
+            [],
+        )
+        .map_err(|error| format!("v36 delegated plan owner column repair failed: {error}"))?;
+    }
+    conn.execute(
+        "UPDATE workflow_plans
+         SET delegated_plan_owner_id =
+             json_extract(plan_json, '$.advisory.delegated_plan_owner_id')
+         WHERE request_source='product_golden_path_delegated'
+           AND delegated_plan_owner_id IS NULL",
+        [],
+    )
+    .map_err(|error| format!("v36 delegated plan owner backfill failed: {error}"))?;
+    let duplicate: Option<String> = conn
+        .query_row(
+            "SELECT delegated_plan_owner_id
+             FROM workflow_plans
+             WHERE delegated_plan_owner_id IS NOT NULL
+             GROUP BY delegated_plan_owner_id
+             HAVING COUNT(*) > 1
+             LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if duplicate.is_some() {
+        return Err("v36 delegated plan owner repair found multiple plans for one owner".into());
+    }
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_plans_delegated_owner
+         ON workflow_plans(delegated_plan_owner_id)
+         WHERE delegated_plan_owner_id IS NOT NULL",
+        [],
+    )
+    .map(|_| ())
+    .map_err(|error| format!("v36 delegated plan owner index repair failed: {error}"))
 }
 
 fn validate_sqlite_v33_schema(conn: &Connection) -> Result<(), String> {
@@ -2991,8 +3616,227 @@ mod tests {
             .unwrap()
     }
 
+    fn insert_terminal_v36_delegation(store: &LocalProductStore, status: &str) {
+        let body = json!({
+            "schema_version": "managed_delegation_contract.v1",
+            "sensitive_fixture": "must-not-survive-v36-rollback"
+        });
+        let mut proposal = json!({
+            "schema_version": "managed_proposal_manifest.v1",
+            "target_repository": "Igzela/alters-lab",
+            "target_main_sha": "a".repeat(40),
+            "mutable_paths": ["docs/USER_GUIDE.md"],
+            "sensitive_fixture": "must-not-survive-v36-rollback"
+        });
+        proposal["manifest_sha256"] = json!(
+            super::super::managed_acceptance::compute_attempt_manifest_sha256(&proposal).unwrap()
+        );
+        let mut manifest = json!({
+            "schema_version": "managed_final_execution_manifest.v1",
+            "target": {
+                "repository": "Igzela/alters-lab",
+                "main_sha": "a".repeat(40),
+                "mutable_paths": ["docs/USER_GUIDE.md"]
+            },
+            "execution": {"product_task_id": "task-terminal"},
+            "limits": {"max_cost_usd": 0.5}
+        });
+        manifest["manifest_sha256"] = json!(
+            super::super::managed_acceptance::compute_attempt_manifest_sha256(&manifest).unwrap()
+        );
+        let journal = json!([{
+            "node_id": "planner",
+            "status": "succeeded",
+            "request_sha256": "b".repeat(64),
+            "sensitive_fixture": "must-not-survive-v36-rollback"
+        }]);
+        let terminal = json!({
+            "schema_version": "managed_delegated_terminal_evidence.v1",
+            "terminal_class": "succeeded",
+            "spend_authorization_state": "expired",
+            "attempt_lease_state": "closed",
+            "delegation_state": "expired",
+            "realized_cost_usd": 0.125,
+            "cleanup_status": "cleaned",
+            "target_main_sha": "a".repeat(40),
+            "sensitive_fixture": "must-not-survive-v36-rollback"
+        });
+        let body_sha = super::super::managed_acceptance::sha256_hex(
+            super::super::managed_acceptance::canonical_json(&body)
+                .unwrap()
+                .as_bytes(),
+        );
+        let proposal_sha = proposal["manifest_sha256"].as_str().unwrap().to_string();
+        let mut approval = json!({});
+        let approval_sha = super::super::managed_acceptance::sha256_hex(
+            super::super::managed_acceptance::canonical_json(&approval)
+                .unwrap()
+                .as_bytes(),
+        );
+        approval["approval_receipt_sha256"] = json!(approval_sha);
+        let spend = json!({});
+        let spend_sha = super::super::managed_acceptance::sha256_hex(
+            super::super::managed_acceptance::canonical_json(&spend)
+                .unwrap()
+                .as_bytes(),
+        );
+        let mut artifact = json!({});
+        let artifact_sha = super::super::managed_acceptance::sha256_hex(
+            super::super::managed_acceptance::canonical_json(&artifact)
+                .unwrap()
+                .as_bytes(),
+        );
+        artifact["artifact_confirmation_sha256"] = json!(artifact_sha);
+        let spend_status = if status == "active" {
+            "active"
+        } else {
+            "expired"
+        };
+        let attempt_status = if status == "active" {
+            "admitted"
+        } else {
+            "closed"
+        };
+        let terminal_json = if status == "active" {
+            None
+        } else {
+            Some(terminal.to_string())
+        };
+        let terminal_at = if status == "active" {
+            None
+        } else {
+            Some("2026-07-31T00:02:00Z")
+        };
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO managed_acceptance_delegations (
+                            delegation_id, tenant_id, principal_kind, principal_id,
+                            manifest_approver_id, artifact_confirmer_id, attempt_activator_id,
+                            delegation_sha256, body_json, proposal_sha256, proposal_json,
+                            status, executions_allowed, executions_used, max_total_cost_usd,
+                            total_cost_usd, spend_authorization_id, manifest_approval_sha256,
+                            manifest_approval_json, spend_body_sha256, spend_status,
+                            spend_body_json, manifest_json, attempt_id, attempt_lease_id,
+                            attempt_lease_token, attempt_status, artifact_confirmation_sha256,
+                            artifact_confirmation_json, provider_request_journal_json,
+                            terminal_receipt_json, created_at, updated_at, expires_at,
+                            terminal_at, revoked_at
+                         ) VALUES (
+                            'delegation-terminal', 'tenant-sensitive', 'operator_api_key',
+                            'principal-sensitive', 'approver-sensitive', 'confirmer-sensitive',
+                            'activator-sensitive', ?1, ?2, ?3, ?4, ?5, 1, 1, 0.5, 0.125,
+                            'spend-sensitive', ?6, ?7, ?8, ?9, ?10, ?11,
+                            'attempt-sensitive', 'lease-sensitive', 'token-sensitive', ?12,
+                            ?13, ?14, ?15, ?16, '2026-07-31T00:00:00Z',
+                            '2026-07-31T00:02:00Z', '2026-08-01T00:00:00Z', ?17, NULL
+                         )",
+                        params![
+                            body_sha,
+                            body.to_string(),
+                            proposal_sha,
+                            proposal.to_string(),
+                            status,
+                            approval_sha,
+                            approval.to_string(),
+                            spend_sha,
+                            spend_status,
+                            spend.to_string(),
+                            manifest.to_string(),
+                            attempt_status,
+                            artifact_sha,
+                            artifact.to_string(),
+                            journal.to_string(),
+                            terminal_json,
+                            terminal_at,
+                        ],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn sqlite_v36_rollback_archives_terminal_delegation_evidence_without_raw_payloads() {
+        let directory = tempdir().unwrap();
+        let database_path = directory.path().join("terminal-v36.db");
+        let store = LocalProductStore::new(&database_path).unwrap();
+        insert_terminal_v36_delegation(&store, "expired");
+
+        store
+            .rollback_v36_to_v35("migration-test", true)
+            .expect("fully closed delegation evidence must be archived");
+        assert_eq!(store.schema_version().unwrap(), V35_SCHEMA_VERSION);
+        assert!(!table_exists(&store, "managed_acceptance_delegations"));
+        store.with_conn(validate_sqlite_v35_schema).unwrap();
+        let archive: Value = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT details_json FROM audit_log
+                         WHERE action='schema.rollback.v36_delegation_archived'
+                         ORDER BY audit_id DESC LIMIT 1",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .map(|raw| serde_json::from_str(&raw).unwrap())
+            .unwrap();
+        let encoded = archive.to_string();
+        assert!(!encoded.contains("must-not-survive-v36-rollback"));
+        assert!(!encoded.contains("principal-sensitive"));
+        assert!(!encoded.contains("token-sensitive"));
+        assert_eq!(
+            archive["schema_version"],
+            "managed_delegation_downgrade_archive.v1"
+        );
+        assert_eq!(
+            archive["source_evidence"]["rollback_summary"]["workspace_status"],
+            "cleaned"
+        );
+        assert_eq!(
+            archive["source_evidence"]["rollback_summary"]["target_main_write"],
+            false
+        );
+        assert_eq!(
+            archive["source_evidence"]["provider_request_status_counts"]["succeeded"],
+            1
+        );
+        let mut unhashed = archive.clone();
+        let archive_sha = unhashed
+            .as_object_mut()
+            .unwrap()
+            .remove("archive_sha256")
+            .unwrap();
+        assert_eq!(
+            archive_sha,
+            super::super::managed_acceptance::sha256_hex(
+                super::super::managed_acceptance::canonical_json(&unhashed)
+                    .unwrap()
+                    .as_bytes()
+            )
+        );
+    }
+
+    #[test]
+    fn sqlite_v36_rollback_still_blocks_active_or_ambiguous_delegation_evidence() {
+        let directory = tempdir().unwrap();
+        let store = LocalProductStore::new(directory.path().join("active-v36.db")).unwrap();
+        insert_terminal_v36_delegation(&store, "active");
+        let error = store
+            .rollback_v36_to_v35("migration-test", true)
+            .expect_err("active delegated authority must not be downgraded");
+        assert!(error.contains("not fully terminal and closed"), "{error}");
+        assert_eq!(store.schema_version().unwrap(), V36_SCHEMA_VERSION);
+        assert!(table_exists(&store, "managed_acceptance_delegations"));
+    }
+
     fn store_at_v25(path: impl AsRef<std::path::Path>) -> LocalProductStore {
         let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v36_to_v35("migration-test", true).unwrap();
         store.rollback_v35_to_v34("migration-test", true).unwrap();
         store.rollback_v34_to_v33("migration-test", true).unwrap();
         store.rollback_v33_to_v32("migration-test", true).unwrap();

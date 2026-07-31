@@ -655,6 +655,7 @@ pub(crate) async fn api_target_repo_output(
                         title: publish_title,
                         body: publish_body,
                         expected_head_sha: None,
+                        expected_base_sha: None,
                     },
                 ))
             } else {
