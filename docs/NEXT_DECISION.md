@@ -45,7 +45,7 @@ The owner has authorized and accepted the production runner repair (#322), the d
 5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
 6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
-`PE7-DELEGATED-AUTONOMOUS-GOLDEN-PATH-1` is `COMPLETE` through merged PR #323 and is no longer the active frontier.
+The delegated autonomous Golden Path packet is complete through merged PR #323 and is no longer the active frontier (see the COMPLETE packet section below).
 
 ## Packet States
 
