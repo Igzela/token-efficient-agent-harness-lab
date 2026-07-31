@@ -538,6 +538,9 @@ impl ManagedProviderCallRequest {
     }
 
     pub(crate) fn estimated_input_tokens(&self) -> u64 {
+        // Conservative UTF-8 byte → token estimate for reservation only.
+        // Using raw bytes here over-reserved multi-stage routes and tripped the
+        // cumulative ceiling before the final review send on live docs tasks.
         let mut bytes = self
             .system
             .as_deref()
@@ -550,7 +553,13 @@ impl ManagedProviderCallRequest {
                 .and_then(|v| serde_json::to_vec(v).ok())
                 .map_or(0, |v| v.len()),
         );
-        bytes as u64
+        // ceil(bytes / 4), at least 1 when any content is present.
+        let bytes = bytes as u64;
+        if bytes == 0 {
+            0
+        } else {
+            bytes.div_ceil(4).max(1)
+        }
     }
 
     pub(crate) fn conservative_reserved_cost_usd(&self) -> Result<f64, String> {
@@ -936,16 +945,15 @@ impl ManagedBudgetLedger {
             ManagedProviderCallError::invalid_request("managed budget lock poisoned")
         })?;
         state.observed_requests = state.observed_requests.saturating_add(1);
+        // Sequential managed stages share one ledger with a single in-flight
+        // reservation. Release the full reservation after each attempt so
+        // unused max_output headroom cannot starve later stages.
+        state.reserved_input_tokens = 0;
+        state.reserved_output_tokens = 0;
         if let Some(response) = response {
             state.cumulative_tokens = state
                 .cumulative_tokens
                 .saturating_add(response.usage.cumulative_tokens);
-            state.reserved_output_tokens = state
-                .reserved_output_tokens
-                .saturating_sub(response.usage.output_tokens);
-            state.reserved_input_tokens = state
-                .reserved_input_tokens
-                .saturating_sub(response.usage.input_tokens);
             if let Some(cost) = response.estimated_cost_usd {
                 state.cumulative_cost_usd += cost;
                 if self
