@@ -22,7 +22,7 @@ provider-free RWE authority reconciliation (#300)
 → managed-coding boundary generalization
 → provider-free DeepSeek dual-protocol integration
 → production DeepSeek ProductTask runner wiring (#322 accepted)
-→ delegated autonomous Golden Path authority and provider-free proof (#323)
+→ delegated autonomous Golden Path authority and provider-free proof (#323 accepted)
 → exactly one owner-authorized bounded DeepSeek Golden Path live seal
 → freeze one operator-supplied real RWE corpus under the accepted protocol
 → first frozen Real Workload Evidence baseline
@@ -34,17 +34,18 @@ provider-free RWE authority reconciliation (#300)
 → Dashboard #225 last
 ```
 
-The owner has authorized the production runner repair, delegated autonomous authority packet, and exactly one subsequent bounded documentation live seal. The two implementation packets remain provider-free; no provider request or target mutation is permitted before both are accepted. The live authorization permits only its exact final manifest, one ProductTask budget, one unmerged `acp/*` Draft PR, and mandatory terminal expiry/cleanup. It grants no credential disclosure, target-main mutation, merge, automatic merge, release, deployment, RWE, or economic claim. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
+The owner has authorized and accepted the production runner repair (#322), the delegated autonomous authority packet (#323), and exactly one subsequent bounded documentation live seal. The live authorization permits only its exact final manifest, one ProductTask budget, one unmerged `acp/*` Draft PR, and mandatory terminal expiry/cleanup. It grants no credential disclosure, target-main mutation, merge, automatic merge, release, deployment, RWE, or economic claim. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
 
 ## Active Routing
 
-1. `PE7-DELEGATED-AUTONOMOUS-GOLDEN-PATH-1` — `IN_PROGRESS` in Draft PR #323.
-2. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on accepted PR #323; exactly one later attempt is authorized.
-3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
-4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `READY_FOR_EXECUTION` after accepted PR #323; exactly one attempt is authorized under the current exact final-manifest and fail-closed checks.
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
+3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+
+The delegated autonomous Golden Path packet is complete through merged PR #323 and is no longer the active frontier (see the COMPLETE packet section below).
 
 ## Packet States
 
@@ -67,7 +68,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, and live-runner wiring through PR #322. Delegated autonomous authority is in progress in Draft PR #323. After its acceptance, the sole active frontier is the owner's exact one-use live seal. Do not begin that live seal, RWE, Architecture Convergence, or later stages before their named prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, and delegated autonomous authority through PR #323. The sole active frontier is the owner's exact one-use live seal. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -177,9 +178,9 @@ Stop before any of the following:
 
 ## Packet PE7-OBSERVATION-RESTACK-1 — observation-only PR #301 reconciliation
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-**Owned PR:** #301
+**Owned PR:** #301 (merged and accepted)
 
 PR #300 is the accepted prerequisite and RWE authority foundation. PR #301 was mechanically restacked as an observation-only layer onto accepted main, its observation file blob identity was verified, and it passed complete exact-head CI and independent review. This packet is observation-only and did not import authority, credentials, proxy ownership, budget ownership, or live execution.
 
@@ -272,21 +273,21 @@ Wire the existing `ManagedDeepSeekProvider::invoke_with_authority` into the exis
 
 ## Packet PE7-DELEGATED-AUTONOMOUS-GOLDEN-PATH-1
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-**Owned PR:** #323
+**Owned PR:** #323, merged as `8d9f8dc47ab458fa01873571fbc7b60ebaf211f0` from exact head `3ca951dd8a645e1a7f2b6cc800d9fad54c010fd7`
 
 **Prerequisite:** PR #322 accepted and merged. Satisfied.
 
-Derive an immutable final execution manifest from the immutable proposal, then bind a separate approval receipt, one-use spend authorization, and attempt lease. A versioned, hash-bound, revocable delegation enforces expiry, replay protection, cumulative budget, repository/task/path/file/line/model/protocol/output limits, and forbidden surfaces.
+**Acceptance evidence:** canonical exact-head CI run `30607238397` successful; independent Theo GO on the exact head; squash merge to main.
 
-The delegated manifest/spend approver and delegated artifact/output confirmer are separate authenticated authorities. The execution agent and models issue neither receipt. The confirmer independently rechecks the exact artifact/diff, allowed paths, deterministic verifier, Pro review, realized cost, target SHA, delegation, and one unmerged `acp/*` Draft-PR output. Missing, stale, conflicting, revoked, expired, replayed, over-budget, or outcome-unknown state fails closed.
-
-Deterministic local transports prove the complete success route and runner absence, manifest mutation, expiry/revocation, replay, budget accumulation, target drift, path escape, malformed tools, verification failure, model/usage mismatch, cancellation, restart, duplicate, late response, outcome unknown, credential redaction, and SQLite/PostgreSQL parity. Canonical CI performs no provider request or target mutation.
+Immutable final execution manifests, separated delegated approval/output authority, one-use spend and attempt leases, durable pre-send journaling, Draft-PR-only output, terminal cleanup, and SQLite/PostgreSQL restart parity are accepted on main. Canonical CI remains provider-free and target-free.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
+
+**Prerequisite:** PR #323 accepted and merged. Satisfied.
 
 **Authority:** the owner's exact one-use documentation delegation and `MAX_COST_USD=0.50`
 
