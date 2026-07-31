@@ -384,5 +384,146 @@ class TestStage0EventGuard(unittest.TestCase):
             self.assertIn("empty", findings[0])
 
 
+class TestDormantAutomationGuard(unittest.TestCase):
+    """Tests for the dormant automation guard check."""
+
+    def test_clean_automation_file_passes(self):
+        """A clean automation script should pass."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "run_checks.sh").write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\ncargo test -p engine\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/run_checks.sh"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_detects_dangerously_skip_permissions(self):
+        """claude --dangerously-skip-permissions must be flagged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "loop.sh").write_text(
+                'claude --dangerously-skip-permissions <<< "$PROMPT"\n'
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/loop.sh"]
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertIn("dangerously-skip-permissions", findings[0])
+
+    def test_detects_gh_run_list(self):
+        """gh run list --limit 1 (unbound CI judgment) must be flagged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "status=$(gh run list --limit 1 --json status,conclusion \\\n"
+                "  --jq '.[0] | \"\\(.status) \\(.conclusion)\"')\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertIn("gh run list", findings[0])
+
+    def test_detects_gh_run_watch(self):
+        """gh run watch with an unbound run id must be flagged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / ".github" / "workflows").mkdir(parents=True)
+            (repo / ".github" / "workflows" / "agent.yml").write_text(
+                "run: gh run watch $(gh run list --limit 1 --json databaseId "
+                "-q '.[0].databaseId') --exit-status\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, [".github/workflows/agent.yml"]
+            )
+            self.assertEqual(len(findings), 2)
+            self.assertTrue(any("gh run watch" in f for f in findings))
+            self.assertTrue(any("gh run list" in f for f in findings))
+
+    def test_doc_prose_is_not_scanned(self):
+        """The same strings in docs prose must not be flagged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "docs").mkdir(parents=True)
+            (repo / "docs" / "notes.md").write_text(
+                "Do not run `gh run list --limit 1` and do not pass "
+                "`--dangerously-skip-permissions`.\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["docs/notes.md"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_vendor_and_generated_dirs_are_not_scanned(self):
+        """Vendored and generated files must not be scanned."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "vendor" / "lib").mkdir(parents=True)
+            (repo / "vendor" / "lib" / "loop.sh").write_text(
+                "claude --dangerously-skip-permissions\n"
+            )
+            (repo / "scripts" / "generated").mkdir(parents=True)
+            (repo / "scripts" / "generated" / "gen.sh").write_text(
+                "gh run list --limit 1\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["vendor/lib/loop.sh", "scripts/generated/gen.sh"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_allowlisted_pattern_passes(self):
+        """An explicit allowlist entry with a reason suppresses the finding."""
+        original = csb.AUTOMATION_GUARD_ALLOWLIST
+        csb.AUTOMATION_GUARD_ALLOWLIST = {
+            "scripts/special_loop.sh": {
+                "gh run list": "bounded maintenance fixture; reviewed"
+            }
+        }
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                repo = Path(tmpdir)
+                (repo / "scripts").mkdir(parents=True)
+                (repo / "scripts" / "special_loop.sh").write_text(
+                    "gh run list --limit 1\n"
+                )
+                findings = csb.check_dormant_automation_guard(
+                    repo, ["scripts/special_loop.sh"]
+                )
+                self.assertEqual(findings, [])
+        finally:
+            csb.AUTOMATION_GUARD_ALLOWLIST = original
+
+    def test_allowlist_only_matches_exact_file_and_pattern(self):
+        """An allowlist entry must not leak to other files or patterns."""
+        original = csb.AUTOMATION_GUARD_ALLOWLIST
+        csb.AUTOMATION_GUARD_ALLOWLIST = {
+            "scripts/special_loop.sh": {
+                "gh run list": "bounded maintenance fixture; reviewed"
+            }
+        }
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                repo = Path(tmpdir)
+                (repo / "scripts").mkdir(parents=True)
+                (repo / "scripts" / "other_loop.sh").write_text(
+                    "gh run list --limit 1\n"
+                )
+                (repo / "scripts" / "special_loop.sh").write_text(
+                    "gh run watch\n"
+                )
+                findings = csb.check_dormant_automation_guard(
+                    repo,
+                    ["scripts/other_loop.sh", "scripts/special_loop.sh"],
+                )
+                self.assertEqual(len(findings), 2)
+        finally:
+            csb.AUTOMATION_GUARD_ALLOWLIST = original
+
+
 if __name__ == "__main__":
     unittest.main()

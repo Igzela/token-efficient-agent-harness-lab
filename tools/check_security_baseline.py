@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Security baseline checker for CA-7 sealed baseline.
 
-Read-only, pure stdlib. Performs five checks against the repository:
+Read-only, pure stdlib. Performs six checks against the repository:
   1. Secret scan — regex scan for credential patterns in git-tracked files
   2. Import scan — AST-based scan for prohibited network/SDK imports
   3. Active routing guard — scan JSON for active_routing_allowed: true
   4. Governance boundary guard — verify governance fixtures exist
   5. Stage-0 event guard — verify events.jsonl exists and is intact
+  6. Dormant automation guard — reject unattended-automation patterns that
+     can bypass exact-head, review, packet, and permission discipline
 
 Exit code 0 = all checks pass, 1 = at least one check fails.
 """
@@ -140,6 +142,72 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
 ACTIVE_ROUTING_EXCLUDE_PREFIXES = (
     "tests/fixtures/",
 )
+
+# ---------------------------------------------------------------------------
+# Dormant automation guard configuration
+# ---------------------------------------------------------------------------
+# Repository-controlled automation (workflows and automation scripts) may not
+# contain patterns that bypass exact-head, review, packet, or permission
+# discipline. Every finding fails closed unless the exact file and pattern
+# pair is listed in AUTOMATION_GUARD_ALLOWLIST with a reviewable reason.
+DORMANT_AUTOMATION_PATTERNS = [
+    (
+        "dangerously-skip-permissions",
+        re.compile(r"dangerously-skip-permissions"),
+    ),
+    (
+        "gh run list",
+        re.compile(r"\bgh\s+run\s+list\b"),
+    ),
+    (
+        "gh run watch",
+        re.compile(r"\bgh\s+run\s+watch\b"),
+    ),
+]
+
+# Only repository-controlled automation surfaces are scanned. Plain-text docs
+# may legitimately mention these strings in prose and are not scanned.
+AUTOMATION_GUARD_SCAN_PREFIXES = (
+    ".github/",
+    "scripts/",
+    "tools/",
+)
+
+# Generated, vendored, or build directories are never scanned.
+AUTOMATION_GUARD_EXCLUDE_DIRS = {
+    "vendor",
+    "target",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    "generated",
+}
+
+# Minimal reviewable allowlist: tracked path -> {pattern label: reason}.
+# Kept empty by default; entries require an explicit ownership and expiry
+# rationale so an exception cannot silently persist.
+AUTOMATION_GUARD_ALLOWLIST: dict[str, dict[str, str]] = {
+    "tools/check_security_baseline.py": {
+        "dangerously-skip-permissions": "guard detector definition itself; "
+        "scanning the guard's own pattern table would be self-referential",
+        "gh run list": "guard detector definition itself; "
+        "scanning the guard's own pattern table would be self-referential",
+        "gh run watch": "guard detector definition itself; "
+        "scanning the guard's own pattern table would be self-referential",
+    },
+    "tools/test_security_baseline.py": {
+        "dangerously-skip-permissions": "positive/negative fixture tests "
+        "for the guard detector; not an automation surface",
+        "gh run list": "positive/negative fixture tests "
+        "for the guard detector; not an automation surface",
+        "gh run watch": "positive/negative fixture tests "
+        "for the guard detector; not an automation surface",
+    },
+}
+
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +475,48 @@ def check_stage0_event_guard(repo_root: Path) -> list[str]:
     return findings
 
 
+def check_dormant_automation_guard(
+    repo_root: Path, tracked_files: list[str]
+) -> list[str]:
+    """Scan repo-controlled workflows and automation scripts for unattended
+    patterns that can bypass exact-head, review, packet, or permission
+    discipline.
+
+    Scanned surfaces are repository-controlled automation only:
+    ``.github/`` workflows and ``scripts/`` / ``tools/`` executables.
+    Generated, vendored, and build directories are never scanned. A finding
+    is suppressed only when the exact file and pattern label appear in
+    ``AUTOMATION_GUARD_ALLOWLIST`` with a reviewable reason; otherwise the
+    check fails closed.
+    """
+    findings = []
+
+    for rel_path in tracked_files:
+        if not rel_path.startswith(AUTOMATION_GUARD_SCAN_PREFIXES):
+            continue
+        if any(
+            part in AUTOMATION_GUARD_EXCLUDE_DIRS for part in Path(rel_path).parts
+        ):
+            continue
+
+        filepath = repo_root / rel_path
+        if not filepath.is_file():
+            continue
+        try:
+            content = filepath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        file_allowlist = AUTOMATION_GUARD_ALLOWLIST.get(rel_path, {})
+        for label, pattern in DORMANT_AUTOMATION_PATTERNS:
+            if pattern.search(content):
+                if file_allowlist.get(label):
+                    continue
+                findings.append(f"{rel_path}: {label} pattern found")
+
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -470,11 +580,22 @@ def main() -> int:
         print("  PASS")
 
     # Check 5: Stage-0 event guard
-    print("[5/5] Stage-0 event guard...")
+    print("[5/6] Stage-0 event guard...")
     event_findings = check_stage0_event_guard(REPO_ROOT)
     if event_findings:
         print("  FAIL — event guard issues:")
         for f in event_findings:
+            print(f"    {f}")
+        all_pass = False
+    else:
+        print("  PASS")
+
+    # Check 6: Dormant automation guard
+    print("[6/6] Dormant automation guard...")
+    automation_findings = check_dormant_automation_guard(REPO_ROOT, tracked_files)
+    if automation_findings:
+        print("  FAIL — forbidden unattended-automation patterns found:")
+        for f in automation_findings:
             print(f"    {f}")
         all_pass = False
     else:
