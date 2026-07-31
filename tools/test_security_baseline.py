@@ -525,5 +525,62 @@ class TestDormantAutomationGuard(unittest.TestCase):
             csb.AUTOMATION_GUARD_ALLOWLIST = original
 
 
+class TestRemovedPluginSurfaceGuard(unittest.TestCase):
+    """Tests for the removed plugin-surface guard check."""
+
+    def test_clean_engine_source_passes(self):
+        """Engine source without plugin trust tokens should pass."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "scheduler.rs").write_text(
+                "pub fn tick() -> u32 { 1 }\n"
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/scheduler.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_detects_official_trust_token(self):
+        """TRUST_LEVEL_OFFICIAL must be flagged in engine/src."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "plugin.rs").write_text(
+                'pub const TRUST_LEVEL_OFFICIAL: &str = "official";\n'
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/plugin.rs"]
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertIn("TRUST_LEVEL_OFFICIAL", findings[0])
+
+    def test_detects_unrestricted_comment(self):
+        """The 'empty = unrestricted' trust semantic must be flagged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "trust.rs").write_text(
+                "TRUST_LEVEL_OFFICIAL => HashSet::new(), // empty = unrestricted\n"
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/trust.rs"]
+            )
+            self.assertEqual(len(findings), 2)
+
+    def test_engine_tests_are_not_scanned(self):
+        """engine/tests is outside the production crate source scan scope."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "tests").mkdir(parents=True)
+            (repo / "engine" / "tests" / "test_plugin.rs").write_text(
+                'pub const TRUST_LEVEL_OFFICIAL: &str = "official";\n'
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/tests/test_plugin.rs"]
+            )
+            self.assertEqual(findings, [])
+
+
 if __name__ == "__main__":
     unittest.main()
