@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Security baseline checker for CA-7 sealed baseline.
 
-Read-only, pure stdlib. Performs six checks against the repository:
+Read-only, pure stdlib. Performs seven checks against the repository:
   1. Secret scan — regex scan for credential patterns in git-tracked files
   2. Import scan — AST-based scan for prohibited network/SDK imports
   3. Active routing guard — scan JSON for active_routing_allowed: true
@@ -9,6 +9,8 @@ Read-only, pure stdlib. Performs six checks against the repository:
   5. Stage-0 event guard — verify events.jsonl exists and is intact
   6. Dormant automation guard — reject unattended-automation patterns that
      can bypass exact-head, review, packet, and permission discipline
+  7. Removed plugin-surface guard — fail closed if the old in-memory plugin
+     trust semantics are reintroduced into the production crate source
 
 Exit code 0 = all checks pass, 1 = at least one check fails.
 """
@@ -207,6 +209,27 @@ AUTOMATION_GUARD_ALLOWLIST: dict[str, dict[str, str]] = {
         "for the guard detector; not an automation surface",
     },
 }
+
+# ---------------------------------------------------------------------------
+# Removed plugin-surface guard configuration
+# ---------------------------------------------------------------------------
+# The in-memory plugin system (infrastructure/plugin_system.rs and
+# plugin_registry.rs) was deleted as a dormant surface: it never loaded or
+# verified plugin binaries and its `official = unrestricted` trust semantics
+# could be mistaken for a production security boundary. These semantic tokens
+# must not reappear in the production crate source.
+PLUGIN_TRUST_FORBIDDEN_TOKENS = (
+    "TRUST_LEVEL_OFFICIAL",
+    "TRUST_LEVEL_VERIFIED",
+    "TRUST_LEVEL_COMMUNITY",
+    "PLUGIN_SYSTEM_SCHEMA_VERSION",
+    "ALL_KNOWN_PERMISSIONS",
+    "empty = unrestricted",
+)
+
+PLUGIN_SURFACE_SCAN_PREFIXES = (
+    "engine/src/",
+)
 
 
 
@@ -517,6 +540,44 @@ def check_dormant_automation_guard(
     return findings
 
 
+def check_removed_plugin_surface_guard(
+    repo_root: Path, tracked_files: list[str]
+) -> list[str]:
+    """Fail closed if the deleted in-memory plugin trust semantics reappear
+    in the production crate source.
+
+    The old plugin system was an in-memory manifest registry without binary
+    loading, signature verification, sandboxing, or capability enforcement;
+    its ``official`` trust level mapped to an empty permission set labeled
+    ``empty = unrestricted`` and could be mistaken for a mature security
+    boundary. Reintroducing those semantic tokens into ``engine/src/`` is a
+    regression of the accepted cleanup.
+    """
+    findings = []
+
+    for rel_path in tracked_files:
+        if not rel_path.startswith(PLUGIN_SURFACE_SCAN_PREFIXES):
+            continue
+        if any(
+            part in AUTOMATION_GUARD_EXCLUDE_DIRS for part in Path(rel_path).parts
+        ):
+            continue
+
+        filepath = repo_root / rel_path
+        if not filepath.is_file():
+            continue
+        try:
+            content = filepath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        for token in PLUGIN_TRUST_FORBIDDEN_TOKENS:
+            if token in content:
+                findings.append(f"{rel_path}: forbidden plugin trust token {token!r}")
+
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -591,11 +652,22 @@ def main() -> int:
         print("  PASS")
 
     # Check 6: Dormant automation guard
-    print("[6/6] Dormant automation guard...")
+    print("[6/7] Dormant automation guard...")
     automation_findings = check_dormant_automation_guard(REPO_ROOT, tracked_files)
     if automation_findings:
         print("  FAIL — forbidden unattended-automation patterns found:")
         for f in automation_findings:
+            print(f"    {f}")
+        all_pass = False
+    else:
+        print("  PASS")
+
+    # Check 7: Removed plugin-surface guard
+    print("[7/7] Removed plugin-surface guard...")
+    plugin_findings = check_removed_plugin_surface_guard(REPO_ROOT, tracked_files)
+    if plugin_findings:
+        print("  FAIL — deleted plugin trust semantics reintroduced:")
+        for f in plugin_findings:
             print(f"    {f}")
         all_pass = False
     else:
