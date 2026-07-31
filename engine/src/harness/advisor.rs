@@ -20,18 +20,22 @@ pub trait AdvisorProvider: Send + Sync {
     fn advise(&self, context: &AdvisorContextPack) -> AdvisorResponse;
 }
 
+#[cfg(test)]
 pub struct StubAdvisorProvider;
+#[cfg(test)]
 impl Default for StubAdvisorProvider {
     fn default() -> Self {
         Self
     }
 }
+#[cfg(test)]
 impl StubAdvisorProvider {
     pub fn new() -> Self {
         Self
     }
 }
 
+#[cfg(test)]
 impl AdvisorProvider for StubAdvisorProvider {
     fn advise(&self, ctx: &AdvisorContextPack) -> AdvisorResponse {
         AdvisorResponse {
