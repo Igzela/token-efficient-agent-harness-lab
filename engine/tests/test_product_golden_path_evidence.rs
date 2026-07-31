@@ -1774,7 +1774,10 @@ fn progressive_draft_pr_terminal_cas_uses_current_task_version_with_original_ope
             durable["product_output_operation"]["request"]["expected_task_version"],
             claim_version
         );
-        assert_eq!(durable["product_output_operation"]["request_sha256"], request_sha256);
+        assert_eq!(
+            durable["product_output_operation"]["request_sha256"],
+            request_sha256
+        );
 
         // Stale claim version is rejected after the task advanced.
         let stale = store
