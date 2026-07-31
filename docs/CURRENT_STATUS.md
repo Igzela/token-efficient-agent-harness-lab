@@ -24,6 +24,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR.
 - PR #321 is merged and accepted as `542a5a453308f8a84e540f48767a80a9e58bf99d`: provider-free managed DeepSeek dual-protocol support reuses the existing OpenAI-compatible and Anthropic-compatible provider clients under one ProductTask-bound authority, with deterministic mock coverage only. No migration, provider request, or target effect was added.
 - PR #322 is merged and accepted as `13f725f949684d179593a6559d8600a5b5d47edf`: the managed DeepSeek executor is wired into the production ProductTask scheduler as Pro planning, Flash bounded implementation, deterministic verification, and Pro review. The repair remained provider-free and added no target effect.
 - PR #323 is merged and accepted as `8d9f8dc47ab458fa01873571fbc7b60ebaf211f0` from exact head `3ca951dd8a645e1a7f2b6cc800d9fad54c010fd7`: provider-free delegated autonomous Golden Path at schema v36 (immutable proposal/final manifests, authenticated bounded delegation, separated manifest/spend and artifact/output authority, durable pre-send provider-request journaling, Draft-PR-only output reconciliation, terminal cleanup, and SQLite/PostgreSQL restart parity). Canonical exact-head CI run `30607238397` was successful; Theo GO accepted the exact head before squash merge.
+- PR #325 is merged and accepted as `0da5c6c785004784d9ffa3b20e0068f4bac6be71` from exact head `7ecffd5a30426dd1f26ab4d46a8f2a36e7594568`: the live-observed repair for live-seal budget reservation release and Draft PR terminal CAS rebind. It releases full per-call managed DeepSeek reservations after each stage, estimates input tokens rather than raw bytes, and accepts completed Draft PR operations at the current ProductTask version for terminal closeout. Canonical exact-head runs `30613256286` and `30613256266` were successful; post-merge `push: main` run `30636441727` passed all jobs and bound the context-capsule artifact to the merge SHA.
 - PR #313 is merged as `ca5ce1023664c58be8d15d681a80f262fb2be70b`. Its final PR exact-head matrix passed, and post-merge `push: main` run `30381836225` completed successfully with all seven source jobs plus terminal context-capsule artifact `8697748363` bound to the same SHA.
 - Verified Delivery Economics (VDE) is adopted as a provider-free architecture and routing contract. Durable semantics live in `docs/ARCHITECTURE_BOOK.md`; execution order and gates live in `docs/NEXT_DECISION.md`. No runtime, schema, database table, Level-1 `MetricVector`, evaluator, store, budget, or adoption authority is added by this documentation decision.
 - Rust `engine/` and `LocalProductStore` remain the sole authorities for workflow state, scheduling, leases, retries, budgets, approvals, evidence, output reconciliation, audit, and persistence.
@@ -44,11 +45,11 @@ A new PR head invalidates earlier CI and review conclusions for that PR.
 
 PR #297 and #298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304. PR #301, PR #306, PR #308, PR #310, PR #311, PR #313, and PR #315 are merged and accepted.
 
-No live provider request, live managed acceptance, live RWE baseline, accepted success probability, or realized VDE result is established.
+One owner-authorized live attempt was made and recorded truthfully under `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1`: a real `Pro → Flash → deterministic verify → Pro` workflow with target `Igzela/alters-lab` main unchanged, one unmerged `acp/*` Draft PR (alters-lab PR #3), realized cost approximately `$0.0016`, expired one-use spend, closed attempt lease, cleaned workspace, and a realized workflow sample labeled `INSUFFICIENT_REPETITIONS`. It is not a clean accepted seal: the provider-stage binary came from a dirty tree and did not equal an accepted commit or the final #325 head, and terminal closeout used later local CAS-rebind code. PR #325 is the accepted live-observed repair. No live managed acceptance, live RWE baseline, accepted success probability, or realized VDE result is established.
 
 ## Current Product Verdict
 
-Product Golden Path authority includes the provider-free production runner through accepted PR #322 and the provider-free delegated autonomous path through accepted PR #323 at schema v36. Live execution remains default-off and is now the sole active frontier as `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1`, subject to exact one-use final-manifest, credential-presence, principal separation, target SHA, and output checks. No provider request or target effect is a default.
+Product Golden Path authority includes the provider-free production runner through accepted PR #322, the provider-free delegated autonomous path through accepted PR #323 at schema v36, and the live-observed budget/CAS repair through accepted PR #325. Live execution remains default-off. The sole active frontier is `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1`, which is `DECISION_REQUIRED` (nearest existing fail-closed equivalent of `LIVE_OBSERVED_RESEAL_REQUIRED`) pending a new explicit one-use owner authorization for one clean exact-main live reseal. No provider request or target effect is a default.
 
 Fixture evidence proves the existing product sequence:
 
@@ -58,7 +59,7 @@ intake → worktree/source binding → executable graph → scheduler lease
 → separate output confirmation → acp/* Draft PR → terminal evidence
 ```
 
-The remaining product proof is one tightly bounded live managed coding task under the accepted authority decision, authenticated non-fixture principal, parent-only provider credential, one-use spend authorization, unchanged target `main`, Draft-PR-only output, and exact terminal evidence. Before any live task, the external authorization manifest in `docs/NEXT_DECISION.md` must be current and persisted; context-capsule automation and the VDE decision contract do not satisfy that authority gate.
+The remaining product proof is one clean exact-main live reseal under the accepted authority decision, authenticated non-fixture principal, parent-only provider credential, fresh one-use spend authorization, unchanged target `main`, Draft-PR-only output, recorded exact source tree and binary SHA, one ProductTask from intake through terminal closure, one bounded unmerged `acp/*` Draft PR, and exact terminal evidence. The first authorized live attempt was observed but did not seal cleanly; a second live attempt must not start without a new explicit one-use owner authorization. Before any live task, the external authorization manifest in `docs/NEXT_DECISION.md` must be current and persisted; context-capsule automation and the VDE decision contract do not satisfy that authority gate.
 
 Residual risks remain explicit:
 
@@ -78,7 +79,7 @@ Therefore live acceptance is not blocked only by credential presence.
 | DeepSeek dual-protocol managed coding | `COMPLETE` | Packet `PE7-DEEPSEEK-DUAL-PROTOCOL-MANAGED-CODING-1`; PR #321 merged at `542a5a45…` with provider-free deterministic mocks only |
 | DeepSeek live-runner wiring repair | `COMPLETE` | Packet `PE7-DEEPSEEK-LIVE-RUNNER-WIRING-REPAIR-1`; PR #322 merged at `13f725f9…` with provider-free scheduler-path proof |
 | Delegated autonomous Golden Path | `COMPLETE` | Packet `PE7-DELEGATED-AUTONOMOUS-GOLDEN-PATH-1`; PR #323 merged as `8d9f8dc4…` after exact-head CI `30607238397` and Theo GO on `3ca951dd…` |
-| Golden Path live residual seal | `READY_FOR_EXECUTION` | PR #323 accepted; exactly one owner-authorized documentation live attempt remains, subject to fresh fail-closed checks |
+| Golden Path live residual seal | `DECISION_REQUIRED` | PR #323 accepted, PR #325 accepted as the live-observed repair; one clean exact-main live reseal remains and requires a new explicit one-use owner authorization |
 | Context capsule automation | `COMPLETE` | PR #306 provides publication/injection; PR #313 proves the repaired post-merge push terminal path on `ca5ce102…` |
 | VDE decision and measurement contract | `COMPLETE` | Provider-free architecture/routing contract only; no accepted live measurement or implementation artifact exists |
 | First Real Workload Evidence | `BLOCKED_PREREQUISITE` | Accepted Golden Path terminal evidence, frozen real economic corpus/protocol, and separately authorized RWE spend envelope |
@@ -95,7 +96,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 
 ## Confirmed Integration Gaps
 
-1. No accepted live managed coding-executor E2E exists; PR #323 establishes provider-free production-path proof only. The live seal remains a separate one-use attempt.
+1. No accepted live managed coding-executor E2E exists; PR #323 establishes provider-free production-path proof only, and PR #325 is the accepted live-observed budget/CAS repair. The first authorized live attempt was observed but did not seal cleanly; one clean exact-main live reseal remains and requires a new explicit one-use owner authorization.
 2. No accepted live RWE baseline exists.
 3. No frozen operator-supplied real economic corpus, reviewer protocol instance, repetition grid, or accepted VDE observation exists. Provider-free schema work does not satisfy this gap.
 4. Architecture Convergence cannot begin before that baseline is frozen.
@@ -112,7 +113,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 ## Active Tracks
 
 - Provider-free Golden Path authority: PR #299 merged and accepted at schema v33; PR #300 merged and accepted at schema v34.
-- Product Golden Path preflight: PR #308 is merged and accepted at schema v35; PR #320–#322 complete managed-coding boundary, DeepSeek protocol, and production runner wiring; PR #323 completes the provider-free delegated autonomous path at schema v36. The active frontier is the one-use live seal.
+- Product Golden Path preflight: PR #308 is merged and accepted at schema v35; PR #320–#322 complete managed-coding boundary, DeepSeek protocol, and production runner wiring; PR #323 completes the provider-free delegated autonomous path at schema v36; PR #325 is the accepted live-observed budget/CAS repair. The active frontier is the clean exact-main live reseal, which must not start without a new explicit one-use owner authorization.
 - Context/CI governance: PR #302, PR #306, PR #310, PR #311, PR #313, PR #315, and PR #318 are merged and accepted; transport, fast feedback, and cache state remain non-authoritative.
 - VDE governance: the provider-free decision contract and artifact-schema validation are complete through PR #319; a real corpus, live observations, persistence automation, and Dashboard projection remain gated future work.
 - Observation adaptation: PR #301 is merged and accepted; observation-only and restacked onto accepted main.
@@ -120,7 +121,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 
 ## Open Work Coordination
 
-The active frontier is the owner-authorized one-use Golden Path live seal after accepted PR #323. It does not make RWE, Architecture Convergence, Level-2, Meta, or Dashboard work eligible. PR #225 remains presentation-only and last.
+The active frontier is the clean exact-main Golden Path live reseal after accepted PR #323 and PR #325. It does not make RWE, Architecture Convergence, Level-2, Meta, or Dashboard work eligible. PR #225 remains presentation-only and last.
 
 All active branches must refresh this main documentation convergence before final merge and must not overwrite it with stale branch-local status text.
 
