@@ -7571,6 +7571,280 @@ fn open_absolute_path_without_symlinks(
     Ok(current)
 }
 
+#[derive(Debug, Clone)]
+struct ManagedSchedulerLeaseAuthority {
+    run_id: String,
+    attempt_count: i64,
+    lease_owner_token_sha256: String,
+    allowed_paths: Value,
+    workspace_path: String,
+}
+
+fn managed_scheduler_lease_owner_token_sha256(
+    run_id: &str,
+    node_id: &str,
+    attempt_count: i64,
+    leased_at: &str,
+) -> String {
+    sha256_hex(
+        format!("managed_scheduler_node_lease.v1:{run_id}:{node_id}:{attempt_count}:{leased_at}")
+            .as_bytes(),
+    )
+}
+
+fn validate_managed_scheduler_lease_values(
+    binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    task_status: &str,
+    run_id: Option<String>,
+    workspace_binding_json: Option<String>,
+    run_status: &str,
+    workflow_id: &str,
+    node_status: &str,
+    attempt_count: i64,
+    leased_at: Option<String>,
+) -> Result<ManagedSchedulerLeaseAuthority, String> {
+    if !matches!(task_status, "graph_ready" | "running") {
+        return Err("managed scheduler ProductTask is cancelled, killed, or not executable".into());
+    }
+    let run_id = run_id.ok_or("managed scheduler ProductTask run is missing")?;
+    let workspace_binding: Value = serde_json::from_str(
+        workspace_binding_json
+            .as_deref()
+            .ok_or("managed scheduler ProductTask workspace binding is missing")?,
+    )
+    .map_err(|_| "managed scheduler ProductTask workspace binding is invalid")?;
+    let allowed_paths = workspace_binding
+        .get("allowed_paths")
+        .cloned()
+        .ok_or("managed scheduler ProductTask allowed paths are missing")?;
+    let workspace_path = workspace_binding
+        .get("workspace_path")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("managed scheduler ProductTask workspace is missing")?
+        .to_string();
+    let leased_at = leased_at.ok_or("managed scheduler node lease is missing")?;
+    if run_status != "running"
+        || workflow_id != binding.workflow_id
+        || node_status != "running"
+        || attempt_count <= 0
+    {
+        return Err("managed scheduler execution lease is stale, cancelled, or replaced".into());
+    }
+    Ok(ManagedSchedulerLeaseAuthority {
+        lease_owner_token_sha256: managed_scheduler_lease_owner_token_sha256(
+            &run_id,
+            &binding.node_id,
+            attempt_count,
+            &leased_at,
+        ),
+        run_id,
+        attempt_count,
+        allowed_paths,
+        workspace_path,
+    })
+}
+
+fn load_managed_scheduler_lease_sqlite(
+    tx: &rusqlite::Transaction<'_>,
+    binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+) -> Result<ManagedSchedulerLeaseAuthority, String> {
+    let (task_status, run_id, workspace_binding_json): (String, Option<String>, Option<String>) =
+        tx.query_row(
+            "SELECT status, run_id, workspace_binding_json
+             FROM product_tasks WHERE task_id=?1",
+            params![binding.product_task_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    let run_id_ref = run_id
+        .as_deref()
+        .ok_or("managed scheduler ProductTask run is missing")?;
+    let (run_status, workflow_id): (String, String) = tx
+        .query_row(
+            "SELECT status, workflow_id FROM workflow_runs WHERE run_id=?1",
+            params![run_id_ref],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    let (node_status, attempt_count, leased_at): (String, i64, Option<String>) = tx
+        .query_row(
+            "SELECT status, attempt_count, leased_at
+             FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2",
+            params![run_id_ref, binding.node_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    validate_managed_scheduler_lease_values(
+        binding,
+        &task_status,
+        run_id,
+        workspace_binding_json,
+        &run_status,
+        &workflow_id,
+        &node_status,
+        attempt_count,
+        leased_at,
+    )
+}
+
+#[cfg(feature = "pg")]
+fn load_managed_scheduler_lease_pg(
+    tx: &mut postgres::Transaction<'_>,
+    binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+) -> Result<ManagedSchedulerLeaseAuthority, String> {
+    let task = tx
+        .query_one(
+            "SELECT status, run_id, workspace_binding_json
+             FROM product_tasks WHERE task_id=$1 FOR UPDATE",
+            &[&binding.product_task_id],
+        )
+        .map_err(|error| error.to_string())?;
+    let task_status: String = task.get(0);
+    let run_id: Option<String> = task.get(1);
+    let workspace_binding_json: Option<String> = task.get(2);
+    let run_id_ref = run_id
+        .as_deref()
+        .ok_or("managed scheduler ProductTask run is missing")?;
+    let run = tx
+        .query_one(
+            "SELECT status, workflow_id FROM workflow_runs WHERE run_id=$1 FOR UPDATE",
+            &[&run_id_ref],
+        )
+        .map_err(|error| error.to_string())?;
+    let run_status: String = run.get(0);
+    let workflow_id: String = run.get(1);
+    let node = tx
+        .query_one(
+            "SELECT status, attempt_count, leased_at
+             FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2 FOR UPDATE",
+            &[&run_id_ref, &binding.node_id],
+        )
+        .map_err(|error| error.to_string())?;
+    let node_status: String = node.get(0);
+    let attempt_count = i64::from(node.get::<_, i32>(1));
+    let leased_at: Option<String> = node.get(2);
+    validate_managed_scheduler_lease_values(
+        binding,
+        &task_status,
+        run_id,
+        workspace_binding_json,
+        &run_status,
+        &workflow_id,
+        &node_status,
+        attempt_count,
+        leased_at,
+    )
+}
+
+fn validate_workspace_provider_journal(
+    journal_json: &str,
+    binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    scheduler: &ManagedSchedulerLeaseAuthority,
+) -> Result<(), String> {
+    let journal: Vec<Value> = serde_json::from_str(journal_json)
+        .map_err(|_| "managed workspace provider journal is invalid")?;
+    let matching = journal
+        .iter()
+        .filter(|entry| {
+            entry.get("node_id").and_then(Value::as_str) == Some(binding.node_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    let entry = match matching.as_slice() {
+        [entry] => *entry,
+        [] => return Err("managed workspace provider request claim is missing".into()),
+        _ => return Err("managed workspace provider request claim is duplicated".into()),
+    };
+    if entry.get("status").and_then(Value::as_str) != Some("succeeded")
+        || entry.get("role").and_then(Value::as_str) != Some("implementer")
+        || entry.get("requested_model").and_then(Value::as_str) != Some("deepseek-v4-flash")
+        || entry
+            .pointer("/scheduler_lease/product_task_id")
+            .and_then(Value::as_str)
+            != Some(binding.product_task_id.as_str())
+        || entry
+            .pointer("/scheduler_lease/run_id")
+            .and_then(Value::as_str)
+            != Some(scheduler.run_id.as_str())
+        || entry
+            .pointer("/scheduler_lease/workflow_id")
+            .and_then(Value::as_str)
+            != Some(binding.workflow_id.as_str())
+        || entry
+            .pointer("/scheduler_lease/node_id")
+            .and_then(Value::as_str)
+            != Some(binding.node_id.as_str())
+        || entry
+            .pointer("/scheduler_lease/attempt_count")
+            .and_then(Value::as_i64)
+            != Some(scheduler.attempt_count)
+        || entry
+            .pointer("/scheduler_lease/lease_owner_token_sha256")
+            .and_then(Value::as_str)
+            != Some(scheduler.lease_owner_token_sha256.as_str())
+    {
+        return Err(
+            "managed workspace provider response belongs to a stale or replaced scheduler lease"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_delegated_workspace_authority(
+    now: &str,
+    binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    delegation_status: &str,
+    expires_at: &str,
+    spend_status: &str,
+    attempt_status: &str,
+    spend_authorization_id: &str,
+    attempt_lease_token: &str,
+    manifest_json: &str,
+    journal_json: &str,
+    scheduler: &ManagedSchedulerLeaseAuthority,
+) -> Result<(), String> {
+    if delegation_status != "active"
+        || is_at_or_before(expires_at, now)?
+        || spend_status != "consumed"
+        || attempt_status != "admitted"
+        || spend_authorization_id != binding.spend_authorization_id
+        || crate::provider::managed_deepseek::managed_attempt_lease_id(attempt_lease_token)
+            != binding.attempt_lease_id
+    {
+        return Err("managed workspace delegated attempt lease is stale or closed".into());
+    }
+    let manifest: Value = serde_json::from_str(manifest_json)
+        .map_err(|_| "managed workspace final manifest is invalid")?;
+    if manifest.get("manifest_sha256").and_then(Value::as_str)
+        != Some(compute_attempt_manifest_sha256(&manifest)?.as_str())
+        || manifest
+            .pointer("/execution/product_task_id")
+            .and_then(Value::as_str)
+            != Some(binding.product_task_id.as_str())
+        || manifest
+            .pointer("/execution/workflow_id")
+            .and_then(Value::as_str)
+            != Some(binding.workflow_id.as_str())
+        || manifest
+            .pointer("/execution/attempt_id")
+            .and_then(Value::as_str)
+            != Some(binding.attempt_id.as_str())
+        || !manifest
+            .pointer("/execution/workflow_node_ids")
+            .and_then(Value::as_array)
+            .is_some_and(|nodes| {
+                nodes
+                    .iter()
+                    .any(|node| node.as_str() == Some(binding.node_id.as_str()))
+            })
+    {
+        return Err("managed workspace final manifest binding is stale or mismatched".into());
+    }
+    validate_workspace_provider_journal(journal_json, binding, scheduler)
+}
+
 /// Adapter from the existing store-owned managed-acceptance authority to the
 /// protocol-neutral provider-call boundary. It reloads persisted attempt/spend
 /// rows on every check; the provider layer never accepts caller assertions as
@@ -7588,16 +7862,115 @@ impl LocalProductStore {
         {
             return Err("workspace action requires current delegated authority".into());
         }
-        let task = self
-            .get_product_task(&binding.product_task_id)?
-            .ok_or("workspace action ProductTask is missing")?;
-        let owner_allowed = task
-            .pointer("/workspace_binding/allowed_paths")
-            .ok_or("workspace action owner allowed paths are missing")?;
-        let owner_workspace = task
-            .pointer("/workspace_binding/workspace_path")
-            .and_then(Value::as_str)
-            .ok_or("workspace action owner workspace is missing")?;
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
+                let scheduler = load_managed_scheduler_lease_sqlite(&tx, binding)?;
+                let row: (
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                ) = tx
+                    .query_row(
+                        "SELECT status, expires_at, spend_status, attempt_status,
+                                spend_authorization_id, attempt_lease_token, manifest_json,
+                                provider_request_journal_json
+                         FROM managed_acceptance_delegations WHERE attempt_id=?1",
+                        params![binding.attempt_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                                row.get(6)?,
+                                row.get(7)?,
+                            ))
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                let now = self.now();
+                validate_delegated_workspace_authority(
+                    &now, binding, &row.0, &row.1, &row.2, &row.3, &row.4, &row.5, &row.6, &row.7,
+                    &scheduler,
+                )?;
+                let receipt = Self::write_managed_workspace_action(
+                    binding,
+                    node_metadata,
+                    model_output,
+                    &scheduler.allowed_paths,
+                    &scheduler.workspace_path,
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(receipt)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let delegation = tx
+                    .query_one(
+                        "SELECT status, expires_at, spend_status, attempt_status,
+                                spend_authorization_id, attempt_lease_token, manifest_json,
+                                provider_request_journal_json
+                         FROM managed_acceptance_delegations
+                         WHERE attempt_id=$1 FOR UPDATE",
+                        &[&binding.attempt_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let scheduler = load_managed_scheduler_lease_pg(&mut tx, binding)?;
+                let delegation_status: String = delegation.get(0);
+                let expires_at: String = delegation.get(1);
+                let spend_status: String = delegation.get(2);
+                let attempt_status: String = delegation.get(3);
+                let spend_authorization_id: String = delegation.get(4);
+                let attempt_lease_token: String = delegation.get(5);
+                let manifest_json: String = delegation.get(6);
+                let journal_json: String = delegation.get(7);
+                let now = self.now();
+                validate_delegated_workspace_authority(
+                    &now,
+                    binding,
+                    &delegation_status,
+                    &expires_at,
+                    &spend_status,
+                    &attempt_status,
+                    &spend_authorization_id,
+                    &attempt_lease_token,
+                    &manifest_json,
+                    &journal_json,
+                    &scheduler,
+                )?;
+                let receipt = Self::write_managed_workspace_action(
+                    binding,
+                    node_metadata,
+                    model_output,
+                    &scheduler.allowed_paths,
+                    &scheduler.workspace_path,
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(receipt)
+            }),
+        }
+    }
+
+    fn write_managed_workspace_action(
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+        node_metadata: &Value,
+        model_output: &str,
+        owner_allowed: &Value,
+        owner_workspace: &str,
+    ) -> Result<Value, String> {
         if node_metadata.get("allowed_paths") != Some(owner_allowed)
             || node_metadata.get("workspace_path").and_then(Value::as_str) != Some(owner_workspace)
             || node_metadata.get("workspace_root").and_then(Value::as_str) != Some(owner_workspace)
@@ -7764,7 +8137,8 @@ impl LocalProductStore {
                 validate_provider_journal_authority(
                     request, &now, &row.0, &row.1, &row.2, &row.3, &row.4, &row.5, &row.6,
                 )?;
-                let journal = claim_provider_journal_entry(&row.7, request, &now)?;
+                let scheduler = load_managed_scheduler_lease_sqlite(&tx, &request.binding)?;
+                let journal = claim_provider_journal_entry(&row.7, request, &scheduler, &now)?;
                 let changed = tx
                     .execute(
                         "UPDATE managed_acceptance_delegations
@@ -7810,7 +8184,9 @@ impl LocalProductStore {
                     &lease_token,
                     &manifest_json,
                 )?;
-                let journal = claim_provider_journal_entry(&journal_json, request, &now)?;
+                let scheduler = load_managed_scheduler_lease_pg(&mut tx, &request.binding)?;
+                let journal =
+                    claim_provider_journal_entry(&journal_json, request, &scheduler, &now)?;
                 let changed = tx
                     .execute(
                         "UPDATE managed_acceptance_delegations
@@ -8084,6 +8460,7 @@ fn validate_provider_journal_authority(
 fn claim_provider_journal_entry(
     journal_json: &str,
     request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,
+    scheduler: &ManagedSchedulerLeaseAuthority,
     now: &str,
 ) -> Result<String, String> {
     let mut journal: Vec<Value> = serde_json::from_str(journal_json)
@@ -8143,6 +8520,14 @@ fn claim_provider_journal_entry(
         "requested_model": request.requested_model,
         "request_sha256": request_sha256,
         "status": "sending",
+        "scheduler_lease": {
+            "product_task_id": request.binding.product_task_id,
+            "run_id": scheduler.run_id,
+            "workflow_id": request.binding.workflow_id,
+            "node_id": request.binding.node_id,
+            "attempt_count": scheduler.attempt_count,
+            "lease_owner_token_sha256": scheduler.lease_owner_token_sha256,
+        },
         "reserved_input_tokens": reserved_input_tokens,
         "reserved_output_tokens": reserved_output_tokens,
         "conservative_reserved_cost_usd": reserved_cost_usd,
@@ -8550,6 +8935,35 @@ mod tests {
             Err(HttpError::Connection(
                 "mock post-send connection outcome is unknown".into(),
             ))
+        }
+    }
+
+    struct DelegatedBlockedImplementationTransport {
+        responses: Mutex<Vec<HttpResponse>>,
+        sends: AtomicUsize,
+        implementation_entered: Arc<Barrier>,
+        implementation_release: Arc<Barrier>,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for DelegatedBlockedImplementationTransport {
+        async fn send(&self, _request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            let ordinal = self.sends.fetch_add(1, Ordering::SeqCst);
+            if ordinal == 1 {
+                self.implementation_entered.wait();
+                self.implementation_release.wait();
+            }
+            let mut responses = self
+                .responses
+                .lock()
+                .map_err(|_| HttpError::Connection("blocked transport poisoned".into()))?;
+            if responses.is_empty() {
+                Err(HttpError::Connection(
+                    "unexpected blocked transport provider request".into(),
+                ))
+            } else {
+                Ok(responses.remove(0))
+            }
         }
     }
 
@@ -10879,6 +11293,67 @@ mod tests {
             "user",
             "DO_NOT_PERSIST_PROVIDER_PROMPT_CONTENT",
         )];
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO product_tasks (
+                            task_id, schema_version, tenant_id, workspace_id, idempotency_key,
+                            status, version, objective_fingerprint, target_id, target_repo_path,
+                            source_revision, source_tree_hash, output_intent, risk_class,
+                            approval_required, confirm_execution, confirm_output,
+                            intake_contract_sha256, intake_json, workspace_binding_json,
+                            plan_id, run_id, workspace_record_id, failure_code, failure_detail,
+                            created_at, updated_at, created_by
+                         ) VALUES (
+                            ?1, 'product_task.v1', 'tenant-a', 'default',
+                            'provider-journal-restart', 'graph_ready', 1, ?2,
+                            'alters-lab-docs', '/redacted/target', ?3, NULL, 'draft_pr', 'low',
+                            1, 1, 1, ?4, '{}', ?5, NULL, 'run-provider-journal-1',
+                            NULL, NULL, NULL, ?6, ?6, 'test'
+                         )",
+                        params![
+                            delegated_binding.product_task_id,
+                            "a".repeat(64),
+                            "b".repeat(40),
+                            "c".repeat(64),
+                            json!({
+                                "allowed_paths": ["docs/USER_GUIDE.md"],
+                                "workspace_path": "/redacted/not-used"
+                            })
+                            .to_string(),
+                            "2026-07-25T12:00:00Z"
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        "INSERT INTO workflow_runs (
+                            run_sequence, run_id, plan_id, created_at, updated_at, status,
+                            workflow_id, dispatch_id, started_at, completed_at, result_json,
+                            boundaries_json, run_json, priority, tenant_id
+                         ) VALUES (
+                            1, 'run-provider-journal-1', NULL, ?1, ?1, 'running',
+                            ?2, NULL, ?1, NULL, NULL, '{}', '{}', 5, 'tenant-a'
+                         )",
+                        params!["2026-07-25T12:00:00Z", delegated_binding.workflow_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        "INSERT INTO workflow_run_nodes (
+                            run_id, node_id, task_type, status, node_json, started_at,
+                            attempt_count, leased_at
+                         ) VALUES (
+                            'run-provider-journal-1', ?1, 'managed_deepseek', 'running',
+                            '{}', ?2, 1, ?2
+                         )",
+                        params![delegated_binding.node_id, "2026-07-25T12:00:00Z"],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
         store.claim_delegated_provider_request(&request).unwrap();
         assert!(store
             .complete_delegated_attempt(
@@ -11808,6 +12283,184 @@ mod tests {
         assert_eq!(recovered["phase"], "terminal_failure");
         assert!(recovered["delegated_terminal"].is_null());
         assert_eq!(unknown_transport.sends.load(Ordering::SeqCst), 1);
+
+        let cancelled_db = dir.path().join("delegated-late-response-cancelled.db");
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "VACUUM INTO ?1",
+                        params![cancelled_db.to_string_lossy().as_ref()],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let cancelled_workspace = dir.path().join("delegated-late-response-workspace");
+        std::fs::create_dir_all(cancelled_workspace.join("docs")).unwrap();
+        std::fs::copy(
+            PathBuf::from(&activated_workspace_path).join("docs/USER_GUIDE.md"),
+            cancelled_workspace.join("docs/USER_GUIDE.md"),
+        )
+        .unwrap();
+        let cancelled_workspace = std::fs::canonicalize(cancelled_workspace).unwrap();
+        let cancelled_store = Arc::new(
+            LocalProductStore::new_with_clock(&cancelled_db, || "2026-07-25T12:00:00Z".to_string())
+                .unwrap(),
+        );
+        let mut cancelled_binding = cancelled_store.get_product_task(task_id).unwrap().unwrap()
+            ["workspace_binding"]
+            .clone();
+        cancelled_binding["workspace_path"] = json!(cancelled_workspace);
+        cancelled_binding["workspace_root"] = json!(cancelled_workspace);
+        cancelled_store
+            .with_conn(|connection| {
+                let workspace_json: String = connection
+                    .query_row(
+                        "SELECT workspace_json FROM supervised_patch_workspaces
+                         WHERE workspace_id=?1",
+                        params![workspace_record_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut workspace_json: Value =
+                    serde_json::from_str(&workspace_json).map_err(|error| error.to_string())?;
+                workspace_json["workspace_mode"] = json!("copy");
+                workspace_json["workspace_path"] = json!(cancelled_workspace);
+                connection
+                    .execute(
+                        "UPDATE product_tasks SET workspace_binding_json=?1
+                         WHERE task_id=?2",
+                        params![cancelled_binding.to_string(), task_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        "UPDATE supervised_patch_workspaces
+                         SET workspace_path=?1, workspace_canonical_path=?1,
+                             workspace_json=?2
+                         WHERE workspace_id=?3",
+                        params![
+                            cancelled_workspace.to_string_lossy().as_ref(),
+                            workspace_json.to_string(),
+                            workspace_record_id
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let cancelled_preimage =
+            std::fs::read(cancelled_workspace.join("docs/USER_GUIDE.md")).unwrap();
+        let implementation_entered = Arc::new(Barrier::new(2));
+        let implementation_release = Arc::new(Barrier::new(2));
+        let blocked_transport = Arc::new(DelegatedBlockedImplementationTransport {
+            responses: Mutex::new(vec![
+                delegated_openai_response(
+                    "blocked-plan-1",
+                    "deepseek-v4-pro",
+                    json!({
+                        "schema_version": "managed_deepseek_plan.v1",
+                        "status": "planned",
+                        "path": "docs/USER_GUIDE.md",
+                        "intent": "clarify_doctor_read_only_health_check"
+                    }),
+                ),
+                delegated_openai_response(
+                    "blocked-implementation-1",
+                    "deepseek-v4-flash",
+                    json!({
+                        "schema_version": "managed_workspace_action.v1",
+                        "action": "replace_text",
+                        "path": "docs/USER_GUIDE.md",
+                        "old_text": "`alters-lab doctor` checks health.",
+                        "new_text": "`alters-lab doctor` performs a read-only health check."
+                    }),
+                ),
+            ]),
+            sends: AtomicUsize::new(0),
+            implementation_entered: Arc::clone(&implementation_entered),
+            implementation_release: Arc::clone(&implementation_release),
+        });
+        let blocked_transport_trait: Arc<dyn HttpTransport> = blocked_transport.clone();
+        let blocked_source: Arc<dyn crate::provider::managed_deepseek::ManagedAuthoritySource> =
+            cancelled_store.clone();
+        let blocked_executor = ManagedDeepSeekNodeExecutor::new(
+            delegated_mock_provider("deepseek-v4-pro", blocked_transport_trait.clone()),
+            delegated_mock_provider("deepseek-v4-flash", blocked_transport_trait.clone()),
+            delegated_mock_provider("deepseek-v4-pro", blocked_transport_trait),
+            blocked_source,
+            ManagedDeepSeekExecutorConfig {
+                protocol: DeepSeekProtocol::OpenAiCompatible,
+                limits: ManagedCallLimits {
+                    max_requests: 3,
+                    max_retries: 0,
+                    max_input_tokens: 8_000,
+                    max_output_tokens: 4_000,
+                    max_cumulative_tokens: 24_000,
+                    timeout_ms: 30_000,
+                    max_cost_usd: Some(0.50),
+                },
+                price_profile: DeepSeekPriceProfile::default(),
+            },
+        )
+        .unwrap();
+        let cancelled_run_id = activated["run"]["run_id"].as_str().unwrap().to_string();
+        cancelled_store
+            .tick_with_executor(&cancelled_run_id, "executor", 0, &blocked_executor)
+            .unwrap();
+        assert_eq!(blocked_transport.sends.load(Ordering::SeqCst), 1);
+        let execution_store = Arc::clone(&cancelled_store);
+        let execution_run_id = cancelled_run_id.clone();
+        let late_response = thread::spawn(move || {
+            execution_store.tick_with_executor(&execution_run_id, "executor", 0, &blocked_executor)
+        });
+        implementation_entered.wait();
+        let cancelled = cancelled_store
+            .request_workflow_run_cancel(
+                &cancelled_run_id,
+                "cancellation-authority",
+                Some("deterministic late-response boundary"),
+            )
+            .unwrap();
+        assert_eq!(cancelled["status"], "cancelled");
+        implementation_release.wait();
+        let late_result = late_response.join().unwrap().unwrap();
+        assert_eq!(late_result["result"]["status"], "failed");
+        assert!(late_result["result"]["error_message"]
+            .as_str()
+            .is_some_and(|message| message.contains("stale") || message.contains("cancelled")));
+        assert_eq!(blocked_transport.sends.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            std::fs::read(cancelled_workspace.join("docs/USER_GUIDE.md")).unwrap(),
+            cancelled_preimage,
+            "a provider response returned after cancellation must not mutate the workspace"
+        );
+        let cancelled_journal: Vec<Value> = cancelled_store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations WHERE attempt_id=?1",
+                        params!["attempt-golden-path-1"],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .and_then(|encoded| serde_json::from_str(&encoded).map_err(|error| error.to_string()))
+            .unwrap();
+        let cancelled_implementation = cancelled_journal
+            .iter()
+            .find(|entry| entry.get("role").and_then(Value::as_str) == Some("implementer"))
+            .unwrap();
+        assert_eq!(cancelled_implementation["status"], "succeeded");
+        assert_eq!(
+            cancelled_store
+                .get_workflow_run(&cancelled_run_id)
+                .unwrap()
+                .unwrap()["status"],
+            "failed"
+        );
 
         let transport = Arc::new(DelegatedRouteMockTransport {
             responses: Mutex::new(vec![

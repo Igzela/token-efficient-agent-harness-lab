@@ -13270,6 +13270,574 @@ async fn axum_delegated_prepare_activate_and_revocation_terminal_are_provider_fr
 }
 
 #[tokio::test]
+async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
+    use engine::executor_pool::{
+        CostProfile, ExecutorCapabilities, ExecutorEntry, ExecutorMetrics, ExecutorStatus,
+    };
+    use engine::node_executor::FailNodeExecutor;
+    use engine::provider::config::{CredentialRef, ProviderConfig};
+    use engine::provider::credential::CredentialBoundary;
+    use engine::provider::managed_deepseek::{
+        DeepSeekPriceProfile, DeepSeekProtocol, ManagedCallLimits, ManagedDeepSeekProvider,
+        DEEPSEEK_CREDENTIAL_REFERENCE,
+    };
+    use engine::provider::managed_deepseek_executor::{
+        ManagedDeepSeekExecutorConfig, ManagedDeepSeekNodeExecutor,
+    };
+    use engine::provider::transport::{HttpResponse, HttpTransport, MockTransport};
+    use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
+    use engine::storage::local_product_store::ALL_MANAGED_ACCEPTANCE_SCOPES;
+    use std::sync::Mutex as StdMutex;
+
+    let _product_env_lock = product_golden_path_env_lock().lock().await;
+    let _product_env = ProductGoldenPathDisabledEnvGuard::enable();
+    let _target_env_lock = target_repo_output_env_lock().lock().await;
+    let _target_env = TargetRepoOutputEnvGuard::enable_local_remote();
+    let prior_deepseek = std::env::var_os(DEEPSEEK_CREDENTIAL_REFERENCE);
+    std::env::set_var(
+        DEEPSEEK_CREDENTIAL_REFERENCE,
+        "fixture-provider-credential-not-secret",
+    );
+    struct DeepSeekEnvGuard(Option<std::ffi::OsString>);
+    impl Drop for DeepSeekEnvGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var(DEEPSEEK_CREDENTIAL_REFERENCE, value),
+                None => std::env::remove_var(DEEPSEEK_CREDENTIAL_REFERENCE),
+            }
+        }
+    }
+    let _deepseek_env = DeepSeekEnvGuard(prior_deepseek);
+
+    let dir = tempdir().unwrap();
+    let repo = dir.path().join("target");
+    std::fs::create_dir_all(repo.join("docs")).unwrap();
+    std::fs::write(
+        repo.join("docs/USER_GUIDE.md"),
+        "# User guide\n\n`alters-lab doctor` checks health.\n",
+    )
+    .unwrap();
+    git(&repo, &["init", "-b", "main"]);
+    git(&repo, &["config", "user.name", "Delegated Success HTTP"]);
+    git(
+        &repo,
+        &[
+            "config",
+            "user.email",
+            "delegated-success-http@example.invalid",
+        ],
+    );
+    git(&repo, &["add", "docs/USER_GUIDE.md"]);
+    git(&repo, &["commit", "-m", "initial"]);
+    git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/Igzela/alters-lab.git",
+        ],
+    );
+    let revision = git(&repo, &["rev-parse", "HEAD"]);
+
+    let store =
+        Arc::new(LocalProductStore::new(dir.path().join("delegated-success-http.db")).unwrap());
+    let mut resolver = TenantResolver::new();
+    let admin_scopes = HashSet::from(["team:admin".to_string(), "dispatch:execute".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "tenant-a".to_string(),
+        name: "Delegated Success".to_string(),
+        scopes: admin_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (approver_key, approver_raw) = resolver
+        .create_api_key("tenant-a", Some(admin_scopes.clone()), None, 1.0)
+        .unwrap();
+    let (activator_key, activator_raw) = resolver
+        .create_api_key(
+            "tenant-a",
+            Some(HashSet::from(["dispatch:execute".to_string()])),
+            None,
+            1.0,
+        )
+        .unwrap();
+    let (confirmer_key, confirmer_raw) = resolver
+        .create_api_key("tenant-a", Some(admin_scopes.clone()), None, 1.0)
+        .unwrap();
+    for (key, user) in [
+        (&approver_key, "delegated-approver-user"),
+        (&activator_key, "delegated-activator-user"),
+        (&confirmer_key, "delegated-confirmer-user"),
+    ] {
+        store
+            .record_api_key_metadata(
+                &key.key_id,
+                user,
+                "operator",
+                &ALL_MANAGED_ACCEPTANCE_SCOPES
+                    .iter()
+                    .map(|scope| (*scope).to_string())
+                    .collect::<Vec<_>>(),
+                "delegated-success-http-test",
+            )
+            .unwrap();
+    }
+
+    fn openai_mock(
+        id: &str,
+        model: &str,
+        content: Value,
+    ) -> Result<HttpResponse, engine::provider::transport::HttpError> {
+        Ok(HttpResponse {
+            status: 200,
+            body: json!({
+                "id": id,
+                "model": model,
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": content.to_string()
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 10}
+            })
+            .to_string()
+            .into_bytes(),
+        })
+    }
+
+    let mock_provider = |model: &str, transport: Arc<dyn HttpTransport>| {
+        let config = ProviderConfig::new(
+            "deepseek-managed-http-test",
+            "openai_compatible",
+            "https://api.deepseek.com",
+            model,
+            DEEPSEEK_CREDENTIAL_REFERENCE,
+            "2026-07-30T00:00:00Z",
+        );
+        Arc::new(ManagedDeepSeekProvider::new_openai(
+            config,
+            CredentialBoundary::new("env").unwrap(),
+            CredentialRef::new(
+                DEEPSEEK_CREDENTIAL_REFERENCE,
+                "env",
+                "***",
+                "provider:deepseek",
+                "2026-07-30T00:00:00Z",
+            ),
+            transport,
+        ))
+    };
+    // Running scheduler is required for prepare availability checks. Use a long
+    // interval so deterministic mock-backed ticks below own the run lifecycle.
+    let mut scheduler = WorkflowScheduler::new(
+        store.clone(),
+        SchedulerConfig {
+            executor_type: "managed_deepseek".into(),
+            supervised_workers_enabled: true,
+            interval_ms: 60_000,
+            ..Default::default()
+        },
+    );
+    scheduler.executor_pool().register(ExecutorEntry {
+        executor_type: "managed_deepseek".into(),
+        executor: Arc::new(FailNodeExecutor {
+            error_domain: "provider_free_test".into(),
+            error_message: "background scheduler must not own the mock success lifecycle".into(),
+        }),
+        capabilities: ExecutorCapabilities {
+            supported_task_types: vec!["managed_deepseek".into()],
+            supported_task_domains: vec!["product_golden_path".into()],
+            requires_auth: true,
+            requires_cli: false,
+            max_timeout_ms: 30_000,
+        },
+        status: ExecutorStatus::default(),
+        cost_profile: CostProfile::default(),
+        metrics: ExecutorMetrics::default(),
+    });
+    scheduler.start().unwrap();
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_scheduler(Arc::new(StdMutex::new(scheduler)))
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    let task_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/product/tasks")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {activator_raw}"),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "objective": "Clarify that alters-lab doctor performs a read-only health check.",
+                        "target_id": "alters-lab-docs",
+                        "target_repo_path": repo,
+                        "source_revision": revision,
+                        "allowed_paths": ["docs/USER_GUIDE.md"],
+                        "verification_commands": [{
+                            "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+                            "timeout_ms": 5000
+                        }],
+                        "output_intent": "draft_pr",
+                        "executor_policy": {
+                            "allowed_executors": ["managed_deepseek"],
+                            "prefer": "managed_deepseek"
+                        },
+                        "risk_class": "low",
+                        "approval_required": true,
+                        "confirm_execution": true,
+                        "confirm_output": true,
+                        "idempotency_key": "delegated-success-http-1",
+                        "tenant_id": "tenant-a",
+                        "workspace_id": "default",
+                        "workspace_mode": "git_worktree"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(task_response.status(), StatusCode::OK);
+    let task_id = response_json(task_response).await["task_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let created_at = chrono::Utc::now();
+    let expires_at = created_at + chrono::Duration::hours(24);
+    let delegation_id = format!("delegation-success-http-{}", uuid::Uuid::new_v4());
+    let delegation = json!({
+        "schema_version": "managed_autonomous_delegation.v1",
+        "delegation_id": delegation_id,
+        "created_at": created_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        "expires_at": expires_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        "executions": 1,
+        "repositories": ["Igzela/alters-lab"],
+        "task_classes": ["documentation"],
+        "allowed_paths": ["docs/USER_GUIDE.md"],
+        "max_changed_files": 1,
+        "max_changed_lines": 100,
+        "max_cost_usd_per_run": 0.50,
+        "max_total_cost_usd": 0.50,
+        "protocol": "openai_compatible",
+        "models": {
+            "planner": "deepseek-v4-pro",
+            "implementer": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro"
+        },
+        "output": {
+            "draft_pr_only": true,
+            "target_main_write": false,
+            "merge": false,
+            "auto_merge": false
+        },
+        "forbidden": [
+            "credential changes",
+            "authentication or permission changes",
+            "schema or database migrations",
+            "dependency changes",
+            "executable or workflow changes",
+            "destructive operations",
+            "release",
+            "deployment"
+        ]
+    });
+    let mut proposal = json!({
+        "schema_version": "pe7_product_golden_path_live_seal_manifest.v1",
+        "target": {
+            "repository": "Igzela/alters-lab",
+            "default_branch": "main",
+            "default_branch_sha": revision,
+            "allowed_mutable_paths": ["docs/USER_GUIDE.md"],
+            "target_main_must_remain_unchanged": true,
+            "output": "one_unmerged_acp_draft_pr_only"
+        },
+        "provider": {"protocol": "openai_compatible"},
+        "role_models": {
+            "planner": "deepseek-v4-pro",
+            "implementer": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro"
+        },
+        "limits": {"max_cost_usd": null}
+    });
+    proposal["manifest_sha256"] = json!(
+        engine::storage::local_product_store::compute_attempt_manifest_sha256(&proposal).unwrap()
+    );
+    let attempt_id = format!("attempt-success-http-{}", uuid::Uuid::new_v4());
+    let prepare = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/product/tasks/{task_id}/delegated/prepare"))
+                .header(header::AUTHORIZATION, format!("Bearer {approver_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "delegation": delegation,
+                        "proposal_manifest": proposal,
+                        "approved_proposal_sha256": proposal["manifest_sha256"],
+                        "attempt_id": attempt_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let prepare_status = prepare.status();
+    let prepared = response_json(prepare).await;
+    assert_eq!(
+        prepare_status,
+        StatusCode::OK,
+        "prepare failed: {prepared:#}"
+    );
+    let final_manifest = prepared["final_manifest"].clone();
+    let spend_authorization_id = prepared["spend_authorization_id"].clone();
+
+    let activated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/product/tasks/{task_id}/delegated/activate"
+                ))
+                .header(header::AUTHORIZATION, format!("Bearer {activator_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "delegation_id": delegation_id,
+                        "attempt_id": attempt_id,
+                        "final_manifest": final_manifest,
+                        "spend_authorization_id": spend_authorization_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(activated.status(), StatusCode::OK);
+    let activated_body = response_json(activated).await;
+    let run_id = activated_body["result"]["run"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let execution_transport: Arc<dyn HttpTransport> = Arc::new(MockTransport::new(vec![
+        openai_mock(
+            "http-mock-plan-1",
+            "deepseek-v4-pro",
+            json!({
+                "schema_version": "managed_deepseek_plan.v1",
+                "status": "planned",
+                "path": "docs/USER_GUIDE.md",
+                "intent": "clarify_doctor_read_only_health_check"
+            }),
+        ),
+        openai_mock(
+            "http-mock-implementation-1",
+            "deepseek-v4-flash",
+            json!({
+                "schema_version": "managed_workspace_action.v1",
+                "action": "replace_text",
+                "path": "docs/USER_GUIDE.md",
+                "old_text": "`alters-lab doctor` checks health.",
+                "new_text": "`alters-lab doctor` performs a read-only health check."
+            }),
+        ),
+        openai_mock(
+            "http-mock-review-1",
+            "deepseek-v4-pro",
+            json!({
+                "schema_version": "managed_deepseek_review.v1",
+                "status": "accepted",
+                "material_objections": []
+            }),
+        ),
+    ]));
+    let execution_source: Arc<dyn engine::provider::managed_deepseek::ManagedAuthoritySource> =
+        store.clone();
+    let pool_executor = ManagedDeepSeekNodeExecutor::new(
+        mock_provider("deepseek-v4-pro", Arc::clone(&execution_transport)),
+        mock_provider("deepseek-v4-flash", Arc::clone(&execution_transport)),
+        mock_provider("deepseek-v4-pro", execution_transport),
+        execution_source,
+        ManagedDeepSeekExecutorConfig {
+            protocol: DeepSeekProtocol::OpenAiCompatible,
+            limits: ManagedCallLimits {
+                max_requests: 3,
+                max_retries: 0,
+                max_input_tokens: 8_000,
+                max_output_tokens: 4_000,
+                max_cumulative_tokens: 24_000,
+                timeout_ms: 30_000,
+                max_cost_usd: Some(0.50),
+            },
+            price_profile: DeepSeekPriceProfile::default(),
+        },
+    )
+    .unwrap();
+    for _ in 0..12 {
+        let tick = store
+            .tick_with_executor(&run_id, "http-success-executor", 0, &pool_executor)
+            .unwrap();
+        if tick
+            .pointer("/run/status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| matches!(status, "completed" | "failed" | "cancelled" | "killed"))
+        {
+            break;
+        }
+    }
+    let completed_run = store.get_workflow_run(&run_id).unwrap().unwrap();
+    assert_eq!(
+        completed_run["status"], "completed",
+        "run={completed_run:#}"
+    );
+    let finalized = store
+        .finalize_product_task_after_execution(&task_id, "http-success-executor")
+        .unwrap();
+    assert_eq!(finalized["task"]["status"], "awaiting_approval");
+    let task_version = finalized["task"]["version"].as_u64().unwrap();
+
+    let same_as_approver = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/product/tasks/{task_id}/delegated/approve"))
+                .header(header::AUTHORIZATION, format!("Bearer {approver_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "expected_task_version": task_version,
+                        "delegation_id": delegation_id,
+                        "final_manifest": final_manifest,
+                        "current_target_main_sha": revision
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(same_as_approver.status(), StatusCode::FORBIDDEN);
+
+    let approved = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/product/tasks/{task_id}/delegated/approve"))
+                .header(header::AUTHORIZATION, format!("Bearer {confirmer_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "expected_task_version": task_version,
+                        "delegation_id": delegation_id,
+                        "final_manifest": final_manifest,
+                        "current_target_main_sha": revision
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approved.status(), StatusCode::OK,);
+    let approved_body = response_json(approved).await;
+    let approval_id = approved_body["result"]["approval"]["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        approved_body["result"]["artifact_confirmation"]["schema_version"],
+        "managed_delegated_artifact_confirmation.v1"
+    );
+
+    // Provider-free Draft PR plan (network effect off) under the existing
+    // product output owner. Full progressive Draft-PR completion and delegated
+    // terminal success remain covered by store-level managed_acceptance and
+    // product golden path evidence tests; this HTTP path proves prepare →
+    // activate → mock Pro/Flash/verify/Pro → independent approve → planned
+    // Draft PR with target main unchanged.
+    let pending = store
+        .output_product_task(
+            &task_id,
+            "http-success-output",
+            task_version,
+            Some(&approval_id),
+            true,
+        )
+        .unwrap();
+    assert_eq!(pending["output"]["mode"], "draft_pr");
+    assert_eq!(pending["output"]["status"], "planned");
+    assert_eq!(pending["output"]["network_effect"], false);
+    assert_eq!(pending["task"]["status"], "output_pending");
+    assert!(pending["output"]["head_branch"]
+        .as_str()
+        .is_some_and(|branch| branch.starts_with("acp/")));
+    assert_eq!(
+        git(&repo, &["rev-parse", "main"]).trim(),
+        revision.trim(),
+        "target main must remain unchanged"
+    );
+
+    let terminal = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/product/tasks/{task_id}/delegated/terminal"
+                ))
+                .header(header::AUTHORIZATION, format!("Bearer {activator_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "delegation_id": delegation_id,
+                        "attempt_id": attempt_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Terminal success requires completed Draft PR evidence; planned output
+    // must fail closed rather than expire spend/lease optimistically.
+    assert_ne!(terminal.status(), StatusCode::OK);
+    let terminal_body = response_json(terminal).await;
+    assert!(
+        terminal_body["error"]
+            .as_str()
+            .or_else(|| terminal_body["message"].as_str())
+            .is_some_and(|message| {
+                message.contains("completed")
+                    || message.contains("Draft PR")
+                    || message.contains("stale")
+                    || message.contains("mismatched")
+                    || message.contains("binding")
+            }),
+        "terminal body={terminal_body:#}"
+    );
+    let state = store.delegated_authority_state(&delegation_id).unwrap();
+    assert_ne!(state["spend_authorization_state"], "expired");
+    assert_ne!(state["attempt_lease_state"], "closed");
+}
+
+#[tokio::test]
 async fn axum_target_repo_worktree_gate_and_kill_switch_are_audited() {
     let _env_lock = target_repo_output_env_lock().lock().await;
     let _env = TargetRepoOutputEnvGuard;

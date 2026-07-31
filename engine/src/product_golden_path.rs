@@ -39,6 +39,9 @@ pub const MAX_VERIFICATION_COMMAND_BYTES: usize = 512;
 pub const PRODUCT_VERIFICATION_READ_ONLY_COMMANDS: &[&str] = &[
     "echo", "cat", "ls", "head", "tail", "grep", "wc", "true", "false", "test",
 ];
+const MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND: &str =
+    "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md";
+const MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS: u64 = 5_000;
 
 fn grep_short_option_recurses(argument: &str) -> bool {
     let mut flags = argument.trim_start_matches('-').chars().peekable();
@@ -160,6 +163,33 @@ fn validate_product_verification_command_argv(argv: &[&str]) -> Result<(), Strin
     }
     Ok(())
 }
+
+fn exact_managed_deepseek_verifier_command(
+    verification_commands: &Value,
+) -> Result<&'static str, String> {
+    let commands = verification_commands.as_array().ok_or_else(|| {
+        "managed DeepSeek verifier is not the exact bounded docs check".to_string()
+    })?;
+    let command = commands
+        .first()
+        .filter(|_| commands.len() == 1)
+        .ok_or_else(|| {
+            "managed DeepSeek verifier is not the exact bounded docs check".to_string()
+        })?;
+    if command.get("command").and_then(Value::as_str)
+        != Some(MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND)
+        || command
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .is_none_or(|timeout| {
+                timeout == 0 || timeout > MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_MAX_TIMEOUT_MS
+            })
+    {
+        return Err("managed DeepSeek verifier is not the exact bounded docs check".to_string());
+    }
+    Ok(MANAGED_DEEPSEEK_DETERMINISTIC_VERIFIER_COMMAND)
+}
+
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 pub const MAX_TARGET_ID_BYTES: usize = 128;
 pub const MAX_EXECUTOR_SET: usize = 16;
@@ -1486,6 +1516,7 @@ pub fn compile_product_executable_graph(
     }
 
     if resolved_executor == "managed_deepseek" {
+        let verifier_command = exact_managed_deepseek_verifier_command(&verification_commands)?;
         let deferred_binding = task
             .get("managed_deepseek_deferred_binding")
             .and_then(Value::as_bool)
@@ -1538,12 +1569,7 @@ pub fn compile_product_executable_graph(
             node["managed_supervised_patch"] = Value::Null;
             if *stage == "deterministic_verification" {
                 node["managed_deepseek"] = Value::Null;
-                node["command"] = json!(verification_commands
-                    .as_array()
-                    .and_then(|commands| commands.first())
-                    .and_then(|command| command.get("command"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("true"));
+                node["command"] = json!(verifier_command);
                 node["executor_class"] = json!("deterministic_verifier");
             } else {
                 let mut stage_binding = binding.clone().unwrap_or_else(|| json!({}));
@@ -1656,9 +1682,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn managed_deepseek_executor_compiles_as_an_explicit_product_node() {
-        let task = json!({
+    fn managed_deepseek_graph_task(verification_commands: Value) -> Value {
+        json!({
             "task_id": "product-task-deepseek",
             "status": "workspace_bound",
             "tenant_id": "tenant-1",
@@ -1683,9 +1708,17 @@ mod tests {
             "intake": {
                 "objective_preview": "Clarify the read-only doctor health check.",
                 "budget": {"total_tokens": 12000},
-                "verification_commands": []
+                "verification_commands": verification_commands
             }
-        });
+        })
+    }
+
+    #[test]
+    fn managed_deepseek_executor_compiles_as_an_explicit_product_node() {
+        let task = managed_deepseek_graph_task(json!([{
+            "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+            "timeout_ms": 5_000
+        }]));
         let graph = compile_product_executable_graph(
             &task,
             "2026-07-30T00:00:00Z",
@@ -1704,11 +1737,83 @@ mod tests {
             "wf-plan-0001-planning"
         );
         assert_eq!(graph["nodes"][2]["task_type"], "command");
+        assert_eq!(
+            graph["nodes"][2]["command"],
+            "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md"
+        );
         assert_eq!(graph["nodes"][3]["managed_deepseek"]["role"], "reviewer");
         assert_eq!(
             node["managed_executor_identity"]["planner_model"],
             "deepseek-v4-pro"
         );
+    }
+
+    #[test]
+    fn managed_deepseek_graph_rejects_damaged_verifier_shapes() {
+        let cases = [
+            ("missing", None),
+            ("malformed_collection", Some(json!({"command": "true"}))),
+            ("empty", Some(json!([]))),
+            ("malformed_entry", Some(json!(["not-an-object"]))),
+            ("missing_command", Some(json!([{"timeout_ms": 5_000}]))),
+            (
+                "malformed_command",
+                Some(json!([{"command": 7, "timeout_ms": 5_000}])),
+            ),
+            (
+                "empty_command",
+                Some(json!([{"command": "", "timeout_ms": 5_000}])),
+            ),
+            (
+                "different_command",
+                Some(json!([{"command": "true", "timeout_ms": 5_000}])),
+            ),
+            (
+                "missing_timeout",
+                Some(json!([{
+                    "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md"
+                }])),
+            ),
+            (
+                "excessive_timeout",
+                Some(json!([{
+                    "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+                    "timeout_ms": 5_001
+                }])),
+            ),
+            (
+                "multiple_commands",
+                Some(json!([
+                    {
+                        "command": "grep -E read-only[[:space:]]health[[:space:]]check docs/USER_GUIDE.md",
+                        "timeout_ms": 5_000
+                    },
+                    {"command": "true", "timeout_ms": 1}
+                ])),
+            ),
+        ];
+        for (name, verification_commands) in cases {
+            let mut task = managed_deepseek_graph_task(json!([]));
+            if let Some(verification_commands) = verification_commands {
+                task["intake"]["verification_commands"] = verification_commands;
+            } else {
+                task["intake"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("verification_commands");
+            }
+            let error = compile_product_executable_graph(
+                &task,
+                "2026-07-30T00:00:00Z",
+                &crate::read_only_planner::WorkflowPlanIds::for_sequence(1),
+                "managed_deepseek",
+            )
+            .expect_err(name);
+            assert!(
+                error.contains("exact bounded docs check"),
+                "{name}: {error}"
+            );
+        }
     }
 
     #[test]

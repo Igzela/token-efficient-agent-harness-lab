@@ -448,12 +448,10 @@ impl NodeExecutor for ManagedDeepSeekNodeExecutor {
         match Self::execute_blocking(provider, authority, request.clone()) {
             Ok(response) => {
                 let action_receipt = if role == ManagedModelRole::Implementer {
-                    if let Err(error) = self.source.current_authority(&request.binding) {
-                        return failed(
-                            format!("managed workspace authority changed before apply: {error}"),
-                            started.elapsed().as_millis() as i64,
-                        );
-                    }
+                    // The store-owned sink revalidates the exact ProductTask,
+                    // workflow run, node lease generation, delegated attempt
+                    // lease, and reconciled provider claim while holding the
+                    // persistence lock through the workspace write.
                     match self.source.apply_workspace_action(
                         &request.binding,
                         &input.node_metadata,

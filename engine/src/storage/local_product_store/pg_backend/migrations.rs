@@ -607,17 +607,57 @@ fn apply_pg_v36_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map(|r| r.get::<_, i64>(0))
         .map_err(|e| e.to_string())?;
     if current_version >= version {
+        repair_pg_v36_delegated_plan_owner(&mut tx)?;
+        validate_pg_v36_schema(&mut tx)?;
         tx.commit().map_err(|e| e.to_string())?;
         return Ok(());
     }
     tx.batch_execute(schema::V36_DDL)
         .map_err(|e| format!("m36: {e}"))?;
+    repair_pg_v36_delegated_plan_owner(&mut tx)?;
     tx.execute(
         "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
         &[&version],
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
+}
+
+fn repair_pg_v36_delegated_plan_owner(
+    client: &mut impl postgres::GenericClient,
+) -> Result<(), String> {
+    client
+        .batch_execute(
+            "ALTER TABLE workflow_plans
+                 ADD COLUMN IF NOT EXISTS delegated_plan_owner_id TEXT;
+             UPDATE workflow_plans
+             SET delegated_plan_owner_id =
+                 CAST(plan_json AS jsonb) #>> '{advisory,delegated_plan_owner_id}'
+             WHERE request_source='product_golden_path_delegated'
+               AND delegated_plan_owner_id IS NULL;",
+        )
+        .map_err(|error| format!("v36 delegated plan owner repair failed: {error}"))?;
+    let duplicate = client
+        .query_opt(
+            "SELECT delegated_plan_owner_id
+             FROM workflow_plans
+             WHERE delegated_plan_owner_id IS NOT NULL
+             GROUP BY delegated_plan_owner_id
+             HAVING COUNT(*) > 1
+             LIMIT 1",
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+    if duplicate.is_some() {
+        return Err("v36 delegated plan owner repair found multiple plans for one owner".into());
+    }
+    client
+        .batch_execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_plans_delegated_owner
+             ON workflow_plans(delegated_plan_owner_id)
+             WHERE delegated_plan_owner_id IS NOT NULL;",
+        )
+        .map_err(|error| format!("v36 delegated plan owner index repair failed: {error}"))
 }
 
 fn validate_pg_v34_tables(client: &mut impl postgres::GenericClient) -> Result<(), String> {
@@ -701,6 +741,32 @@ fn validate_pg_v36_schema(client: &mut impl postgres::GenericClient) -> Result<(
         if !present {
             return Err(format!("PostgreSQL v36 schema missing index {index}"));
         }
+    }
+    if !pg_column_exists(
+        client,
+        "workflow_plans",
+        super::super::migrations::V36_DELEGATED_PLAN_OWNER_COLUMN,
+    )? {
+        return Err(format!(
+            "PostgreSQL v36 schema missing workflow_plans column {}",
+            super::super::migrations::V36_DELEGATED_PLAN_OWNER_COLUMN
+        ));
+    }
+    let owner_index_present = client
+        .query_one(
+            "SELECT EXISTS (
+                SELECT 1 FROM pg_indexes
+                WHERE schemaname=current_schema() AND indexname=$1
+             )",
+            &[&super::super::migrations::V36_DELEGATED_PLAN_OWNER_INDEX],
+        )
+        .map_err(|error| error.to_string())?
+        .get::<_, bool>(0);
+    if !owner_index_present {
+        return Err(format!(
+            "PostgreSQL v36 schema missing index {}",
+            super::super::migrations::V36_DELEGATED_PLAN_OWNER_INDEX
+        ));
     }
     validate_pg_v35_structure(client)
 }
@@ -1758,15 +1824,82 @@ impl LocalProductStore {
                 "LOCK TABLE managed_acceptance_delegations IN ACCESS EXCLUSIVE MODE",
             )
             .map_err(|e| e.to_string())?;
-            let count: i64 = tx
-                .query_one("SELECT COUNT(*) FROM managed_acceptance_delegations", &[])
-                .map_err(|e| e.to_string())?
-                .get(0);
-            if count != 0 {
-                return Err("v36 rollback blocked: delegated authority rows exist".into());
+            let archives = tx
+                .query(
+                    "SELECT delegation_sha256, body_json, proposal_sha256, proposal_json,
+                            status, total_cost_usd, manifest_approval_sha256,
+                            manifest_approval_json, spend_body_sha256, spend_body_json,
+                            spend_status, manifest_json, attempt_id, attempt_lease_id,
+                            attempt_lease_token, attempt_status,
+                            artifact_confirmation_sha256, artifact_confirmation_json,
+                            provider_request_journal_json, terminal_receipt_json, terminal_at
+                     FROM managed_acceptance_delegations
+                     ORDER BY delegation_sha256",
+                    &[],
+                )
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|row| {
+                    super::super::migrations::build_v36_delegation_downgrade_archive(
+                        super::super::migrations::V36DelegationArchiveSource {
+                            delegation_sha256: row.get(0),
+                            body_json: row.get(1),
+                            proposal_sha256: row.get(2),
+                            proposal_json: row.get(3),
+                            status: row.get(4),
+                            total_cost_usd: row.get(5),
+                            manifest_approval_sha256: row.get(6),
+                            manifest_approval_json: row.get(7),
+                            spend_body_sha256: row.get(8),
+                            spend_body_json: row.get(9),
+                            spend_status: row.get(10),
+                            manifest_json: row.get(11),
+                            attempt_id: row.get(12),
+                            attempt_lease_id: row.get(13),
+                            attempt_lease_token: row.get(14),
+                            attempt_status: row.get(15),
+                            artifact_confirmation_sha256: row.get(16),
+                            artifact_confirmation_json: row.get(17),
+                            provider_request_journal_json: row.get(18),
+                            terminal_receipt_json: row.get(19),
+                            terminal_at: row.get(20),
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            for archive in &archives {
+                let delegation_sha = archive
+                    .pointer("/source_evidence/delegation_sha256")
+                    .and_then(Value::as_str)
+                    .ok_or("v36 downgrade archive delegation hash is missing")?;
+                let resource = format!(
+                    "managed_delegation_archive:{}",
+                    &delegation_sha[..16]
+                );
+                let details =
+                    super::super::managed_acceptance::canonical_json(archive)?;
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES ($1,$2,'schema.rollback.v36_delegation_archived',$3,$4)",
+                    &[&now, &actor, &resource, &details],
+                )
+                .map_err(|error| error.to_string())?;
             }
+            let archive_hashes = Value::Array(
+                archives
+                    .iter()
+                    .filter_map(|archive| archive.get("archive_sha256").cloned())
+                    .collect(),
+            );
+            let archive_set_sha256 =
+                super::super::managed_acceptance::sha256_hex(
+                    super::super::managed_acceptance::canonical_json(&archive_hashes)?
+                        .as_bytes(),
+                );
             tx.batch_execute(
-                "DROP INDEX IF EXISTS idx_managed_acceptance_delegations_lease;
+                "DROP INDEX IF EXISTS idx_workflow_plans_delegated_owner;
+                 ALTER TABLE workflow_plans DROP COLUMN delegated_plan_owner_id;
+                 DROP INDEX IF EXISTS idx_managed_acceptance_delegations_lease;
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_attempt;
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_spend;
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_status;
@@ -1776,7 +1909,9 @@ impl LocalProductStore {
             let details = serde_json::json!({
                 "from_version": 36,
                 "to_version": 35,
-                "tables": super::super::migrations::V36_TABLES
+                "tables": super::super::migrations::V36_TABLES,
+                "archived_delegations": archives.len(),
+                "archive_set_sha256": archive_set_sha256,
             })
             .to_string();
             tx.execute(
@@ -2824,7 +2959,9 @@ mod tests {
     use super::*;
 
     #[cfg(feature = "pg-tests")]
-    use crate::storage::local_product_store::DatabaseConnection;
+    use crate::storage::local_product_store::{
+        managed_acceptance, migrations::V36_DELEGATED_PLAN_OWNER_COLUMN, DatabaseConnection,
+    };
     #[cfg(feature = "pg-tests")]
     use postgres::NoTls;
     #[cfg(feature = "pg-tests")]
@@ -3075,6 +3212,272 @@ mod tests {
         store
             .with_pg_conn(validate_pg_v35_schema)
             .expect("the rolled-back v35 schema must validate");
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn pg_v36_rollback_archives_terminal_delegation_evidence_and_validates_v35() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        let store = &fixture.store;
+        let body = serde_json::json!({
+            "schema_version": "managed_delegation_contract.v1",
+            "sensitive_fixture": "must-not-survive-pg-v36-rollback"
+        });
+        let mut proposal = serde_json::json!({
+            "schema_version": "managed_proposal_manifest.v1",
+            "target_repository": "Igzela/alters-lab",
+            "target_main_sha": "a".repeat(40),
+            "mutable_paths": ["docs/USER_GUIDE.md"]
+        });
+        proposal["manifest_sha256"] = serde_json::json!(
+            managed_acceptance::compute_attempt_manifest_sha256(&proposal).unwrap()
+        );
+        let mut manifest = serde_json::json!({
+            "schema_version": "managed_final_execution_manifest.v1",
+            "target": {
+                "repository": "Igzela/alters-lab",
+                "main_sha": "a".repeat(40),
+                "mutable_paths": ["docs/USER_GUIDE.md"]
+            },
+            "execution": {"product_task_id": "task-terminal"},
+            "limits": {"max_cost_usd": 0.5}
+        });
+        manifest["manifest_sha256"] = serde_json::json!(
+            managed_acceptance::compute_attempt_manifest_sha256(&manifest).unwrap()
+        );
+        let mut approval = serde_json::json!({});
+        let approval_sha = managed_acceptance::sha256_hex(
+            managed_acceptance::canonical_json(&approval)
+                .unwrap()
+                .as_bytes(),
+        );
+        approval["approval_receipt_sha256"] = serde_json::json!(approval_sha);
+        let spend = serde_json::json!({});
+        let spend_sha = managed_acceptance::sha256_hex(
+            managed_acceptance::canonical_json(&spend)
+                .unwrap()
+                .as_bytes(),
+        );
+        let mut artifact = serde_json::json!({});
+        let artifact_sha = managed_acceptance::sha256_hex(
+            managed_acceptance::canonical_json(&artifact)
+                .unwrap()
+                .as_bytes(),
+        );
+        artifact["artifact_confirmation_sha256"] = serde_json::json!(artifact_sha);
+        let terminal = serde_json::json!({
+            "terminal_class": "succeeded",
+            "delegation_state": "expired",
+            "spend_authorization_state": "expired",
+            "attempt_lease_state": "closed",
+            "realized_cost_usd": 0.125,
+            "rollback_evidence": {
+                "workspace_status": "cleaned",
+                "target_main_write": false,
+                "sensitive_fixture": "must-not-survive-pg-v36-rollback"
+            }
+        });
+        let body_sha = managed_acceptance::sha256_hex(
+            managed_acceptance::canonical_json(&body)
+                .unwrap()
+                .as_bytes(),
+        );
+        let proposal_sha = proposal["manifest_sha256"].as_str().unwrap().to_string();
+        let values = [
+            body_sha,
+            body.to_string(),
+            proposal_sha,
+            proposal.to_string(),
+            approval_sha,
+            approval.to_string(),
+            spend_sha,
+            spend.to_string(),
+            manifest.to_string(),
+            artifact_sha,
+            artifact.to_string(),
+            serde_json::json!([{"status":"succeeded","sensitive_fixture":"must-not-survive-pg-v36-rollback"}]).to_string(),
+            terminal.to_string(),
+        ];
+        let parameters = values
+            .iter()
+            .map(|value| value as &(dyn postgres::types::ToSql + Sync))
+            .collect::<Vec<_>>();
+        store
+            .with_pg_conn(|client| {
+                client
+                    .execute(
+                        "INSERT INTO managed_acceptance_delegations (
+                            delegation_id, tenant_id, principal_kind, principal_id,
+                            manifest_approver_id, artifact_confirmer_id, attempt_activator_id,
+                            delegation_sha256, body_json, proposal_sha256, proposal_json,
+                            status, executions_allowed, executions_used, max_total_cost_usd,
+                            total_cost_usd, spend_authorization_id, manifest_approval_sha256,
+                            manifest_approval_json, spend_body_sha256, spend_status,
+                            spend_body_json, manifest_json, attempt_id, attempt_lease_id,
+                            attempt_lease_token, attempt_status, artifact_confirmation_sha256,
+                            artifact_confirmation_json, provider_request_journal_json,
+                            terminal_receipt_json, created_at, updated_at, expires_at,
+                            terminal_at, revoked_at
+                         ) VALUES (
+                            'delegation-terminal', 'tenant-sensitive', 'operator_api_key',
+                            'principal-sensitive', 'approver-sensitive', 'confirmer-sensitive',
+                            'activator-sensitive', $1,$2,$3,$4,'expired',1,1,0.5,0.125,
+                            'spend-sensitive',$5,$6,$7,'expired',$8,$9,
+                            'attempt-sensitive','lease-sensitive','token-sensitive','closed',
+                            $10,$11,$12,$13,'2026-07-31T00:00:00Z',
+                            '2026-07-31T00:02:00Z','2026-08-01T00:00:00Z',
+                            '2026-07-31T00:02:00Z',NULL
+                         )",
+                        &parameters,
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        store
+            .rollback_v36_to_v35("migration-test", true)
+            .expect("terminal PG delegation evidence must be archived");
+        assert_eq!(store.schema_version().unwrap(), 35);
+        store
+            .with_pg_conn(validate_pg_v35_schema)
+            .expect("archived rollback must leave a valid v35 schema");
+        assert!(!pg_table_exists(store, "managed_acceptance_delegations"));
+        let owner_column_exists = store
+            .with_pg_conn(|client| {
+                pg_column_exists(client, "workflow_plans", V36_DELEGATED_PLAN_OWNER_COLUMN)
+            })
+            .unwrap();
+        assert!(!owner_column_exists);
+        let archive: Value = store
+            .with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT details_json FROM audit_log
+                         WHERE action='schema.rollback.v36_delegation_archived'
+                         ORDER BY audit_id DESC LIMIT 1",
+                        &[],
+                    )
+                    .map(|row| serde_json::from_str::<Value>(&row.get::<_, String>(0)).unwrap())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let encoded = archive.to_string();
+        assert!(!encoded.contains("must-not-survive-pg-v36-rollback"));
+        assert!(!encoded.contains("principal-sensitive"));
+        assert!(!encoded.contains("token-sensitive"));
+        let mut unhashed = archive.clone();
+        let archive_sha = unhashed
+            .as_object_mut()
+            .unwrap()
+            .remove("archive_sha256")
+            .unwrap();
+        assert_eq!(
+            archive_sha,
+            managed_acceptance::sha256_hex(
+                managed_acceptance::canonical_json(&unhashed)
+                    .unwrap()
+                    .as_bytes()
+            )
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn pg_concurrent_delegated_plan_prepare_has_one_execution_identity() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        let IsolatedPgStore { store, _cleanup } = fixture;
+        let store = std::sync::Arc::new(store);
+        store
+            .with_pg_conn(|client| {
+                client
+                    .execute(
+                        "INSERT INTO product_tasks (
+                            task_id, schema_version, tenant_id, workspace_id, idempotency_key,
+                            status, version, objective_fingerprint, target_id, target_repo_path,
+                            source_revision, source_tree_hash, output_intent, risk_class,
+                            approval_required, confirm_execution, confirm_output,
+                            intake_contract_sha256, intake_json, workspace_binding_json,
+                            plan_id, run_id, workspace_record_id, failure_code, failure_detail,
+                            created_at, updated_at, created_by
+                         ) VALUES (
+                            'task-concurrent','product_task.v1','tenant-a','workspace-a',
+                            'delegated-plan-concurrency','workspace_bound',1,$1,
+                            'target-a','/redacted/target',$2,NULL,'draft_pr','low',
+                            TRUE,TRUE,TRUE,$3,'{}','{}',NULL,NULL,NULL,NULL,NULL,
+                            '2026-07-31T00:00:00Z','2026-07-31T00:00:00Z','test'
+                         )",
+                        &[&"a".repeat(64), &"b".repeat(40), &"c".repeat(64)],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let owner_id = "d".repeat(64);
+        let plans = std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for index in 0..4 {
+                let store = std::sync::Arc::clone(&store);
+                let barrier = std::sync::Arc::clone(&barrier);
+                let owner_id = owner_id.clone();
+                handles.push(scope.spawn(move || {
+                    barrier.wait();
+                    store.create_or_recover_delegated_workflow_plan(
+                        "task-concurrent",
+                        &owner_id,
+                        "bounded delegated task",
+                        &format!("pg-concurrent-{index}"),
+                        |ids, created_at| {
+                            Ok(serde_json::json!({
+                                "status": "planned_executable",
+                                "graph": {
+                                    "nodes": [],
+                                    "edges": [],
+                                    "workflow_id": ids.workflow_id,
+                                    "dispatch_id": ids.dispatch_id
+                                },
+                                "analysis": {},
+                                "advisory": {
+                                    "product_task_id": "task-concurrent",
+                                    "delegated_plan_owner_id": owner_id
+                                },
+                                "boundaries": {
+                                    "execution_authority": "delegated_product_golden_path"
+                                },
+                                "created_at": created_at
+                            }))
+                        },
+                    )
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let plan_id = plans[0]["plan_id"].as_str().unwrap();
+        assert!(plans
+            .iter()
+            .all(|plan| plan["plan_id"].as_str() == Some(plan_id)));
+        assert_eq!(
+            store.list_workflow_plans_with_offset(100, 0).unwrap().len(),
+            1
+        );
+        let replay = store
+            .create_or_recover_delegated_workflow_plan(
+                "task-concurrent",
+                &owner_id,
+                "bounded delegated task",
+                "pg-restart-connection",
+                |_, _| Err("replay must recover without rebuilding".into()),
+            )
+            .unwrap();
+        assert_eq!(replay["plan_id"], plan_id);
     }
 
     #[test]

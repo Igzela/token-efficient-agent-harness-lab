@@ -3303,21 +3303,12 @@ impl LocalProductStore {
         deferred_task["managed_deepseek_deferred_binding"] = json!(true);
         let planner = ReadOnlyPlanner::new();
         let plan_owner_id = delegated_product_plan_owner_id(task_id);
-        let plan = if let Some(plan_id) = task.get("plan_id").and_then(Value::as_str) {
-            let plan = self
-                .get_workflow_plan(plan_id)?
-                .ok_or("delegated ProductTask plan is missing")?;
-            validate_deferred_delegated_product_plan(&plan, task_id)?;
-            plan
-        } else if let Some(plan) = self.recover_delegated_product_plan(task_id, &plan_owner_id)? {
-            let plan_id = plan
-                .get("plan_id")
-                .and_then(Value::as_str)
-                .ok_or("recovered delegated plan missing plan_id")?;
-            self.bind_product_task_plan_only(task_id, plan_id, actor)?;
-            plan
-        } else {
-            let plan = self.create_workflow_plan(objective_preview, "product_golden_path_delegated", actor, |ids, created_at| {
+        let plan = self.create_or_recover_delegated_workflow_plan(
+            task_id,
+            &plan_owner_id,
+            objective_preview,
+            actor,
+            |ids, created_at| {
                 let graph = compile_product_executable_graph(&deferred_task, created_at, ids, &resolved)?;
                 let analysis = planner.create_plan(ids, objective_preview, "product_golden_path_delegated", created_at)?
                     .get("analysis").cloned().unwrap_or(json!({}));
@@ -3339,14 +3330,9 @@ impl LocalProductStore {
                     "advisory": {"schema_version":"plan_advisory.v1","requires_executor":"managed_deepseek","product_task_id":task_id,"delegated_binding":"required","delegated_plan_owner_id":plan_owner_id},
                     "boundaries": {"execution_authority":"delegated_product_golden_path","provider_calls":"not_invoked","target_repository_writes":"disabled","approval_execution_authority":"separate","product_task_id":task_id,"workspace_id":workspace_record_id,"source_revision":workspace_binding.get("source_revision")}
                 }))
-            })?;
-            let plan_id = plan
-                .get("plan_id")
-                .and_then(Value::as_str)
-                .ok_or("plan missing plan_id")?;
-            self.bind_product_task_plan_only(task_id, plan_id, actor)?;
-            plan
-        };
+            },
+        )?;
+        validate_deferred_delegated_product_plan(&plan, task_id)?;
         let workflow_id = plan
             .get("workflow_id")
             .and_then(Value::as_str)
@@ -6797,105 +6783,6 @@ impl LocalProductStore {
                         &[&now, &actor, &task_id, &details],
                     )
                     .map_err(|e| e.to_string())?;
-                Ok(())
-            }),
-        }
-    }
-
-    fn recover_delegated_product_plan(
-        &self,
-        task_id: &str,
-        plan_owner_id: &str,
-    ) -> Result<Option<Value>, String> {
-        let plan_ids = match &self.db {
-            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let mut statement = conn
-                    .prepare(
-                        "SELECT plan_id
-                         FROM workflow_plans
-                         WHERE request_source='product_golden_path_delegated'
-                           AND json_extract(plan_json, '$.advisory.product_task_id')=?1
-                           AND json_extract(plan_json, '$.advisory.delegated_plan_owner_id')=?2
-                         ORDER BY plan_sequence",
-                    )
-                    .map_err(|error| error.to_string())?;
-                let plan_ids = statement
-                    .query_map(params![task_id, plan_owner_id], |row| {
-                        row.get::<_, String>(0)
-                    })
-                    .map_err(|error| error.to_string())?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| error.to_string())?;
-                Ok(plan_ids)
-            })?,
-            #[cfg(feature = "pg")]
-            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                client
-                    .query(
-                        "SELECT plan_id
-                         FROM workflow_plans
-                         WHERE request_source='product_golden_path_delegated'
-                           AND CAST(plan_json AS jsonb) #>> '{advisory,product_task_id}'=$1
-                           AND CAST(plan_json AS jsonb) #>> '{advisory,delegated_plan_owner_id}'=$2
-                         ORDER BY plan_sequence",
-                        &[&task_id, &plan_owner_id],
-                    )
-                    .map(|rows| {
-                        rows.into_iter()
-                            .map(|row| row.get(0))
-                            .collect::<Vec<String>>()
-                    })
-                    .map_err(|error| error.to_string())
-            })?,
-        };
-        match plan_ids.as_slice() {
-            [] => Ok(None),
-            [plan_id] => {
-                let plan = self
-                    .get_workflow_plan(plan_id)?
-                    .ok_or("recoverable delegated ProductTask plan disappeared")?;
-                validate_deferred_delegated_product_plan(&plan, task_id)?;
-                Ok(Some(plan))
-            }
-            _ => Err(
-                "multiple delegated plans claim the same deterministic ProductTask owner".into(),
-            ),
-        }
-    }
-
-    fn bind_product_task_plan_only(
-        &self,
-        task_id: &str,
-        plan_id: &str,
-        actor: &str,
-    ) -> Result<(), String> {
-        let now = self.now();
-        match &self.db {
-            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let updated = conn.execute(
-                    "UPDATE product_tasks SET plan_id=?1, updated_at=?2 WHERE task_id=?3 AND (plan_id IS NULL OR plan_id=?1)",
-                    params![plan_id, now, task_id],
-                ).map_err(|e| e.to_string())?;
-                if updated != 1 { return Err("delegated plan binding is stale or conflicting".into()); }
-                append_audit_locked(
-                    conn,
-                    &now,
-                    actor,
-                    "product_task.bind_delegated_plan",
-                    task_id,
-                    &json!({"plan_id":plan_id}),
-                )?;
-                Ok(())
-            }),
-            #[cfg(feature = "pg")]
-            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                let updated = client.execute(
-                    "UPDATE product_tasks SET plan_id=$1, updated_at=$2 WHERE task_id=$3 AND (plan_id IS NULL OR plan_id=$1)",
-                    &[&plan_id, &now, &task_id],
-                ).map_err(|e| e.to_string())?;
-                if updated != 1 { return Err("delegated plan binding is stale or conflicting".into()); }
-                let details = json!({"plan_id":plan_id}).to_string();
-                client.execute("INSERT INTO audit_log (created_at, actor, action, resource, details_json) VALUES ($1,$2,$3,$4,$5)", &[&now, &actor, &"product_task.bind_delegated_plan", &task_id, &details]).map_err(|e| e.to_string())?;
                 Ok(())
             }),
         }
