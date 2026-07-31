@@ -11,8 +11,6 @@ pub mod cli;
 pub mod dispatch_decision;
 pub mod dispatch_engine;
 pub mod dispatch_ledger;
-pub mod doc_generator;
-pub mod ecosystem;
 pub mod efficiency_benchmark_runtime;
 pub mod errors;
 pub mod evaluation_stub;
