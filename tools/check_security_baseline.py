@@ -319,10 +319,11 @@ def _cfg_expression_requires_test(expression: str) -> bool:
     )
     position = 0
 
-    def parse() -> bool:
+    def parse() -> tuple[bool, bool]:
+        """Return (can_be_true, can_be_false) with test fixed to false."""
         nonlocal position
         if position >= len(tokens):
-            return False
+            return False, True
         token = tokens[position]
         position += 1
         if token == "(":
@@ -333,7 +334,7 @@ def _cfg_expression_requires_test(expression: str) -> bool:
                 position += 1
             return value
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
-            return False
+            return False, True
         if position < len(tokens) and tokens[position] == "(":
             position += 1
             arguments = []
@@ -344,18 +345,29 @@ def _cfg_expression_requires_test(expression: str) -> bool:
             if position < len(tokens):
                 position += 1
             if token == "all":
-                return any(arguments)
+                return (
+                    all(argument[0] for argument in arguments),
+                    any(argument[1] for argument in arguments),
+                )
             if token == "any":
-                return bool(arguments) and all(arguments)
-            return False
+                return (
+                    any(argument[0] for argument in arguments),
+                    all(argument[1] for argument in arguments),
+                )
+            if token == "not" and len(arguments) == 1:
+                return arguments[0][1], arguments[0][0]
+            return True, True
         if position < len(tokens) and tokens[position] == "=":
             position += 1
             if position < len(tokens) and tokens[position] not in {",", ")"}:
                 position += 1
-            return False
-        return token == "test"
+            return True, True
+        if token == "test":
+            return False, True
+        return True, True
 
-    return parse()
+    can_be_true, _ = parse()
+    return not can_be_true
 
 DORMANT_OWNERSHIP_CLAIM_RE = re.compile(
     r"(?i)\b(?:the\s+)?(?:sole|only|single|canonical|authoritative)\s+"
@@ -973,6 +985,13 @@ def _strip_cfg_test_regions(content: str) -> str:
         nonlocal pending_delimiter_depths, brace_depth
         pending_item_text = tail
         pending_delimiter_depths = (0, 0, 0)
+        closing_brace = _rust_first_enclosing_close(tail)
+        if closing_brace is not None:
+            emit(line_number, line[raw_tail_offset + closing_brace :].strip())
+            pending_test_item = False
+            pending_item_text = ""
+            pending_delimiter_depths = (0, 0, 0)
+            return
         consumed = False
         for token_index, token in _rust_top_level_tokens(tail):
             if token == "," and not _rust_comma_terminated_item(

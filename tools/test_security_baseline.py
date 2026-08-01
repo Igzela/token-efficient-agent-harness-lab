@@ -1033,6 +1033,19 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
                     )
                     self.assertEqual(findings, [])
 
+    def test_cfg_nested_not_test_requirement_is_detected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(not(not(test)))]\n"
+                "pub fn execute_test_stub() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
     def test_fully_qualified_value_null_executor_is_flagged(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
@@ -1266,6 +1279,29 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
                     (repo / "engine" / "src" / "executor.rs").write_text(
                         prefix
                         + "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+                    )
+                    findings = csb.check_dormant_surface_heuristics(
+                        repo, ["engine/src/executor.rs"]
+                    )
+                    self.assertTrue(
+                        any("execute_real" in finding for finding in findings)
+                    )
+
+    def test_cfg_test_same_line_comma_optional_items_preserve_production_code(self):
+        cases = [
+            "enum Fixture { #[cfg(test)] Test }\n",
+            "enum Fixture { #[cfg(test)] Test(u8, u16) }\n",
+            "enum Fixture { #[cfg(test)] Test = (1, 2) }\n",
+            "struct Fixture { #[cfg(test)] test_field: i32 }\n",
+        ]
+        for prefix in cases:
+            with self.subTest(prefix=prefix):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    repo = Path(tmpdir)
+                    (repo / "engine" / "src").mkdir(parents=True)
+                    (repo / "engine" / "src" / "executor.rs").write_text(
+                        prefix
+                        + "pub fn execute_real() -> serde_json.Value { serde_json::json!({}) }\n"
                     )
                     findings = csb.check_dormant_surface_heuristics(
                         repo, ["engine/src/executor.rs"]
