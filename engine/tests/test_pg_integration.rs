@@ -532,6 +532,19 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
     let principal = store
         .authenticate_managed_acceptance_principal("tenant-a", &reviewer_key_id, Some(1.0))
         .unwrap();
+    let bootstrap_scopes = vec![SCOPE_IDENTITY_DELEGATE.to_string()];
+    store
+        .record_api_key_metadata(
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &bootstrap_scopes,
+            "pg-bootstrap-test",
+        )
+        .unwrap();
+    let bootstrap = store
+        .authenticate_bootstrap_identity_delegation_principal("tenant-a", Some(1.0))
+        .unwrap();
     let created_at = utc_now_string();
     let expires_at = (chrono::DateTime::parse_from_rfc3339(&created_at)
         .unwrap()
@@ -569,11 +582,10 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
     store.persist_delegation(&principal, &delegation).unwrap();
     let rebound = store
         .rebind_unadmitted_delegation_for_bootstrap(
-            "tenant-a",
+            &bootstrap,
             task_id,
             &delegation.delegation_id,
-            &reviewer_key_id,
-            "pg-bootstrap",
+            &principal,
         )
         .unwrap();
     assert_eq!(rebound["status"], "active");
@@ -586,20 +598,18 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
     );
     assert!(store
         .rebind_unadmitted_delegation_for_bootstrap(
-            "tenant-a",
+            &bootstrap,
             foreign_task_id,
             &delegation.delegation_id,
-            &reviewer_key_id,
-            "pg-bootstrap",
+            &principal,
         )
         .is_err());
     let replay = store
         .rebind_unadmitted_delegation_for_bootstrap(
-            "tenant-a",
+            &bootstrap,
             task_id,
             &delegation.delegation_id,
-            &reviewer_key_id,
-            "pg-bootstrap",
+            &principal,
         )
         .unwrap();
     assert_eq!(replay["replayed"], true);

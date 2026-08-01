@@ -1150,14 +1150,11 @@ pub(crate) async fn api_reconcile_unadmitted_delegated_product_task(
     reviewer
         .require_scope(SCOPE_SPEND_AUTHORIZE)
         .map_err(|error| delegated_api_error(&error, "delegated_reviewer_scope_denied"))?;
+    let bootstrap = store
+        .authenticate_bootstrap_identity_delegation_principal(&context.tenant_id, None)
+        .map_err(|error| delegated_api_error(&error, "bootstrap_identity_authority_required"))?;
     let result = store
-        .rebind_unadmitted_delegation_for_bootstrap(
-            &context.tenant_id,
-            &task_id,
-            delegation_id,
-            reviewer_key_id,
-            &context.api_key_id,
-        )
+        .rebind_unadmitted_delegation_for_bootstrap(&bootstrap, &task_id, delegation_id, &reviewer)
         .map_err(|error| {
             delegated_api_error(&error, "delegated_bootstrap_reconciliation_failed")
         })?;

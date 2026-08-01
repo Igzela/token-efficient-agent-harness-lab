@@ -3219,7 +3219,7 @@ impl LocalProductStore {
             .get("tenant_id")
             .and_then(Value::as_str)
             .ok_or("delegated ProductTask tenant_id is missing")?;
-        self.require_delegation_tenant(&delegation.delegation_id, tenant_id)?;
+        self.require_delegation_product_task(&delegation.delegation_id, tenant_id, task_id)?;
         self.require_approved_delegated_proposal(&delegation.delegation_id, proposal)?;
         let status =
             ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
@@ -3393,7 +3393,7 @@ impl LocalProductStore {
             .pointer("/delegation/delegation_id")
             .and_then(Value::as_str)
             .ok_or("delegated manifest delegation_id is missing")?;
-        self.require_delegation_tenant(delegation_id, tenant_id)?;
+        self.require_delegation_product_task(delegation_id, tenant_id, task_id)?;
         let task_status =
             ProductTaskStatus::parse(task.get("status").and_then(Value::as_str).unwrap_or(""))?;
         if !matches!(
@@ -4925,7 +4925,7 @@ impl LocalProductStore {
         // The task id and delegation id are request inputs, never authority
         // assertions supplied by the caller.
         self.require_product_task_tenant(task_id, confirmer.tenant_id())?;
-        self.require_delegation_tenant(delegation_id, confirmer.tenant_id())?;
+        self.require_delegation_product_task(delegation_id, confirmer.tenant_id(), task_id)?;
         let evidence =
             self.product_task_output_approval_evidence(task_id, expected_task_version)?;
         let run_id = required_product_task_string(&evidence, "run_id")?;
