@@ -905,6 +905,24 @@ def _strip_cfg_test_regions(content: str) -> str:
             if pending_test_item:
                 if not line.strip() or line.lstrip().startswith("#"):
                     continue
+                first_brace = code_line.find("{")
+                terminating_semicolon = code_line.find(";")
+                if terminating_semicolon >= 0 and (
+                    first_brace < 0 or terminating_semicolon < first_brace
+                ):
+                    suffix = line[terminating_semicolon + 1 :].strip()
+                    if suffix:
+                        out.append(suffix)
+                    pending_test_item = False
+                    continue
+                if first_brace >= 0:
+                    item_end = _rust_balanced_brace_end(code_line, first_brace)
+                    if item_end is not None:
+                        suffix = line[item_end:].strip()
+                        if suffix:
+                            out.append(suffix)
+                        pending_test_item = False
+                        continue
                 delta = _rust_brace_delta(code_line)
                 if delta > 0:
                     in_test = True

@@ -1020,6 +1020,32 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
             )
             self.assertTrue(any("execute_real" in finding for finding in findings))
 
+    def test_own_line_cfg_test_const_preserves_production_suffix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(test)]\n"
+                "const FIXTURE: i32 = 1; pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_own_line_cfg_test_module_preserves_production_suffix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(test)]\n"
+                "mod tests {} fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
     def test_cfg_all_not_test_does_not_hide_production_code(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
