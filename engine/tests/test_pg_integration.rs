@@ -719,6 +719,7 @@ fn pg_product_task_to_approval(
 fn pg_product_task_authority_rejects_foreign_tenant_before_approval_or_output() {
     let Some(store) = test_store() else { return };
     std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
     let (repo, revision) = pg_product_repo("pg foreign tenant authority");
     let (task, approval, _) =
         pg_product_task_to_approval(&store, repo.path(), &revision, &uuid_tag(), "artifact_only");
@@ -743,6 +744,8 @@ fn pg_product_task_authority_rejects_foreign_tenant_before_approval_or_output() 
         store.get_product_task(task_id).unwrap().unwrap()["version"],
         version
     );
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
 }
 
 #[test]
