@@ -1439,7 +1439,7 @@ fn append_delegated_product_task_openapi_paths(doc: &mut Value) {
         json!({
             "post": {
                 "summary": "Independently approve a delegated ProductTask artifact",
-                "description": "Requires managed_acceptance:delegated_artifact_confirm. The authenticated confirmer must belong to the same tenant as both the ProductTask and delegation, and must be distinct from the manifest/spend approver and execution activator. The store rechecks the exact artifact, verifier and Pro review evidence, provider journal, cost, target SHA, final manifest, and current delegation before authorizing one Draft-PR-only output.",
+                "description": "Requires managed_acceptance:risk_acknowledge and managed_acceptance:delegated_artifact_confirm. The authenticated confirmer must belong to the same tenant as both the ProductTask and delegation, and must be distinct from the manifest/spend approver and execution activator. The store rechecks the exact artifact, verifier and Pro review evidence, provider journal, cost, target SHA, final manifest, and current delegation before authorizing one Draft-PR-only output.",
                 "parameters": [path_parameter("task_id")],
                 "requestBody": json_request_body(
                     &[
