@@ -899,48 +899,51 @@ def _strip_cfg_test_regions(content: str) -> str:
     out = []
     in_test = False
     pending_test_item = False
+    pending_item_text = ""
+    pending_delimiter_depths = (0, 0, 0)
     brace_depth = 0
     for line, code_line in zip(lines, code_lines):
         if not in_test:
             if pending_test_item:
                 if not line.strip() or line.lstrip().startswith("#"):
                     continue
-                first_brace = code_line.find("{")
-                terminating_semicolon = code_line.find(";")
-                terminating_comma = code_line.find(",")
-                if terminating_semicolon >= 0 and (
-                    first_brace < 0 or terminating_semicolon < first_brace
+                item_prefix = pending_item_text
+                if item_prefix and code_line.strip():
+                    item_prefix += "\n"
+                item_prefix += code_line
+                for token_index, token in _rust_top_level_tokens(
+                    code_line, pending_delimiter_depths
                 ):
-                    suffix = line[terminating_semicolon + 1 :].strip()
-                    if suffix:
-                        out.append(suffix)
-                    pending_test_item = False
-                    continue
-                if (
-                    terminating_comma >= 0
-                    and (first_brace < 0 or terminating_comma < first_brace)
-                    and _rust_comma_terminated_item(code_line[:terminating_comma])
-                ):
-                    suffix = line[terminating_comma + 1 :].strip()
-                    if suffix:
-                        out.append(suffix)
-                    pending_test_item = False
-                    continue
-                if first_brace >= 0:
-                    item_end = _rust_balanced_brace_end(code_line, first_brace)
-                    if item_end is not None:
-                        suffix = line[item_end:].strip()
-                        if suffix:
-                            out.append(suffix)
-                        pending_test_item = False
+                    if token == "," and not _rust_comma_terminated_item(
+                        pending_item_text + code_line[:token_index]
+                    ):
                         continue
-                delta = _rust_brace_delta(code_line)
-                if delta > 0:
-                    in_test = True
+                    if token == "{":
+                        item_end = _rust_balanced_brace_end(code_line, token_index)
+                        if item_end is None:
+                            in_test = True
+                            pending_test_item = False
+                            brace_depth = 1
+                        else:
+                            suffix = line[item_end:].strip()
+                            if suffix:
+                                out.append(suffix)
+                            pending_test_item = False
+                        pending_item_text = ""
+                        pending_delimiter_depths = (0, 0, 0)
+                        break
+                    suffix = line[token_index + 1 :].strip()
+                    if suffix:
+                        out.append(suffix)
                     pending_test_item = False
-                    brace_depth = delta
-                elif ";" in line:
-                    pending_test_item = False
+                    pending_item_text = ""
+                    pending_delimiter_depths = (0, 0, 0)
+                    break
+                else:
+                    pending_item_text = item_prefix
+                    pending_delimiter_depths = _rust_delimiter_depths(
+                        code_line, pending_delimiter_depths
+                    )
                 continue
             attr = re.search(
                 r"#\[\s*cfg\s*\(([^\]]*)\)\s*\]",
@@ -960,50 +963,41 @@ def _strip_cfg_test_regions(content: str) -> str:
                 )
             )
             if test_only:
+                production_prefix = line[: attr.start()].strip()
+                if production_prefix:
+                    out.append(production_prefix)
                 tail = code_line[attr.end() :]
-                first_brace = tail.find("{")
-                terminating_semicolon = tail.find(";")
-                if terminating_semicolon >= 0 and (
-                    first_brace < 0 or terminating_semicolon < first_brace
-                ):
-                    suffix = line[
-                        attr.end() + terminating_semicolon + 1 :
-                    ].strip()
-                    if suffix:
-                        out.append(suffix)
-                    in_test = False
-                    pending_test_item = False
-                    continue
-                terminating_comma = tail.find(",")
-                if (
-                    terminating_comma >= 0
-                    and (first_brace < 0 or terminating_comma < first_brace)
-                    and _rust_comma_terminated_item(tail[:terminating_comma])
-                ):
-                    suffix = line[attr.end() + terminating_comma + 1 :].strip()
-                    if suffix:
-                        out.append(suffix)
-                    in_test = False
-                    pending_test_item = False
-                    continue
-                if first_brace >= 0:
-                    item_end = _rust_balanced_brace_end(
-                        tail, first_brace
-                    )
-                else:
-                    item_end = None
-                if item_end is not None:
-                    suffix = line[attr.end() + item_end :].strip()
-                    if suffix:
-                        out.append(suffix)
-                    in_test = False
-                    pending_test_item = False
-                else:
-                    in_test = True
-                    brace_depth = _rust_brace_delta(tail)
-                    if brace_depth <= 0:
-                        in_test = False
-                        pending_test_item = True
+                pending_item_text = tail
+                pending_delimiter_depths = (0, 0, 0)
+                consumed = False
+                for token_index, token in _rust_top_level_tokens(tail):
+                    if token == "," and not _rust_comma_terminated_item(
+                        tail[:token_index]
+                    ):
+                        continue
+                    if token == "{":
+                        item_end = _rust_balanced_brace_end(tail, token_index)
+                        if item_end is None:
+                            in_test = True
+                            brace_depth = 1
+                        else:
+                            suffix = line[attr.end() + item_end :].strip()
+                            if suffix:
+                                out.append(suffix)
+                        consumed = True
+                    else:
+                        suffix = line[attr.end() + token_index + 1 :].strip()
+                        if suffix:
+                            out.append(suffix)
+                        consumed = True
+                    if consumed:
+                        pending_test_item = False
+                        pending_item_text = ""
+                        pending_delimiter_depths = (0, 0, 0)
+                        break
+                if not consumed:
+                    pending_test_item = True
+                    pending_delimiter_depths = _rust_delimiter_depths(tail)
             else:
                 out.append(line)
             continue
@@ -1017,6 +1011,51 @@ def _strip_cfg_test_regions(content: str) -> str:
         else:
             brace_depth += _rust_brace_delta(code_line)
     return "\n".join(out)
+
+
+def _rust_top_level_tokens(
+    code: str, initial_depths: tuple[int, int, int] = (0, 0, 0)
+):
+    """Yield item delimiters outside Rust (), [], and {} delimiters."""
+    paren_depth, bracket_depth, brace_depth = initial_depths
+    for index, current in enumerate(code):
+        if current in "{;," and not any(
+            (paren_depth, bracket_depth, brace_depth)
+        ):
+            yield index, current
+        if current == "(":
+            paren_depth += 1
+        elif current == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif current == "[":
+            bracket_depth += 1
+        elif current == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif current == "{":
+            brace_depth += 1
+        elif current == "}":
+            brace_depth = max(0, brace_depth - 1)
+
+
+def _rust_delimiter_depths(
+    code: str, initial_depths: tuple[int, int, int] = (0, 0, 0)
+) -> tuple[int, int, int]:
+    """Return unmatched Rust (), [], and {} delimiter depths for a line."""
+    paren_depth, bracket_depth, brace_depth = initial_depths
+    for current in code:
+        if current == "(":
+            paren_depth += 1
+        elif current == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif current == "[":
+            bracket_depth += 1
+        elif current == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif current == "{":
+            brace_depth += 1
+        elif current == "}":
+            brace_depth = max(0, brace_depth - 1)
+    return paren_depth, bracket_depth, brace_depth
 
 
 def _rust_balanced_brace_end(code: str, opening_index: int) -> int | None:
