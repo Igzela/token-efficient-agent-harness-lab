@@ -628,7 +628,9 @@ fn repair_pg_v36_delegated_plan_owner(
 ) -> Result<(), String> {
     client
         .batch_execute(
-            "ALTER TABLE workflow_plans
+            "ALTER TABLE managed_acceptance_delegations
+                 ADD COLUMN IF NOT EXISTS product_task_id TEXT;
+             ALTER TABLE workflow_plans
                  ADD COLUMN IF NOT EXISTS delegated_plan_owner_id TEXT;
              UPDATE workflow_plans
              SET delegated_plan_owner_id =

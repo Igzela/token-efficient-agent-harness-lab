@@ -19,7 +19,8 @@ use crate::storage::local_product_store::product_tasks::{
     public_product_task_projection, public_product_task_result_projection,
 };
 use crate::storage::local_product_store::{
-    SCOPE_DELEGATED_ARTIFACT_CONFIRM, SCOPE_DELEGATED_MANIFEST_APPROVE, SCOPE_IDENTITY_DELEGATE,
+    SCOPE_DELEGATED_ARTIFACT_CONFIRM, SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_MANIFEST_APPROVE,
+    SCOPE_IDENTITY_DELEGATE, SCOPE_SPEND_AUTHORIZE,
 };
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, GitHubPullRequestConfig, GitHubPullRequestRequest,
@@ -384,6 +385,9 @@ pub(crate) async fn api_prepare_delegated_product_task(
     let persisted = store
         .persist_delegation(&principal, &delegation)
         .map_err(|error| delegated_api_error(&error, "delegation_persist_failed"))?;
+    let task_binding = store
+        .bind_delegation_to_product_task(&principal, &task_id, &delegation.delegation_id)
+        .map_err(|error| delegated_api_error(&error, "delegation_product_task_binding_failed"))?;
     let proposal_receipt = store
         .persist_approved_delegated_proposal(
             &delegation.delegation_id,
@@ -423,6 +427,7 @@ pub(crate) async fn api_prepare_delegated_product_task(
         cors_headers(),
         Json(delegated_prepare_response(
             &persisted,
+            &task_binding,
             &proposal_receipt,
             &manifest,
             &approval,
@@ -434,6 +439,7 @@ pub(crate) async fn api_prepare_delegated_product_task(
 
 fn delegated_prepare_response(
     persisted: &serde_json::Value,
+    task_binding: &serde_json::Value,
     proposal_receipt: &serde_json::Value,
     manifest: &serde_json::Value,
     approval: &serde_json::Value,
@@ -443,6 +449,7 @@ fn delegated_prepare_response(
     json!({
         "schema_version": AXUM_API_SCHEMA_VERSION,
         "delegation_sha256": persisted.get("delegation_sha256"),
+        "delegation_product_task_binding": task_binding,
         "approved_proposal_sha256": proposal_receipt.get("proposal_manifest_sha256"),
         "final_manifest": manifest,
         "manifest_approval_receipt_sha256": approval.get("approval_receipt_sha256"),
@@ -1117,7 +1124,7 @@ pub(crate) async fn api_reconcile_unadmitted_delegated_product_task(
         return Err(ApiError::with_code(
             StatusCode::FORBIDDEN,
             "bootstrap_identity_authority_required",
-            "only the canonical bootstrap identity-delegation authority may reconcile an unadmitted delegation",
+            "only the canonical bootstrap identity-delegation authority may rebind an unadmitted delegation",
         ));
     }
     let delegation_id = body
@@ -1125,12 +1132,30 @@ pub(crate) async fn api_reconcile_unadmitted_delegated_product_task(
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| delegated_request_error("delegation_id is required"))?;
+    let reviewer_key_id = body
+        .get("reviewer_key_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| delegated_request_error("reviewer_key_id is required"))?;
     let store = require_store(&state)?;
+    let reviewer = store
+        .authenticate_managed_acceptance_principal(&context.tenant_id, reviewer_key_id, None)
+        .map_err(|error| delegated_api_error(&error, "delegated_reviewer_authentication_failed"))?;
+    reviewer
+        .require_scope(SCOPE_DELEGATED_AUTONOMY)
+        .map_err(|error| delegated_api_error(&error, "delegated_reviewer_scope_denied"))?;
+    reviewer
+        .require_scope(SCOPE_DELEGATED_MANIFEST_APPROVE)
+        .map_err(|error| delegated_api_error(&error, "delegated_reviewer_scope_denied"))?;
+    reviewer
+        .require_scope(SCOPE_SPEND_AUTHORIZE)
+        .map_err(|error| delegated_api_error(&error, "delegated_reviewer_scope_denied"))?;
     let result = store
-        .revoke_unadmitted_delegation_for_bootstrap(
+        .rebind_unadmitted_delegation_for_bootstrap(
             &context.tenant_id,
             &task_id,
             delegation_id,
+            reviewer_key_id,
             &context.api_key_id,
         )
         .map_err(|error| {
@@ -1273,6 +1298,7 @@ mod tests {
     fn delegated_prepare_response_never_admits_or_exposes_an_attempt_lease() {
         let response = delegated_prepare_response(
             &json!({"delegation_sha256": "d".repeat(64)}),
+            &json!({"product_task_id": "ptask-1", "replayed": false}),
             &json!({"proposal_manifest_sha256": "p".repeat(64)}),
             &json!({"schema_version": "managed_final_execution_manifest.v1"}),
             &json!({"approval_receipt_sha256": "a".repeat(64)}),

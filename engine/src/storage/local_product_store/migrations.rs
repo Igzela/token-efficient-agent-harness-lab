@@ -68,9 +68,10 @@ pub(super) const V35_TABLES: [&str; 1] = ["product_task_workspace_preparations"]
 pub(super) const V36_TABLES: [&str; 1] = ["managed_acceptance_delegations"];
 pub(super) const V36_DELEGATED_PLAN_OWNER_COLUMN: &str = "delegated_plan_owner_id";
 pub(super) const V36_DELEGATED_PLAN_OWNER_INDEX: &str = "idx_workflow_plans_delegated_owner";
-pub(super) const V36_COLUMNS: [&str; 36] = [
+pub(super) const V36_COLUMNS: [&str; 37] = [
     "delegation_id",
     "tenant_id",
+    "product_task_id",
     "principal_kind",
     "principal_id",
     "manifest_approver_id",
@@ -2759,6 +2760,13 @@ fn validate_sqlite_v36_schema(conn: &Connection) -> Result<(), String> {
 }
 
 fn repair_sqlite_v36_delegated_plan_owner(conn: &Connection) -> Result<(), String> {
+    if !column_exists(conn, "managed_acceptance_delegations", "product_task_id")? {
+        conn.execute(
+            "ALTER TABLE managed_acceptance_delegations ADD COLUMN product_task_id TEXT",
+            [],
+        )
+        .map_err(|error| format!("v36 ProductTask delegation binding repair failed: {error}"))?;
+    }
     if !column_exists(conn, "workflow_plans", V36_DELEGATED_PLAN_OWNER_COLUMN)? {
         conn.execute(
             "ALTER TABLE workflow_plans ADD COLUMN delegated_plan_owner_id TEXT",

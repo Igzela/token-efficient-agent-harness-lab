@@ -464,6 +464,154 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
 }
 
 #[cfg(feature = "pg-tests")]
+#[test]
+fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let (_repo, repo_path) = pg_product_repo(&format!("rebind-{tag}"));
+    let request = ProductTaskIntakeRequest {
+        objective: "bind a PostgreSQL recovery task".into(),
+        target_id: format!("pg-rebind-{tag}"),
+        target_repo_path: repo_path,
+        source_kind: Some("git_repository".into()),
+        source_revision: "unused-at-intake".into(),
+        source_tree_hash: None,
+        allowed_paths: vec!["README.md".into()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f README.md".into(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: "artifact_only".into(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["command".into()],
+            prefer: Some("command".into()),
+        },
+        budget: None,
+        risk_class: "low".into(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: Some(true),
+        idempotency_key: format!("pg-rebind-primary-{tag}"),
+        expected_version: None,
+        tenant_id: Some("tenant-a".into()),
+        workspace_id: Some("default".into()),
+        workspace_mode: Some("git_worktree".into()),
+    };
+    let task = store
+        .admit_product_task(
+            &validate_intake(&request, "tenant-a", "default").unwrap(),
+            "pg-rebind",
+        )
+        .unwrap();
+    let task_id = task["task_id"].as_str().unwrap();
+    let task_version = task["version"].as_i64().unwrap();
+    let mut foreign_request = request.clone();
+    foreign_request.idempotency_key = format!("pg-rebind-foreign-{tag}");
+    let foreign_task = store
+        .admit_product_task(
+            &validate_intake(&foreign_request, "tenant-a", "default").unwrap(),
+            "pg-rebind",
+        )
+        .unwrap();
+    let foreign_task_id = foreign_task["task_id"].as_str().unwrap();
+    assert_ne!(task_id, foreign_task_id);
+
+    let reviewer_key_id = format!("pg-rebind-reviewer-{tag}");
+    store
+        .record_api_key_metadata(
+            &reviewer_key_id,
+            "pg-rebind-reviewer",
+            "operator",
+            &ALL_MANAGED_ACCEPTANCE_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "pg-rebind-test-setup",
+        )
+        .unwrap();
+    let principal = store
+        .authenticate_managed_acceptance_principal("tenant-a", &reviewer_key_id, Some(1.0))
+        .unwrap();
+    let created_at = utc_now_string();
+    let expires_at = (chrono::DateTime::parse_from_rfc3339(&created_at)
+        .unwrap()
+        .with_timezone(&chrono::Utc)
+        + chrono::Duration::hours(24))
+    .format("%Y-%m-%dT%H:%M:%SZ")
+    .to_string();
+    let delegation = DelegationContract {
+        schema_version: "managed_autonomous_delegation.v1".into(),
+        delegation_id: format!("pg-rebind-delegation-{tag}"),
+        created_at,
+        expires_at,
+        executions: 1,
+        repositories: vec!["Igzela/alters-lab".into()],
+        task_classes: vec!["documentation".into()],
+        allowed_paths: vec!["README.md".into()],
+        max_changed_files: 1,
+        max_changed_lines: 100,
+        max_cost_usd_per_run: 0.50,
+        max_total_cost_usd: 0.50,
+        protocol: "openai_compatible".into(),
+        models: json!({
+            "planner": "deepseek-v4-pro",
+            "implementer": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro"
+        }),
+        output: json!({
+            "draft_pr_only": true,
+            "target_main_write": false,
+            "merge": false,
+            "auto_merge": false
+        }),
+        forbidden: vec!["credential changes".into(), "destructive operations".into()],
+    };
+    store.persist_delegation(&principal, &delegation).unwrap();
+    let rebound = store
+        .rebind_unadmitted_delegation_for_bootstrap(
+            "tenant-a",
+            task_id,
+            &delegation.delegation_id,
+            &reviewer_key_id,
+            "pg-bootstrap",
+        )
+        .unwrap();
+    assert_eq!(rebound["status"], "active");
+    assert_eq!(rebound["operation_identity"], delegation.delegation_id);
+    assert_eq!(rebound["product_task_id"], task_id);
+    assert_eq!(rebound["replayed"], false);
+    assert_eq!(
+        store.get_product_task(task_id).unwrap().unwrap()["version"],
+        task_version
+    );
+    assert!(store
+        .rebind_unadmitted_delegation_for_bootstrap(
+            "tenant-a",
+            foreign_task_id,
+            &delegation.delegation_id,
+            &reviewer_key_id,
+            "pg-bootstrap",
+        )
+        .is_err());
+    let replay = store
+        .rebind_unadmitted_delegation_for_bootstrap(
+            "tenant-a",
+            task_id,
+            &delegation.delegation_id,
+            &reviewer_key_id,
+            "pg-bootstrap",
+        )
+        .unwrap();
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(
+        store
+            .delegated_authority_state(&delegation.delegation_id)
+            .unwrap()["delegation_state"],
+        "active"
+    );
+}
+
+#[cfg(feature = "pg-tests")]
 fn uuid_tag() -> String {
     uuid::Uuid::new_v4().to_string()
 }
