@@ -919,7 +919,7 @@ def _strip_cfg_test_regions(content: str) -> str:
                 if (
                     terminating_comma >= 0
                     and (first_brace < 0 or terminating_comma < first_brace)
-                    and _rust_field_prefix(code_line[:terminating_comma])
+                    and _rust_comma_terminated_item(code_line[:terminating_comma])
                 ):
                     suffix = line[terminating_comma + 1 :].strip()
                     if suffix:
@@ -978,7 +978,7 @@ def _strip_cfg_test_regions(content: str) -> str:
                 if (
                     terminating_comma >= 0
                     and (first_brace < 0 or terminating_comma < first_brace)
-                    and _rust_field_prefix(tail[:terminating_comma])
+                    and _rust_comma_terminated_item(tail[:terminating_comma])
                 ):
                     suffix = line[attr.end() + terminating_comma + 1 :].strip()
                     if suffix:
@@ -1052,6 +1052,20 @@ def _rust_field_prefix(prefix: str) -> bool:
         re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*[^:]", prefix)
         and not re.search(
             r"\b(?:fn|struct|enum|mod|const|static|type|use|impl|trait)\b",
+            prefix,
+        )
+    )
+
+
+def _rust_comma_terminated_item(prefix: str) -> bool:
+    """Identify a struct field or enum variant ending at a comma."""
+    if _rust_field_prefix(prefix):
+        return True
+    return bool(
+        re.fullmatch(
+            r"\s*(?:pub(?:\([^)]*\))?\s+)?[A-Za-z_][A-Za-z0-9_]*"
+            r"(?:\s*::\s*[A-Za-z_][A-Za-z0-9_]*)*"
+            r"(?:\s*\([^{}]*\))?(?:\s*=\s*[^,]+)?\s*",
             prefix,
         )
     )

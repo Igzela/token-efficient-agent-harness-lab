@@ -1073,6 +1073,22 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
             )
             self.assertTrue(any("execute_real" in finding for finding in findings))
 
+    def test_cfg_test_enum_variant_preserves_following_production_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test, Real,\n"
+                "}\n"
+                "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
     def test_cfg_all_not_test_does_not_hide_production_code(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
