@@ -907,10 +907,21 @@ def _strip_cfg_test_regions(content: str) -> str:
                     continue
                 first_brace = code_line.find("{")
                 terminating_semicolon = code_line.find(";")
+                terminating_comma = code_line.find(",")
                 if terminating_semicolon >= 0 and (
                     first_brace < 0 or terminating_semicolon < first_brace
                 ):
                     suffix = line[terminating_semicolon + 1 :].strip()
+                    if suffix:
+                        out.append(suffix)
+                    pending_test_item = False
+                    continue
+                if (
+                    terminating_comma >= 0
+                    and (first_brace < 0 or terminating_comma < first_brace)
+                    and _rust_field_prefix(code_line[:terminating_comma])
+                ):
+                    suffix = line[terminating_comma + 1 :].strip()
                     if suffix:
                         out.append(suffix)
                     pending_test_item = False
@@ -958,6 +969,18 @@ def _strip_cfg_test_regions(content: str) -> str:
                     suffix = line[
                         attr.end() + terminating_semicolon + 1 :
                     ].strip()
+                    if suffix:
+                        out.append(suffix)
+                    in_test = False
+                    pending_test_item = False
+                    continue
+                terminating_comma = tail.find(",")
+                if (
+                    terminating_comma >= 0
+                    and (first_brace < 0 or terminating_comma < first_brace)
+                    and _rust_field_prefix(tail[:terminating_comma])
+                ):
+                    suffix = line[attr.end() + terminating_comma + 1 :].strip()
                     if suffix:
                         out.append(suffix)
                     in_test = False
@@ -1021,6 +1044,17 @@ def _rust_region_end(code: str, initial_depth: int) -> int | None:
             if depth <= 0:
                 return index + 1
     return None
+
+
+def _rust_field_prefix(prefix: str) -> bool:
+    """Identify a field prefix without treating function arguments as fields."""
+    return bool(
+        re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*[^:]", prefix)
+        and not re.search(
+            r"\b(?:fn|struct|enum|mod|const|static|type|use|impl|trait)\b",
+            prefix,
+        )
+    )
 
 
 def _rust_code_mask(content: str) -> str:
