@@ -216,6 +216,43 @@ fn drive_to_awaiting_approval(
     store.get_product_task(task_id).unwrap().unwrap()
 }
 
+#[test]
+fn product_task_authority_rejects_foreign_tenant_before_approval_or_output() {
+    with_gates(|| {
+        let repo = tempfile::tempdir().unwrap();
+        let revision = init_git_repo(repo.path());
+        let (_store_dir, store) = temp_store();
+        let task = drive_to_awaiting_approval(
+            &store,
+            repo.path(),
+            &revision,
+            "foreign-tenant-authority",
+            "artifact_only",
+        );
+        let task_id = task["task_id"].as_str().unwrap();
+        let version = task["version"].as_u64().unwrap();
+        let approval_error = store
+            .approve_product_task_for_tenant("foreign-tenant", task_id, "foreign", version)
+            .unwrap_err();
+        assert!(approval_error.contains("tenant"));
+        let output_error = store
+            .output_product_task_for_tenant(
+                "foreign-tenant",
+                task_id,
+                "foreign",
+                version,
+                Some("foreign-approval"),
+                true,
+            )
+            .unwrap_err();
+        assert!(output_error.contains("tenant"));
+        assert_eq!(
+            store.get_product_task(task_id).unwrap().unwrap()["version"],
+            version
+        );
+    });
+}
+
 fn draft_pr_request(
     task_id: &str,
     artifact: &serde_json::Value,

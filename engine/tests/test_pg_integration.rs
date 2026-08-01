@@ -716,6 +716,37 @@ fn pg_product_task_to_approval(
 
 #[test]
 #[cfg(feature = "pg-tests")]
+fn pg_product_task_authority_rejects_foreign_tenant_before_approval_or_output() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    let (repo, revision) = pg_product_repo("pg foreign tenant authority");
+    let (task, approval, _) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &uuid_tag(), "artifact_only");
+    let task_id = task["task_id"].as_str().unwrap();
+    let version = task["version"].as_u64().unwrap();
+    let approval_error = store
+        .approve_product_task_for_tenant("foreign-tenant", task_id, "foreign", version)
+        .unwrap_err();
+    assert!(approval_error.contains("tenant"));
+    let output_error = store
+        .output_product_task_for_tenant(
+            "foreign-tenant",
+            task_id,
+            "foreign",
+            version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap_err();
+    assert!(output_error.contains("tenant"));
+    assert_eq!(
+        store.get_product_task(task_id).unwrap().unwrap()["version"],
+        version
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
 fn pg_local_folder_apply_and_rollback_are_staged_and_idempotent() {
     let Some(store) = test_store() else { return };
     std::env::set_var(PRODUCT_TASK_GATE, "1");

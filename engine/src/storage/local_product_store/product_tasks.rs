@@ -4759,6 +4759,34 @@ impl LocalProductStore {
 
     /// Record an independent, output-only approval bound to the exact evidence
     /// that will be consumed by a later output operation.
+    fn require_product_task_tenant(
+        &self,
+        task_id: &str,
+        expected_tenant_id: &str,
+    ) -> Result<(), String> {
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        if task.get("tenant_id").and_then(Value::as_str) != Some(expected_tenant_id) {
+            return Err("product task tenant does not match authenticated principal".into());
+        }
+        Ok(())
+    }
+
+    /// HTTP/store boundary for approval. The tenant is derived from the
+    /// authenticated API context and is checked before the existing mutation
+    /// owner is entered; it is never accepted from the request body.
+    pub fn approve_product_task_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+        expected_task_version: u64,
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.approve_product_task(task_id, actor, expected_task_version)
+    }
+
     pub fn approve_product_task(
         &self,
         task_id: &str,
@@ -5290,6 +5318,25 @@ impl LocalProductStore {
     /// Consume one exact persisted product-output approval after an explicit
     /// output confirmation. Validation completes before any state or audit
     /// mutation, so a missing confirmation has zero side effects.
+    pub fn output_product_task_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+        expected_task_version: u64,
+        approval_id: Option<&str>,
+        confirm_output: bool,
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.output_product_task(
+            task_id,
+            actor,
+            expected_task_version,
+            approval_id,
+            confirm_output,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn output_product_task(
         &self,
@@ -6117,6 +6164,17 @@ impl LocalProductStore {
             approval.get("approval_id").and_then(Value::as_str),
             true,
         )
+    }
+
+    pub fn approve_and_output_product_task_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+        confirm_output: bool,
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.approve_and_output_product_task(task_id, actor, confirm_output)
     }
 
     #[allow(clippy::too_many_arguments)]

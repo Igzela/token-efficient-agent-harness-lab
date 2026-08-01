@@ -599,7 +599,8 @@ pub(crate) async fn api_approve_and_output_product_task(
         .get("confirm_output")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    match store.approve_and_output_product_task(
+    match store.approve_and_output_product_task_for_tenant(
+        &approval_context.tenant_id,
         &task_id,
         &approval_context.api_key_id,
         confirm_output,
@@ -646,7 +647,12 @@ pub(crate) async fn api_approve_product_task(
             )
         })?;
     let store = require_store(&state)?;
-    match store.approve_product_task(&task_id, &context.api_key_id, expected_task_version) {
+    match store.approve_product_task_for_tenant(
+        &context.tenant_id,
+        &task_id,
+        &context.api_key_id,
+        expected_task_version,
+    ) {
         Ok(approval) => Ok((
             cors_headers(),
             Json(json!({
@@ -716,7 +722,8 @@ pub(crate) async fn api_output_product_task(
         ));
     }
     let store = require_store(&state)?;
-    match store.output_product_task(
+    match store.output_product_task_for_tenant(
+        &context.tenant_id,
         &task_id,
         &context.api_key_id,
         expected_task_version,

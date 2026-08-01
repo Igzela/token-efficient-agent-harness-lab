@@ -293,6 +293,33 @@ impl LocalProductStore {
         }
     }
 
+    /// Run one SQLite mutation and its audit append as a single store-owned
+    /// transaction. Callers must not expose the connection or perform a
+    /// compensating mutation outside this owner.
+    pub(super) fn with_sqlite_transaction<F, R>(&self, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&Connection) -> Result<R, String>,
+    {
+        self.with_conn(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| error.to_string())?;
+            match f(conn) {
+                Ok(value) => match conn.execute_batch("COMMIT") {
+                    Ok(()) => Ok(value),
+                    Err(error) => {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        Err(error.to_string())
+                    }
+                },
+                Err(error) => {
+                    conn.execute_batch("ROLLBACK")
+                        .map_err(|rollback| format!("{error}; rollback failed: {rollback}"))?;
+                    Err(error)
+                }
+            }
+        })
+    }
+
     pub fn checkpoint_wal(&self) -> Result<(), String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {

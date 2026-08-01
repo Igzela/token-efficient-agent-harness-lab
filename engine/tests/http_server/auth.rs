@@ -525,6 +525,31 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         ])
     );
     let reviewer_id = reviewer_body["key_id"].as_str().unwrap();
+    let reviewer_raw = reviewer_body["raw_key"].as_str().unwrap();
+
+    // The reviewer needs team:admin for the canonical approval route, but
+    // that operational scope must not become a second key-delegation owner.
+    let reviewer_create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {reviewer_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "forbidden-by-managed-reviewer",
+                        "role": "admin",
+                        "scopes": ["team:admin"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reviewer_create.status(), StatusCode::FORBIDDEN);
 
     let operator = app
         .clone()

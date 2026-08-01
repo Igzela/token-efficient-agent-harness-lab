@@ -103,6 +103,21 @@ pub(crate) async fn api_create_key(
     validate_managed_acceptance_role_scopes(&request.role, &request.scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
     let store = require_store(&state)?;
+    let actor_role = store
+        .get_api_key_metadata(&context.api_key_id)
+        .map_err(internal_error)?
+        .and_then(|metadata| {
+            metadata
+                .get("role")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
+    if matches!(actor_role.as_deref(), Some("reviewer" | "output_operator")) {
+        return Err(ApiError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "managed identities cannot create or delegate API keys",
+        ));
+    }
 
     let resolver = state.tenant_resolver.as_ref().cloned().ok_or_else(|| {
         ApiError::new(
@@ -311,7 +326,8 @@ pub(crate) async fn api_rotate_key(
         .create_api_key(&context.tenant_id, Some(scopes_set), expires_at, now)
         .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    if let Err(error) = store.record_api_key_metadata_with_expiry(
+    match store.rotate_api_key_metadata(
+        &key_id,
         &new_key.key_id,
         user_id,
         role,
@@ -319,17 +335,11 @@ pub(crate) async fn api_rotate_key(
         new_key.expires_at,
         &context.api_key_id,
     ) {
-        guard.remove_api_key(&new_key.key_id);
-        return Err(internal_error(error));
-    }
-
-    match store.revoke_api_key_metadata(&key_id, &context.api_key_id) {
         Ok(true) => {
             guard.remove_api_key(&key_id);
         }
         Ok(false) => {
             guard.remove_api_key(&new_key.key_id);
-            let _ = store.delete_api_key_metadata(&new_key.key_id, &context.api_key_id);
             return Err(ApiError::new(
                 axum::http::StatusCode::NOT_FOUND,
                 "key not found or already revoked",
@@ -337,7 +347,6 @@ pub(crate) async fn api_rotate_key(
         }
         Err(error) => {
             guard.remove_api_key(&new_key.key_id);
-            let _ = store.delete_api_key_metadata(&new_key.key_id, &context.api_key_id);
             return Err(internal_error(error));
         }
     }
@@ -457,28 +466,36 @@ pub(crate) async fn api_update_key_scopes(
     validate_managed_acceptance_role_scopes(role, &request.scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
 
+    let old_scopes = target.scopes.clone();
     let scopes: std::collections::HashSet<String> = request.scopes.iter().cloned().collect();
     guard
         .validate_api_key_scopes(&key_id, &scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
 
-    let updated = store
-        .update_api_key_scopes(&key_id, &request.scopes, &context.api_key_id)
-        .map_err(internal_error)?;
+    guard
+        .update_api_key_scopes(&key_id, scopes.clone())
+        .map_err(|_| {
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "auth state update failed",
+            )
+        })?;
+
+    let updated = match store.update_api_key_scopes(&key_id, &request.scopes, &context.api_key_id) {
+        Ok(updated) => updated,
+        Err(error) => {
+            let _ = guard.update_api_key_scopes(&key_id, old_scopes);
+            return Err(internal_error(error));
+        }
+    };
 
     if !updated {
+        let _ = guard.update_api_key_scopes(&key_id, old_scopes);
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
             "key not found",
         ));
     }
-
-    guard.update_api_key_scopes(&key_id, scopes).map_err(|_| {
-        ApiError::new(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "auth state update failed",
-        )
-    })?;
 
     Ok((
         cors_headers(),
