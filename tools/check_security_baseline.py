@@ -350,7 +350,7 @@ def _cfg_expression_requires_test(expression: str) -> bool:
             return False
         if position < len(tokens) and tokens[position] == "=":
             position += 1
-            if position < len(tokens):
+            if position < len(tokens) and tokens[position] not in {",", ")"}:
                 position += 1
             return False
         return token == "test"

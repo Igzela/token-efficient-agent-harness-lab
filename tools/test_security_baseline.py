@@ -1014,6 +1014,25 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
             )
             self.assertEqual(findings, [])
 
+    def test_cfg_test_requirement_is_order_independent(self):
+        expressions = [
+            'all(any(test, feature = "a"), test)',
+            'all(not(feature = "x"), test)',
+        ]
+        for expression in expressions:
+            with self.subTest(expression=expression):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    repo = Path(tmpdir)
+                    (repo / "engine" / "src").mkdir(parents=True)
+                    (repo / "engine" / "src" / "executor.rs").write_text(
+                        f"#[cfg({expression})]\n"
+                        "pub fn execute_test_stub() -> serde_json::Value { serde_json::json!({}) }\n"
+                    )
+                    findings = csb.check_dormant_surface_heuristics(
+                        repo, ["engine/src/executor.rs"]
+                    )
+                    self.assertEqual(findings, [])
+
     def test_fully_qualified_value_null_executor_is_flagged(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
