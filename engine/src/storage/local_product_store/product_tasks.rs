@@ -4920,6 +4920,12 @@ impl LocalProductStore {
         manifest: &Value,
         current_target_main_sha: &str,
     ) -> Result<Value, String> {
+        // Both immutable authority owners are tenant-bound before any
+        // artifact evidence is read or confirmation state can be written.
+        // The task id and delegation id are request inputs, never authority
+        // assertions supplied by the caller.
+        self.require_product_task_tenant(task_id, confirmer.tenant_id())?;
+        self.require_delegation_tenant(delegation_id, confirmer.tenant_id())?;
         let evidence =
             self.product_task_output_approval_evidence(task_id, expected_task_version)?;
         let run_id = required_product_task_string(&evidence, "run_id")?;

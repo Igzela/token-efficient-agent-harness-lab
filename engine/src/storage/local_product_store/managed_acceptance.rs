@@ -44,6 +44,7 @@ pub const MANAGED_REVIEWER_KEY_SCOPES: &[&str] = &[
     SCOPE_DELEGATED_AUTONOMY,
     SCOPE_DELEGATED_MANIFEST_APPROVE,
     SCOPE_SPEND_AUTHORIZE,
+    SCOPE_DELEGATED_ARTIFACT_CONFIRM,
 ];
 pub const MANAGED_OUTPUT_OPERATOR_KEY_SCOPES: &[&str] = &[
     "dispatch:execute",
@@ -98,6 +99,70 @@ pub fn validate_managed_acceptance_role_scopes(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod managed_identity_scope_profile_tests {
+    use super::{
+        validate_managed_acceptance_role_scopes, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
+        MANAGED_REVIEWER_KEY_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_DELEGATED_ARTIFACT_CONFIRM,
+        SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_EXECUTE, SCOPE_DELEGATED_MANIFEST_APPROVE,
+        SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
+    };
+
+    fn strings(scopes: &[&str]) -> Vec<String> {
+        scopes.iter().map(|scope| (*scope).to_string()).collect()
+    }
+
+    #[test]
+    fn reviewer_profiles_are_stage_specific_and_never_team_admin() {
+        assert!(MANAGED_REVIEWER_KEY_SCOPES.contains(&SCOPE_DELEGATED_MANIFEST_APPROVE));
+        assert!(MANAGED_REVIEWER_KEY_SCOPES.contains(&SCOPE_DELEGATED_ARTIFACT_CONFIRM));
+        assert!(!MANAGED_REVIEWER_KEY_SCOPES.contains(&"team:admin"));
+
+        validate_managed_acceptance_role_scopes(
+            "reviewer",
+            &strings(&[
+                SCOPE_RISK_ACKNOWLEDGE,
+                SCOPE_DELEGATED_AUTONOMY,
+                SCOPE_DELEGATED_MANIFEST_APPROVE,
+                SCOPE_SPEND_AUTHORIZE,
+            ]),
+        )
+        .unwrap();
+        validate_managed_acceptance_role_scopes(
+            "reviewer",
+            &strings(&[SCOPE_RISK_ACKNOWLEDGE, SCOPE_DELEGATED_ARTIFACT_CONFIRM]),
+        )
+        .unwrap();
+        assert!(validate_managed_acceptance_role_scopes(
+            "reviewer",
+            &strings(&[SCOPE_RISK_ACKNOWLEDGE, "team:admin"]),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn output_operator_profile_is_execution_only_and_rejects_manifest_authority() {
+        assert!(MANAGED_OUTPUT_OPERATOR_KEY_SCOPES.contains(&SCOPE_DELEGATED_EXECUTE));
+        assert!(MANAGED_OUTPUT_OPERATOR_KEY_SCOPES.contains(&SCOPE_ATTEMPT_ADMIT));
+        assert!(!MANAGED_OUTPUT_OPERATOR_KEY_SCOPES.contains(&SCOPE_DELEGATED_MANIFEST_APPROVE));
+        assert!(validate_managed_acceptance_role_scopes(
+            "output_operator",
+            &strings(&[
+                "dispatch:execute",
+                SCOPE_RISK_ACKNOWLEDGE,
+                SCOPE_DELEGATED_EXECUTE,
+                SCOPE_ATTEMPT_ADMIT,
+            ]),
+        )
+        .is_ok());
+        assert!(validate_managed_acceptance_role_scopes(
+            "output_operator",
+            &strings(&[SCOPE_DELEGATED_MANIFEST_APPROVE]),
+        )
+        .is_err());
+    }
 }
 
 pub const DELEGATION_SCHEMA_VERSION: &str = "managed_autonomous_delegation.v1";
@@ -877,9 +942,11 @@ impl LocalProductStore {
         delegation: &DelegationContract,
     ) -> Result<Value, String> {
         principal.require_scope(SCOPE_DELEGATED_AUTONOMY)?;
-        if !principal.may_authorize_production_live_start()
-            || matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal)
-        {
+        // Preparing the immutable delegation and reserving spend is not the
+        // execution admission effect. Keep attempt admission with the
+        // output operator's activate step so the manifest/spend reviewer does
+        // not receive execution authority merely to prepare a run.
+        if matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal) {
             return Err("delegation requires an authenticated non-fixture operator".into());
         }
         let now = self.now();
