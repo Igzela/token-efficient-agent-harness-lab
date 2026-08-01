@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-08-01.
+Last updated: 2026-08-02.
 
 ## Current Direction
 
@@ -38,13 +38,12 @@ The owner has authorized and accepted the production runner repair (#322), the d
 
 ## Active Routing
 
-1. `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` — `READY_FOR_EXECUTION`: Packet A is accepted on main; repair pre-effect credential failure recovery while retaining the original durable operation identity and monotonic ProductTask version.
-2. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on Packets A and B: the owner-authorized clean reseal loop remains bounded to the three separately consumed attempts in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`.
-3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
-4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `READY_FOR_EXECUTION`: Packets A and B are accepted; the clean reseal loop remains bounded to the three separately consumed attempts in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`.
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
+3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 The delegated autonomous Golden Path packet is complete through merged PR #323 and is no longer the active frontier (see the COMPLETE packet section below).
 
 ## Packet States
@@ -68,9 +67,10 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #325 is merged and accepted as `0da5c6c785004784d9ffa3b20e0068f4bac6be71` from exact head `7ecffd5a30426dd1f26ab4d46a8f2a36e7594568`: live-seal budget reservation release and Draft PR terminal CAS rebind. Exact-head canonical `tests` runs `30613256286` (full) and `30613256266` (PR) were successful; post-merge `push: main` run `30636441727` passed all jobs and bound context-capsule artifact to the merge SHA.
 - PR #336 is merged as `17723bb66a1274498c32aef0f6cac85ad339efea`, but canonical acceptance is incomplete. Its run `30680937667` is recorded as `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure`, `failure_reason: PR merged before terminal required job`; Packet A repairs the material governance findings. It does not authorize a live task, provider call, spend, merge policy change, or any RWE/VDE reclassification.
+- PR #342 is merged and accepted as `e1e08ddcb745b02892f099b9de1436c99c25d533` from exact head `666cabeab31c14c77389646edc140c2d8ae7eb86`. It completes Packet B's canonical restart recovery and minimal managed-identity authority. Exact-head run `30710854561` passed all source jobs, `pg-integration-tests`, and terminal context capsule `91399051309`; the exact-head independent delta review was PASS with no unresolved objections.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, and delegated autonomous authority through PR #323. PR #325 is the accepted live-observed repair of the first attempt. Packet A is complete through PRs #339 and #340; Packet B is now the implementation frontier, and the clean live reseal remains blocked until Packet B is accepted. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, delegated autonomous authority through PR #323, Packet A through PRs #339/#340, and Packet B through PR #342. The clean live reseal is now the active frontier. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -353,17 +353,17 @@ This historical record remains evidence for the merged #336 range only. It is co
 
 ## Packet PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
-**Prerequisite:** Packet `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` accepted on main.
+**Accepted evidence:** PR #342 merged at `e1e08ddcb745b02892f099b9de1436c99c25d533` from exact head `666cabeab31c14c77389646edc140c2d8ae7eb86`; canonical run `30710854561` passed the complete source matrix, PG parity/PE-6 owner evidence, and terminal context capsule `91399051309`. The complete-diff review receipt covers the cumulative range `d5662d55..666cabea`; the final independent delta review covers `4b5f8d42..666cabea` and found no unresolved objections.
 
 Repair the ProductTask output path so a known pre-effect GitHub credential failure marks the existing output operation `failed_known` through `LocalProductStore`, leaves ProductTask status/version unchanged, and can be reclaimed after restart with the same immutable operation/request identity. Add deterministic SQLite/PostgreSQL coverage for monotonic versions, current-version terminal CAS, canonical key/principal reissuance and scope restoration, concurrency/idempotency, duplicate-effect refusal, outcome-unknown/late-response refusal, target/approval/artifact binding, lease/spend/delegation terminalization, and workspace cleanup. No direct SQL mutation, manual version rollback, second identity store, or replacement output operation is permitted.
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** Packets `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` and `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` accepted and merged. Not yet satisfied.
+**Prerequisite:** Packets `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` and `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` accepted and merged. Satisfied by PRs #339/#340 and #342.
 
 **Authority:** owner authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`, with separately persisted and consumed sub-authorizations `.../attempt-1`, `.../attempt-2`, and `.../attempt-3`; combined provider spend cap `$1.00`, zero retries, and one ProductTask per attempt.
 
@@ -394,7 +394,7 @@ The prior `Igzela/alters-lab#4` attempt remains `LIVE_OBSERVED_NOT_ACCEPTED`. It
 
 One clean exact-main live reseal using:
 
-- the merged post-#325 `main`;
+- the merged post-#342 `main`;
 - a clean worktree;
 - recorded exact source tree and binary SHA before execution;
 - no uncommitted patches or one-shot helper;
@@ -403,7 +403,7 @@ One clean exact-main live reseal using:
 - one bounded unmerged `acp/*` Draft PR;
 - exact terminal evidence.
 
-Do not start an attempt until Packets A and B are accepted on main, its separately persisted sub-authorization is consumed, and the preceding attempt (if any) is terminalized and any code defect is repaired, reviewed, CI-green, and merged.
+Do not start an attempt until its separately persisted sub-authorization is consumed, the exact accepted main/source/binary manifest is frozen, and the preceding attempt (if any) is terminalized with any code defect repaired, reviewed, CI-green, and merged.
 
 Completion requires reconciled redacted usage/cost evidence, expired one-use spend, closed attempt lease, cleanup and rollback receipts, independently reviewed terminal evidence, exactly one realized workflow sample labeled `INSUFFICIENT_REPETITIONS`, and post-observation canonical-document updates. It authorizes neither RWE nor economic, reliability, learning, ROI, success-probability, release, deployment, installation, target-main, or auto-merge claims.
 

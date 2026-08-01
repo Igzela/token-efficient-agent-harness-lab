@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-08-01.
+Last updated: 2026-08-02.
 
 ## Verified Repository State
 
@@ -34,6 +34,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR.
 - PR #336 is merged as `17723bb66a1274498c32aef0f6cac85ad339efea` from exact head `6fdb00dd4b4710b795be3181aed46e3a6ee31d9e`, but its canonical acceptance is incomplete: dormant-surface governance code landed, while the recorded run `30680937667` had `source_matrix: success`, `terminal_context_capsule: failure`, and `overall_canonical_run: failure`; `failure_reason: PR merged before terminal required job`. Its material governance findings were repaired and accepted through PRs #339 and #340; no successful capsule is retroactively claimed for `30680937667`.
 - PR #339 is merged and accepted as `a7ddf1cd588c71d553bf4d0644a6dabdd55e5ea` from exact head `240e80065b9632b75ce7c733b63da59fb14c0680`. It corrected the #336 evidence and repaired the sole CI/security-baseline governance owner, including the requirement that terminal `context-capsule` success is a merge gate. Its exact-head canonical run `30695452770` passed all source jobs and terminal capsule job `91358472963`, publishing artifact `context-capsule-30695452770-1-240e80065b9632b75ce7c733b63da59fb14c0680`.
 - PR #340 is merged and accepted as `dc1d839316771145a0b1c079bfbc66b30c0ab61a` from exact head `4aed0af5227c53efeb711c8123d922c2e3133cea`. It repaired accepted-main `workflow_dispatch` capsule validation without weakening pull-request exact-head validation. The first post-merge dispatch `30695885514` correctly remains a failed canonical run because its terminal capsule still required an unavailable PR head; replacement post-merge full accepted-main run `30696953015` passed all source jobs and terminal capsule job `91362363217`, publishing non-expired artifact `context-capsule-30696953015-1-dc1d839316771145a0b1c079bfbc66b30c0ab61a`.
+- PR #342 is merged and accepted as `e1e08ddcb745b02892f099b9de1436c99c25d533` from exact head `666cabeab31c14c77389646edc140c2d8ae7eb86`. It completes Packet B: pre-effect missing GitHub credentials leave the existing output operation recoverable without decreasing ProductTask versions or rebinding the original operation/request identity; restart recovery reissues canonical managed identities/scopes through the existing owner; reviewer/output scopes remain minimal; duplicate, stale, foreign, late, concurrent, outcome-unknown, target-drift, artifact/approval, lease/spend/delegation, and cleanup boundaries fail closed. Canonical exact-head run `30710854561` passed the complete source matrix, PostgreSQL parity/PE-6 owner evidence, and terminal `context-capsule` (`91399051309`). The exact-head independent delta review for `4b5f8d42..666cabea` was PASS with no unresolved objections; no provider call or target effect occurred.
 - PR #313 is merged as `ca5ce1023664c58be8d15d681a80f262fb2be70b`. Its final PR exact-head matrix passed, and post-merge `push: main` run `30381836225` completed successfully with all seven source jobs plus terminal context-capsule artifact `8697748363` bound to the same SHA.
 - Verified Delivery Economics (VDE) is adopted as a provider-free architecture and routing contract. Durable semantics live in `docs/ARCHITECTURE_BOOK.md`; execution order and gates live in `docs/NEXT_DECISION.md`. No runtime, schema, database table, Level-1 `MetricVector`, evaluator, store, budget, or adoption authority is added by this documentation decision.
 - Rust `engine/` and `LocalProductStore` remain the sole authorities for workflow state, scheduling, leases, retries, budgets, approvals, evidence, output reconciliation, audit, and persistence.
@@ -60,7 +61,7 @@ The later observed `Igzela/alters-lab#4` attempt is also `LIVE_OBSERVED_NOT_ACCE
 
 ## Current Product Verdict
 
-Product Golden Path authority includes the provider-free production runner through accepted PR #322, the provider-free delegated autonomous path through accepted PR #323 at schema v36, and the live-observed budget/CAS repair through accepted PR #325. Packet A is accepted through PRs #339 and #340 plus the post-merge verification recorded above. Live execution remains default-off. The sole active implementation frontier is `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1`; the PE7 live reseal packet remains blocked until Packet B is accepted on main. No provider request or target effect is a default.
+Product Golden Path authority includes the provider-free production runner through accepted PR #322, the provider-free delegated autonomous path through accepted PR #323 at schema v36, the live-observed budget/CAS repair through accepted PR #325, and Packet B through accepted PR #342. Packet A is accepted through PRs #339 and #340 plus the post-merge verification recorded above. Live execution remains default-off; the PE7 clean live reseal is now the active eligible frontier and still requires its fresh exact-main manifest, consumed sub-authorization, authenticated non-fixture principal, parent-only provider credential, and all target/terminal gates. No provider request or target effect is a default.
 
 Fixture evidence proves the existing product sequence:
 
@@ -90,7 +91,7 @@ Therefore live acceptance is not blocked only by credential presence.
 | DeepSeek dual-protocol managed coding | `COMPLETE` | Packet `PE7-DEEPSEEK-DUAL-PROTOCOL-MANAGED-CODING-1`; PR #321 merged at `542a5a45…` with provider-free deterministic mocks only |
 | DeepSeek live-runner wiring repair | `COMPLETE` | Packet `PE7-DEEPSEEK-LIVE-RUNNER-WIRING-REPAIR-1`; PR #322 merged at `13f725f9…` with provider-free scheduler-path proof |
 | Delegated autonomous Golden Path | `COMPLETE` | Packet `PE7-DELEGATED-AUTONOMOUS-GOLDEN-PATH-1`; PR #323 merged as `8d9f8dc4…` after exact-head CI `30607238397` and Theo GO on `3ca951dd…` |
-| Golden Path live residual seal | `BLOCKED_PREREQUISITE` | Packets A and B must be accepted on main before the owner-authorized clean exact-main live reseal loop |
+| Golden Path live residual seal | `READY_FOR_EXECUTION` | Packets A and B are accepted on main; each attempt still requires its fresh manifest, sub-authorization, credentials, and unchanged-target/terminal gates |
 | Context capsule automation | `COMPLETE` | PR #306 provides publication/injection; PR #313 proves the repaired post-merge push terminal path on `ca5ce102…` |
 | VDE decision and measurement contract | `COMPLETE` | Provider-free architecture/routing contract only; no accepted live measurement or implementation artifact exists |
 | First Real Workload Evidence | `BLOCKED_PREREQUISITE` | Accepted Golden Path terminal evidence, frozen real economic corpus/protocol, and separately authorized RWE spend envelope |
@@ -107,7 +108,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 
 ## Confirmed Integration Gaps
 
-1. No accepted live managed coding-executor E2E exists; PR #323 establishes provider-free production-path proof only, and PR #325 is the accepted live-observed budget/CAS repair. The first authorized live attempt was observed but did not seal cleanly; one clean exact-main live reseal remains and requires a new explicit one-use owner authorization.
+1. No accepted live managed coding-executor E2E exists; PR #323 establishes provider-free production-path proof only, and PR #325 is the accepted live-observed budget/CAS repair. The first authorized live attempt was observed but did not seal cleanly; one clean exact-main live reseal remains and is governed by the existing owner authorization with a fresh separately persisted and consumed sub-authorization for each attempt.
 2. No accepted live RWE baseline exists.
 3. No frozen operator-supplied real economic corpus, reviewer protocol instance, repetition grid, or accepted VDE observation exists. Provider-free schema work does not satisfy this gap.
 4. Architecture Convergence cannot begin before that baseline is frozen.
@@ -124,7 +125,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 ## Active Tracks
 
 - Provider-free Golden Path authority: PR #299 merged and accepted at schema v33; PR #300 merged and accepted at schema v34.
-- Product Golden Path preflight: PR #308 is merged and accepted at schema v35; PR #320–#322 complete managed-coding boundary, DeepSeek protocol, and production runner wiring; PR #323 completes the provider-free delegated autonomous path at schema v36; PR #325 is the accepted live-observed budget/CAS repair; Packet A is accepted through PRs #339 and #340; Packet B is the current ProductTask output restart recovery frontier; the clean exact-main live reseal remains blocked until Packet B is accepted.
+- Product Golden Path preflight: PR #308 is merged and accepted at schema v35; PR #320–#322 complete managed-coding boundary, DeepSeek protocol, and production runner wiring; PR #323 completes the provider-free delegated autonomous path at schema v36; PR #325 is the accepted live-observed budget/CAS repair; Packet A is accepted through PRs #339 and #340; Packet B is accepted through PR #342; the clean exact-main live reseal is the active frontier.
 - Context/CI governance: PR #302, PR #306, PR #310, PR #311, PR #313, PR #315, and PR #318 are merged and accepted; transport, fast feedback, and cache state remain non-authoritative.
 - VDE governance: the provider-free decision contract and artifact-schema validation are complete through PR #319; a real corpus, live observations, persistence automation, and Dashboard projection remain gated future work.
 - Observation adaptation: PR #301 is merged and accepted; observation-only and restacked onto accepted main.
@@ -132,7 +133,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 
 ## Open Work Coordination
 
-The active frontier is Packet B, following accepted Packet A (#339 and #340). The clean exact-main Golden Path live reseal is blocked until Packet B is accepted; this does not make RWE, Architecture Convergence, Level-2, Meta, or Dashboard work eligible. PR #225 remains presentation-only and last.
+The active frontier is the owner-authorized clean exact-main Golden Path live reseal, following accepted Packets A (#339/#340) and B (#342). RWE, Architecture Convergence, Level-2, Meta, and Dashboard work remain ineligible until their named prerequisites; PR #225 remains presentation-only and last.
 
 All active branches must refresh this main documentation convergence before final merge and must not overwrite it with stale branch-local status text.
 
