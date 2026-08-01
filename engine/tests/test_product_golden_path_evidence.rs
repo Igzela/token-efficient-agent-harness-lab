@@ -129,6 +129,20 @@ fn init_git_repo(root: &std::path::Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+fn set_github_origin(root: &std::path::Path) {
+    let output = Command::new("git")
+        .args([
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/disposable/acceptance.git",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git remote set-url: {output:?}");
+}
+
 fn intake(
     target: &std::path::Path,
     rev: &str,
@@ -227,7 +241,9 @@ fn draft_pr_request(
         "remote": "origin",
         "commit_message": format!("feat: product golden path {task_id}"),
         "pr_title": format!("Draft: product task {task_id}"),
-        "pr_body": format!("Product golden path Draft PR for task `{task_id}`."),
+        "pr_body": format!(
+            "Product golden path Draft PR for task `{task_id}`.\n\nDo not merge automatically."
+        ),
     })
 }
 
@@ -1145,6 +1161,129 @@ fn draft_pr_network_gate_disabled_remains_output_pending() {
 }
 
 #[test]
+fn draft_pr_non_github_admission_block_does_not_advance_product_task() {
+    with_gates(|| {
+        std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let remote = Command::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "https://example.invalid/not-github.git",
+            ])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(remote.status.success(), "{remote:?}");
+        let task =
+            drive_to_awaiting_approval(&store, &repo, &rev, "ev-draft-invalid-origin", "draft_pr");
+        let task_id = task["task_id"].as_str().unwrap();
+        let version = task["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .expect("approval");
+
+        let result = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .expect("admission block is a recoverable non-effect result");
+        assert_eq!(result["output"]["status"], "blocked");
+        assert_eq!(result["output"]["admission_blocked"], true);
+        assert_eq!(result["output"]["recovery_required"], false);
+        assert_eq!(result["task"]["status"], "awaiting_approval");
+        assert_eq!(result["task"]["version"], version);
+    });
+}
+
+#[test]
+fn draft_pr_planned_retry_rebinds_current_task_without_replacing_operation() {
+    with_gates(|| {
+        std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let remote = Command::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/Igzela/alters-lab.git",
+            ])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(remote.status.success(), "{remote:?}");
+        let task = drive_to_awaiting_approval(&store, &repo, &rev, "ev-draft-rebind", "draft_pr");
+        let task_id = task["task_id"].as_str().unwrap();
+        let version = task["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .expect("approval");
+        let first = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .expect("planned output");
+        let first_operation = first["output"]["operation"].clone();
+        assert_eq!(first["task"]["status"], "output_pending");
+        assert_eq!(first_operation["expected_task_version"], version);
+
+        let branch_pushed = store
+            .record_product_output_branch_pushed(
+                first_operation["artifact_id"].as_str().unwrap(),
+                first_operation["operation_id"].as_str().unwrap(),
+                first_operation["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                first["task"]["version"].as_u64().unwrap(),
+                &"d".repeat(40),
+                "output-operator",
+            )
+            .expect("planned output operation rebinds its current task version");
+        assert_eq!(branch_pushed["branch_push"]["status"], "completed");
+        assert_eq!(branch_pushed["expected_task_version"], version);
+
+        std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "1");
+        let second = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                first["task"]["version"].as_u64().unwrap(),
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .expect("current-version retry remains recoverable");
+        assert_eq!(second["output"]["status"], "pr_create_pending");
+        assert_eq!(
+            second["output"]["operation"]["operation_id"],
+            first_operation["operation_id"]
+        );
+        assert_eq!(
+            second["output"]["operation"]["request_sha256"],
+            first_operation["request_sha256"]
+        );
+        assert_eq!(
+            second["output"]["operation"]["branch_push"]["status"],
+            "completed"
+        );
+        assert_eq!(second["task"]["version"], first["task"]["version"]);
+        std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
+    });
+}
+
+#[test]
 fn draft_pr_rejects_non_github_remote_before_branch_push() {
     with_gates(|| {
         std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "1");
@@ -1937,6 +2076,7 @@ fn terminal_completion_revalidates_workspace_verification_atomically() {
         let (dir, store) = temp_store();
         let repo = dir.path().join("repo");
         let rev = init_git_repo(&repo);
+        set_github_origin(&repo);
         let task = drive_to_awaiting_approval(
             &store,
             &repo,
@@ -1945,18 +2085,15 @@ fn terminal_completion_revalidates_workspace_verification_atomically() {
             "draft_pr",
         );
         let task_id = task["task_id"].as_str().unwrap();
+        let original_version = task["version"].as_u64().unwrap();
         let approval = store
-            .approve_product_task(
-                task_id,
-                "independent-operator",
-                task["version"].as_u64().unwrap(),
-            )
+            .approve_product_task(task_id, "independent-operator", original_version)
             .unwrap();
         let pending = store
             .output_product_task(
                 task_id,
                 "output-operator",
-                task["version"].as_u64().unwrap(),
+                original_version,
                 approval["approval_id"].as_str(),
                 true,
             )
@@ -1968,27 +2105,7 @@ fn terminal_completion_revalidates_workspace_verification_atomically() {
             .unwrap()
             .unwrap();
         let artifact_id = artifact["artifact_id"].as_str().unwrap();
-        let request = serde_json::json!({
-            "schema_version": "product_draft_pr_output_request.v1",
-            "product_task_id": task_id,
-            "artifact_id": artifact_id,
-            "approval_id": approval["approval_id"],
-            "output_intent": "draft_pr",
-            "expected_task_version": pending_version,
-            "workspace_id": artifact["workspace_id"],
-            "run_id": artifact["run_id"],
-            "target_id": artifact["target_id"],
-            "patch_hash": artifact["patch_hash"],
-            "source_revision": artifact["source_revision"],
-            "target_repository": "disposable/acceptance",
-            "repository_host": "github.com",
-            "base_branch": "main",
-            "head_branch": format!("acp/product-{task_id}"),
-            "remote": "origin",
-            "commit_message": "bounded terminal authority test",
-            "pr_title": "Draft: terminal authority test",
-            "pr_body": "Do not merge automatically.",
-        });
+        let request = draft_pr_request(task_id, &artifact, &approval, original_version);
         let request_sha256 = sha256_json(&request);
         let branch_claim = store
             .claim_product_output_operation(
@@ -2129,6 +2246,7 @@ fn progressive_draft_pr_terminal_cas_uses_current_task_version_with_original_ope
         let (dir, store) = temp_store();
         let repo = dir.path().join("repo");
         let rev = init_git_repo(&repo);
+        set_github_origin(&repo);
         let task = drive_to_awaiting_approval(
             &store,
             &repo,
@@ -2137,18 +2255,15 @@ fn progressive_draft_pr_terminal_cas_uses_current_task_version_with_original_ope
             "draft_pr",
         );
         let task_id = task["task_id"].as_str().unwrap();
+        let original_version = task["version"].as_u64().unwrap();
         let approval = store
-            .approve_product_task(
-                task_id,
-                "independent-operator",
-                task["version"].as_u64().unwrap(),
-            )
+            .approve_product_task(task_id, "independent-operator", original_version)
             .unwrap();
         let pending = store
             .output_product_task(
                 task_id,
                 "output-operator",
-                task["version"].as_u64().unwrap(),
+                original_version,
                 approval["approval_id"].as_str(),
                 true,
             )
@@ -2160,27 +2275,7 @@ fn progressive_draft_pr_terminal_cas_uses_current_task_version_with_original_ope
             .unwrap()
             .unwrap();
         let artifact_id = artifact["artifact_id"].as_str().unwrap();
-        let request = serde_json::json!({
-            "schema_version": "product_draft_pr_output_request.v1",
-            "product_task_id": task_id,
-            "artifact_id": artifact_id,
-            "approval_id": approval["approval_id"],
-            "output_intent": "draft_pr",
-            "expected_task_version": claim_version,
-            "workspace_id": artifact["workspace_id"],
-            "run_id": artifact["run_id"],
-            "target_id": artifact["target_id"],
-            "patch_hash": artifact["patch_hash"],
-            "source_revision": artifact["source_revision"],
-            "target_repository": "disposable/acceptance",
-            "repository_host": "github.com",
-            "base_branch": "main",
-            "head_branch": format!("acp/product-{task_id}"),
-            "remote": "origin",
-            "commit_message": "bounded progressive terminal cas",
-            "pr_title": "Draft: progressive terminal cas",
-            "pr_body": "Do not merge automatically.",
-        });
+        let request = draft_pr_request(task_id, &artifact, &approval, original_version);
         let request_sha256 = sha256_json(&request);
         let claimed = store
             .claim_product_output_operation(
@@ -2258,11 +2353,11 @@ fn progressive_draft_pr_terminal_cas_uses_current_task_version_with_original_ope
             .unwrap();
         assert_eq!(
             durable["product_output_operation"]["expected_task_version"],
-            claim_version
+            original_version
         );
         assert_eq!(
             durable["product_output_operation"]["request"]["expected_task_version"],
-            claim_version
+            original_version
         );
         assert_eq!(
             durable["product_output_operation"]["request_sha256"],
@@ -2325,11 +2420,11 @@ fn progressive_draft_pr_terminal_cas_uses_current_task_version_with_original_ope
         assert_eq!(completed["task"]["status"], "completed");
         assert_eq!(
             completed["operation"]["expected_task_version"],
-            claim_version
+            original_version
         );
         assert_eq!(
             completed["operation"]["request"]["expected_task_version"],
-            claim_version
+            original_version
         );
         assert_eq!(completed["operation"]["request_sha256"], request_sha256);
         assert_eq!(completed["operation"]["pr_create"]["number"], 42);

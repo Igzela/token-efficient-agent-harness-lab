@@ -6645,6 +6645,8 @@ impl LocalProductStore {
                     return Ok(json!({
                         "mode": "draft_pr",
                         "status": "blocked",
+                        "admission_blocked": true,
+                        "recovery_required": false,
                         "reason": error,
                         "product_task_id": task_id,
                         "artifact_id": artifact_id,

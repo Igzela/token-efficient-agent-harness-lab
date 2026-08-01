@@ -106,6 +106,10 @@ impl TenantResolver {
         self.api_keys.remove(key_id).is_some()
     }
 
+    pub fn api_key(&self, key_id: &str) -> Option<APIKey> {
+        self.api_keys.get(key_id).cloned()
+    }
+
     pub fn mark_key_used(&mut self, key_id: &str, now: f64) {
         if let Some(key) = self.api_keys.get_mut(key_id) {
             key.last_used_at = Some(now);

@@ -2425,7 +2425,26 @@ impl LocalProductStore {
         actor: &str,
     ) -> Result<Value, String> {
         validate_target_output_request_hash(request, request_sha256)?;
-        let authority_request = json!({
+        let task_for_rebind = self.get_product_task(
+            request
+                .get("product_task_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "product output task identity missing".to_string())?,
+        )?;
+        let durable_operation_version =
+            self.get_supervised_patch_artifact(artifact_id)?
+                .and_then(|artifact| {
+                    artifact
+                        .pointer("/product_output_operation/expected_task_version")
+                        .and_then(Value::as_u64)
+                });
+        let allow_operation_version_rebind = task_for_rebind.as_ref().is_some_and(|task| {
+            task.get("status").and_then(Value::as_str) == Some("output_pending")
+                && task.get("version").and_then(Value::as_u64) == Some(expected_task_version)
+        }) && durable_operation_version
+            .and_then(|version| version.checked_add(1))
+            == Some(expected_task_version);
+        let mut authority_request = json!({
             "schema_version": "product_output_authority_request.v1",
             "product_task_id": request.get("product_task_id"),
             "artifact_id": request.get("artifact_id"),
@@ -2433,6 +2452,9 @@ impl LocalProductStore {
             "output_intent": request.get("output_intent"),
             "expected_task_version": expected_task_version,
         });
+        if allow_operation_version_rebind {
+            authority_request["operation_version_rebind"] = json!(true);
+        }
         self.mutate_product_output_operation(
             artifact_id,
             actor,
@@ -2447,13 +2469,19 @@ impl LocalProductStore {
                 )?;
                 if let Some(existing) = artifact.get("product_output_operation") {
                     validate_product_output_operation(artifact, existing)?;
-                    if existing.get("request_sha256").and_then(Value::as_str)
-                        != Some(request_sha256)
-                        || existing.get("request") != Some(request)
-                        || existing
-                            .get("expected_task_version")
-                            .and_then(Value::as_u64)
-                            != Some(expected_task_version)
+                    let expected_version_matches = existing
+                        .get("expected_task_version")
+                        .and_then(Value::as_u64)
+                        == Some(expected_task_version);
+                    let request_matches = existing
+                        .get("request")
+                        .is_some_and(|stored| stored == request)
+                        || (allow_operation_version_rebind
+                            && existing.get("request").is_some_and(|stored| {
+                                product_output_requests_match_except_task_version(stored, request)
+                            }));
+                    if (!expected_version_matches && !allow_operation_version_rebind)
+                        || !request_matches
                     {
                         return Err(
                             "product output request does not match durable operation".to_string()
@@ -3182,13 +3210,20 @@ impl LocalProductStore {
         commit_sha: &str,
         actor: &str,
     ) -> Result<Value, String> {
-        let authority_request = Self::product_output_authority_request(
+        let allow_operation_version_rebind = self.get_product_task(task_id)?.is_some_and(|task| {
+            task.get("status").and_then(Value::as_str) == Some("output_pending")
+                && task.get("version").and_then(Value::as_u64) == Some(expected_task_version)
+        });
+        let mut authority_request = Self::product_output_authority_request(
             task_id,
             artifact_id,
             approval_id,
             "draft_pr",
             expected_task_version,
         );
+        if allow_operation_version_rebind {
+            authority_request["operation_version_rebind"] = json!(true);
+        }
         self.mutate_product_output_operation(
             artifact_id,
             actor,
@@ -3207,7 +3242,7 @@ impl LocalProductStore {
                     task_id,
                     approval_id,
                     expected_task_version,
-                    false,
+                    allow_operation_version_rebind,
                 )?;
                 require_product_output_operation_version(operation, expected_operation_version)?;
                 let branch = operation
@@ -5653,6 +5688,16 @@ fn validate_product_output_request_task(
         return Err("product output task state or intent authority changed".to_string());
     }
     let task_status = task.get("status").and_then(Value::as_str);
+    if request
+        .get("operation_version_rebind")
+        .and_then(Value::as_bool)
+        == Some(true)
+        && task_status != Some("output_pending")
+    {
+        return Err(
+            "product output operation version rebind requires output_pending task".to_string(),
+        );
+    }
     if request.get("terminal_rebind").and_then(Value::as_bool) == Some(true)
         && task_status != Some("output_pending")
     {
@@ -5684,6 +5729,17 @@ fn validate_product_output_request_task(
         return Err("product output request workspace authority changed".to_string());
     }
     Ok(())
+}
+
+fn product_output_requests_match_except_task_version(left: &Value, right: &Value) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.as_object_mut()
+        .and_then(|object| object.remove("expected_task_version"));
+    right
+        .as_object_mut()
+        .and_then(|object| object.remove("expected_task_version"));
+    left == right
 }
 
 fn validate_product_output_request_approval(

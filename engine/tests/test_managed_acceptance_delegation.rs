@@ -180,6 +180,56 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
         .unwrap();
     assert_eq!(ordinary_create.status(), StatusCode::FORBIDDEN);
 
+    let ordinary_role_without_managed_scope = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, auth_header(&ordinary_raw))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "forbidden-role-only",
+                        "role": "output_operator",
+                        "scopes": ["team:admin"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        ordinary_role_without_managed_scope.status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let bootstrap_unapproved_role_scope = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, auth_header(&bootstrap_raw))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "forbidden-unapproved-role-scope",
+                        "role": "output_operator",
+                        "scopes": ["team:admin"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        bootstrap_unapproved_role_scope.status(),
+        StatusCode::BAD_REQUEST
+    );
+
     let bootstrap_delegate = app
         .clone()
         .oneshot(
@@ -271,6 +321,25 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
+
+    // A tenant admin must not be able to rewrite a managed identity into an
+    // ordinary scope profile by naming its key id. The bootstrap authority is
+    // the only owner of managed identity mutation, even when the requested
+    // replacement scopes contain no managed capability.
+    let ordinary_rewrite = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{reviewer_id}/scopes"))
+                .header(header::AUTHORIZATION, auth_header(&ordinary_raw))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"scopes": ["team:admin"]}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ordinary_rewrite.status(), StatusCode::FORBIDDEN);
 
     // Restart keeps only the parent bootstrap credential in the resolver. The
     // child identity is reissued through the canonical API, not SQL mutation.

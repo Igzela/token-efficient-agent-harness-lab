@@ -537,7 +537,7 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
                 .body(Body::from(
                     json!({
                         "user_id": "managed-output-operator",
-                        "role": "operator",
+                        "role": "output_operator",
                         "scopes": [
                             "managed_acceptance:risk_acknowledge",
                             "managed_acceptance:delegated_execute",

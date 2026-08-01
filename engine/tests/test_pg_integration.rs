@@ -188,8 +188,13 @@ fn test_store() -> Option<LocalProductStore> {
             return None;
         }
     };
-    let store =
-        LocalProductStore::new_postgres(&url, utc_now_string).expect("new_postgres should succeed");
+    // The synchronous postgres client creates its connection on the calling
+    // thread. Keep that bootstrap outside the Tokio runtime used by Axum
+    // tests; subsequent store calls reuse the initialized pool.
+    let store = std::thread::spawn(move || LocalProductStore::new_postgres(&url, utc_now_string))
+        .join()
+        .expect("PostgreSQL store bootstrap thread must not panic")
+        .expect("new_postgres should succeed");
     Some(store)
 }
 
@@ -199,13 +204,13 @@ async fn pg_response_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-#[tokio::test]
 #[cfg(feature = "pg-tests")]
-async fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart() {
+#[test]
+fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart() {
     let Some(store) = test_store() else { return };
     let store = Arc::new(store);
-    let bootstrap_raw = format!("harness_{}", "p".repeat(64));
-    let ordinary_raw = format!("harness_{}", "q".repeat(64));
+    let bootstrap_raw = format!("harness_{}", "a".repeat(64));
+    let ordinary_raw = format!("harness_{}", "b".repeat(64));
     let mut resolver = TenantResolver::new();
     let mut local_tenant_scopes: std::collections::HashSet<String> = [
         "team:read",
@@ -269,102 +274,108 @@ async fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_r
             .with_local_store_arc(store.clone())
             .with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 1.0),
     );
-    let reviewer = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/v1/keys")
-                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "user_id": "pg-reviewer",
-                        "role": "reviewer",
-                        "scopes": MANAGED_REVIEWER_KEY_SCOPES
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
         .unwrap();
-    assert_eq!(reviewer.status(), StatusCode::OK);
-    assert_eq!(
-        pg_response_json(reviewer).await["scopes"],
-        json!(MANAGED_REVIEWER_KEY_SCOPES)
-    );
-    let operator = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/v1/keys")
-                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "user_id": "pg-output-operator",
-                        "role": "output_operator",
-                        "scopes": MANAGED_OUTPUT_OPERATOR_KEY_SCOPES
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(operator.status(), StatusCode::OK);
-    assert_eq!(
-        pg_response_json(operator).await["scopes"],
-        json!(MANAGED_OUTPUT_OPERATOR_KEY_SCOPES)
-    );
-    let ordinary = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/v1/keys")
-                .header(header::AUTHORIZATION, format!("Bearer {ordinary_raw}"))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "user_id": "pg-forbidden",
-                        "role": "output_operator",
-                        "scopes": ["managed_acceptance:attempt_admit"]
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
-    let wrong_role_scope = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/v1/keys")
-                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "user_id": "pg-forbidden-scope",
-                        "role": "reviewer",
-                        "scopes": [
-                            "team:admin",
-                            "managed_acceptance:risk_acknowledge",
-                            "managed_acceptance:delegated_execute"
-                        ]
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(wrong_role_scope.status(), StatusCode::BAD_REQUEST);
+    runtime.block_on(async {
+        let reviewer = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "user_id": "pg-reviewer",
+                            "role": "reviewer",
+                            "scopes": MANAGED_REVIEWER_KEY_SCOPES
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reviewer.status(), StatusCode::OK);
+        assert_eq!(
+            pg_response_json(reviewer).await["scopes"],
+            json!(MANAGED_REVIEWER_KEY_SCOPES)
+        );
+        let operator = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "user_id": "pg-output-operator",
+                            "role": "output_operator",
+                            "scopes": MANAGED_OUTPUT_OPERATOR_KEY_SCOPES
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(operator.status(), StatusCode::OK);
+        assert_eq!(
+            pg_response_json(operator).await["scopes"],
+            json!(MANAGED_OUTPUT_OPERATOR_KEY_SCOPES)
+        );
+        let ordinary = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {ordinary_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "user_id": "pg-forbidden",
+                            "role": "output_operator",
+                            "scopes": ["managed_acceptance:attempt_admit"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+        let wrong_role_scope = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "user_id": "pg-forbidden-scope",
+                            "role": "reviewer",
+                            "scopes": [
+                                "team:admin",
+                                "managed_acceptance:risk_acknowledge",
+                                "managed_acceptance:delegated_execute"
+                            ]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_role_scope.status(), StatusCode::BAD_REQUEST);
+    });
 
     let mut restarted_resolver = TenantResolver::new();
     let mut restarted_scopes: std::collections::HashSet<String> = [
@@ -411,35 +422,45 @@ async fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_r
                 1.0,
             ),
     );
-    let reissued = restarted_app
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/v1/keys")
-                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "user_id": "pg-reviewer-reissued",
-                        "role": "reviewer",
-                        "scopes": ["team:admin", "managed_acceptance:risk_acknowledge"]
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let reissued = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "user_id": "pg-reviewer-reissued",
+                            "role": "reviewer",
+                            "scopes": ["team:admin", "managed_acceptance:risk_acknowledge"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
     assert_eq!(reissued.status(), StatusCode::OK);
-    let reissued_body = pg_response_json(reissued).await;
+    let reissued_body = runtime.block_on(pg_response_json(reissued));
     assert_eq!(
         reissued_body["scopes"],
         json!(["team:admin", "managed_acceptance:risk_acknowledge"])
     );
-    assert!(store
-        .get_api_key_metadata(reissued_body["key_id"].as_str().unwrap())
-        .unwrap()
-        .is_some());
+    let reissued_key_id = reissued_body["key_id"].as_str().unwrap().to_string();
+    let persisted = store.get_api_key_metadata(&reissued_key_id).unwrap();
+    assert!(persisted.is_some());
+
+    // `postgres::Client` performs synchronous runtime work from Drop. Keep
+    // the router and pool teardown off the Tokio test runtime as well as
+    // their initialization, otherwise a successful assertion can abort the
+    // process during destructor cleanup.
+    runtime.shutdown_background();
+    drop(restarted_app);
+    drop(store);
 }
 
 #[cfg(feature = "pg-tests")]
@@ -2250,7 +2271,7 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             "remote",
             "add",
             "origin",
-            "https://example.invalid/pg-product-approval.git",
+            "https://github.com/disposable/pg-product-approval.git",
         ][..],
     ] {
         let output = Command::new("git")
@@ -2349,41 +2370,25 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             true,
         )
         .unwrap();
-    assert_eq!(pending["task"]["status"], "awaiting_approval");
-    // The network gate is disabled in this parity test, so planning is blocked
-    // before the credential/configuration pre-effect path is entered.
-    assert_eq!(pending["output"]["status"], "blocked");
-    assert!(pending["output"].get("pre_effect_failure").is_none());
+    assert_eq!(pending["task"]["status"], "output_pending");
+    // The network gate is disabled in this parity test, so the durable output
+    // operation is planned without attempting a branch or pull-request effect.
+    assert_eq!(pending["output"]["status"], "planned");
+    assert_eq!(pending["output"]["network_effect"], false);
     let pending_version = pending["task"]["version"].as_u64().unwrap();
 
     let artifact = store
         .get_supervised_patch_artifact(approval["artifact_id"].as_str().unwrap())
         .unwrap()
         .unwrap();
-    let output_request = json!({
-        "schema_version": "product_draft_pr_output_request.v1",
-        "product_task_id": task_id,
-        "artifact_id": artifact["artifact_id"],
-        "approval_id": approval["approval_id"],
-        "output_intent": "draft_pr",
-        "expected_task_version": pending_version,
-        "workspace_id": artifact["workspace_id"],
-        "run_id": artifact["run_id"],
-        "target_id": artifact["target_id"],
-        "patch_hash": artifact["patch_hash"],
-        "source_revision": artifact["source_revision"],
-        "target_repository": "disposable/pg-acceptance",
-        "repository_host": "github.com",
-        "base_branch": "main",
-        "head_branch": format!("acp/product-{task_id}"),
-        "remote": "origin",
-        "commit_message": "bounded PG test",
-        "pr_title": "Draft: bounded PG test",
-        "pr_body": "Do not merge automatically.",
-    });
+    let output_request = artifact
+        .pointer("/product_output_operation/request")
+        .cloned()
+        .expect("planned PG output must persist its canonical request");
     let output_request_sha =
         hex::encode(Sha256::digest(serde_json::to_vec(&output_request).unwrap()));
     let artifact_id = artifact["artifact_id"].as_str().unwrap();
+    let durable_operation_before = artifact["product_output_operation"].clone();
     let stale_error = store
         .claim_product_output_operation(
             artifact_id,
@@ -2397,31 +2402,27 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         stale_error.contains("stale product task version"),
         "{stale_error}"
     );
-    assert!(
-        store
-            .get_supervised_patch_artifact(artifact_id)
-            .unwrap()
-            .unwrap()
-            .get("product_output_operation")
-            .is_none(),
-        "stale PG output caller must have zero durable operation effect"
+    let durable_operation_after = store
+        .get_supervised_patch_artifact(artifact_id)
+        .unwrap()
+        .unwrap()["product_output_operation"]
+        .clone();
+    assert_eq!(
+        durable_operation_after, durable_operation_before,
+        "stale PG output caller must not mutate the existing durable operation"
     );
-    let claimed = store
-        .claim_product_output_operation(
-            artifact_id,
-            &output_request,
-            &output_request_sha,
-            pending_version,
-            "pg-output-operator",
-        )
-        .unwrap();
-    let operation_id = claimed["operation_id"].as_str().unwrap().to_string();
+    let planned_operation = pending["output"]["operation"].clone();
+    let operation_id = planned_operation["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let operation_version = planned_operation["current_version"].as_u64().unwrap();
     let commit_sha = "a".repeat(40);
     store
         .record_product_output_branch_pushed(
             artifact_id,
             &operation_id,
-            claimed["current_version"].as_u64().unwrap(),
+            operation_version,
             task_id,
             approval["approval_id"].as_str().unwrap(),
             pending_version,
@@ -2491,11 +2492,11 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
     assert_eq!(reconciliation["claim_action"], "reconcile_pr_only");
     let pull_request = json!({
         "number": 23,
-        "url": "https://github.com/disposable/pg-acceptance/pull/23",
+        "url": "https://github.com/disposable/pg-product-approval/pull/23",
         "state": "open",
         "draft": true,
         "reused": false,
-        "repository": "disposable/pg-acceptance",
+        "repository": "disposable/pg-product-approval",
         "base_branch": "main",
         "head_branch": format!("acp/product-{task_id}"),
         "head_sha": commit_sha,
