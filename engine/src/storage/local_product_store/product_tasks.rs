@@ -1282,9 +1282,13 @@ impl LocalProductStore {
             }));
         }
 
-        let completed_output =
-            validate_completed_product_output_binding(&task, &artifact, &approval)?;
         let terminal_evidence = self.get_product_task_terminal_evidence(product_task_id)?;
+        let completed_output = validate_completed_product_output_binding(
+            &task,
+            &artifact,
+            &approval,
+            &terminal_evidence,
+        )?;
         if terminal_evidence
             .get("product_task_id")
             .and_then(Value::as_str)
@@ -5369,9 +5373,13 @@ impl LocalProductStore {
         }
 
         if status == ProductTaskStatus::Completed {
-            let terminal_output =
-                validate_completed_product_output_binding(&task, &artifact, &approval)?;
             let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
+            let terminal_output = validate_completed_product_output_binding(
+                &task,
+                &artifact,
+                &approval,
+                &terminal_evidence,
+            )?;
             return Ok(json!({
                 "task": task,
                 "approval": approval,
@@ -5463,6 +5471,36 @@ impl LocalProductStore {
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("failed");
+        if output_result
+            .get("pre_effect_failure")
+            .and_then(Value::as_bool)
+            == Some(true)
+            || output_status == "operation_in_progress"
+        {
+            // A credential, allowlist, or target-admission failure before any
+            // branch/PR effect, or a concurrent durable-operation claimant, is
+            // recoverable without advancing ProductTask. Keep the task at the
+            // approval version so its operation, approval, and terminal CAS
+            // bindings cannot drift across restart or concurrent retry.
+            let current = self
+                .get_product_task(task_id)?
+                .ok_or_else(|| "product task disappeared during output recovery".to_string())?;
+            if current.get("version").and_then(Value::as_u64) != Some(expected_task_version) {
+                return Err(
+                    "product task version changed during pre-effect output recovery".to_string(),
+                );
+            }
+            return Ok(json!({
+                "task": current,
+                "approval": approval,
+                "artifact": artifact,
+                "output": output_result,
+                "output_receipt": Value::Null,
+                "terminal_evidence": Value::Null,
+                "reused": false,
+                "recovery_required": true,
+            }));
+        }
         // Receipt and terminal CAS are separate store transactions. A concurrent
         // winner may commit receipt+terminal (advancing ProductTask version) before
         // this caller rebinds; recover by reconstructing the canonical completed
@@ -5650,9 +5688,13 @@ impl LocalProductStore {
         let completed_artifact = self
             .get_supervised_patch_artifact(artifact_id)?
             .ok_or_else(|| "completed output artifact disappeared after race".to_string())?;
-        let terminal_output =
-            validate_completed_product_output_binding(&completed, &completed_artifact, approval)?;
         let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
+        let terminal_output = validate_completed_product_output_binding(
+            &completed,
+            &completed_artifact,
+            approval,
+            &terminal_evidence,
+        )?;
         Ok(json!({
             "task": completed,
             "approval": approval,
@@ -5723,8 +5765,13 @@ impl LocalProductStore {
             {
                 return Err("stale product task version at Draft PR replay".to_string());
             }
-            validate_completed_product_output_binding(&task, &artifact, &approval)?;
             let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
+            validate_completed_product_output_binding(
+                &task,
+                &artifact,
+                &approval,
+                &terminal_evidence,
+            )?;
             return Ok(json!({
                 "task": task,
                 "operation": operation,
@@ -5733,6 +5780,19 @@ impl LocalProductStore {
                 "reused": true,
             }));
         }
+        let operation = self.bind_product_output_terminal_task_version(
+            task_id,
+            artifact_id,
+            operation_id,
+            &approval_id,
+            operation
+                .get("current_version")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "completed Draft PR operation version missing".to_string())?,
+            expected_task_version,
+            actor,
+        )?;
+        let output = product_draft_pr_output_from_operation(task_id, &operation);
         let candidate = self.build_product_task_terminal_evidence(
             &task,
             &artifact,
@@ -5770,12 +5830,13 @@ impl LocalProductStore {
                     .ok_or_else(|| {
                         "completed Draft PR artifact disappeared after race".to_string()
                     })?;
+                let evidence = self.get_product_task_terminal_evidence(task_id)?;
                 validate_completed_product_output_binding(
                     &completed,
                     &completed_artifact,
                     &approval,
+                    &evidence,
                 )?;
-                let evidence = self.get_product_task_terminal_evidence(task_id)?;
                 return Ok(json!({
                     "task": completed,
                     "operation": operation,
@@ -6553,13 +6614,26 @@ impl LocalProductStore {
             .pointer("/git/origin_remote")
             .and_then(Value::as_str)
             .ok_or_else(|| "workspace is missing its credential-free bound origin".to_string())?;
+        // Provider-free planning does not require GitHub admission. The
+        // repository/credential boundary is enforced only when a network
+        // effect is explicitly enabled.
         let repository = match crate::target_repo_output::parse_github_repository_url(bound_origin)
         {
             Ok(repository) => repository,
             Err(error) => {
+                if !allow_network {
+                    return Ok(json!({
+                        "mode": "draft_pr",
+                        "status": "blocked",
+                        "reason": error,
+                        "product_task_id": task_id,
+                        "artifact_id": artifact_id,
+                    }));
+                }
                 return Ok(json!({
                     "mode": "draft_pr",
                     "status": "blocked",
+                    "pre_effect_failure": true,
                     "reason": error,
                     "product_task_id": task_id,
                     "artifact_id": artifact_id,
@@ -6648,9 +6722,26 @@ impl LocalProductStore {
         if let Err(error) = crate::target_repo_output::GitHubPullRequestConfig::from_env()
             .require_repository(&repository)
         {
+            let operation_id = operation
+                .get("operation_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "product output operation identity missing".to_string())?;
+            let operation_version = operation
+                .get("current_version")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "product output operation version missing".to_string())?;
+            let operation = self.mark_product_output_branch_failed_known(
+                artifact_id,
+                operation_id,
+                operation_version,
+                actor,
+                &error,
+            )?;
             return Ok(json!({
                 "mode": "draft_pr",
                 "status": "blocked",
+                "pre_effect_failure": true,
+                "recovery_required": true,
                 "reason": error,
                 "operation": operation,
                 "product_task_id": task_id,
@@ -7915,6 +8006,7 @@ fn validate_completed_product_output_binding(
     task: &Value,
     artifact: &Value,
     approval: &Value,
+    terminal_evidence: &Value,
 ) -> Result<Value, String> {
     let task_id = required_product_task_string(task, "task_id")?;
     let artifact_id = required_product_task_string(artifact, "artifact_id")?;
@@ -7930,6 +8022,9 @@ fn validate_completed_product_output_binding(
         let operation = artifact
             .get("product_output_operation")
             .ok_or_else(|| "completed task is missing its Draft PR operation".to_string())?;
+        validate_product_terminal_evidence_content_hash(terminal_evidence)?;
+        let expected_output = product_draft_pr_output_from_operation(&task_id, operation);
+        let expected_output_sha256 = product_json_sha256(&expected_output)?;
         if operation.get("state").and_then(Value::as_str) != Some("completed")
             || operation.get("product_task_id").and_then(Value::as_str) != Some(task_id.as_str())
             || operation.get("artifact_id").and_then(Value::as_str) != Some(artifact_id.as_str())
@@ -7949,12 +8044,29 @@ fn validate_completed_product_output_binding(
                 .and_then(Value::as_bool)
                 != Some(true)
             || operation
-                .get("expected_task_version")
+                .get("terminal_task_version")
                 .and_then(Value::as_u64)
                 .and_then(|version| version.checked_add(1))
                 != Some(task_version)
             || operation.pointer("/request/expected_task_version")
                 != operation.get("expected_task_version")
+            || terminal_evidence.get("task_status").and_then(Value::as_str) != Some("completed")
+            || terminal_evidence
+                .get("task_version")
+                .and_then(Value::as_u64)
+                != Some(task_version)
+            || terminal_evidence
+                .get("product_task_id")
+                .and_then(Value::as_str)
+                != Some(task_id.as_str())
+            || terminal_evidence
+                .pointer("/output/operation_id")
+                .and_then(Value::as_str)
+                != operation.get("operation_id").and_then(Value::as_str)
+            || terminal_evidence
+                .pointer("/output/result_sha256")
+                .and_then(Value::as_str)
+                != Some(expected_output_sha256.as_str())
         {
             return Err("completed Draft PR operation binding is stale".to_string());
         }

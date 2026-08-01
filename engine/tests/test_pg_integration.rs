@@ -2085,9 +2085,10 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             true,
         )
         .unwrap();
-    assert_eq!(pending["task"]["status"], "output_pending");
-    // Non-github or unauthenticated remotes fail closed as blocked Draft PR
-    // planning (legacy alias network_output_unavailable is no longer emitted).
+    assert_eq!(pending["task"]["status"], "awaiting_approval");
+    assert_eq!(pending["output"]["pre_effect_failure"], true);
+    // Non-github remotes are rejected before any branch/PR effect and do not
+    // advance the ProductTask into a version with no durable operation.
     assert!(
         matches!(
             pending["output"]["status"].as_str(),
@@ -2420,6 +2421,180 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
     std::env::remove_var(PRODUCT_TASK_GATE);
     std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
     std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_draft_pr_missing_github_credential_reuses_operation_after_restart() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "1");
+    std::env::set_var("ACP_ENABLE_GITHUB_PR_OUTPUT", "1");
+    std::env::set_var("ACP_GITHUB_REPOSITORY_ALLOWLIST", "Igzela/alters-lab");
+    std::env::set_var("ACP_GITHUB_TOKEN_ENV", "ACP_TEST_GITHUB_TOKEN");
+    std::env::set_var("ACP_TEST_GITHUB_TOKEN", "");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg missing GitHub credential");
+    let remote = Command::new("git")
+        .args([
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/Igzela/alters-lab.git",
+        ])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(remote.status.success(), "git remote set-url: {remote:?}");
+    let tag = uuid_tag();
+    let (task, approval, artifact) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &tag, "draft_pr");
+    let task_id = task["task_id"].as_str().unwrap();
+    let task_version = task["version"].as_u64().unwrap();
+    let artifact_id = artifact["artifact_id"].as_str().unwrap();
+    let blocked = store
+        .output_product_task(
+            task_id,
+            "pg-output-before-restart",
+            task_version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(blocked["output"]["status"], "blocked");
+    assert_eq!(blocked["output"]["pre_effect_failure"], true);
+    assert_eq!(blocked["task"]["status"], "awaiting_approval");
+    assert_eq!(blocked["task"]["version"], task_version);
+    assert_eq!(
+        blocked["output"]["operation"]["branch_push"]["status"],
+        "failed_known"
+    );
+    let operation_id = blocked["output"]["operation"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let request = blocked["output"]["operation"]["request"].clone();
+    let request_sha256 = blocked["output"]["operation"]["request_sha256"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let audit_before_restart = store.audit_events(10_000).unwrap();
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    drop(store);
+
+    // Restart restores the parent-held configuration reference; no raw
+    // credential is persisted or printed, and no provider/target call occurs.
+    std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "0");
+    std::env::set_var("ACP_TEST_GITHUB_TOKEN", "restored-test-token");
+    let restarted = LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
+    let resumed = restarted
+        .claim_product_output_operation(
+            artifact_id,
+            &request,
+            &request_sha256,
+            task_version,
+            "pg-output-after-restart",
+        )
+        .unwrap();
+    assert_eq!(resumed["claim_action"], "push_or_reconcile_branch");
+    assert_eq!(resumed["operation_id"], operation_id);
+    assert_eq!(
+        restarted.get_product_task(task_id).unwrap().unwrap()["version"],
+        task_version
+    );
+    let commit_sha = "b".repeat(40);
+    restarted
+        .record_product_output_branch_pushed(
+            artifact_id,
+            &operation_id,
+            resumed["current_version"].as_u64().unwrap(),
+            &commit_sha,
+            "pg-output-after-restart",
+        )
+        .unwrap();
+    let pending = restarted
+        .output_product_task(
+            task_id,
+            "pg-output-after-restart",
+            task_version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(pending["output"]["status"], "pr_create_pending");
+    assert_eq!(pending["task"]["status"], "output_pending");
+    assert!(pending["task"]["version"].as_u64().unwrap() > task_version);
+    let pr_claim = pending["output"]["operation"].clone();
+    assert_eq!(pr_claim["operation_id"], operation_id);
+    let pull_request = json!({
+        "number": 51,
+        "url": "https://github.com/Igzela/alters-lab/pull/51",
+        "state": "open",
+        "draft": true,
+        "reused": false,
+        "repository": "Igzela/alters-lab",
+        "base_branch": "main",
+        "head_branch": format!("acp/product-{task_id}"),
+        "head_sha": commit_sha,
+    });
+    let completed_operation = restarted
+        .complete_product_output_draft_pr(
+            artifact_id,
+            &operation_id,
+            pr_claim["current_version"].as_u64().unwrap(),
+            &pull_request,
+            "pg-output-after-restart",
+        )
+        .unwrap();
+    let terminal = restarted
+        .complete_product_task_draft_pr_output(
+            task_id,
+            artifact_id,
+            &operation_id,
+            completed_operation["current_version"].as_u64().unwrap(),
+            pending["task"]["version"].as_u64().unwrap(),
+            &pull_request,
+            "pg-output-after-restart",
+        )
+        .unwrap();
+    assert_eq!(terminal["task"]["status"], "completed");
+    assert_eq!(terminal["operation"]["operation_id"], operation_id);
+    assert_eq!(
+        terminal["terminal_evidence"]["output"]["operation_id"],
+        operation_id
+    );
+    let completed_version = terminal["task"]["version"].as_u64().unwrap();
+    let after_terminal = restarted.audit_events(10_000).unwrap();
+    assert!(after_terminal.len() > audit_before_restart.len());
+    let replay = restarted
+        .output_product_task(
+            task_id,
+            "pg-output-replay",
+            completed_version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(replay["reused"], true);
+    assert_eq!(
+        replay["terminal_evidence"]["evidence_id"],
+        terminal["terminal_evidence"]["evidence_id"]
+    );
+    assert_eq!(restarted.audit_events(10_000).unwrap(), after_terminal);
+    for key in [
+        "ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT",
+        "ACP_ENABLE_GITHUB_PR_OUTPUT",
+        "ACP_GITHUB_REPOSITORY_ALLOWLIST",
+        "ACP_GITHUB_TOKEN_ENV",
+        "ACP_TEST_GITHUB_TOKEN",
+        "ACP_PRODUCT_WORKSPACE_ROOT",
+        "ACP_ENABLE_TARGET_REPO_OUTPUT",
+        PRODUCT_TASK_GATE,
+    ] {
+        std::env::remove_var(key);
+    }
 }
 
 #[cfg(feature = "pg-tests")]

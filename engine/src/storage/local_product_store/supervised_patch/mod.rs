@@ -3353,6 +3353,80 @@ impl LocalProductStore {
         )
     }
 
+    /// Bind the completed durable PR operation to the current ProductTask
+    /// version immediately before terminal CAS. The original request and
+    /// claim version remain immutable; this separate binding records the
+    /// current-version terminal authority after progressive output phases.
+    pub(crate) fn bind_product_output_terminal_task_version(
+        &self,
+        task_id: &str,
+        artifact_id: &str,
+        operation_id: &str,
+        approval_id: &str,
+        expected_operation_version: u64,
+        expected_task_version: u64,
+        actor: &str,
+    ) -> Result<Value, String> {
+        let authority_request = json!({
+            "schema_version": "product_output_authority_request.v1",
+            "product_task_id": task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval_id,
+            "output_intent": "draft_pr",
+            "expected_task_version": expected_task_version,
+        });
+        self.mutate_product_output_operation(
+            artifact_id,
+            actor,
+            "product_task.output_terminal_version_bound",
+            Some(&authority_request),
+            |artifact, now| {
+                let operation = artifact
+                    .get_mut("product_output_operation")
+                    .ok_or_else(|| "product output operation missing".to_string())?;
+                if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
+                    return Err("product output operation identity mismatch".to_string());
+                }
+                if operation.get("state").and_then(Value::as_str) != Some("completed")
+                    || operation
+                        .pointer("/branch_push/status")
+                        .and_then(Value::as_str)
+                        != Some("completed")
+                    || operation
+                        .pointer("/pr_create/status")
+                        .and_then(Value::as_str)
+                        != Some("completed")
+                {
+                    return Err("product output operation is not terminal-bindable".to_string());
+                }
+                if operation
+                    .get("terminal_task_version")
+                    .and_then(Value::as_u64)
+                    == Some(expected_task_version)
+                {
+                    return Ok(operation.clone());
+                }
+                if operation.get("terminal_task_version").is_some() {
+                    return Err("product output terminal task version is already bound".to_string());
+                }
+                require_product_output_operation_version(operation, expected_operation_version)?;
+                operation
+                    .as_object_mut()
+                    .ok_or_else(|| "product output operation must be an object".to_string())?
+                    .insert(
+                        "terminal_task_version".to_string(),
+                        json!(expected_task_version),
+                    );
+                increment_product_output_operation_version(operation)?;
+                operation["updated_at"] = json!(now);
+                operation["updated_by"] = json!(actor);
+                let snapshot = operation.clone();
+                validate_product_output_operation(artifact, &snapshot)?;
+                Ok(snapshot)
+            },
+        )
+    }
+
     pub fn mark_product_output_pr_outcome_unknown(
         &self,
         artifact_id: &str,
@@ -5549,8 +5623,8 @@ fn validate_terminal_product_output_record(
         validate_product_output_operation(artifact, operation)?;
         // Progressive Draft PR completion may advance ProductTask version when the
         // branch/PR phases land before terminal CAS. The durable operation keeps
-        // the original claim version; terminal CAS must rebind on the current
-        // ProductTask version while still verifying the completed PR receipt.
+        // the original claim/request version; the canonical terminal-version
+        // binding must match the current ProductTask version exactly.
         if operation.get("state").and_then(Value::as_str) != Some("completed")
             || operation.get("product_task_id") != authority_request.get("product_task_id")
             || operation.get("artifact_id") != authority_request.get("artifact_id")
@@ -5571,6 +5645,8 @@ fn validate_terminal_product_output_record(
                 .pointer("/pr_create/draft")
                 .and_then(Value::as_bool)
                 != Some(true)
+            || operation.get("terminal_task_version")
+                != authority_request.get("expected_task_version")
         {
             return Err("completed Draft PR operation is stale at terminal CAS".to_string());
         }

@@ -9181,6 +9181,49 @@ mod tests {
     }
 
     #[test]
+    fn persisted_key_metadata_reissues_principal_after_restart_without_secret() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("operator-key-reissue.db");
+        let scopes = vec![
+            SCOPE_RISK_ACKNOWLEDGE.to_string(),
+            SCOPE_DELEGATED_EXECUTE.to_string(),
+        ];
+        let store = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
+            .unwrap();
+        store
+            .record_api_key_metadata(
+                "restart-operator-key",
+                "operator-user",
+                "operator",
+                &scopes,
+                "canonical-key-issuer",
+            )
+            .unwrap();
+        let metadata = store
+            .get_api_key_metadata("restart-operator-key")
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata["scopes"], json!(scopes));
+        assert!(metadata.get("raw_key").is_none());
+        drop(store);
+
+        let restarted =
+            LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:01Z".to_string())
+                .unwrap();
+        let principal = restarted
+            .authenticate_managed_acceptance_principal(
+                "tenant-a",
+                "restart-operator-key",
+                Some(1.0),
+            )
+            .unwrap();
+        assert_eq!(principal.principal_id(), "restart-operator-key");
+        assert!(principal.has_scope(SCOPE_RISK_ACKNOWLEDGE));
+        assert!(principal.has_scope(SCOPE_DELEGATED_EXECUTE));
+        assert!(!principal.has_scope(SCOPE_DELEGATED_ARTIFACT_CONFIRM));
+    }
+
+    #[test]
     fn expired_api_key_principal_is_rejected_against_wall_clock() {
         let (_dir, store) = store();
         // Key expired at unix 100. A mistaken cost-cap "now" of 0.50 never exceeds
