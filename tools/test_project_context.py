@@ -123,6 +123,21 @@ Phase one was accepted through PR #302.
         self.assertEqual(summary["state"], "success")
         self.assertEqual(summary["missing_required"], [])
 
+    def test_source_matrix_excludes_terminal_context_capsule_input(self) -> None:
+        checks = [
+            {"name": name, "status": "COMPLETED", "conclusion": "SUCCESS"}
+            for name in project_context.REQUIRED_SOURCE_CI_CHECKS
+        ]
+        matrix = project_context.source_required_check_matrix(
+            project_context.summarize_checks(checks), event_name="workflow_dispatch"
+        )
+        self.assertEqual(
+            [item["logical_name"] for item in matrix],
+            list(project_context.REQUIRED_SOURCE_CI_CHECKS),
+        )
+        self.assertNotIn("context-capsule", [item["logical_name"] for item in matrix])
+        self.assertTrue(project_context.is_matrix_successful(matrix, event_name="workflow_dispatch"))
+
     def test_missing_required_check_is_incomplete(self) -> None:
         checks = [
             {"name": name, "status": "COMPLETED", "conclusion": "SUCCESS"}
@@ -382,7 +397,6 @@ PR #299
         self.assertEqual(
             sorted(item["logical_name"] for item in missing),
             [
-                "context-capsule",
                 "exact-head-check",
                 "native-runtime",
                 "pg-integration-tests",
@@ -400,7 +414,7 @@ PR #299
         self.assertTrue(all(item["conclusion"] == "success" for item in matrix))
         self.assertEqual(
             [item["logical_name"] for item in matrix],
-            list(project_context.REQUIRED_CI_CHECKS),
+            list(project_context.REQUIRED_SOURCE_CI_CHECKS),
         )
 
     def test_conflicting_required_check_outcomes_fail_the_matrix(self) -> None:
@@ -514,6 +528,8 @@ PR #299
 Reviewed SHA: {head}
 Reviewed range: {base}...{head}
 Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
 Observed at: 2026-08-01T06:00:00Z
 Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
 Outcome: PASS
@@ -539,6 +555,8 @@ Unresolved objections: none
 Reviewed SHA: {head}
 Reviewed range: {base}...{head}
 Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
 Observed at: 2026-08-01T06:00:00Z
 Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
 Outcome: PASS
@@ -563,6 +581,8 @@ Unresolved objections: none
 Reviewed SHA: {head}
 Reviewed range: {wrong_base}...{head}
 Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
 Observed at: 2026-08-01T06:00:00Z
 Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
 Outcome: PASS
@@ -630,6 +650,59 @@ Unresolved objections: none
         )
         self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
 
+    def test_parent_transport_requires_authenticated_independent_session(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: 019fbc08-e766-7930-ade1-1019221d2d43
+Reviewer authenticated identity: implementation-agent
+Review transport: parent-posted-on-behalf-of-independent-session
+Implementation session identity: parent-implementation-session-338
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[
+                {"author": {"login": "implementation-agent"}, "body": body}
+            ],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_receipt_authenticated_reviewer_identity_must_match_comment_author(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Reviewer authenticated identity: another-reviewer
+Review transport: direct-github-reviewer
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
     def test_blocking_review_body_never_confirms_receipt(self) -> None:
         head = "a" * 40
         base = "b" * 40
@@ -637,6 +710,8 @@ Unresolved objections: none
 Reviewed SHA: {head}
 Reviewed range: {base}...{head}
 Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
 Observed at: 2026-08-01T06:00:00Z
 Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
 Outcome: PASS
@@ -670,7 +745,7 @@ Reviewed SHA: {head}
 Reviewed range: {base}...{head}
 Reviewer session identity: independent-session-1
 Observed at: yesterday
-Axes: notarchitecture, authority, compatibility, security, audit, rollback, scope/path binding
+Axes: not architecture, authority, compatibility, security, audit, rollback, scope/path binding
 Outcome: PASS
 Unresolved objections: none
 """

@@ -697,6 +697,7 @@ def _has_unbound_latest_run_list(content: str) -> bool:
 
 def _has_unbound_run_watch(content: str) -> bool:
     """Return true when every run-watch command lacks an explicit numeric id."""
+    content = re.sub(r"\\[ \t]*\n", " ", content)
     for match in re.finditer(
         r"(?m)\bgh\s+run\s+watch\b([^\n;&|]*)", content
     ):
@@ -715,7 +716,7 @@ def _has_unbound_run_watch(content: str) -> bool:
         index = 0
         while index < len(tokens):
             token = tokens[index]
-            if token in {"--interval", "-i"}:
+            if token in {"--interval", "-i", "--repo", "-R"}:
                 index += 2
                 continue
             if token.startswith("-"):
@@ -723,13 +724,14 @@ def _has_unbound_run_watch(content: str) -> bool:
                 continue
             positional.append(token)
             index += 1
-        if not positional or not re.fullmatch(r"\d{6,}", positional[0]):
+        if not positional or not re.fullmatch(r"\d+", positional[0]):
             return True
     return False
 
 
 def _has_unbound_chained_watch(content: str) -> bool:
     """Return true only for a watch fed by an unbound latest-run list."""
+    content = re.sub(r"\\[ \t]*\n", " ", content)
     for match in re.finditer(
         r"(?m)\bgh\s+run\s+watch\b([^;&|\n]*)\$\(\s*gh\s+run\s+list\b([^)]*)\)",
         content,
@@ -767,9 +769,11 @@ def check_removed_plugin_surface_guard(
     cleanup. The guard uses a composite legacy fingerprint so that generic
     business identifiers (``official``, ``verified``) stay legal: only
     resurrection of the deleted files, the unrestricted semantic, or two or
-    more legacy tokens in one file are flagged.
+    more legacy tokens in the production crate are flagged, even when split
+    across files.
     """
     findings = []
+    legacy_hits_by_file: dict[str, list[str]] = {}
 
     for rel_path in tracked_files:
         if not rel_path.startswith(PLUGIN_SURFACE_SCAN_PREFIXES):
@@ -802,11 +806,8 @@ def check_removed_plugin_surface_guard(
             token for token in PLUGIN_LEGACY_FINGERPRINT_TOKENS
             if token in semantic_content
         ]
-        if len(legacy_hits) >= 2:
-            findings.append(
-                f"{rel_path}: {len(legacy_hits)} legacy plugin trust tokens "
-                f"found: {', '.join(legacy_hits)}"
-            )
+        if legacy_hits:
+            legacy_hits_by_file[rel_path] = legacy_hits
         lower_content = semantic_content.lower()
         if (
             "plugin" in lower_content
@@ -824,6 +825,18 @@ def check_removed_plugin_surface_guard(
                 "fingerprint found"
             )
 
+    all_legacy_hits = sorted(
+        {token for hits in legacy_hits_by_file.values() for token in hits}
+    )
+    if len(all_legacy_hits) >= 2:
+        locations = ", ".join(
+            f"{path}: {', '.join(hits)}"
+            for path, hits in sorted(legacy_hits_by_file.items())
+        )
+        findings.append(
+            "production crate contains a composite legacy plugin trust "
+            f"fingerprint: {', '.join(all_legacy_hits)} ({locations})"
+        )
     return findings
 
 
@@ -850,18 +863,26 @@ def _iter_rs_lines(repo_root: Path, tracked_files: list[str]):
 
 
 def _strip_cfg_test_regions(content: str) -> str:
-    """Return Rust source with test-only items removed using lexical braces."""
+    """Return Rust source with test-only items removed using lexical braces.
+
+    Attributes are matched against a code mask so a ``cfg(test)`` string in a
+    comment or literal cannot hide production code. Only unconditional
+    ``cfg(test)`` and ``cfg(all(..., test, ...))`` regions are test-only;
+    ``cfg(any(test, ...))`` and ``cfg(not(test))`` also describe production
+    configurations and must remain visible to the production heuristics.
+    """
     lines = content.splitlines()
+    code_lines = _rust_code_mask(content).splitlines()
     out = []
     in_test = False
     pending_test_item = False
     brace_depth = 0
-    for line in lines:
+    for line, code_line in zip(lines, code_lines):
         if not in_test:
             if pending_test_item:
                 if not line.strip() or line.lstrip().startswith("#"):
                     continue
-                delta = _rust_brace_delta(line)
+                delta = _rust_brace_delta(code_line)
                 if delta > 0:
                     in_test = True
                     pending_test_item = False
@@ -870,22 +891,133 @@ def _strip_cfg_test_regions(content: str) -> str:
                     pending_test_item = False
                 continue
             attr = re.search(
-                r"#\[\s*cfg\s*\([^\]]*\btest\b[^\]]*\)\s*\]",
-                line,
+                r"#\[\s*cfg\s*\(([^\]]*)\)\s*\]",
+                code_line,
             )
-            if attr:
+            expression = attr.group(1) if attr else ""
+            test_only = bool(
+                attr
+                and (
+                    re.fullmatch(r"\s*test\s*", expression)
+                    or (
+                        re.match(r"\s*all\s*\(", expression)
+                        and re.search(r"\btest\b", expression)
+                        and not re.search(r"\bany\s*\(", expression)
+                    )
+                )
+            )
+            if test_only:
                 in_test = True
-                brace_depth = _rust_brace_delta(line[attr.end() :])
+                brace_depth = _rust_brace_delta(code_line[attr.end() :])
                 if brace_depth <= 0:
                     in_test = False
                     pending_test_item = True
             else:
                 out.append(line)
             continue
-        brace_depth += _rust_brace_delta(line)
+        brace_depth += _rust_brace_delta(code_line)
         if brace_depth <= 0:
             in_test = False
     return "\n".join(out)
+
+
+def _rust_code_mask(content: str) -> str:
+    """Mask Rust comments and literals while preserving code punctuation."""
+    chars = list(content)
+    masked = list(content)
+    index = 0
+    block_depth = 0
+    string = False
+    char = False
+    escaped = False
+    raw_hashes: int | None = None
+    while index < len(chars):
+        current = chars[index]
+        next_char = chars[index + 1] if index + 1 < len(chars) else ""
+        if block_depth:
+            if current == "/" and next_char == "*":
+                block_depth += 1
+                masked[index] = masked[index + 1] = " "
+                index += 2
+                continue
+            if current == "*" and next_char == "/":
+                block_depth -= 1
+                masked[index] = masked[index + 1] = " "
+                index += 2
+                continue
+            if current != "\n":
+                masked[index] = " "
+            index += 1
+            continue
+        if raw_hashes is not None:
+            terminator = '"' + ("#" * raw_hashes)
+            if content.startswith(terminator, index):
+                for offset in range(len(terminator)):
+                    masked[index + offset] = " "
+                index += len(terminator)
+                raw_hashes = None
+            elif current != "\n":
+                masked[index] = " "
+                index += 1
+            else:
+                index += 1
+            continue
+        if string:
+            if current == '"' and not escaped:
+                masked[index] = " "
+                string = False
+            elif current != "\n":
+                masked[index] = " "
+            escaped = current == "\\" and not escaped
+            if current != "\\":
+                escaped = False
+            index += 1
+            continue
+        if char:
+            if current == "'" and not escaped:
+                masked[index] = " "
+                char = False
+            elif current != "\n":
+                masked[index] = " "
+            escaped = current == "\\" and not escaped
+            if current != "\\":
+                escaped = False
+            index += 1
+            continue
+        if current == "/" and next_char == "/":
+            masked[index] = masked[index + 1] = " "
+            index += 2
+            while index < len(chars) and chars[index] != "\n":
+                masked[index] = " "
+                index += 1
+            continue
+        if current == "/" and next_char == "*":
+            masked[index] = masked[index + 1] = " "
+            block_depth = 1
+            index += 2
+            continue
+        if current == "r":
+            quote_index = index + 1
+            while quote_index < len(chars) and chars[quote_index] == "#":
+                quote_index += 1
+            if quote_index < len(chars) and chars[quote_index] == '"':
+                raw_hashes = quote_index - index - 1
+                for offset in range(quote_index - index + 1):
+                    masked[index + offset] = " "
+                index = quote_index + 1
+                continue
+        if current == '"':
+            masked[index] = " "
+            string = True
+        elif current == "'":
+            char_end = index + (3 if index + 1 < len(chars) and chars[index + 1] == "\\" else 2)
+            if char_end < len(chars) and chars[char_end] == "'":
+                for offset in range(char_end - index + 1):
+                    masked[index + offset] = " "
+                index = char_end + 1
+                continue
+        index += 1
+    return "".join(masked)
 
 
 def _rust_brace_delta(line: str) -> int:

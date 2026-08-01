@@ -1859,6 +1859,7 @@ class TestExactHeadCI(unittest.TestCase):
         run = {
             "databaseId": 1, "workflowName": "tests", "headSha": "a" * 40,
             "status": "completed", "conclusion": "success",
+            "artifacts": [{"name": "context-capsule-1-1-" + "a" * 40, "expired": False}],
             "jobs": _successful_required_jobs(),
         }
         with mock.patch.object(ci_verifier, "run_info", return_value=run):
@@ -1866,6 +1867,21 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(result["successful_jobs"], required)
         self.assertEqual(result["checked_out_sha"], "a" * 40)
         self.assertEqual(result["exact_head_verify_step"], ci_verifier.EXACT_HEAD_VERIFY_STEP)
+
+    def test_context_capsule_artifact_must_be_published_on_exact_head(self):
+        sha = "a" * 40
+        run = {
+            "databaseId": 3, "workflowName": "tests", "headSha": sha,
+            "status": "completed", "conclusion": "success",
+            "jobs": _successful_required_jobs(),
+            "artifacts": [],
+        }
+        with mock.patch.object(ci_verifier, "run_info", return_value=run):
+            with self.assertRaisesRegex(
+                ci_verifier.CIVerificationError,
+                "context-capsule artifact publication evidence",
+            ):
+                ci_verifier.verify_exact_head_ci(2, sha, 3, {"headRefOid": sha})
 
     def test_moved_head_or_missing_job_is_rejected(self):
         required = ci_verifier.load_requirements()["required_jobs"]
@@ -1926,7 +1942,8 @@ class TestExactHeadCI(unittest.TestCase):
     def test_existing_natural_exact_head_run_is_reused_without_dispatch(self):
         run = {"databaseId": 11, "event": "pull_request", "status": "completed", "conclusion": "success", "headSha": "c" * 40, "headBranch": "agent/issue-7", "workflowName": "tests"}
         with mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]), \
-             mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
+             mock.patch.object(ci_verifier.subprocess, "run") as dispatch, \
+             mock.patch.object(ci_verifier, "verify_exact_head_ci"):
             result = ci_verifier.acquire_exact_ci(7, "agent/issue-7", "c" * 40, observe_seconds=1)
         dispatch.assert_not_called()
         self.assertEqual(result["workflow_run_id"], 11)
@@ -1935,7 +1952,8 @@ class TestExactHeadCI(unittest.TestCase):
     def test_missing_exact_head_run_dispatches_once_then_binds_one(self):
         run = {"databaseId": 12, "event": "workflow_dispatch", "status": "completed", "conclusion": "success", "headSha": "d" * 40, "headBranch": "agent/issue-8", "workflowName": "tests"}
         with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[], [run]]), \
-             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch, \
+             mock.patch.object(ci_verifier, "verify_exact_head_ci"):
             result = ci_verifier.acquire_exact_ci(8, "agent/issue-8", "d" * 40, observe_seconds=0)
         dispatch.assert_called_once()
         self.assertEqual(result["workflow_run_id"], 12)
@@ -2017,13 +2035,35 @@ class TestExactHeadCI(unittest.TestCase):
                 )
         validator.assert_called_once_with()
 
+    def test_completed_success_acquisition_runs_exact_head_verifier(self):
+        sha = "y" * 40
+        acquisition = {
+            "workflow_run_id": 123,
+            "bound_status": "completed",
+            "bound_conclusion": "success",
+            "source": "pull_request",
+        }
+        with mock.patch.object(ci_verifier, "acquire_exact_run", return_value=acquisition), \
+             mock.patch.object(ci_verifier, "verify_exact_head_ci") as verify:
+            result = ci_verifier.acquire_exact_ci(
+                207, "agent/issue-y", sha, observe_seconds=0
+            )
+        self.assertEqual(result["status"], "completed")
+        verify.assert_called_once_with(
+            207,
+            sha,
+            123,
+            pr_snapshot={"headRefOid": sha, "headRefName": "agent/issue-y"},
+        )
+
     def test_two_exact_head_runs_select_one_and_mark_duplicate(self):
         runs = [
             {"databaseId": 21, "event": "pull_request", "status": "completed", "conclusion": "success", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
             {"databaseId": 22, "event": "workflow_dispatch", "status": "completed", "conclusion": "success", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
         ]
         with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs):
-            result = ci_verifier.acquire_exact_ci(9, "agent/issue-9", "e" * 40, observe_seconds=1)
+            with mock.patch.object(ci_verifier, "verify_exact_head_ci"):
+                result = ci_verifier.acquire_exact_ci(9, "agent/issue-9", "e" * 40, observe_seconds=1)
         self.assertEqual(result["workflow_run_id"], 21)
         self.assertEqual(result["duplicate_run_ids"], [22])
 
@@ -2243,7 +2283,8 @@ class TestExactHeadCI(unittest.TestCase):
             "headSha": "f" * 40, "headBranch": "agent/issue-42", "workflowName": "tests",
         }
         with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[cancelled], [cancelled, fallback]]), \
-             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch, \
+             mock.patch.object(ci_verifier, "verify_exact_head_ci"):
             result = ci_verifier.acquire_exact_ci(207, "agent/issue-42", "f" * 40, observe_seconds=0)
         dispatch.assert_called_once()
         self.assertEqual(result["workflow_run_id"], 42)
@@ -2336,7 +2377,8 @@ class TestExactHeadCI(unittest.TestCase):
              "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
              "createdAt": "2026-07-14T00:02:00Z", "updatedAt": "2026-07-14T00:03:00Z"},
         ]
-        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs):
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs), \
+             mock.patch.object(ci_verifier, "verify_exact_head_ci"):
             result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
         self.assertEqual(result["workflow_run_id"], 901)
         self.assertEqual(result["selection_reason"], "natural_completed_observed")
@@ -2367,7 +2409,8 @@ class TestExactHeadCI(unittest.TestCase):
              "updatedAt": "2026-07-14T00:02:00Z"},
         ]
         with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs), \
-             mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
+             mock.patch.object(ci_verifier.subprocess, "run") as dispatch, \
+             mock.patch.object(ci_verifier, "verify_exact_head_ci"):
             result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
         dispatch.assert_not_called()
         self.assertEqual(result["workflow_run_id"], 921)
@@ -2381,6 +2424,7 @@ class TestExactHeadCI(unittest.TestCase):
         completed = {"databaseId": 930, "event": "pull_request", "status": "completed", "conclusion": "success",
                      "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
                      "updatedAt": "2026-07-14T00:01:00Z",
+                     "artifacts": [{"name": "context-capsule-930-1-" + sha, "expired": False}],
                      "jobs": _successful_required_jobs()}
         with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[natural], [completed]]), \
              mock.patch.object(ci_verifier, "run_info", return_value=completed), \
@@ -2437,7 +2481,8 @@ class TestExactHeadCI(unittest.TestCase):
              "updatedAt": "2026-07-14T00:02:00Z"},
         ]
         with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs), \
-             mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
+             mock.patch.object(ci_verifier.subprocess, "run") as dispatch, \
+             mock.patch.object(ci_verifier, "verify_exact_head_ci"):
             result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
         dispatch.assert_not_called()
         self.assertEqual(result["workflow_run_id"], 971)
@@ -2453,7 +2498,8 @@ class TestExactHeadCI(unittest.TestCase):
              "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
              "updatedAt": "2026-07-14T00:04:00Z"},
         ]
-        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs):
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs), \
+             mock.patch.object(ci_verifier, "verify_exact_head_ci"):
             result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
         self.assertEqual(result["workflow_run_id"], 980)
         self.assertEqual(result["source"], "pull_request")

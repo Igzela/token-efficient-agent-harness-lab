@@ -32,6 +32,11 @@ REQUIRED_CI_CHECKS = (
     "exact-head-check",
     "context-capsule",
 )
+# The terminal context-capsule publisher consumes the source matrix, so it is
+# required for canonical acceptance but must not be listed as its own input.
+REQUIRED_SOURCE_CI_CHECKS = tuple(
+    name for name in REQUIRED_CI_CHECKS if name != "context-capsule"
+)
 
 # Explicit aliases for known check-name representations.
 # Every alias must canonicalize to exactly one logical required check.
@@ -397,6 +402,9 @@ def _parse_review_receipt(
         else None
     )
     reviewer_identity = _receipt_field(body, "Reviewer session identity")
+    authenticated_identity = _receipt_field(body, "Reviewer authenticated identity")
+    transport = _receipt_field(body, "Review transport")
+    implementation_identity = _receipt_field(body, "Implementation session identity")
     reviewed_sha = _receipt_field(body, "Reviewed SHA")
     reviewed_range = _receipt_field(body, "Reviewed range")
     observed_at = _receipt_field(body, "Observed at")
@@ -407,10 +415,12 @@ def _parse_review_receipt(
 
     if not author_identity:
         errors.append("reviewer_author_identity_missing")
+    if not authenticated_identity:
+        errors.append("reviewer_authenticated_identity_missing")
+    elif author_identity and authenticated_identity.lower() != author_identity.lower():
+        errors.append("reviewer_authenticated_identity_mismatch")
     if not expected_pr_author_identity:
         errors.append("pull_request_author_identity_missing")
-    elif author_identity and author_identity.lower() == expected_pr_author_identity.lower():
-        errors.append("reviewer_author_matches_pull_request_author")
     if not reviewer_identity or reviewer_identity.lower() in {
         "self",
         "self-review",
@@ -418,6 +428,15 @@ def _parse_review_receipt(
         "unknown",
     }:
         errors.append("reviewer_session_identity_missing")
+    if author_identity and expected_pr_author_identity and author_identity.lower() == expected_pr_author_identity.lower():
+        if transport != "parent-posted-on-behalf-of-independent-session":
+            errors.append("same-author-review-requires-independent-transport")
+        if not implementation_identity:
+            errors.append("implementation_session_identity_missing")
+        elif implementation_identity.lower() == reviewer_identity.lower():
+            errors.append("reviewer_and_implementation_sessions_match")
+    elif transport != "direct-github-reviewer":
+        errors.append("direct-review-requires-authenticated-reviewer-transport")
     if not expected_head_sha or not re.fullmatch(r"[0-9a-f]{40}", expected_head_sha):
         errors.append("current_head_sha_missing_or_invalid")
     if not reviewed_sha or not re.fullmatch(r"[0-9a-f]{40}", reviewed_sha):
@@ -447,6 +466,13 @@ def _parse_review_receipt(
         if parsed_observed_at is None or parsed_observed_at.tzinfo is None:
             errors.append("observation_time_is_not_iso8601_with_timezone")
     axes_lower = (axes_value or "").lower()
+    negated_axes = sorted(
+        axis
+        for axis in REVIEW_RECEIPT_REQUIRED_AXES
+        if re.search(rf"\b(?:not|missing|excluded)\s+{re.escape(axis)}\b", axes_lower)
+    )
+    if negated_axes:
+        errors.append("review_axes_negated:" + ",".join(negated_axes))
     missing_axes = sorted(
         axis
         for axis in REVIEW_RECEIPT_REQUIRED_AXES
@@ -467,6 +493,9 @@ def _parse_review_receipt(
         "observed_head_sha": reviewed_sha,
         "complete_diff_range": reviewed_range,
         "reviewer_session_identity": reviewer_identity,
+        "reviewer_authenticated_identity": authenticated_identity,
+        "review_transport": transport,
+        "implementation_session_identity": implementation_identity,
         "reviewer_author_identity": author_identity,
         "observation_time": observed_at,
         "axes": axes_value,
@@ -645,7 +674,7 @@ def source_required_check_matrix(
     pending = canonical_names(ci_summary.get("pending") or [])
     raw_by_canonical = ci_summary.get("raw_by_canonical") or {}
     matrix: list[dict[str, Any]] = []
-    for required in REQUIRED_CI_CHECKS:
+    for required in REQUIRED_SOURCE_CI_CHECKS:
         raw_names = raw_by_canonical.get(required) or []
         if required in failed:
             conclusion = "failed"
@@ -704,7 +733,7 @@ def is_matrix_successful(
     matrix: list[dict[str, Any]], *, event_name: str | None = None
 ) -> bool:
     """True only for one complete, successful entry per required check."""
-    if not isinstance(matrix, list) or len(matrix) != len(REQUIRED_CI_CHECKS):
+    if not isinstance(matrix, list) or len(matrix) != len(REQUIRED_SOURCE_CI_CHECKS):
         return False
     observed_required: set[str] = set()
     for item in matrix:
@@ -714,7 +743,7 @@ def is_matrix_successful(
         conclusion = item.get("conclusion")
         raw_names = item.get("raw_names")
         if (
-            required not in REQUIRED_CI_CHECKS
+            required not in REQUIRED_SOURCE_CI_CHECKS
             or required in observed_required
             or not isinstance(raw_names, list)
             or conclusion not in {"success", "not_applicable"}
@@ -734,7 +763,7 @@ def is_matrix_successful(
         ):
             return False
         observed_required.add(required)
-    return observed_required == set(REQUIRED_CI_CHECKS)
+    return observed_required == set(REQUIRED_SOURCE_CI_CHECKS)
 
 
 def has_valid_success_binding(capsule: dict[str, Any]) -> bool:

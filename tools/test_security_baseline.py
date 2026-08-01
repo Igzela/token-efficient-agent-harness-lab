@@ -460,6 +460,18 @@ class TestDormantAutomationGuard(unittest.TestCase):
             )
             self.assertEqual(findings, [])
 
+    def test_short_explicit_run_id_watch_passes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run watch 12345 --repo owner/repo --exit-status\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(findings, [])
+
     def test_commit_bound_list_passes(self):
         """gh run list bound to a head sha or branch is legitimate."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -537,6 +549,19 @@ class TestDormantAutomationGuard(unittest.TestCase):
             (repo / "scripts").mkdir(parents=True)
             (repo / "scripts" / "wait.sh").write_text(
                 "gh run watch $(gh run list --commit=\"$SHA\" --limit 1 -q '.[0].databaseId')\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_multiline_bound_nested_watch_and_repo_run_id_are_safe(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run watch $(gh run list --commit \\\n+  \"$SHA\" --limit 1 -q '.[0].databaseId') --exit-status\n"
+                "gh run watch --repo owner/repo 12345 --exit-status\n"
             )
             findings = csb.check_dormant_automation_guard(
                 repo, ["scripts/wait.sh"]
@@ -676,6 +701,21 @@ class TestRemovedPluginSurfaceGuard(unittest.TestCase):
             )
             findings = csb.check_removed_plugin_surface_guard(
                 repo, ["engine/src/plugin.rs"]
+            )
+            self.assertEqual(len(findings), 1)
+
+    def test_legacy_tokens_split_across_production_files_are_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "trust.rs").write_text(
+                "pub const TRUST_LEVEL_OFFICIAL: &str = \"official\";\n"
+            )
+            (repo / "engine" / "src" / "permissions.rs").write_text(
+                "pub const ALL_KNOWN_PERMISSIONS: &[&str] = &[];\n"
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/trust.rs", "engine/src/permissions.rs"]
             )
             self.assertEqual(len(findings), 1)
 
@@ -904,6 +944,21 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
                 repo, ["engine/src/executor.rs"]
             )
             self.assertEqual(findings, [])
+
+    def test_cfg_comments_any_and_raw_strings_do_not_hide_production_executor(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "// #[cfg(test)]\n"
+                "#[cfg(any(test, feature = \"fixture\"))]\n"
+                "fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+                "const TEXT: &str = r###\"{ production braces }\"###;\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
 
     def test_cfg_test_module_dead_code_blanket_not_flagged(self):
         with tempfile.TemporaryDirectory() as tmpdir:

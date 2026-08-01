@@ -103,7 +103,12 @@ A review conclusion only binds the exact head it was produced against. Every mer
 1. the exact commit SHA reviewed (the PR head at review time);
 2. the complete `base...head` diff that was reviewed (not a partial or stale-range diff);
 3. the review axes applied (architecture, authority, compatibility, security, audit, rollback, scope/path binding);
-4. the review outcome and any remaining bounded findings, with no unresolved objection.
+4. the authenticated GitHub reviewer identity, reviewer session identity, and
+   transport (`direct-github-reviewer` or the explicitly recorded
+   `parent-posted-on-behalf-of-independent-session` transport);
+5. the implementation session identity when the parent transports a receipt,
+   proving it differs from the reviewer session;
+6. the review outcome and any remaining bounded findings, with no unresolved objection.
 
 A replacement head invalidates the prior receipt: the new exact head requires a new complete-diff review before Ready/merge eligibility. A receipt written against an older head is never valid evidence for a newer head. Strictly documentation-only PRs may use a simplified receipt (exact head, complete diff, outcome, rollback by revert) but still need exact-head binding. Review receipts live in the PR review thread; an aggregate approval label alone is not an exact-head independent acceptance unless its commit binding is verified.
 
