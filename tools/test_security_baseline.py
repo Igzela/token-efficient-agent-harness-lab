@@ -908,7 +908,8 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
     def test_malformed_classification_allowlist_fails_closed(self):
         original = csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
         csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST = [
-            {"path": "engine/src/executor.rs", "classification": "wired"}
+            {"path": "engine/src/executor.rs", "classification": "wired"},
+            "not-an-entry",
         ]
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -918,6 +919,7 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
                     repo, ["engine/src/executor.rs"]
                 )
                 self.assertTrue(any("missing owner" in finding for finding in findings))
+                self.assertTrue(any("is not an object" in finding for finding in findings))
         finally:
             csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST = original
 

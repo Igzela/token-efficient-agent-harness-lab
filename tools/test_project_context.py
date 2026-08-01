@@ -515,6 +515,7 @@ Unresolved objections: none
 """.format(head=head, base=base)
         observation = project_context._build_review_observation(
             head_sha=head,
+            base_sha=base,
             aggregate_review="REVIEW_REQUIRED",
             reviews=[],
             comments=[{"author": {"login": "reviewer"}, "body": body}],
@@ -523,6 +524,73 @@ Unresolved objections: none
         self.assertEqual(observation["review_receipt"]["state"], "valid")
         self.assertEqual(observation["exact_head_review_state"], "confirmed")
         self.assertEqual(observation["unresolved_objections_state"], "none_observed")
+
+    def test_receipt_without_current_head_never_confirms(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = """EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+""".format(head=head, base=base)
+        observation = project_context._build_review_observation(
+            head_sha=None,
+            base_sha=base,
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_receipt_bound_to_wrong_base_never_confirms(self) -> None:
+        head = "a" * 40
+        expected_base = "b" * 40
+        wrong_base = "c" * 40
+        body = """EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {wrong_base}...{head}
+Reviewer session identity: independent-session-1
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+""".format(head=head, wrong_base=wrong_base)
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=expected_base,
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_self_review_identity_never_confirms(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = """EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: self-review
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+""".format(head=head, base=base)
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
 
     def test_failed_or_incomplete_receipt_never_confirms_exact_head(self) -> None:
         head = "c" * 40

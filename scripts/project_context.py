@@ -302,6 +302,7 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
             "headRefName",
             "headRefOid",
             "baseRefName",
+            "baseRefOid",
             "isDraft",
             "mergeStateStatus",
             "reviewDecision",
@@ -328,6 +329,7 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
     observation_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     review_observation = _build_review_observation(
         head_sha=head_sha,
+        base_sha=payload.get("baseRefOid"),
         aggregate_review=aggregate_review,
         reviews=payload.get("reviews") or [],
         comments=payload.get("comments") or [],
@@ -379,7 +381,7 @@ def _receipt_field(body: str, label: str) -> str | None:
 
 
 def _parse_review_receipt(
-    comment: dict[str, Any], expected_head_sha: str | None
+    comment: dict[str, Any], expected_head_sha: str | None, expected_base_sha: str | None
 ) -> dict[str, Any]:
     body = str(comment.get("body") or "")
     author = comment.get("author") or comment.get("user") or {}
@@ -399,11 +401,18 @@ def _parse_review_receipt(
 
     if not author_identity:
         errors.append("reviewer_author_identity_missing")
-    if not reviewer_identity:
+    if not reviewer_identity or reviewer_identity.lower() in {
+        "self",
+        "self-review",
+        "implementation-agent",
+        "unknown",
+    }:
         errors.append("reviewer_session_identity_missing")
+    if not expected_head_sha or not re.fullmatch(r"[0-9a-f]{40}", expected_head_sha):
+        errors.append("current_head_sha_missing_or_invalid")
     if not reviewed_sha or not re.fullmatch(r"[0-9a-f]{40}", reviewed_sha):
         errors.append("reviewed_sha_missing_or_invalid")
-    if reviewed_sha and expected_head_sha and reviewed_sha != expected_head_sha:
+    if reviewed_sha and reviewed_sha != expected_head_sha:
         errors.append("reviewed_sha_does_not_match_current_head")
     range_match = (
         re.fullmatch(r"([0-9a-f]{40})\.\.\.([0-9a-f]{40})", reviewed_range or "")
@@ -414,6 +423,10 @@ def _parse_review_receipt(
         errors.append("complete_diff_range_missing_or_invalid")
     elif expected_head_sha and range_match.group(2) != expected_head_sha:
         errors.append("complete_diff_range_does_not_match_current_head")
+    if not expected_base_sha or not re.fullmatch(r"[0-9a-f]{40}", expected_base_sha):
+        errors.append("accepted_base_sha_missing_or_invalid")
+    elif range_match and range_match.group(1) != expected_base_sha:
+        errors.append("complete_diff_range_does_not_match_accepted_base")
     if not observed_at:
         errors.append("observation_time_missing")
     axes_lower = (axes_value or "").lower()
@@ -445,6 +458,7 @@ def _parse_review_receipt(
 def _build_review_observation(
     *,
     head_sha: str | None,
+    base_sha: str | None = None,
     aggregate_review: str | None,
     reviews: list[dict[str, Any]],
     comments: list[dict[str, Any]],
@@ -478,7 +492,7 @@ def _build_review_observation(
     ]
     if receipt_comments:
         receipt = receipt_comments[-1]
-        parsed_receipt = _parse_review_receipt(receipt, head_sha)
+        parsed_receipt = _parse_review_receipt(receipt, head_sha, base_sha)
         observation["review_receipt"] = parsed_receipt
         if parsed_receipt["state"] == "valid":
             observation["exact_head_review_state"] = "receipt_observed"

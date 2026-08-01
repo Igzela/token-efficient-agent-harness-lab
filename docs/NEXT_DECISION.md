@@ -38,7 +38,7 @@ The owner has authorized and accepted the production runner repair (#322), the d
 
 ## Active Routing
 
-1. `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` — `IN_PROGRESS`: Draft PR #338 at exact head `dbb4c9a0ed3cf01c263e0bc279f26bc9674d2e87` corrects the PR #336 evidence classification, repairs the merged governance gate findings, and requires terminal `context-capsule` success before merge.
+1. `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` — `IN_PROGRESS`: Draft PR #338; its exact head, CI, and review receipt must be refreshed from GitHub before Ready/merge. It corrects the PR #336 evidence classification, repairs the merged governance gate findings, and requires terminal `context-capsule` success before merge.
 2. `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` — `BLOCKED_PREREQUISITE` on Packet A: repair pre-effect credential failure recovery while retaining the original durable operation identity and monotonic ProductTask version.
 3. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on Packets A and B: the owner-authorized clean reseal loop remains bounded to the three separately consumed attempts in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`.
 4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
@@ -291,7 +291,7 @@ Immutable final execution manifests, separated delegated approval/output authori
 
 **State:** `IN_PROGRESS`
 
-**Owned PR:** #338, exact head `dbb4c9a0ed3cf01c263e0bc279f26bc9674d2e87`, Draft
+**Owned PR:** #338, Draft; exact head is always read from GitHub before review/Ready/merge.
 
 **Prerequisite:** accepted main `1dac6d16f7a99faacb856d6c0cbdb5eed9fd881b`. Satisfied.
 

@@ -829,6 +829,11 @@ def check_dormant_surface_heuristics(
     allowed = {
         (entry["path"], entry["classification"])
         for entry in DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
+        if isinstance(entry, dict)
+        and isinstance(entry.get("path"), str)
+        and isinstance(entry.get("classification"), str)
+        and entry.get("path", "").strip()
+        and entry.get("classification", "").strip()
     }
 
     def suppressed(rel_path: str, classification: str) -> bool:
@@ -968,11 +973,11 @@ def _validate_dormant_surface_allowlist() -> list[str]:
                 f"dormant classification allowlist entry {index} is not an object"
             )
             continue
-        missing = [
-            field
-            for field in required
-            if not isinstance(entry.get(field), str) or not entry[field].strip()
-        ]
+        missing = []
+        for field in required:
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                missing.append(field)
         if missing:
             findings.append(
                 f"dormant classification allowlist entry {index} missing "
