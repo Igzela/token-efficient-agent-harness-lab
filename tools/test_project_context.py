@@ -760,6 +760,59 @@ Unresolved objections: none
         )
         self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
 
+    def test_parent_receipt_rejects_non_uuid_and_embedded_negative_axes(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: fabricated-session
+Reviewer authenticated identity: implementation-agent
+Review transport: parent-posted-on-behalf-of-independent-session
+Implementation session identity: parent-session
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture (not reviewed), authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "implementation-agent"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_dispatch_success_binding_requires_expected_checkout_identity(self) -> None:
+        checks = {
+            name: {"result": "success"}
+            for name in project_context.REQUIRED_CI_CHECKS
+            if name != "exact-head-check"
+        }
+        sha = "a" * 40
+        capsule = {
+            "schema_version": "project_context.v1",
+            "binding": {
+                "workflow_run_identity": {
+                    "availability": "confirmed",
+                    "event_name": "workflow_dispatch",
+                },
+                "expected_head_sha": sha,
+                "checked_out_sha": "b" * 40,
+                "source_required_check_matrix": project_context.source_required_check_matrix(
+                    project_context.summarize_checks(
+                        project_context.parse_checks_json(json.dumps(checks))
+                    ),
+                    event_name="workflow_dispatch",
+                ),
+            },
+        }
+        with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_dispatch"}, clear=False):
+            self.assertFalse(project_context.has_valid_success_binding(capsule))
+
     def test_failed_or_incomplete_receipt_never_confirms_exact_head(self) -> None:
         head = "c" * 40
         body = f"""EXACT-HEAD REVIEW RECEIPT
@@ -969,6 +1022,8 @@ Unresolved objections: none
                     "availability": "confirmed",
                     "event_name": "push",
                 },
+                "expected_head_sha": "a" * 40,
+                "checked_out_sha": "a" * 40,
                 "source_required_check_matrix": project_context.source_required_check_matrix(
                     project_context.summarize_checks(
                         project_context.parse_checks_json(json.dumps(checks))
@@ -993,6 +1048,8 @@ Unresolved objections: none
                     "availability": "confirmed",
                     "event_name": "pull_request",
                 },
+                "expected_head_sha": sha,
+                "checked_out_sha": sha,
                 "source_required_check_matrix": project_context.source_required_check_matrix(
                     project_context.summarize_checks(checks), event_name="pull_request"
                 ),

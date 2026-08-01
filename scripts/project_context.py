@@ -378,6 +378,10 @@ REVIEW_RECEIPT_REQUIRED_AXES = {
     "rollback",
     "scope/path binding",
 }
+REVIEW_SESSION_ID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
 
 
 def _receipt_field(body: str, label: str) -> str | None:
@@ -428,6 +432,10 @@ def _parse_review_receipt(
         "unknown",
     }:
         errors.append("reviewer_session_identity_missing")
+    elif transport == "parent-posted-on-behalf-of-independent-session" and not REVIEW_SESSION_ID_PATTERN.fullmatch(
+        reviewer_identity
+    ):
+        errors.append("parent_reviewer_session_identity_is_not_a_uuid")
     if author_identity and expected_pr_author_identity and author_identity.lower() == expected_pr_author_identity.lower():
         if transport != "parent-posted-on-behalf-of-independent-session":
             errors.append("same-author-review-requires-independent-transport")
@@ -466,10 +474,15 @@ def _parse_review_receipt(
         if parsed_observed_at is None or parsed_observed_at.tzinfo is None:
             errors.append("observation_time_is_not_iso8601_with_timezone")
     axes_lower = (axes_value or "").lower()
+    negative_review = r"\b(?:not|no|missing|excluded|unreviewed|unavailable|without|never)\b"
     negated_axes = sorted(
         axis
         for axis in REVIEW_RECEIPT_REQUIRED_AXES
-        if re.search(rf"\b(?:not|missing|excluded)\s+{re.escape(axis)}\b", axes_lower)
+        if re.search(
+            rf"(?:{negative_review}[^,;\n]*{re.escape(axis)}|"
+            rf"{re.escape(axis)}[^,;\n]*{negative_review})",
+            axes_lower,
+        )
     )
     if negated_axes:
         errors.append("review_axes_negated:" + ",".join(negated_axes))
@@ -789,6 +802,14 @@ def has_valid_success_binding(capsule: dict[str, Any]) -> bool:
     matrix = binding.get("source_required_check_matrix")
     if not is_matrix_successful(matrix, event_name=event_name):
         return False
+    expected_head = binding.get("expected_head_sha")
+    checked_out = binding.get("checked_out_sha")
+    if (
+        not isinstance(expected_head, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", expected_head)
+        or checked_out != expected_head
+    ):
+        return False
     if event_name == "pull_request":
         requested = binding.get("requested_pr_exact_head")
         if (
@@ -970,6 +991,7 @@ def compute_fingerprint(capsule: dict[str, Any]) -> str:
         "requested_pr_number": requested_pr.get("number"),
         "requested_pr_exact_head_sha": requested_pr.get("head_sha"),
         "checked_out_sha": binding.get("checked_out_sha"),
+        "expected_head_sha": binding.get("expected_head_sha"),
         "workflow_run_id": run.get("run_id"),
         "workflow_run_attempt": run.get("run_attempt"),
     }
@@ -1136,6 +1158,7 @@ def build_capsule(
             "head_sha": expected_head_sha,
         },
         "checked_out_sha": checkout.get("head_sha"),
+        "expected_head_sha": expected_head_sha,
         "workflow_run_identity": run_identity,
         "source_required_check_matrix": matrix,
         "review_observation": review_observation,

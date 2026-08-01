@@ -752,6 +752,8 @@ def _has_nonempty_option_value(args: str, option: str) -> bool:
     if not match:
         return False
     value = match.group(1) or match.group(2) or ""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
     return bool(value and not value.startswith("-"))
 
 
@@ -903,15 +905,17 @@ def _strip_cfg_test_regions(content: str) -> str:
                         re.match(r"\s*all\s*\(", expression)
                         and re.search(r"\btest\b", expression)
                         and not re.search(r"\bany\s*\(", expression)
+                        and not re.search(r"\bnot\s*\(\s*test\s*\)", expression)
                     )
                 )
             )
             if test_only:
                 in_test = True
-                brace_depth = _rust_brace_delta(code_line[attr.end() :])
+                tail = code_line[attr.end() :]
+                brace_depth = _rust_brace_delta(tail)
                 if brace_depth <= 0:
                     in_test = False
-                    pending_test_item = True
+                    pending_test_item = "{" not in tail or "}" not in tail
             else:
                 out.append(line)
             continue
@@ -1056,19 +1060,7 @@ def _rust_brace_delta(line: str) -> int:
 
 def _rust_semantic_content(content: str) -> str:
     """Remove test-only regions, comments, and literals before fingerprinting."""
-    content = _strip_cfg_test_regions(content)
-    content = re.sub(r"//[^\n]*", "", content)
-    content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
-    for hashes in ("###", "##", "#", ""):
-        content = re.sub(
-            rf'r{re.escape(hashes)}".*?"{re.escape(hashes)}',
-            "",
-            content,
-            flags=re.DOTALL,
-        )
-    content = re.sub(r'"(?:\\.|[^"\\])*"', "", content)
-    content = re.sub(r"'(?:\\.|[^'\\])*'", "", content)
-    return content
+    return _rust_code_mask(_strip_cfg_test_regions(content))
 
 
 def check_dormant_surface_heuristics(

@@ -37,6 +37,7 @@ def _successful_required_jobs():
         "name": ci_verifier.EXACT_HEAD_VERIFY_STEP,
         "status": "completed",
         "conclusion": "success",
+        "run": "set -euo pipefail\ntest -n \"${EXPECTED_SHA}\"\ntest \"$(git rev-parse HEAD)\" = \"${EXPECTED_SHA}\"",
     }
     return [
         {
@@ -1859,7 +1860,12 @@ class TestExactHeadCI(unittest.TestCase):
         run = {
             "databaseId": 1, "workflowName": "tests", "headSha": "a" * 40,
             "status": "completed", "conclusion": "success",
-            "artifacts": [{"name": "context-capsule-1-1-" + "a" * 40, "expired": False}],
+            "attempt": 1,
+            "artifacts": [{
+                "name": "context-capsule-1-1-" + "a" * 40,
+                "expired": False,
+                "workflow_run": {"id": 1, "run_attempt": 1},
+            }],
             "jobs": _successful_required_jobs(),
         }
         with mock.patch.object(ci_verifier, "run_info", return_value=run):
@@ -1882,6 +1888,54 @@ class TestExactHeadCI(unittest.TestCase):
                 "context-capsule artifact publication evidence",
             ):
                 ci_verifier.verify_exact_head_ci(2, sha, 3, {"headRefOid": sha})
+
+    def test_context_capsule_artifact_must_bind_nested_workflow_run(self):
+        sha = "a" * 40
+        run = {
+            "databaseId": 4,
+            "attempt": 1,
+            "workflowName": "tests",
+            "headSha": sha,
+            "status": "completed",
+            "conclusion": "success",
+            "jobs": _successful_required_jobs(),
+            "artifacts": [{
+                "name": f"context-capsule-4-1-{sha}",
+                "expired": False,
+                "workflow_run": {"id": 3, "run_attempt": 1},
+            }],
+        }
+        with mock.patch.object(ci_verifier, "run_info", return_value=run):
+            with self.assertRaisesRegex(
+                ci_verifier.CIVerificationError,
+                "context-capsule artifact publication evidence",
+            ):
+                ci_verifier.verify_exact_head_ci(2, sha, 4, {"headRefOid": sha})
+
+    def test_exact_head_step_must_contain_the_checkout_assertion(self):
+        sha = "a" * 40
+        jobs = _successful_required_jobs()
+        jobs[0]["steps"][0]["run"] = "echo only"
+        run = {
+            "databaseId": 5,
+            "attempt": 1,
+            "workflowName": "tests",
+            "headSha": sha,
+            "status": "completed",
+            "conclusion": "success",
+            "jobs": jobs,
+            "artifacts": [{
+                "name": f"context-capsule-5-1-{sha}",
+                "expired": False,
+                "workflow_run": {"id": 5, "run_attempt": 1},
+            }],
+        }
+        with mock.patch.object(ci_verifier, "run_info", return_value=run):
+            with self.assertRaisesRegex(
+                ci_verifier.CIVerificationError,
+                "exact-head verification step did not succeed",
+            ):
+                ci_verifier.verify_exact_head_ci(2, sha, 5, {"headRefOid": sha})
 
     def test_moved_head_or_missing_job_is_rejected(self):
         required = ci_verifier.load_requirements()["required_jobs"]
@@ -2424,7 +2478,12 @@ class TestExactHeadCI(unittest.TestCase):
         completed = {"databaseId": 930, "event": "pull_request", "status": "completed", "conclusion": "success",
                      "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
                      "updatedAt": "2026-07-14T00:01:00Z",
-                     "artifacts": [{"name": "context-capsule-930-1-" + sha, "expired": False}],
+                     "attempt": 1,
+                     "artifacts": [{
+                         "name": "context-capsule-930-1-" + sha,
+                         "expired": False,
+                         "workflow_run": {"id": 930, "run_attempt": 1},
+                     }],
                      "jobs": _successful_required_jobs()}
         with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[natural], [completed]]), \
              mock.patch.object(ci_verifier, "run_info", return_value=completed), \

@@ -530,6 +530,19 @@ class TestDormantAutomationGuard(unittest.TestCase):
                 1,
             )
 
+    def test_empty_commit_binding_is_not_treated_as_bound(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                'gh run list --commit="" --limit=1\n'
+                "gh run list --commit='' --limit 1\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(len(findings), 1)
+
     def test_watch_repo_without_run_id_is_unbound(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
@@ -762,6 +775,18 @@ class TestRemovedPluginSurfaceGuard(unittest.TestCase):
             )
             self.assertEqual(findings, [])
 
+    def test_four_hash_raw_string_plugin_tokens_are_ignored(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "strings.rs").write_text(
+                'const TEXT: &str = r####"PluginRegistry TrustLevel ALL_KNOWN_PERMISSIONS"####;\n'
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/strings.rs"]
+            )
+            self.assertEqual(findings, [])
+
     def test_resurrected_plugin_path_flagged(self):
         """Re-creating the deleted plugin files is always a finding."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -944,6 +969,32 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
                 repo, ["engine/src/executor.rs"]
             )
             self.assertEqual(findings, [])
+
+    def test_same_line_empty_cfg_test_module_does_not_hide_production_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(test)] mod tests {}\n"
+                "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_cfg_all_not_test_does_not_hide_production_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                '#[cfg(all(not(test), feature = "fixture"))]\n'
+                "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
 
     def test_cfg_comments_any_and_raw_strings_do_not_hide_production_executor(self):
         with tempfile.TemporaryDirectory() as tmpdir:
