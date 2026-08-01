@@ -38,6 +38,7 @@ use engine::provider::transport::ReqwestTransport;
 use engine::provider::Provider;
 use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
 use engine::storage::local_product_store::LocalProductStore;
+use engine::storage::local_product_store::ALL_MANAGED_ACCEPTANCE_SCOPES;
 use engine::trusted_local::EffectiveExecutionGates;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -891,7 +892,7 @@ fn local_admin_scopes() -> HashSet<String> {
 }
 
 fn local_admin_scope_list() -> Vec<String> {
-    [
+    let mut scopes: Vec<String> = [
         "audit:read",
         "backup:admin",
         "config:admin",
@@ -907,7 +908,13 @@ fn local_admin_scope_list() -> Vec<String> {
     ]
     .into_iter()
     .map(String::from)
-    .collect()
+    .collect();
+    scopes.extend(
+        ALL_MANAGED_ACCEPTANCE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string()),
+    );
+    scopes
 }
 
 fn build_single_provider_from_env(
@@ -1099,6 +1106,12 @@ mod tests {
         assert!(scopes.iter().any(|scope| scope == "backup:admin"));
         assert!(scopes.iter().any(|scope| scope == "dispatch:write"));
         assert!(scopes.iter().any(|scope| scope == "health:read"));
+        for scope in ALL_MANAGED_ACCEPTANCE_SCOPES {
+            assert!(
+                scopes.iter().any(|candidate| candidate == scope),
+                "bootstrap tenant must permit canonical managed scope {scope}"
+            );
+        }
     }
 
     #[test]
