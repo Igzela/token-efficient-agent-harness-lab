@@ -38,15 +38,13 @@ The owner has authorized and accepted the production runner repair (#322), the d
 
 ## Active Routing
 
-1. `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` — `IN_PROGRESS`: Draft PR #339; its exact head, CI, and review receipt must be refreshed from GitHub before Ready/merge. It corrects the PR #336 evidence classification, repairs the merged governance gate findings, and requires terminal `context-capsule` success before merge.
-2. `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` — `BLOCKED_PREREQUISITE` on Packet A: repair pre-effect credential failure recovery while retaining the original durable operation identity and monotonic ProductTask version.
-3. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on Packets A and B: the owner-authorized clean reseal loop remains bounded to the three separately consumed attempts in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`.
-4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
-5. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-8. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
-
+1. `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` — `READY_FOR_EXECUTION`: Packet A is accepted on main; repair pre-effect credential failure recovery while retaining the original durable operation identity and monotonic ProductTask version.
+2. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on Packets A and B: the owner-authorized clean reseal loop remains bounded to the three separately consumed attempts in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`.
+3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
+4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 The delegated autonomous Golden Path packet is complete through merged PR #323 and is no longer the active frontier (see the COMPLETE packet section below).
 
 ## Packet States
@@ -72,7 +70,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #336 is merged as `17723bb66a1274498c32aef0f6cac85ad339efea`, but canonical acceptance is incomplete. Its run `30680937667` is recorded as `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure`, `failure_reason: PR merged before terminal required job`; Packet A repairs the material governance findings. It does not authorize a live task, provider call, spend, merge policy change, or any RWE/VDE reclassification.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, and delegated autonomous authority through PR #323. PR #325 is the accepted live-observed repair of the first attempt. Packet A (#339) is the current implementation frontier, Packet B follows it, and the clean live reseal remains blocked until both are accepted. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, and delegated autonomous authority through PR #323. PR #325 is the accepted live-observed repair of the first attempt. Packet A is complete through PRs #339 and #340; Packet B is now the implementation frontier, and the clean live reseal remains blocked until Packet B is accepted. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -289,15 +287,46 @@ Immutable final execution manifests, separated delegated approval/output authori
 
 ## Packet CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
-**Owned PR:** #339, Draft; exact head is always read from GitHub before review/Ready/merge.
+**Owned PRs:** #339 and #340, both merged; exact heads and merge SHAs are recorded below.
 
 **Prerequisite:** accepted main `1dac6d16f7a99faacb856d6c0cbdb5eed9fd881b`. Satisfied.
 
 Correct the false PR #336 CI claim and repair material governance findings from the independent complete-diff review of merge `17723bb66a1274498c32aef0f6cac85ad339efea`. The existing security-baseline owner remains the sole owner of automation, plugin-fingerprint, dormant-surface, allowlist, and review-receipt checks. The repair preserves fail-closed behavior, exact-head binding, terminal context-capsule requirements, provider-free CI, and reversible documentation rollback.
 
-Acceptance requires: the exact #336 distinction `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure`, `failure_reason: PR merged before terminal required job`; complete independent re-review of the merged #336 range; repaired allowlist/automation/plugin/dormant-surface/review-receipt tests; exact-head independent review of PR #339; canonical `tests` success including terminal capsule and artifact publication; and a post-merge full accepted-main verification run recorded truthfully.
+Acceptance requires: the exact #336 distinction `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure`, `failure_reason: PR merged before terminal required job`; complete independent re-review of the merged #336 range; repaired allowlist/automation/plugin/dormant-surface/review-receipt tests; exact-head independent reviews of PRs #339 and #340; canonical `tests` success including terminal capsule and artifact publication; and a post-merge full accepted-main verification run recorded truthfully. The merge discipline now requires every required job, including the terminal context-capsule, to be completed successfully before merge; it does not weaken exact-head or terminal checks.
+
+**Merged implementation evidence:**
+
+```yaml
+pr_339:
+  exact_head: 240e80065b9632b75ce7c733b63da59fb14c0680
+  merge_sha: a7ddf1cd588c71d553bf4d0644a6dabdd55e5ea
+  exact_head_review: PASS_WITH_NOTES
+  reviewer_session_identity: a4ac23a9-5c63-4623-8532-83b3901261f5
+  canonical_run: 30695452770
+  terminal_capsule_job: 91358472963
+  artifact: context-capsule-30695452770-1-240e80065b9632b75ce7c733b63da59fb14c0680
+pr_340:
+  exact_head: 4aed0af5227c53efeb711c8123d922c2e3133cea
+  merge_sha: dc1d839316771145a0b1c079bfbc66b30c0ab61a
+  exact_head_review: PASS_WITH_NOTES
+  reviewer_session_identity: d02c0cd6-6d40-4524-a14b-2da670d20de4
+  canonical_run: 30696552639
+  terminal_capsule_job: 91361226959
+  artifact: context-capsule-30696552639-1-4aed0af5227c53efeb711c8123d922c2e3133cea
+post_merge_accepted_main_verification:
+  failed_run: 30695885514
+  failed_run_reason: terminal capsule applied pull_request_only_matching_to_workflow_dispatch_and_rejected_unavailable_pr_head
+  replacement_run: 30696953015
+  source_matrix: success
+  terminal_context_capsule: success
+  overall_canonical_run: success
+  terminal_capsule_job: 91362363217
+  artifact: context-capsule-30696953015-1-dc1d839316771145a0b1c079bfbc66b30c0ab61a
+  artifact_expired: false
+```
 
 **Persisted independent complete-diff review:**
 
@@ -320,11 +349,11 @@ independent_complete_diff_review:
   verdict: PASS_WITH_NOTES
 ```
 
-This record is evidence for the historical merged range only. It does not substitute for a new exact-head receipt, canonical `tests` run, terminal context-capsule artifact, or post-merge accepted-main verification for PR #339.
+This historical record remains evidence for the merged #336 range only. It is complemented by the exact-head receipts, canonical runs, terminal artifacts, and post-merge accepted-main verification recorded above; the failed `30695885514` is not retroactively treated as green.
 
 ## Packet PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
 **Prerequisite:** Packet `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` accepted on main.
 
