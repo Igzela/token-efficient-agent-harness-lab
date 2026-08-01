@@ -1399,7 +1399,10 @@ def main() -> int:
         if not has_valid_success_binding(capsule):
             print("\nSource required-check matrix is not fully successful.", file=sys.stderr)
             return 1
-        if not is_requested_head_matched(capsule):
+        event_name = ((capsule.get("binding") or {}).get("workflow_run_identity") or {}).get(
+            "event_name"
+        )
+        if event_name == "pull_request" and not is_requested_head_matched(capsule):
             print("\nRequested exact PR head is unavailable or no longer current.", file=sys.stderr)
             return 1
     return 0
