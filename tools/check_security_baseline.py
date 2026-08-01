@@ -931,12 +931,26 @@ def _strip_cfg_test_regions(content: str) -> str:
                 )
             )
             if test_only:
-                in_test = True
                 tail = code_line[attr.end() :]
-                brace_depth = _rust_brace_delta(tail)
-                if brace_depth <= 0:
+                first_brace = tail.find("{")
+                if first_brace >= 0:
+                    item_end = _rust_balanced_brace_end(
+                        tail, first_brace
+                    )
+                else:
+                    item_end = None
+                if item_end is not None:
+                    suffix = line[attr.end() + item_end :].strip()
+                    if suffix:
+                        out.append(suffix)
                     in_test = False
-                    pending_test_item = "{" not in tail or "}" not in tail
+                    pending_test_item = False
+                else:
+                    in_test = True
+                    brace_depth = _rust_brace_delta(tail)
+                    if brace_depth <= 0:
+                        in_test = False
+                        pending_test_item = True
             else:
                 out.append(line)
             continue
@@ -944,6 +958,20 @@ def _strip_cfg_test_regions(content: str) -> str:
         if brace_depth <= 0:
             in_test = False
     return "\n".join(out)
+
+
+def _rust_balanced_brace_end(code: str, opening_index: int) -> int | None:
+    """Return the offset immediately after a balanced Rust brace item."""
+    depth = 0
+    for index in range(opening_index, len(code)):
+        current = code[index]
+        if current == "{":
+            depth += 1
+        elif current == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
 
 
 def _rust_code_mask(content: str) -> str:
