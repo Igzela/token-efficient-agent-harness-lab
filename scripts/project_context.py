@@ -18,7 +18,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPOSITORY = "Igzela/token-efficient-agent-harness-lab"
-PACKET_ID = r"(?:PE\d+|PR\d+|TOOL)(?:-[A-Z0-9]+)+"
+PACKET_ID = r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+"
 
 # Logical required check names. These are the canonical names used in the matrix.
 REQUIRED_CI_CHECKS = (
@@ -333,6 +333,14 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
         comments=payload.get("comments") or [],
         observation_time=observation_time,
     )
+    exact_review_state = review_observation.get("exact_head_review_state")
+    exact_head_review = {
+        "state": "confirmed" if exact_review_state == "confirmed" else "unverified",
+        "reason": None
+        if exact_review_state == "confirmed"
+        else review_observation.get("unavailable_reason")
+        or "exact_head_review_receipt_not_confirmed",
+    }
     return {
         "number": payload.get("number", pr_number),
         "availability": "confirmed",
@@ -344,16 +352,94 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
         "draft": payload.get("isDraft"),
         "merge_state": payload.get("mergeStateStatus"),
         "review_decision": aggregate_review,
-        "exact_head_review": {
-            "state": "unverified",
-            "reason": "aggregate_review_decision_is_not_exact_head_bound",
-        },
+        "exact_head_review": exact_head_review,
         "review_observation": review_observation,
         "ci": summarize_checks(payload.get("statusCheckRollup") or []),
     }
 
 
 REVIEW_RECEIPT_MARKER = "EXACT-HEAD REVIEW RECEIPT"
+REVIEW_RECEIPT_REQUIRED_AXES = {
+    "architecture",
+    "authority",
+    "compatibility",
+    "security",
+    "audit",
+    "rollback",
+    "scope/path binding",
+}
+
+
+def _receipt_field(body: str, label: str) -> str | None:
+    match = re.search(
+        rf"(?im)^\s*{re.escape(label)}\s*:\s*(.*?)\s*$", body
+    )
+    value = match.group(1).strip() if match else ""
+    return value or None
+
+
+def _parse_review_receipt(
+    comment: dict[str, Any], expected_head_sha: str | None
+) -> dict[str, Any]:
+    body = str(comment.get("body") or "")
+    author = comment.get("author") or comment.get("user") or {}
+    author_identity = (
+        author.get("login")
+        if isinstance(author, dict)
+        else None
+    )
+    reviewer_identity = _receipt_field(body, "Reviewer session identity")
+    reviewed_sha = _receipt_field(body, "Reviewed SHA")
+    reviewed_range = _receipt_field(body, "Reviewed range")
+    observed_at = _receipt_field(body, "Observed at")
+    axes_value = _receipt_field(body, "Axes")
+    outcome = (_receipt_field(body, "Outcome") or "").upper()
+    unresolved = (_receipt_field(body, "Unresolved objections") or "").lower()
+    errors: list[str] = []
+
+    if not author_identity:
+        errors.append("reviewer_author_identity_missing")
+    if not reviewer_identity:
+        errors.append("reviewer_session_identity_missing")
+    if not reviewed_sha or not re.fullmatch(r"[0-9a-f]{40}", reviewed_sha):
+        errors.append("reviewed_sha_missing_or_invalid")
+    if reviewed_sha and expected_head_sha and reviewed_sha != expected_head_sha:
+        errors.append("reviewed_sha_does_not_match_current_head")
+    range_match = (
+        re.fullmatch(r"([0-9a-f]{40})\.\.\.([0-9a-f]{40})", reviewed_range or "")
+        if reviewed_range
+        else None
+    )
+    if not range_match:
+        errors.append("complete_diff_range_missing_or_invalid")
+    elif expected_head_sha and range_match.group(2) != expected_head_sha:
+        errors.append("complete_diff_range_does_not_match_current_head")
+    if not observed_at:
+        errors.append("observation_time_missing")
+    axes_lower = (axes_value or "").lower()
+    missing_axes = sorted(
+        axis for axis in REVIEW_RECEIPT_REQUIRED_AXES if axis not in axes_lower
+    )
+    if missing_axes:
+        errors.append("review_axes_missing:" + ",".join(missing_axes))
+    if outcome not in {"PASS", "PASS_WITH_NOTES"}:
+        errors.append("review_outcome_is_not_passing")
+    if unresolved not in {"none", "none observed"}:
+        errors.append("unresolved_objections_present_or_unspecified")
+
+    state = "valid" if not errors else "invalid"
+    return {
+        "state": state,
+        "observed_head_sha": reviewed_sha,
+        "complete_diff_range": reviewed_range,
+        "reviewer_session_identity": reviewer_identity,
+        "reviewer_author_identity": author_identity,
+        "observation_time": observed_at,
+        "axes": axes_value,
+        "outcome": outcome or None,
+        "unresolved_objections": unresolved or None,
+        "errors": errors,
+    }
 
 
 def _build_review_observation(
@@ -392,24 +478,13 @@ def _build_review_observation(
     ]
     if receipt_comments:
         receipt = receipt_comments[-1]
-        receipt_body = str(receipt.get("body") or "")
-        receipt_sha_match = re.search(r"\b([0-9a-f]{40})\b", receipt_body)
-        receipt_sha = receipt_sha_match.group(1) if receipt_sha_match else None
-        outcome_match = re.search(
-            r"(?i)\b(PASS|PASS_WITH_NOTES|BLOCKED|FAIL)\b", receipt_body
-        )
-        observation["review_receipt"] = {
-            "state": "observed",
-            "observed_head_sha": receipt_sha,
-            "outcome": outcome_match.group(1) if outcome_match else None,
-        }
-        if receipt_sha and receipt_sha == head_sha:
+        parsed_receipt = _parse_review_receipt(receipt, head_sha)
+        observation["review_receipt"] = parsed_receipt
+        if parsed_receipt["state"] == "valid":
             observation["exact_head_review_state"] = "receipt_observed"
         else:
-            observation["exact_head_review_state"] = "receipt_stale"
-            observation["unavailable_reason"] = (
-                "review_receipt_head_does_not_match_current_head"
-            )
+            observation["exact_head_review_state"] = "receipt_invalid"
+            observation["unavailable_reason"] = "review_receipt_is_invalid"
     if not reviews and not comments:
         observation["unresolved_objections_state"] = "unavailable"
         observation["unavailable_reason"] = "no_reviews_or_comments_exposed"
@@ -422,6 +497,7 @@ def _build_review_observation(
     ]
     if blocking_reviews:
         observation["unresolved_objections_state"] = "blocking_reviews_present"
+        observation["exact_head_review_state"] = "unverified"
         return observation
 
     # Comments from the GitHub REST API do not expose resolved/unresolved state
@@ -433,9 +509,17 @@ def _build_review_observation(
     ]
     if explicit_blocking:
         observation["unresolved_objections_state"] = "explicit_blocking_comments_present"
+        observation["exact_head_review_state"] = "unverified"
         return observation
 
-    if aggregate_review == "APPROVED" and reviews:
+    if (
+        observation["review_receipt"].get("state") == "valid"
+        and observation["review_receipt"].get("unresolved_objections")
+        in {"none", "none observed"}
+    ):
+        observation["unresolved_objections_state"] = "none_observed"
+        observation["exact_head_review_state"] = "confirmed"
+    elif aggregate_review == "APPROVED" and reviews:
         # Aggregate approval exists, but we still do not treat it as exact-head
         # independent acceptance. Mark objections as none observed, not resolved.
         observation["unresolved_objections_state"] = "none_observed"

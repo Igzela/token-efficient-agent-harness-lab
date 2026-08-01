@@ -501,6 +501,63 @@ PR #299
         )
         self.assertEqual(obs["unresolved_objections_state"], "explicit_blocking_comments_present")
 
+    def test_valid_structured_receipt_confirms_exact_head(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = """EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+""".format(head=head, base=base)
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(observation["review_receipt"]["state"], "valid")
+        self.assertEqual(observation["exact_head_review_state"], "confirmed")
+        self.assertEqual(observation["unresolved_objections_state"], "none_observed")
+
+    def test_failed_or_incomplete_receipt_never_confirms_exact_head(self) -> None:
+        head = "c" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Outcome: FAIL
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            aggregate_review="APPROVED",
+            reviews=[{"state": "APPROVED", "body": "aggregate"}],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(observation["review_receipt"]["state"], "invalid")
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_new_repair_packet_id_routes_with_owned_pr(self) -> None:
+        text = """## Active Routing
+1. `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` — `IN_PROGRESS`.
+
+## Packet CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1
+**State:** `IN_PROGRESS`
+**Owned PR:** #338
+"""
+        self.assertEqual(
+            project_context.parse_first_routed_packet(text),
+            {
+                "packet": "CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1",
+                "state": "IN_PROGRESS",
+                "pr_number": "338",
+            },
+        )
+
     def test_approved_aggregate_not_treated_as_exact_head_acceptance(self) -> None:
         obs = project_context._build_review_observation(
             head_sha="h" * 40,

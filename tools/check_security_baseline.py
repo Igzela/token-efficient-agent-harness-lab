@@ -171,7 +171,10 @@ DORMANT_AUTOMATION_PATTERNS = [
     ),
     (
         "gh run list --limit 1",
-        re.compile(r"\bgh\s+run\s+list\s+--limit\s+1\b"),
+        re.compile(
+            r"(?m)\bgh\s+run\s+list\b[^\n;&|]*"
+            r"(?:--limit\s*=?\s*1|-L\s*1)\b"
+        ),
     ),
     (
         "gh run watch chained to unbound gh run list",
@@ -179,7 +182,7 @@ DORMANT_AUTOMATION_PATTERNS = [
     ),
     (
         "gh run watch unbound",
-        re.compile(r"\bgh\s+run\s+watch\b\s*(?:--exit-status\s*)?(?:$|#|\||&&|;)"),
+        re.compile(r"(?m)\bgh\s+run\s+watch\b[^\n;&|]*"),
     ),
 ]
 
@@ -658,12 +661,47 @@ def check_dormant_automation_guard(
 
         file_allowlist = AUTOMATION_GUARD_ALLOWLIST.get(rel_path, {})
         for label, pattern in DORMANT_AUTOMATION_PATTERNS:
-            if pattern.search(content):
+            if label == "gh run list --limit 1":
+                matched = _has_unbound_latest_run_list(content)
+            elif label == "gh run watch unbound":
+                matched = _has_unbound_run_watch(content)
+            else:
+                matched = bool(pattern.search(content))
+            if matched:
                 if file_allowlist.get(label):
                     continue
                 findings.append(f"{rel_path}: {label} pattern found")
 
     return findings
+
+
+def _has_unbound_latest_run_list(content: str) -> bool:
+    """Return true for latest-run polling that is not bound to a head/commit."""
+    for match in re.finditer(
+        r"(?m)\bgh\s+run\s+list\b([^\n;&|]*)", content
+    ):
+        args = match.group(1)
+        if not re.search(r"(?:--limit\s*=?\s*1|-L\s*1)\b", args):
+            continue
+        if re.search(r"(?:--head|--commit)(?:\s|=)", args):
+            continue
+        return True
+    return False
+
+
+def _has_unbound_run_watch(content: str) -> bool:
+    """Return true when every run-watch command lacks an explicit numeric id."""
+    for match in re.finditer(
+        r"(?m)\bgh\s+run\s+watch\b([^\n;&|]*)", content
+    ):
+        if re.search(r"\$\(\s*gh\s+run\s+list\b", match.group(1)):
+            # The chained-list detector reports this command separately; do
+            # not double-count it as a bare watch with no id.
+            continue
+        args = re.sub(r"\$\([^)]*\)", "", match.group(1))
+        if not re.search(r"\b\d{6,}\b", args):
+            return True
+    return False
 
 
 def check_removed_plugin_surface_guard(
@@ -719,6 +757,17 @@ def check_removed_plugin_surface_guard(
                 f"{rel_path}: {len(legacy_hits)} legacy plugin trust tokens "
                 f"found: {', '.join(legacy_hits)}"
             )
+        lower_content = content.lower()
+        if (
+            "plugin" in lower_content
+            and "trust" in lower_content
+            and ("permission" in lower_content or "registry" in lower_content)
+            and re.search(r"\b(?:enum|struct|fn)\b", content)
+        ):
+            findings.append(
+                f"{rel_path}: plugin trust/permission registry structural "
+                "fingerprint found"
+            )
 
     return findings
 
@@ -742,7 +791,7 @@ def _iter_rs_lines(repo_root: Path, tracked_files: list[str]):
             content = filepath.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        yield rel_path, content
+        yield rel_path, _strip_cfg_test_regions(content)
 
 
 def _strip_cfg_test_regions(content: str) -> str:
@@ -776,7 +825,7 @@ def check_dormant_surface_heuristics(
     Findings are suppressed only by DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
     entries.
     """
-    findings = []
+    findings = _validate_dormant_surface_allowlist()
     allowed = {
         (entry["path"], entry["classification"])
         for entry in DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
@@ -800,6 +849,7 @@ def check_dormant_surface_heuristics(
         lib_content = lib_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         lib_content = ""
+    lib_content = _strip_cfg_test_regions(lib_content)
     declared_modules = re.findall(
         r"^\s*(?:pub(?:\(crate\))?\s+)?mod\s+(\w+)\s*;",
         lib_content,
@@ -899,6 +949,35 @@ def check_dormant_surface_heuristics(
                 + ", ".join(unique)
             )
 
+    return findings
+
+
+def _validate_dormant_surface_allowlist() -> list[str]:
+    required = (
+        "path",
+        "classification",
+        "owner",
+        "reason",
+        "review_condition",
+        "expiry_or_recheck_condition",
+    )
+    findings = []
+    for index, entry in enumerate(DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST):
+        if not isinstance(entry, dict):
+            findings.append(
+                f"dormant classification allowlist entry {index} is not an object"
+            )
+            continue
+        missing = [
+            field
+            for field in required
+            if not isinstance(entry.get(field), str) or not entry[field].strip()
+        ]
+        if missing:
+            findings.append(
+                f"dormant classification allowlist entry {index} missing "
+                + ", ".join(missing)
+            )
     return findings
 
 

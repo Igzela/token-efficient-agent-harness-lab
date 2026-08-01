@@ -34,11 +34,11 @@ provider-free RWE authority reconciliation (#300)
 → Dashboard #225 last
 ```
 
-The owner has authorized and accepted the production runner repair (#322), the delegated autonomous authority packet (#323), and the repair/reseal objective in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`. The earlier observed attempts remain non-accepted: the first used a dirty/non-exact source identity, and the later `Igzela/alters-lab#4` recovery required direct SQLite authority mutation plus a manual ProductTask version rollback. The current authorization permits up to three separately consumed, zero-retry attempts, each with one ProductTask, at most three provider requests, one unmerged `acp/*` Draft PR, unchanged target `main`, and no merge/release/deployment/RWE effect. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
+The owner has authorized and accepted the production runner repair (#322), the delegated autonomous authority packet (#323), and the repair/reseal objective in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801` issued at `2026-08-01T14:29:00+09:00`. The earlier observed attempts remain non-accepted: the first used a dirty/non-exact source identity, and the later `Igzela/alters-lab#4` recovery required direct SQLite authority mutation plus a manual ProductTask version rollback. The current authorization permits a maximum of three separately consumed attempts, one ProductTask per attempt, at most three provider requests per attempt, zero retries, at most one new `acp/*` branch and one Draft PR per attempt, and a combined provider spend cap of `$1.00`. Its route is `deepseek-v4-pro` planning, `deepseek-v4-flash` implementation, deterministic non-provider verification, and `deepseek-v4-pro` review. Each attempt binds `Igzela/alters-lab/main` to a freshly resolved exact SHA, leaves target main unchanged, and forbids merge, auto-merge, release, deployment, RWE, direct SQL mutation, credential disclosure, raw prompt/output persistence, or outcome-unknown retry. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
 
 ## Active Routing
 
-1. `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` — `READY_FOR_EXECUTION`: correct the PR #336 evidence classification and require terminal `context-capsule` success before merge; the recorded #336 run was an overall failure despite successful source jobs.
+1. `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` — `IN_PROGRESS`: Draft PR #338 at exact head `dbb4c9a0ed3cf01c263e0bc279f26bc9674d2e87` corrects the PR #336 evidence classification, repairs the merged governance gate findings, and requires terminal `context-capsule` success before merge.
 2. `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` — `BLOCKED_PREREQUISITE` on Packet A: repair pre-effect credential failure recovery while retaining the original durable operation identity and monotonic ProductTask version.
 3. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on Packets A and B: the owner-authorized clean reseal loop remains bounded to the three separately consumed attempts in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`.
 4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
@@ -69,10 +69,10 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #310 and PR #311 are merged CI-governance changes.
 - PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #325 is merged and accepted as `0da5c6c785004784d9ffa3b20e0068f4bac6be71` from exact head `7ecffd5a30426dd1f26ab4d46a8f2a36e7594568`: live-seal budget reservation release and Draft PR terminal CAS rebind. Exact-head canonical `tests` runs `30613256286` (full) and `30613256266` (PR) were successful; post-merge `push: main` run `30636441727` passed all jobs and bound context-capsule artifact to the merge SHA.
-- PR #336 is merged and accepted as `17723bb66a1274498c32aef0f6cac85ad339efea`: the dormant-surface governance gate. Its run `30680937667` is recorded as `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure` because the terminal job ran after the PR was merged and closed. It does not authorize a live task, provider call, spend, merge policy change, or any RWE/VDE reclassification.
+- PR #336 is merged as `17723bb66a1274498c32aef0f6cac85ad339efea`, but canonical acceptance is incomplete. Its run `30680937667` is recorded as `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure` because the terminal job ran after the PR was merged and closed; Packet A repairs the material governance findings. It does not authorize a live task, provider call, spend, merge policy change, or any RWE/VDE reclassification.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, and delegated autonomous authority through PR #323. PR #325 is the accepted live-observed repair of the one authorized live attempt. The sole active frontier is the owner-required clean exact-main live reseal, which must not start without a new explicit one-use owner authorization. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, and delegated autonomous authority through PR #323. PR #325 is the accepted live-observed repair of the first attempt. Packet A (#338) is the current implementation frontier, Packet B follows it, and the clean live reseal remains blocked until both are accepted. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -287,17 +287,37 @@ Wire the existing `ManagedDeepSeekProvider::invoke_with_authority` into the exis
 
 Immutable final execution manifests, separated delegated approval/output authority, one-use spend and attempt leases, durable pre-send journaling, Draft-PR-only output, terminal cleanup, and SQLite/PostgreSQL restart parity are accepted on main. Canonical CI remains provider-free and target-free.
 
+## Packet CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1
+
+**State:** `IN_PROGRESS`
+
+**Owned PR:** #338, exact head `dbb4c9a0ed3cf01c263e0bc279f26bc9674d2e87`, Draft
+
+**Prerequisite:** accepted main `1dac6d16f7a99faacb856d6c0cbdb5eed9fd881b`. Satisfied.
+
+Correct the false PR #336 CI claim and repair material governance findings from the independent complete-diff review of merge `17723bb66a1274498c32aef0f6cac85ad339efea`. The existing security-baseline owner remains the sole owner of automation, plugin-fingerprint, dormant-surface, allowlist, and review-receipt checks. The repair preserves fail-closed behavior, exact-head binding, terminal context-capsule requirements, provider-free CI, and reversible documentation rollback.
+
+Acceptance requires: the exact #336 distinction `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure`, `failure_reason: PR merged before terminal required job`; complete independent re-review of the merged #336 range; repaired allowlist/automation/plugin/dormant-surface/review-receipt tests; exact-head independent review of PR #338; canonical `tests` success including terminal capsule and artifact publication; and a post-merge full accepted-main verification run recorded truthfully.
+
+## Packet PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** Packet `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` accepted on main.
+
+Repair the ProductTask output path so a known pre-effect GitHub credential failure marks the existing output operation `failed_known` through `LocalProductStore`, leaves ProductTask status/version unchanged, and can be reclaimed after restart with the same immutable operation/request identity. Add deterministic SQLite/PostgreSQL coverage for monotonic versions, current-version terminal CAS, canonical key/principal reissuance and scope restoration, concurrency/idempotency, duplicate-effect refusal, outcome-unknown/late-response refusal, target/approval/artifact binding, lease/spend/delegation terminalization, and workspace cleanup. No direct SQL mutation, manual version rollback, second identity store, or replacement output operation is permitted.
+
 ## Packet PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1
 
-**State:** `DECISION_REQUIRED` (nearest existing fail-closed equivalent of `LIVE_OBSERVED_RESEAL_REQUIRED`)
+**State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PR #323 accepted and merged. Satisfied.
+**Prerequisite:** Packets `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` and `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` accepted and merged. Not yet satisfied.
 
-**Authority:** the owner's exact one-use documentation delegation and `MAX_COST_USD=0.50`
+**Authority:** owner authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`, with separately persisted and consumed sub-authorizations `.../attempt-1`, `.../attempt-2`, and `.../attempt-3`; combined provider spend cap `$1.00`, zero retries, and one ProductTask per attempt.
 
 Before any provider request, persist and display the complete derived final manifest, recalculate its SHA-256, verify the delegated approval/spend receipt binds that exact hash, confirm accepted Harness and target main SHAs are unchanged, and report only that the parent-held credential is present. Never print, persist, request, unset, rotate, or forward it to a child.
 
-The sole target is `Igzela/alters-lab` at the freshly verified default-branch SHA. The task only clarifies in `docs/USER_GUIDE.md` that `alters-lab doctor` is a read-only health check, with at most one changed file and 100 changed lines. Execute Pro planning, Flash bounded implementation, deterministic verification, and Pro review; neither model receives spend, approval, output, merge, release, or deployment authority. The only target output is one unmerged `acp/*` Draft PR and target main must remain unchanged.
+The sole target is `Igzela/alters-lab/main`, resolved and bound to an exact SHA immediately before each final manifest. Execute Pro planning, Flash bounded implementation, deterministic verification, and Pro review; neither model receives spend, approval, output, merge, release, or deployment authority. The only target output is one new unmerged `acp/*` Draft PR and target main must remain unchanged. Provider route, credential boundary, retry, branch/PR, and forbidden-action limits are those in the owner authorization above.
 
 ### First live observation (recorded truthfully)
 
@@ -314,6 +334,10 @@ The owner-authorized one-use live attempt executed a real `Pro → Flash → det
 
 PR #325 is the accepted live-observed repair for budget reservation release and Draft PR terminal CAS rebind.
 
+### Second live observation (recorded truthfully)
+
+The prior `Igzela/alters-lab#4` attempt remains `LIVE_OBSERVED_NOT_ACCEPTED`. Its realized evidence is preserved: three provider requests, 6,976 realized tokens, realized cost `$0.00143`, target main unchanged, one new unmerged Draft PR, and terminal task state `succeeded` after manual recovery. The recovery directly modified SQLite authority, manually reduced the ProductTask version from v8 to v7, manually reapplied scopes, and retried `/output`; those actions invalidate clean acceptance because canonical restart recovery failed. PR #4 and its branch must not be reused for a clean attempt.
+
 ### Remaining acceptance condition — one clean exact-main live reseal
 
 One clean exact-main live reseal using:
@@ -327,7 +351,7 @@ One clean exact-main live reseal using:
 - one bounded unmerged `acp/*` Draft PR;
 - exact terminal evidence.
 
-Do not start that second live attempt without a new explicit one-use owner authorization.
+Do not start an attempt until Packets A and B are accepted on main, its separately persisted sub-authorization is consumed, and the preceding attempt (if any) is terminalized and any code defect is repaired, reviewed, CI-green, and merged.
 
 Completion requires reconciled redacted usage/cost evidence, expired one-use spend, closed attempt lease, cleanup and rollback receipts, independently reviewed terminal evidence, exactly one realized workflow sample labeled `INSUFFICIENT_REPETITIONS`, and post-observation canonical-document updates. It authorizes neither RWE nor economic, reliability, learning, ROI, success-probability, release, deployment, installation, target-main, or auto-merge claims.
 

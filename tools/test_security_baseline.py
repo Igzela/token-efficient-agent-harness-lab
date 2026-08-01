@@ -493,7 +493,37 @@ class TestDormantAutomationGuard(unittest.TestCase):
             repo = Path(tmpdir)
             (repo / "scripts").mkdir(parents=True)
             (repo / "scripts" / "wait.sh").write_text(
-                "gh run watch --exit-status\n"
+                "gh run watch --exit-status\nprintf 'still unbound after this line'\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertIn("gh run watch unbound", findings[0])
+
+    def test_run_list_limit_variants_are_checked_but_head_bound_list_passes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run list --json databaseId --limit=1\n"
+                "gh run list -L 1 --repo owner/repo\n"
+                "gh run list --limit 1 --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(
+                findings.count("scripts/wait.sh: gh run list --limit 1 pattern found"),
+                1,
+            )
+
+    def test_watch_repo_without_run_id_is_unbound(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run watch --repo owner/repo --exit-status\n"
             )
             findings = csb.check_dormant_automation_guard(
                 repo, ["scripts/wait.sh"]
@@ -623,7 +653,19 @@ class TestRemovedPluginSurfaceGuard(unittest.TestCase):
                 repo, ["engine/src/plugin.rs"]
             )
             self.assertEqual(len(findings), 1)
-            self.assertIn("legacy plugin trust tokens", findings[0])
+
+    def test_structural_plugin_trust_registry_fingerprint_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "renamed.rs").write_text(
+                "pub struct PluginTrustRegistry { permissions: Vec<String> }\n"
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/renamed.rs"]
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertIn("structural fingerprint", findings[0])
 
     def test_detects_unrestricted_comment(self):
         """The 'empty = unrestricted' trust semantic must be flagged."""
@@ -805,6 +847,22 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
             )
             self.assertEqual(findings, [])
 
+    def test_cfg_test_module_dead_code_blanket_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "test_support.rs").write_text(
+                "#[cfg(test)]\n"
+                "mod tests {\n"
+                "    #![allow(dead_code)]\n"
+                "    fn helper() {}\n"
+                "}\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/test_support.rs"]
+            )
+            self.assertEqual(findings, [])
+
     def test_conflicting_owner_claims_flagged(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
@@ -844,6 +902,22 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
                     repo, ["engine/src/executor.rs"]
                 )
                 self.assertEqual(findings, [])
+        finally:
+            csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST = original
+
+    def test_malformed_classification_allowlist_fails_closed(self):
+        original = csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
+        csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST = [
+            {"path": "engine/src/executor.rs", "classification": "wired"}
+        ]
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                repo = Path(tmpdir)
+                (repo / "engine" / "src").mkdir(parents=True)
+                findings = csb.check_dormant_surface_heuristics(
+                    repo, ["engine/src/executor.rs"]
+                )
+                self.assertTrue(any("missing owner" in finding for finding in findings))
         finally:
             csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST = original
 
