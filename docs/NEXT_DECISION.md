@@ -38,7 +38,7 @@ The owner has authorized and accepted the production runner repair (#322), the d
 
 ## Active Routing
 
-1. `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` — `IN_PROGRESS`: Draft PR #338; its exact head, CI, and review receipt must be refreshed from GitHub before Ready/merge. It corrects the PR #336 evidence classification, repairs the merged governance gate findings, and requires terminal `context-capsule` success before merge.
+1. `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` — `IN_PROGRESS`: Draft PR #339; its exact head, CI, and review receipt must be refreshed from GitHub before Ready/merge. It corrects the PR #336 evidence classification, repairs the merged governance gate findings, and requires terminal `context-capsule` success before merge.
 2. `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` — `BLOCKED_PREREQUISITE` on Packet A: repair pre-effect credential failure recovery while retaining the original durable operation identity and monotonic ProductTask version.
 3. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on Packets A and B: the owner-authorized clean reseal loop remains bounded to the three separately consumed attempts in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`.
 4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
@@ -72,7 +72,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #336 is merged as `17723bb66a1274498c32aef0f6cac85ad339efea`, but canonical acceptance is incomplete. Its run `30680937667` is recorded as `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure`, `failure_reason: PR merged before terminal required job`; Packet A repairs the material governance findings. It does not authorize a live task, provider call, spend, merge policy change, or any RWE/VDE reclassification.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, and delegated autonomous authority through PR #323. PR #325 is the accepted live-observed repair of the first attempt. Packet A (#338) is the current implementation frontier, Packet B follows it, and the clean live reseal remains blocked until both are accepted. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, and delegated autonomous authority through PR #323. PR #325 is the accepted live-observed repair of the first attempt. Packet A (#339) is the current implementation frontier, Packet B follows it, and the clean live reseal remains blocked until both are accepted. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -291,13 +291,13 @@ Immutable final execution manifests, separated delegated approval/output authori
 
 **State:** `IN_PROGRESS`
 
-**Owned PR:** #338, Draft; exact head is always read from GitHub before review/Ready/merge.
+**Owned PR:** #339, Draft; exact head is always read from GitHub before review/Ready/merge.
 
 **Prerequisite:** accepted main `1dac6d16f7a99faacb856d6c0cbdb5eed9fd881b`. Satisfied.
 
 Correct the false PR #336 CI claim and repair material governance findings from the independent complete-diff review of merge `17723bb66a1274498c32aef0f6cac85ad339efea`. The existing security-baseline owner remains the sole owner of automation, plugin-fingerprint, dormant-surface, allowlist, and review-receipt checks. The repair preserves fail-closed behavior, exact-head binding, terminal context-capsule requirements, provider-free CI, and reversible documentation rollback.
 
-Acceptance requires: the exact #336 distinction `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure`, `failure_reason: PR merged before terminal required job`; complete independent re-review of the merged #336 range; repaired allowlist/automation/plugin/dormant-surface/review-receipt tests; exact-head independent review of PR #338; canonical `tests` success including terminal capsule and artifact publication; and a post-merge full accepted-main verification run recorded truthfully.
+Acceptance requires: the exact #336 distinction `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure`, `failure_reason: PR merged before terminal required job`; complete independent re-review of the merged #336 range; repaired allowlist/automation/plugin/dormant-surface/review-receipt tests; exact-head independent review of PR #339; canonical `tests` success including terminal capsule and artifact publication; and a post-merge full accepted-main verification run recorded truthfully.
 
 ## Packet PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1
 

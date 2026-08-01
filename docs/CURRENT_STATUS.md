@@ -48,7 +48,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR.
 
 | PR | Purpose | Current status |
 |---|---|---|
-| #338 | Packet A: CI evidence and governance closeout repair | Draft, implementation frontier; exact head/CI/review remain unaccepted |
+| #339 | Packet A: CI evidence and governance closeout repair | Draft, implementation frontier; exact head/CI/review remain unaccepted |
 | #225 | Presentation-only Dashboard work | Independent and last |
 
 PR #297 and #298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304. PR #301, PR #306, PR #308, PR #310, PR #311, PR #313, and PR #315 are merged and accepted.
@@ -59,7 +59,7 @@ The later observed `Igzela/alters-lab#4` attempt is also `LIVE_OBSERVED_NOT_ACCE
 
 ## Current Product Verdict
 
-Product Golden Path authority includes the provider-free production runner through accepted PR #322, the provider-free delegated autonomous path through accepted PR #323 at schema v36, and the live-observed budget/CAS repair through accepted PR #325. Live execution remains default-off. The sole active implementation frontier is `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` in Draft PR #338; output recovery is its named prerequisite, and the PE7 live reseal packet remains blocked until both repair packets are accepted on main. No provider request or target effect is a default.
+Product Golden Path authority includes the provider-free production runner through accepted PR #322, the provider-free delegated autonomous path through accepted PR #323 at schema v36, and the live-observed budget/CAS repair through accepted PR #325. Live execution remains default-off. The sole active implementation frontier is `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` in Draft PR #339; output recovery is its named prerequisite, and the PE7 live reseal packet remains blocked until both repair packets are accepted on main. No provider request or target effect is a default.
 
 Fixture evidence proves the existing product sequence:
 
@@ -123,7 +123,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 ## Active Tracks
 
 - Provider-free Golden Path authority: PR #299 merged and accepted at schema v33; PR #300 merged and accepted at schema v34.
-- Product Golden Path preflight: PR #308 is merged and accepted at schema v35; PR #320–#322 complete managed-coding boundary, DeepSeek protocol, and production runner wiring; PR #323 completes the provider-free delegated autonomous path at schema v36; PR #325 is the accepted live-observed budget/CAS repair. Packet A (#338) is repairing CI evidence/governance, Packet B is repairing ProductTask output restart recovery, and the clean exact-main live reseal remains blocked until both are accepted.
+- Product Golden Path preflight: PR #308 is merged and accepted at schema v35; PR #320–#322 complete managed-coding boundary, DeepSeek protocol, and production runner wiring; PR #323 completes the provider-free delegated autonomous path at schema v36; PR #325 is the accepted live-observed budget/CAS repair. Packet A (#339) is repairing CI evidence/governance, Packet B is repairing ProductTask output restart recovery, and the clean exact-main live reseal remains blocked until both are accepted.
 - Context/CI governance: PR #302, PR #306, PR #310, PR #311, PR #313, PR #315, and PR #318 are merged and accepted; transport, fast feedback, and cache state remain non-authoritative.
 - VDE governance: the provider-free decision contract and artifact-schema validation are complete through PR #319; a real corpus, live observations, persistence automation, and Dashboard projection remain gated future work.
 - Observation adaptation: PR #301 is merged and accepted; observation-only and restacked onto accepted main.
@@ -131,7 +131,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 
 ## Open Work Coordination
 
-The active frontier is Packet A (#338), followed by Packet B. The clean exact-main Golden Path live reseal is blocked until both repair packets are accepted; this does not make RWE, Architecture Convergence, Level-2, Meta, or Dashboard work eligible. PR #225 remains presentation-only and last.
+The active frontier is Packet A (#339), followed by Packet B. The clean exact-main Golden Path live reseal is blocked until both repair packets are accepted; this does not make RWE, Architecture Convergence, Level-2, Meta, or Dashboard work eligible. PR #225 remains presentation-only and last.
 
 All active branches must refresh this main documentation convergence before final merge and must not overwrite it with stale branch-local status text.
 
