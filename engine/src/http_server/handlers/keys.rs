@@ -12,7 +12,8 @@ use crate::http_server::state::AxumApiState;
 use crate::http_server::{CreateApiKeyRequest, UpdateKeyScopesRequest, AXUM_API_SCHEMA_VERSION};
 use crate::infrastructure::auth::LOCAL_BOOTSTRAP_API_KEY_ID;
 use crate::storage::local_product_store::{
-    validate_managed_acceptance_role_scopes, ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_IDENTITY_DELEGATE,
+    validate_managed_acceptance_role_scopes, LocalProductStore, ALL_MANAGED_ACCEPTANCE_SCOPES,
+    SCOPE_IDENTITY_DELEGATE,
 };
 
 fn requests_managed_acceptance_scope(scopes: &[String]) -> bool {
@@ -73,6 +74,28 @@ fn require_key_target_authority(
     Ok(())
 }
 
+fn require_managed_actor_key_mutation_allowed(
+    store: &LocalProductStore,
+    context: &ApiRequestContext,
+) -> Result<(), ApiError> {
+    let actor_role = store
+        .get_api_key_metadata(&context.api_key_id)
+        .map_err(internal_error)?
+        .and_then(|metadata| {
+            metadata
+                .get("role")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
+    if matches!(actor_role.as_deref(), Some("reviewer" | "output_operator")) {
+        return Err(ApiError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "managed identities cannot mutate API key authority",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn api_list_keys(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
@@ -103,21 +126,7 @@ pub(crate) async fn api_create_key(
     validate_managed_acceptance_role_scopes(&request.role, &request.scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
     let store = require_store(&state)?;
-    let actor_role = store
-        .get_api_key_metadata(&context.api_key_id)
-        .map_err(internal_error)?
-        .and_then(|metadata| {
-            metadata
-                .get("role")
-                .and_then(|value| value.as_str())
-                .map(str::to_string)
-        });
-    if matches!(actor_role.as_deref(), Some("reviewer" | "output_operator")) {
-        return Err(ApiError::new(
-            axum::http::StatusCode::FORBIDDEN,
-            "managed identities cannot create or delegate API keys",
-        ));
-    }
+    require_managed_actor_key_mutation_allowed(&store, &context)?;
 
     let resolver = state.tenant_resolver.as_ref().cloned().ok_or_else(|| {
         ApiError::new(
@@ -207,6 +216,7 @@ pub(crate) async fn api_revoke_key(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
+    require_managed_actor_key_mutation_allowed(&store, &context)?;
     let role = store
         .get_api_key_metadata(&key_id)
         .map_err(internal_error)?
@@ -266,6 +276,7 @@ pub(crate) async fn api_rotate_key(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
+    require_managed_actor_key_mutation_allowed(&store, &context)?;
 
     let old_key = store
         .get_api_key_metadata(&key_id)
@@ -375,6 +386,7 @@ pub(crate) async fn api_delete_key(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
+    require_managed_actor_key_mutation_allowed(&store, &context)?;
     let role = store
         .get_api_key_metadata(&key_id)
         .map_err(internal_error)?
@@ -435,6 +447,7 @@ pub(crate) async fn api_update_key_scopes(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
+    require_managed_actor_key_mutation_allowed(&store, &context)?;
 
     let old_key = store
         .get_api_key_metadata(&key_id)

@@ -152,9 +152,17 @@ pub(crate) async fn api_product_task_detail(
     Extension(request_id): Extension<RequestId>,
     AxumPath(task_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    match store.get_product_task(&task_id).map_err(internal_error)? {
+    match store
+        .get_product_task_for_tenant(&task_id, &context.tenant_id)
+        .map_err(|error| {
+            if error.contains("tenant") {
+                ApiError::with_code(StatusCode::FORBIDDEN, "product_task_scope_mismatch", error)
+            } else {
+                internal_error(error)
+            }
+        })? {
         Some(task) => {
             // Enforce tenant scope from persisted state.
             // Auth context tenant is available via re-authorize path; for read we check when present.
@@ -205,7 +213,12 @@ pub(crate) async fn api_compile_and_schedule_product_task(
             error,
         )
     })?;
-    match store.compile_and_schedule_product_task(&task_id, &context.api_key_id, &available) {
+    match store.compile_and_schedule_product_task_for_tenant(
+        &context.tenant_id,
+        &task_id,
+        &context.api_key_id,
+        &available,
+    ) {
         Ok(result) => Ok((
             cors_headers(),
             Json(json!({
@@ -259,7 +272,8 @@ pub(crate) async fn api_finalize_product_task(
     >| {
         product_verification_commit_authority(scheduler_for_commit.as_ref(), operation)
     };
-    match store.finalize_product_task_after_execution_with_commit_authority(
+    match store.finalize_product_task_after_execution_with_commit_authority_for_tenant(
+        &context.tenant_id,
         &task_id,
         &context.api_key_id,
         &authority,
@@ -985,7 +999,11 @@ pub(crate) async fn api_recover_product_task_workspace(
         ));
     }
     let store = require_store(&state)?;
-    match store.recover_product_task_workspace(&task_id, &context.api_key_id) {
+    match store.recover_product_task_workspace_for_tenant(
+        &context.tenant_id,
+        &task_id,
+        &context.api_key_id,
+    ) {
         Ok(task) => Ok((
             cors_headers(),
             Json(json!({

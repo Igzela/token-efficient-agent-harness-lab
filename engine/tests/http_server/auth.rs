@@ -505,6 +505,7 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
                         "user_id": "managed-reviewer",
                         "role": "reviewer",
                         "scopes": [
+                            "team:admin",
                             "managed_acceptance:risk_acknowledge",
                             "managed_acceptance:delegated_manifest_approve"
                         ]
@@ -520,6 +521,7 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
     assert_eq!(
         reviewer_body["scopes"],
         json!([
+            "team:admin",
             "managed_acceptance:risk_acknowledge",
             "managed_acceptance:delegated_manifest_approve"
         ])
@@ -550,6 +552,69 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         .await
         .unwrap();
     assert_eq!(reviewer_create.status(), StatusCode::FORBIDDEN);
+
+    let ordinary = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "ordinary-key-managed-by-bootstrap",
+                        "role": "admin",
+                        "scopes": ["team:admin"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ordinary.status(), StatusCode::OK);
+    let ordinary_id = response_json(ordinary).await["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (method, uri, body) in [
+        (
+            Method::POST,
+            format!("/api/v1/keys/{ordinary_id}/revoke"),
+            Body::empty(),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/keys/{ordinary_id}/rotate"),
+            Body::empty(),
+        ),
+        (
+            Method::DELETE,
+            format!("/api/v1/keys/{ordinary_id}"),
+            Body::empty(),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/keys/{ordinary_id}/scopes"),
+            Body::from(json!({"scopes": ["team:admin"]}).to_string()),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {reviewer_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
 
     let operator = app
         .clone()

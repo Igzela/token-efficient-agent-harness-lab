@@ -4126,6 +4126,23 @@ impl LocalProductStore {
         }))
     }
 
+    pub(crate) fn finalize_product_task_after_execution_with_commit_authority_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+        runtime_authority: &dyn Fn() -> Result<ProductVerificationRuntimeAuthority, String>,
+        commit_authority: &dyn ProductArtifactCommitAuthority,
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.finalize_product_task_after_execution_with_commit_authority(
+            task_id,
+            actor,
+            runtime_authority,
+            commit_authority,
+        )
+    }
+
     /// Execute every declared verification command via CommandNodeExecutor (same allowlisted
     /// owner used by supervised-patch verification) and persist authoritative receipts.
     /// Never writes `result: pass` before execution. Fail-closed on any non-pass outcome.
@@ -4771,6 +4788,31 @@ impl LocalProductStore {
             return Err("product task tenant does not match authenticated principal".into());
         }
         Ok(())
+    }
+
+    pub(crate) fn get_product_task_for_tenant(
+        &self,
+        task_id: &str,
+        expected_tenant_id: &str,
+    ) -> Result<Option<Value>, String> {
+        let Some(task) = self.get_product_task(task_id)? else {
+            return Ok(None);
+        };
+        if task.get("tenant_id").and_then(Value::as_str) != Some(expected_tenant_id) {
+            return Err("product task tenant does not match authenticated principal".into());
+        }
+        Ok(Some(task))
+    }
+
+    pub(crate) fn compile_and_schedule_product_task_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+        available_executors: &[String],
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.compile_and_schedule_product_task(task_id, actor, available_executors)
     }
 
     /// HTTP/store boundary for approval. The tenant is derived from the
@@ -7237,6 +7279,16 @@ impl LocalProductStore {
             "product task workspace recovery retry exhausted while preparation remains active"
                 .to_string(),
         )
+    }
+
+    pub(crate) fn recover_product_task_workspace_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.recover_product_task_workspace(task_id, actor)
     }
 
     /// Execute the receipt-bound compensation path for a completed local
