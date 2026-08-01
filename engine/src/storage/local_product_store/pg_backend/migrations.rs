@@ -630,6 +630,8 @@ fn repair_pg_v36_delegated_plan_owner(
         .batch_execute(
             "ALTER TABLE managed_acceptance_delegations
                  ADD COLUMN IF NOT EXISTS product_task_id TEXT;
+             ALTER TABLE api_key_metadata
+                 ADD COLUMN IF NOT EXISTS tenant_id TEXT;
              ALTER TABLE workflow_plans
                  ADD COLUMN IF NOT EXISTS delegated_plan_owner_id TEXT;
              UPDATE workflow_plans
@@ -752,6 +754,16 @@ fn validate_pg_v36_schema(client: &mut impl postgres::GenericClient) -> Result<(
         return Err(format!(
             "PostgreSQL v36 schema missing workflow_plans column {}",
             super::super::migrations::V36_DELEGATED_PLAN_OWNER_COLUMN
+        ));
+    }
+    if !pg_column_exists(
+        client,
+        "api_key_metadata",
+        super::super::migrations::V36_API_KEY_TENANT_COLUMN,
+    )? {
+        return Err(format!(
+            "PostgreSQL v36 schema missing api_key_metadata column {}",
+            super::super::migrations::V36_API_KEY_TENANT_COLUMN
         ));
     }
     let owner_index_present = client
@@ -1766,7 +1778,7 @@ impl LocalProductStore {
             .map_err(|e| e.to_string())?;
             let archives = tx
                 .query(
-                    "SELECT delegation_sha256, body_json, proposal_sha256, proposal_json,
+                    "SELECT delegation_sha256, product_task_id, body_json, proposal_sha256, proposal_json,
                             status, total_cost_usd, manifest_approval_sha256,
                             manifest_approval_json, spend_body_sha256, spend_body_json,
                             spend_status, manifest_json, attempt_id, attempt_lease_id,
@@ -1783,26 +1795,27 @@ impl LocalProductStore {
                     super::super::migrations::build_v36_delegation_downgrade_archive(
                         super::super::migrations::V36DelegationArchiveSource {
                             delegation_sha256: row.get(0),
-                            body_json: row.get(1),
-                            proposal_sha256: row.get(2),
-                            proposal_json: row.get(3),
-                            status: row.get(4),
-                            total_cost_usd: row.get(5),
-                            manifest_approval_sha256: row.get(6),
-                            manifest_approval_json: row.get(7),
-                            spend_body_sha256: row.get(8),
-                            spend_body_json: row.get(9),
-                            spend_status: row.get(10),
-                            manifest_json: row.get(11),
-                            attempt_id: row.get(12),
-                            attempt_lease_id: row.get(13),
-                            attempt_lease_token: row.get(14),
-                            attempt_status: row.get(15),
-                            artifact_confirmation_sha256: row.get(16),
-                            artifact_confirmation_json: row.get(17),
-                            provider_request_journal_json: row.get(18),
-                            terminal_receipt_json: row.get(19),
-                            terminal_at: row.get(20),
+                            product_task_id: row.get(1),
+                            body_json: row.get(2),
+                            proposal_sha256: row.get(3),
+                            proposal_json: row.get(4),
+                            status: row.get(5),
+                            total_cost_usd: row.get(6),
+                            manifest_approval_sha256: row.get(7),
+                            manifest_approval_json: row.get(8),
+                            spend_body_sha256: row.get(9),
+                            spend_body_json: row.get(10),
+                            spend_status: row.get(11),
+                            manifest_json: row.get(12),
+                            attempt_id: row.get(13),
+                            attempt_lease_id: row.get(14),
+                            attempt_lease_token: row.get(15),
+                            attempt_status: row.get(16),
+                            artifact_confirmation_sha256: row.get(17),
+                            artifact_confirmation_json: row.get(18),
+                            provider_request_journal_json: row.get(19),
+                            terminal_receipt_json: row.get(20),
+                            terminal_at: row.get(21),
                         },
                     )
                 })

@@ -3113,7 +3113,7 @@ impl LocalProductStore {
         {
             return Err("bootstrap authority context is stale or mismatched".into());
         }
-        let canonical_reviewer = self.authenticate_managed_acceptance_principal(
+        let canonical_reviewer = self.authenticate_managed_acceptance_principal_for_tenant(
             reviewer.tenant_id(),
             reviewer.principal_id(),
             None,
@@ -3125,6 +3125,13 @@ impl LocalProductStore {
         {
             return Err("reissued reviewer principal is not an authenticated operator".into());
         }
+        if canonical_reviewer.role() != "reviewer" {
+            return Err("reissued identity must use the reviewer profile".into());
+        }
+        validate_managed_acceptance_role_scopes(
+            canonical_reviewer.role(),
+            canonical_reviewer.scopes(),
+        )?;
         canonical_reviewer.require_scope(SCOPE_DELEGATED_AUTONOMY)?;
         canonical_reviewer.require_scope(SCOPE_DELEGATED_MANIFEST_APPROVE)?;
         canonical_reviewer.require_scope(SCOPE_SPEND_AUTHORIZE)?;
@@ -4391,6 +4398,9 @@ impl LocalProductStore {
         let meta = self
             .get_api_key_metadata(LOCAL_BOOTSTRAP_API_KEY_ID)?
             .ok_or("canonical bootstrap key metadata is missing")?;
+        if meta.get("tenant_id").and_then(Value::as_str) != Some(tenant_id) {
+            return Err("canonical bootstrap key tenant binding is missing or invalid".into());
+        }
         if meta.get("revoked_at").and_then(Value::as_str).is_some() {
             return Err("canonical bootstrap key is revoked".into());
         }
@@ -4460,6 +4470,11 @@ impl LocalProductStore {
         let meta = self
             .get_api_key_metadata(key_id)?
             .ok_or_else(|| format!("api key {key_id} not found"))?;
+        if let Some(bound_tenant) = meta.get("tenant_id").and_then(Value::as_str) {
+            if bound_tenant != tenant_id {
+                return Err("api key tenant binding does not match requested tenant".into());
+            }
+        }
         if meta.get("revoked_at").and_then(Value::as_str).is_some() {
             return Err("api key revoked".into());
         }
@@ -4511,6 +4526,27 @@ impl LocalProductStore {
         // Must hold at least risk-ack scope to be usable as a managed-acceptance principal.
         principal.require_scope(SCOPE_RISK_ACKNOWLEDGE)?;
         let _ = self.touch_api_key_last_used(key_id);
+        Ok(principal)
+    }
+
+    /// Authenticate a canonical managed identity whose store record is
+    /// immutably bound to the requested tenant. Legacy fixture metadata may
+    /// omit tenant_id, so production identity-reissuance paths use this
+    /// stricter variant rather than accepting an unbound key.
+    pub fn authenticate_managed_acceptance_principal_for_tenant(
+        &self,
+        tenant_id: &str,
+        key_id: &str,
+        now_unix: Option<f64>,
+    ) -> Result<AuthenticatedPrincipal, String> {
+        let principal =
+            self.authenticate_managed_acceptance_principal(tenant_id, key_id, now_unix)?;
+        let metadata = self
+            .get_api_key_metadata(key_id)?
+            .ok_or_else(|| format!("api key {key_id} not found"))?;
+        if metadata.get("tenant_id").and_then(Value::as_str) != Some(tenant_id.trim()) {
+            return Err("canonical managed identity tenant binding is missing or invalid".into());
+        }
         Ok(principal)
     }
 
@@ -13956,7 +13992,8 @@ mod tests {
             .unwrap();
         let bootstrap_scopes = vec![SCOPE_IDENTITY_DELEGATE.to_string()];
         store
-            .record_api_key_metadata(
+            .record_api_key_metadata_for_tenant(
+                "local",
                 LOCAL_BOOTSTRAP_API_KEY_ID,
                 "local-admin",
                 "admin",
@@ -13972,9 +14009,24 @@ mod tests {
         store
             .persist_delegation_for_product_task(&principal, task_id, &delegation)
             .unwrap();
-        seed_key(&store, "bootstrap-reconcile-reissued");
+        let reviewer_scopes = vec![
+            SCOPE_RISK_ACKNOWLEDGE.to_string(),
+            SCOPE_DELEGATED_AUTONOMY.to_string(),
+            SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+            SCOPE_SPEND_AUTHORIZE.to_string(),
+        ];
+        store
+            .record_api_key_metadata_for_tenant(
+                "local",
+                "bootstrap-reconcile-reissued",
+                "reviewer-user",
+                "reviewer",
+                &reviewer_scopes,
+                "test-bootstrap",
+            )
+            .unwrap();
         let reissued_reviewer = store
-            .authenticate_managed_acceptance_principal(
+            .authenticate_managed_acceptance_principal_for_tenant(
                 "local",
                 "bootstrap-reconcile-reissued",
                 Some(1.0),
@@ -14075,6 +14127,62 @@ mod tests {
             .is_err());
         assert!(store
             .authenticate_bootstrap_identity_delegation_principal("foreign-tenant", Some(1.0))
+            .is_err());
+
+        store
+            .record_api_key_metadata_with_expiry_for_tenant(
+                "foreign",
+                "bootstrap-reconcile-foreign-reviewer",
+                "foreign-reviewer-user",
+                "reviewer",
+                &reviewer_scopes,
+                None,
+                "test-bootstrap",
+            )
+            .unwrap();
+        let foreign_reviewer = store
+            .authenticate_managed_acceptance_principal(
+                "foreign",
+                "bootstrap-reconcile-foreign-reviewer",
+                Some(1.0),
+            )
+            .unwrap();
+        assert!(store
+            .rebind_unadmitted_delegation_for_bootstrap(
+                &bootstrap,
+                task_id,
+                &delegation.delegation_id,
+                &foreign_reviewer,
+            )
+            .is_err());
+
+        store
+            .record_api_key_metadata_for_tenant(
+                "local",
+                "bootstrap-reconcile-operator-profile",
+                "operator-profile-user",
+                "operator",
+                &ALL_MANAGED_ACCEPTANCE_SCOPES
+                    .iter()
+                    .map(|scope| (*scope).to_string())
+                    .collect::<Vec<_>>(),
+                "test-bootstrap",
+            )
+            .unwrap();
+        let operator_profile = store
+            .authenticate_managed_acceptance_principal_for_tenant(
+                "local",
+                "bootstrap-reconcile-operator-profile",
+                Some(1.0),
+            )
+            .unwrap();
+        assert!(store
+            .rebind_unadmitted_delegation_for_bootstrap(
+                &bootstrap,
+                task_id,
+                &delegation.delegation_id,
+                &operator_profile,
+            )
             .is_err());
 
         let mut unbound = delegated_contract();

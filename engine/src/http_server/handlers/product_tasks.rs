@@ -1141,7 +1141,11 @@ pub(crate) async fn api_reconcile_unadmitted_delegated_product_task(
         .ok_or_else(|| delegated_request_error("reviewer_key_id is required"))?;
     let store = require_store(&state)?;
     let reviewer = store
-        .authenticate_managed_acceptance_principal(&context.tenant_id, reviewer_key_id, None)
+        .authenticate_managed_acceptance_principal_for_tenant(
+            &context.tenant_id,
+            reviewer_key_id,
+            None,
+        )
         .map_err(|error| delegated_api_error(&error, "delegated_reviewer_authentication_failed"))?;
     reviewer
         .require_scope(SCOPE_DELEGATED_AUTONOMY)

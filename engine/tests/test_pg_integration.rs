@@ -69,7 +69,7 @@ use engine::storage::local_product_store::{
     ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, RwePerTaskBudget,
     SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
     MANAGED_REVIEWER_KEY_SCOPES, SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_MANIFEST_APPROVE,
-    SCOPE_IDENTITY_DELEGATE, SCOPE_SPEND_AUTHORIZE,
+    SCOPE_IDENTITY_DELEGATE, SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -519,11 +519,13 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
 
     let reviewer_key_id = format!("pg-rebind-reviewer-{tag}");
     store
-        .record_api_key_metadata(
+        .record_api_key_metadata_for_tenant(
+            "local",
             &reviewer_key_id,
             "pg-rebind-reviewer",
-            "operator",
+            "reviewer",
             &[
+                SCOPE_RISK_ACKNOWLEDGE.to_string(),
                 SCOPE_DELEGATED_AUTONOMY.to_string(),
                 SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
                 SCOPE_SPEND_AUTHORIZE.to_string(),
@@ -532,11 +534,12 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
         )
         .unwrap();
     let principal = store
-        .authenticate_managed_acceptance_principal("local", &reviewer_key_id, Some(1.0))
+        .authenticate_managed_acceptance_principal_for_tenant("local", &reviewer_key_id, Some(1.0))
         .unwrap();
     let bootstrap_scopes = vec![SCOPE_IDENTITY_DELEGATE.to_string()];
     store
-        .record_api_key_metadata(
+        .record_api_key_metadata_for_tenant(
+            "local",
             LOCAL_BOOTSTRAP_API_KEY_ID,
             "local-admin",
             "admin",
@@ -4089,7 +4092,47 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
         .map(str::to_string)
         .collect(),
     };
-    store.persist_delegation(&principal, &delegation).unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(target_dir.path().join("docs")).unwrap();
+    std::fs::write(target_dir.path().join("docs/USER_GUIDE.md"), "pg test\n").unwrap();
+    let intake = ProductTaskIntakeRequest {
+        objective: "Run bounded delegated PostgreSQL test".into(),
+        target_id: format!("delegated-pg-test-{tag}"),
+        target_repo_path: target_dir.path().to_string_lossy().into_owned(),
+        source_kind: Some("local_folder".into()),
+        source_revision: "pg-delegated-source".into(),
+        source_tree_hash: None,
+        allowed_paths: vec!["docs/USER_GUIDE.md".into()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f docs/USER_GUIDE.md".into(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: "artifact_only".into(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["deterministic".into()],
+            prefer: Some("deterministic".into()),
+        },
+        budget: None,
+        risk_class: "low".into(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: Some(true),
+        idempotency_key: format!("delegated-pg-task-{tag}"),
+        expected_version: None,
+        tenant_id: Some("tenant-a".into()),
+        workspace_id: Some("default".into()),
+        workspace_mode: Some("local_folder".into()),
+    };
+    let product_task = store
+        .admit_product_task(
+            &validate_intake(&intake, "tenant-a", "default").unwrap(),
+            "pg-test",
+        )
+        .unwrap();
+    let product_task_id = product_task["task_id"].as_str().unwrap().to_owned();
+    store
+        .persist_delegation_for_product_task(&principal, &product_task_id, &delegation)
+        .unwrap();
     let target_sha = "6".repeat(40);
     let mut proposal = json!({
         "schema_version": "managed_proposal_manifest.v1",
@@ -4107,7 +4150,6 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
             proposal["manifest_sha256"].as_str().unwrap(),
         )
         .unwrap();
-    let product_task_id = format!("product-task-pg-{tag}");
     let workflow_id = format!("workflow-pg-{tag}");
     let attempt_id = format!("attempt-pg-{tag}");
     let manifest = derive_final_execution_manifest(

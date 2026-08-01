@@ -181,7 +181,8 @@ pub(crate) async fn api_create_key(
         let store = Arc::clone(&store);
         let key_id = key_id.clone();
         move || {
-            store.record_api_key_metadata_with_expiry(
+            store.record_api_key_metadata_with_expiry_for_tenant(
+                &context.tenant_id,
                 &key_id,
                 &user_id,
                 &role,

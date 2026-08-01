@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
@@ -12,7 +12,27 @@ impl LocalProductStore {
         scopes: &[String],
         actor: &str,
     ) -> Result<Value, String> {
-        self.record_api_key_metadata_with_expiry(key_id, user_id, role, scopes, None, actor)
+        self.record_api_key_metadata_with_tenant(key_id, user_id, role, None, scopes, None, actor)
+    }
+
+    pub fn record_api_key_metadata_for_tenant(
+        &self,
+        tenant_id: &str,
+        key_id: &str,
+        user_id: &str,
+        role: &str,
+        scopes: &[String],
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.record_api_key_metadata_with_tenant(
+            key_id,
+            user_id,
+            role,
+            Some(tenant_id),
+            scopes,
+            None,
+            actor,
+        )
     }
 
     pub fn record_api_key_metadata_with_expiry(
@@ -24,6 +44,45 @@ impl LocalProductStore {
         expires_at: Option<f64>,
         actor: &str,
     ) -> Result<Value, String> {
+        self.record_api_key_metadata_with_tenant(
+            key_id, user_id, role, None, scopes, expires_at, actor,
+        )
+    }
+
+    pub fn record_api_key_metadata_with_expiry_for_tenant(
+        &self,
+        tenant_id: &str,
+        key_id: &str,
+        user_id: &str,
+        role: &str,
+        scopes: &[String],
+        expires_at: Option<f64>,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.record_api_key_metadata_with_tenant(
+            key_id,
+            user_id,
+            role,
+            Some(tenant_id),
+            scopes,
+            expires_at,
+            actor,
+        )
+    }
+
+    fn record_api_key_metadata_with_tenant(
+        &self,
+        key_id: &str,
+        user_id: &str,
+        role: &str,
+        tenant_id: Option<&str>,
+        scopes: &[String],
+        expires_at: Option<f64>,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if tenant_id.is_some_and(|tenant| tenant.trim().is_empty()) {
+            return Err("tenant_id must not be empty".into());
+        }
         let scopes_json = serde_json::to_string(scopes).map_err(|e| e.to_string())?;
         let expires_at_text = expires_at.map(|value| value.to_string());
         match &self.db {
@@ -31,11 +90,12 @@ impl LocalProductStore {
                 let now = self.now();
                 conn.execute(
                     "INSERT INTO api_key_metadata
-                     (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at, expires_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)
+                     (key_id, user_id, role, tenant_id, scopes_json, created_at, created_by, revoked_at, expires_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)
                      ON CONFLICT(key_id) DO UPDATE SET
                         user_id = excluded.user_id,
                         role = excluded.role,
+                        tenant_id = excluded.tenant_id,
                         scopes_json = excluded.scopes_json,
                         created_by = excluded.created_by,
                         expires_at = excluded.expires_at",
@@ -43,6 +103,7 @@ impl LocalProductStore {
                         key_id,
                         user_id,
                         role,
+                        tenant_id,
                         scopes_json,
                         now,
                         actor,
@@ -62,6 +123,7 @@ impl LocalProductStore {
                     "key_id": key_id,
                     "user_id": user_id,
                     "role": role,
+                    "tenant_id": tenant_id,
                     "scopes": scopes,
                     "created_at": now,
                     "created_by": actor,
@@ -76,11 +138,12 @@ impl LocalProductStore {
                     transaction
                         .execute(
                             "INSERT INTO api_key_metadata
-                     (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at, expires_at)
-                     VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)
+                     (key_id, user_id, role, tenant_id, scopes_json, created_at, created_by, revoked_at, expires_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8)
                      ON CONFLICT(key_id) DO UPDATE SET
                         user_id = excluded.user_id,
                         role = excluded.role,
+                        tenant_id = excluded.tenant_id,
                         scopes_json = excluded.scopes_json,
                         created_by = excluded.created_by,
                         expires_at = excluded.expires_at",
@@ -88,6 +151,7 @@ impl LocalProductStore {
                                 &key_id,
                                 &user_id,
                                 &role,
+                                &tenant_id,
                                 &scopes_json,
                                 &now,
                                 &actor,
@@ -107,6 +171,7 @@ impl LocalProductStore {
                         "key_id": key_id,
                         "user_id": user_id,
                         "role": role,
+                        "tenant_id": tenant_id,
                         "scopes": scopes,
                         "created_at": now,
                         "created_by": actor,
@@ -121,26 +186,27 @@ impl LocalProductStore {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let result = conn.query_row(
-                    "SELECT key_id, user_id, role, scopes_json, created_at, created_by,
+                    "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
                             revoked_at, last_used_at, expires_at
                      FROM api_key_metadata WHERE key_id = ?1",
                     params![key_id],
                     |row| {
-                        let scopes_text: String = row.get(3)?;
+                        let scopes_text: String = row.get(4)?;
                         let scopes: Vec<String> =
                             serde_json::from_str(&scopes_text).unwrap_or_default();
                         let expires_at = row
-                            .get::<_, Option<String>>(8)?
+                            .get::<_, Option<String>>(9)?
                             .and_then(|value| value.parse::<f64>().ok());
                         Ok(json!({
                             "key_id": row.get::<_, String>(0)?,
                             "user_id": row.get::<_, String>(1)?,
                             "role": row.get::<_, String>(2)?,
+                            "tenant_id": row.get::<_, Option<String>>(3)?,
                             "scopes": scopes,
-                            "created_at": row.get::<_, String>(4)?,
-                            "created_by": row.get::<_, String>(5)?,
-                            "revoked_at": row.get::<_, Option<String>>(6)?,
-                            "last_used_at": row.get::<_, Option<String>>(7)?,
+                            "created_at": row.get::<_, String>(5)?,
+                            "created_by": row.get::<_, String>(6)?,
+                            "revoked_at": row.get::<_, Option<String>>(7)?,
+                            "last_used_at": row.get::<_, Option<String>>(8)?,
                             "expires_at": expires_at,
                         }))
                     },
@@ -155,7 +221,7 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let rows = client
                     .query(
-                        "SELECT key_id, user_id, role, scopes_json, created_at, created_by,
+                        "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
                                 revoked_at, last_used_at, expires_at
                          FROM api_key_metadata WHERE key_id = $1",
                         &[&key_id],
@@ -165,20 +231,21 @@ impl LocalProductStore {
                     return Ok(None);
                 }
                 let row = &rows[0];
-                let scopes_text: String = row.get(3);
+                let scopes_text: String = row.get(4);
                 let scopes: Vec<String> = serde_json::from_str(&scopes_text).unwrap_or_default();
                 let expires_at = row
-                    .get::<_, Option<String>>(8)
+                    .get::<_, Option<String>>(9)
                     .and_then(|value| value.parse::<f64>().ok());
                 Ok(Some(json!({
                     "key_id": row.get::<_, String>(0),
                     "user_id": row.get::<_, String>(1),
                     "role": row.get::<_, String>(2),
+                    "tenant_id": row.get::<_, Option<String>>(3),
                     "scopes": scopes,
-                    "created_at": row.get::<_, String>(4),
-                    "created_by": row.get::<_, String>(5),
-                    "revoked_at": row.get::<_, Option<String>>(6),
-                    "last_used_at": row.get::<_, Option<String>>(7),
+                    "created_at": row.get::<_, String>(5),
+                    "created_by": row.get::<_, String>(6),
+                    "revoked_at": row.get::<_, Option<String>>(7),
+                    "last_used_at": row.get::<_, Option<String>>(8),
                     "expires_at": expires_at,
                 })))
             }),
@@ -190,7 +257,7 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT key_id, user_id, role, scopes_json, created_at, created_by,
+                        "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
                                 revoked_at, last_used_at, expires_at
                          FROM api_key_metadata
                          ORDER BY created_at DESC
@@ -199,21 +266,22 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?;
                 let rows = stmt
                     .query_map(params![limit], |row| {
-                        let scopes_text: String = row.get(3)?;
+                        let scopes_text: String = row.get(4)?;
                         let scopes: Vec<String> =
                             serde_json::from_str(&scopes_text).unwrap_or_default();
                         let expires_at = row
-                            .get::<_, Option<String>>(8)?
+                            .get::<_, Option<String>>(9)?
                             .and_then(|value| value.parse::<f64>().ok());
                         Ok(json!({
                             "key_id": row.get::<_, String>(0)?,
                             "user_id": row.get::<_, String>(1)?,
                             "role": row.get::<_, String>(2)?,
+                            "tenant_id": row.get::<_, Option<String>>(3)?,
                             "scopes": scopes,
-                            "created_at": row.get::<_, String>(4)?,
-                            "created_by": row.get::<_, String>(5)?,
-                            "revoked_at": row.get::<_, Option<String>>(6)?,
-                            "last_used_at": row.get::<_, Option<String>>(7)?,
+                            "created_at": row.get::<_, String>(5)?,
+                            "created_by": row.get::<_, String>(6)?,
+                            "revoked_at": row.get::<_, Option<String>>(7)?,
+                            "last_used_at": row.get::<_, Option<String>>(8)?,
                             "expires_at": expires_at,
                         }))
                     })
@@ -224,7 +292,7 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let rows = client
                     .query(
-                        "SELECT key_id, user_id, role, scopes_json, created_at, created_by,
+                        "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
                                 revoked_at, last_used_at, expires_at
                          FROM api_key_metadata
                          ORDER BY created_at DESC
@@ -234,21 +302,22 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?;
                 let mut result = Vec::new();
                 for row in &rows {
-                    let scopes_text: String = row.get(3);
+                    let scopes_text: String = row.get(4);
                     let scopes: Vec<String> =
                         serde_json::from_str(&scopes_text).unwrap_or_default();
                     let expires_at = row
-                        .get::<_, Option<String>>(8)
+                        .get::<_, Option<String>>(9)
                         .and_then(|value| value.parse::<f64>().ok());
                     result.push(json!({
                         "key_id": row.get::<_, String>(0),
                         "user_id": row.get::<_, String>(1),
                         "role": row.get::<_, String>(2),
+                        "tenant_id": row.get::<_, Option<String>>(3),
                         "scopes": scopes,
-                        "created_at": row.get::<_, String>(4),
-                        "created_by": row.get::<_, String>(5),
-                        "revoked_at": row.get::<_, Option<String>>(6),
-                        "last_used_at": row.get::<_, Option<String>>(7),
+                        "created_at": row.get::<_, String>(5),
+                        "created_by": row.get::<_, String>(6),
+                        "revoked_at": row.get::<_, Option<String>>(7),
+                        "last_used_at": row.get::<_, Option<String>>(8),
                         "expires_at": expires_at,
                     }));
                 }
@@ -320,6 +389,14 @@ impl LocalProductStore {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_sqlite_transaction(|conn| {
                 let now = self.now();
+                let old_tenant_id: Option<String> = conn
+                    .query_row(
+                        "SELECT tenant_id FROM api_key_metadata WHERE key_id=?1",
+                        params![old_key_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
                 let revoked = conn
                     .execute(
                         "UPDATE api_key_metadata SET revoked_at = ?1
@@ -332,12 +409,13 @@ impl LocalProductStore {
                 }
                 conn.execute(
                     "INSERT INTO api_key_metadata
-                     (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at, expires_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)",
+                     (key_id, user_id, role, tenant_id, scopes_json, created_at, created_by, revoked_at, expires_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
                     params![
                         new_key_id,
                         user_id,
                         role,
+                        old_tenant_id,
                         scopes_json,
                         now,
                         actor,
@@ -367,6 +445,13 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut transaction = client.transaction().map_err(|e| e.to_string())?;
                 let now = self.now();
+                let old_tenant_id: Option<String> = transaction
+                    .query_opt(
+                        "SELECT tenant_id FROM api_key_metadata WHERE key_id=$1",
+                        &[&old_key_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .map(|row| row.get(0));
                 let revoked = transaction
                     .execute(
                         "UPDATE api_key_metadata SET revoked_at = $1
@@ -381,12 +466,13 @@ impl LocalProductStore {
                 transaction
                     .execute(
                         "INSERT INTO api_key_metadata
-                         (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at, expires_at)
-                         VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)",
+                         (key_id, user_id, role, tenant_id, scopes_json, created_at, created_by, revoked_at, expires_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8)",
                         &[
                             &new_key_id,
                             &user_id,
                             &role,
+                            &old_tenant_id,
                             &scopes_json,
                             &now,
                             &actor,

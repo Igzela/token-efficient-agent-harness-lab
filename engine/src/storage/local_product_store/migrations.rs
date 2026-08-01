@@ -68,6 +68,7 @@ pub(super) const V35_TABLES: [&str; 1] = ["product_task_workspace_preparations"]
 pub(super) const V36_TABLES: [&str; 1] = ["managed_acceptance_delegations"];
 pub(super) const V36_DELEGATED_PLAN_OWNER_COLUMN: &str = "delegated_plan_owner_id";
 pub(super) const V36_DELEGATED_PLAN_OWNER_INDEX: &str = "idx_workflow_plans_delegated_owner";
+pub(super) const V36_API_KEY_TENANT_COLUMN: &str = "tenant_id";
 pub(super) const V36_COLUMNS: [&str; 37] = [
     "delegation_id",
     "tenant_id",
@@ -116,6 +117,7 @@ pub(super) const V36_INDEXES: [&str; 4] = [
 
 pub(super) struct V36DelegationArchiveSource {
     pub delegation_sha256: String,
+    pub product_task_id: Option<String>,
     pub body_json: String,
     pub proposal_sha256: Option<String>,
     pub proposal_json: Option<String>,
@@ -322,6 +324,7 @@ pub(super) fn build_v36_delegation_downgrade_archive(
     }))?;
     let source_evidence = json!({
         "delegation_sha256": source.delegation_sha256,
+        "product_task_id": source.product_task_id,
         "proposal_sha256": proposal_sha256,
         "final_manifest_sha256": final_manifest_sha256,
         "manifest_approval_sha256": manifest_approval_sha256,
@@ -719,11 +722,22 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_created ON scheduler_feedback(
             rows.filter_map(|r| r.ok()).collect()
         };
         if !columns.contains(&"last_used_at".to_string()) {
-            conn.execute_batch(
-                "ALTER TABLE api_key_metadata ADD COLUMN last_used_at TEXT;
-                 ALTER TABLE api_key_metadata ADD COLUMN expires_at TEXT;",
+            conn.execute(
+                "ALTER TABLE api_key_metadata ADD COLUMN last_used_at TEXT",
+                [],
             )
             .map_err(|e| e.to_string())?;
+        }
+        if !columns.contains(&"expires_at".to_string()) {
+            conn.execute(
+                "ALTER TABLE api_key_metadata ADD COLUMN expires_at TEXT",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !columns.contains(&V36_API_KEY_TENANT_COLUMN.to_string()) {
+            conn.execute("ALTER TABLE api_key_metadata ADD COLUMN tenant_id TEXT", [])
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -1253,7 +1267,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
             let archives = {
                 let mut statement = tx
                     .prepare(
-                        "SELECT delegation_sha256, body_json, proposal_sha256, proposal_json,
+                        "SELECT delegation_sha256, product_task_id, body_json, proposal_sha256, proposal_json,
                                 status, total_cost_usd, manifest_approval_sha256,
                                 manifest_approval_json, spend_body_sha256, spend_body_json,
                                 spend_status, manifest_json, attempt_id, attempt_lease_id,
@@ -1268,26 +1282,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                     .query_map([], |row| {
                         Ok(V36DelegationArchiveSource {
                             delegation_sha256: row.get(0)?,
-                            body_json: row.get(1)?,
-                            proposal_sha256: row.get(2)?,
-                            proposal_json: row.get(3)?,
-                            status: row.get(4)?,
-                            total_cost_usd: row.get(5)?,
-                            manifest_approval_sha256: row.get(6)?,
-                            manifest_approval_json: row.get(7)?,
-                            spend_body_sha256: row.get(8)?,
-                            spend_body_json: row.get(9)?,
-                            spend_status: row.get(10)?,
-                            manifest_json: row.get(11)?,
-                            attempt_id: row.get(12)?,
-                            attempt_lease_id: row.get(13)?,
-                            attempt_lease_token: row.get(14)?,
-                            attempt_status: row.get(15)?,
-                            artifact_confirmation_sha256: row.get(16)?,
-                            artifact_confirmation_json: row.get(17)?,
-                            provider_request_journal_json: row.get(18)?,
-                            terminal_receipt_json: row.get(19)?,
-                            terminal_at: row.get(20)?,
+                            product_task_id: row.get(1)?,
+                            body_json: row.get(2)?,
+                            proposal_sha256: row.get(3)?,
+                            proposal_json: row.get(4)?,
+                            status: row.get(5)?,
+                            total_cost_usd: row.get(6)?,
+                            manifest_approval_sha256: row.get(7)?,
+                            manifest_approval_json: row.get(8)?,
+                            spend_body_sha256: row.get(9)?,
+                            spend_body_json: row.get(10)?,
+                            spend_status: row.get(11)?,
+                            manifest_json: row.get(12)?,
+                            attempt_id: row.get(13)?,
+                            attempt_lease_id: row.get(14)?,
+                            attempt_lease_token: row.get(15)?,
+                            attempt_status: row.get(16)?,
+                            artifact_confirmation_sha256: row.get(17)?,
+                            artifact_confirmation_json: row.get(18)?,
+                            provider_request_journal_json: row.get(19)?,
+                            terminal_receipt_json: row.get(20)?,
+                            terminal_at: row.get(21)?,
                         })
                     })
                     .map_err(|error| error.to_string())?
@@ -2743,6 +2758,12 @@ fn validate_sqlite_v36_schema(conn: &Connection) -> Result<(), String> {
             V36_DELEGATED_PLAN_OWNER_COLUMN
         ));
     }
+    if !column_exists(conn, "api_key_metadata", V36_API_KEY_TENANT_COLUMN)? {
+        return Err(format!(
+            "SQLite v36 schema missing api_key_metadata column {}",
+            V36_API_KEY_TENANT_COLUMN
+        ));
+    }
     let owner_index_exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
@@ -2760,6 +2781,10 @@ fn validate_sqlite_v36_schema(conn: &Connection) -> Result<(), String> {
 }
 
 fn repair_sqlite_v36_delegated_plan_owner(conn: &Connection) -> Result<(), String> {
+    if !column_exists(conn, "api_key_metadata", V36_API_KEY_TENANT_COLUMN)? {
+        conn.execute("ALTER TABLE api_key_metadata ADD COLUMN tenant_id TEXT", [])
+            .map_err(|error| format!("v36 API-key tenant binding repair failed: {error}"))?;
+    }
     if !column_exists(conn, "managed_acceptance_delegations", "product_task_id")? {
         conn.execute(
             "ALTER TABLE managed_acceptance_delegations ADD COLUMN product_task_id TEXT",
@@ -3720,7 +3745,7 @@ mod tests {
                 connection
                     .execute(
                         "INSERT INTO managed_acceptance_delegations (
-                            delegation_id, tenant_id, principal_kind, principal_id,
+                            delegation_id, tenant_id, product_task_id, principal_kind, principal_id,
                             manifest_approver_id, artifact_confirmer_id, attempt_activator_id,
                             delegation_sha256, body_json, proposal_sha256, proposal_json,
                             status, executions_allowed, executions_used, max_total_cost_usd,
@@ -3732,7 +3757,7 @@ mod tests {
                             terminal_receipt_json, created_at, updated_at, expires_at,
                             terminal_at, revoked_at
                          ) VALUES (
-                            'delegation-terminal', 'tenant-sensitive', 'operator_api_key',
+                            'delegation-terminal', 'tenant-sensitive', 'task-terminal', 'operator_api_key',
                             'principal-sensitive', 'approver-sensitive', 'confirmer-sensitive',
                             'activator-sensitive', ?1, ?2, ?3, ?4, ?5, 1, 1, 0.5, 0.125,
                             'spend-sensitive', ?6, ?7, ?8, ?9, ?10, ?11,
@@ -3812,6 +3837,10 @@ mod tests {
         assert_eq!(
             archive["source_evidence"]["provider_request_status_counts"]["succeeded"],
             1
+        );
+        assert_eq!(
+            archive["source_evidence"]["product_task_id"],
+            "task-terminal"
         );
         let mut unhashed = archive.clone();
         let archive_sha = unhashed

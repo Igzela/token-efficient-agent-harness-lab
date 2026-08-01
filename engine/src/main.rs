@@ -98,7 +98,8 @@ fn main() {
             .upsert_team_member("local-admin", "Local Admin", "admin")
             .expect("failed to record local admin team member");
         store
-            .record_api_key_metadata(
+            .record_api_key_metadata_for_tenant(
+                "local",
                 "local-admin-env",
                 "local-admin",
                 "admin",
