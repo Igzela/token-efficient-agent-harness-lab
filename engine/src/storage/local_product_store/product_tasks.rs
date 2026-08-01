@@ -5725,10 +5725,22 @@ impl LocalProductStore {
         pull_request: &Value,
         actor: &str,
     ) -> Result<Value, String> {
+        let approval_id = self
+            .get_supervised_patch_artifact(artifact_id)?
+            .and_then(|artifact| {
+                artifact
+                    .pointer("/product_output_operation/approval_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .ok_or_else(|| "Draft PR completion approval identity missing".to_string())?;
         let operation = self.complete_product_output_draft_pr(
             artifact_id,
             operation_id,
             expected_operation_version,
+            task_id,
+            &approval_id,
+            expected_task_version,
             pull_request,
             actor,
         )?;
@@ -6788,6 +6800,12 @@ impl LocalProductStore {
                         .get("current_version")
                         .and_then(Value::as_u64)
                         .ok_or_else(|| "product output operation version missing".to_string())?,
+                    task_id,
+                    approval_binding
+                        .get("approval_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "product output approval identity missing".to_string())?,
+                    expected_task_version,
                     &published.commit_sha,
                     actor,
                 )?;

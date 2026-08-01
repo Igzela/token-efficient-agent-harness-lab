@@ -2469,46 +2469,57 @@ impl LocalProductStore {
                         .and_then(Value::as_str)
                         .unwrap_or("pending")
                         .to_string();
-                    let action = if operation.get("state").and_then(Value::as_str)
-                        == Some("completed")
-                    {
-                        "reused"
-                    } else if branch_status == "completed" && pr_status == "completed" {
-                        "reconciliation_required"
-                    } else if branch_status == "completed" {
-                        let pr = operation
-                            .get("pr_create")
-                            .ok_or_else(|| "product output PR phase missing".to_string())?;
-                        if pr_status == "in_progress"
-                            && product_output_phase_claim_is_current(pr, now)?
-                        {
-                            "operation_in_progress"
-                        } else {
-                            claim_product_output_phase(&mut operation, "pr_create", actor, now)?;
-                            if pr_status == "outcome_unknown" {
-                                "reconcile_pr_only"
+                    let action =
+                        if operation.get("state").and_then(Value::as_str) == Some("completed") {
+                            "reused"
+                        } else if branch_status == "completed" && pr_status == "completed" {
+                            "reconciliation_required"
+                        } else if branch_status == "completed" {
+                            let pr = operation
+                                .get("pr_create")
+                                .ok_or_else(|| "product output PR phase missing".to_string())?;
+                            if pr_status == "in_progress"
+                                && product_output_phase_claim_is_current(pr, now)?
+                            {
+                                "operation_in_progress"
                             } else {
-                                "create_or_reconcile_pr"
+                                claim_product_output_phase(
+                                    &mut operation,
+                                    "pr_create",
+                                    actor,
+                                    now,
+                                    expected_task_version,
+                                )?;
+                                if pr_status == "outcome_unknown" {
+                                    "reconcile_pr_only"
+                                } else {
+                                    "create_or_reconcile_pr"
+                                }
                             }
-                        }
-                    } else if matches!(
-                        branch_status,
-                        "in_progress" | "outcome_unknown" | "failed_known"
-                    ) {
-                        let branch = operation
-                            .get("branch_push")
-                            .ok_or_else(|| "product output branch phase missing".to_string())?;
-                        if branch_status == "in_progress"
-                            && product_output_phase_claim_is_current(branch, now)?
-                        {
-                            "operation_in_progress"
+                        } else if matches!(
+                            branch_status,
+                            "in_progress" | "outcome_unknown" | "failed_known"
+                        ) {
+                            let branch = operation
+                                .get("branch_push")
+                                .ok_or_else(|| "product output branch phase missing".to_string())?;
+                            if branch_status == "in_progress"
+                                && product_output_phase_claim_is_current(branch, now)?
+                            {
+                                "operation_in_progress"
+                            } else {
+                                claim_product_output_phase(
+                                    &mut operation,
+                                    "branch_push",
+                                    actor,
+                                    now,
+                                    expected_task_version,
+                                )?;
+                                "push_or_reconcile_branch"
+                            }
                         } else {
-                            claim_product_output_phase(&mut operation, "branch_push", actor, now)?;
-                            "push_or_reconcile_branch"
-                        }
-                    } else {
-                        "reconciliation_required"
-                    };
+                            "reconciliation_required"
+                        };
                     if matches!(
                         action,
                         "create_or_reconcile_pr" | "reconcile_pr_only" | "push_or_reconcile_branch"
@@ -2548,6 +2559,7 @@ impl LocalProductStore {
                         "status": "in_progress",
                         "claimed_at": now,
                         "claimed_by": actor,
+                        "claimed_task_version": expected_task_version,
                         "commit_sha": Value::Null,
                         "completed_at": Value::Null,
                     },
@@ -3164,11 +3176,19 @@ impl LocalProductStore {
         artifact_id: &str,
         operation_id: &str,
         expected_operation_version: u64,
+        task_id: &str,
+        approval_id: &str,
+        expected_task_version: u64,
         commit_sha: &str,
         actor: &str,
     ) -> Result<Value, String> {
-        let authority_request =
-            self.current_product_output_authority_request(artifact_id, operation_id, "draft_pr")?;
+        let authority_request = Self::product_output_authority_request(
+            task_id,
+            artifact_id,
+            approval_id,
+            "draft_pr",
+            expected_task_version,
+        );
         self.mutate_product_output_operation(
             artifact_id,
             actor,
@@ -3181,6 +3201,14 @@ impl LocalProductStore {
                 if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
                     return Err("product output operation identity mismatch".to_string());
                 }
+                validate_product_output_phase_binding(
+                    operation,
+                    "branch_push",
+                    task_id,
+                    approval_id,
+                    expected_task_version,
+                    false,
+                )?;
                 require_product_output_operation_version(operation, expected_operation_version)?;
                 let branch = operation
                     .get_mut("branch_push")
@@ -3215,6 +3243,9 @@ impl LocalProductStore {
         artifact_id: &str,
         operation_id: &str,
         expected_operation_version: u64,
+        task_id: &str,
+        approval_id: &str,
+        expected_task_version: u64,
         pull_request: &Value,
         actor: &str,
     ) -> Result<Value, String> {
@@ -3240,8 +3271,33 @@ impl LocalProductStore {
         {
             return Err("Draft PR receipt is incomplete".to_string());
         }
-        let authority_request =
-            self.current_product_output_authority_request(artifact_id, operation_id, "draft_pr")?;
+        let task_replay_binding = self.get_product_task(task_id)?.map(|task| {
+            let status = task.get("status").and_then(Value::as_str);
+            let version = task.get("version").and_then(Value::as_u64);
+            (
+                status == Some("output_pending") && version == Some(expected_task_version),
+                status == Some("completed") && version == expected_task_version.checked_add(1),
+            )
+        });
+        let terminal_rebind = task_replay_binding
+            .map(|(terminal_rebind, _)| terminal_rebind)
+            .unwrap_or(false);
+        let allow_completed_idempotent = task_replay_binding
+            .map(|(_, allow_completed_idempotent)| allow_completed_idempotent)
+            .unwrap_or(false);
+        let mut authority_request = Self::product_output_authority_request(
+            task_id,
+            artifact_id,
+            approval_id,
+            "draft_pr",
+            expected_task_version,
+        );
+        if terminal_rebind {
+            authority_request["terminal_rebind"] = json!(true);
+        }
+        if allow_completed_idempotent {
+            authority_request["allow_completed_idempotent"] = json!(true);
+        }
         self.mutate_product_output_operation(
             artifact_id,
             actor,
@@ -3267,6 +3323,17 @@ impl LocalProductStore {
                 {
                     return Ok(operation.clone());
                 }
+                validate_product_output_phase_binding(
+                    operation,
+                    "pr_create",
+                    task_id,
+                    approval_id,
+                    expected_task_version,
+                    authority_request
+                        .get("terminal_rebind")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                )?;
                 require_product_output_operation_version(operation, expected_operation_version)?;
                 if operation
                     .pointer("/branch_push/status")
@@ -3436,11 +3503,19 @@ impl LocalProductStore {
         artifact_id: &str,
         operation_id: &str,
         expected_operation_version: u64,
+        task_id: &str,
+        approval_id: &str,
+        expected_task_version: u64,
         actor: &str,
         reason: &str,
     ) -> Result<Value, String> {
-        let authority_request =
-            self.current_product_output_authority_request(artifact_id, operation_id, "draft_pr")?;
+        let authority_request = Self::product_output_authority_request(
+            task_id,
+            artifact_id,
+            approval_id,
+            "draft_pr",
+            expected_task_version,
+        );
         self.mutate_product_output_operation(
             artifact_id,
             actor,
@@ -3453,6 +3528,14 @@ impl LocalProductStore {
                 if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
                     return Err("product output operation identity mismatch".to_string());
                 }
+                validate_product_output_phase_binding(
+                    operation,
+                    "pr_create",
+                    task_id,
+                    approval_id,
+                    expected_task_version,
+                    false,
+                )?;
                 require_product_output_operation_version(operation, expected_operation_version)?;
                 let pr = operation
                     .get_mut("pr_create")
@@ -3491,14 +3574,13 @@ impl LocalProductStore {
         actor: &str,
         reason: &str,
     ) -> Result<Value, String> {
-        let authority_request = json!({
-            "schema_version": "product_output_authority_request.v1",
-            "product_task_id": task_id,
-            "artifact_id": artifact_id,
-            "approval_id": approval_id,
-            "output_intent": "draft_pr",
-            "expected_task_version": expected_task_version,
-        });
+        let authority_request = Self::product_output_authority_request(
+            task_id,
+            artifact_id,
+            approval_id,
+            "draft_pr",
+            expected_task_version,
+        );
         self.mutate_product_output_operation(
             artifact_id,
             actor,
@@ -3511,6 +3593,14 @@ impl LocalProductStore {
                 if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
                     return Err("product output operation identity mismatch".to_string());
                 }
+                validate_product_output_phase_binding(
+                    operation,
+                    "branch_push",
+                    task_id,
+                    approval_id,
+                    expected_task_version,
+                    false,
+                )?;
                 require_product_output_operation_version(operation, expected_operation_version)?;
                 let branch = operation
                     .get_mut("branch_push")
@@ -3549,14 +3639,13 @@ impl LocalProductStore {
         actor: &str,
         reason: &str,
     ) -> Result<Value, String> {
-        let authority_request = json!({
-            "schema_version": "product_output_authority_request.v1",
-            "product_task_id": task_id,
-            "artifact_id": artifact_id,
-            "approval_id": approval_id,
-            "output_intent": "draft_pr",
-            "expected_task_version": expected_task_version,
-        });
+        let authority_request = Self::product_output_authority_request(
+            task_id,
+            artifact_id,
+            approval_id,
+            "draft_pr",
+            expected_task_version,
+        );
         self.mutate_product_output_operation(
             artifact_id,
             actor,
@@ -3569,6 +3658,14 @@ impl LocalProductStore {
                 if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
                     return Err("product output operation identity mismatch".to_string());
                 }
+                validate_product_output_phase_binding(
+                    operation,
+                    "branch_push",
+                    task_id,
+                    approval_id,
+                    expected_task_version,
+                    false,
+                )?;
                 require_product_output_operation_version(operation, expected_operation_version)?;
                 let branch = operation
                     .get_mut("branch_push")
@@ -3601,11 +3698,19 @@ impl LocalProductStore {
         artifact_id: &str,
         operation_id: &str,
         expected_operation_version: u64,
+        task_id: &str,
+        approval_id: &str,
+        expected_task_version: u64,
         actor: &str,
         reason: &str,
     ) -> Result<Value, String> {
-        let authority_request =
-            self.current_product_output_authority_request(artifact_id, operation_id, "draft_pr")?;
+        let authority_request = Self::product_output_authority_request(
+            task_id,
+            artifact_id,
+            approval_id,
+            "draft_pr",
+            expected_task_version,
+        );
         self.mutate_product_output_operation(
             artifact_id,
             actor,
@@ -3618,6 +3723,14 @@ impl LocalProductStore {
                 if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
                     return Err("product output operation identity mismatch".to_string());
                 }
+                validate_product_output_phase_binding(
+                    operation,
+                    "pr_create",
+                    task_id,
+                    approval_id,
+                    expected_task_version,
+                    false,
+                )?;
                 require_product_output_operation_version(operation, expected_operation_version)?;
                 let pr = operation
                     .get_mut("pr_create")
@@ -3645,38 +3758,21 @@ impl LocalProductStore {
         )
     }
 
-    fn current_product_output_authority_request(
-        &self,
+    fn product_output_authority_request(
+        task_id: &str,
         artifact_id: &str,
-        operation_id: &str,
+        approval_id: &str,
         output_intent: &str,
-    ) -> Result<Value, String> {
-        let artifact = self
-            .get_supervised_patch_artifact(artifact_id)?
-            .ok_or_else(|| "product output artifact missing for authority".to_string())?;
-        let operation = artifact
-            .get("product_output_operation")
-            .ok_or_else(|| "product output operation missing for authority".to_string())?;
-        if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
-            return Err("product output operation identity mismatch".to_string());
-        }
-        let task_id = required_str(operation, "product_task_id")?;
-        let approval_id = required_str(operation, "approval_id")?;
-        let task = self
-            .get_product_task(task_id)?
-            .ok_or_else(|| "product task missing for output authority".to_string())?;
-        let expected_task_version = task
-            .get("version")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "product task version missing for output authority".to_string())?;
-        Ok(json!({
+        expected_task_version: u64,
+    ) -> Value {
+        json!({
             "schema_version": "product_output_authority_request.v1",
             "product_task_id": task_id,
             "artifact_id": artifact_id,
             "approval_id": approval_id,
             "output_intent": output_intent,
             "expected_task_version": expected_task_version,
-        }))
+        })
     }
 
     fn mutate_product_output_operation<F>(
@@ -5557,6 +5653,11 @@ fn validate_product_output_request_task(
         return Err("product output task state or intent authority changed".to_string());
     }
     let task_status = task.get("status").and_then(Value::as_str);
+    if request.get("terminal_rebind").and_then(Value::as_bool) == Some(true)
+        && task_status != Some("output_pending")
+    {
+        return Err("product output terminal rebind requires output_pending task".to_string());
+    }
     let task_version = task.get("version").and_then(Value::as_u64);
     let completed_idempotent = request
         .get("allow_completed_idempotent")
@@ -5653,6 +5754,40 @@ fn validate_product_output_approval_artifact(
         || artifact.get("changed_files") != approval.get("changed_files")
     {
         return Err("product output approval artifact authority changed".to_string());
+    }
+    Ok(())
+}
+
+fn validate_product_output_phase_binding(
+    operation: &Value,
+    phase_name: &str,
+    task_id: &str,
+    approval_id: &str,
+    expected_task_version: u64,
+    allow_terminal_rebind: bool,
+) -> Result<(), String> {
+    if operation.get("product_task_id").and_then(Value::as_str) != Some(task_id)
+        || operation.get("approval_id").and_then(Value::as_str) != Some(approval_id)
+    {
+        return Err("product output operation claim binding changed".to_string());
+    }
+    let phase = operation
+        .get(phase_name)
+        .ok_or_else(|| format!("product output {phase_name} phase missing"))?;
+    let claimed_task_version = phase
+        .get("claimed_task_version")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            operation
+                .get("expected_task_version")
+                .and_then(Value::as_u64)
+        });
+    if claimed_task_version != Some(expected_task_version)
+        && !(allow_terminal_rebind
+            && claimed_task_version.and_then(|version| version.checked_add(1))
+                == Some(expected_task_version))
+    {
+        return Err("product output operation claim binding changed".to_string());
     }
     Ok(())
 }
@@ -5781,6 +5916,7 @@ fn claim_product_output_phase(
     phase_name: &str,
     actor: &str,
     now: &str,
+    expected_task_version: u64,
 ) -> Result<(), String> {
     let prior_attempt = operation
         .get("attempt")
@@ -5801,6 +5937,10 @@ fn claim_product_output_phase(
     phase.insert("status".to_string(), json!("in_progress"));
     phase.insert("claimed_at".to_string(), json!(now));
     phase.insert("claimed_by".to_string(), json!(actor));
+    phase.insert(
+        "claimed_task_version".to_string(),
+        json!(expected_task_version),
+    );
     Ok(())
 }
 
@@ -6304,6 +6444,7 @@ mod managed_owner_tests {
             "branch_push",
             "output-operator",
             "2026-07-22T00:00:00Z",
+            1,
         )
         .unwrap_err();
         assert!(error.contains("four bounded attempts"));

@@ -840,6 +840,9 @@ pub(crate) async fn api_output_product_task(
                                 artifact_id,
                                 operation_id,
                                 operation_version,
+                                &task_id,
+                                approval_id,
+                                completion_task_version,
                                 &context.api_key_id,
                                 &error,
                             )
@@ -863,6 +866,9 @@ pub(crate) async fn api_output_product_task(
                                 artifact_id,
                                 operation_id,
                                 operation_version,
+                                &task_id,
+                                approval_id,
+                                completion_task_version,
                                 &context.api_key_id,
                                 &error,
                             )

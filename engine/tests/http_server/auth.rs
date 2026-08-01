@@ -458,12 +458,16 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
             .collect(),
         rate_limit: Some(10_000),
     });
+    let bootstrap_scopes: HashSet<String> = ["team:read", "team:admin", SCOPE_IDENTITY_DELEGATE]
+        .into_iter()
+        .map(String::from)
+        .collect();
     resolver.add_api_key(APIKey {
         key_id: LOCAL_BOOTSTRAP_API_KEY_ID.into(),
         tenant_id: "local".into(),
         key_hash: hash_api_key(&bootstrap_raw, "bootstrap-test-salt"),
         key_salt: "bootstrap-test-salt".into(),
-        scopes: local_scopes,
+        scopes: bootstrap_scopes,
         created_at: 1.0,
         expires_at: None,
         revoked_at: None,
@@ -472,10 +476,12 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
     let (_ordinary_key, ordinary_raw) = resolver
         .create_api_key(
             "ordinary",
-            Some(["team:read", "team:admin"]
-                .into_iter()
-                .map(String::from)
-                .collect()),
+            Some(
+                ["team:read", "team:admin"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+            ),
             None,
             1.0,
         )
@@ -630,30 +636,22 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         tenant_id: "local".into(),
         key_hash: hash_api_key(&bootstrap_raw, "bootstrap-test-salt"),
         key_salt: "bootstrap-test-salt".into(),
-        scopes: ALL_MANAGED_ACCEPTANCE_SCOPES
-            .iter()
-            .map(|scope| (*scope).to_string())
-            .chain([
-                "team:read".into(),
-                "team:admin".into(),
-                SCOPE_IDENTITY_DELEGATE.into(),
-            ])
+        scopes: ["team:read", "team:admin", SCOPE_IDENTITY_DELEGATE]
+            .into_iter()
+            .map(String::from)
             .collect(),
         created_at: 1.0,
         expires_at: None,
         revoked_at: None,
         last_used_at: None,
     });
-    let restarted_app = build_axum_router(
-        AxumApiState::new()
-            .with_local_store_arc(store)
-            .with_auth(
-                restarted_resolver,
-                RateLimiter::new(60.0, 10_000),
-                Some(10_000),
-                1.0,
-            ),
-    );
+    let restarted_app =
+        build_axum_router(AxumApiState::new().with_local_store_arc(store).with_auth(
+            restarted_resolver,
+            RateLimiter::new(60.0, 10_000),
+            Some(10_000),
+            1.0,
+        ));
     let reissued = restarted_app
         .oneshot(
             Request::builder()

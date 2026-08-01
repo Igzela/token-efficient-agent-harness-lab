@@ -10,7 +10,9 @@ use crate::http_server::middleware::{
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{CreateApiKeyRequest, UpdateKeyScopesRequest, AXUM_API_SCHEMA_VERSION};
 use crate::infrastructure::auth::LOCAL_BOOTSTRAP_API_KEY_ID;
-use crate::storage::local_product_store::{ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_IDENTITY_DELEGATE};
+use crate::storage::local_product_store::{
+    validate_managed_acceptance_role_scopes, ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_IDENTITY_DELEGATE,
+};
 
 fn requests_managed_acceptance_scope(scopes: &[String]) -> bool {
     scopes
@@ -67,6 +69,8 @@ pub(crate) async fn api_create_key(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     require_bootstrap_for_managed_delegation(&context, &request.scopes)?;
+    validate_managed_acceptance_role_scopes(&request.role, &request.scopes)
+        .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
     let store = require_store(&state)?;
 
     let mut guard = state
@@ -200,6 +204,8 @@ pub(crate) async fn api_rotate_key(
         })
         .unwrap_or_default();
     require_bootstrap_for_managed_delegation(&context, &scopes)?;
+    validate_managed_acceptance_role_scopes(role, &scopes)
+        .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
     let expires_at = old_key["expires_at"].as_f64();
     if old_key["revoked_at"].as_str().is_some() {
         if let Some(resolver) = &state.tenant_resolver {
@@ -327,8 +333,21 @@ pub(crate) async fn api_update_key_scopes(
     Json(request): Json<UpdateKeyScopesRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
-    require_bootstrap_for_managed_delegation(&context, &request.scopes)?;
     let store = require_store(&state)?;
+
+    let old_key = store
+        .get_api_key_metadata(&key_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
+    let role = old_key["role"].as_str().ok_or_else(|| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid key metadata",
+        )
+    })?;
+    require_bootstrap_for_managed_delegation(&context, &request.scopes)?;
+    validate_managed_acceptance_role_scopes(role, &request.scopes)
+        .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
 
     let scopes: std::collections::HashSet<String> = request.scopes.iter().cloned().collect();
     let resolver = state.tenant_resolver.as_ref().ok_or_else(|| {

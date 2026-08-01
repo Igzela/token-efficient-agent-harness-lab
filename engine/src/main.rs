@@ -815,6 +815,10 @@ fn configure_auth(state: AxumApiState) -> AxumApiState {
         panic!("ACP_ADMIN_API_KEY must use the harness_<64 hex chars> local key shape");
     }
 
+    // The tenant scope set is a ceiling for keys minted by this canonical
+    // bootstrap authority; it is not granted to the bootstrap key itself.
+    // Managed-acceptance delegation remains fenced in the key handlers by the
+    // immutable local bootstrap key id plus SCOPE_IDENTITY_DELEGATE.
     let bootstrap_scopes = local_admin_scopes();
     let mut tenant_scopes = bootstrap_scopes.clone();
     tenant_scopes.extend(

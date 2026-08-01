@@ -94,13 +94,14 @@ pub use external_runtime::{
 pub use integrity::{IntegrityReport, TableIntegrity};
 pub use managed_acceptance::{
     build_attempt_authority_manifest, compute_attempt_manifest_sha256,
-    confirm_delegated_artifact_output, derive_final_execution_manifest, AuthenticatedPrincipal,
-    CostAuthority, DelegationContract, ManagedCodexLaunchFacts, ManagedCodexSpawnLease,
-    PrincipalKind, RiskAcknowledgementRequest, SpendAuthorizationRequest,
-    ALL_MANAGED_ACCEPTANCE_SCOPES, BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES,
-    SCOPE_ATTEMPT_ADMIT, SCOPE_DELEGATED_ARTIFACT_CONFIRM, SCOPE_DELEGATED_AUTONOMY,
-    SCOPE_DELEGATED_EXECUTE, SCOPE_DELEGATED_MANIFEST_APPROVE, SCOPE_IDENTITY_DELEGATE,
-    SCOPE_REVOKE, SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
+    confirm_delegated_artifact_output, derive_final_execution_manifest,
+    validate_managed_acceptance_role_scopes, AuthenticatedPrincipal, CostAuthority,
+    DelegationContract, ManagedCodexLaunchFacts, ManagedCodexSpawnLease, PrincipalKind,
+    RiskAcknowledgementRequest, SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES,
+    BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
+    MANAGED_REVIEWER_KEY_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_DELEGATED_ARTIFACT_CONFIRM,
+    SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_EXECUTE, SCOPE_DELEGATED_MANIFEST_APPROVE,
+    SCOPE_IDENTITY_DELEGATE, SCOPE_REVOKE, SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
 };
 pub use policy_replay_producer::{
     EvidenceChainPromotionRequest, ReplayProductionProfile, ReplayProductionRequest,

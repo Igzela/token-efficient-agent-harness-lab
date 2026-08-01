@@ -3,6 +3,10 @@
 // CI runs these with a PostgreSQL service container.
 
 #[cfg(feature = "pg-tests")]
+use axum::body::{to_bytes, Body};
+#[cfg(feature = "pg-tests")]
+use axum::http::{header, Method, Request, StatusCode};
+#[cfg(feature = "pg-tests")]
 use engine::budget_forecast::{
     build_budget_forecast, BudgetForecastRequest, BudgetUsageObservation,
 };
@@ -21,6 +25,14 @@ use engine::feedback::{
     ContextualPolicyPromotion, ContextualPolicyPromotionGate, ObjectiveProfile,
     CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
 };
+#[cfg(feature = "pg-tests")]
+use engine::http_server::{build_axum_router, AxumApiState};
+#[cfg(feature = "pg-tests")]
+use engine::infrastructure::auth::{
+    hash_api_key, APIKey, Tenant, TenantResolver, LOCAL_BOOTSTRAP_API_KEY_ID,
+};
+#[cfg(feature = "pg-tests")]
+use engine::infrastructure::rate_limiter::RateLimiter;
 #[cfg(feature = "pg-tests")]
 use engine::node_executor::{
     AgentAction, AgentStepExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor,
@@ -55,7 +67,8 @@ use engine::storage::local_product_store::{
     ExternalRuntimeInvocationClaim, ExternalRuntimeScope, LocalProductStore,
     MemoryRetrievalRequest, MemoryScope, ProviderEmbeddingResolutionAction,
     ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, RwePerTaskBudget,
-    SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES,
+    SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
+    MANAGED_REVIEWER_KEY_SCOPES, SCOPE_IDENTITY_DELEGATE,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -73,6 +86,8 @@ use std::sync::Arc;
 use std::thread;
 #[cfg(feature = "pg-tests")]
 use std::time::Duration;
+#[cfg(feature = "pg-tests")]
+use tower::ServiceExt;
 
 #[cfg(feature = "pg-tests")]
 fn utc_now_string() -> String {
@@ -176,6 +191,255 @@ fn test_store() -> Option<LocalProductStore> {
     let store =
         LocalProductStore::new_postgres(&url, utc_now_string).expect("new_postgres should succeed");
     Some(store)
+}
+
+#[cfg(feature = "pg-tests")]
+async fn pg_response_json(response: axum::response::Response) -> Value {
+    let bytes = to_bytes(response.into_body(), 1_048_576).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+#[cfg(feature = "pg-tests")]
+async fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart() {
+    let Some(store) = test_store() else { return };
+    let store = Arc::new(store);
+    let bootstrap_raw = format!("harness_{}", "p".repeat(64));
+    let ordinary_raw = format!("harness_{}", "q".repeat(64));
+    let mut resolver = TenantResolver::new();
+    let mut local_tenant_scopes: std::collections::HashSet<String> = [
+        "team:read",
+        "team:admin",
+        "dispatch:execute",
+        SCOPE_IDENTITY_DELEGATE,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    local_tenant_scopes.extend(
+        ALL_MANAGED_ACCEPTANCE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string()),
+    );
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".into(),
+        name: "PostgreSQL bootstrap tenant".into(),
+        scopes: local_tenant_scopes,
+        rate_limit: Some(10_000),
+    });
+    resolver.add_tenant(Tenant {
+        tenant_id: "ordinary".into(),
+        name: "PostgreSQL ordinary tenant".into(),
+        scopes: ["team:read", "team:admin"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        rate_limit: Some(10_000),
+    });
+    resolver.add_api_key(APIKey {
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.into(),
+        tenant_id: "local".into(),
+        key_hash: hash_api_key(&bootstrap_raw, "pg-bootstrap-salt"),
+        key_salt: "pg-bootstrap-salt".into(),
+        scopes: ["team:read", "team:admin", SCOPE_IDENTITY_DELEGATE]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    resolver.add_api_key(APIKey {
+        key_id: "pg-ordinary-key".into(),
+        tenant_id: "ordinary".into(),
+        key_hash: hash_api_key(&ordinary_raw, "pg-ordinary-salt"),
+        key_salt: "pg-ordinary-salt".into(),
+        scopes: ["team:read", "team:admin"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 1.0),
+    );
+    let reviewer = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "pg-reviewer",
+                        "role": "reviewer",
+                        "scopes": MANAGED_REVIEWER_KEY_SCOPES
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reviewer.status(), StatusCode::OK);
+    assert_eq!(
+        pg_response_json(reviewer).await["scopes"],
+        json!(MANAGED_REVIEWER_KEY_SCOPES)
+    );
+    let operator = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "pg-output-operator",
+                        "role": "output_operator",
+                        "scopes": MANAGED_OUTPUT_OPERATOR_KEY_SCOPES
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(operator.status(), StatusCode::OK);
+    assert_eq!(
+        pg_response_json(operator).await["scopes"],
+        json!(MANAGED_OUTPUT_OPERATOR_KEY_SCOPES)
+    );
+    let ordinary = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {ordinary_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "pg-forbidden",
+                        "role": "output_operator",
+                        "scopes": ["managed_acceptance:attempt_admit"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+    let wrong_role_scope = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "pg-forbidden-scope",
+                        "role": "reviewer",
+                        "scopes": [
+                            "team:admin",
+                            "managed_acceptance:risk_acknowledge",
+                            "managed_acceptance:delegated_execute"
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_role_scope.status(), StatusCode::BAD_REQUEST);
+
+    let mut restarted_resolver = TenantResolver::new();
+    let mut restarted_scopes: std::collections::HashSet<String> = [
+        "team:read",
+        "team:admin",
+        "dispatch:execute",
+        SCOPE_IDENTITY_DELEGATE,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    restarted_scopes.extend(
+        ALL_MANAGED_ACCEPTANCE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string()),
+    );
+    restarted_resolver.add_tenant(Tenant {
+        tenant_id: "local".into(),
+        name: "PostgreSQL bootstrap tenant after restart".into(),
+        scopes: restarted_scopes,
+        rate_limit: Some(10_000),
+    });
+    restarted_resolver.add_api_key(APIKey {
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.into(),
+        tenant_id: "local".into(),
+        key_hash: hash_api_key(&bootstrap_raw, "pg-bootstrap-salt"),
+        key_salt: "pg-bootstrap-salt".into(),
+        scopes: ["team:read", "team:admin", SCOPE_IDENTITY_DELEGATE]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    let restarted_app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_auth(
+                restarted_resolver,
+                RateLimiter::new(60.0, 10_000),
+                Some(10_000),
+                1.0,
+            ),
+    );
+    let reissued = restarted_app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "pg-reviewer-reissued",
+                        "role": "reviewer",
+                        "scopes": ["team:admin", "managed_acceptance:risk_acknowledge"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reissued.status(), StatusCode::OK);
+    let reissued_body = pg_response_json(reissued).await;
+    assert_eq!(
+        reissued_body["scopes"],
+        json!(["team:admin", "managed_acceptance:risk_acknowledge"])
+    );
+    assert!(store
+        .get_api_key_metadata(reissued_body["key_id"].as_str().unwrap())
+        .unwrap()
+        .is_some());
 }
 
 #[cfg(feature = "pg-tests")]
@@ -2158,6 +2422,9 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             artifact_id,
             &operation_id,
             claimed["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            pending_version,
             &commit_sha,
             "pg-output-operator",
         )
@@ -2205,6 +2472,9 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             artifact_id,
             &operation_id,
             pr_claim["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            pending_version,
             "pg-output-operator",
             "github_pr_create_outcome_unknown: mock connection loss",
         )
@@ -2235,6 +2505,9 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             artifact_id,
             &operation_id,
             reconciliation["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            pending_version,
             &pull_request,
             "pg-output-operator",
         )
@@ -2329,6 +2602,9 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             artifact_id,
             &operation_id,
             pr_claim["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            pending_version,
             "pg-late-output",
             "late failure",
         )
@@ -2414,6 +2690,167 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
     std::env::remove_var(PRODUCT_TASK_GATE);
     std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
     std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_output_phase_responses_reject_stale_product_task_authority() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "0");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg stale output phase authority");
+    let remote = Command::new("git")
+        .args([
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/disposable/pg-acceptance.git",
+        ])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(remote.status.success(), "git remote set-url: {remote:?}");
+
+    let (task, approval, _artifact) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &uuid_tag(), "draft_pr");
+    let task_id = task["task_id"].as_str().unwrap();
+    let original_version = task["version"].as_u64().unwrap();
+    let pending = store
+        .output_product_task(
+            task_id,
+            "pg-output-operator",
+            original_version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    let pending_version = pending["task"]["version"].as_u64().unwrap();
+    assert!(pending_version > original_version);
+    let artifact_id = approval["artifact_id"].as_str().unwrap();
+    let durable = store
+        .get_supervised_patch_artifact(artifact_id)
+        .unwrap()
+        .unwrap();
+    let operation = durable["product_output_operation"].clone();
+    let operation_id = operation["operation_id"].as_str().unwrap();
+    let stale_branch = store
+        .record_product_output_branch_pushed(
+            artifact_id,
+            operation_id,
+            operation["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            original_version,
+            &"f".repeat(40),
+            "pg-late-branch-writer",
+        )
+        .unwrap_err();
+    assert!(
+        stale_branch.contains("stale product task version"),
+        "{stale_branch}"
+    );
+
+    let (task, approval, artifact) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &uuid_tag(), "draft_pr");
+    let task_id = task["task_id"].as_str().unwrap();
+    let task_version = task["version"].as_u64().unwrap();
+    let artifact_id = artifact["artifact_id"].as_str().unwrap();
+    let request = json!({
+        "schema_version": "product_draft_pr_output_request.v1",
+        "product_task_id": task_id,
+        "artifact_id": artifact_id,
+        "approval_id": approval["approval_id"],
+        "output_intent": "draft_pr",
+        "expected_task_version": task_version,
+        "workspace_id": artifact["workspace_id"],
+        "run_id": artifact["run_id"],
+        "target_id": artifact["target_id"],
+        "patch_hash": artifact["patch_hash"],
+        "source_revision": artifact["source_revision"],
+        "target_repository": "disposable/pg-acceptance",
+        "repository_host": "github.com",
+        "base_branch": "main",
+        "head_branch": format!("acp/product-{task_id}"),
+        "remote": "origin",
+        "commit_message": "bounded stale phase test",
+        "pr_title": "Draft: stale phase test",
+        "pr_body": "Do not merge automatically.",
+    });
+    let request_sha = hex::encode(Sha256::digest(serde_json::to_vec(&request).unwrap()));
+    let branch = store
+        .claim_product_output_operation(
+            artifact_id,
+            &request,
+            &request_sha,
+            task_version,
+            "pg-output-operator",
+        )
+        .unwrap();
+    let operation_id = branch["operation_id"].as_str().unwrap();
+    let branch = store
+        .record_product_output_branch_pushed(
+            artifact_id,
+            operation_id,
+            branch["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            task_version,
+            &"0".repeat(40),
+            "pg-output-operator",
+        )
+        .unwrap();
+    let pr = store
+        .claim_product_output_operation(
+            artifact_id,
+            &request,
+            &request_sha,
+            task_version,
+            "pg-output-operator",
+        )
+        .unwrap();
+    let advanced = store
+        .mark_product_task_output_outcome_unknown(
+            task_id,
+            "pg-task-version-advancer",
+            "simulate task advance before late PG PR response",
+        )
+        .unwrap();
+    assert!(advanced["version"].as_u64().unwrap() > task_version);
+    let stale_pr = store
+        .mark_product_output_pr_failed_known(
+            artifact_id,
+            operation_id,
+            pr["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            task_version,
+            "pg-late-pr-writer",
+            "late response",
+        )
+        .unwrap_err();
+    assert!(
+        stale_pr.contains("stale product task version"),
+        "{stale_pr}"
+    );
+    assert_eq!(
+        store
+            .get_supervised_patch_artifact(artifact_id)
+            .unwrap()
+            .unwrap()["product_output_operation"]["pr_create"]["status"],
+        "in_progress"
+    );
+    let _ = (pending_version, branch);
+    for key in [
+        "ACP_PRODUCT_WORKSPACE_ROOT",
+        "ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT",
+        "ACP_ENABLE_TARGET_REPO_OUTPUT",
+        PRODUCT_TASK_GATE,
+    ] {
+        std::env::remove_var(key);
+    }
 }
 
 #[test]
@@ -2547,6 +2984,9 @@ fn pg_draft_pr_missing_github_credential_reuses_operation_after_restart() {
             artifact_id,
             &operation_id,
             resumed_operation["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            resumed["task"]["version"].as_u64().unwrap(),
             &pull_request,
             "pg-output-after-restart",
         )

@@ -23,6 +23,17 @@ use tempfile::{tempdir, TempDir};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 
+// The auth route test lives under http_server/ and must be part of the
+// canonical integration target; an unreferenced directory module is not
+// compiled by Cargo and cannot provide acceptance evidence. Keep the wiring
+// narrow so unrelated dormant route groups do not change this target.
+#[allow(dead_code, unused_imports)]
+#[path = "http_server/common.rs"]
+mod common;
+#[allow(dead_code, unused_imports)]
+#[path = "http_server/auth.rs"]
+mod http_server_auth_tests;
+
 async fn response_json(response: axum::response::Response) -> Value {
     let bytes = to_bytes(response.into_body(), 1_048_576).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()

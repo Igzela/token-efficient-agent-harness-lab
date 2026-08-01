@@ -9,7 +9,8 @@ use engine::infrastructure::auth::{
 };
 use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::storage::local_product_store::{
-    LocalProductStore, ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_IDENTITY_DELEGATE,
+    LocalProductStore, ALL_MANAGED_ACCEPTANCE_SCOPES, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
+    MANAGED_REVIEWER_KEY_SCOPES, SCOPE_IDENTITY_DELEGATE,
 };
 use serde_json::{json, Value};
 use tempfile::tempdir;
@@ -21,10 +22,15 @@ async fn response_json(response: axum::response::Response) -> Value {
 }
 
 fn bootstrap_resolver(bootstrap_raw: &str) -> TenantResolver {
-    let mut tenant_scopes: HashSet<String> = ["team:read", "team:admin", SCOPE_IDENTITY_DELEGATE]
-        .into_iter()
-        .map(String::from)
-        .collect();
+    let mut tenant_scopes: HashSet<String> = [
+        "team:read",
+        "team:admin",
+        "dispatch:execute",
+        SCOPE_IDENTITY_DELEGATE,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
     tenant_scopes.extend(
         ALL_MANAGED_ACCEPTANCE_SCOPES
             .iter()
@@ -112,10 +118,7 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
                     json!({
                         "user_id": "managed-reviewer",
                         "role": "reviewer",
-                        "scopes": [
-                            "managed_acceptance:risk_acknowledge",
-                            "managed_acceptance:delegated_manifest_approve"
-                        ]
+                        "scopes": MANAGED_REVIEWER_KEY_SCOPES
                     })
                     .to_string(),
                 ))
@@ -125,13 +128,7 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
         .unwrap();
     assert_eq!(reviewer.status(), StatusCode::OK);
     let reviewer = response_json(reviewer).await;
-    assert_eq!(
-        reviewer["scopes"],
-        json!([
-            "managed_acceptance:risk_acknowledge",
-            "managed_acceptance:delegated_manifest_approve"
-        ])
-    );
+    assert_eq!(reviewer["scopes"], json!(MANAGED_REVIEWER_KEY_SCOPES));
     let reviewer_id = reviewer["key_id"].as_str().unwrap();
 
     let operator = app
@@ -145,12 +142,8 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
                 .body(Body::from(
                     json!({
                         "user_id": "managed-output-operator",
-                        "role": "operator",
-                        "scopes": [
-                            "managed_acceptance:risk_acknowledge",
-                            "managed_acceptance:delegated_execute",
-                            "managed_acceptance:attempt_admit"
-                        ]
+                        "role": "output_operator",
+                        "scopes": MANAGED_OUTPUT_OPERATOR_KEY_SCOPES
                     })
                     .to_string(),
                 ))
@@ -161,11 +154,7 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
     assert_eq!(operator.status(), StatusCode::OK);
     assert_eq!(
         response_json(operator).await["scopes"],
-        json!([
-            "managed_acceptance:risk_acknowledge",
-            "managed_acceptance:delegated_execute",
-            "managed_acceptance:attempt_admit"
-        ])
+        json!(MANAGED_OUTPUT_OPERATOR_KEY_SCOPES)
     );
 
     let ordinary_raw = format!("harness_{}", "c".repeat(64));
@@ -180,7 +169,7 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
                 .body(Body::from(
                     json!({
                         "user_id": "forbidden",
-                        "role": "operator",
+                        "role": "output_operator",
                         "scopes": ["managed_acceptance:attempt_admit"]
                     })
                     .to_string(),
@@ -212,6 +201,54 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
         .await
         .unwrap();
     assert_eq!(bootstrap_delegate.status(), StatusCode::FORBIDDEN);
+
+    let unknown_scope = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, auth_header(&bootstrap_raw))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "forbidden-unknown-scope",
+                        "role": "operator",
+                        "scopes": ["managed_acceptance:not-a-canonical-scope"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unknown_scope.status(), StatusCode::BAD_REQUEST);
+
+    let wrong_role_scope = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, auth_header(&bootstrap_raw))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "forbidden-role-scope",
+                        "role": "reviewer",
+                        "scopes": [
+                            "team:admin",
+                            "managed_acceptance:risk_acknowledge",
+                            "managed_acceptance:delegated_execute"
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_role_scope.status(), StatusCode::BAD_REQUEST);
 
     for endpoint in [
         format!("/api/v1/keys/{reviewer_id}/scopes"),

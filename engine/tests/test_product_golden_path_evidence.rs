@@ -202,6 +202,35 @@ fn drive_to_awaiting_approval(
     store.get_product_task(task_id).unwrap().unwrap()
 }
 
+fn draft_pr_request(
+    task_id: &str,
+    artifact: &serde_json::Value,
+    approval: &serde_json::Value,
+    expected_task_version: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "product_draft_pr_output_request.v1",
+        "product_task_id": task_id,
+        "artifact_id": artifact["artifact_id"],
+        "approval_id": approval["approval_id"],
+        "output_intent": "draft_pr",
+        "expected_task_version": expected_task_version,
+        "workspace_id": artifact["workspace_id"],
+        "run_id": artifact["run_id"],
+        "target_id": artifact["target_id"],
+        "patch_hash": artifact["patch_hash"],
+        "source_revision": artifact["source_revision"],
+        "target_repository": "disposable/acceptance",
+        "repository_host": "github.com",
+        "base_branch": "main",
+        "head_branch": format!("acp/product-{task_id}"),
+        "remote": "origin",
+        "commit_message": format!("feat: product golden path {task_id}"),
+        "pr_title": format!("Draft: product task {task_id}"),
+        "pr_body": format!("Product golden path Draft PR for task `{task_id}`."),
+    })
+}
+
 struct ReceiptReportingManagedExecutor;
 
 impl NodeExecutor for ReceiptReportingManagedExecutor {
@@ -1351,6 +1380,9 @@ fn draft_pr_missing_github_credential_keeps_version_and_reuses_operation_after_r
                 artifact_id,
                 &operation_id,
                 resumed_operation["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                resumed_task_version,
                 &pull_request,
                 "output-operator-after-restart",
             )
@@ -1522,6 +1554,9 @@ fn progressive_output_operation_survives_restart_and_retries_only_pr_phase() {
                 artifact_id,
                 &operation_id,
                 claimed["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                task_version,
                 &commit_sha,
                 "output-operator",
             )
@@ -1600,6 +1635,9 @@ fn progressive_output_operation_survives_restart_and_retries_only_pr_phase() {
                 artifact_id,
                 &operation_id,
                 pr_claim["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                task_version,
                 "output-operator",
                 "github_pr_create_outcome_unknown: mock connection loss",
             )
@@ -1619,6 +1657,9 @@ fn progressive_output_operation_survives_restart_and_retries_only_pr_phase() {
                 artifact_id,
                 &operation_id,
                 reconciliation["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                task_version,
                 "output-operator",
                 "github_pr_create_failed_known: reconciliation proved no PR",
             )
@@ -1654,6 +1695,9 @@ fn progressive_output_operation_survives_restart_and_retries_only_pr_phase() {
                 artifact_id,
                 &operation_id,
                 retry["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                task_version,
                 &wrong_repository,
                 "output-operator",
             )
@@ -1664,6 +1708,9 @@ fn progressive_output_operation_survives_restart_and_retries_only_pr_phase() {
                 artifact_id,
                 &operation_id,
                 retry["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                task_version,
                 &pull_request,
                 "output-operator",
             )
@@ -1680,6 +1727,9 @@ fn progressive_output_operation_survives_restart_and_retries_only_pr_phase() {
                 artifact_id,
                 &operation_id,
                 retry["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                task_version,
                 "late-output-operator",
                 "late failure must not replace completion",
             )
@@ -1712,6 +1762,171 @@ fn progressive_output_operation_survives_restart_and_retries_only_pr_phase() {
             .unwrap();
         assert_eq!(reused["claim_action"], "reused");
         assert_eq!(reused["operation_id"], operation_id);
+    });
+}
+
+#[test]
+fn output_phase_responses_reject_stale_product_task_authority() {
+    with_gates(|| {
+        std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "0");
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let remote = Command::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/disposable/acceptance.git",
+            ])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(remote.status.success(), "git remote set-url: {remote:?}");
+
+        let task =
+            drive_to_awaiting_approval(&store, &repo, &rev, "ev-stale-phase-branch-1", "draft_pr");
+        let task_id = task["task_id"].as_str().unwrap();
+        let original_version = task["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", original_version)
+            .unwrap();
+        let pending = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                original_version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .unwrap();
+        let pending_version = pending["task"]["version"].as_u64().unwrap();
+        assert!(pending_version > original_version);
+        let artifact_id = approval["artifact_id"].as_str().unwrap();
+        let artifact = store
+            .get_supervised_patch_artifact(artifact_id)
+            .unwrap()
+            .unwrap();
+        let operation = artifact["product_output_operation"].clone();
+        let operation_id = operation["operation_id"].as_str().unwrap();
+        let before = store.audit_events(10_000).unwrap();
+        let stale_branch = store
+            .record_product_output_branch_pushed(
+                artifact_id,
+                operation_id,
+                operation["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                original_version,
+                &"d".repeat(40),
+                "late-branch-writer",
+            )
+            .unwrap_err();
+        assert!(
+            stale_branch.contains("stale product task version"),
+            "{stale_branch}"
+        );
+        let unchanged = store
+            .get_supervised_patch_artifact(artifact_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            unchanged["product_output_operation"]["current_version"],
+            operation["current_version"]
+        );
+        assert_eq!(
+            unchanged["product_output_operation"]["branch_push"]["status"],
+            "in_progress"
+        );
+        assert_eq!(store.audit_events(10_000).unwrap(), before);
+
+        let task =
+            drive_to_awaiting_approval(&store, &repo, &rev, "ev-stale-phase-pr-1", "draft_pr");
+        let task_id = task["task_id"].as_str().unwrap();
+        let task_version = task["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", task_version)
+            .unwrap();
+        let artifact_id = approval["artifact_id"].as_str().unwrap();
+        let artifact = store
+            .get_supervised_patch_artifact(artifact_id)
+            .unwrap()
+            .unwrap();
+        let request = draft_pr_request(task_id, &artifact, &approval, task_version);
+        let request_sha = sha256_json(&request);
+        let branch = store
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha,
+                task_version,
+                "output-operator",
+            )
+            .unwrap();
+        let operation_id = branch["operation_id"].as_str().unwrap();
+        let branch = store
+            .record_product_output_branch_pushed(
+                artifact_id,
+                operation_id,
+                branch["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                task_version,
+                &"e".repeat(40),
+                "output-operator",
+            )
+            .unwrap();
+        let pr = store
+            .claim_product_output_operation(
+                artifact_id,
+                &request,
+                &request_sha,
+                task_version,
+                "output-operator",
+            )
+            .unwrap();
+        assert_eq!(pr["claim_action"], "create_or_reconcile_pr");
+        let operation_version = pr["current_version"].as_u64().unwrap();
+        let advanced = store
+            .mark_product_task_output_outcome_unknown(
+                task_id,
+                "task-version-advancer",
+                "simulate task advance before late PR response",
+            )
+            .unwrap();
+        assert!(advanced["version"].as_u64().unwrap() > task_version);
+        let before = store.audit_events(10_000).unwrap();
+        let stale_pr = store
+            .mark_product_output_pr_failed_known(
+                artifact_id,
+                operation_id,
+                operation_version,
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                task_version,
+                "late-pr-writer",
+                "late response",
+            )
+            .unwrap_err();
+        assert!(
+            stale_pr.contains("stale product task version"),
+            "{stale_pr}"
+        );
+        let unchanged = store
+            .get_supervised_patch_artifact(artifact_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            unchanged["product_output_operation"]["current_version"],
+            operation_version
+        );
+        assert_eq!(
+            unchanged["product_output_operation"]["pr_create"]["status"],
+            "in_progress"
+        );
+        assert_eq!(store.audit_events(10_000).unwrap(), before);
+        let _ = branch;
+        std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
     });
 }
 
@@ -1791,6 +2006,9 @@ fn terminal_completion_revalidates_workspace_verification_atomically() {
                 artifact_id,
                 operation_id,
                 branch_claim["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                pending_version,
                 &commit_sha,
                 "output-operator",
             )
@@ -1820,6 +2038,9 @@ fn terminal_completion_revalidates_workspace_verification_atomically() {
                 artifact_id,
                 operation_id,
                 pr_claim["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                pending_version,
                 &pull_request,
                 "output-operator",
             )
@@ -1977,6 +2198,9 @@ fn progressive_draft_pr_terminal_cas_uses_current_task_version_with_original_ope
                 artifact_id,
                 operation_id,
                 claimed["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                claim_version,
                 &commit_sha,
                 "output-operator",
             )
@@ -2006,6 +2230,9 @@ fn progressive_draft_pr_terminal_cas_uses_current_task_version_with_original_ope
                 artifact_id,
                 operation_id,
                 pr_claim["current_version"].as_u64().unwrap(),
+                task_id,
+                approval["approval_id"].as_str().unwrap(),
+                claim_version,
                 &pull_request,
                 "output-operator",
             )
@@ -2077,6 +2304,7 @@ fn progressive_draft_pr_terminal_cas_uses_current_task_version_with_original_ope
             conflict.contains("stale")
                 || conflict.contains("mismatch")
                 || conflict.contains("incomplete")
+                || conflict.contains("claim binding")
                 || conflict.contains("does not match"),
             "unexpected PR conflict rejection: {conflict}"
         );

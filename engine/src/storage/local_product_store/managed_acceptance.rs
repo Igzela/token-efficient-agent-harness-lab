@@ -34,6 +34,25 @@ pub const SCOPE_DELEGATED_ARTIFACT_CONFIRM: &str = "managed_acceptance:delegated
 pub const SCOPE_IDENTITY_DELEGATE: &str = "managed_acceptance:identity_delegate";
 pub const BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES: &[&str] = &[SCOPE_IDENTITY_DELEGATE];
 
+/// Least-privilege API-key ceilings for the two managed identities used by
+/// the delegated ProductTask path. These are ceilings, not a grant to the
+/// bootstrap key; callers may request a subset, but never an unrelated
+/// managed or ordinary authority scope.
+pub const MANAGED_REVIEWER_KEY_SCOPES: &[&str] = &[
+    "team:admin",
+    SCOPE_RISK_ACKNOWLEDGE,
+    SCOPE_DELEGATED_AUTONOMY,
+    SCOPE_DELEGATED_MANIFEST_APPROVE,
+    SCOPE_SPEND_AUTHORIZE,
+];
+pub const MANAGED_OUTPUT_OPERATOR_KEY_SCOPES: &[&str] = &[
+    "dispatch:execute",
+    SCOPE_RISK_ACKNOWLEDGE,
+    SCOPE_DELEGATED_ARTIFACT_CONFIRM,
+    SCOPE_DELEGATED_EXECUTE,
+    SCOPE_ATTEMPT_ADMIT,
+];
+
 pub const ALL_MANAGED_ACCEPTANCE_SCOPES: &[&str] = &[
     SCOPE_RISK_ACKNOWLEDGE,
     SCOPE_SPEND_AUTHORIZE,
@@ -44,6 +63,41 @@ pub const ALL_MANAGED_ACCEPTANCE_SCOPES: &[&str] = &[
     SCOPE_DELEGATED_EXECUTE,
     SCOPE_DELEGATED_ARTIFACT_CONFIRM,
 ];
+
+/// Validate the only role-specific managed-acceptance delegation profiles.
+/// The environment bootstrap authority owns this policy; ordinary tenants
+/// cannot reach this function through the key API because the handler first
+/// requires the immutable bootstrap key identity and delegation capability.
+pub fn validate_managed_acceptance_role_scopes(
+    role: &str,
+    scopes: &[String],
+) -> Result<(), String> {
+    let managed_requested = scopes.iter().any(|scope| {
+        ALL_MANAGED_ACCEPTANCE_SCOPES.contains(&scope.as_str())
+            || scope.starts_with("managed_acceptance:")
+    });
+    if !managed_requested {
+        return Ok(());
+    }
+    let allowed = match role {
+        "reviewer" => MANAGED_REVIEWER_KEY_SCOPES,
+        "operator" | "output_operator" => MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
+        _ => {
+            return Err(format!(
+                "managed-acceptance scopes require reviewer or output_operator role; got {role:?}"
+            ));
+        }
+    };
+    if let Some(scope) = scopes
+        .iter()
+        .find(|scope| !allowed.contains(&scope.as_str()))
+    {
+        return Err(format!(
+            "scope {scope:?} is outside the least-privilege {role} managed-acceptance profile"
+        ));
+    }
+    Ok(())
+}
 
 pub const DELEGATION_SCHEMA_VERSION: &str = "managed_autonomous_delegation.v1";
 pub const FINAL_MANIFEST_SCHEMA_VERSION: &str = "managed_final_execution_manifest.v1";
