@@ -1001,6 +1001,19 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
             )
             self.assertEqual(findings, [])
 
+    def test_cfg_all_test_with_nested_any_hides_test_only_executor(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(all(test, any(feature = \"a\", feature = \"b\")))]\n"
+                "pub fn execute_test_stub() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
     def test_fully_qualified_value_null_executor_is_flagged(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
@@ -1011,7 +1024,7 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
             findings = csb.check_dormant_surface_heuristics(
                 repo, ["engine/src/executor.rs"]
             )
-            self.assertTrue(any("execute_real" in finding for finding in findings))
+            self.assertTrue(any("executor.rs:1:" in finding for finding in findings))
 
     def test_cfg_test_nested_opening_braces_keep_entire_region_hidden(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1046,7 +1059,7 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
             findings = csb.check_dormant_surface_heuristics(
                 repo, ["engine/src/executor.rs"]
             )
-            self.assertTrue(any("execute_real" in finding for finding in findings))
+            self.assertTrue(any("executor.rs:4:" in finding for finding in findings))
 
     def test_same_line_empty_cfg_test_module_does_not_hide_production_code(self):
         with tempfile.TemporaryDirectory() as tmpdir:

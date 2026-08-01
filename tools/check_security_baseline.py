@@ -310,6 +310,53 @@ DORMANT_EMPTY_BODY_RE = re.compile(
     r"(?:\s*\))?\s*;?\s*$"
 )
 
+
+def _cfg_expression_requires_test(expression: str) -> bool:
+    """Return whether a cfg meta-expression can only match test builds."""
+    tokens = re.findall(
+        r"[A-Za-z_][A-Za-z0-9_]*|[(),=]|\"(?:\\.|[^\"\\])*\"",
+        expression,
+    )
+    position = 0
+
+    def parse() -> bool:
+        nonlocal position
+        if position >= len(tokens):
+            return False
+        token = tokens[position]
+        position += 1
+        if token == "(":
+            value = parse()
+            while position < len(tokens) and tokens[position] != ")":
+                position += 1
+            if position < len(tokens):
+                position += 1
+            return value
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
+            return False
+        if position < len(tokens) and tokens[position] == "(":
+            position += 1
+            arguments = []
+            while position < len(tokens) and tokens[position] != ")":
+                arguments.append(parse())
+                if position < len(tokens) and tokens[position] == ",":
+                    position += 1
+            if position < len(tokens):
+                position += 1
+            if token == "all":
+                return any(arguments)
+            if token == "any":
+                return bool(arguments) and all(arguments)
+            return False
+        if position < len(tokens) and tokens[position] == "=":
+            position += 1
+            if position < len(tokens):
+                position += 1
+            return False
+        return token == "test"
+
+    return parse()
+
 DORMANT_OWNERSHIP_CLAIM_RE = re.compile(
     r"(?i)\b(?:the\s+)?(?:sole|only|single|canonical|authoritative)\s+"
     r"(?:owner|authority|runtime|store|scheduler|evaluator)\s+"
@@ -973,18 +1020,7 @@ def _strip_cfg_test_regions(content: str) -> str:
                 )
                 expression = attribute.group(1) if attribute else ""
                 test_only = bool(
-                    attribute
-                    and (
-                        re.fullmatch(r"\s*test\s*", expression)
-                        or (
-                            re.match(r"\s*all\s*\(", expression)
-                            and re.search(r"\btest\b", expression)
-                            and not re.search(r"\bany\s*\(", expression)
-                            and not re.search(
-                                r"\bnot\s*\(\s*test\s*\)", expression
-                            )
-                        )
-                    )
+                    attribute and _cfg_expression_requires_test(expression)
                 )
                 if test_only:
                     consume_test_tail(
@@ -1052,18 +1088,7 @@ def _strip_cfg_test_regions(content: str) -> str:
                 code_line,
             )
             expression = attr.group(1) if attr else ""
-            test_only = bool(
-                attr
-                and (
-                    re.fullmatch(r"\s*test\s*", expression)
-                    or (
-                        re.match(r"\s*all\s*\(", expression)
-                        and re.search(r"\btest\b", expression)
-                        and not re.search(r"\bany\s*\(", expression)
-                        and not re.search(r"\bnot\s*\(\s*test\s*\)", expression)
-                    )
-                )
-            )
+            test_only = bool(attr and _cfg_expression_requires_test(expression))
             if test_only:
                 production_prefix = line[: attr.start()].strip()
                 if production_prefix:
@@ -1438,6 +1463,7 @@ def check_dormant_surface_heuristics(
     for rel_path, content in _iter_rs_lines(repo_root, tracked_files):
         clean = _rust_semantic_content(content)
         for match in DORMANT_EXECUTOR_FN_RE.finditer(clean):
+            line_no = clean.count("\n", 0, match.start()) + 1
             brace = clean.find("{", match.end())
             if brace == -1:
                 continue
@@ -1460,7 +1486,7 @@ def check_dormant_surface_heuristics(
                     or suppressed(rel_path, "generated")
                 ):
                     findings.append(
-                        f"{rel_path}: executor-named function "
+                        f"{rel_path}:{line_no}: executor-named function "
                         f"'{match.group(0)[3:]}' returns only an empty value "
                         "(no-op executor surface)"
                     )
