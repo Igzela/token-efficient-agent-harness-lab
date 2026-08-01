@@ -5459,6 +5459,46 @@ impl LocalProductStore {
             }
         };
 
+        // A missing output credential is a pre-effect, recoverable failure. The
+        // durable branch operation has already been marked failed_known by its
+        // canonical owner, so a restarted caller can reclaim the same operation
+        // after credentials are reissued. Do not advance ProductTask here: doing
+        // so would bind the terminal CAS to a version the durable operation never
+        // claimed and would make normal recovery require an unsafe version rollback.
+        let pre_effect_recovery = output_intent == "draft_pr"
+            && output_result.get("status").and_then(Value::as_str) == Some("blocked")
+            && output_result.get("pre_effect").and_then(Value::as_bool) == Some(true)
+            && output_result.get("recoverable").and_then(Value::as_bool) == Some(true);
+        if pre_effect_recovery {
+            let current = self
+                .get_product_task(task_id)?
+                .ok_or_else(|| "product task disappeared during output recovery".to_string())?;
+            let current_version = current
+                .get("version")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "product task version missing during output recovery".to_string())?;
+            let current_status = ProductTaskStatus::parse(
+                current.get("status").and_then(Value::as_str).unwrap_or(""),
+            )?;
+            if current_version != persisted_task_version || current_status != status {
+                return Err(
+                    "product output pre-effect recovery raced with a task transition; reconciliation required"
+                        .to_string(),
+                );
+            }
+            return Ok(json!({
+                "task": current,
+                "approval": approval,
+                "artifact": artifact,
+                "output": output_result,
+                "output_receipt": Value::Null,
+                "terminal_evidence": Value::Null,
+                "operation": output_result.get("operation"),
+                "reused": false,
+                "recoverable": true,
+            }));
+        }
+
         let output_status = output_result
             .get("status")
             .and_then(Value::as_str)
@@ -6648,6 +6688,21 @@ impl LocalProductStore {
         if let Err(error) = crate::target_repo_output::GitHubPullRequestConfig::from_env()
             .require_repository(&repository)
         {
+            let operation_id = operation
+                .get("operation_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "product output operation identity missing".to_string())?;
+            let operation_version = operation
+                .get("current_version")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "product output operation version missing".to_string())?;
+            let operation = self.mark_product_output_branch_failed_known(
+                artifact_id,
+                operation_id,
+                operation_version,
+                actor,
+                &error,
+            )?;
             return Ok(json!({
                 "mode": "draft_pr",
                 "status": "blocked",
@@ -6655,6 +6710,8 @@ impl LocalProductStore {
                 "operation": operation,
                 "product_task_id": task_id,
                 "artifact_id": artifact_id,
+                "pre_effect": true,
+                "recoverable": true,
             }));
         }
         let publish = crate::target_repo_output::BranchPublishRequest {

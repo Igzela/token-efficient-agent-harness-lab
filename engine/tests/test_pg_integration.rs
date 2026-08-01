@@ -431,6 +431,102 @@ fn pg_product_task_to_approval(
 
 #[test]
 #[cfg(feature = "pg-tests")]
+fn pg_draft_pr_missing_github_credential_is_restart_recoverable_without_task_advance() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    std::env::set_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH", "0");
+    std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "1");
+    std::env::set_var("ACP_ENABLE_GITHUB_PR_OUTPUT", "1");
+    std::env::set_var("ACP_GITHUB_REPOSITORY_ALLOWLIST", "Igzela/alters-lab");
+    std::env::set_var(
+        "ACP_GITHUB_TOKEN_ENV",
+        "PG_PRODUCT_RECOVERY_MISSING_GITHUB_TOKEN",
+    );
+    std::env::remove_var("PG_PRODUCT_RECOVERY_MISSING_GITHUB_TOKEN");
+    std::env::set_var(
+        "ACP_TARGET_REPO_GIT_TOKEN_ENV",
+        "PG_PRODUCT_RECOVERY_GIT_TOKEN",
+    );
+    std::env::set_var("PG_PRODUCT_RECOVERY_GIT_TOKEN", "fixture-output-token");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+
+    let (repo, revision) = pg_product_repo("pg restartable credential recovery");
+    let remote = Command::new("git")
+        .args([
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/Igzela/alters-lab.git",
+        ])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(remote.status.success(), "{remote:?}");
+    let tag = uuid_tag();
+    let (task, approval, _) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &tag, "draft_pr");
+    let task_id = task["task_id"].as_str().unwrap();
+    let version = task["version"].as_u64().unwrap();
+    let blocked = store
+        .output_product_task(
+            task_id,
+            "pg-output-operator",
+            version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(blocked["output"]["status"], "blocked");
+    assert_eq!(blocked["output"]["pre_effect"], true);
+    assert_eq!(blocked["output"]["recoverable"], true);
+    assert_eq!(blocked["task"]["status"], "awaiting_approval");
+    assert_eq!(blocked["task"]["version"], version);
+    assert_eq!(
+        blocked["operation"]["branch_push"]["status"],
+        "failed_known"
+    );
+    let operation_id = blocked["operation"]["operation_id"].clone();
+    let failed_version = blocked["operation"]["current_version"].as_u64().unwrap();
+
+    drop(store);
+    let restarted = test_store().unwrap();
+    std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "0");
+    let planned = restarted
+        .output_product_task(
+            task_id,
+            "pg-restarted-output-operator",
+            version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(planned["output"]["status"], "planned");
+    assert_eq!(planned["task"]["status"], "output_pending");
+    assert!(planned["task"]["version"].as_u64().unwrap() > version);
+    assert_eq!(planned["output"]["operation"]["operation_id"], operation_id);
+    assert!(
+        planned["output"]["operation"]["current_version"]
+            .as_u64()
+            .unwrap()
+            > failed_version
+    );
+
+    std::env::remove_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT");
+    std::env::remove_var("ACP_ENABLE_GITHUB_PR_OUTPUT");
+    std::env::remove_var("ACP_GITHUB_REPOSITORY_ALLOWLIST");
+    std::env::remove_var("ACP_GITHUB_TOKEN_ENV");
+    std::env::remove_var("ACP_TARGET_REPO_GIT_TOKEN_ENV");
+    std::env::remove_var("PG_PRODUCT_RECOVERY_GIT_TOKEN");
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var("ACP_TARGET_REPO_OUTPUT_KILL_SWITCH");
+    std::env::remove_var(PRODUCT_TASK_GATE);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
 fn pg_local_folder_apply_and_rollback_are_staged_and_idempotent() {
     let Some(store) = test_store() else { return };
     std::env::set_var(PRODUCT_TASK_GATE, "1");

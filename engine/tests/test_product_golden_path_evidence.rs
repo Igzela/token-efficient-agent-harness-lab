@@ -1161,6 +1161,119 @@ fn draft_pr_rejects_non_github_remote_before_branch_push() {
 }
 
 #[test]
+fn draft_pr_missing_github_credential_is_restart_recoverable_without_task_advance() {
+    with_gates(|| {
+        let _env = EnvironmentGuard::set(&[
+            (
+                "ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT",
+                "1".to_string(),
+            ),
+            ("ACP_ENABLE_GITHUB_PR_OUTPUT", "1".to_string()),
+            (
+                "ACP_GITHUB_REPOSITORY_ALLOWLIST",
+                "Igzela/alters-lab".to_string(),
+            ),
+            (
+                "ACP_GITHUB_TOKEN_ENV",
+                "PRODUCT_RECOVERY_MISSING_GITHUB_TOKEN".to_string(),
+            ),
+            (
+                "ACP_TARGET_REPO_GIT_TOKEN_ENV",
+                "PRODUCT_RECOVERY_GIT_TOKEN".to_string(),
+            ),
+            (
+                "PRODUCT_RECOVERY_GIT_TOKEN",
+                "fixture-output-token".to_string(),
+            ),
+        ]);
+        std::env::remove_var("PRODUCT_RECOVERY_MISSING_GITHUB_TOKEN");
+
+        let (dir, store) = temp_store();
+        let repo = dir.path().join("repo");
+        let rev = init_git_repo(&repo);
+        let remote = Command::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/Igzela/alters-lab.git",
+            ])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(remote.status.success(), "{remote:?}");
+        let task = drive_to_awaiting_approval(
+            &store,
+            &repo,
+            &rev,
+            "ev-draft-recoverable-credential-1",
+            "draft_pr",
+        );
+        let task_id = task["task_id"].as_str().unwrap();
+        let version = task["version"].as_u64().unwrap();
+        let approval = store
+            .approve_product_task(task_id, "independent-operator", version)
+            .unwrap();
+
+        let blocked = store
+            .output_product_task(
+                task_id,
+                "output-operator",
+                version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .expect("missing credential is a recoverable pre-effect result");
+        assert_eq!(blocked["output"]["status"], "blocked");
+        assert_eq!(blocked["output"]["pre_effect"], true);
+        assert_eq!(blocked["output"]["recoverable"], true);
+        assert_eq!(blocked["task"]["status"], "awaiting_approval");
+        assert_eq!(blocked["task"]["version"], version);
+        assert_eq!(
+            blocked["operation"]["operation_id"],
+            blocked["output"]["operation"]["operation_id"]
+        );
+        assert_eq!(
+            blocked["operation"]["branch_push"]["status"],
+            "failed_known"
+        );
+        let operation_id = blocked["operation"]["operation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let failed_version = blocked["operation"]["current_version"].as_u64().unwrap();
+        assert!(failed_version > 1);
+
+        drop(store);
+        let restarted = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+        std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "0");
+        let planned = restarted
+            .output_product_task(
+                task_id,
+                "restarted-output-operator",
+                version,
+                approval["approval_id"].as_str(),
+                true,
+            )
+            .expect("restarted caller can reclaim the same operation");
+        assert_eq!(planned["output"]["status"], "planned");
+        assert_eq!(planned["task"]["status"], "output_pending");
+        assert!(planned["task"]["version"].as_u64().unwrap() > version);
+        assert_eq!(planned["output"]["operation"]["operation_id"], operation_id);
+        assert!(
+            planned["output"]["operation"]["current_version"]
+                .as_u64()
+                .unwrap()
+                > failed_version
+        );
+        assert_eq!(
+            restarted.get_product_task(task_id).unwrap().unwrap()["version"],
+            planned["task"]["version"]
+        );
+    });
+}
+
+#[test]
 fn progressive_output_operation_survives_restart_and_retries_only_pr_phase() {
     with_gates(|| {
         let (dir, store) = temp_store();
