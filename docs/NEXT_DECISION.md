@@ -1,6 +1,6 @@
 # Next Decision
 
-Last updated: 2026-07-31.
+Last updated: 2026-08-01.
 
 ## Current Direction
 
@@ -34,16 +34,18 @@ provider-free RWE authority reconciliation (#300)
 → Dashboard #225 last
 ```
 
-The owner has authorized and accepted the production runner repair (#322), the delegated autonomous authority packet (#323), and exactly one subsequent bounded documentation live seal. That single live attempt has now been made and observed truthfully (see the packet below); it did not produce a clean accepted seal. PR #325 is merged and accepted as the live-observed repair. The live authorization permitted only its exact final manifest, one ProductTask budget, one unmerged `acp/*` Draft PR, and mandatory terminal expiry/cleanup. It granted no credential disclosure, target-main mutation, merge, automatic merge, release, deployment, RWE, or economic claim. A second live attempt requires a new explicit one-use owner authorization. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
+The owner has authorized and accepted the production runner repair (#322), the delegated autonomous authority packet (#323), and the repair/reseal objective in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`. The earlier observed attempts remain non-accepted: the first used a dirty/non-exact source identity, and the later `Igzela/alters-lab#4` recovery required direct SQLite authority mutation plus a manual ProductTask version rollback. The current authorization permits up to three separately consumed, zero-retry attempts, each with one ProductTask, at most three provider requests, one unmerged `acp/*` Draft PR, unchanged target `main`, and no merge/release/deployment/RWE effect. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
 
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `DECISION_REQUIRED` (nearest existing fail-closed equivalent of `LIVE_OBSERVED_RESEAL_REQUIRED`): the single authorized attempt was observed and PR #325 was accepted as its repair, but one clean exact-main live reseal remains and must not start without a new explicit one-use owner authorization.
-2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
-3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` — `READY_FOR_EXECUTION`: correct the PR #336 evidence classification and require terminal `context-capsule` success before merge; the recorded #336 run was an overall failure despite successful source jobs.
+2. `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` — `BLOCKED_PREREQUISITE` on Packet A: repair pre-effect credential failure recovery while retaining the original durable operation identity and monotonic ProductTask version.
+3. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `BLOCKED_PREREQUISITE` on Packets A and B: the owner-authorized clean reseal loop remains bounded to the three separately consumed attempts in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
+5. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+7. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+8. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 
 The delegated autonomous Golden Path packet is complete through merged PR #323 and is no longer the active frontier (see the COMPLETE packet section below).
 
@@ -67,7 +69,7 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #310 and PR #311 are merged CI-governance changes.
 - PR #313 is merged and accepted. Post-merge `push: main` run `30381836225` passed all seven source jobs and produced terminal capsule artifact `8697748363` bound to `ca5ce1023664c58be8d15d681a80f262fb2be70b`.
 - PR #325 is merged and accepted as `0da5c6c785004784d9ffa3b20e0068f4bac6be71` from exact head `7ecffd5a30426dd1f26ab4d46a8f2a36e7594568`: live-seal budget reservation release and Draft PR terminal CAS rebind. Exact-head canonical `tests` runs `30613256286` (full) and `30613256266` (PR) were successful; post-merge `push: main` run `30636441727` passed all jobs and bound context-capsule artifact to the merge SHA.
-- PR #336 is merged and accepted as `17723bb66a1274498c32aef0f6cac85ad339efea`: the dormant-surface governance gate. It does not authorize a live task, provider call, spend, merge policy change, or any RWE/VDE reclassification.
+- PR #336 is merged and accepted as `17723bb66a1274498c32aef0f6cac85ad339efea`: the dormant-surface governance gate. Its run `30680937667` is recorded as `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure` because the terminal job ran after the PR was merged and closed. It does not authorize a live task, provider call, spend, merge policy change, or any RWE/VDE reclassification.
 - PR #225 is presentation-only and remains last.
 
 The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, and delegated autonomous authority through PR #323. PR #325 is the accepted live-observed repair of the one authorized live attempt. The sole active frontier is the owner-required clean exact-main live reseal, which must not start without a new explicit one-use owner authorization. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
