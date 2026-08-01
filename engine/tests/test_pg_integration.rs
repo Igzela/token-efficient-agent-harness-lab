@@ -6738,7 +6738,7 @@ fn pg_rwe_authority_rejects_foreign_replay_and_stale_task_attempt_replay() {
         draft_pr_only: true,
         admitted_executor: corpus.admitted_executor.clone(),
         auto_merge_disabled: corpus.auto_merge_disabled,
-        expires_at: "2026-08-01T00:00:00Z".into(),
+        expires_at: (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
     };
     persist_rwe_run_authorization(&store, &principal, &body, true).unwrap();
     let run_id = format!("rwe-pg-run-{tag}");
@@ -6864,7 +6864,7 @@ fn pg_rwe_fixture_authorization_body(
         draft_pr_only: true,
         admitted_executor: corpus.admitted_executor.clone(),
         auto_merge_disabled: corpus.auto_merge_disabled,
-        expires_at: "2026-08-01T00:00:00Z".into(),
+        expires_at: (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
     }
 }
 
