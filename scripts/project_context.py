@@ -132,7 +132,6 @@ def parse_first_routed_packet(next_text: str) -> dict[str, str | None]:
         block,
         re.MULTILINE | re.IGNORECASE,
     )
-    fallback_pr = re.search(r"\bPR #(\d+)\b|(?<!\w)#(\d+)\b", block)
     pr_number = None
     if structured_owner:
         structured_pr = re.fullmatch(
@@ -140,8 +139,6 @@ def parse_first_routed_packet(next_text: str) -> dict[str, str | None]:
         )
         if structured_pr:
             pr_number = structured_pr.group("number")
-    elif fallback_pr:
-        pr_number = fallback_pr.group(1) or fallback_pr.group(2)
     return {
         "packet": packet,
         "state": state_match.group(1) if state_match else None,
@@ -1007,6 +1004,11 @@ def next_permitted_action(packet: dict[str, Any], active_pr: dict[str, Any] | No
     if state == "COMPLETE":
         return f"{packet_id} is complete; refresh accepted main and select the next eligible packet"
     if not active_pr:
+        if state == "READY_FOR_EXECUTION":
+            return (
+                f"confirm the documented prerequisites and bounded action for {packet_id}; "
+                "do not infer an implementation PR or provider effect"
+            )
         return f"inspect {packet_id}, confirm ownership, and create or continue one focused PR"
     number = active_pr.get("number")
     if active_pr.get("availability") != "confirmed":
