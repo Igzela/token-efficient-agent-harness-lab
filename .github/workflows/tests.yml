@@ -772,7 +772,6 @@ jobs:
             --format json
             --checks-json "$(cat needs-context.json)"
             --event-name "${GITHUB_EVENT_NAME}"
-            --expected-head-sha "${EXPECTED_SHA}"
           )
           if [ -n "${GITHUB_PR_NUMBER}" ]; then
             cp "${GITHUB_WORKSPACE}/trusted-exact-head-proof.json" trusted-exact-head-proof.json
@@ -781,6 +780,9 @@ jobs:
               --expected-head-sha "${EXPECTED_SHA}"
               --exact-head-proof trusted-exact-head-proof.json
             )
+          else
+            expected_head_option="--expected-head-sha"
+            args+=("${expected_head_option}" "${EXPECTED_SHA}")
           fi
           env -u GH_TOKEN -u GITHUB_TOKEN \
             uv run --no-project python "${GITHUB_WORKSPACE}/scripts/project_context.py" "${args[@]}" \
