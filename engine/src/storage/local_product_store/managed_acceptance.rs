@@ -213,6 +213,17 @@ type DelegatedArtifactConfirmationSqliteRow = (
     String,
 );
 
+type BootstrapRecoveryDelegationRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 /// Hash-bound policy delegated by an authenticated operator. This is a policy
 /// receipt, not an execution or output authority; both are issued separately
 /// and only after the exact derived manifest is checked.
@@ -2652,6 +2663,181 @@ impl LocalProductStore {
         }?;
         self.close_revoked_delegation_attempt(delegation_id, principal.principal_id())?;
         Ok(())
+    }
+
+    /// Reconcile an active delegation that never reached spend or attempt
+    /// admission after a restart/preparation interruption.  This is the
+    /// narrow bootstrap recovery owner: it cannot revoke an admitted,
+    /// spent, confirmed, or terminalized delegation, and it is scoped to the
+    /// ProductTask tenant before the store transaction mutates authority.
+    pub fn revoke_unadmitted_delegation_for_bootstrap(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        delegation_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        if task.get("tenant_id").and_then(Value::as_str) != Some(tenant_id) {
+            return Err("product task tenant does not match bootstrap authority".into());
+        }
+        let now = self.now();
+        let details = json!({
+            "authority_owner": "managed_acceptance_bootstrap",
+            "pre_admission_only": true,
+            "task_id": task_id,
+        });
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let row: BootstrapRecoveryDelegationRow = tx
+                    .query_row(
+                        "SELECT tenant_id, status, spend_status, attempt_id, attempt_status,
+                                attempt_lease_token, artifact_confirmation_json, terminal_receipt_json
+                         FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                                row.get(6)?,
+                                row.get(7)?,
+                            ))
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                if row.0 != tenant_id {
+                    return Err("delegation tenant does not match ProductTask tenant".into());
+                }
+                if row.1 == "revoked" {
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(json!({
+                        "status": "revoked",
+                        "delegation_state": "revoked",
+                        "spend_authorization_state": "revoked",
+                        "attempt_lease_state": null,
+                        "replayed": true,
+                    }));
+                }
+                if row.1 != "active"
+                    || row.2.is_some()
+                    || row.3.is_some()
+                    || row.4.is_some()
+                    || row.5.is_some()
+                    || row.6.is_some()
+                    || row.7.is_some()
+                {
+                    return Err(
+                        "bootstrap delegation recovery only permits active pre-admission state"
+                            .into(),
+                    );
+                }
+                tx.execute(
+                    "UPDATE managed_acceptance_delegations
+                     SET status='revoked', spend_status='revoked', revoked_at=?1, updated_at=?1
+                     WHERE delegation_id=?2 AND tenant_id=?3 AND status='active'
+                       AND spend_status IS NULL AND attempt_id IS NULL
+                       AND attempt_status IS NULL AND attempt_lease_token IS NULL
+                       AND artifact_confirmation_json IS NULL AND terminal_receipt_json IS NULL",
+                    params![now, delegation_id, tenant_id],
+                )
+                .map_err(|error| error.to_string())?;
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    actor,
+                    "managed_acceptance.delegation_bootstrap_reconciled",
+                    delegation_id,
+                    &details,
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(json!({
+                    "status": "revoked",
+                    "delegation_state": "revoked",
+                    "spend_authorization_state": "revoked",
+                    "attempt_lease_state": null,
+                    "replayed": false,
+                }))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let row = tx
+                    .query_one(
+                        "SELECT tenant_id, status, spend_status, attempt_id, attempt_status,
+                                attempt_lease_token, artifact_confirmation_json, terminal_receipt_json
+                         FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                        &[&delegation_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let stored_tenant: String = row.get(0);
+                let status: String = row.get(1);
+                let spend_status: Option<String> = row.get(2);
+                let attempt_id: Option<String> = row.get(3);
+                let attempt_status: Option<String> = row.get(4);
+                let lease_token: Option<String> = row.get(5);
+                let confirmation: Option<String> = row.get(6);
+                let terminal: Option<String> = row.get(7);
+                if stored_tenant != tenant_id {
+                    return Err("delegation tenant does not match ProductTask tenant".into());
+                }
+                if status == "revoked" {
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(json!({
+                        "status": "revoked",
+                        "delegation_state": "revoked",
+                        "spend_authorization_state": "revoked",
+                        "attempt_lease_state": null,
+                        "replayed": true,
+                    }));
+                }
+                if status != "active"
+                    || spend_status.is_some()
+                    || attempt_id.is_some()
+                    || attempt_status.is_some()
+                    || lease_token.is_some()
+                    || confirmation.is_some()
+                    || terminal.is_some()
+                {
+                    return Err(
+                        "bootstrap delegation recovery only permits active pre-admission state"
+                            .into(),
+                    );
+                }
+                tx.execute(
+                    "UPDATE managed_acceptance_delegations
+                     SET status='revoked', spend_status='revoked', revoked_at=$1, updated_at=$1
+                     WHERE delegation_id=$2 AND tenant_id=$3 AND status='active'
+                       AND spend_status IS NULL AND attempt_id IS NULL
+                       AND attempt_status IS NULL AND attempt_lease_token IS NULL
+                       AND artifact_confirmation_json IS NULL AND terminal_receipt_json IS NULL",
+                    &[&now, &delegation_id, &tenant_id],
+                )
+                .map_err(|error| error.to_string())?;
+                let details_json = details.to_string();
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES ($1, $2, 'managed_acceptance.delegation_bootstrap_reconciled', $3, $4)",
+                    &[&now, &actor, &delegation_id, &details_json],
+                )
+                .map_err(|error| error.to_string())?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(json!({
+                    "status": "revoked",
+                    "delegation_state": "revoked",
+                    "spend_authorization_state": "revoked",
+                    "attempt_lease_state": null,
+                    "replayed": false,
+                }))
+            }),
+        }
     }
 
     pub fn delegated_authority_state(&self, delegation_id: &str) -> Result<Value, String> {
@@ -12989,5 +13175,142 @@ mod tests {
                 .unwrap()["replayed"],
             true
         );
+    }
+
+    #[test]
+    fn bootstrap_reconciles_only_unadmitted_delegation_and_is_idempotent() {
+        struct ProductGateGuard(Option<std::ffi::OsString>);
+
+        impl Drop for ProductGateGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var(PRODUCT_TASK_GATE, value),
+                    None => std::env::remove_var(PRODUCT_TASK_GATE),
+                }
+            }
+        }
+
+        let _env_lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prior_gate = std::env::var_os(PRODUCT_TASK_GATE);
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        let _gate = ProductGateGuard(prior_gate);
+
+        let (dir, store) = store();
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(target.join("docs")).unwrap();
+        std::fs::write(target.join("docs/USER_GUIDE.md"), "guide\n").unwrap();
+        let intake = ProductTaskIntakeRequest {
+            objective: "Create a bounded local artifact".into(),
+            target_id: "bootstrap-recovery".into(),
+            target_repo_path: target.to_string_lossy().into_owned(),
+            source_kind: Some("local_folder".into()),
+            source_revision: "unused-local-folder-revision".into(),
+            source_tree_hash: None,
+            allowed_paths: vec!["docs/USER_GUIDE.md".into()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "test -f docs/USER_GUIDE.md".into(),
+                timeout_ms: 5_000,
+            }],
+            output_intent: "artifact_only".into(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["deterministic".into()],
+                prefer: Some("deterministic".into()),
+            },
+            budget: None,
+            risk_class: "low".into(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(true),
+            idempotency_key: "bootstrap-recovery-reconcile".into(),
+            expected_version: None,
+            tenant_id: Some("tenant-a".into()),
+            workspace_id: Some("default".into()),
+            workspace_mode: Some("local_folder".into()),
+        };
+        let validated = validate_intake(&intake, "tenant-a", "default").unwrap();
+        let task = store.admit_product_task(&validated, "operator").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        let task_version_before = task["version"].as_i64().unwrap();
+
+        seed_key(&store, "bootstrap-reconcile-operator");
+        let principal = store
+            .authenticate_managed_acceptance_principal(
+                "tenant-a",
+                "bootstrap-reconcile-operator",
+                Some(1.0),
+            )
+            .unwrap();
+        let mut delegation = delegated_contract();
+        delegation.delegation_id = "bootstrap-reconcile-delegation".into();
+        store.persist_delegation(&principal, &delegation).unwrap();
+
+        let reconciled = store
+            .revoke_unadmitted_delegation_for_bootstrap(
+                "tenant-a",
+                task_id,
+                &delegation.delegation_id,
+                "local-admin-env",
+            )
+            .unwrap();
+        assert_eq!(reconciled["status"], "revoked");
+        assert_eq!(reconciled["delegation_state"], "revoked");
+        assert_eq!(reconciled["spend_authorization_state"], "revoked");
+        assert_eq!(reconciled["replayed"], false);
+        assert_eq!(
+            store
+                .delegated_authority_state(&delegation.delegation_id)
+                .unwrap()["delegation_state"],
+            "revoked"
+        );
+        assert_eq!(
+            store.get_product_task(task_id).unwrap().unwrap()["version"],
+            task_version_before
+        );
+
+        let audit_count_before_replay = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM audit_log WHERE action='managed_acceptance.delegation_bootstrap_reconciled' AND resource=?1",
+                    params![delegation.delegation_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let replay = store
+            .revoke_unadmitted_delegation_for_bootstrap(
+                "tenant-a",
+                task_id,
+                &delegation.delegation_id,
+                "local-admin-env",
+            )
+            .unwrap();
+        assert_eq!(replay["replayed"], true);
+        assert_eq!(
+            store.get_product_task(task_id).unwrap().unwrap()["version"],
+            task_version_before
+        );
+        let audit_count_after_replay = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM audit_log WHERE action='managed_acceptance.delegation_bootstrap_reconciled' AND resource=?1",
+                    params![delegation.delegation_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(audit_count_after_replay, audit_count_before_replay);
+        assert!(store
+            .revoke_unadmitted_delegation_for_bootstrap(
+                "foreign-tenant",
+                task_id,
+                &delegation.delegation_id,
+                "local-admin-env",
+            )
+            .is_err());
     }
 }

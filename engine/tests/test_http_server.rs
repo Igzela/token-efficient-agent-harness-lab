@@ -12926,6 +12926,24 @@ async fn axum_delegated_product_task_endpoints_enforce_separated_scopes_before_b
         assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
         assert_eq!(response_json(response).await["code"], "missing_scope");
     }
+
+    let bootstrap_reconcile_attempt = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/product/tasks/missing/delegated/reconcile-unadmitted")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_only_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"delegation_id": "missing"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bootstrap_reconcile_attempt.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(bootstrap_reconcile_attempt).await["code"],
+        "bootstrap_identity_authority_required"
+    );
 }
 
 #[tokio::test]

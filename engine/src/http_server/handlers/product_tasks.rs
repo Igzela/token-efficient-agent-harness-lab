@@ -9,6 +9,7 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{ProductTaskIntakeApiRequest, AXUM_API_SCHEMA_VERSION};
+use crate::infrastructure::auth::LOCAL_BOOTSTRAP_API_KEY_ID;
 use crate::product_golden_path::{
     product_gate_enabled, product_scheduler_kill_active, validate_intake, ProductExecutorPolicy,
     ProductTaskBudget, ProductTaskIntakeRequest, ProductVerificationCommand,
@@ -18,7 +19,7 @@ use crate::storage::local_product_store::product_tasks::{
     public_product_task_projection, public_product_task_result_projection,
 };
 use crate::storage::local_product_store::{
-    SCOPE_DELEGATED_ARTIFACT_CONFIRM, SCOPE_DELEGATED_MANIFEST_APPROVE,
+    SCOPE_DELEGATED_ARTIFACT_CONFIRM, SCOPE_DELEGATED_MANIFEST_APPROVE, SCOPE_IDENTITY_DELEGATE,
 };
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, GitHubPullRequestConfig, GitHubPullRequestRequest,
@@ -1096,6 +1097,52 @@ pub(crate) async fn api_recover_product_task_workspace(
             ))
         }
     }
+}
+
+pub(crate) async fn api_reconcile_unadmitted_delegated_product_task(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(task_id): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    if context.api_key_id != LOCAL_BOOTSTRAP_API_KEY_ID
+        || !context
+            .scopes
+            .iter()
+            .any(|scope| scope == SCOPE_IDENTITY_DELEGATE)
+    {
+        return Err(ApiError::with_code(
+            StatusCode::FORBIDDEN,
+            "bootstrap_identity_authority_required",
+            "only the canonical bootstrap identity-delegation authority may reconcile an unadmitted delegation",
+        ));
+    }
+    let delegation_id = body
+        .get("delegation_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| delegated_request_error("delegation_id is required"))?;
+    let store = require_store(&state)?;
+    let result = store
+        .revoke_unadmitted_delegation_for_bootstrap(
+            &context.tenant_id,
+            &task_id,
+            delegation_id,
+            &context.api_key_id,
+        )
+        .map_err(|error| {
+            delegated_api_error(&error, "delegated_bootstrap_reconciliation_failed")
+        })?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "result": result,
+        })),
+    ))
 }
 
 /// Executor types the attached scheduler can actually route to a worker right now.
