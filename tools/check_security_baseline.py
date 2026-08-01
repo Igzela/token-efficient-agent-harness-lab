@@ -933,6 +933,18 @@ def _strip_cfg_test_regions(content: str) -> str:
             if test_only:
                 tail = code_line[attr.end() :]
                 first_brace = tail.find("{")
+                terminating_semicolon = tail.find(";")
+                if terminating_semicolon >= 0 and (
+                    first_brace < 0 or terminating_semicolon < first_brace
+                ):
+                    suffix = line[
+                        attr.end() + terminating_semicolon + 1 :
+                    ].strip()
+                    if suffix:
+                        out.append(suffix)
+                    in_test = False
+                    pending_test_item = False
+                    continue
                 if first_brace >= 0:
                     item_end = _rust_balanced_brace_end(
                         tail, first_brace
