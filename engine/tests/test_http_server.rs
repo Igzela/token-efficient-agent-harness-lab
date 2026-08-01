@@ -12929,6 +12929,159 @@ async fn axum_delegated_product_task_endpoints_enforce_separated_scopes_before_b
 }
 
 #[tokio::test]
+async fn axum_product_task_http_authority_rejects_foreign_tenant_on_every_entrypoint() {
+    let _product_env_lock = product_golden_path_env_lock().lock().await;
+    let _target_output_lock = target_repo_output_env_lock().lock().await;
+    let _product_env = ProductGoldenPathDisabledEnvGuard::enable();
+    let _target_output_env = TargetRepoOutputEnvGuard::enable_local_remote();
+    let target = tempdir().unwrap();
+    git(target.path(), &["init", "-b", "main"]);
+    git(target.path(), &["config", "user.name", "ACP Tenant Test"]);
+    git(
+        target.path(),
+        &["config", "user.email", "acp-tenant@example.invalid"],
+    );
+    std::fs::write(target.path().join("README.md"), "tenant-bound\n").unwrap();
+    git(target.path(), &["add", "README.md"]);
+    git(target.path(), &["commit", "-m", "base"]);
+    git(
+        target.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/disposable/tenant-bound.git",
+        ],
+    );
+    let revision = git(target.path(), &["rev-parse", "HEAD"]);
+
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("tenant-bound.db")).unwrap());
+    let scopes = HashSet::from([
+        "team:admin".to_string(),
+        "dispatch:read".to_string(),
+        "dispatch:execute".to_string(),
+    ]);
+    let mut resolver = TenantResolver::new();
+    for tenant_id in ["local", "foreign"] {
+        resolver.add_tenant(Tenant {
+            tenant_id: tenant_id.to_string(),
+            name: tenant_id.to_string(),
+            scopes: scopes.clone(),
+            rate_limit: Some(100),
+        });
+    }
+    let (_, local_raw) = resolver
+        .create_api_key("local", Some(scopes.clone()), None, 1.0)
+        .unwrap();
+    let (_, foreign_raw) = resolver
+        .create_api_key("foreign", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store_arc(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+
+    let intake = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/product/tasks")
+                .header(header::AUTHORIZATION, format!("Bearer {local_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "objective": "tenant authority boundary",
+                        "target_id": "tenant-bound",
+                        "target_repo_path": target.path().to_string_lossy(),
+                        "source_revision": revision,
+                        "allowed_paths": ["README.md"],
+                        "verification_commands": [{"command": "test -f README.md", "timeout_ms": 5000}],
+                        "output_intent": "artifact_only",
+                        "executor_policy": {"allowed_executors": ["command"], "prefer": "command"},
+                        "risk_class": "low",
+                        "approval_required": true,
+                        "confirm_execution": true,
+                        "confirm_output": true,
+                        "idempotency_key": "foreign-tenant-http-boundary",
+                        "tenant_id": "local",
+                        "workspace_id": "default",
+                        "workspace_mode": "git_worktree"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let intake_status = intake.status();
+    let intake_body = response_json(intake).await;
+    assert_eq!(intake_status, StatusCode::OK, "intake body={intake_body:#}");
+    let task_id = intake_body["task_id"].as_str().unwrap().to_string();
+
+    let cases = [
+        (
+            Method::GET,
+            format!("/api/v1/product/tasks/{task_id}"),
+            Body::empty(),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/product/tasks/{task_id}/compile-and-schedule"),
+            Body::from("{}"),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/product/tasks/{task_id}/finalize"),
+            Body::from("{}"),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/product/tasks/{task_id}/approve"),
+            Body::from(json!({"expected_task_version": 1}).to_string()),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/product/tasks/{task_id}/output"),
+            Body::from(
+                json!({"expected_task_version": 1, "approval_id": "foreign", "confirm_output": true})
+                    .to_string(),
+            ),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/product/tasks/{task_id}/recover-workspace"),
+            Body::from("{}"),
+        ),
+    ];
+    for (method, uri, body) in cases {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(&uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {foreign_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response_json(response).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "foreign ProductTask entrypoint {uri}: {body:#}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn axum_delegated_prepare_is_default_off_after_admin_authorization() {
     let _env_lock = product_golden_path_env_lock().lock().await;
     let _env = ProductGoldenPathDisabledEnvGuard::disable();

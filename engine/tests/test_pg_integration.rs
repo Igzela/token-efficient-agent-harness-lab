@@ -435,7 +435,7 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
                         json!({
                             "user_id": "pg-reviewer-reissued",
                             "role": "reviewer",
-                            "scopes": ["team:admin", "managed_acceptance:risk_acknowledge"]
+                            "scopes": ["managed_acceptance:risk_acknowledge"]
                         })
                         .to_string(),
                     ))
@@ -448,7 +448,7 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
     let reissued_body = runtime.block_on(pg_response_json(reissued));
     assert_eq!(
         reissued_body["scopes"],
-        json!(["team:admin", "managed_acceptance:risk_acknowledge"])
+        json!(["managed_acceptance:risk_acknowledge"])
     );
     let reissued_key_id = reissued_body["key_id"].as_str().unwrap().to_string();
     let persisted = store.get_api_key_metadata(&reissued_key_id).unwrap();

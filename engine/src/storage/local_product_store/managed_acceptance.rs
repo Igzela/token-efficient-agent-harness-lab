@@ -35,13 +35,11 @@ pub const SCOPE_IDENTITY_DELEGATE: &str = "managed_acceptance:identity_delegate"
 pub const BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES: &[&str] = &[SCOPE_IDENTITY_DELEGATE];
 
 /// Least-privilege API-key ceilings for the two managed identities used by
-/// the delegated ProductTask path. `team:admin` is required because the
-/// canonical product approval route is protected by that scope; it does not
-/// grant identity delegation, which remains bootstrap-only. These are
-/// ceilings, not a grant to the bootstrap key; callers may request a subset,
-/// but never an unrelated managed or ordinary authority scope.
+/// the delegated ProductTask path. Reviewer approval uses its dedicated
+/// capability rather than the broad tenant-admin scope. These are ceilings,
+/// not a grant to the bootstrap key; callers may request a subset, but never
+/// an unrelated managed or ordinary authority scope.
 pub const MANAGED_REVIEWER_KEY_SCOPES: &[&str] = &[
-    "team:admin",
     SCOPE_RISK_ACKNOWLEDGE,
     SCOPE_DELEGATED_AUTONOMY,
     SCOPE_DELEGATED_MANIFEST_APPROVE,
@@ -2192,6 +2190,35 @@ impl LocalProductStore {
             "product_terminal_evidence": terminal_evidence,
             "artifact_confirmation": confirmation,
         }))
+    }
+
+    /// HTTP/store boundary for delegated terminalization. The authenticated
+    /// output principal supplies the tenant and required terminal scopes; the
+    /// request body supplies only immutable identities that are rechecked by
+    /// the existing terminal owner.
+    pub fn complete_delegated_product_task_terminal_for_principal(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        delegation_id: &str,
+        attempt_id: &str,
+        product_task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_ATTEMPT_ADMIT)?;
+        principal.require_scope(SCOPE_DELEGATED_EXECUTE)?;
+        let task = self
+            .get_product_task(product_task_id)?
+            .ok_or("delegated terminal ProductTask is missing")?;
+        if task.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id()) {
+            return Err("delegated terminal ProductTask tenant does not match principal".into());
+        }
+        self.require_delegation_tenant(delegation_id, principal.tenant_id())?;
+        self.complete_delegated_product_task_terminal(
+            delegation_id,
+            attempt_id,
+            product_task_id,
+            actor,
+        )
     }
 
     /// Close a delegated non-success ProductTask from store-owned task,

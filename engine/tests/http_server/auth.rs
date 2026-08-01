@@ -505,7 +505,6 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
                         "user_id": "managed-reviewer",
                         "role": "reviewer",
                         "scopes": [
-                            "team:admin",
                             "managed_acceptance:risk_acknowledge",
                             "managed_acceptance:delegated_manifest_approve"
                         ]
@@ -521,7 +520,6 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
     assert_eq!(
         reviewer_body["scopes"],
         json!([
-            "team:admin",
             "managed_acceptance:risk_acknowledge",
             "managed_acceptance:delegated_manifest_approve"
         ])
@@ -529,8 +527,8 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
     let reviewer_id = reviewer_body["key_id"].as_str().unwrap();
     let reviewer_raw = reviewer_body["raw_key"].as_str().unwrap();
 
-    // The reviewer needs team:admin for the canonical approval route, but
-    // that operational scope must not become a second key-delegation owner.
+    // Review uses the dedicated approval capability and never receives the
+    // broad tenant-admin/key-management scope.
     let reviewer_create = app
         .clone()
         .oneshot(

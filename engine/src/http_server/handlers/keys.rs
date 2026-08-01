@@ -93,6 +93,18 @@ fn require_managed_actor_key_mutation_allowed(
             "managed identities cannot mutate API key authority",
         ));
     }
+    if actor_role.is_none()
+        && context.api_key_id != LOCAL_BOOTSTRAP_API_KEY_ID
+        && context
+            .scopes
+            .iter()
+            .any(|scope| ALL_MANAGED_ACCEPTANCE_SCOPES.contains(&scope.as_str()))
+    {
+        return Err(ApiError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "managed-capability key metadata is required for API key authority mutation",
+        ));
+    }
     Ok(())
 }
 
