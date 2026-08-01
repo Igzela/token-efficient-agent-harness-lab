@@ -16,7 +16,8 @@ use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::provider::audit::{ProviderAuditEvent, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION};
 use engine::storage::local_product_store::LocalProductStore;
 use engine::storage::local_product_store::{
-    ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_IDENTITY_DELEGATE,
+    ALL_MANAGED_ACCEPTANCE_SCOPES, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES, MANAGED_REVIEWER_KEY_SCOPES,
+    SCOPE_IDENTITY_DELEGATE,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -442,7 +443,7 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         )
         .unwrap();
 
-    let mut local_scopes: HashSet<String> = ["team:read", "team:admin"]
+    let mut local_scopes: HashSet<String> = ["team:read", "team:admin", "dispatch:execute"]
         .into_iter()
         .map(String::from)
         .collect();
@@ -658,6 +659,129 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
             "managed_acceptance:attempt_admit"
         ])
     );
+    let operator_id = operator_body["key_id"].as_str().unwrap().to_string();
+
+    // The canonical bootstrap owner may mutate managed identities through the
+    // same API, while repeated terminal operations fail closed instead of
+    // creating a second durable authority record.
+    let update_operator = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{operator_id}/scopes"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"scopes": MANAGED_OUTPUT_OPERATOR_KEY_SCOPES}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let update_operator_status = update_operator.status();
+    let update_operator_body = response_json(update_operator).await;
+    assert_eq!(
+        update_operator_status,
+        StatusCode::OK,
+        "{update_operator_body}"
+    );
+
+    let rotated_operator = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{operator_id}/rotate"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rotated_operator.status(), StatusCode::OK);
+    let rotated_operator_id = response_json(rotated_operator).await["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let revoked_operator = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{rotated_operator_id}/revoke"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoked_operator.status(), StatusCode::OK);
+    let repeated_revoke = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{rotated_operator_id}/revoke"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repeated_revoke.status(), StatusCode::NOT_FOUND);
+
+    let disposable_reviewer = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "managed-reviewer-disposable",
+                        "role": "reviewer",
+                        "scopes": MANAGED_REVIEWER_KEY_SCOPES
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disposable_reviewer.status(), StatusCode::OK);
+    let disposable_reviewer_id = response_json(disposable_reviewer).await["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let deleted_reviewer = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/v1/keys/{disposable_reviewer_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted_reviewer.status(), StatusCode::OK);
+    let repeated_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/v1/keys/{disposable_reviewer_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repeated_delete.status(), StatusCode::NOT_FOUND);
 
     let ordinary_create = app
         .clone()
