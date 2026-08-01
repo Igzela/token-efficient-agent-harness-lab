@@ -102,6 +102,24 @@ pub fn validate_managed_acceptance_role_scopes(
     Ok(())
 }
 
+fn validate_bootstrap_identity_delegation_scopes(scopes: &[String]) -> Result<(), String> {
+    if !BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES
+        .iter()
+        .all(|required| scopes.iter().any(|scope| scope == required))
+    {
+        return Err("canonical bootstrap identity-delegation scope is missing".into());
+    }
+    if let Some(scope) = scopes.iter().find(|scope| {
+        scope.starts_with("managed_acceptance:")
+            && !BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES.contains(&scope.as_str())
+    }) {
+        return Err(format!(
+            "canonical bootstrap carries a managed-operation scope outside its delegation ceiling: {scope:?}"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod managed_identity_scope_profile_tests {
     use super::{
@@ -3106,8 +3124,14 @@ impl LocalProductStore {
         {
             return Err("canonical bootstrap identity-delegation authority is required".into());
         }
-        let canonical_bootstrap =
-            self.authenticate_bootstrap_identity_delegation_principal(bootstrap.tenant_id(), None)?;
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or(0.0);
+        let canonical_bootstrap = self.authenticate_bootstrap_identity_delegation_principal(
+            bootstrap.tenant_id(),
+            Some(now_unix),
+        )?;
         if canonical_bootstrap.principal_id() != bootstrap.principal_id()
             || canonical_bootstrap.scopes() != bootstrap.scopes()
         {
@@ -3116,7 +3140,7 @@ impl LocalProductStore {
         let canonical_reviewer = self.authenticate_managed_acceptance_principal_for_tenant(
             reviewer.tenant_id(),
             reviewer.principal_id(),
-            None,
+            Some(now_unix),
         )?;
         if canonical_reviewer.principal_kind() != &PrincipalKind::OperatorApiKey
             || canonical_reviewer.tenant_id() != canonical_bootstrap.tenant_id()
@@ -3135,6 +3159,10 @@ impl LocalProductStore {
         canonical_reviewer.require_scope(SCOPE_DELEGATED_AUTONOMY)?;
         canonical_reviewer.require_scope(SCOPE_DELEGATED_MANIFEST_APPROVE)?;
         canonical_reviewer.require_scope(SCOPE_SPEND_AUTHORIZE)?;
+        let bootstrap_scopes_json = serde_json::to_string(canonical_bootstrap.scopes())
+            .map_err(|error| error.to_string())?;
+        let reviewer_scopes_json = serde_json::to_string(canonical_reviewer.scopes())
+            .map_err(|error| error.to_string())?;
         let tenant_id = canonical_bootstrap.tenant_id();
         let reviewer_key_id = canonical_reviewer.principal_id();
         let task = self
@@ -3239,34 +3267,64 @@ impl LocalProductStore {
                             .into(),
                     );
                 }
+                if row.4 != reviewer_key_id && row.4 != row.3 {
+                    return Err(
+                        "bootstrap recovery cannot replace an already rebound reviewer".into(),
+                    );
+                }
                 let replayed = row.4 == reviewer_key_id;
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET manifest_approver_id=?1,
+                             updated_at=CASE WHEN manifest_approver_id=?1 THEN updated_at ELSE ?2 END
+                         WHERE delegation_id=?3 AND tenant_id=?4 AND status='active'
+                           AND product_task_id=?5
+                           AND executions_used=0 AND total_cost_usd=0
+                           AND proposal_sha256 IS NULL AND proposal_json IS NULL
+                           AND spend_authorization_id IS NULL
+                           AND manifest_approval_sha256 IS NULL AND manifest_approval_json IS NULL
+                           AND spend_body_sha256 IS NULL AND spend_status IS NULL
+                           AND spend_body_json IS NULL AND manifest_json IS NULL
+                           AND attempt_id IS NULL AND attempt_lease_id IS NULL
+                           AND attempt_lease_token IS NULL AND attempt_status IS NULL
+                           AND attempt_activator_id IS NULL
+                           AND artifact_confirmation_sha256 IS NULL
+                           AND artifact_confirmation_json IS NULL
+                           AND provider_request_journal_json='[]'
+                           AND terminal_receipt_json IS NULL AND terminal_at IS NULL
+                           AND revoked_at IS NULL AND artifact_confirmer_id=''
+                           AND (manifest_approver_id=?1 OR manifest_approver_id=principal_id)
+                           AND EXISTS (
+                               SELECT 1 FROM api_key_metadata
+                               WHERE key_id=?6 AND tenant_id=?4 AND role='reviewer'
+                                 AND scopes_json=?7 AND revoked_at IS NULL
+                                 AND (expires_at IS NULL OR CAST(expires_at AS REAL) >= ?9)
+                           )
+                           AND EXISTS (
+                               SELECT 1 FROM api_key_metadata
+                               WHERE key_id=?8 AND tenant_id=?4 AND role IN ('admin','bootstrap')
+                                 AND scopes_json=?10 AND revoked_at IS NULL
+                                 AND (expires_at IS NULL OR CAST(expires_at AS REAL) >= ?9)
+                           )",
+                        params![
+                            reviewer_key_id,
+                            now,
+                            delegation_id,
+                            tenant_id,
+                            task_id,
+                            reviewer_key_id,
+                            reviewer_scopes_json,
+                            LOCAL_BOOTSTRAP_API_KEY_ID,
+                            now_unix,
+                            bootstrap_scopes_json,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("delegation recovery lost its current authenticated pre-admission state".into());
+                }
                 if !replayed {
-                    let changed = tx
-                        .execute(
-                            "UPDATE managed_acceptance_delegations
-                             SET manifest_approver_id=?1, updated_at=?2
-                             WHERE delegation_id=?3 AND tenant_id=?4 AND status='active'
-                               AND product_task_id=?5
-                               AND executions_used=0 AND total_cost_usd=0
-                               AND proposal_sha256 IS NULL AND proposal_json IS NULL
-                               AND spend_authorization_id IS NULL
-                               AND manifest_approval_sha256 IS NULL AND manifest_approval_json IS NULL
-                               AND spend_body_sha256 IS NULL AND spend_status IS NULL
-                               AND spend_body_json IS NULL AND manifest_json IS NULL
-                               AND attempt_id IS NULL AND attempt_lease_id IS NULL
-                               AND attempt_lease_token IS NULL AND attempt_status IS NULL
-                               AND attempt_activator_id IS NULL
-                               AND artifact_confirmation_sha256 IS NULL
-                               AND artifact_confirmation_json IS NULL
-                               AND provider_request_journal_json='[]'
-                               AND terminal_receipt_json IS NULL AND terminal_at IS NULL
-                               AND revoked_at IS NULL AND artifact_confirmer_id=''",
-                            params![reviewer_key_id, now, delegation_id, tenant_id, task_id],
-                        )
-                        .map_err(|error| error.to_string())?;
-                    if changed != 1 {
-                        return Err("delegation recovery lost its current pre-admission state".into());
-                    }
                     append_audit_locked(
                         &tx,
                         &now,
@@ -3363,34 +3421,66 @@ impl LocalProductStore {
                             .into(),
                     );
                 }
+                if stored_manifest_approver_id != reviewer_key_id
+                    && stored_manifest_approver_id != stored_principal_id
+                {
+                    return Err(
+                        "bootstrap recovery cannot replace an already rebound reviewer".into(),
+                    );
+                }
                 let replayed = stored_manifest_approver_id == reviewer_key_id;
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET manifest_approver_id=$1,
+                             updated_at=CASE WHEN manifest_approver_id=$1 THEN updated_at ELSE $2 END
+                         WHERE delegation_id=$3 AND tenant_id=$4 AND status='active'
+                           AND product_task_id=$5
+                           AND executions_used=0 AND total_cost_usd=0
+                           AND proposal_sha256 IS NULL AND proposal_json IS NULL
+                           AND spend_authorization_id IS NULL
+                           AND manifest_approval_sha256 IS NULL AND manifest_approval_json IS NULL
+                           AND spend_body_sha256 IS NULL AND spend_status IS NULL
+                           AND spend_body_json IS NULL AND manifest_json IS NULL
+                           AND attempt_id IS NULL AND attempt_lease_id IS NULL
+                           AND attempt_lease_token IS NULL AND attempt_status IS NULL
+                           AND attempt_activator_id IS NULL
+                           AND artifact_confirmation_sha256 IS NULL
+                           AND artifact_confirmation_json IS NULL
+                           AND provider_request_journal_json='[]'
+                           AND terminal_receipt_json IS NULL AND terminal_at IS NULL
+                           AND revoked_at IS NULL AND artifact_confirmer_id=''
+                           AND (manifest_approver_id=$1 OR manifest_approver_id=principal_id)
+                           AND EXISTS (
+                               SELECT 1 FROM api_key_metadata
+                               WHERE key_id=$6 AND tenant_id=$4 AND role='reviewer'
+                                 AND scopes_json=$7 AND revoked_at IS NULL
+                                 AND (expires_at IS NULL OR CAST(expires_at AS DOUBLE PRECISION) >= $9)
+                           )
+                           AND EXISTS (
+                               SELECT 1 FROM api_key_metadata
+                               WHERE key_id=$8 AND tenant_id=$4 AND role IN ('admin','bootstrap')
+                                 AND scopes_json=$10 AND revoked_at IS NULL
+                                 AND (expires_at IS NULL OR CAST(expires_at AS DOUBLE PRECISION) >= $9)
+                           )",
+                        &[
+                            &reviewer_key_id,
+                            &now,
+                            &delegation_id,
+                            &tenant_id,
+                            &task_id,
+                            &reviewer_key_id,
+                            &reviewer_scopes_json,
+                            &LOCAL_BOOTSTRAP_API_KEY_ID,
+                            &now_unix,
+                            &bootstrap_scopes_json,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("delegation recovery lost its current authenticated pre-admission state".into());
+                }
                 if !replayed {
-                    let changed = tx
-                        .execute(
-                            "UPDATE managed_acceptance_delegations
-                             SET manifest_approver_id=$1, updated_at=$2
-                             WHERE delegation_id=$3 AND tenant_id=$4 AND status='active'
-                               AND product_task_id=$5
-                               AND executions_used=0 AND total_cost_usd=0
-                               AND proposal_sha256 IS NULL AND proposal_json IS NULL
-                               AND spend_authorization_id IS NULL
-                               AND manifest_approval_sha256 IS NULL AND manifest_approval_json IS NULL
-                               AND spend_body_sha256 IS NULL AND spend_status IS NULL
-                               AND spend_body_json IS NULL AND manifest_json IS NULL
-                               AND attempt_id IS NULL AND attempt_lease_id IS NULL
-                               AND attempt_lease_token IS NULL AND attempt_status IS NULL
-                               AND attempt_activator_id IS NULL
-                               AND artifact_confirmation_sha256 IS NULL
-                               AND artifact_confirmation_json IS NULL
-                               AND provider_request_journal_json='[]'
-                               AND terminal_receipt_json IS NULL AND terminal_at IS NULL
-                               AND revoked_at IS NULL AND artifact_confirmer_id=''",
-                            &[&reviewer_key_id, &now, &delegation_id, &tenant_id, &task_id],
-                        )
-                        .map_err(|error| error.to_string())?;
-                    if changed != 1 {
-                        return Err("delegation recovery lost its current pre-admission state".into());
-                    }
                     let details_json = details.to_string();
                     tx.execute(
                         "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
@@ -4435,9 +4525,7 @@ impl LocalProductStore {
                     .collect()
             })
             .unwrap_or_default();
-        if !scopes.iter().any(|scope| scope == SCOPE_IDENTITY_DELEGATE) {
-            return Err("canonical bootstrap identity-delegation scope is missing".into());
-        }
+        validate_bootstrap_identity_delegation_scopes(&scopes)?;
         let _ = self.touch_api_key_last_used(LOCAL_BOOTSTRAP_API_KEY_ID);
         Ok(AuthenticatedPrincipal {
             tenant_id: tenant_id.to_string(),
@@ -13991,6 +14079,23 @@ mod tests {
             )
             .unwrap();
         let bootstrap_scopes = vec![SCOPE_IDENTITY_DELEGATE.to_string()];
+        let over_scoped_bootstrap = vec![
+            SCOPE_IDENTITY_DELEGATE.to_string(),
+            SCOPE_RISK_ACKNOWLEDGE.to_string(),
+        ];
+        store
+            .record_api_key_metadata_for_tenant(
+                "local",
+                LOCAL_BOOTSTRAP_API_KEY_ID,
+                "local-admin",
+                "admin",
+                &over_scoped_bootstrap,
+                "test-bootstrap",
+            )
+            .unwrap();
+        assert!(store
+            .authenticate_bootstrap_identity_delegation_principal("local", Some(1.0))
+            .is_err());
         store
             .record_api_key_metadata_for_tenant(
                 "local",
@@ -14107,6 +14212,32 @@ mod tests {
             })
             .unwrap();
         assert_eq!(audit_count_after_replay, audit_count_before_replay);
+
+        store
+            .record_api_key_metadata_for_tenant(
+                "local",
+                "bootstrap-reconcile-second-reviewer",
+                "second-reviewer-user",
+                "reviewer",
+                &reviewer_scopes,
+                "test-bootstrap",
+            )
+            .unwrap();
+        let second_reviewer = store
+            .authenticate_managed_acceptance_principal_for_tenant(
+                "local",
+                "bootstrap-reconcile-second-reviewer",
+                Some(1.0),
+            )
+            .unwrap();
+        assert!(store
+            .rebind_unadmitted_delegation_for_bootstrap(
+                &bootstrap,
+                task_id,
+                &delegation.delegation_id,
+                &second_reviewer,
+            )
+            .is_err());
         let mut foreign_intake = intake;
         foreign_intake.idempotency_key = "bootstrap-rebind-foreign-task".into();
         let foreign_task = store

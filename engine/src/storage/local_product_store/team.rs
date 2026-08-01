@@ -171,7 +171,7 @@ impl LocalProductStore {
                 let api_keys = {
                     let mut stmt = conn
                         .prepare(
-                            "SELECT key_id, user_id, role, scopes_json, created_at, created_by,
+                            "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
                                     revoked_at, last_used_at, expires_at
                              FROM api_key_metadata
                              ORDER BY key_id",
@@ -179,19 +179,20 @@ impl LocalProductStore {
                         .map_err(|e| e.to_string())?;
                     let rows = stmt
                         .query_map([], |row| {
-                            let scopes_text: String = row.get(3)?;
+                            let scopes_text: String = row.get(4)?;
                             let scopes: Vec<String> =
                                 serde_json::from_str(&scopes_text).unwrap_or_default();
                             Ok(json!({
                                 "key_id": row.get::<_, String>(0)?,
                                 "user_id": row.get::<_, String>(1)?,
                                 "role": row.get::<_, String>(2)?,
+                                "tenant_id": row.get::<_, Option<String>>(3)?,
                                 "scopes": scopes,
-                                "created_at": row.get::<_, String>(4)?,
-                                "created_by": row.get::<_, String>(5)?,
-                                "revoked_at": row.get::<_, Option<String>>(6)?,
-                                "last_used_at": row.get::<_, Option<String>>(7)?,
-                                "expires_at": row.get::<_, Option<String>>(8)?,
+                                "created_at": row.get::<_, String>(5)?,
+                                "created_by": row.get::<_, String>(6)?,
+                                "revoked_at": row.get::<_, Option<String>>(7)?,
+                                "last_used_at": row.get::<_, Option<String>>(8)?,
+                                "expires_at": row.get::<_, Option<String>>(9)?,
                             }))
                         })
                         .map_err(|e| e.to_string())?;
@@ -226,7 +227,7 @@ impl LocalProductStore {
 
                 let key_rows = client
                     .query(
-                        "SELECT key_id, user_id, role, scopes_json, created_at, created_by,
+                        "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
                                 revoked_at, last_used_at, expires_at
                          FROM api_key_metadata ORDER BY key_id",
                         &[],
@@ -234,19 +235,20 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?;
                 let mut api_keys = Vec::new();
                 for row in &key_rows {
-                    let scopes_text: String = row.get(3);
+                    let scopes_text: String = row.get(4);
                     let scopes: Vec<String> =
                         serde_json::from_str(&scopes_text).unwrap_or_default();
                     api_keys.push(json!({
                         "key_id": row.get::<_, String>(0),
                         "user_id": row.get::<_, String>(1),
                         "role": row.get::<_, String>(2),
+                        "tenant_id": row.get::<_, Option<String>>(3),
                         "scopes": scopes,
-                        "created_at": row.get::<_, String>(4),
-                        "created_by": row.get::<_, String>(5),
-                        "revoked_at": row.get::<_, Option<String>>(6),
-                        "last_used_at": row.get::<_, Option<String>>(7),
-                        "expires_at": row.get::<_, Option<String>>(8),
+                        "created_at": row.get::<_, String>(5),
+                        "created_by": row.get::<_, String>(6),
+                        "revoked_at": row.get::<_, Option<String>>(7),
+                        "last_used_at": row.get::<_, Option<String>>(8),
+                        "expires_at": row.get::<_, Option<String>>(9),
                     }));
                 }
 

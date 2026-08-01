@@ -517,7 +517,7 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
     let foreign_task_id = foreign_task["task_id"].as_str().unwrap();
     assert_ne!(task_id, foreign_task_id);
 
-    let reviewer_key_id = format!("pg-rebind-reviewer-{tag}");
+    let reviewer_key_id = format!("pg-rebind-reviewer-original-{tag}");
     store
         .record_api_key_metadata_for_tenant(
             "local",
@@ -536,7 +536,47 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
     let principal = store
         .authenticate_managed_acceptance_principal_for_tenant("local", &reviewer_key_id, Some(1.0))
         .unwrap();
+    let reissued_reviewer_key_id = format!("pg-rebind-reviewer-reissued-{tag}");
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            &reissued_reviewer_key_id,
+            "pg-rebind-reissued-reviewer",
+            "reviewer",
+            &[
+                SCOPE_RISK_ACKNOWLEDGE.to_string(),
+                SCOPE_DELEGATED_AUTONOMY.to_string(),
+                SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+                SCOPE_SPEND_AUTHORIZE.to_string(),
+            ],
+            "pg-rebind-test-setup",
+        )
+        .unwrap();
+    let reissued_reviewer = store
+        .authenticate_managed_acceptance_principal_for_tenant(
+            "local",
+            &reissued_reviewer_key_id,
+            Some(1.0),
+        )
+        .unwrap();
     let bootstrap_scopes = vec![SCOPE_IDENTITY_DELEGATE.to_string()];
+    let over_scoped_bootstrap = vec![
+        SCOPE_IDENTITY_DELEGATE.to_string(),
+        SCOPE_RISK_ACKNOWLEDGE.to_string(),
+    ];
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &over_scoped_bootstrap,
+            "pg-bootstrap-test",
+        )
+        .unwrap();
+    assert!(store
+        .authenticate_bootstrap_identity_delegation_principal("local", Some(1.0))
+        .is_err());
     store
         .record_api_key_metadata_for_tenant(
             "local",
@@ -592,7 +632,7 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
             &bootstrap,
             task_id,
             &delegation.delegation_id,
-            &principal,
+            &reissued_reviewer,
         )
         .unwrap();
     assert_eq!(rebound["status"], "active");
@@ -608,7 +648,7 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
             &bootstrap,
             foreign_task_id,
             &delegation.delegation_id,
-            &principal,
+            &reissued_reviewer,
         )
         .is_err());
     let replay = store
@@ -616,7 +656,7 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
             &bootstrap,
             task_id,
             &delegation.delegation_id,
-            &principal,
+            &reissued_reviewer,
         )
         .unwrap();
     assert_eq!(replay["replayed"], true);
@@ -626,6 +666,14 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
             .unwrap()["delegation_state"],
         "active"
     );
+    assert!(store
+        .rebind_unadmitted_delegation_for_bootstrap(
+            &bootstrap,
+            task_id,
+            &delegation.delegation_id,
+            &principal,
+        )
+        .is_err());
 }
 
 #[cfg(feature = "pg-tests")]

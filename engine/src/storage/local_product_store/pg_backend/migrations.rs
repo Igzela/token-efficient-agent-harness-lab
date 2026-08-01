@@ -1856,7 +1856,8 @@ impl LocalProductStore {
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_attempt;
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_spend;
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_status;
-                 DROP TABLE IF EXISTS managed_acceptance_delegations;",
+                 DROP TABLE IF EXISTS managed_acceptance_delegations;
+                 ALTER TABLE api_key_metadata DROP COLUMN tenant_id;",
             )
             .map_err(|e| e.to_string())?;
             let details = serde_json::json!({
@@ -2913,7 +2914,9 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     use crate::storage::local_product_store::{
-        managed_acceptance, migrations::V36_DELEGATED_PLAN_OWNER_COLUMN, DatabaseConnection,
+        managed_acceptance,
+        migrations::{V36_API_KEY_TENANT_COLUMN, V36_DELEGATED_PLAN_OWNER_COLUMN},
+        DatabaseConnection,
     };
     #[cfg(feature = "pg-tests")]
     use postgres::NoTls;
@@ -3265,7 +3268,7 @@ mod tests {
                 client
                     .execute(
                         "INSERT INTO managed_acceptance_delegations (
-                            delegation_id, tenant_id, principal_kind, principal_id,
+                            delegation_id, tenant_id, product_task_id, principal_kind, principal_id,
                             manifest_approver_id, artifact_confirmer_id, attempt_activator_id,
                             delegation_sha256, body_json, proposal_sha256, proposal_json,
                             status, executions_allowed, executions_used, max_total_cost_usd,
@@ -3277,7 +3280,7 @@ mod tests {
                             terminal_receipt_json, created_at, updated_at, expires_at,
                             terminal_at, revoked_at
                          ) VALUES (
-                            'delegation-terminal', 'tenant-sensitive', 'operator_api_key',
+                            'delegation-terminal', 'tenant-sensitive', 'task-terminal', 'operator_api_key',
                             'principal-sensitive', 'approver-sensitive', 'confirmer-sensitive',
                             'activator-sensitive', $1,$2,$3,$4,'expired',1,1,0.5,0.125,
                             'spend-sensitive',$5,$6,$7,'expired',$8,$9,
@@ -3307,6 +3310,12 @@ mod tests {
             })
             .unwrap();
         assert!(!owner_column_exists);
+        let key_tenant_column_exists = store
+            .with_pg_conn(|client| {
+                pg_column_exists(client, "api_key_metadata", V36_API_KEY_TENANT_COLUMN)
+            })
+            .unwrap();
+        assert!(!key_tenant_column_exists);
         let archive: Value = store
             .with_pg_conn(|client| {
                 client
@@ -3324,6 +3333,10 @@ mod tests {
         assert!(!encoded.contains("must-not-survive-pg-v36-rollback"));
         assert!(!encoded.contains("principal-sensitive"));
         assert!(!encoded.contains("token-sensitive"));
+        assert_eq!(
+            archive["source_evidence"]["product_task_id"],
+            "task-terminal"
+        );
         let mut unhashed = archive.clone();
         let archive_sha = unhashed
             .as_object_mut()

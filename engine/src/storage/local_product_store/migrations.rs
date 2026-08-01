@@ -1345,7 +1345,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_attempt;
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_spend;
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_status;
-                 DROP TABLE IF EXISTS managed_acceptance_delegations;",
+                 DROP TABLE IF EXISTS managed_acceptance_delegations;
+                 ALTER TABLE api_key_metadata DROP COLUMN tenant_id;",
             )
             .map_err(|e| e.to_string())?;
             tx.execute(
@@ -3803,6 +3804,11 @@ mod tests {
             .expect("fully closed delegation evidence must be archived");
         assert_eq!(store.schema_version().unwrap(), V35_SCHEMA_VERSION);
         assert!(!table_exists(&store, "managed_acceptance_delegations"));
+        assert!(!store
+            .with_conn(|connection| {
+                column_exists(connection, "api_key_metadata", V36_API_KEY_TENANT_COLUMN)
+            })
+            .unwrap());
         store.with_conn(validate_sqlite_v35_schema).unwrap();
         let archive: Value = store
             .with_conn(|connection| {
