@@ -1045,6 +1045,15 @@ def _strip_cfg_test_regions(content: str) -> str:
             if pending_test_item:
                 if not line.strip() or line.lstrip().startswith("#"):
                     continue
+                closing_brace = _rust_first_enclosing_close(
+                    code_line, pending_delimiter_depths
+                )
+                if closing_brace is not None:
+                    emit(line_number, line[closing_brace:].strip())
+                    pending_test_item = False
+                    pending_item_text = ""
+                    pending_delimiter_depths = (0, 0, 0)
+                    continue
                 item_prefix = pending_item_text
                 if item_prefix and code_line.strip():
                     item_prefix += "\n"
@@ -1166,6 +1175,31 @@ def _rust_delimiter_depths(
         elif current == "}":
             brace_depth = max(0, brace_depth - 1)
     return paren_depth, bracket_depth, brace_depth
+
+
+def _rust_first_enclosing_close(
+    code: str, initial_depths: tuple[int, int, int] = (0, 0, 0)
+) -> int | None:
+    """Return an outer ``}`` that ends a comma-optional item."""
+    paren_depth, bracket_depth, brace_depth = initial_depths
+    for index, current in enumerate(code):
+        if current == "}" and not any(
+            (paren_depth, bracket_depth, brace_depth)
+        ):
+            return index
+        if current == "(":
+            paren_depth += 1
+        elif current == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif current == "[":
+            bracket_depth += 1
+        elif current == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif current == "{":
+            brace_depth += 1
+        elif current == "}":
+            brace_depth = max(0, brace_depth - 1)
+    return None
 
 
 def _rust_balanced_brace_end(code: str, opening_index: int) -> int | None:

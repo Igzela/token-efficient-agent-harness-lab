@@ -1212,6 +1212,49 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
             )
             self.assertTrue(any("execute_real" in finding for finding in findings))
 
+    def test_cfg_test_comma_optional_final_items_preserve_production_code(self):
+        cases = [
+            (
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test\n"
+                "}\n"
+            ),
+            (
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test(u8, u16)\n"
+                "}\n"
+            ),
+            (
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test = (1, 2)\n"
+                "}\n"
+            ),
+            (
+                "struct Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    test_field: i32\n"
+                "}\n"
+            ),
+        ]
+        for prefix in cases:
+            with self.subTest(prefix=prefix):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    repo = Path(tmpdir)
+                    (repo / "engine" / "src").mkdir(parents=True)
+                    (repo / "engine" / "src" / "executor.rs").write_text(
+                        prefix
+                        + "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+                    )
+                    findings = csb.check_dormant_surface_heuristics(
+                        repo, ["engine/src/executor.rs"]
+                    )
+                    self.assertTrue(
+                        any("execute_real" in finding for finding in findings)
+                    )
+
     def test_cfg_test_multiline_tuple_variant_ignores_inner_commas(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
