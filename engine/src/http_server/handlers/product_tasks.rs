@@ -1158,7 +1158,13 @@ pub(crate) async fn api_reconcile_unadmitted_delegated_product_task(
         .map_err(|error| delegated_api_error(&error, "delegated_reviewer_scope_denied"))?;
     let bootstrap = store
         .authenticate_bootstrap_identity_delegation_principal(&context.tenant_id, None)
-        .map_err(|error| delegated_api_error(&error, "bootstrap_identity_authority_required"))?;
+        .map_err(|error| {
+            ApiError::with_code(
+                StatusCode::FORBIDDEN,
+                "bootstrap_identity_authority_required",
+                error,
+            )
+        })?;
     let result = store
         .rebind_unadmitted_delegation_for_bootstrap(&bootstrap, &task_id, delegation_id, &reviewer)
         .map_err(|error| {

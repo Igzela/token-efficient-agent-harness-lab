@@ -4063,7 +4063,8 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
     let tag = uuid_tag();
     let key_id = format!("delegated-pg-operator-{tag}");
     store
-        .record_api_key_metadata(
+        .record_api_key_metadata_for_tenant(
+            "tenant-a",
             &key_id,
             &format!("delegated-pg-user-{tag}"),
             "operator",
@@ -4079,7 +4080,8 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
         .unwrap();
     let activator_key_id = format!("delegated-pg-activator-{tag}");
     store
-        .record_api_key_metadata(
+        .record_api_key_metadata_for_tenant(
+            "tenant-a",
             &activator_key_id,
             &format!("delegated-pg-activator-user-{tag}"),
             "operator",

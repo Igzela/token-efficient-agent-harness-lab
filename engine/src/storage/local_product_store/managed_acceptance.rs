@@ -4558,10 +4558,10 @@ impl LocalProductStore {
         let meta = self
             .get_api_key_metadata(key_id)?
             .ok_or_else(|| format!("api key {key_id} not found"))?;
-        if let Some(bound_tenant) = meta.get("tenant_id").and_then(Value::as_str) {
-            if bound_tenant != tenant_id {
-                return Err("api key tenant binding does not match requested tenant".into());
-            }
+        if meta.get("tenant_id").and_then(Value::as_str) != Some(tenant_id) {
+            return Err(
+                "api key tenant binding is missing or does not match requested tenant".into(),
+            );
         }
         if meta.get("revoked_at").and_then(Value::as_str).is_some() {
             return Err("api key revoked".into());
@@ -4618,9 +4618,9 @@ impl LocalProductStore {
     }
 
     /// Authenticate a canonical managed identity whose store record is
-    /// immutably bound to the requested tenant. Legacy fixture metadata may
-    /// omit tenant_id, so production identity-reissuance paths use this
-    /// stricter variant rather than accepting an unbound key.
+    /// immutably bound to the requested tenant. The generic production
+    /// authentication path is strict as well; this named variant documents
+    /// the tenant-bound contract at identity-reissuance call sites.
     pub fn authenticate_managed_acceptance_principal_for_tenant(
         &self,
         tenant_id: &str,
@@ -10166,9 +10166,10 @@ mod tests {
         })
     }
 
-    fn seed_key(store: &LocalProductStore, key_id: &str) {
+    fn seed_key(store: &LocalProductStore, tenant_id: &str, key_id: &str) {
         store
-            .record_api_key_metadata(
+            .record_api_key_metadata_for_tenant(
+                tenant_id,
                 key_id,
                 "user-operator-1",
                 "operator",
@@ -10274,12 +10275,30 @@ mod tests {
             err.contains("not admitted") || err.contains("not found"),
             "{err}"
         );
-        seed_key(&store, "key_operator_ok");
+        seed_key(&store, "tenant-a", "key_operator_ok");
         let p = store
             .authenticate_managed_acceptance_principal("tenant-a", "key_operator_ok", Some(1.0))
             .unwrap();
         assert_eq!(p.principal_id(), "key_operator_ok");
         assert!(p.has_scope(SCOPE_RISK_ACKNOWLEDGE));
+    }
+
+    #[test]
+    fn managed_principal_auth_rejects_unbound_metadata() {
+        let (_dir, store) = store();
+        store
+            .record_api_key_metadata(
+                "unbound-operator",
+                "operator-user",
+                "operator",
+                &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+                "test-setup",
+            )
+            .unwrap();
+        let error = store
+            .authenticate_managed_acceptance_principal("tenant-a", "unbound-operator", Some(1.0))
+            .unwrap_err();
+        assert!(error.contains("tenant binding"), "{error}");
     }
 
     #[test]
@@ -10293,7 +10312,8 @@ mod tests {
         let store = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
             .unwrap();
         store
-            .record_api_key_metadata(
+            .record_api_key_metadata_for_tenant(
+                "tenant-a",
                 "restart-operator-key",
                 "operator-user",
                 "operator",
@@ -10331,7 +10351,8 @@ mod tests {
         // Key expired at unix 100. A mistaken cost-cap "now" of 0.50 never exceeds
         // real production expiry timestamps and would keep keys alive forever.
         store
-            .record_api_key_metadata_with_expiry(
+            .record_api_key_metadata_with_expiry_for_tenant(
+                "tenant-a",
                 "key_expired",
                 "operator",
                 "operator",
@@ -12361,7 +12382,7 @@ mod tests {
         let path = dir.path().join("delegated.db");
         let store =
             LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".into()).unwrap();
-        seed_key(&store, "delegated-operator");
+        seed_key(&store, "tenant-a", "delegated-operator");
         let principal = store
             .authenticate_managed_acceptance_principal("tenant-a", "delegated-operator", Some(1.0))
             .unwrap();
@@ -13092,7 +13113,7 @@ mod tests {
         let task = store.admit_product_task(&validated, "executor").unwrap();
         let task_id = task["task_id"].as_str().unwrap();
 
-        seed_key(&store, "delegated-operator");
+        seed_key(&store, "tenant-a", "delegated-operator");
         let principal = store
             .authenticate_managed_acceptance_principal("tenant-a", "delegated-operator", Some(1.0))
             .unwrap();
@@ -14070,7 +14091,7 @@ mod tests {
         let task_id = task["task_id"].as_str().unwrap();
         let task_version_before = task["version"].as_i64().unwrap();
 
-        seed_key(&store, "bootstrap-reconcile-operator");
+        seed_key(&store, "local", "bootstrap-reconcile-operator");
         let principal = store
             .authenticate_managed_acceptance_principal(
                 "local",
