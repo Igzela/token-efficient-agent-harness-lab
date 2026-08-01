@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 
 use super::adaptive_fusion::{objective_weights, ObjectiveProfile};
 use super::offline_evaluation::{CandidateAggregate, TaskClassEvaluation};
@@ -871,8 +871,4 @@ fn serializable_and_not_sensitive<T: Serialize>(value: &T) -> bool {
     serde_json::to_string(value)
         .map(|serialized| !contains_sensitive_patterns(&serialized))
         .unwrap_or(false)
-}
-
-fn _canonical_map(values: impl IntoIterator<Item = (String, Value)>) -> BTreeMap<String, Value> {
-    values.into_iter().collect()
 }

@@ -381,7 +381,13 @@ PR #299
         missing = [item for item in matrix if item["conclusion"] == "missing"]
         self.assertEqual(
             sorted(item["logical_name"] for item in missing),
-            ["exact-head-check", "native-runtime", "pg-integration-tests", "rust-typescript-cutover"],
+            [
+                "context-capsule",
+                "exact-head-check",
+                "native-runtime",
+                "pg-integration-tests",
+                "rust-typescript-cutover",
+            ],
         )
 
     def test_successful_matrix_reports_all_required(self) -> None:
@@ -516,6 +522,7 @@ Unresolved objections: none
         observation = project_context._build_review_observation(
             head_sha=head,
             base_sha=base,
+            pr_author_identity="implementation-agent",
             aggregate_review="REVIEW_REQUIRED",
             reviews=[],
             comments=[{"author": {"login": "reviewer"}, "body": body}],
@@ -540,6 +547,7 @@ Unresolved objections: none
         observation = project_context._build_review_observation(
             head_sha=None,
             base_sha=base,
+            pr_author_identity="implementation-agent",
             aggregate_review="REVIEW_REQUIRED",
             reviews=[],
             comments=[{"author": {"login": "reviewer"}, "body": body}],
@@ -563,6 +571,7 @@ Unresolved objections: none
         observation = project_context._build_review_observation(
             head_sha=head,
             base_sha=expected_base,
+            pr_author_identity="implementation-agent",
             aggregate_review="REVIEW_REQUIRED",
             reviews=[],
             comments=[{"author": {"login": "reviewer"}, "body": body}],
@@ -585,6 +594,90 @@ Unresolved objections: none
         observation = project_context._build_review_observation(
             head_sha=head,
             base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_receipt_authored_by_pull_request_author_never_confirms(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: fabricated-independent-session
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[
+                {
+                    "author": {"login": "implementation-agent"},
+                    "body": body,
+                }
+            ],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_blocking_review_body_never_confirms_receipt(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[
+                {
+                    "state": "COMMENTED",
+                    "body": "BLOCKING: unresolved review objection",
+                }
+            ],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(
+            observation["unresolved_objections_state"],
+            "explicit_blocking_comments_present",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_receipt_requires_valid_timestamp_and_exact_axis_tokens(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Observed at: yesterday
+Axes: notarchitecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
             aggregate_review="REVIEW_REQUIRED",
             reviews=[],
             comments=[{"author": {"login": "reviewer"}, "body": body}],
@@ -668,6 +761,7 @@ Unresolved objections: none
             "native-runtime": {"result": "success"},
             "docker-build": {"result": "success"},
             "rust-typescript-cutover": {"result": "success"},
+            "context-capsule": {"result": "success"},
         }
         capsule = project_context.build_capsule(
             offline=True,

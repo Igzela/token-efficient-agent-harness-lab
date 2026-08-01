@@ -30,6 +30,7 @@ REQUIRED_CI_CHECKS = (
     "docker-build",
     "rust-typescript-cutover",
     "exact-head-check",
+    "context-capsule",
 )
 
 # Explicit aliases for known check-name representations.
@@ -299,6 +300,7 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
         [
             "number",
             "title",
+            "author",
             "headRefName",
             "headRefOid",
             "baseRefName",
@@ -330,6 +332,7 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
     review_observation = _build_review_observation(
         head_sha=head_sha,
         base_sha=payload.get("baseRefOid"),
+        pr_author_identity=(payload.get("author") or {}).get("login"),
         aggregate_review=aggregate_review,
         reviews=payload.get("reviews") or [],
         comments=payload.get("comments") or [],
@@ -381,7 +384,10 @@ def _receipt_field(body: str, label: str) -> str | None:
 
 
 def _parse_review_receipt(
-    comment: dict[str, Any], expected_head_sha: str | None, expected_base_sha: str | None
+    comment: dict[str, Any],
+    expected_head_sha: str | None,
+    expected_base_sha: str | None,
+    expected_pr_author_identity: str | None,
 ) -> dict[str, Any]:
     body = str(comment.get("body") or "")
     author = comment.get("author") or comment.get("user") or {}
@@ -401,6 +407,10 @@ def _parse_review_receipt(
 
     if not author_identity:
         errors.append("reviewer_author_identity_missing")
+    if not expected_pr_author_identity:
+        errors.append("pull_request_author_identity_missing")
+    elif author_identity and author_identity.lower() == expected_pr_author_identity.lower():
+        errors.append("reviewer_author_matches_pull_request_author")
     if not reviewer_identity or reviewer_identity.lower() in {
         "self",
         "self-review",
@@ -429,9 +439,20 @@ def _parse_review_receipt(
         errors.append("complete_diff_range_does_not_match_accepted_base")
     if not observed_at:
         errors.append("observation_time_missing")
+    else:
+        try:
+            parsed_observed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        except ValueError:
+            parsed_observed_at = None
+        if parsed_observed_at is None or parsed_observed_at.tzinfo is None:
+            errors.append("observation_time_is_not_iso8601_with_timezone")
     axes_lower = (axes_value or "").lower()
     missing_axes = sorted(
-        axis for axis in REVIEW_RECEIPT_REQUIRED_AXES if axis not in axes_lower
+        axis
+        for axis in REVIEW_RECEIPT_REQUIRED_AXES
+        if not re.search(
+            rf"(?<![a-z0-9]){re.escape(axis)}(?![a-z0-9])", axes_lower
+        )
     )
     if missing_axes:
         errors.append("review_axes_missing:" + ",".join(missing_axes))
@@ -459,6 +480,7 @@ def _build_review_observation(
     *,
     head_sha: str | None,
     base_sha: str | None = None,
+    pr_author_identity: str | None = None,
     aggregate_review: str | None,
     reviews: list[dict[str, Any]],
     comments: list[dict[str, Any]],
@@ -492,7 +514,9 @@ def _build_review_observation(
     ]
     if receipt_comments:
         receipt = receipt_comments[-1]
-        parsed_receipt = _parse_review_receipt(receipt, head_sha, base_sha)
+        parsed_receipt = _parse_review_receipt(
+            receipt, head_sha, base_sha, pr_author_identity
+        )
         observation["review_receipt"] = parsed_receipt
         if parsed_receipt["state"] == "valid":
             observation["exact_head_review_state"] = "receipt_observed"
@@ -517,6 +541,10 @@ def _build_review_observation(
     # Comments from the GitHub REST API do not expose resolved/unresolved state
     # reliably. We only flag explicit BLOCKING mentions so we do not hide them.
     explicit_blocking = [
+        review
+        for review in reviews
+        if "BLOCKING" in str(review.get("body") or "").upper()
+    ] + [
         comment
         for comment in comments
         if "BLOCKING" in str(comment.get("body") or "").upper()

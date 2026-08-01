@@ -26,6 +26,7 @@ import ast
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -304,7 +305,7 @@ DORMANT_EXECUTOR_FN_RE = re.compile(
 )
 DORMANT_EMPTY_BODY_RE = re.compile(
     r"^\s*(?:return\s+)?(?:Ok\(\s*)?"
-    r"(?:json!\(\s*\{\s*\}|Value::Null|\{\}\.into\(\)|HashMap::new\(\)|"
+    r"(?:(?:[A-Za-z_][\w]*::)*json!\(\s*\{\s*\}|Value::Null|\{\}\.into\(\)|HashMap::new\(\)|"
     r"BTreeMap::new\(\)|Vec::new\(\)|vec!\[\]|Default::default\(\))"
     r"(?:\s*\))?\s*;?\s*$"
 )
@@ -663,6 +664,8 @@ def check_dormant_automation_guard(
         for label, pattern in DORMANT_AUTOMATION_PATTERNS:
             if label == "gh run list --limit 1":
                 matched = _has_unbound_latest_run_list(content)
+            elif label == "gh run watch chained to unbound gh run list":
+                matched = _has_unbound_chained_watch(content)
             elif label == "gh run watch unbound":
                 matched = _has_unbound_run_watch(content)
             else:
@@ -677,13 +680,16 @@ def check_dormant_automation_guard(
 
 def _has_unbound_latest_run_list(content: str) -> bool:
     """Return true for latest-run polling that is not bound to a head/commit."""
+    content = re.sub(r"\\[ \t]*\n", " ", content)
     for match in re.finditer(
-        r"(?m)\bgh\s+run\s+list\b([^\n;&|]*)", content
+        r"(?m)\bgh\s+run\s+list\b([^;&|\n]*(?:\\\n[^;&|\n]*)*)", content
     ):
-        args = match.group(1)
+        args = match.group(1).replace("\\\n", " ")
         if not re.search(r"(?:--limit\s*=?\s*1|-L\s*1)\b", args):
             continue
-        if re.search(r"(?:--head|--commit)(?:\s|=)", args):
+        if _has_nonempty_option_value(args, "--head") or _has_nonempty_option_value(
+            args, "--commit"
+        ):
             continue
         return True
     return False
@@ -694,14 +700,57 @@ def _has_unbound_run_watch(content: str) -> bool:
     for match in re.finditer(
         r"(?m)\bgh\s+run\s+watch\b([^\n;&|]*)", content
     ):
-        if re.search(r"\$\(\s*gh\s+run\s+list\b", match.group(1)):
-            # The chained-list detector reports this command separately; do
-            # not double-count it as a bare watch with no id.
+        args = match.group(1)
+        nested_lists = re.findall(r"\$\(\s*gh\s+run\s+list\b([^)]*)\)", args)
+        if nested_lists:
+            # The chained detector reports nested lists with their own
+            # binding semantics; do not double-count the outer watch.
             continue
-        args = re.sub(r"\$\([^)]*\)", "", match.group(1))
-        if not re.search(r"\b\d{6,}\b", args):
+        args = re.sub(r"\$\([^)]*\)", "", args)
+        try:
+            tokens = shlex.split(args)
+        except ValueError:
+            return True
+        positional = []
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token in {"--interval", "-i"}:
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            positional.append(token)
+            index += 1
+        if not positional or not re.fullmatch(r"\d{6,}", positional[0]):
             return True
     return False
+
+
+def _has_unbound_chained_watch(content: str) -> bool:
+    """Return true only for a watch fed by an unbound latest-run list."""
+    for match in re.finditer(
+        r"(?m)\bgh\s+run\s+watch\b([^;&|\n]*)\$\(\s*gh\s+run\s+list\b([^)]*)\)",
+        content,
+    ):
+        nested = match.group(2)
+        if not (
+            _has_nonempty_option_value(nested, "--head")
+            or _has_nonempty_option_value(nested, "--commit")
+        ):
+            return True
+    return False
+
+
+def _has_nonempty_option_value(args: str, option: str) -> bool:
+    """Return true only when an option has a concrete non-option value."""
+    pattern = rf"(?:^|\s){re.escape(option)}(?:=([^\s;&|]+)|\s+([^\s;&|]+))"
+    match = re.search(pattern, args)
+    if not match:
+        return False
+    value = match.group(1) or match.group(2) or ""
+    return bool(value and not value.startswith("-"))
 
 
 def check_removed_plugin_surface_guard(
@@ -743,26 +792,32 @@ def check_removed_plugin_surface_guard(
         except OSError:
             continue
 
-        if PLUGIN_UNRESTRICTED_SEMANTIC in content:
+        semantic_content = _rust_semantic_content(content)
+        if PLUGIN_UNRESTRICTED_SEMANTIC in semantic_content:
             findings.append(
                 f"{rel_path}: 'empty = unrestricted' trust semantic found"
             )
 
         legacy_hits = [
             token for token in PLUGIN_LEGACY_FINGERPRINT_TOKENS
-            if token in content
+            if token in semantic_content
         ]
         if len(legacy_hits) >= 2:
             findings.append(
                 f"{rel_path}: {len(legacy_hits)} legacy plugin trust tokens "
                 f"found: {', '.join(legacy_hits)}"
             )
-        lower_content = content.lower()
+        lower_content = semantic_content.lower()
         if (
             "plugin" in lower_content
-            and "trust" in lower_content
-            and ("permission" in lower_content or "registry" in lower_content)
-            and re.search(r"\b(?:enum|struct|fn)\b", content)
+            and (
+                re.search(r"\b(?:pluginregistry|pluginsystem|pluginmanifest|plugintrust|trustlevel)\b", lower_content)
+                or (
+                    "trust" in lower_content
+                    and ("permission" in lower_content or "registry" in lower_content)
+                )
+            )
+            and re.search(r"\b(?:enum|struct|fn)\b", semantic_content)
         ):
             findings.append(
                 f"{rel_path}: plugin trust/permission registry structural "
@@ -795,23 +850,93 @@ def _iter_rs_lines(repo_root: Path, tracked_files: list[str]):
 
 
 def _strip_cfg_test_regions(content: str) -> str:
-    """Return content with `#[cfg(test)]` regions removed (brace balanced)."""
+    """Return Rust source with test-only items removed using lexical braces."""
     lines = content.splitlines()
     out = []
     in_test = False
+    pending_test_item = False
     brace_depth = 0
     for line in lines:
         if not in_test:
-            if re.match(r"^\s*#\[cfg\(test\)\]\s*$", line):
+            if pending_test_item:
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                delta = _rust_brace_delta(line)
+                if delta > 0:
+                    in_test = True
+                    pending_test_item = False
+                    brace_depth = delta
+                elif ";" in line:
+                    pending_test_item = False
+                continue
+            attr = re.search(
+                r"#\[\s*cfg\s*\([^\]]*\btest\b[^\]]*\)\s*\]",
+                line,
+            )
+            if attr:
                 in_test = True
-                brace_depth = 0
+                brace_depth = _rust_brace_delta(line[attr.end() :])
+                if brace_depth <= 0:
+                    in_test = False
+                    pending_test_item = True
             else:
                 out.append(line)
             continue
-        brace_depth += line.count("{") - line.count("}")
+        brace_depth += _rust_brace_delta(line)
         if brace_depth <= 0:
             in_test = False
     return "\n".join(out)
+
+
+def _rust_brace_delta(line: str) -> int:
+    """Count Rust braces while ignoring comments, strings, and char literals."""
+    delta = 0
+    index = 0
+    in_string = False
+    in_char = False
+    escaped = False
+    while index < len(line):
+        char = line[index]
+        next_char = line[index + 1] if index + 1 < len(line) else ""
+        if not in_string and not in_char and char == "/" and next_char == "/":
+            break
+        if not in_string and not in_char and char == "/" and next_char == "*":
+            end = line.find("*/", index + 2)
+            if end == -1:
+                break
+            index = end + 2
+            continue
+        if not in_char and char == '"' and not escaped:
+            in_string = not in_string
+        elif not in_string and char == "'" and not escaped:
+            in_char = not in_char
+        elif not in_string and not in_char:
+            if char == "{":
+                delta += 1
+            elif char == "}":
+                delta -= 1
+        escaped = char == "\\" and not escaped
+        if char != "\\":
+            escaped = False
+        index += 1
+    return delta
+
+
+def _rust_semantic_content(content: str) -> str:
+    """Remove test-only regions, comments, and literals before fingerprinting."""
+    content = _strip_cfg_test_regions(content)
+    content = re.sub(r"//[^\n]*", "", content)
+    content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
+    for hashes in ("###", "##", "#", ""):
+        content = re.sub(
+            rf'r{re.escape(hashes)}".*?"{re.escape(hashes)}',
+            "",
+            content,
+            flags=re.DOTALL,
+        )
+    content = re.sub(r'"(?:\\.|[^"\\])*"', "", content)
+    content = re.sub(r"'(?:\\.|[^'\\])*'", "", content)
+    return content
 
 
 def check_dormant_surface_heuristics(
@@ -890,6 +1015,7 @@ def check_dormant_surface_heuristics(
                 )
             except OSError:
                 continue
+            content = _rust_semantic_content(content)
             if re.search(rf"\bcrate::{module}\b|\bengine::{module}\b", content):
                 referenced = True
                 break
@@ -916,7 +1042,7 @@ def check_dormant_surface_heuristics(
 
     # (d) executor-named empty functions
     for rel_path, content in _iter_rs_lines(repo_root, tracked_files):
-        clean = _strip_cfg_test_regions(content)
+        clean = _rust_semantic_content(content)
         for match in DORMANT_EXECUTOR_FN_RE.finditer(clean):
             brace = clean.find("{", match.end())
             if brace == -1:
@@ -935,11 +1061,15 @@ def check_dormant_surface_heuristics(
                 continue
             body = clean[brace + 1 : body_end]
             if DORMANT_EMPTY_BODY_RE.search(body):
-                findings.append(
-                    f"{rel_path}: executor-named function "
-                    f"'{match.group(0)[3:]}' returns only an empty value "
-                    "(no-op executor surface)"
-                )
+                if not (
+                    suppressed(rel_path, "wired")
+                    or suppressed(rel_path, "generated")
+                ):
+                    findings.append(
+                        f"{rel_path}: executor-named function "
+                        f"'{match.group(0)[3:]}' returns only an empty value "
+                        "(no-op executor surface)"
+                    )
 
     # (e) conflicting sole-owner claims
     claims: dict[str, list[str]] = {}
@@ -948,10 +1078,13 @@ def check_dormant_surface_heuristics(
             claims.setdefault(match.group(1), []).append(rel_path)
     for claimed, paths in claims.items():
         unique = sorted(set(paths))
-        if len(unique) > 1:
+        unsuppressed = [
+            path for path in unique if not suppressed(path, "sole_owner")
+        ]
+        if len(unsuppressed) > 1:
             findings.append(
                 f"conflicting sole-owner claims for '{claimed}' across: "
-                + ", ".join(unique)
+                + ", ".join(unsuppressed)
             )
 
     return findings

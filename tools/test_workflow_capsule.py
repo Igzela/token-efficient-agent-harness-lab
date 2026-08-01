@@ -18,6 +18,7 @@ REQUIRED_TEST_JOBS = {
     "native-runtime",
     "docker-build",
     "rust-typescript-cutover",
+    "context-capsule",
 }
 
 
@@ -142,7 +143,7 @@ class WorkflowCapsuleTests(unittest.TestCase):
             source,
         )
 
-    def test_context_capsule_not_in_required_checks(self) -> None:
+    def test_context_capsule_is_in_required_checks(self) -> None:
         from tools import test_project_context as tpc
 
         importlib = __import__("importlib")
@@ -154,7 +155,7 @@ class WorkflowCapsuleTests(unittest.TestCase):
         sys.modules[spec.name] = project_context
         spec.loader.exec_module(project_context)
 
-        self.assertNotIn(
+        self.assertIn(
             "context-capsule",
             set(project_context.REQUIRED_CI_CHECKS),
         )

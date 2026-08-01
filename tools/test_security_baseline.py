@@ -531,6 +531,31 @@ class TestDormantAutomationGuard(unittest.TestCase):
             self.assertEqual(len(findings), 1)
             self.assertIn("gh run watch unbound", findings[0])
 
+    def test_bound_nested_watch_and_commit_equals_are_safe(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run watch $(gh run list --commit=\"$SHA\" --limit 1 -q '.[0].databaseId')\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_multiline_latest_list_and_interval_numeric_watch_are_checked(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run list \\\n+  --limit 1\n"
+                "gh run watch --interval 123456 --exit-status\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(len(findings), 2)
+
     def test_doc_prose_is_not_scanned(self):
         """The same strings in docs prose must not be flagged."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -667,19 +692,35 @@ class TestRemovedPluginSurfaceGuard(unittest.TestCase):
             self.assertEqual(len(findings), 1)
             self.assertIn("structural fingerprint", findings[0])
 
-    def test_detects_unrestricted_comment(self):
+    def test_detects_unrestricted_semantic(self):
         """The 'empty = unrestricted' trust semantic must be flagged."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
             (repo / "engine" / "src").mkdir(parents=True)
             (repo / "engine" / "src" / "trust.rs").write_text(
-                "TRUST_LEVEL_OFFICIAL => HashSet::new(), // empty = unrestricted\n"
+                "fn trust() { empty = unrestricted; }\n"
             )
             findings = csb.check_removed_plugin_surface_guard(
                 repo, ["engine/src/trust.rs"]
             )
             self.assertEqual(len(findings), 1)
             self.assertIn("empty = unrestricted", findings[0])
+
+    def test_plugin_tokens_in_test_code_or_comments_are_ignored(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "plugin.rs").write_text(
+                "// TRUST_LEVEL_OFFICIAL ALL_KNOWN_PERMISSIONS empty = unrestricted\n"
+                "#[cfg(all(test, feature = \"fixture\"))]\n"
+                "mod tests {\n"
+                "    const TRUST_LEVEL_OFFICIAL: &str = \"official\";\n"
+                "}\n"
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/plugin.rs"]
+            )
+            self.assertEqual(findings, [])
 
     def test_resurrected_plugin_path_flagged(self):
         """Re-creating the deleted plugin files is always a finding."""
@@ -841,6 +882,23 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
                 "fn execute_test_stub() -> serde_json::Value {\n"
                 "    json!({})\n"
                 "}\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_cfg_test_variants_and_braces_in_strings_do_not_leak(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(all(test, feature = \"fixture\"))] mod tests {\n"
+                "    fn execute_test_stub() -> serde_json::Value {\n"
+                "        \"{ not a brace }\"; serde_json::json!({})\n"
+                "    }\n"
+                "}\n"
+                "pub fn execute_real() -> u32 { 1 }\n"
             )
             findings = csb.check_dormant_surface_heuristics(
                 repo, ["engine/src/executor.rs"]

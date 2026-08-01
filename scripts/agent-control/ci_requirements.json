@@ -9,6 +9,7 @@
     "python-tests",
     "rust-tests",
     "rust-typescript-cutover",
-    "typescript-tests"
+    "typescript-tests",
+    "context-capsule"
   ]
 }
