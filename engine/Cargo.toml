@@ -8,6 +8,9 @@ repository = "https://github.com/Igzela/token-efficient-agent-harness-lab"
 readme = "../README.md"
 keywords = ["agent", "workflow", "control-plane", "deterministic", "local"]
 categories = ["command-line-utilities", "web-programming"]
+# Internal crate: the release pipeline ships binary archives and provenance,
+# not a crates.io package. Never publish without an explicit decision.
+publish = false
 
 [[bin]]
 name = "agent-control-plane"

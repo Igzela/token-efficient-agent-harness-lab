@@ -873,7 +873,6 @@ fn serializable_and_not_sensitive<T: Serialize>(value: &T) -> bool {
         .unwrap_or(false)
 }
 
-#[allow(dead_code)]
 fn _canonical_map(values: impl IntoIterator<Item = (String, Value)>) -> BTreeMap<String, Value> {
     values.into_iter().collect()
 }

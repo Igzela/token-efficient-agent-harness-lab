@@ -353,6 +353,9 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
     }
 
 
+REVIEW_RECEIPT_MARKER = "EXACT-HEAD REVIEW RECEIPT"
+
+
 def _build_review_observation(
     *,
     head_sha: str | None,
@@ -364,6 +367,10 @@ def _build_review_observation(
     """Build a fail-closed review observation from available GitHub evidence.
 
     Exact-head acceptance is never inferred from aggregate state or prose.
+    A review receipt comment (``EXACT-HEAD REVIEW RECEIPT`` marker, see
+    ``docs/REAL_WORLD_TESTING_PLAYBOOK.md``) is the only evidence that a
+    complete-diff review was bound to a specific head; a receipt naming a
+    different head is stale, not acceptance.
     """
     observation: dict[str, Any] = {
         "observed_head_sha": head_sha,
@@ -372,7 +379,37 @@ def _build_review_observation(
         "exact_head_review_state": "unverified",
         "unresolved_objections_state": "unavailable",
         "unavailable_reason": None,
+        "review_receipt": {
+            "state": "unavailable",
+            "observed_head_sha": None,
+            "outcome": None,
+        },
     }
+    receipt_comments = [
+        comment
+        for comment in comments
+        if REVIEW_RECEIPT_MARKER in str(comment.get("body") or "")
+    ]
+    if receipt_comments:
+        receipt = receipt_comments[-1]
+        receipt_body = str(receipt.get("body") or "")
+        receipt_sha_match = re.search(r"\b([0-9a-f]{40})\b", receipt_body)
+        receipt_sha = receipt_sha_match.group(1) if receipt_sha_match else None
+        outcome_match = re.search(
+            r"(?i)\b(PASS|PASS_WITH_NOTES|BLOCKED|FAIL)\b", receipt_body
+        )
+        observation["review_receipt"] = {
+            "state": "observed",
+            "observed_head_sha": receipt_sha,
+            "outcome": outcome_match.group(1) if outcome_match else None,
+        }
+        if receipt_sha and receipt_sha == head_sha:
+            observation["exact_head_review_state"] = "receipt_observed"
+        else:
+            observation["exact_head_review_state"] = "receipt_stale"
+            observation["unavailable_reason"] = (
+                "review_receipt_head_does_not_match_current_head"
+            )
     if not reviews and not comments:
         observation["unresolved_objections_state"] = "unavailable"
         observation["unavailable_reason"] = "no_reviews_or_comments_exposed"
@@ -404,7 +441,8 @@ def _build_review_observation(
         observation["unresolved_objections_state"] = "none_observed"
     else:
         observation["unresolved_objections_state"] = "unavailable"
-        observation["unavailable_reason"] = "insufficient_review_evidence"
+        if observation["unavailable_reason"] is None:
+            observation["unavailable_reason"] = "insufficient_review_evidence"
     return observation
 
 
@@ -748,6 +786,7 @@ def staleness_conditions() -> list[str]:
         "any required CI check conclusion changes",
         "canonical documents change",
         "review state or unresolved objections change",
+        "review receipt head or outcome changes",
         "workflow run identity changes",
         "local checkout becomes dirty or switches branch",
     ]
@@ -915,6 +954,11 @@ def build_capsule(
             "exact_head_review_state": "unavailable",
             "unresolved_objections_state": "unavailable",
             "unavailable_reason": "no_active_pr_review_observation",
+            "review_receipt": {
+                "state": "unavailable",
+                "observed_head_sha": None,
+                "outcome": None,
+            },
         }
     )
     binding = {

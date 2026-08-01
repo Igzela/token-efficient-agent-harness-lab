@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use rusqlite::Row;
 use serde_json::{json, Value};
 
@@ -36,6 +34,7 @@ pub(super) const AVG_PRIORITY_SQL: &str =
 pub(super) const SQLITE_OVERDUE_COUNT_SQL: &str = "SELECT COUNT(*) FROM workflow_runs
                          WHERE deadline_at IS NOT NULL AND deadline_at < datetime('now')
                            AND status IN ('created', 'running')";
+#[allow(dead_code)] // pg-parity SQL; consumed under --features pg-tests
 pub(super) const PG_OVERDUE_COUNT_SQL: &str = "SELECT COUNT(*) FROM workflow_runs
                          WHERE deadline_at IS NOT NULL
                            AND CAST(deadline_at AS TIMESTAMPTZ) < now()
@@ -51,12 +50,11 @@ pub(super) const PENDING_NODE_FOR_TEST_SQL: &str =
     "SELECT node_id FROM workflow_run_nodes WHERE status = 'pending' LIMIT 1";
 pub(super) const SQLITE_SET_PENDING_NODE_RUNNING_SQL: &str =
     "UPDATE workflow_run_nodes SET status = 'running', leased_at = ?1 WHERE node_id = ?2";
+#[allow(dead_code)] // pg-parity SQL; consumed under --features pg-tests
 pub(super) const PG_SET_PENDING_NODE_RUNNING_SQL: &str =
     "UPDATE workflow_run_nodes SET status = 'running', leased_at = $1 WHERE node_id = $2";
 
 pub(super) const STALE_LEASE_SELECT_SQL: &str = "SELECT run_id, node_id, leased_at FROM workflow_run_nodes WHERE status = 'running' AND leased_at IS NOT NULL";
-pub(super) const SQLITE_RECOVER_STALE_LEASE_SQL: &str = "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE run_id = ?1 AND node_id = ?2 AND status = 'running' AND leased_at = ?3";
-pub(super) const PG_RECOVER_STALE_LEASE_SQL: &str = "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE run_id = $1 AND node_id = $2 AND status = 'running' AND leased_at = $3";
 
 pub(super) fn prioritized_sqlite_row(row: &Row<'_>) -> rusqlite::Result<Value> {
     Ok(json!({

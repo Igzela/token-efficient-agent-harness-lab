@@ -1072,24 +1072,12 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-#[allow(dead_code)]
 struct TickResult {
     ticks: u64,
     retries: u64,
-    aggregations: u64,
-    adaptation_recommendations: Vec<AdaptationRecommendation>,
     paused_runs: Vec<String>,
-    degraded_runs: Vec<String>,
     backpressure_active: bool,
     queue_depth: usize,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct AdaptationRecommendation {
-    pub task_group: String,
-    pub should_adapt: bool,
-    pub reason: String,
 }
 
 fn env_flag_enabled(key: &str) -> bool {
@@ -2560,7 +2548,6 @@ mod tests {
         // Tick once: node completes, run becomes completed
         let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 1);
-        assert_eq!(result.aggregations, 1, "should aggregate completed run");
     }
 
     #[test]
@@ -2585,8 +2572,7 @@ mod tests {
         assert_eq!(active.len(), 1);
 
         // Tick to completion
-        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
-        assert!(result.aggregations > 0, "should aggregate after completion");
+        scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
         assert_eq!(run["status"], "completed");
@@ -2627,8 +2613,6 @@ mod tests {
         // Tick with fail executor — records outcome for adaptation
         let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 1);
-        // Recommendation depends on failure rate thresholds; just verify it doesn't panic
-        let _ = result.adaptation_recommendations;
     }
 
     #[test]
@@ -2670,7 +2654,6 @@ mod tests {
         // Tick: node completes → conflict resolver and approval gate run without panic
         let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 1);
-        assert_eq!(result.aggregations, 1, "should aggregate after completion");
 
         let run = store.get_workflow_run("run-0001").unwrap().unwrap();
         assert_eq!(run["status"], "completed");

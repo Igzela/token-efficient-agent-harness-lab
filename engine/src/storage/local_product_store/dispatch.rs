@@ -1150,22 +1150,6 @@ fn first_str<'a>(value: &'a Value, paths: &[&[&str]]) -> Option<&'a str> {
     paths.iter().find_map(|path| str_at(value, path))
 }
 
-#[allow(dead_code)]
-fn first_f64(value: &Value, paths: &[&[&str]]) -> Option<f64> {
-    paths
-        .iter()
-        .find_map(|path| value_at(value, path).and_then(Value::as_f64))
-}
-
-#[allow(dead_code)]
-fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
-    let mut current = value;
-    for part in path {
-        current = current.get(*part)?;
-    }
-    Some(current)
-}
-
 fn trace_matches(trace: &Value, key: &str, expected: Option<&str>) -> bool {
     let Some(expected) = expected.map(str::trim).filter(|value| !value.is_empty()) else {
         return true;

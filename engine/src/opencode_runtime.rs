@@ -1672,8 +1672,6 @@ struct ToolCounters {
     web_attempts: i64,
     remote_agent_attempts: i64,
     background_agent_attempts: i64,
-    #[allow(dead_code)]
-    process_attempts: i64,
 }
 
 fn deny_by_default_permission_profile() -> Value {
@@ -1940,7 +1938,6 @@ fn validate_tool_summary_counters(summary: &Value) -> Result<ToolCounters, (Stri
         web_attempts: read_counter("web_attempts")?,
         remote_agent_attempts: read_counter("remote_agent_attempts")?,
         background_agent_attempts: read_counter("background_agent_attempts")?,
-        process_attempts: read_counter("process_attempts")?,
     };
     for key in FORBIDDEN_TOOL_COUNTERS {
         let value = obj.get(*key).and_then(Value::as_i64).unwrap_or(-1);

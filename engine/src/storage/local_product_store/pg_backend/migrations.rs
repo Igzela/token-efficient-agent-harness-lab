@@ -1313,21 +1313,6 @@ fn validate_pg_v31_schema(client: &mut impl postgres::GenericClient) -> Result<(
     validate_pg_v30_tables(client)
 }
 
-#[allow(dead_code)]
-fn validate_pg_v30_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
-    let version = client
-        .query_one(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-            &[],
-        )
-        .map_err(|error| error.to_string())?
-        .get::<_, i64>(0);
-    if version != super::super::migrations::V30_SCHEMA_VERSION {
-        return Err(format!("PostgreSQL v30 schema version mismatch: {version}"));
-    }
-    validate_pg_v30_tables(client)
-}
-
 fn validate_pg_v30_tables(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     for table in super::super::migrations::V30_TABLES {
         if !pg_table_present(client, table)? {
@@ -1344,21 +1329,6 @@ fn validate_pg_v29_tables(client: &mut impl postgres::GenericClient) -> Result<(
         }
     }
     validate_pg_v28_tables(client)
-}
-
-#[allow(dead_code)]
-fn validate_pg_v29_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
-    let version = client
-        .query_one(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-            &[],
-        )
-        .map_err(|error| error.to_string())?
-        .get::<_, i64>(0);
-    if version != super::super::migrations::V29_SCHEMA_VERSION {
-        return Err(format!("PostgreSQL v29 schema version mismatch: {version}"));
-    }
-    validate_pg_v29_tables(client)
 }
 
 fn validate_pg_v28_tables(client: &mut impl postgres::GenericClient) -> Result<(), String> {
@@ -1405,22 +1375,6 @@ fn apply_pg_v28_migration(client: &mut postgres::Client) -> Result<(), String> {
         .map_err(|error| format!("failed to commit migration 28: {error}"))
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-fn validate_pg_v28_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
-    let version = client
-        .query_one(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-            &[],
-        )
-        .map_err(|error| error.to_string())?
-        .get::<_, i64>(0);
-    if version != super::super::migrations::V28_SCHEMA_VERSION {
-        return Err(format!("PostgreSQL v28 schema version mismatch: {version}"));
-    }
-    validate_pg_v28_tables(client)
-}
-
 fn validate_pg_v27_tables(client: &mut impl postgres::GenericClient) -> Result<(), String> {
     for table in super::super::migrations::V27_TABLES {
         if !pg_table_present(client, table)? {
@@ -1428,22 +1382,6 @@ fn validate_pg_v27_tables(client: &mut impl postgres::GenericClient) -> Result<(
         }
     }
     validate_pg_v26_tables(client)
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-fn validate_pg_v27_schema(client: &mut impl postgres::GenericClient) -> Result<(), String> {
-    let version = client
-        .query_one(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-            &[],
-        )
-        .map_err(|error| error.to_string())?
-        .get::<_, i64>(0);
-    if version != super::super::migrations::V27_SCHEMA_VERSION {
-        return Err(format!("PostgreSQL v27 schema version mismatch: {version}"));
-    }
-    validate_pg_v27_tables(client)
 }
 
 fn validate_pg_v26_tables(client: &mut impl postgres::GenericClient) -> Result<(), String> {
