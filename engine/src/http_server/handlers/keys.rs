@@ -138,7 +138,13 @@ pub(crate) async fn api_create_key(
     validate_managed_acceptance_role_scopes(&request.role, &request.scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
     let store = require_store(&state)?;
-    require_managed_actor_key_mutation_allowed(&store, &context)?;
+    let actor_store = Arc::clone(&store);
+    let actor_context = context.clone();
+    tokio::task::spawn_blocking(move || {
+        require_managed_actor_key_mutation_allowed(&actor_store, &actor_context)
+    })
+    .await
+    .map_err(|error| internal_error(format!("key authority worker failed: {error}")))??;
 
     let resolver = state.tenant_resolver.as_ref().cloned().ok_or_else(|| {
         ApiError::new(
