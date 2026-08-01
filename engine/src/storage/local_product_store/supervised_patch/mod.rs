@@ -3479,14 +3479,25 @@ impl LocalProductStore {
         artifact_id: &str,
         operation_id: &str,
         expected_operation_version: u64,
+        task_id: &str,
+        approval_id: &str,
+        expected_task_version: u64,
         actor: &str,
         reason: &str,
     ) -> Result<Value, String> {
+        let authority_request = json!({
+            "schema_version": "product_output_authority_request.v1",
+            "product_task_id": task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval_id,
+            "output_intent": "draft_pr",
+            "expected_task_version": expected_task_version,
+        });
         self.mutate_product_output_operation(
             artifact_id,
             actor,
             "product_task.output_branch_outcome_unknown",
-            None,
+            Some(&authority_request),
             |artifact, now| {
                 let operation = artifact
                     .get_mut("product_output_operation")
@@ -3526,14 +3537,25 @@ impl LocalProductStore {
         artifact_id: &str,
         operation_id: &str,
         expected_operation_version: u64,
+        task_id: &str,
+        approval_id: &str,
+        expected_task_version: u64,
         actor: &str,
         reason: &str,
     ) -> Result<Value, String> {
+        let authority_request = json!({
+            "schema_version": "product_output_authority_request.v1",
+            "product_task_id": task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval_id,
+            "output_intent": "draft_pr",
+            "expected_task_version": expected_task_version,
+        });
         self.mutate_product_output_operation(
             artifact_id,
             actor,
             "product_task.output_branch_failed_known",
-            None,
+            Some(&authority_request),
             |artifact, now| {
                 let operation = artifact
                     .get_mut("product_output_operation")

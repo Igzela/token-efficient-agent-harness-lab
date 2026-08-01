@@ -5475,13 +5475,18 @@ impl LocalProductStore {
             .get("pre_effect_failure")
             .and_then(Value::as_bool)
             == Some(true)
+            || output_result
+                .get("admission_blocked")
+                .and_then(Value::as_bool)
+                == Some(true)
             || output_status == "operation_in_progress"
         {
-            // A credential, allowlist, or target-admission failure before any
-            // branch/PR effect, or a concurrent durable-operation claimant, is
-            // recoverable without advancing ProductTask. Keep the task at the
-            // approval version so its operation, approval, and terminal CAS
-            // bindings cannot drift across restart or concurrent retry.
+            // A credential failure before any branch/PR effect, or a concurrent
+            // durable-operation claimant, is recoverable without advancing
+            // ProductTask. A malformed/non-GitHub origin is different: it is an
+            // admission block with no durable operation and is not presented as
+            // restart recovery. Keep both outcomes at the approval version so
+            // their task bindings cannot drift across a retry.
             let current = self
                 .get_product_task(task_id)?
                 .ok_or_else(|| "product task disappeared during output recovery".to_string())?;
@@ -5498,7 +5503,10 @@ impl LocalProductStore {
                 "output_receipt": Value::Null,
                 "terminal_evidence": Value::Null,
                 "reused": false,
-                "recovery_required": true,
+                "recovery_required": output_result
+                    .get("recovery_required")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(output_status == "operation_in_progress"),
             }));
         }
         // Receipt and terminal CAS are separate store transactions. A concurrent
@@ -6633,7 +6641,8 @@ impl LocalProductStore {
                 return Ok(json!({
                     "mode": "draft_pr",
                     "status": "blocked",
-                    "pre_effect_failure": true,
+                    "admission_blocked": true,
+                    "recovery_required": false,
                     "reason": error,
                     "product_task_id": task_id,
                     "artifact_id": artifact_id,
@@ -6734,6 +6743,12 @@ impl LocalProductStore {
                 artifact_id,
                 operation_id,
                 operation_version,
+                task_id,
+                approval_binding
+                    .get("approval_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "product output approval identity missing".to_string())?,
+                expected_task_version,
                 actor,
                 &error,
             )?;
@@ -6810,6 +6825,14 @@ impl LocalProductStore {
                         artifact_id,
                         operation_id,
                         operation_version,
+                        task_id,
+                        approval_binding
+                            .get("approval_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                "product output approval identity missing".to_string()
+                            })?,
+                        expected_task_version,
                         actor,
                         &error,
                     )?
@@ -6818,6 +6841,14 @@ impl LocalProductStore {
                         artifact_id,
                         operation_id,
                         operation_version,
+                        task_id,
+                        approval_binding
+                            .get("approval_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                "product output approval identity missing".to_string()
+                            })?,
+                        expected_task_version,
                         actor,
                         &error,
                     )?

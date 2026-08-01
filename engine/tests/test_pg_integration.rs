@@ -2437,6 +2437,26 @@ fn pg_draft_pr_missing_github_credential_reuses_operation_after_restart() {
     let workspace_root = tempfile::tempdir().unwrap();
     std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
     let (repo, revision) = pg_product_repo("pg missing GitHub credential");
+    let bare = repo.path().join("origin.git");
+    let bare_init = Command::new("git")
+        .args(["init", "--bare", "-b", "main"])
+        .arg(&bare)
+        .output()
+        .unwrap();
+    assert!(bare_init.status.success(), "{bare_init:?}");
+    let local_origin = Command::new("git")
+        .args(["remote", "set-url", "origin"])
+        .arg(&bare)
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(local_origin.status.success(), "{local_origin:?}");
+    let push_main = Command::new("git")
+        .args(["push", "-u", "origin", "main"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(push_main.status.success(), "{push_main:?}");
     let remote = Command::new("git")
         .args([
             "remote",
@@ -2448,6 +2468,16 @@ fn pg_draft_pr_missing_github_credential_reuses_operation_after_restart() {
         .output()
         .unwrap();
     assert!(remote.status.success(), "git remote set-url: {remote:?}");
+    let push_url = Command::new("git")
+        .args(["remote", "set-url", "--add", "--push", "origin"])
+        .arg(&bare)
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(
+        push_url.status.success(),
+        "git remote push-url: {push_url:?}"
+    );
     let tag = uuid_tag();
     let (task, approval, artifact) =
         pg_product_task_to_approval(&store, repo.path(), &revision, &tag, "draft_pr");
@@ -2475,46 +2505,20 @@ fn pg_draft_pr_missing_github_credential_reuses_operation_after_restart() {
         .as_str()
         .unwrap()
         .to_string();
-    let request = blocked["output"]["operation"]["request"].clone();
-    let request_sha256 = blocked["output"]["operation"]["request_sha256"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let audit_before_restart = store.audit_events(10_000).unwrap();
     let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
     drop(store);
 
     // Restart restores the parent-held configuration reference; no raw
-    // credential is persisted or printed, and no provider/target call occurs.
-    std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "0");
+    // credential is persisted or printed. The branch push uses only the
+    // fixture's local push URL; no provider request or external target call occurs.
+    std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "1");
     std::env::set_var("ACP_TEST_GITHUB_TOKEN", "restored-test-token");
+    std::env::set_var("ACP_TARGET_REPO_GIT_TOKEN_ENV", "ACP_TEST_GITHUB_TOKEN");
+    std::env::set_var("ACP_TARGET_REPO_REMOTE_HOST_ALLOWLIST", "github.com");
+    std::env::set_var("ACP_TARGET_REPO_ALLOW_LOCAL_REMOTE", "1");
     let restarted = LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
     let resumed = restarted
-        .claim_product_output_operation(
-            artifact_id,
-            &request,
-            &request_sha256,
-            task_version,
-            "pg-output-after-restart",
-        )
-        .unwrap();
-    assert_eq!(resumed["claim_action"], "push_or_reconcile_branch");
-    assert_eq!(resumed["operation_id"], operation_id);
-    assert_eq!(
-        restarted.get_product_task(task_id).unwrap().unwrap()["version"],
-        task_version
-    );
-    let commit_sha = "b".repeat(40);
-    restarted
-        .record_product_output_branch_pushed(
-            artifact_id,
-            &operation_id,
-            resumed["current_version"].as_u64().unwrap(),
-            &commit_sha,
-            "pg-output-after-restart",
-        )
-        .unwrap();
-    let pending = restarted
         .output_product_task(
             task_id,
             "pg-output-after-restart",
@@ -2523,11 +2527,17 @@ fn pg_draft_pr_missing_github_credential_reuses_operation_after_restart() {
             true,
         )
         .unwrap();
-    assert_eq!(pending["output"]["status"], "pr_create_pending");
-    assert_eq!(pending["task"]["status"], "output_pending");
-    assert!(pending["task"]["version"].as_u64().unwrap() > task_version);
-    let pr_claim = pending["output"]["operation"].clone();
-    assert_eq!(pr_claim["operation_id"], operation_id);
+    assert_eq!(resumed["output"]["status"], "pr_create_pending");
+    let resumed_operation = resumed["output"]["operation"].clone();
+    assert_eq!(resumed_operation["operation_id"], operation_id);
+    assert_eq!(
+        restarted.get_product_task(task_id).unwrap().unwrap()["version"],
+        resumed["task"]["version"]
+    );
+    assert_eq!(resumed["task"]["status"], "output_pending");
+    assert!(resumed["task"]["version"].as_u64().unwrap() > task_version);
+    assert_eq!(resumed_operation["branch_push"]["status"], "completed");
+    assert_eq!(resumed_operation["pr_create"]["status"], "in_progress");
     let pull_request = json!({
         "number": 51,
         "url": "https://github.com/Igzela/alters-lab/pull/51",
@@ -2537,13 +2547,13 @@ fn pg_draft_pr_missing_github_credential_reuses_operation_after_restart() {
         "repository": "Igzela/alters-lab",
         "base_branch": "main",
         "head_branch": format!("acp/product-{task_id}"),
-        "head_sha": commit_sha,
+        "head_sha": resumed_operation["branch_push"]["commit_sha"],
     });
     let completed_operation = restarted
         .complete_product_output_draft_pr(
             artifact_id,
             &operation_id,
-            pr_claim["current_version"].as_u64().unwrap(),
+            resumed_operation["current_version"].as_u64().unwrap(),
             &pull_request,
             "pg-output-after-restart",
         )
@@ -2554,7 +2564,7 @@ fn pg_draft_pr_missing_github_credential_reuses_operation_after_restart() {
             artifact_id,
             &operation_id,
             completed_operation["current_version"].as_u64().unwrap(),
-            pending["task"]["version"].as_u64().unwrap(),
+            resumed["task"]["version"].as_u64().unwrap(),
             &pull_request,
             "pg-output-after-restart",
         )
@@ -2589,6 +2599,9 @@ fn pg_draft_pr_missing_github_credential_reuses_operation_after_restart() {
         "ACP_GITHUB_REPOSITORY_ALLOWLIST",
         "ACP_GITHUB_TOKEN_ENV",
         "ACP_TEST_GITHUB_TOKEN",
+        "ACP_TARGET_REPO_GIT_TOKEN_ENV",
+        "ACP_TARGET_REPO_REMOTE_HOST_ALLOWLIST",
+        "ACP_TARGET_REPO_ALLOW_LOCAL_REMOTE",
         "ACP_PRODUCT_WORKSPACE_ROOT",
         "ACP_ENABLE_TARGET_REPO_OUTPUT",
         PRODUCT_TASK_GATE,
