@@ -299,6 +299,29 @@ Correct the false PR #336 CI claim and repair material governance findings from 
 
 Acceptance requires: the exact #336 distinction `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure`, `failure_reason: PR merged before terminal required job`; complete independent re-review of the merged #336 range; repaired allowlist/automation/plugin/dormant-surface/review-receipt tests; exact-head independent review of PR #339; canonical `tests` success including terminal capsule and artifact publication; and a post-merge full accepted-main verification run recorded truthfully.
 
+**Persisted independent complete-diff review:**
+
+```yaml
+independent_complete_diff_review:
+  reviewed_merge_sha: 17723bb66a1274498c32aef0f6cac85ad339efea
+  reviewed_range: bd096e34986f60824908a72ab97df0e8a31eb461..17723bb66a1274498c32aef0f6cac85ad339efea
+  reviewer_session_identity: 019fbc9e-75be-7491-b2e9-65862a337e91
+  supporting_reviewer_session_identity: 019fbc9e-7481-7451-b230-b99e35066357
+  reviewer_authenticated_identity: unavailable
+  review_transport: local_read_only_inspection_not_direct_authenticated_github_review
+  observed_at: 2026-08-01T09:30:40Z
+  correctness: PASS_WITH_NOTES
+  security: PASS_WITH_NOTES
+  authority_integrity: PASS_WITH_NOTES
+  compatibility: PASS_WITH_NOTES
+  CI_governance: PASS_WITH_NOTES
+  rollback: PASS
+  unresolved_objections: none_for_reviewed_merged_range
+  verdict: PASS_WITH_NOTES
+```
+
+This record is evidence for the historical merged range only. It does not substitute for a new exact-head receipt, canonical `tests` run, terminal context-capsule artifact, or post-merge accepted-main verification for PR #339.
+
 ## Packet PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1
 
 **State:** `BLOCKED_PREREQUISITE`
