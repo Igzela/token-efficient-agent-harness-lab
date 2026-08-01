@@ -813,6 +813,49 @@ Unresolved objections: none
         with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_dispatch"}, clear=False):
             self.assertFalse(project_context.has_valid_success_binding(capsule))
 
+    def test_require_success_accepts_a_complete_dispatch_snapshot(self) -> None:
+        checks = {
+            name: {"result": "success"}
+            for name in project_context.REQUIRED_CI_CHECKS
+            if name != "exact-head-check"
+        }
+        sha = "a" * 40
+        capsule = {
+            "schema_version": "project_context.v1",
+            "binding": {
+                "workflow_run_identity": {
+                    "availability": "confirmed",
+                    "event_name": "workflow_dispatch",
+                },
+                "expected_head_sha": sha,
+                "checked_out_sha": sha,
+                "source_required_check_matrix": project_context.source_required_check_matrix(
+                    project_context.summarize_checks(
+                        project_context.parse_checks_json(json.dumps(checks))
+                    ),
+                    event_name="workflow_dispatch",
+                ),
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "capsule.json"
+            snapshot.write_text(json.dumps(capsule), encoding="utf-8")
+            with (
+                mock.patch.object(
+                    project_context,
+                    "parse_args",
+                    return_value=argparse.Namespace(
+                        format="json",
+                        capsule_json=snapshot,
+                        require_success=True,
+                    ),
+                ),
+                mock.patch.dict(
+                    os.environ, {"GITHUB_EVENT_NAME": "workflow_dispatch"}, clear=False
+                ),
+            ):
+                self.assertEqual(project_context.main(), 0)
+
     def test_dispatch_capsule_generation_rejects_checkout_drift(self) -> None:
         with mock.patch.object(
             project_context,
