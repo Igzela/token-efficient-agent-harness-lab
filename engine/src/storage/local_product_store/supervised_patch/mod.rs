@@ -3473,6 +3473,35 @@ impl LocalProductStore {
         expected_task_version: u64,
         actor: &str,
     ) -> Result<Value, String> {
+        let existing_terminal_task_version = self
+            .get_supervised_patch_artifact(artifact_id)?
+            .and_then(|artifact| {
+                artifact
+                    .pointer("/product_output_operation/terminal_task_version")
+                    .and_then(Value::as_u64)
+            });
+        let allow_terminal_rebind = match existing_terminal_task_version {
+            Some(bound_version) if bound_version != expected_task_version => {
+                if bound_version.checked_add(1) != Some(expected_task_version) {
+                    return Err(
+                        "product output terminal task version may only advance one version"
+                            .to_string(),
+                    );
+                }
+                match self.get_product_task_terminal_evidence(task_id) {
+                    Ok(_) => {
+                        return Err(
+                            "product output terminal version cannot rebind after terminal evidence"
+                                .to_string(),
+                        )
+                    }
+                    Err(error) if error == "product task terminal evidence is not committed" => {}
+                    Err(error) => return Err(error),
+                }
+                true
+            }
+            _ => false,
+        };
         let authority_request = json!({
             "schema_version": "product_output_authority_request.v1",
             "product_task_id": task_id,
@@ -3480,6 +3509,7 @@ impl LocalProductStore {
             "approval_id": approval_id,
             "output_intent": "draft_pr",
             "expected_task_version": expected_task_version,
+            "terminal_rebind": allow_terminal_rebind,
         });
         self.mutate_product_output_operation(
             artifact_id,
@@ -3512,7 +3542,14 @@ impl LocalProductStore {
                 {
                     return Ok(operation.clone());
                 }
-                if operation.get("terminal_task_version").is_some() {
+                if operation.get("terminal_task_version").is_some()
+                    && (!allow_terminal_rebind
+                        || operation
+                            .get("terminal_task_version")
+                            .and_then(Value::as_u64)
+                            .and_then(|version| version.checked_add(1))
+                            != Some(expected_task_version))
+                {
                     return Err("product output terminal task version is already bound".to_string());
                 }
                 require_product_output_operation_version(operation, expected_operation_version)?;

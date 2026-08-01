@@ -220,11 +220,16 @@ pub(crate) async fn api_revoke_key(
     require_key_target_authority(&context, &target, role.as_deref())?;
     guard.remove_api_key(&key_id);
 
-    let revoked = store
-        .revoke_api_key_metadata(&key_id, &context.api_key_id)
-        .map_err(internal_error)?;
+    let revoked = match store.revoke_api_key_metadata(&key_id, &context.api_key_id) {
+        Ok(revoked) => revoked,
+        Err(error) => {
+            guard.add_api_key(target);
+            return Err(internal_error(error));
+        }
+    };
 
     if !revoked {
+        guard.add_api_key(target);
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
             "key not found or already revoked",
@@ -389,11 +394,16 @@ pub(crate) async fn api_delete_key(
     require_key_target_authority(&context, &target, role.as_deref())?;
     guard.remove_api_key(&key_id);
 
-    let deleted = store
-        .delete_api_key_metadata(&key_id, &context.api_key_id)
-        .map_err(internal_error)?;
+    let deleted = match store.delete_api_key_metadata(&key_id, &context.api_key_id) {
+        Ok(deleted) => deleted,
+        Err(error) => {
+            guard.add_api_key(target);
+            return Err(internal_error(error));
+        }
+    };
 
     if !deleted {
+        guard.add_api_key(target);
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
             "key not found",

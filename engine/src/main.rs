@@ -1088,7 +1088,10 @@ fn production_profile_violations_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{header, Method, Request, StatusCode};
     use std::sync::OnceLock;
+    use tower::ServiceExt;
 
     fn main_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1130,6 +1133,70 @@ mod tests {
                 "bootstrap key must not carry managed operation scope {scope}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn configure_auth_wires_canonical_bootstrap_for_managed_reissuance() {
+        let bootstrap_raw = format!("harness_{}", "c".repeat(64));
+        let (app, restarted) = {
+            let _guard = main_env_lock().lock().unwrap();
+            clear_trusted_provider_env();
+            std::env::set_var("ACP_REQUIRE_AUTH", "1");
+            std::env::set_var("ACP_ADMIN_API_KEY", &bootstrap_raw);
+            let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+            let app =
+                build_axum_router(configure_auth(AxumApiState::new()).with_local_store_arc(store));
+            // Construct the restart instance before releasing the environment
+            // lock, so unrelated tests cannot clear the bootstrap configuration
+            // between the two lifecycle checks.
+            let restarted = build_axum_router(
+                configure_auth(AxumApiState::new())
+                    .with_local_store_arc(Arc::new(LocalProductStore::new(":memory:").unwrap())),
+            );
+            clear_trusted_provider_env();
+            (app, restarted)
+        };
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "user_id": "canonical-reviewer",
+                            "role": "reviewer",
+                            "scopes": ["managed_acceptance:risk_acknowledge"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = restarted
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "user_id": "restarted-output-operator",
+                            "role": "output_operator",
+                            "scopes": ["managed_acceptance:delegated_execute"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]

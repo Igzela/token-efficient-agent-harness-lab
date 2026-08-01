@@ -5835,12 +5835,77 @@ impl LocalProductStore {
                 if error.contains("expected-current")
                     || error.contains("stale product task version") =>
             {
-                let completed = self
+                let current = self
                     .get_product_task(task_id)?
                     .ok_or_else(|| "product task disappeared after Draft PR race".to_string())?;
-                if completed.get("status").and_then(Value::as_str)
+                if current.get("status").and_then(Value::as_str)
+                    == Some(ProductTaskStatus::OutputPending.as_str())
+                    && current
+                        .get("version")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|version| version > expected_task_version)
+                {
+                    let current_task_version = current
+                        .get("version")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| {
+                            "current product task version missing after Draft PR race".to_string()
+                        })?;
+                    if current_task_version != expected_task_version.saturating_add(1) {
+                        return Err(error);
+                    }
+                    let current_artifact = self
+                        .get_supervised_patch_artifact(artifact_id)?
+                        .ok_or_else(|| {
+                            "current Draft PR artifact disappeared after race".to_string()
+                        })?;
+                    let current_operation = self.bind_product_output_terminal_task_version(
+                        task_id,
+                        artifact_id,
+                        operation_id,
+                        &approval_id,
+                        operation
+                            .get("current_version")
+                            .and_then(Value::as_u64)
+                            .ok_or_else(|| {
+                                "completed Draft PR operation version missing after race"
+                                    .to_string()
+                            })?,
+                        current_task_version,
+                        actor,
+                    )?;
+                    let current_output =
+                        product_draft_pr_output_from_operation(task_id, &current_operation);
+                    let current_candidate = self.build_product_task_terminal_evidence(
+                        &current,
+                        &current_artifact,
+                        &approval,
+                        &current_output,
+                        current_task_version.saturating_add(1),
+                        actor,
+                    )?;
+                    let (current_completed, current_evidence) = self
+                        .complete_product_task_output_authorized(
+                            task_id,
+                            artifact_id,
+                            &approval_id,
+                            "draft_pr",
+                            current_task_version,
+                            &current_candidate,
+                            actor,
+                        )?;
+                    return Ok(json!({
+                        "task": current_completed,
+                        "operation": current_operation,
+                        "output": current_output,
+                        "terminal_evidence": current_evidence,
+                        "reused": false,
+                        "recovered_after_task_version_advance": true,
+                    }));
+                }
+                if current.get("status").and_then(Value::as_str)
                     != Some(ProductTaskStatus::Completed.as_str())
-                    || completed.get("version").and_then(Value::as_u64)
+                    || current.get("version").and_then(Value::as_u64)
                         != Some(expected_task_version.saturating_add(1))
                 {
                     return Err(error);
@@ -5852,13 +5917,13 @@ impl LocalProductStore {
                     })?;
                 let evidence = self.get_product_task_terminal_evidence(task_id)?;
                 validate_completed_product_output_binding(
-                    &completed,
+                    &current,
                     &completed_artifact,
                     &approval,
                     &evidence,
                 )?;
                 return Ok(json!({
-                    "task": completed,
+                    "task": current,
                     "operation": operation,
                     "output": output,
                     "terminal_evidence": evidence,
