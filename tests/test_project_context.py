@@ -68,6 +68,21 @@ class TestProjectContextRouting(unittest.TestCase):
         self.assertIn("documented prerequisites", action)
         self.assertNotIn("create or continue one focused PR", action)
 
+    def test_in_progress_prerequisite_prose_does_not_use_legacy_fallback(self):
+        text = """\
+## Active Routing
+
+1. `PE7-TEST-1` — `IN_PROGRESS`
+
+## Packet PE7-TEST-1
+
+**State:** `IN_PROGRESS`
+
+Prerequisite: PR #342 is accepted.
+"""
+
+        self.assertIsNone(project_context.parse_first_routed_packet(text)["pr_number"])
+
 
 if __name__ == "__main__":
     unittest.main()

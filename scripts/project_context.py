@@ -139,6 +139,24 @@ def parse_first_routed_packet(next_text: str) -> dict[str, str | None]:
         )
         if structured_pr:
             pr_number = structured_pr.group("number")
+    # Older in-progress packets used a prose review-surface line before the
+    # structured owner field was introduced.  Keep those exact legacy forms
+    # readable, but never infer a PR from prerequisite/history prose.  In
+    # particular, READY packets may list accepted prerequisite PRs and must
+    # remain unbound until an owner field exists.
+    if pr_number is None and state_match and state_match.group(1) == "IN_PROGRESS":
+        legacy_review = re.search(
+            r"^\s*(?:Current review surface is )?PR #(?P<number>\d+)\.?\s*$",
+            block,
+            re.MULTILINE | re.IGNORECASE,
+        )
+        has_prerequisite_prose = re.search(
+            r"\b(?:prerequisite|prerequisites|accepted by|satisfied by|depends on)\b",
+            block,
+            re.IGNORECASE,
+        )
+        if legacy_review and not has_prerequisite_prose:
+            pr_number = legacy_review.group("number")
     return {
         "packet": packet,
         "state": state_match.group(1) if state_match else None,
