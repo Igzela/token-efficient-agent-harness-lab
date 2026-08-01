@@ -8,6 +8,7 @@ pub const AUTH_SCHEMA_VERSION: &str = "auth.v1";
 /// to delegate managed-acceptance scopes. API-created keys remain ordinary
 /// principals even when they carry `team:admin`.
 pub const LOCAL_BOOTSTRAP_API_KEY_ID: &str = "local-admin-env";
+pub const LOCAL_BOOTSTRAP_TENANT_ID: &str = "local";
 const API_KEY_PREFIX: &str = "harness_";
 const API_KEY_SUFFIX_LEN: usize = 64;
 

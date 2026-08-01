@@ -68,7 +68,8 @@ use engine::storage::local_product_store::{
     MemoryRetrievalRequest, MemoryScope, ProviderEmbeddingResolutionAction,
     ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, RwePerTaskBudget,
     SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
-    MANAGED_REVIEWER_KEY_SCOPES, SCOPE_IDENTITY_DELEGATE,
+    MANAGED_REVIEWER_KEY_SCOPES, SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_MANIFEST_APPROVE,
+    SCOPE_IDENTITY_DELEGATE, SCOPE_SPEND_AUTHORIZE,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -493,13 +494,13 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
         confirm_output: Some(true),
         idempotency_key: format!("pg-rebind-primary-{tag}"),
         expected_version: None,
-        tenant_id: Some("tenant-a".into()),
+        tenant_id: Some("local".into()),
         workspace_id: Some("default".into()),
         workspace_mode: Some("git_worktree".into()),
     };
     let task = store
         .admit_product_task(
-            &validate_intake(&request, "tenant-a", "default").unwrap(),
+            &validate_intake(&request, "local", "default").unwrap(),
             "pg-rebind",
         )
         .unwrap();
@@ -509,7 +510,7 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
     foreign_request.idempotency_key = format!("pg-rebind-foreign-{tag}");
     let foreign_task = store
         .admit_product_task(
-            &validate_intake(&foreign_request, "tenant-a", "default").unwrap(),
+            &validate_intake(&foreign_request, "local", "default").unwrap(),
             "pg-rebind",
         )
         .unwrap();
@@ -522,15 +523,16 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
             &reviewer_key_id,
             "pg-rebind-reviewer",
             "operator",
-            &ALL_MANAGED_ACCEPTANCE_SCOPES
-                .iter()
-                .map(|scope| (*scope).to_string())
-                .collect::<Vec<_>>(),
+            &[
+                SCOPE_DELEGATED_AUTONOMY.to_string(),
+                SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+                SCOPE_SPEND_AUTHORIZE.to_string(),
+            ],
             "pg-rebind-test-setup",
         )
         .unwrap();
     let principal = store
-        .authenticate_managed_acceptance_principal("tenant-a", &reviewer_key_id, Some(1.0))
+        .authenticate_managed_acceptance_principal("local", &reviewer_key_id, Some(1.0))
         .unwrap();
     let bootstrap_scopes = vec![SCOPE_IDENTITY_DELEGATE.to_string()];
     store
@@ -543,7 +545,7 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
         )
         .unwrap();
     let bootstrap = store
-        .authenticate_bootstrap_identity_delegation_principal("tenant-a", Some(1.0))
+        .authenticate_bootstrap_identity_delegation_principal("local", Some(1.0))
         .unwrap();
     let created_at = utc_now_string();
     let expires_at = (chrono::DateTime::parse_from_rfc3339(&created_at)
@@ -579,7 +581,9 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
         }),
         forbidden: vec!["credential changes".into(), "destructive operations".into()],
     };
-    store.persist_delegation(&principal, &delegation).unwrap();
+    store
+        .persist_delegation_for_product_task(&principal, task_id, &delegation)
+        .unwrap();
     let rebound = store
         .rebind_unadmitted_delegation_for_bootstrap(
             &bootstrap,

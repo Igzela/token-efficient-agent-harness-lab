@@ -383,11 +383,13 @@ pub(crate) async fn api_prepare_delegated_product_task(
         )
     })?;
     let persisted = store
-        .persist_delegation(&principal, &delegation)
+        .persist_delegation_for_product_task(&principal, &task_id, &delegation)
         .map_err(|error| delegated_api_error(&error, "delegation_persist_failed"))?;
-    let task_binding = store
-        .bind_delegation_to_product_task(&principal, &task_id, &delegation.delegation_id)
-        .map_err(|error| delegated_api_error(&error, "delegation_product_task_binding_failed"))?;
+    let task_binding = json!({
+        "delegation_id": delegation.delegation_id,
+        "product_task_id": persisted.get("product_task_id"),
+        "replayed": persisted.get("replayed"),
+    });
     let proposal_receipt = store
         .persist_approved_delegated_proposal(
             &delegation.delegation_id,
