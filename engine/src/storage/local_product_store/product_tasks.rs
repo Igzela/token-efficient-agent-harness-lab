@@ -1282,9 +1282,13 @@ impl LocalProductStore {
             }));
         }
 
-        let completed_output =
-            validate_completed_product_output_binding(&task, &artifact, &approval)?;
         let terminal_evidence = self.get_product_task_terminal_evidence(product_task_id)?;
+        let completed_output = validate_completed_product_output_binding(
+            &task,
+            &artifact,
+            &approval,
+            &terminal_evidence,
+        )?;
         if terminal_evidence
             .get("product_task_id")
             .and_then(Value::as_str)
@@ -4122,6 +4126,23 @@ impl LocalProductStore {
         }))
     }
 
+    pub(crate) fn finalize_product_task_after_execution_with_commit_authority_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+        runtime_authority: &dyn Fn() -> Result<ProductVerificationRuntimeAuthority, String>,
+        commit_authority: &dyn ProductArtifactCommitAuthority,
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.finalize_product_task_after_execution_with_commit_authority(
+            task_id,
+            actor,
+            runtime_authority,
+            commit_authority,
+        )
+    }
+
     /// Execute every declared verification command via CommandNodeExecutor (same allowlisted
     /// owner used by supervised-patch verification) and persist authoritative receipts.
     /// Never writes `result: pass` before execution. Fail-closed on any non-pass outcome.
@@ -4755,6 +4776,59 @@ impl LocalProductStore {
 
     /// Record an independent, output-only approval bound to the exact evidence
     /// that will be consumed by a later output operation.
+    fn require_product_task_tenant(
+        &self,
+        task_id: &str,
+        expected_tenant_id: &str,
+    ) -> Result<(), String> {
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        if task.get("tenant_id").and_then(Value::as_str) != Some(expected_tenant_id) {
+            return Err("product task tenant does not match authenticated principal".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn get_product_task_for_tenant(
+        &self,
+        task_id: &str,
+        expected_tenant_id: &str,
+    ) -> Result<Option<Value>, String> {
+        let Some(task) = self.get_product_task(task_id)? else {
+            return Ok(None);
+        };
+        if task.get("tenant_id").and_then(Value::as_str) != Some(expected_tenant_id) {
+            return Err("product task tenant does not match authenticated principal".into());
+        }
+        Ok(Some(task))
+    }
+
+    pub(crate) fn compile_and_schedule_product_task_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+        available_executors: &[String],
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.compile_and_schedule_product_task(task_id, actor, available_executors)
+    }
+
+    /// HTTP/store boundary for approval. The tenant is derived from the
+    /// authenticated API context and is checked before the existing mutation
+    /// owner is entered; it is never accepted from the request body.
+    pub fn approve_product_task_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+        expected_task_version: u64,
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.approve_product_task(task_id, actor, expected_task_version)
+    }
+
     pub fn approve_product_task(
         &self,
         task_id: &str,
@@ -5286,6 +5360,25 @@ impl LocalProductStore {
     /// Consume one exact persisted product-output approval after an explicit
     /// output confirmation. Validation completes before any state or audit
     /// mutation, so a missing confirmation has zero side effects.
+    pub fn output_product_task_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+        expected_task_version: u64,
+        approval_id: Option<&str>,
+        confirm_output: bool,
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.output_product_task(
+            task_id,
+            actor,
+            expected_task_version,
+            approval_id,
+            confirm_output,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn output_product_task(
         &self,
@@ -5369,9 +5462,13 @@ impl LocalProductStore {
         }
 
         if status == ProductTaskStatus::Completed {
-            let terminal_output =
-                validate_completed_product_output_binding(&task, &artifact, &approval)?;
             let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
+            let terminal_output = validate_completed_product_output_binding(
+                &task,
+                &artifact,
+                &approval,
+                &terminal_evidence,
+            )?;
             return Ok(json!({
                 "task": task,
                 "approval": approval,
@@ -5463,6 +5560,44 @@ impl LocalProductStore {
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("failed");
+        if output_result
+            .get("pre_effect_failure")
+            .and_then(Value::as_bool)
+            == Some(true)
+            || output_result
+                .get("admission_blocked")
+                .and_then(Value::as_bool)
+                == Some(true)
+            || output_status == "operation_in_progress"
+        {
+            // A credential failure before any branch/PR effect, or a concurrent
+            // durable-operation claimant, is recoverable without advancing
+            // ProductTask. A malformed/non-GitHub origin is different: it is an
+            // admission block with no durable operation and is not presented as
+            // restart recovery. Keep both outcomes at the approval version so
+            // their task bindings cannot drift across a retry.
+            let current = self
+                .get_product_task(task_id)?
+                .ok_or_else(|| "product task disappeared during output recovery".to_string())?;
+            if current.get("version").and_then(Value::as_u64) != Some(expected_task_version) {
+                return Err(
+                    "product task version changed during pre-effect output recovery".to_string(),
+                );
+            }
+            return Ok(json!({
+                "task": current,
+                "approval": approval,
+                "artifact": artifact,
+                "output": output_result,
+                "output_receipt": Value::Null,
+                "terminal_evidence": Value::Null,
+                "reused": false,
+                "recovery_required": output_result
+                    .get("recovery_required")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(output_status == "operation_in_progress"),
+            }));
+        }
         // Receipt and terminal CAS are separate store transactions. A concurrent
         // winner may commit receipt+terminal (advancing ProductTask version) before
         // this caller rebinds; recover by reconstructing the canonical completed
@@ -5650,9 +5785,13 @@ impl LocalProductStore {
         let completed_artifact = self
             .get_supervised_patch_artifact(artifact_id)?
             .ok_or_else(|| "completed output artifact disappeared after race".to_string())?;
-        let terminal_output =
-            validate_completed_product_output_binding(&completed, &completed_artifact, approval)?;
         let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
+        let terminal_output = validate_completed_product_output_binding(
+            &completed,
+            &completed_artifact,
+            approval,
+            &terminal_evidence,
+        )?;
         Ok(json!({
             "task": completed,
             "approval": approval,
@@ -5675,10 +5814,22 @@ impl LocalProductStore {
         pull_request: &Value,
         actor: &str,
     ) -> Result<Value, String> {
+        let approval_id = self
+            .get_supervised_patch_artifact(artifact_id)?
+            .and_then(|artifact| {
+                artifact
+                    .pointer("/product_output_operation/approval_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .ok_or_else(|| "Draft PR completion approval identity missing".to_string())?;
         let operation = self.complete_product_output_draft_pr(
             artifact_id,
             operation_id,
             expected_operation_version,
+            task_id,
+            &approval_id,
+            expected_task_version,
             pull_request,
             actor,
         )?;
@@ -5723,8 +5874,13 @@ impl LocalProductStore {
             {
                 return Err("stale product task version at Draft PR replay".to_string());
             }
-            validate_completed_product_output_binding(&task, &artifact, &approval)?;
             let terminal_evidence = self.get_product_task_terminal_evidence(task_id)?;
+            validate_completed_product_output_binding(
+                &task,
+                &artifact,
+                &approval,
+                &terminal_evidence,
+            )?;
             return Ok(json!({
                 "task": task,
                 "operation": operation,
@@ -5733,6 +5889,19 @@ impl LocalProductStore {
                 "reused": true,
             }));
         }
+        let operation = self.bind_product_output_terminal_task_version(
+            task_id,
+            artifact_id,
+            operation_id,
+            &approval_id,
+            operation
+                .get("current_version")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "completed Draft PR operation version missing".to_string())?,
+            expected_task_version,
+            actor,
+        )?;
+        let output = product_draft_pr_output_from_operation(task_id, &operation);
         let candidate = self.build_product_task_terminal_evidence(
             &task,
             &artifact,
@@ -5755,12 +5924,77 @@ impl LocalProductStore {
                 if error.contains("expected-current")
                     || error.contains("stale product task version") =>
             {
-                let completed = self
+                let current = self
                     .get_product_task(task_id)?
                     .ok_or_else(|| "product task disappeared after Draft PR race".to_string())?;
-                if completed.get("status").and_then(Value::as_str)
+                if current.get("status").and_then(Value::as_str)
+                    == Some(ProductTaskStatus::OutputPending.as_str())
+                    && current
+                        .get("version")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|version| version > expected_task_version)
+                {
+                    let current_task_version = current
+                        .get("version")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| {
+                            "current product task version missing after Draft PR race".to_string()
+                        })?;
+                    if current_task_version != expected_task_version.saturating_add(1) {
+                        return Err(error);
+                    }
+                    let current_artifact = self
+                        .get_supervised_patch_artifact(artifact_id)?
+                        .ok_or_else(|| {
+                            "current Draft PR artifact disappeared after race".to_string()
+                        })?;
+                    let current_operation = self.bind_product_output_terminal_task_version(
+                        task_id,
+                        artifact_id,
+                        operation_id,
+                        &approval_id,
+                        operation
+                            .get("current_version")
+                            .and_then(Value::as_u64)
+                            .ok_or_else(|| {
+                                "completed Draft PR operation version missing after race"
+                                    .to_string()
+                            })?,
+                        current_task_version,
+                        actor,
+                    )?;
+                    let current_output =
+                        product_draft_pr_output_from_operation(task_id, &current_operation);
+                    let current_candidate = self.build_product_task_terminal_evidence(
+                        &current,
+                        &current_artifact,
+                        &approval,
+                        &current_output,
+                        current_task_version.saturating_add(1),
+                        actor,
+                    )?;
+                    let (current_completed, current_evidence) = self
+                        .complete_product_task_output_authorized(
+                            task_id,
+                            artifact_id,
+                            &approval_id,
+                            "draft_pr",
+                            current_task_version,
+                            &current_candidate,
+                            actor,
+                        )?;
+                    return Ok(json!({
+                        "task": current_completed,
+                        "operation": current_operation,
+                        "output": current_output,
+                        "terminal_evidence": current_evidence,
+                        "reused": false,
+                        "recovered_after_task_version_advance": true,
+                    }));
+                }
+                if current.get("status").and_then(Value::as_str)
                     != Some(ProductTaskStatus::Completed.as_str())
-                    || completed.get("version").and_then(Value::as_u64)
+                    || current.get("version").and_then(Value::as_u64)
                         != Some(expected_task_version.saturating_add(1))
                 {
                     return Err(error);
@@ -5770,14 +6004,15 @@ impl LocalProductStore {
                     .ok_or_else(|| {
                         "completed Draft PR artifact disappeared after race".to_string()
                     })?;
+                let evidence = self.get_product_task_terminal_evidence(task_id)?;
                 validate_completed_product_output_binding(
-                    &completed,
+                    &current,
                     &completed_artifact,
                     &approval,
+                    &evidence,
                 )?;
-                let evidence = self.get_product_task_terminal_evidence(task_id)?;
                 return Ok(json!({
-                    "task": completed,
+                    "task": current,
                     "operation": operation,
                     "output": output,
                     "terminal_evidence": evidence,
@@ -5971,6 +6206,17 @@ impl LocalProductStore {
             approval.get("approval_id").and_then(Value::as_str),
             true,
         )
+    }
+
+    pub fn approve_and_output_product_task_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+        confirm_output: bool,
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.approve_and_output_product_task(task_id, actor, confirm_output)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6553,13 +6799,29 @@ impl LocalProductStore {
             .pointer("/git/origin_remote")
             .and_then(Value::as_str)
             .ok_or_else(|| "workspace is missing its credential-free bound origin".to_string())?;
+        // Provider-free planning does not require GitHub admission. The
+        // repository/credential boundary is enforced only when a network
+        // effect is explicitly enabled.
         let repository = match crate::target_repo_output::parse_github_repository_url(bound_origin)
         {
             Ok(repository) => repository,
             Err(error) => {
+                if !allow_network {
+                    return Ok(json!({
+                        "mode": "draft_pr",
+                        "status": "blocked",
+                        "admission_blocked": true,
+                        "recovery_required": false,
+                        "reason": error,
+                        "product_task_id": task_id,
+                        "artifact_id": artifact_id,
+                    }));
+                }
                 return Ok(json!({
                     "mode": "draft_pr",
                     "status": "blocked",
+                    "admission_blocked": true,
+                    "recovery_required": false,
                     "reason": error,
                     "product_task_id": task_id,
                     "artifact_id": artifact_id,
@@ -6648,9 +6910,32 @@ impl LocalProductStore {
         if let Err(error) = crate::target_repo_output::GitHubPullRequestConfig::from_env()
             .require_repository(&repository)
         {
+            let operation_id = operation
+                .get("operation_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "product output operation identity missing".to_string())?;
+            let operation_version = operation
+                .get("current_version")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "product output operation version missing".to_string())?;
+            let operation = self.mark_product_output_branch_failed_known(
+                artifact_id,
+                operation_id,
+                operation_version,
+                task_id,
+                approval_binding
+                    .get("approval_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "product output approval identity missing".to_string())?,
+                expected_task_version,
+                actor,
+                &error,
+            )?;
             return Ok(json!({
                 "mode": "draft_pr",
                 "status": "blocked",
+                "pre_effect_failure": true,
+                "recovery_required": true,
                 "reason": error,
                 "operation": operation,
                 "product_task_id": task_id,
@@ -6682,6 +6967,12 @@ impl LocalProductStore {
                         .get("current_version")
                         .and_then(Value::as_u64)
                         .ok_or_else(|| "product output operation version missing".to_string())?,
+                    task_id,
+                    approval_binding
+                        .get("approval_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "product output approval identity missing".to_string())?,
+                    expected_task_version,
                     &published.commit_sha,
                     actor,
                 )?;
@@ -6719,6 +7010,14 @@ impl LocalProductStore {
                         artifact_id,
                         operation_id,
                         operation_version,
+                        task_id,
+                        approval_binding
+                            .get("approval_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                "product output approval identity missing".to_string()
+                            })?,
+                        expected_task_version,
                         actor,
                         &error,
                     )?
@@ -6727,6 +7026,14 @@ impl LocalProductStore {
                         artifact_id,
                         operation_id,
                         operation_version,
+                        task_id,
+                        approval_binding
+                            .get("approval_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                "product output approval identity missing".to_string()
+                            })?,
+                        expected_task_version,
                         actor,
                         &error,
                     )?
@@ -6972,6 +7279,16 @@ impl LocalProductStore {
             "product task workspace recovery retry exhausted while preparation remains active"
                 .to_string(),
         )
+    }
+
+    pub(crate) fn recover_product_task_workspace_for_tenant(
+        &self,
+        tenant_id: &str,
+        task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.require_product_task_tenant(task_id, tenant_id)?;
+        self.recover_product_task_workspace(task_id, actor)
     }
 
     /// Execute the receipt-bound compensation path for a completed local
@@ -7915,6 +8232,7 @@ fn validate_completed_product_output_binding(
     task: &Value,
     artifact: &Value,
     approval: &Value,
+    terminal_evidence: &Value,
 ) -> Result<Value, String> {
     let task_id = required_product_task_string(task, "task_id")?;
     let artifact_id = required_product_task_string(artifact, "artifact_id")?;
@@ -7930,6 +8248,9 @@ fn validate_completed_product_output_binding(
         let operation = artifact
             .get("product_output_operation")
             .ok_or_else(|| "completed task is missing its Draft PR operation".to_string())?;
+        validate_product_terminal_evidence_content_hash(terminal_evidence)?;
+        let expected_output = product_draft_pr_output_from_operation(&task_id, operation);
+        let expected_output_sha256 = product_json_sha256(&expected_output)?;
         if operation.get("state").and_then(Value::as_str) != Some("completed")
             || operation.get("product_task_id").and_then(Value::as_str) != Some(task_id.as_str())
             || operation.get("artifact_id").and_then(Value::as_str) != Some(artifact_id.as_str())
@@ -7949,12 +8270,29 @@ fn validate_completed_product_output_binding(
                 .and_then(Value::as_bool)
                 != Some(true)
             || operation
-                .get("expected_task_version")
+                .get("terminal_task_version")
                 .and_then(Value::as_u64)
                 .and_then(|version| version.checked_add(1))
                 != Some(task_version)
             || operation.pointer("/request/expected_task_version")
                 != operation.get("expected_task_version")
+            || terminal_evidence.get("task_status").and_then(Value::as_str) != Some("completed")
+            || terminal_evidence
+                .get("task_version")
+                .and_then(Value::as_u64)
+                != Some(task_version)
+            || terminal_evidence
+                .get("product_task_id")
+                .and_then(Value::as_str)
+                != Some(task_id.as_str())
+            || terminal_evidence
+                .pointer("/output/operation_id")
+                .and_then(Value::as_str)
+                != operation.get("operation_id").and_then(Value::as_str)
+            || terminal_evidence
+                .pointer("/output/result_sha256")
+                .and_then(Value::as_str)
+                != Some(expected_output_sha256.as_str())
         {
             return Err("completed Draft PR operation binding is stale".to_string());
         }

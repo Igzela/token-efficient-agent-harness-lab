@@ -27,7 +27,7 @@ impl LocalProductStore {
         let scopes_json = serde_json::to_string(scopes).map_err(|e| e.to_string())?;
         let expires_at_text = expires_at.map(|value| value.to_string());
         match &self.db {
-            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+            DatabaseConnection::Sqlite(_) => self.with_sqlite_transaction(|conn| {
                 let now = self.now();
                 conn.execute(
                     "INSERT INTO api_key_metadata
@@ -71,8 +71,9 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => {
                 self.with_pg_conn(|client| {
+                    let mut transaction = client.transaction().map_err(|e| e.to_string())?;
                     let now = self.now();
-                    client
+                    transaction
                         .execute(
                             "INSERT INTO api_key_metadata
                      (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at, expires_at)
@@ -96,11 +97,12 @@ impl LocalProductStore {
                         .map_err(|e| e.to_string())?;
                     let details =
                         json!({"key_id": key_id, "user_id": user_id, "role": role}).to_string();
-                    client.execute(
+                    transaction.execute(
                     "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
                      VALUES ($1, $2, $3, $4, $5)",
                     &[&now, &actor, &"api_key.record_metadata", &key_id, &details],
                 ).map_err(|e| e.to_string())?;
+                    transaction.commit().map_err(|e| e.to_string())?;
                     Ok(json!({
                         "key_id": key_id,
                         "user_id": user_id,
@@ -257,7 +259,7 @@ impl LocalProductStore {
 
     pub fn revoke_api_key_metadata(&self, key_id: &str, actor: &str) -> Result<bool, String> {
         match &self.db {
-            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+            DatabaseConnection::Sqlite(_) => self.with_sqlite_transaction(|conn| {
                 let now = self.now();
                 let rows = conn
                     .execute(
@@ -279,8 +281,9 @@ impl LocalProductStore {
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut transaction = client.transaction().map_err(|e| e.to_string())?;
                 let now = self.now();
-                let rows = client
+                let rows = transaction
                     .execute(
                         "UPDATE api_key_metadata SET revoked_at = $1 WHERE key_id = $2 AND revoked_at IS NULL",
                         &[&now, &key_id],
@@ -288,20 +291,147 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?;
                 if rows > 0 {
                     let details = json!({"key_id": key_id}).to_string();
-                    client.execute(
+                    transaction.execute(
                         "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
                          VALUES ($1, $2, $3, $4, $5)",
                         &[&now, &actor, &"team.key.revoked", &key_id, &details],
                     ).map_err(|e| e.to_string())?;
                 }
+                transaction.commit().map_err(|e| e.to_string())?;
                 Ok(rows > 0)
+            }),
+        }
+    }
+
+    /// Atomically replace one live API key with its rotated successor and
+    /// append both audit records in the same store-owned transaction.
+    pub fn rotate_api_key_metadata(
+        &self,
+        old_key_id: &str,
+        new_key_id: &str,
+        user_id: &str,
+        role: &str,
+        scopes: &[String],
+        expires_at: Option<f64>,
+        actor: &str,
+    ) -> Result<bool, String> {
+        let scopes_json = serde_json::to_string(scopes).map_err(|e| e.to_string())?;
+        let expires_at_text = expires_at.map(|value| value.to_string());
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_sqlite_transaction(|conn| {
+                let now = self.now();
+                let revoked = conn
+                    .execute(
+                        "UPDATE api_key_metadata SET revoked_at = ?1
+                         WHERE key_id = ?2 AND revoked_at IS NULL",
+                        params![now, old_key_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if revoked == 0 {
+                    return Ok(false);
+                }
+                conn.execute(
+                    "INSERT INTO api_key_metadata
+                     (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at, expires_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)",
+                    params![
+                        new_key_id,
+                        user_id,
+                        role,
+                        scopes_json,
+                        now,
+                        actor,
+                        expires_at_text
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                append_audit_locked(
+                    conn,
+                    &now,
+                    actor,
+                    "team.key.revoked",
+                    old_key_id,
+                    &json!({"key_id": old_key_id, "rotated_to": new_key_id}),
+                )?;
+                append_audit_locked(
+                    conn,
+                    &now,
+                    actor,
+                    "api_key.record_metadata",
+                    new_key_id,
+                    &json!({"key_id": new_key_id, "user_id": user_id, "role": role}),
+                )?;
+                Ok(true)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut transaction = client.transaction().map_err(|e| e.to_string())?;
+                let now = self.now();
+                let revoked = transaction
+                    .execute(
+                        "UPDATE api_key_metadata SET revoked_at = $1
+                         WHERE key_id = $2 AND revoked_at IS NULL",
+                        &[&now, &old_key_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if revoked == 0 {
+                    transaction.rollback().map_err(|e| e.to_string())?;
+                    return Ok(false);
+                }
+                transaction
+                    .execute(
+                        "INSERT INTO api_key_metadata
+                         (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at, expires_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)",
+                        &[
+                            &new_key_id,
+                            &user_id,
+                            &role,
+                            &scopes_json,
+                            &now,
+                            &actor,
+                            &expires_at_text,
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let revoked_details = json!({"key_id": old_key_id, "rotated_to": new_key_id}).to_string();
+                transaction
+                    .execute(
+                        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                         VALUES ($1, $2, $3, $4, $5)",
+                        &[
+                            &now,
+                            &actor,
+                            &"team.key.revoked",
+                            &old_key_id,
+                            &revoked_details,
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let created_details =
+                    json!({"key_id": new_key_id, "user_id": user_id, "role": role}).to_string();
+                transaction
+                    .execute(
+                        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                         VALUES ($1, $2, $3, $4, $5)",
+                        &[
+                            &now,
+                            &actor,
+                            &"api_key.record_metadata",
+                            &new_key_id,
+                            &created_details,
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                transaction.commit().map_err(|e| e.to_string())?;
+                Ok(true)
             }),
         }
     }
 
     pub fn delete_api_key_metadata(&self, key_id: &str, actor: &str) -> Result<bool, String> {
         match &self.db {
-            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+            DatabaseConnection::Sqlite(_) => self.with_sqlite_transaction(|conn| {
                 let rows = conn
                     .execute(
                         "DELETE FROM api_key_metadata WHERE key_id = ?1",
@@ -322,18 +452,20 @@ impl LocalProductStore {
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut transaction = client.transaction().map_err(|e| e.to_string())?;
                 let now = self.now();
-                let rows = client
+                let rows = transaction
                     .execute("DELETE FROM api_key_metadata WHERE key_id = $1", &[&key_id])
                     .map_err(|e| e.to_string())?;
                 if rows > 0 {
                     let details = json!({"key_id": key_id}).to_string();
-                    client.execute(
+                    transaction.execute(
                         "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
                          VALUES ($1, $2, $3, $4, $5)",
                         &[&now, &actor, &"team.key.deleted", &key_id, &details],
                     ).map_err(|e| e.to_string())?;
                 }
+                transaction.commit().map_err(|e| e.to_string())?;
                 Ok(rows > 0)
             }),
         }
@@ -347,7 +479,7 @@ impl LocalProductStore {
     ) -> Result<bool, String> {
         let scopes_json = serde_json::to_string(scopes).map_err(|e| e.to_string())?;
         match &self.db {
-            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+            DatabaseConnection::Sqlite(_) => self.with_sqlite_transaction(|conn| {
                 let rows = conn
                     .execute(
                         "UPDATE api_key_metadata SET scopes_json = ?1 WHERE key_id = ?2",
@@ -368,8 +500,9 @@ impl LocalProductStore {
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut transaction = client.transaction().map_err(|e| e.to_string())?;
                 let now = self.now();
-                let rows = client
+                let rows = transaction
                     .execute(
                         "UPDATE api_key_metadata SET scopes_json = $1 WHERE key_id = $2",
                         &[&scopes_json, &key_id],
@@ -377,12 +510,13 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?;
                 if rows > 0 {
                     let details = json!({"key_id": key_id, "scopes": scopes}).to_string();
-                    client.execute(
+                    transaction.execute(
                         "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
                          VALUES ($1, $2, $3, $4, $5)",
                         &[&now, &actor, &"team.key.scopes_updated", &key_id, &details],
                     ).map_err(|e| e.to_string())?;
                 }
+                transaction.commit().map_err(|e| e.to_string())?;
                 Ok(rows > 0)
             }),
         }

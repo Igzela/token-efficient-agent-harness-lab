@@ -29,6 +29,30 @@ pub const SCOPE_DELEGATED_MANIFEST_APPROVE: &str = "managed_acceptance:delegated
 pub const SCOPE_DELEGATED_EXECUTE: &str = "managed_acceptance:delegated_execute";
 pub const SCOPE_DELEGATED_ARTIFACT_CONFIRM: &str = "managed_acceptance:delegated_artifact_confirm";
 
+/// Capability held only by the environment bootstrap authority. It is not a
+/// managed-operation scope and is never included in child principals.
+pub const SCOPE_IDENTITY_DELEGATE: &str = "managed_acceptance:identity_delegate";
+pub const BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES: &[&str] = &[SCOPE_IDENTITY_DELEGATE];
+
+/// Least-privilege API-key ceilings for the two managed identities used by
+/// the delegated ProductTask path. Reviewer approval uses its dedicated
+/// capability rather than the broad tenant-admin scope. These are ceilings,
+/// not a grant to the bootstrap key; callers may request a subset, but never
+/// an unrelated managed or ordinary authority scope.
+pub const MANAGED_REVIEWER_KEY_SCOPES: &[&str] = &[
+    SCOPE_RISK_ACKNOWLEDGE,
+    SCOPE_DELEGATED_AUTONOMY,
+    SCOPE_DELEGATED_MANIFEST_APPROVE,
+    SCOPE_SPEND_AUTHORIZE,
+];
+pub const MANAGED_OUTPUT_OPERATOR_KEY_SCOPES: &[&str] = &[
+    "dispatch:execute",
+    SCOPE_RISK_ACKNOWLEDGE,
+    SCOPE_DELEGATED_ARTIFACT_CONFIRM,
+    SCOPE_DELEGATED_EXECUTE,
+    SCOPE_ATTEMPT_ADMIT,
+];
+
 pub const ALL_MANAGED_ACCEPTANCE_SCOPES: &[&str] = &[
     SCOPE_RISK_ACKNOWLEDGE,
     SCOPE_SPEND_AUTHORIZE,
@@ -39,6 +63,42 @@ pub const ALL_MANAGED_ACCEPTANCE_SCOPES: &[&str] = &[
     SCOPE_DELEGATED_EXECUTE,
     SCOPE_DELEGATED_ARTIFACT_CONFIRM,
 ];
+
+/// Validate the only role-specific managed-acceptance delegation profiles.
+/// The environment bootstrap authority owns this policy; ordinary tenants
+/// cannot reach this function through the key API because the handler first
+/// requires the immutable bootstrap key identity and delegation capability.
+pub fn validate_managed_acceptance_role_scopes(
+    role: &str,
+    scopes: &[String],
+) -> Result<(), String> {
+    let managed_role = matches!(role, "reviewer" | "output_operator");
+    let managed_requested = scopes.iter().any(|scope| {
+        ALL_MANAGED_ACCEPTANCE_SCOPES.contains(&scope.as_str())
+            || scope.starts_with("managed_acceptance:")
+    });
+    if !managed_role && !managed_requested {
+        return Ok(());
+    }
+    let allowed = match role {
+        "reviewer" => MANAGED_REVIEWER_KEY_SCOPES,
+        "output_operator" => MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
+        _ => {
+            return Err(format!(
+                "managed-acceptance scopes require reviewer or output_operator role; got {role:?}"
+            ));
+        }
+    };
+    if let Some(scope) = scopes
+        .iter()
+        .find(|scope| !allowed.contains(&scope.as_str()))
+    {
+        return Err(format!(
+            "scope {scope:?} is outside the least-privilege {role} managed-acceptance profile"
+        ));
+    }
+    Ok(())
+}
 
 pub const DELEGATION_SCHEMA_VERSION: &str = "managed_autonomous_delegation.v1";
 pub const FINAL_MANIFEST_SCHEMA_VERSION: &str = "managed_final_execution_manifest.v1";
@@ -2130,6 +2190,35 @@ impl LocalProductStore {
             "product_terminal_evidence": terminal_evidence,
             "artifact_confirmation": confirmation,
         }))
+    }
+
+    /// HTTP/store boundary for delegated terminalization. The authenticated
+    /// output principal supplies the tenant and required terminal scopes; the
+    /// request body supplies only immutable identities that are rechecked by
+    /// the existing terminal owner.
+    pub fn complete_delegated_product_task_terminal_for_principal(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        delegation_id: &str,
+        attempt_id: &str,
+        product_task_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_ATTEMPT_ADMIT)?;
+        principal.require_scope(SCOPE_DELEGATED_EXECUTE)?;
+        let task = self
+            .get_product_task(product_task_id)?
+            .ok_or("delegated terminal ProductTask is missing")?;
+        if task.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id()) {
+            return Err("delegated terminal ProductTask tenant does not match principal".into());
+        }
+        self.require_delegation_tenant(delegation_id, principal.tenant_id())?;
+        self.complete_delegated_product_task_terminal(
+            delegation_id,
+            attempt_id,
+            product_task_id,
+            actor,
+        )
     }
 
     /// Close a delegated non-success ProductTask from store-owned task,
@@ -9178,6 +9267,49 @@ mod tests {
             .unwrap();
         assert_eq!(p.principal_id(), "key_operator_ok");
         assert!(p.has_scope(SCOPE_RISK_ACKNOWLEDGE));
+    }
+
+    #[test]
+    fn persisted_key_metadata_reissues_principal_after_restart_without_secret() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("operator-key-reissue.db");
+        let scopes = vec![
+            SCOPE_RISK_ACKNOWLEDGE.to_string(),
+            SCOPE_DELEGATED_EXECUTE.to_string(),
+        ];
+        let store = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
+            .unwrap();
+        store
+            .record_api_key_metadata(
+                "restart-operator-key",
+                "operator-user",
+                "operator",
+                &scopes,
+                "canonical-key-issuer",
+            )
+            .unwrap();
+        let metadata = store
+            .get_api_key_metadata("restart-operator-key")
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata["scopes"], json!(scopes));
+        assert!(metadata.get("raw_key").is_none());
+        drop(store);
+
+        let restarted =
+            LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:01Z".to_string())
+                .unwrap();
+        let principal = restarted
+            .authenticate_managed_acceptance_principal(
+                "tenant-a",
+                "restart-operator-key",
+                Some(1.0),
+            )
+            .unwrap();
+        assert_eq!(principal.principal_id(), "restart-operator-key");
+        assert!(principal.has_scope(SCOPE_RISK_ACKNOWLEDGE));
+        assert!(principal.has_scope(SCOPE_DELEGATED_EXECUTE));
+        assert!(!principal.has_scope(SCOPE_DELEGATED_ARTIFACT_CONFIRM));
     }
 
     #[test]

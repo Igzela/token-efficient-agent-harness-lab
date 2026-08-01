@@ -418,4 +418,3 @@ impl Drop for AdaptivePolicyEnvCleanup {
         std::env::remove_var("ACP_ADAPTIVE_EXPLORATION_KILL_SWITCH");
     }
 }
-

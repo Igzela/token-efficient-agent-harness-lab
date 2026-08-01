@@ -3,6 +3,10 @@
 // CI runs these with a PostgreSQL service container.
 
 #[cfg(feature = "pg-tests")]
+use axum::body::{to_bytes, Body};
+#[cfg(feature = "pg-tests")]
+use axum::http::{header, Method, Request, StatusCode};
+#[cfg(feature = "pg-tests")]
 use engine::budget_forecast::{
     build_budget_forecast, BudgetForecastRequest, BudgetUsageObservation,
 };
@@ -21,6 +25,14 @@ use engine::feedback::{
     ContextualPolicyPromotion, ContextualPolicyPromotionGate, ObjectiveProfile,
     CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
 };
+#[cfg(feature = "pg-tests")]
+use engine::http_server::{build_axum_router, AxumApiState};
+#[cfg(feature = "pg-tests")]
+use engine::infrastructure::auth::{
+    hash_api_key, APIKey, Tenant, TenantResolver, LOCAL_BOOTSTRAP_API_KEY_ID,
+};
+#[cfg(feature = "pg-tests")]
+use engine::infrastructure::rate_limiter::RateLimiter;
 #[cfg(feature = "pg-tests")]
 use engine::node_executor::{
     AgentAction, AgentStepExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor,
@@ -55,7 +67,8 @@ use engine::storage::local_product_store::{
     ExternalRuntimeInvocationClaim, ExternalRuntimeScope, LocalProductStore,
     MemoryRetrievalRequest, MemoryScope, ProviderEmbeddingResolutionAction,
     ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, RwePerTaskBudget,
-    SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES,
+    SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
+    MANAGED_REVIEWER_KEY_SCOPES, SCOPE_IDENTITY_DELEGATE,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -73,6 +86,8 @@ use std::sync::Arc;
 use std::thread;
 #[cfg(feature = "pg-tests")]
 use std::time::Duration;
+#[cfg(feature = "pg-tests")]
+use tower::ServiceExt;
 
 #[cfg(feature = "pg-tests")]
 fn utc_now_string() -> String {
@@ -173,9 +188,279 @@ fn test_store() -> Option<LocalProductStore> {
             return None;
         }
     };
-    let store =
-        LocalProductStore::new_postgres(&url, utc_now_string).expect("new_postgres should succeed");
+    // The synchronous postgres client creates its connection on the calling
+    // thread. Keep that bootstrap outside the Tokio runtime used by Axum
+    // tests; subsequent store calls reuse the initialized pool.
+    let store = std::thread::spawn(move || LocalProductStore::new_postgres(&url, utc_now_string))
+        .join()
+        .expect("PostgreSQL store bootstrap thread must not panic")
+        .expect("new_postgres should succeed");
     Some(store)
+}
+
+#[cfg(feature = "pg-tests")]
+async fn pg_response_json(response: axum::response::Response) -> Value {
+    let bytes = to_bytes(response.into_body(), 1_048_576).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart() {
+    let Some(store) = test_store() else { return };
+    let store = Arc::new(store);
+    let bootstrap_raw = format!("harness_{}", "a".repeat(64));
+    let ordinary_raw = format!("harness_{}", "b".repeat(64));
+    let mut resolver = TenantResolver::new();
+    let mut local_tenant_scopes: std::collections::HashSet<String> = [
+        "team:read",
+        "team:admin",
+        "dispatch:execute",
+        SCOPE_IDENTITY_DELEGATE,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    local_tenant_scopes.extend(
+        ALL_MANAGED_ACCEPTANCE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string()),
+    );
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".into(),
+        name: "PostgreSQL bootstrap tenant".into(),
+        scopes: local_tenant_scopes,
+        rate_limit: Some(10_000),
+    });
+    resolver.add_tenant(Tenant {
+        tenant_id: "ordinary".into(),
+        name: "PostgreSQL ordinary tenant".into(),
+        scopes: ["team:read", "team:admin"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        rate_limit: Some(10_000),
+    });
+    resolver.add_api_key(APIKey {
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.into(),
+        tenant_id: "local".into(),
+        key_hash: hash_api_key(&bootstrap_raw, "pg-bootstrap-salt"),
+        key_salt: "pg-bootstrap-salt".into(),
+        scopes: ["team:read", "team:admin", SCOPE_IDENTITY_DELEGATE]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    resolver.add_api_key(APIKey {
+        key_id: "pg-ordinary-key".into(),
+        tenant_id: "ordinary".into(),
+        key_hash: hash_api_key(&ordinary_raw, "pg-ordinary-salt"),
+        key_salt: "pg-ordinary-salt".into(),
+        scopes: ["team:read", "team:admin"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 1.0),
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let reviewer = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "user_id": "pg-reviewer",
+                            "role": "reviewer",
+                            "scopes": MANAGED_REVIEWER_KEY_SCOPES
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reviewer.status(), StatusCode::OK);
+        assert_eq!(
+            pg_response_json(reviewer).await["scopes"],
+            json!(MANAGED_REVIEWER_KEY_SCOPES)
+        );
+        let operator = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "user_id": "pg-output-operator",
+                            "role": "output_operator",
+                            "scopes": MANAGED_OUTPUT_OPERATOR_KEY_SCOPES
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(operator.status(), StatusCode::OK);
+        assert_eq!(
+            pg_response_json(operator).await["scopes"],
+            json!(MANAGED_OUTPUT_OPERATOR_KEY_SCOPES)
+        );
+        let ordinary = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {ordinary_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "user_id": "pg-forbidden",
+                            "role": "output_operator",
+                            "scopes": ["managed_acceptance:attempt_admit"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+        let wrong_role_scope = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "user_id": "pg-forbidden-scope",
+                            "role": "reviewer",
+                            "scopes": [
+                                "team:admin",
+                                "managed_acceptance:risk_acknowledge",
+                                "managed_acceptance:delegated_execute"
+                            ]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_role_scope.status(), StatusCode::BAD_REQUEST);
+    });
+
+    let mut restarted_resolver = TenantResolver::new();
+    let mut restarted_scopes: std::collections::HashSet<String> = [
+        "team:read",
+        "team:admin",
+        "dispatch:execute",
+        SCOPE_IDENTITY_DELEGATE,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    restarted_scopes.extend(
+        ALL_MANAGED_ACCEPTANCE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string()),
+    );
+    restarted_resolver.add_tenant(Tenant {
+        tenant_id: "local".into(),
+        name: "PostgreSQL bootstrap tenant after restart".into(),
+        scopes: restarted_scopes,
+        rate_limit: Some(10_000),
+    });
+    restarted_resolver.add_api_key(APIKey {
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.into(),
+        tenant_id: "local".into(),
+        key_hash: hash_api_key(&bootstrap_raw, "pg-bootstrap-salt"),
+        key_salt: "pg-bootstrap-salt".into(),
+        scopes: ["team:read", "team:admin", SCOPE_IDENTITY_DELEGATE]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    let restarted_app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_auth(
+                restarted_resolver,
+                RateLimiter::new(60.0, 10_000),
+                Some(10_000),
+                1.0,
+            ),
+    );
+    let reissued = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "user_id": "pg-reviewer-reissued",
+                            "role": "reviewer",
+                            "scopes": ["managed_acceptance:risk_acknowledge"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(reissued.status(), StatusCode::OK);
+    let reissued_body = runtime.block_on(pg_response_json(reissued));
+    assert_eq!(
+        reissued_body["scopes"],
+        json!(["managed_acceptance:risk_acknowledge"])
+    );
+    let reissued_key_id = reissued_body["key_id"].as_str().unwrap().to_string();
+    let persisted = store.get_api_key_metadata(&reissued_key_id).unwrap();
+    assert!(persisted.is_some());
+
+    // `postgres::Client` performs synchronous runtime work from Drop. Keep
+    // the router and pool teardown off the Tokio test runtime as well as
+    // their initialization, otherwise a successful assertion can abort the
+    // process during destructor cleanup.
+    runtime.shutdown_background();
+    drop(restarted_app);
+    drop(store);
 }
 
 #[cfg(feature = "pg-tests")]
@@ -427,6 +712,43 @@ fn pg_product_task_to_approval(
         "PostgreSQL product artifacts must exclude fixture control files"
     );
     (task, approval, artifact)
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_product_task_authority_rejects_foreign_tenant_before_approval_or_output() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg foreign tenant authority");
+    let (task, approval, _) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &uuid_tag(), "artifact_only");
+    let task_id = task["task_id"].as_str().unwrap();
+    let version = task["version"].as_u64().unwrap();
+    let approval_error = store
+        .approve_product_task_for_tenant("foreign-tenant", task_id, "foreign", version)
+        .unwrap_err();
+    assert!(approval_error.contains("tenant"));
+    let output_error = store
+        .output_product_task_for_tenant(
+            "foreign-tenant",
+            task_id,
+            "foreign",
+            version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap_err();
+    assert!(output_error.contains("tenant"));
+    assert_eq!(
+        store.get_product_task(task_id).unwrap().unwrap()["version"],
+        version
+    );
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::remove_var(PRODUCT_TASK_GATE);
 }
 
 #[test]
@@ -1986,7 +2308,7 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             "remote",
             "add",
             "origin",
-            "https://example.invalid/pg-product-approval.git",
+            "https://github.com/disposable/pg-product-approval.git",
         ][..],
     ] {
         let output = Command::new("git")
@@ -2086,46 +2408,24 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         )
         .unwrap();
     assert_eq!(pending["task"]["status"], "output_pending");
-    // Non-github or unauthenticated remotes fail closed as blocked Draft PR
-    // planning (legacy alias network_output_unavailable is no longer emitted).
-    assert!(
-        matches!(
-            pending["output"]["status"].as_str(),
-            Some("blocked" | "planned" | "network_output_unavailable")
-        ),
-        "unexpected draft_pr status: {}",
-        pending["output"]
-    );
+    // The network gate is disabled in this parity test, so the durable output
+    // operation is planned without attempting a branch or pull-request effect.
+    assert_eq!(pending["output"]["status"], "planned");
+    assert_eq!(pending["output"]["network_effect"], false);
     let pending_version = pending["task"]["version"].as_u64().unwrap();
 
     let artifact = store
         .get_supervised_patch_artifact(approval["artifact_id"].as_str().unwrap())
         .unwrap()
         .unwrap();
-    let output_request = json!({
-        "schema_version": "product_draft_pr_output_request.v1",
-        "product_task_id": task_id,
-        "artifact_id": artifact["artifact_id"],
-        "approval_id": approval["approval_id"],
-        "output_intent": "draft_pr",
-        "expected_task_version": pending_version,
-        "workspace_id": artifact["workspace_id"],
-        "run_id": artifact["run_id"],
-        "target_id": artifact["target_id"],
-        "patch_hash": artifact["patch_hash"],
-        "source_revision": artifact["source_revision"],
-        "target_repository": "disposable/pg-acceptance",
-        "repository_host": "github.com",
-        "base_branch": "main",
-        "head_branch": format!("acp/product-{task_id}"),
-        "remote": "origin",
-        "commit_message": "bounded PG test",
-        "pr_title": "Draft: bounded PG test",
-        "pr_body": "Do not merge automatically.",
-    });
+    let output_request = artifact
+        .pointer("/product_output_operation/request")
+        .cloned()
+        .expect("planned PG output must persist its canonical request");
     let output_request_sha =
         hex::encode(Sha256::digest(serde_json::to_vec(&output_request).unwrap()));
     let artifact_id = artifact["artifact_id"].as_str().unwrap();
+    let durable_operation_before = artifact["product_output_operation"].clone();
     let stale_error = store
         .claim_product_output_operation(
             artifact_id,
@@ -2139,31 +2439,30 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         stale_error.contains("stale product task version"),
         "{stale_error}"
     );
-    assert!(
-        store
-            .get_supervised_patch_artifact(artifact_id)
-            .unwrap()
-            .unwrap()
-            .get("product_output_operation")
-            .is_none(),
-        "stale PG output caller must have zero durable operation effect"
+    let durable_operation_after = store
+        .get_supervised_patch_artifact(artifact_id)
+        .unwrap()
+        .unwrap()["product_output_operation"]
+        .clone();
+    assert_eq!(
+        durable_operation_after, durable_operation_before,
+        "stale PG output caller must not mutate the existing durable operation"
     );
-    let claimed = store
-        .claim_product_output_operation(
-            artifact_id,
-            &output_request,
-            &output_request_sha,
-            pending_version,
-            "pg-output-operator",
-        )
-        .unwrap();
-    let operation_id = claimed["operation_id"].as_str().unwrap().to_string();
+    let planned_operation = pending["output"]["operation"].clone();
+    let operation_id = planned_operation["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let operation_version = planned_operation["current_version"].as_u64().unwrap();
     let commit_sha = "a".repeat(40);
     store
         .record_product_output_branch_pushed(
             artifact_id,
             &operation_id,
-            claimed["current_version"].as_u64().unwrap(),
+            operation_version,
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            pending_version,
             &commit_sha,
             "pg-output-operator",
         )
@@ -2211,6 +2510,9 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             artifact_id,
             &operation_id,
             pr_claim["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            pending_version,
             "pg-output-operator",
             "github_pr_create_outcome_unknown: mock connection loss",
         )
@@ -2227,11 +2529,11 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
     assert_eq!(reconciliation["claim_action"], "reconcile_pr_only");
     let pull_request = json!({
         "number": 23,
-        "url": "https://github.com/disposable/pg-acceptance/pull/23",
+        "url": "https://github.com/disposable/pg-product-approval/pull/23",
         "state": "open",
         "draft": true,
         "reused": false,
-        "repository": "disposable/pg-acceptance",
+        "repository": "disposable/pg-product-approval",
         "base_branch": "main",
         "head_branch": format!("acp/product-{task_id}"),
         "head_sha": commit_sha,
@@ -2241,6 +2543,9 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             artifact_id,
             &operation_id,
             reconciliation["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            pending_version,
             &pull_request,
             "pg-output-operator",
         )
@@ -2335,6 +2640,9 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
             artifact_id,
             &operation_id,
             pr_claim["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            pending_version,
             "pg-late-output",
             "late failure",
         )
@@ -2420,6 +2728,357 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
     std::env::remove_var(PRODUCT_TASK_GATE);
     std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT");
     std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_output_phase_responses_reject_stale_product_task_authority() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "0");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg stale output phase authority");
+    let remote = Command::new("git")
+        .args([
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/disposable/pg-acceptance.git",
+        ])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(remote.status.success(), "git remote set-url: {remote:?}");
+
+    let (task, approval, _artifact) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &uuid_tag(), "draft_pr");
+    let task_id = task["task_id"].as_str().unwrap();
+    let original_version = task["version"].as_u64().unwrap();
+    let pending = store
+        .output_product_task(
+            task_id,
+            "pg-output-operator",
+            original_version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    let pending_version = pending["task"]["version"].as_u64().unwrap();
+    assert!(pending_version > original_version);
+    let artifact_id = approval["artifact_id"].as_str().unwrap();
+    let durable = store
+        .get_supervised_patch_artifact(artifact_id)
+        .unwrap()
+        .unwrap();
+    let operation = durable["product_output_operation"].clone();
+    let operation_id = operation["operation_id"].as_str().unwrap();
+    let stale_branch = store
+        .record_product_output_branch_pushed(
+            artifact_id,
+            operation_id,
+            operation["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            original_version,
+            &"f".repeat(40),
+            "pg-late-branch-writer",
+        )
+        .unwrap_err();
+    assert!(
+        stale_branch.contains("stale product task version"),
+        "{stale_branch}"
+    );
+
+    let (task, approval, artifact) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &uuid_tag(), "draft_pr");
+    let task_id = task["task_id"].as_str().unwrap();
+    let task_version = task["version"].as_u64().unwrap();
+    let artifact_id = artifact["artifact_id"].as_str().unwrap();
+    let request = json!({
+        "schema_version": "product_draft_pr_output_request.v1",
+        "product_task_id": task_id,
+        "artifact_id": artifact_id,
+        "approval_id": approval["approval_id"],
+        "output_intent": "draft_pr",
+        "expected_task_version": task_version,
+        "workspace_id": artifact["workspace_id"],
+        "run_id": artifact["run_id"],
+        "target_id": artifact["target_id"],
+        "patch_hash": artifact["patch_hash"],
+        "source_revision": artifact["source_revision"],
+        "target_repository": "disposable/pg-acceptance",
+        "repository_host": "github.com",
+        "base_branch": "main",
+        "head_branch": format!("acp/product-{task_id}"),
+        "remote": "origin",
+        "commit_message": "bounded stale phase test",
+        "pr_title": "Draft: stale phase test",
+        "pr_body": "Do not merge automatically.",
+    });
+    let request_sha = hex::encode(Sha256::digest(serde_json::to_vec(&request).unwrap()));
+    let branch = store
+        .claim_product_output_operation(
+            artifact_id,
+            &request,
+            &request_sha,
+            task_version,
+            "pg-output-operator",
+        )
+        .unwrap();
+    let operation_id = branch["operation_id"].as_str().unwrap();
+    let branch = store
+        .record_product_output_branch_pushed(
+            artifact_id,
+            operation_id,
+            branch["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            task_version,
+            &"0".repeat(40),
+            "pg-output-operator",
+        )
+        .unwrap();
+    let pr = store
+        .claim_product_output_operation(
+            artifact_id,
+            &request,
+            &request_sha,
+            task_version,
+            "pg-output-operator",
+        )
+        .unwrap();
+    let advanced = store
+        .mark_product_task_output_outcome_unknown(
+            task_id,
+            "pg-task-version-advancer",
+            "simulate task advance before late PG PR response",
+        )
+        .unwrap();
+    assert!(advanced["version"].as_u64().unwrap() > task_version);
+    let stale_pr = store
+        .mark_product_output_pr_failed_known(
+            artifact_id,
+            operation_id,
+            pr["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            task_version,
+            "pg-late-pr-writer",
+            "late response",
+        )
+        .unwrap_err();
+    assert!(
+        stale_pr.contains("stale product task version"),
+        "{stale_pr}"
+    );
+    assert_eq!(
+        store
+            .get_supervised_patch_artifact(artifact_id)
+            .unwrap()
+            .unwrap()["product_output_operation"]["pr_create"]["status"],
+        "in_progress"
+    );
+    let _ = (pending_version, branch);
+    for key in [
+        "ACP_PRODUCT_WORKSPACE_ROOT",
+        "ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT",
+        "ACP_ENABLE_TARGET_REPO_OUTPUT",
+        PRODUCT_TASK_GATE,
+    ] {
+        std::env::remove_var(key);
+    }
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_draft_pr_missing_github_credential_reuses_operation_after_restart() {
+    let Some(store) = test_store() else { return };
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "1");
+    std::env::set_var("ACP_ENABLE_GITHUB_PR_OUTPUT", "1");
+    std::env::set_var("ACP_GITHUB_REPOSITORY_ALLOWLIST", "Igzela/alters-lab");
+    std::env::set_var("ACP_GITHUB_TOKEN_ENV", "ACP_TEST_GITHUB_TOKEN");
+    std::env::set_var("ACP_TEST_GITHUB_TOKEN", "");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let (repo, revision) = pg_product_repo("pg missing GitHub credential");
+    let bare = repo.path().join("origin.git");
+    let bare_init = Command::new("git")
+        .args(["init", "--bare", "-b", "main"])
+        .arg(&bare)
+        .output()
+        .unwrap();
+    assert!(bare_init.status.success(), "{bare_init:?}");
+    let local_origin = Command::new("git")
+        .args(["remote", "set-url", "origin"])
+        .arg(&bare)
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(local_origin.status.success(), "{local_origin:?}");
+    let push_main = Command::new("git")
+        .args(["push", "-u", "origin", "main"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(push_main.status.success(), "{push_main:?}");
+    let remote = Command::new("git")
+        .args([
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/Igzela/alters-lab.git",
+        ])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(remote.status.success(), "git remote set-url: {remote:?}");
+    let push_url = Command::new("git")
+        .args(["remote", "set-url", "--add", "--push", "origin"])
+        .arg(&bare)
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(
+        push_url.status.success(),
+        "git remote push-url: {push_url:?}"
+    );
+    let tag = uuid_tag();
+    let (task, approval, artifact) =
+        pg_product_task_to_approval(&store, repo.path(), &revision, &tag, "draft_pr");
+    let task_id = task["task_id"].as_str().unwrap();
+    let task_version = task["version"].as_u64().unwrap();
+    let artifact_id = artifact["artifact_id"].as_str().unwrap();
+    let blocked = store
+        .output_product_task(
+            task_id,
+            "pg-output-before-restart",
+            task_version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(blocked["output"]["status"], "blocked");
+    assert_eq!(blocked["output"]["pre_effect_failure"], true);
+    assert_eq!(blocked["task"]["status"], "awaiting_approval");
+    assert_eq!(blocked["task"]["version"], task_version);
+    assert_eq!(
+        blocked["output"]["operation"]["branch_push"]["status"],
+        "failed_known"
+    );
+    let operation_id = blocked["output"]["operation"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let audit_before_restart = store.audit_events(10_000).unwrap();
+    let database_url = std::env::var("ACP_TEST_DATABASE_URL").unwrap();
+    drop(store);
+
+    // Restart restores the parent-held configuration reference; no raw
+    // credential is persisted or printed. The branch push uses only the
+    // fixture's local push URL; no provider request or external target call occurs.
+    std::env::set_var("ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT", "1");
+    std::env::set_var("ACP_TEST_GITHUB_TOKEN", "restored-test-token");
+    std::env::set_var("ACP_TARGET_REPO_GIT_TOKEN_ENV", "ACP_TEST_GITHUB_TOKEN");
+    std::env::set_var("ACP_TARGET_REPO_REMOTE_HOST_ALLOWLIST", "github.com");
+    std::env::set_var("ACP_TARGET_REPO_ALLOW_LOCAL_REMOTE", "1");
+    let restarted = LocalProductStore::new_postgres(&database_url, utc_now_string).unwrap();
+    let resumed = restarted
+        .output_product_task(
+            task_id,
+            "pg-output-after-restart",
+            task_version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(resumed["output"]["status"], "pr_create_pending");
+    let resumed_operation = resumed["output"]["operation"].clone();
+    assert_eq!(resumed_operation["operation_id"], operation_id);
+    assert_eq!(
+        restarted.get_product_task(task_id).unwrap().unwrap()["version"],
+        resumed["task"]["version"]
+    );
+    assert_eq!(resumed["task"]["status"], "output_pending");
+    assert!(resumed["task"]["version"].as_u64().unwrap() > task_version);
+    assert_eq!(resumed_operation["branch_push"]["status"], "completed");
+    assert_eq!(resumed_operation["pr_create"]["status"], "in_progress");
+    let pull_request = json!({
+        "number": 51,
+        "url": "https://github.com/Igzela/alters-lab/pull/51",
+        "state": "open",
+        "draft": true,
+        "reused": false,
+        "repository": "Igzela/alters-lab",
+        "base_branch": "main",
+        "head_branch": format!("acp/product-{task_id}"),
+        "head_sha": resumed_operation["branch_push"]["commit_sha"],
+    });
+    let completed_operation = restarted
+        .complete_product_output_draft_pr(
+            artifact_id,
+            &operation_id,
+            resumed_operation["current_version"].as_u64().unwrap(),
+            task_id,
+            approval["approval_id"].as_str().unwrap(),
+            resumed["task"]["version"].as_u64().unwrap(),
+            &pull_request,
+            "pg-output-after-restart",
+        )
+        .unwrap();
+    let terminal = restarted
+        .complete_product_task_draft_pr_output(
+            task_id,
+            artifact_id,
+            &operation_id,
+            completed_operation["current_version"].as_u64().unwrap(),
+            resumed["task"]["version"].as_u64().unwrap(),
+            &pull_request,
+            "pg-output-after-restart",
+        )
+        .unwrap();
+    assert_eq!(terminal["task"]["status"], "completed");
+    assert_eq!(terminal["operation"]["operation_id"], operation_id);
+    assert_eq!(
+        terminal["terminal_evidence"]["output"]["operation_id"],
+        operation_id
+    );
+    let completed_version = terminal["task"]["version"].as_u64().unwrap();
+    let after_terminal = restarted.audit_events(10_000).unwrap();
+    assert!(after_terminal.len() > audit_before_restart.len());
+    let replay = restarted
+        .output_product_task(
+            task_id,
+            "pg-output-replay",
+            completed_version,
+            approval["approval_id"].as_str(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(replay["reused"], true);
+    assert_eq!(
+        replay["terminal_evidence"]["evidence_id"],
+        terminal["terminal_evidence"]["evidence_id"]
+    );
+    assert_eq!(restarted.audit_events(10_000).unwrap(), after_terminal);
+    for key in [
+        "ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT",
+        "ACP_ENABLE_GITHUB_PR_OUTPUT",
+        "ACP_GITHUB_REPOSITORY_ALLOWLIST",
+        "ACP_GITHUB_TOKEN_ENV",
+        "ACP_TEST_GITHUB_TOKEN",
+        "ACP_TARGET_REPO_GIT_TOKEN_ENV",
+        "ACP_TARGET_REPO_REMOTE_HOST_ALLOWLIST",
+        "ACP_TARGET_REPO_ALLOW_LOCAL_REMOTE",
+        "ACP_PRODUCT_WORKSPACE_ROOT",
+        "ACP_ENABLE_TARGET_REPO_OUTPUT",
+        PRODUCT_TASK_GATE,
+    ] {
+        std::env::remove_var(key);
+    }
 }
 
 #[cfg(feature = "pg-tests")]

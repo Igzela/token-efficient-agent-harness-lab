@@ -8,7 +8,7 @@ use engine::http_server::{
     build_axum_router, build_axum_router_with_dashboard, AxumApiState, CliCapability,
 };
 use engine::infrastructure::auth::{
-    hash_api_key, validate_token_shape, APIKey, Tenant, TenantResolver,
+    hash_api_key, validate_token_shape, APIKey, Tenant, TenantResolver, LOCAL_BOOTSTRAP_API_KEY_ID,
 };
 use engine::infrastructure::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
 use engine::infrastructure::rate_limiter::RateLimiter;
@@ -38,6 +38,9 @@ use engine::provider::transport::ReqwestTransport;
 use engine::provider::Provider;
 use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
 use engine::storage::local_product_store::LocalProductStore;
+use engine::storage::local_product_store::{
+    ALL_MANAGED_ACCEPTANCE_SCOPES, BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES,
+};
 use engine::trusted_local::EffectiveExecutionGates;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -812,21 +815,31 @@ fn configure_auth(state: AxumApiState) -> AxumApiState {
         panic!("ACP_ADMIN_API_KEY must use the harness_<64 hex chars> local key shape");
     }
 
-    let scopes = local_admin_scopes();
+    // The tenant scope set is a ceiling for keys minted by this canonical
+    // bootstrap authority; it is not granted to the bootstrap key itself.
+    // Managed-acceptance delegation remains fenced in the key handlers by the
+    // immutable local bootstrap key id plus SCOPE_IDENTITY_DELEGATE.
+    let bootstrap_scopes = local_admin_scopes();
+    let mut tenant_scopes = bootstrap_scopes.clone();
+    tenant_scopes.extend(
+        ALL_MANAGED_ACCEPTANCE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string()),
+    );
     let mut resolver = TenantResolver::new();
     resolver.add_tenant(Tenant {
         tenant_id: "local".to_string(),
         name: "Local Team".to_string(),
-        scopes: scopes.clone(),
+        scopes: tenant_scopes,
         rate_limit: Some(10_000),
     });
     let salt = "local-admin-env-salt";
     resolver.add_api_key(APIKey {
-        key_id: "local-admin-env".to_string(),
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.to_string(),
         tenant_id: "local".to_string(),
         key_hash: hash_api_key(&raw_key, salt),
         key_salt: salt.to_string(),
-        scopes,
+        scopes: bootstrap_scopes,
         created_at: 0.0,
         expires_at: None,
         revoked_at: None,
@@ -891,7 +904,7 @@ fn local_admin_scopes() -> HashSet<String> {
 }
 
 fn local_admin_scope_list() -> Vec<String> {
-    [
+    let mut scopes: Vec<String> = [
         "audit:read",
         "backup:admin",
         "config:admin",
@@ -907,7 +920,13 @@ fn local_admin_scope_list() -> Vec<String> {
     ]
     .into_iter()
     .map(String::from)
-    .collect()
+    .collect();
+    scopes.extend(
+        BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string()),
+    );
+    scopes
 }
 
 fn build_single_provider_from_env(
@@ -1069,7 +1088,10 @@ fn production_profile_violations_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{header, Method, Request, StatusCode};
     use std::sync::OnceLock;
+    use tower::ServiceExt;
 
     fn main_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1099,6 +1121,82 @@ mod tests {
         assert!(scopes.iter().any(|scope| scope == "backup:admin"));
         assert!(scopes.iter().any(|scope| scope == "dispatch:write"));
         assert!(scopes.iter().any(|scope| scope == "health:read"));
+        for scope in BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES {
+            assert!(
+                scopes.iter().any(|candidate| candidate == scope),
+                "bootstrap tenant must permit canonical delegation scope {scope}"
+            );
+        }
+        for scope in ALL_MANAGED_ACCEPTANCE_SCOPES {
+            assert!(
+                !scopes.iter().any(|candidate| candidate == scope),
+                "bootstrap key must not carry managed operation scope {scope}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn configure_auth_wires_canonical_bootstrap_for_managed_reissuance() {
+        let bootstrap_raw = format!("harness_{}", "c".repeat(64));
+        let (app, restarted) = {
+            let _guard = main_env_lock().lock().unwrap();
+            clear_trusted_provider_env();
+            std::env::set_var("ACP_REQUIRE_AUTH", "1");
+            std::env::set_var("ACP_ADMIN_API_KEY", &bootstrap_raw);
+            let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+            let app =
+                build_axum_router(configure_auth(AxumApiState::new()).with_local_store_arc(store));
+            // Construct the restart instance before releasing the environment
+            // lock, so unrelated tests cannot clear the bootstrap configuration
+            // between the two lifecycle checks.
+            let restarted = build_axum_router(
+                configure_auth(AxumApiState::new())
+                    .with_local_store_arc(Arc::new(LocalProductStore::new(":memory:").unwrap())),
+            );
+            clear_trusted_provider_env();
+            (app, restarted)
+        };
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "user_id": "canonical-reviewer",
+                            "role": "reviewer",
+                            "scopes": ["managed_acceptance:risk_acknowledge"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = restarted
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "user_id": "restarted-output-operator",
+                            "role": "output_operator",
+                            "scopes": ["managed_acceptance:delegated_execute"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]

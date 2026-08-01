@@ -85,12 +85,26 @@ pub(crate) fn authorize(
     path: &str,
     request_id: &str,
 ) -> Result<ApiRequestContext, ApiError> {
+    authorize_any(state, headers, &[required_scope], path, request_id)
+}
+
+pub(crate) fn authorize_any(
+    state: &AxumApiState,
+    headers: &HeaderMap,
+    required_scopes: &[&str],
+    path: &str,
+    request_id: &str,
+) -> Result<ApiRequestContext, ApiError> {
     let Some(resolver) = &state.tenant_resolver else {
         return Ok(ApiRequestContext {
             tenant_id: "local".to_string(),
             api_key_id: "none".to_string(),
             request_id: request_id.to_string(),
-            scopes: HashSet::from([required_scope.to_string(), "team:admin".to_string()]),
+            scopes: required_scopes
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .chain(["team:admin".to_string()])
+                .collect(),
         });
     };
 
@@ -103,7 +117,10 @@ pub(crate) fn authorize(
             tenant_id: "local".to_string(),
             api_key_id: "health-bypass".to_string(),
             request_id: request_id.to_string(),
-            scopes: HashSet::from([required_scope.to_string()]),
+            scopes: required_scopes
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect(),
         });
     }
 
@@ -116,7 +133,7 @@ pub(crate) fn authorize(
     })?;
     let now = state.now();
     let decision = guard.resolve_mut(auth_header, now);
-    let context = auth_context_from_decision(decision, required_scope, request_id)?;
+    let context = auth_context_from_decision(decision, required_scopes, request_id)?;
     let tenant_limit = guard.tenant_rate_limit(&context.tenant_id);
     drop(guard);
 
@@ -165,7 +182,7 @@ pub(crate) fn internal_error(error: String) -> ApiError {
 
 fn auth_context_from_decision(
     decision: AuthDecision,
-    required_scope: &str,
+    required_scopes: &[&str],
     request_id: &str,
 ) -> Result<ApiRequestContext, ApiError> {
     if !decision.allowed {
@@ -175,7 +192,10 @@ fn auth_context_from_decision(
             "unauthorized",
         ));
     }
-    if !decision.scopes.contains(required_scope) {
+    if !required_scopes
+        .iter()
+        .any(|required_scope| decision.scopes.contains(*required_scope))
+    {
         return Err(ApiError::with_code(
             StatusCode::FORBIDDEN,
             "missing_scope",

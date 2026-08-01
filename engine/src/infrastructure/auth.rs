@@ -4,6 +4,10 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 pub const AUTH_SCHEMA_VERSION: &str = "auth.v1";
+/// The environment-injected bootstrap key is the sole local authority allowed
+/// to delegate managed-acceptance scopes. API-created keys remain ordinary
+/// principals even when they carry `team:admin`.
+pub const LOCAL_BOOTSTRAP_API_KEY_ID: &str = "local-admin-env";
 const API_KEY_PREFIX: &str = "harness_";
 const API_KEY_SUFFIX_LEN: usize = 64;
 
@@ -100,6 +104,10 @@ impl TenantResolver {
 
     pub fn remove_api_key(&mut self, key_id: &str) -> bool {
         self.api_keys.remove(key_id).is_some()
+    }
+
+    pub fn api_key(&self, key_id: &str) -> Option<APIKey> {
+        self.api_keys.get(key_id).cloned()
     }
 
     pub fn mark_key_used(&mut self, key_id: &str, now: f64) {

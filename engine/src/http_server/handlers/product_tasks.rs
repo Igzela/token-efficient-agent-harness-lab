@@ -5,7 +5,7 @@ use axum::Json;
 use serde_json::json;
 
 use crate::http_server::middleware::{
-    authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
+    authorize, authorize_any, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{ProductTaskIntakeApiRequest, AXUM_API_SCHEMA_VERSION};
@@ -17,6 +17,7 @@ use crate::product_golden_path::{
 use crate::storage::local_product_store::product_tasks::{
     public_product_task_projection, public_product_task_result_projection,
 };
+use crate::storage::local_product_store::SCOPE_DELEGATED_MANIFEST_APPROVE;
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, GitHubPullRequestConfig, GitHubPullRequestRequest,
     GitHubRepository,
@@ -152,9 +153,17 @@ pub(crate) async fn api_product_task_detail(
     Extension(request_id): Extension<RequestId>,
     AxumPath(task_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    match store.get_product_task(&task_id).map_err(internal_error)? {
+    match store
+        .get_product_task_for_tenant(&task_id, &context.tenant_id)
+        .map_err(|error| {
+            if error.contains("tenant") {
+                ApiError::with_code(StatusCode::FORBIDDEN, "product_task_scope_mismatch", error)
+            } else {
+                internal_error(error)
+            }
+        })? {
         Some(task) => {
             // Enforce tenant scope from persisted state.
             // Auth context tenant is available via re-authorize path; for read we check when present.
@@ -196,6 +205,24 @@ pub(crate) async fn api_compile_and_schedule_product_task(
         ));
     }
     let store = require_store(&state)?;
+    match store
+        .get_product_task_for_tenant(&task_id, &context.tenant_id)
+        .map_err(|error| {
+            if error.contains("tenant") {
+                ApiError::with_code(StatusCode::FORBIDDEN, "product_task_scope_mismatch", error)
+            } else {
+                internal_error(error)
+            }
+        })? {
+        Some(_) => {}
+        None => {
+            return Err(ApiError::with_code(
+                StatusCode::NOT_FOUND,
+                "product_task_not_found",
+                "product task not found",
+            ));
+        }
+    }
     // Automatic admission requires the actual attached/running scheduler and its live
     // executor pool. A request-scoped registration snapshot cannot consume the run.
     let available = live_available_executor_types(&state).map_err(|error| {
@@ -205,7 +232,12 @@ pub(crate) async fn api_compile_and_schedule_product_task(
             error,
         )
     })?;
-    match store.compile_and_schedule_product_task(&task_id, &context.api_key_id, &available) {
+    match store.compile_and_schedule_product_task_for_tenant(
+        &context.tenant_id,
+        &task_id,
+        &context.api_key_id,
+        &available,
+    ) {
         Ok(result) => Ok((
             cors_headers(),
             Json(json!({
@@ -259,7 +291,8 @@ pub(crate) async fn api_finalize_product_task(
     >| {
         product_verification_commit_authority(scheduler_for_commit.as_ref(), operation)
     };
-    match store.finalize_product_task_after_execution_with_commit_authority(
+    match store.finalize_product_task_after_execution_with_commit_authority_for_tenant(
+        &context.tenant_id,
         &task_id,
         &context.api_key_id,
         &authority,
@@ -271,6 +304,11 @@ pub(crate) async fn api_finalize_product_task(
                 "schema_version": AXUM_API_SCHEMA_VERSION,
                 "result": public_product_task_result_projection(&result),
             })),
+        )),
+        Err(error) if error.contains("tenant") => Err(ApiError::with_code(
+            StatusCode::FORBIDDEN,
+            "product_task_scope_mismatch",
+            error,
         )),
         Err(error) => Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -554,8 +592,12 @@ pub(crate) async fn api_terminal_delegated_product_task(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| delegated_request_error("attempt_id is required"))?;
     let store = require_store(&state)?;
+    let principal = store
+        .authenticate_managed_acceptance_principal(&context.tenant_id, &context.api_key_id, None)
+        .map_err(|error| delegated_api_error(&error, "delegated_terminal_authentication_failed"))?;
     let result = store
-        .complete_delegated_product_task_terminal(
+        .complete_delegated_product_task_terminal_for_principal(
+            &principal,
             delegation_id,
             attempt_id,
             &task_id,
@@ -599,7 +641,8 @@ pub(crate) async fn api_approve_and_output_product_task(
         .get("confirm_output")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    match store.approve_and_output_product_task(
+    match store.approve_and_output_product_task_for_tenant(
+        &approval_context.tenant_id,
         &task_id,
         &approval_context.api_key_id,
         confirm_output,
@@ -627,7 +670,13 @@ pub(crate) async fn api_approve_product_task(
     AxumPath(task_id): AxumPath<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    let context = authorize_any(
+        &state,
+        &headers,
+        &["team:admin", SCOPE_DELEGATED_MANIFEST_APPROVE],
+        uri.path(),
+        &request_id.0,
+    )?;
     if !product_gate_enabled() {
         return Err(ApiError::with_code(
             StatusCode::FORBIDDEN,
@@ -646,7 +695,12 @@ pub(crate) async fn api_approve_product_task(
             )
         })?;
     let store = require_store(&state)?;
-    match store.approve_product_task(&task_id, &context.api_key_id, expected_task_version) {
+    match store.approve_product_task_for_tenant(
+        &context.tenant_id,
+        &task_id,
+        &context.api_key_id,
+        expected_task_version,
+    ) {
         Ok(approval) => Ok((
             cors_headers(),
             Json(json!({
@@ -655,6 +709,13 @@ pub(crate) async fn api_approve_product_task(
             })),
         )),
         Err(error) => {
+            if error.contains("tenant") {
+                return Err(ApiError::with_code(
+                    StatusCode::FORBIDDEN,
+                    "product_task_scope_mismatch",
+                    error,
+                ));
+            }
             let (status, code) = product_output_error(&error, "product_task_approval_failed");
             Err(ApiError::with_code(status, code, error))
         }
@@ -716,7 +777,8 @@ pub(crate) async fn api_output_product_task(
         ));
     }
     let store = require_store(&state)?;
-    match store.output_product_task(
+    match store.output_product_task_for_tenant(
+        &context.tenant_id,
         &task_id,
         &context.api_key_id,
         expected_task_version,
@@ -840,6 +902,9 @@ pub(crate) async fn api_output_product_task(
                                 artifact_id,
                                 operation_id,
                                 operation_version,
+                                &task_id,
+                                approval_id,
+                                completion_task_version,
                                 &context.api_key_id,
                                 &error,
                             )
@@ -863,6 +928,9 @@ pub(crate) async fn api_output_product_task(
                                 artifact_id,
                                 operation_id,
                                 operation_version,
+                                &task_id,
+                                approval_id,
+                                completion_task_version,
                                 &context.api_key_id,
                                 &error,
                             )
@@ -884,6 +952,13 @@ pub(crate) async fn api_output_product_task(
             ))
         }
         Err(error) => {
+            if error.contains("tenant") {
+                return Err(ApiError::with_code(
+                    StatusCode::FORBIDDEN,
+                    "product_task_scope_mismatch",
+                    error,
+                ));
+            }
             let (status, code) = product_output_error(&error, "product_task_output_failed");
             Err(ApiError::with_code(status, code, error))
         }
@@ -972,7 +1047,11 @@ pub(crate) async fn api_recover_product_task_workspace(
         ));
     }
     let store = require_store(&state)?;
-    match store.recover_product_task_workspace(&task_id, &context.api_key_id) {
+    match store.recover_product_task_workspace_for_tenant(
+        &context.tenant_id,
+        &task_id,
+        &context.api_key_id,
+    ) {
         Ok(task) => Ok((
             cors_headers(),
             Json(json!({
@@ -981,7 +1060,9 @@ pub(crate) async fn api_recover_product_task_workspace(
             })),
         )),
         Err(error) => {
-            let status = if error.contains("not found") {
+            let status = if error.contains("tenant") {
+                StatusCode::FORBIDDEN
+            } else if error.contains("not found") {
                 StatusCode::NOT_FOUND
             } else if error.contains("not recoverable") {
                 StatusCode::CONFLICT

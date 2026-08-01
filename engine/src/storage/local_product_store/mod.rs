@@ -94,12 +94,14 @@ pub use external_runtime::{
 pub use integrity::{IntegrityReport, TableIntegrity};
 pub use managed_acceptance::{
     build_attempt_authority_manifest, compute_attempt_manifest_sha256,
-    confirm_delegated_artifact_output, derive_final_execution_manifest, AuthenticatedPrincipal,
-    CostAuthority, DelegationContract, ManagedCodexLaunchFacts, ManagedCodexSpawnLease,
-    PrincipalKind, RiskAcknowledgementRequest, SpendAuthorizationRequest,
-    ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_DELEGATED_ARTIFACT_CONFIRM,
+    confirm_delegated_artifact_output, derive_final_execution_manifest,
+    validate_managed_acceptance_role_scopes, AuthenticatedPrincipal, CostAuthority,
+    DelegationContract, ManagedCodexLaunchFacts, ManagedCodexSpawnLease, PrincipalKind,
+    RiskAcknowledgementRequest, SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES,
+    BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
+    MANAGED_REVIEWER_KEY_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_DELEGATED_ARTIFACT_CONFIRM,
     SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_EXECUTE, SCOPE_DELEGATED_MANIFEST_APPROVE,
-    SCOPE_REVOKE, SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
+    SCOPE_IDENTITY_DELEGATE, SCOPE_REVOKE, SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
 };
 pub use policy_replay_producer::{
     EvidenceChainPromotionRequest, ReplayProductionProfile, ReplayProductionRequest,
@@ -289,6 +291,33 @@ impl LocalProductStore {
                 Err("with_conn called on PostgreSQL store; use with_pg_conn".into())
             }
         }
+    }
+
+    /// Run one SQLite mutation and its audit append as a single store-owned
+    /// transaction. Callers must not expose the connection or perform a
+    /// compensating mutation outside this owner.
+    pub(super) fn with_sqlite_transaction<F, R>(&self, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&Connection) -> Result<R, String>,
+    {
+        self.with_conn(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|error| error.to_string())?;
+            match f(conn) {
+                Ok(value) => match conn.execute_batch("COMMIT") {
+                    Ok(()) => Ok(value),
+                    Err(error) => {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        Err(error.to_string())
+                    }
+                },
+                Err(error) => {
+                    conn.execute_batch("ROLLBACK")
+                        .map_err(|rollback| format!("{error}; rollback failed: {rollback}"))?;
+                    Err(error)
+                }
+            }
+        })
     }
 
     pub fn checkpoint_wal(&self) -> Result<(), String> {
