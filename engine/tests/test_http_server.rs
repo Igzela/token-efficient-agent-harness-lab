@@ -13824,7 +13824,9 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
     use engine::executor_pool::{
         CostProfile, ExecutorCapabilities, ExecutorEntry, ExecutorMetrics, ExecutorStatus,
     };
-    use engine::infrastructure::auth::{hash_api_key, APIKey, LOCAL_BOOTSTRAP_API_KEY_ID};
+    use engine::infrastructure::auth::{
+        hash_api_key, APIKey, LOCAL_BOOTSTRAP_API_KEY_ID, LOCAL_BOOTSTRAP_TENANT_ID,
+    };
     use engine::node_executor::FailNodeExecutor;
     use engine::provider::config::{CredentialRef, ProviderConfig};
     use engine::provider::credential::CredentialBoundary;
@@ -13899,6 +13901,16 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
         Arc::new(LocalProductStore::new(dir.path().join("delegated-success-http.db")).unwrap());
     let mut resolver = TenantResolver::new();
     let bootstrap_raw = format!("harness_{}", "b".repeat(64));
+    store
+        .record_api_key_metadata_for_tenant(
+            LOCAL_BOOTSTRAP_TENANT_ID,
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &[SCOPE_IDENTITY_DELEGATE.to_string()],
+            "delegated-success-http-test",
+        )
+        .unwrap();
     let bootstrap_scopes = HashSet::from([
         "team:admin".to_string(),
         "team:read".to_string(),
@@ -13912,14 +13924,14 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
             .map(|scope| (*scope).to_string()),
     );
     resolver.add_tenant(Tenant {
-        tenant_id: "tenant-a".to_string(),
+        tenant_id: LOCAL_BOOTSTRAP_TENANT_ID.to_string(),
         name: "Delegated Success".to_string(),
         scopes: tenant_scopes.clone(),
         rate_limit: Some(100),
     });
     resolver.add_api_key(APIKey {
         key_id: LOCAL_BOOTSTRAP_API_KEY_ID.to_string(),
-        tenant_id: "tenant-a".to_string(),
+        tenant_id: LOCAL_BOOTSTRAP_TENANT_ID.to_string(),
         key_hash: hash_api_key(&bootstrap_raw, "delegated-success-bootstrap-salt"),
         key_salt: "delegated-success-bootstrap-salt".to_string(),
         scopes: bootstrap_scopes,
@@ -14128,7 +14140,7 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
                         "confirm_execution": true,
                         "confirm_output": true,
                         "idempotency_key": "delegated-success-http-1",
-                        "tenant_id": "tenant-a",
+                        "tenant_id": LOCAL_BOOTSTRAP_TENANT_ID,
                         "workspace_id": "default",
                         "workspace_mode": "git_worktree"
                     })

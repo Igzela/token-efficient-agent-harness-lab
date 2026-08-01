@@ -23,6 +23,7 @@ fn requests_managed_acceptance_scope(scopes: &[String]) -> bool {
 }
 
 fn require_bootstrap_for_managed_delegation(
+    store: &LocalProductStore,
     context: &ApiRequestContext,
     role: &str,
     scopes: &[String],
@@ -33,19 +34,29 @@ fn require_bootstrap_for_managed_delegation(
             "the bootstrap delegation capability cannot be delegated",
         ));
     }
-    if (matches!(role, "reviewer" | "output_operator") || requests_managed_acceptance_scope(scopes))
-        && (context.api_key_id != LOCAL_BOOTSTRAP_API_KEY_ID
-            || !context.scopes.contains(SCOPE_IDENTITY_DELEGATE))
-    {
-        return Err(ApiError::new(
-            axum::http::StatusCode::FORBIDDEN,
-            "managed-acceptance scope delegation requires the canonical bootstrap authority",
-        ));
+    if matches!(role, "reviewer" | "output_operator") || requests_managed_acceptance_scope(scopes) {
+        if context.api_key_id != LOCAL_BOOTSTRAP_API_KEY_ID
+            || !context.scopes.contains(SCOPE_IDENTITY_DELEGATE)
+        {
+            return Err(ApiError::new(
+                axum::http::StatusCode::FORBIDDEN,
+                "managed-acceptance scope delegation requires the canonical bootstrap authority",
+            ));
+        }
+        store
+            .authenticate_bootstrap_identity_delegation_principal(&context.tenant_id, None)
+            .map_err(|_| {
+                ApiError::new(
+                    axum::http::StatusCode::FORBIDDEN,
+                    "managed-acceptance scope delegation requires the canonical bootstrap authority",
+                )
+            })?;
     }
     Ok(())
 }
 
 fn require_key_target_authority(
+    store: &LocalProductStore,
     context: &ApiRequestContext,
     target: &crate::infrastructure::auth::APIKey,
     target_role: Option<&str>,
@@ -62,14 +73,23 @@ fn require_key_target_authority(
             "a key may only be managed within the authenticated tenant",
         ));
     }
-    if matches!(target_role, Some("reviewer" | "output_operator"))
-        && (context.api_key_id != LOCAL_BOOTSTRAP_API_KEY_ID
-            || !context.scopes.contains(SCOPE_IDENTITY_DELEGATE))
-    {
-        return Err(ApiError::new(
-            axum::http::StatusCode::FORBIDDEN,
-            "managed identity mutation requires the canonical bootstrap authority",
-        ));
+    if matches!(target_role, Some("reviewer" | "output_operator")) {
+        if context.api_key_id != LOCAL_BOOTSTRAP_API_KEY_ID
+            || !context.scopes.contains(SCOPE_IDENTITY_DELEGATE)
+        {
+            return Err(ApiError::new(
+                axum::http::StatusCode::FORBIDDEN,
+                "managed identity mutation requires the canonical bootstrap authority",
+            ));
+        }
+        store
+            .authenticate_bootstrap_identity_delegation_principal(&context.tenant_id, None)
+            .map_err(|_| {
+                ApiError::new(
+                    axum::http::StatusCode::FORBIDDEN,
+                    "managed identity mutation requires the canonical bootstrap authority",
+                )
+            })?;
     }
     Ok(())
 }
@@ -134,10 +154,10 @@ pub(crate) async fn api_create_key(
     Json(request): Json<CreateApiKeyRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
-    require_bootstrap_for_managed_delegation(&context, &request.role, &request.scopes)?;
+    let store = require_store(&state)?;
+    require_bootstrap_for_managed_delegation(&store, &context, &request.role, &request.scopes)?;
     validate_managed_acceptance_role_scopes(&request.role, &request.scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
-    let store = require_store(&state)?;
     let actor_store = Arc::clone(&store);
     let actor_context = context.clone();
     tokio::task::spawn_blocking(move || {
@@ -261,7 +281,7 @@ pub(crate) async fn api_revoke_key(
     let target = guard
         .api_key(&key_id)
         .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
-    require_key_target_authority(&context, &target, role.as_deref())?;
+    require_key_target_authority(&store, &context, &target, role.as_deref())?;
     guard.remove_api_key(&key_id);
 
     let revoked = match store.revoke_api_key_metadata(&key_id, &context.api_key_id) {
@@ -329,7 +349,7 @@ pub(crate) async fn api_rotate_key(
     let target = guard
         .api_key(&key_id)
         .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
-    require_key_target_authority(&context, &target, Some(role))?;
+    require_key_target_authority(&store, &context, &target, Some(role))?;
     let scopes: Vec<String> = old_key["scopes"]
         .as_array()
         .map(|arr| {
@@ -338,7 +358,7 @@ pub(crate) async fn api_rotate_key(
                 .collect()
         })
         .unwrap_or_default();
-    require_bootstrap_for_managed_delegation(&context, role, &scopes)?;
+    require_bootstrap_for_managed_delegation(&store, &context, role, &scopes)?;
     validate_managed_acceptance_role_scopes(role, &scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
     let expires_at = old_key["expires_at"].as_f64();
@@ -431,7 +451,7 @@ pub(crate) async fn api_delete_key(
     let target = guard
         .api_key(&key_id)
         .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
-    require_key_target_authority(&context, &target, role.as_deref())?;
+    require_key_target_authority(&store, &context, &target, role.as_deref())?;
     guard.remove_api_key(&key_id);
 
     let deleted = match store.delete_api_key_metadata(&key_id, &context.api_key_id) {
@@ -493,8 +513,8 @@ pub(crate) async fn api_update_key_scopes(
     let target = guard
         .api_key(&key_id)
         .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
-    require_key_target_authority(&context, &target, Some(role))?;
-    require_bootstrap_for_managed_delegation(&context, role, &request.scopes)?;
+    require_key_target_authority(&store, &context, &target, Some(role))?;
+    require_bootstrap_for_managed_delegation(&store, &context, role, &request.scopes)?;
     validate_managed_acceptance_role_scopes(role, &request.scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
 

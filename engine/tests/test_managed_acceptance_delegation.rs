@@ -87,6 +87,23 @@ fn bootstrap_resolver(bootstrap_raw: &str) -> TenantResolver {
 }
 
 fn bootstrap_app(store: Arc<LocalProductStore>, bootstrap_raw: &str) -> axum::Router {
+    store
+        .upsert_team_member("local-admin", "Local Admin", "admin")
+        .unwrap();
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &[
+                "team:read".to_string(),
+                "team:admin".to_string(),
+                SCOPE_IDENTITY_DELEGATE.to_string(),
+            ],
+            "bootstrap-test",
+        )
+        .unwrap();
     build_axum_router(AxumApiState::new().with_local_store_arc(store).with_auth(
         bootstrap_resolver(bootstrap_raw),
         RateLimiter::new(60.0, 10_000),

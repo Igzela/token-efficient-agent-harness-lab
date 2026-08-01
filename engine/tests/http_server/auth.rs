@@ -431,6 +431,16 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
     let dir = tempdir().unwrap();
     let store = Arc::new(LocalProductStore::new(dir.path().join("team.db")).unwrap());
     let bootstrap_raw = format!("harness_{}", "b".repeat(64));
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &[SCOPE_IDENTITY_DELEGATE.to_string()],
+            "test-bootstrap",
+        )
+        .unwrap();
 
     let mut local_scopes: HashSet<String> = ["team:read", "team:admin"]
         .into_iter()
@@ -670,6 +680,67 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         .await
         .unwrap();
     assert_eq!(ordinary_create.status(), StatusCode::FORBIDDEN);
+
+    // A reserved bootstrap key ID in a foreign resolver tenant is not the
+    // canonical local bootstrap authority and must not issue managed identities.
+    let foreign_bootstrap_raw = format!("harness_{}", "d".repeat(64));
+    let mut foreign_resolver = TenantResolver::new();
+    foreign_resolver.add_tenant(Tenant {
+        tenant_id: "foreign".into(),
+        name: "Foreign tenant".into(),
+        scopes: ["team:admin", SCOPE_IDENTITY_DELEGATE]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        rate_limit: Some(10_000),
+    });
+    foreign_resolver.add_api_key(APIKey {
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.into(),
+        tenant_id: "foreign".into(),
+        key_hash: hash_api_key(&foreign_bootstrap_raw, "foreign-bootstrap-salt"),
+        key_salt: "foreign-bootstrap-salt".into(),
+        scopes: ["team:admin", SCOPE_IDENTITY_DELEGATE]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    let foreign_app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_auth(
+                foreign_resolver,
+                RateLimiter::new(60.0, 10_000),
+                Some(10_000),
+                1.0,
+            ),
+    );
+    let foreign_create = foreign_app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {foreign_bootstrap_raw}"),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "foreign-reviewer",
+                        "role": "reviewer",
+                        "scopes": ["managed_acceptance:risk_acknowledge"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(foreign_create.status(), StatusCode::FORBIDDEN);
 
     let ordinary_update = app
         .clone()

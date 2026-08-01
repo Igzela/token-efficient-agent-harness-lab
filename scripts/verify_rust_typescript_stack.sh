@@ -46,7 +46,10 @@ bash scripts/check_wire_codegen_drift.sh
 if [[ "${MODE}" == "full" ]]; then
   cargo fmt --check
   cargo clippy -p engine -- -D warnings
-  cargo test -p engine
+  # HTTP integration tests intentionally exercise process-wide environment
+  # gates; serialize the Rust test process so one test cannot observe another
+  # test's temporary configuration.
+  cargo test -p engine -- --test-threads=1
 
   cd "${ROOT}/sdk/typescript"
   bun install --frozen-lockfile
