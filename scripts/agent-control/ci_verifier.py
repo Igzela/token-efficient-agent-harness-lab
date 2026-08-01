@@ -1150,14 +1150,8 @@ def verify_exact_head_ci(
         if isinstance(artifact, dict)
         and str(artifact.get("name") or "")
         == f"context-capsule-{run_id}-{run_attempt}-{expected_sha}"
-        and (
-            str(artifact.get("workflow_run_id") or "") == run_id
-            or (
-                isinstance(artifact.get("workflow_run"), dict)
-                and str(artifact["workflow_run"].get("id") or "") == run_id
-            )
-        )
-        and artifact.get("expired") is not True
+        and _artifact_binds_workflow_run(artifact, run_id)
+        and artifact.get("expired") is False
     ]
     if not capsule_artifacts:
         raise CIVerificationError(
@@ -1180,6 +1174,25 @@ def verify_exact_head_ci(
         "created_at": run.get("createdAt"),
         "updated_at": run.get("updatedAt"),
     }
+
+
+def _artifact_binds_workflow_run(artifact: dict[str, Any], run_id: str) -> bool:
+    """Require every supplied artifact workflow identity to agree exactly."""
+    identities: list[str] = []
+    if "workflow_run_id" in artifact:
+        top_level = str(artifact.get("workflow_run_id") or "")
+        if not top_level:
+            return False
+        identities.append(top_level)
+    nested = artifact.get("workflow_run")
+    if nested is not None:
+        if not isinstance(nested, dict):
+            return False
+        nested_id = str(nested.get("id") or "")
+        if not nested_id:
+            return False
+        identities.append(nested_id)
+    return bool(identities) and all(identity == run_id for identity in identities)
 
 
 def _require_exact_head_checkout_evidence(

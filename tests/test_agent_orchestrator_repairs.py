@@ -1911,6 +1911,52 @@ class TestExactHeadCI(unittest.TestCase):
             ):
                 ci_verifier.verify_exact_head_ci(2, sha, 4, {"headRefOid": sha})
 
+    def test_context_capsule_artifact_requires_explicit_unexpired_status(self):
+        sha = "a" * 40
+        run = {
+            "databaseId": 5,
+            "attempt": 1,
+            "workflowName": "tests",
+            "headSha": sha,
+            "status": "completed",
+            "conclusion": "success",
+            "jobs": _successful_required_jobs(),
+            "artifacts": [{
+                "name": f"context-capsule-5-1-{sha}",
+                "workflow_run": {"id": 5},
+            }],
+        }
+        with mock.patch.object(ci_verifier, "run_info", return_value=run):
+            with self.assertRaisesRegex(
+                ci_verifier.CIVerificationError,
+                "context-capsule artifact publication evidence",
+            ):
+                ci_verifier.verify_exact_head_ci(2, sha, 5, {"headRefOid": sha})
+
+    def test_context_capsule_artifact_rejects_conflicting_workflow_run_id(self):
+        sha = "a" * 40
+        run = {
+            "databaseId": 6,
+            "attempt": 1,
+            "workflowName": "tests",
+            "headSha": sha,
+            "status": "completed",
+            "conclusion": "success",
+            "jobs": _successful_required_jobs(),
+            "artifacts": [{
+                "name": f"context-capsule-6-1-{sha}",
+                "expired": False,
+                "workflow_run_id": 6,
+                "workflow_run": {"id": 7},
+            }],
+        }
+        with mock.patch.object(ci_verifier, "run_info", return_value=run):
+            with self.assertRaisesRegex(
+                ci_verifier.CIVerificationError,
+                "context-capsule artifact publication evidence",
+            ):
+                ci_verifier.verify_exact_head_ci(2, sha, 6, {"headRefOid": sha})
+
     def test_moved_head_or_missing_job_is_rejected(self):
         required = ci_verifier.load_requirements()["required_jobs"]
         run = {
