@@ -813,6 +813,20 @@ Unresolved objections: none
         with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_dispatch"}, clear=False):
             self.assertFalse(project_context.has_valid_success_binding(capsule))
 
+    def test_dispatch_capsule_generation_rejects_checkout_drift(self) -> None:
+        with mock.patch.object(
+            project_context,
+            "local_checkout_state",
+            return_value={"head_sha": "b" * 40, "branch": "main", "dirty": False},
+        ):
+            with self.assertRaisesRegex(ValueError, "does not match expected exact head"):
+                project_context.build_capsule(
+                    offline=True,
+                    repository="owner/repo",
+                    event_name="workflow_dispatch",
+                    expected_head_sha="a" * 40,
+                )
+
     def test_failed_or_incomplete_receipt_never_confirms_exact_head(self) -> None:
         head = "c" * 40
         body = f"""EXACT-HEAD REVIEW RECEIPT

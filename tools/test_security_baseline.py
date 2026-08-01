@@ -543,6 +543,19 @@ class TestDormantAutomationGuard(unittest.TestCase):
             )
             self.assertEqual(len(findings), 1)
 
+    def test_quoted_limit_one_is_not_treated_as_bounded(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                'gh run list --limit "1"\n'
+                "gh run list --limit='1'\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(len(findings), 1)
+
     def test_watch_repo_without_run_id_is_unbound(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

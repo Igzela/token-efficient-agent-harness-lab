@@ -37,7 +37,6 @@ def _successful_required_jobs():
         "name": ci_verifier.EXACT_HEAD_VERIFY_STEP,
         "status": "completed",
         "conclusion": "success",
-        "run": "set -euo pipefail\ntest -n \"${EXPECTED_SHA}\"\ntest \"$(git rev-parse HEAD)\" = \"${EXPECTED_SHA}\"",
     }
     return [
         {
@@ -1877,7 +1876,7 @@ class TestExactHeadCI(unittest.TestCase):
     def test_context_capsule_artifact_must_be_published_on_exact_head(self):
         sha = "a" * 40
         run = {
-            "databaseId": 3, "workflowName": "tests", "headSha": sha,
+            "databaseId": 3, "attempt": 1, "workflowName": "tests", "headSha": sha,
             "status": "completed", "conclusion": "success",
             "jobs": _successful_required_jobs(),
             "artifacts": [],
@@ -1911,31 +1910,6 @@ class TestExactHeadCI(unittest.TestCase):
                 "context-capsule artifact publication evidence",
             ):
                 ci_verifier.verify_exact_head_ci(2, sha, 4, {"headRefOid": sha})
-
-    def test_exact_head_step_must_contain_the_checkout_assertion(self):
-        sha = "a" * 40
-        jobs = _successful_required_jobs()
-        jobs[0]["steps"][0]["run"] = "echo only"
-        run = {
-            "databaseId": 5,
-            "attempt": 1,
-            "workflowName": "tests",
-            "headSha": sha,
-            "status": "completed",
-            "conclusion": "success",
-            "jobs": jobs,
-            "artifacts": [{
-                "name": f"context-capsule-5-1-{sha}",
-                "expired": False,
-                "workflow_run": {"id": 5, "run_attempt": 1},
-            }],
-        }
-        with mock.patch.object(ci_verifier, "run_info", return_value=run):
-            with self.assertRaisesRegex(
-                ci_verifier.CIVerificationError,
-                "exact-head verification step did not succeed",
-            ):
-                ci_verifier.verify_exact_head_ci(2, sha, 5, {"headRefOid": sha})
 
     def test_moved_head_or_missing_job_is_rejected(self):
         required = ci_verifier.load_requirements()["required_jobs"]

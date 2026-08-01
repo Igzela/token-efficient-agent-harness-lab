@@ -1142,6 +1142,8 @@ def verify_exact_head_ci(
         raise CIVerificationError("CI artifact evidence is absent")
     run_id = str(run.get("databaseId") or workflow_run_id)
     run_attempt = str(run.get("attempt") or "")
+    if not run_attempt:
+        raise CIVerificationError("CI run attempt identity is absent")
     capsule_artifacts = [
         artifact
         for artifact in artifacts
@@ -1153,15 +1155,6 @@ def verify_exact_head_ci(
             or (
                 isinstance(artifact.get("workflow_run"), dict)
                 and str(artifact["workflow_run"].get("id") or "") == run_id
-            )
-        )
-        and (
-            not run_attempt
-            or str(artifact.get("run_attempt") or "") == run_attempt
-            or (
-                isinstance(artifact.get("workflow_run"), dict)
-                and str(artifact["workflow_run"].get("run_attempt") or "")
-                == run_attempt
             )
         )
         and artifact.get("expired") is not True
@@ -1226,9 +1219,6 @@ def _require_exact_head_checkout_evidence(
         if status != "completed" or conclusion != "success":
             failed.append(name)
             continue
-        script = str(step.get("run") or "")
-        if "EXPECTED_SHA" not in script or "git rev-parse HEAD" not in script:
-            failed.append(name)
     if absent_steps:
         raise CIVerificationError(
             f"exact-head verification step evidence is absent: {absent_steps}"

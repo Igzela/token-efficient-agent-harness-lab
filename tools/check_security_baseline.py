@@ -685,7 +685,7 @@ def _has_unbound_latest_run_list(content: str) -> bool:
         r"(?m)\bgh\s+run\s+list\b([^;&|\n]*(?:\\\n[^;&|\n]*)*)", content
     ):
         args = match.group(1).replace("\\\n", " ")
-        if not re.search(r"(?:--limit\s*=?\s*1|-L\s*1)\b", args):
+        if not _has_limit_one(args):
             continue
         if _has_nonempty_option_value(args, "--head") or _has_nonempty_option_value(
             args, "--commit"
@@ -755,6 +755,27 @@ def _has_nonempty_option_value(args: str, option: str) -> bool:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         value = value[1:-1]
     return bool(value and not value.startswith("-"))
+
+
+def _has_limit_one(args: str) -> bool:
+    """Recognize shell-quoted and unquoted latest-run limit spellings."""
+    try:
+        tokens = shlex.split(args)
+    except ValueError:
+        return bool(
+            re.search(
+                r"(?:--limit\s*(?:=\s*)?[\"']?1[\"']?(?=\s|$)|"
+                r"-L\s*[\"']?1[\"']?(?=\s|$))",
+                args,
+            )
+        )
+    for index, token in enumerate(tokens):
+        if token in {"--limit", "-L"}:
+            if index + 1 < len(tokens) and tokens[index + 1] == "1":
+                return True
+        elif token.startswith("--limit=") and token.removeprefix("--limit=") == "1":
+            return True
+    return False
 
 
 def check_removed_plugin_surface_guard(

@@ -1077,6 +1077,12 @@ def build_capsule(
         if target_pr_number is None or frontier["pr"] != target_pr_number
     ]
     checkout = local_checkout_state()
+    if (
+        expected_head_sha
+        and event_name in {"push", "workflow_dispatch"}
+        and checkout.get("head_sha") != expected_head_sha
+    ):
+        raise ValueError("capsule checkout does not match expected exact head")
     checkout["matches_accepted_baseline"] = bool(
         checkout.get("head_sha")
         and baseline.get("sha")
