@@ -13083,12 +13083,17 @@ async fn axum_product_task_http_authority_rejects_foreign_tenant_on_every_entryp
 
 #[tokio::test]
 async fn axum_delegated_prepare_is_default_off_after_admin_authorization() {
+    use engine::storage::local_product_store::SCOPE_DELEGATED_MANIFEST_APPROVE;
+
     let _env_lock = product_golden_path_env_lock().lock().await;
     let _env = ProductGoldenPathDisabledEnvGuard::disable();
 
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("delegated-product-gate.db")).unwrap();
-    let scopes = HashSet::from(["team:admin".to_string()]);
+    let scopes = HashSet::from([
+        "team:admin".to_string(),
+        SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+    ]);
     let mut resolver = TenantResolver::new();
     resolver.add_tenant(Tenant {
         tenant_id: "delegated-product".to_string(),
@@ -13132,7 +13137,9 @@ async fn axum_delegated_prepare_rejects_expired_api_key_metadata() {
     };
     use engine::node_executor::FailNodeExecutor;
     use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
-    use engine::storage::local_product_store::ALL_MANAGED_ACCEPTANCE_SCOPES;
+    use engine::storage::local_product_store::{
+        ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_DELEGATED_MANIFEST_APPROVE,
+    };
     use std::sync::Mutex as StdMutex;
 
     let _product_env_lock = product_golden_path_env_lock().lock().await;
@@ -13142,7 +13149,11 @@ async fn axum_delegated_prepare_rejects_expired_api_key_metadata() {
     let store =
         Arc::new(LocalProductStore::new(dir.path().join("delegated-expired-key.db")).unwrap());
     let mut resolver = TenantResolver::new();
-    let scopes = HashSet::from(["team:admin".to_string(), "dispatch:execute".to_string()]);
+    let scopes = HashSet::from([
+        "team:admin".to_string(),
+        "dispatch:execute".to_string(),
+        SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+    ]);
     resolver.add_tenant(Tenant {
         tenant_id: "tenant-a".to_string(),
         name: "Expired Key".to_string(),
@@ -13242,7 +13253,9 @@ async fn axum_delegated_prepare_activate_and_revocation_terminal_are_provider_fr
     };
     use engine::node_executor::FailNodeExecutor;
     use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
-    use engine::storage::local_product_store::ALL_MANAGED_ACCEPTANCE_SCOPES;
+    use engine::storage::local_product_store::{
+        ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_DELEGATED_MANIFEST_APPROVE,
+    };
     use std::sync::Mutex as StdMutex;
 
     let _product_env_lock = product_golden_path_env_lock().lock().await;
@@ -13280,7 +13293,11 @@ async fn axum_delegated_prepare_activate_and_revocation_terminal_are_provider_fr
     let store =
         Arc::new(LocalProductStore::new(dir.path().join("delegated-positive-http.db")).unwrap());
     let mut resolver = TenantResolver::new();
-    let tenant_scopes = HashSet::from(["team:admin".to_string(), "dispatch:execute".to_string()]);
+    let tenant_scopes = HashSet::from([
+        "team:admin".to_string(),
+        "dispatch:execute".to_string(),
+        SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+    ]);
     resolver.add_tenant(Tenant {
         tenant_id: "tenant-a".to_string(),
         name: "Delegated Positive".to_string(),
@@ -13560,7 +13577,10 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
     };
     use engine::provider::transport::{HttpResponse, HttpTransport, MockTransport};
     use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
-    use engine::storage::local_product_store::ALL_MANAGED_ACCEPTANCE_SCOPES;
+    use engine::storage::local_product_store::{
+        ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_DELEGATED_ARTIFACT_CONFIRM,
+        SCOPE_DELEGATED_MANIFEST_APPROVE,
+    };
     use std::sync::Mutex as StdMutex;
 
     let _product_env_lock = product_golden_path_env_lock().lock().await;
@@ -13617,7 +13637,12 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
     let store =
         Arc::new(LocalProductStore::new(dir.path().join("delegated-success-http.db")).unwrap());
     let mut resolver = TenantResolver::new();
-    let admin_scopes = HashSet::from(["team:admin".to_string(), "dispatch:execute".to_string()]);
+    let admin_scopes = HashSet::from([
+        "team:admin".to_string(),
+        "dispatch:execute".to_string(),
+        SCOPE_DELEGATED_ARTIFACT_CONFIRM.to_string(),
+        SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+    ]);
     resolver.add_tenant(Tenant {
         tenant_id: "tenant-a".to_string(),
         name: "Delegated Success".to_string(),
