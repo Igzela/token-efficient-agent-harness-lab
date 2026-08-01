@@ -141,7 +141,7 @@ FORBIDDEN_ADAPTER_HEADINGS = {
     ],
 }
 
-PACKET_ID_PATTERN = r"(?:PE\d+|PR\d+|TOOL)(?:-[A-Z0-9]+)+"
+PACKET_ID_PATTERN = r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+"
 PACKET_HEADING_RE = re.compile(
     rf"^#{{2,3}} Packet (?P<packet>{PACKET_ID_PATTERN})\b.*$", re.MULTILINE
 )
