@@ -3167,11 +3167,13 @@ impl LocalProductStore {
         commit_sha: &str,
         actor: &str,
     ) -> Result<Value, String> {
+        let authority_request =
+            self.current_product_output_authority_request(artifact_id, operation_id, "draft_pr")?;
         self.mutate_product_output_operation(
             artifact_id,
             actor,
             "product_task.output_branch_pushed",
-            None,
+            Some(&authority_request),
             |artifact, now| {
                 let operation = artifact
                     .get_mut("product_output_operation")
@@ -3238,11 +3240,13 @@ impl LocalProductStore {
         {
             return Err("Draft PR receipt is incomplete".to_string());
         }
+        let authority_request =
+            self.current_product_output_authority_request(artifact_id, operation_id, "draft_pr")?;
         self.mutate_product_output_operation(
             artifact_id,
             actor,
             "product_task.output_draft_pr_completed",
-            None,
+            Some(&authority_request),
             |artifact, now| {
                 let operation = artifact
                     .get_mut("product_output_operation")
@@ -3435,11 +3439,13 @@ impl LocalProductStore {
         actor: &str,
         reason: &str,
     ) -> Result<Value, String> {
+        let authority_request =
+            self.current_product_output_authority_request(artifact_id, operation_id, "draft_pr")?;
         self.mutate_product_output_operation(
             artifact_id,
             actor,
             "product_task.output_draft_pr_outcome_unknown",
-            None,
+            Some(&authority_request),
             |artifact, now| {
                 let operation = artifact
                     .get_mut("product_output_operation")
@@ -3598,11 +3604,13 @@ impl LocalProductStore {
         actor: &str,
         reason: &str,
     ) -> Result<Value, String> {
+        let authority_request =
+            self.current_product_output_authority_request(artifact_id, operation_id, "draft_pr")?;
         self.mutate_product_output_operation(
             artifact_id,
             actor,
             "product_task.output_draft_pr_failed_known",
-            None,
+            Some(&authority_request),
             |artifact, now| {
                 let operation = artifact
                     .get_mut("product_output_operation")
@@ -3635,6 +3643,40 @@ impl LocalProductStore {
                 Ok(snapshot)
             },
         )
+    }
+
+    fn current_product_output_authority_request(
+        &self,
+        artifact_id: &str,
+        operation_id: &str,
+        output_intent: &str,
+    ) -> Result<Value, String> {
+        let artifact = self
+            .get_supervised_patch_artifact(artifact_id)?
+            .ok_or_else(|| "product output artifact missing for authority".to_string())?;
+        let operation = artifact
+            .get("product_output_operation")
+            .ok_or_else(|| "product output operation missing for authority".to_string())?;
+        if operation.get("operation_id").and_then(Value::as_str) != Some(operation_id) {
+            return Err("product output operation identity mismatch".to_string());
+        }
+        let task_id = required_str(operation, "product_task_id")?;
+        let approval_id = required_str(operation, "approval_id")?;
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| "product task missing for output authority".to_string())?;
+        let expected_task_version = task
+            .get("version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "product task version missing for output authority".to_string())?;
+        Ok(json!({
+            "schema_version": "product_output_authority_request.v1",
+            "product_task_id": task_id,
+            "artifact_id": artifact_id,
+            "approval_id": approval_id,
+            "output_intent": output_intent,
+            "expected_task_version": expected_task_version,
+        }))
     }
 
     fn mutate_product_output_operation<F>(

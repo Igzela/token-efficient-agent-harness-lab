@@ -8,7 +8,7 @@ use engine::http_server::{
     build_axum_router, build_axum_router_with_dashboard, AxumApiState, CliCapability,
 };
 use engine::infrastructure::auth::{
-    hash_api_key, validate_token_shape, APIKey, Tenant, TenantResolver,
+    hash_api_key, validate_token_shape, APIKey, Tenant, TenantResolver, LOCAL_BOOTSTRAP_API_KEY_ID,
 };
 use engine::infrastructure::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
 use engine::infrastructure::rate_limiter::RateLimiter;
@@ -38,7 +38,9 @@ use engine::provider::transport::ReqwestTransport;
 use engine::provider::Provider;
 use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
 use engine::storage::local_product_store::LocalProductStore;
-use engine::storage::local_product_store::ALL_MANAGED_ACCEPTANCE_SCOPES;
+use engine::storage::local_product_store::{
+    ALL_MANAGED_ACCEPTANCE_SCOPES, BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES,
+};
 use engine::trusted_local::EffectiveExecutionGates;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -813,21 +815,27 @@ fn configure_auth(state: AxumApiState) -> AxumApiState {
         panic!("ACP_ADMIN_API_KEY must use the harness_<64 hex chars> local key shape");
     }
 
-    let scopes = local_admin_scopes();
+    let bootstrap_scopes = local_admin_scopes();
+    let mut tenant_scopes = bootstrap_scopes.clone();
+    tenant_scopes.extend(
+        ALL_MANAGED_ACCEPTANCE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string()),
+    );
     let mut resolver = TenantResolver::new();
     resolver.add_tenant(Tenant {
         tenant_id: "local".to_string(),
         name: "Local Team".to_string(),
-        scopes: scopes.clone(),
+        scopes: tenant_scopes,
         rate_limit: Some(10_000),
     });
     let salt = "local-admin-env-salt";
     resolver.add_api_key(APIKey {
-        key_id: "local-admin-env".to_string(),
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.to_string(),
         tenant_id: "local".to_string(),
         key_hash: hash_api_key(&raw_key, salt),
         key_salt: salt.to_string(),
-        scopes,
+        scopes: bootstrap_scopes,
         created_at: 0.0,
         expires_at: None,
         revoked_at: None,
@@ -910,7 +918,7 @@ fn local_admin_scope_list() -> Vec<String> {
     .map(String::from)
     .collect();
     scopes.extend(
-        ALL_MANAGED_ACCEPTANCE_SCOPES
+        BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES
             .iter()
             .map(|scope| (*scope).to_string()),
     );
@@ -1106,10 +1114,16 @@ mod tests {
         assert!(scopes.iter().any(|scope| scope == "backup:admin"));
         assert!(scopes.iter().any(|scope| scope == "dispatch:write"));
         assert!(scopes.iter().any(|scope| scope == "health:read"));
-        for scope in ALL_MANAGED_ACCEPTANCE_SCOPES {
+        for scope in BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES {
             assert!(
                 scopes.iter().any(|candidate| candidate == scope),
-                "bootstrap tenant must permit canonical managed scope {scope}"
+                "bootstrap tenant must permit canonical delegation scope {scope}"
+            );
+        }
+        for scope in ALL_MANAGED_ACCEPTANCE_SCOPES {
+            assert!(
+                !scopes.iter().any(|candidate| candidate == scope),
+                "bootstrap key must not carry managed operation scope {scope}"
             );
         }
     }

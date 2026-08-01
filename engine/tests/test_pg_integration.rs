@@ -2086,17 +2086,10 @@ fn pg_product_output_approval_revalidates_current_bindings_atomically() {
         )
         .unwrap();
     assert_eq!(pending["task"]["status"], "awaiting_approval");
-    assert_eq!(pending["output"]["pre_effect_failure"], true);
-    // Non-github remotes are rejected before any branch/PR effect and do not
-    // advance the ProductTask into a version with no durable operation.
-    assert!(
-        matches!(
-            pending["output"]["status"].as_str(),
-            Some("blocked" | "planned" | "network_output_unavailable")
-        ),
-        "unexpected draft_pr status: {}",
-        pending["output"]
-    );
+    // The network gate is disabled in this parity test, so planning is blocked
+    // before the credential/configuration pre-effect path is entered.
+    assert_eq!(pending["output"]["status"], "blocked");
+    assert!(pending["output"].get("pre_effect_failure").is_none());
     let pending_version = pending["task"]["version"].as_u64().unwrap();
 
     let artifact = store

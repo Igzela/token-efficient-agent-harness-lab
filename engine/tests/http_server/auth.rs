@@ -9,11 +9,17 @@ use axum::http::{header, Method, Request, StatusCode};
 use engine::http_server::{
     build_axum_router, build_axum_router_with_dashboard, AxumApiState, CliCapability,
 };
-use engine::infrastructure::auth::{Tenant, TenantResolver};
+use engine::infrastructure::auth::{
+    hash_api_key, APIKey, Tenant, TenantResolver, LOCAL_BOOTSTRAP_API_KEY_ID,
+};
 use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::provider::audit::{ProviderAuditEvent, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION};
 use engine::storage::local_product_store::LocalProductStore;
+use engine::storage::local_product_store::{
+    ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_IDENTITY_DELEGATE,
+};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use tempfile::{tempdir, TempDir};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
@@ -418,6 +424,260 @@ async fn axum_create_api_key_returns_raw_key() {
     assert!(body["raw_key"].as_str().unwrap().starts_with("harness_"));
     assert_eq!(body["user_id"], "u1");
     assert_eq!(body["role"], "admin");
+}
+
+#[tokio::test]
+async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_reissues() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("team.db")).unwrap());
+    let bootstrap_raw = format!("harness_{}", "b".repeat(64));
+
+    let mut local_scopes: HashSet<String> = ["team:read", "team:admin"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    local_scopes.extend(
+        ALL_MANAGED_ACCEPTANCE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string()),
+    );
+    local_scopes.insert(SCOPE_IDENTITY_DELEGATE.to_string());
+    let mut resolver = TenantResolver::new();
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".into(),
+        name: "Local bootstrap".into(),
+        scopes: local_scopes.clone(),
+        rate_limit: Some(10_000),
+    });
+    resolver.add_tenant(Tenant {
+        tenant_id: "ordinary".into(),
+        name: "Ordinary tenant".into(),
+        scopes: ["team:read", "team:admin"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        rate_limit: Some(10_000),
+    });
+    resolver.add_api_key(APIKey {
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.into(),
+        tenant_id: "local".into(),
+        key_hash: hash_api_key(&bootstrap_raw, "bootstrap-test-salt"),
+        key_salt: "bootstrap-test-salt".into(),
+        scopes: local_scopes,
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    let (_ordinary_key, ordinary_raw) = resolver
+        .create_api_key(
+            "ordinary",
+            Some(["team:read", "team:admin"]
+                .into_iter()
+                .map(String::from)
+                .collect()),
+            None,
+            1.0,
+        )
+        .unwrap();
+
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 1.0),
+    );
+    let reviewer = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "managed-reviewer",
+                        "role": "reviewer",
+                        "scopes": [
+                            "managed_acceptance:risk_acknowledge",
+                            "managed_acceptance:delegated_manifest_approve"
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reviewer.status(), StatusCode::OK);
+    let reviewer_body = response_json(reviewer).await;
+    assert_eq!(
+        reviewer_body["scopes"],
+        json!([
+            "managed_acceptance:risk_acknowledge",
+            "managed_acceptance:delegated_manifest_approve"
+        ])
+    );
+    let reviewer_id = reviewer_body["key_id"].as_str().unwrap();
+
+    let operator = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "managed-output-operator",
+                        "role": "operator",
+                        "scopes": [
+                            "managed_acceptance:risk_acknowledge",
+                            "managed_acceptance:delegated_execute",
+                            "managed_acceptance:attempt_admit"
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(operator.status(), StatusCode::OK);
+    let operator_body = response_json(operator).await;
+    assert_eq!(
+        operator_body["scopes"],
+        json!([
+            "managed_acceptance:risk_acknowledge",
+            "managed_acceptance:delegated_execute",
+            "managed_acceptance:attempt_admit"
+        ])
+    );
+
+    let ordinary_create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {ordinary_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "forbidden",
+                        "role": "operator",
+                        "scopes": ["managed_acceptance:attempt_admit"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ordinary_create.status(), StatusCode::FORBIDDEN);
+
+    let ordinary_update = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{reviewer_id}/scopes"))
+                .header(header::AUTHORIZATION, format!("Bearer {ordinary_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"scopes": ["managed_acceptance:attempt_admit"]}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ordinary_update.status(), StatusCode::FORBIDDEN);
+
+    let ordinary_rotate = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{reviewer_id}/rotate"))
+                .header(header::AUTHORIZATION, format!("Bearer {ordinary_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ordinary_rotate.status(), StatusCode::FORBIDDEN);
+
+    // Simulate an engine restart: the resolver is reconstructed from the
+    // bootstrap environment, while the same store is retained. Reissuance is
+    // through the API owner; no key/scope row is edited directly.
+    let mut restarted_resolver = TenantResolver::new();
+    restarted_resolver.add_tenant(Tenant {
+        tenant_id: "local".into(),
+        name: "Local bootstrap".into(),
+        scopes: ALL_MANAGED_ACCEPTANCE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .chain([
+                "team:read".into(),
+                "team:admin".into(),
+                SCOPE_IDENTITY_DELEGATE.into(),
+            ])
+            .collect(),
+        rate_limit: Some(10_000),
+    });
+    restarted_resolver.add_api_key(APIKey {
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.into(),
+        tenant_id: "local".into(),
+        key_hash: hash_api_key(&bootstrap_raw, "bootstrap-test-salt"),
+        key_salt: "bootstrap-test-salt".into(),
+        scopes: ALL_MANAGED_ACCEPTANCE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .chain([
+                "team:read".into(),
+                "team:admin".into(),
+                SCOPE_IDENTITY_DELEGATE.into(),
+            ])
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    let restarted_app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store)
+            .with_auth(
+                restarted_resolver,
+                RateLimiter::new(60.0, 10_000),
+                Some(10_000),
+                1.0,
+            ),
+    );
+    let reissued = restarted_app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "managed-reviewer-reissued",
+                        "role": "reviewer",
+                        "scopes": ["managed_acceptance:risk_acknowledge"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reissued.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(reissued).await["scopes"],
+        json!(["managed_acceptance:risk_acknowledge"])
+    );
 }
 
 #[tokio::test]

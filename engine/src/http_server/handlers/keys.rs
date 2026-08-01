@@ -5,10 +5,40 @@ use axum::Json;
 use serde_json::json;
 
 use crate::http_server::middleware::{
-    authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
+    authorize, cors_headers, internal_error, require_store, ApiError, ApiRequestContext, RequestId,
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{CreateApiKeyRequest, UpdateKeyScopesRequest, AXUM_API_SCHEMA_VERSION};
+use crate::infrastructure::auth::LOCAL_BOOTSTRAP_API_KEY_ID;
+use crate::storage::local_product_store::{ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_IDENTITY_DELEGATE};
+
+fn requests_managed_acceptance_scope(scopes: &[String]) -> bool {
+    scopes
+        .iter()
+        .any(|scope| ALL_MANAGED_ACCEPTANCE_SCOPES.contains(&scope.as_str()))
+}
+
+fn require_bootstrap_for_managed_delegation(
+    context: &ApiRequestContext,
+    scopes: &[String],
+) -> Result<(), ApiError> {
+    if scopes.iter().any(|scope| scope == SCOPE_IDENTITY_DELEGATE) {
+        return Err(ApiError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "the bootstrap delegation capability cannot be delegated",
+        ));
+    }
+    if requests_managed_acceptance_scope(scopes)
+        && (context.api_key_id != LOCAL_BOOTSTRAP_API_KEY_ID
+            || !context.scopes.contains(SCOPE_IDENTITY_DELEGATE))
+    {
+        return Err(ApiError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "managed-acceptance scope delegation requires the canonical bootstrap authority",
+        ));
+    }
+    Ok(())
+}
 
 pub(crate) async fn api_list_keys(
     State(state): State<AxumApiState>,
@@ -36,6 +66,7 @@ pub(crate) async fn api_create_key(
     Json(request): Json<CreateApiKeyRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    require_bootstrap_for_managed_delegation(&context, &request.scopes)?;
     let store = require_store(&state)?;
 
     let mut guard = state
@@ -168,6 +199,7 @@ pub(crate) async fn api_rotate_key(
                 .collect()
         })
         .unwrap_or_default();
+    require_bootstrap_for_managed_delegation(&context, &scopes)?;
     let expires_at = old_key["expires_at"].as_f64();
     if old_key["revoked_at"].as_str().is_some() {
         if let Some(resolver) = &state.tenant_resolver {
@@ -294,7 +326,8 @@ pub(crate) async fn api_update_key_scopes(
     AxumPath(key_id): AxumPath<String>,
     Json(request): Json<UpdateKeyScopesRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let _context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    require_bootstrap_for_managed_delegation(&context, &request.scopes)?;
     let store = require_store(&state)?;
 
     let scopes: std::collections::HashSet<String> = request.scopes.iter().cloned().collect();
@@ -315,7 +348,7 @@ pub(crate) async fn api_update_key_scopes(
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
 
     let updated = store
-        .update_api_key_scopes(&key_id, &request.scopes, &_context.api_key_id)
+        .update_api_key_scopes(&key_id, &request.scopes, &context.api_key_id)
         .map_err(internal_error)?;
 
     if !updated {

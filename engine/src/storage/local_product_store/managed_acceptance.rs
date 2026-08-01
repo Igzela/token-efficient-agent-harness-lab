@@ -29,6 +29,11 @@ pub const SCOPE_DELEGATED_MANIFEST_APPROVE: &str = "managed_acceptance:delegated
 pub const SCOPE_DELEGATED_EXECUTE: &str = "managed_acceptance:delegated_execute";
 pub const SCOPE_DELEGATED_ARTIFACT_CONFIRM: &str = "managed_acceptance:delegated_artifact_confirm";
 
+/// Capability held only by the environment bootstrap authority. It is not a
+/// managed-operation scope and is never included in child principals.
+pub const SCOPE_IDENTITY_DELEGATE: &str = "managed_acceptance:identity_delegate";
+pub const BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES: &[&str] = &[SCOPE_IDENTITY_DELEGATE];
+
 pub const ALL_MANAGED_ACCEPTANCE_SCOPES: &[&str] = &[
     SCOPE_RISK_ACKNOWLEDGE,
     SCOPE_SPEND_AUTHORIZE,
