@@ -17,7 +17,9 @@ use crate::product_golden_path::{
 use crate::storage::local_product_store::product_tasks::{
     public_product_task_projection, public_product_task_result_projection,
 };
-use crate::storage::local_product_store::SCOPE_DELEGATED_MANIFEST_APPROVE;
+use crate::storage::local_product_store::{
+    SCOPE_DELEGATED_ARTIFACT_CONFIRM, SCOPE_DELEGATED_MANIFEST_APPROVE,
+};
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, GitHubPullRequestConfig, GitHubPullRequestRequest,
     GitHubRepository,
@@ -326,7 +328,16 @@ pub(crate) async fn api_prepare_delegated_product_task(
     AxumPath(task_id): AxumPath<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    // Manifest/spend approval is a managed reviewer capability. The canonical
+    // bootstrap key only owns identity delegation and deliberately does not
+    // carry managed-operation scopes.
+    let context = authorize(
+        &state,
+        &headers,
+        SCOPE_DELEGATED_MANIFEST_APPROVE,
+        uri.path(),
+        &request_id.0,
+    )?;
     if !product_gate_enabled() {
         return Err(ApiError::with_code(
             StatusCode::FORBIDDEN,
@@ -517,7 +528,16 @@ pub(crate) async fn api_approve_delegated_product_task(
     AxumPath(task_id): AxumPath<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    // Artifact confirmation is a separate managed reviewer capability. Store
+    // authority additionally rejects the manifest approver and activator, so
+    // callers must use a distinct authenticated reviewer key.
+    let context = authorize(
+        &state,
+        &headers,
+        SCOPE_DELEGATED_ARTIFACT_CONFIRM,
+        uri.path(),
+        &request_id.0,
+    )?;
     let expected_task_version = body
         .get("expected_task_version")
         .and_then(serde_json::Value::as_u64)

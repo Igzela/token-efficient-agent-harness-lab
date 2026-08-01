@@ -1376,7 +1376,7 @@ fn append_delegated_product_task_openapi_paths(doc: &mut Value) {
         json!({
             "post": {
                 "summary": "Approve and prepare one delegated managed ProductTask attempt",
-                "description": "Requires team:admin, managed_acceptance:risk_acknowledge, managed_acceptance:delegated_autonomy, managed_acceptance:delegated_manifest_approve, and managed_acceptance:spend_authorize plus the Product Golden Path gate. Persists the authenticated approver principal, exact externally approved proposal and expected hash, delegation, immutable final manifest approval, and one-use spend authority. It does not admit a lease, activate execution, confirm output, or call a provider.",
+                "description": "Requires the managed reviewer manifest-approval capability plus the Product Golden Path gate. The canonical bootstrap key owns only identity delegation and is not a managed-operation principal. Persists the authenticated manifest/spend approver, exact externally approved proposal and expected hash, delegation, immutable final manifest approval, and one-use spend authority. It does not admit a lease, activate execution, confirm output, or call a provider.",
                 "parameters": [path_parameter("task_id")],
                 "requestBody": json_request_body(
                     &[
@@ -1398,7 +1398,7 @@ fn append_delegated_product_task_openapi_paths(doc: &mut Value) {
                 "responses": {
                     "200": {"description": "Persisted proposal/delegation approval and one-use spend authority; execution_activated is false"},
                     "400": {"description": "Malformed or out-of-policy authority"},
-                    "403": {"description": "Missing team:admin scope or disabled Product Golden Path"},
+                    "403": {"description": "Missing managed manifest-approval scope or disabled Product Golden Path"},
                     "409": {"description": "Scheduler, replay, or authority conflict"}
                 }
             }
@@ -1439,7 +1439,7 @@ fn append_delegated_product_task_openapi_paths(doc: &mut Value) {
         json!({
             "post": {
                 "summary": "Independently approve a delegated ProductTask artifact",
-                "description": "Requires team:admin, managed_acceptance:risk_acknowledge, and managed_acceptance:delegated_artifact_confirm. Persists an authenticated confirmer principal distinct from both manifest/spend approver and execution activator, then rechecks the exact artifact, verifier and Pro review evidence, provider journal, cost, target SHA, final manifest, and current delegation before authorizing one Draft-PR-only output.",
+                "description": "Requires the managed reviewer artifact-confirmation capability. Persists an authenticated confirmer principal distinct from both manifest/spend approver and execution activator, then rechecks the exact artifact, verifier and Pro review evidence, provider journal, cost, target SHA, final manifest, and current delegation before authorizing one Draft-PR-only output.",
                 "parameters": [path_parameter("task_id")],
                 "requestBody": json_request_body(
                     &[
@@ -1461,7 +1461,7 @@ fn append_delegated_product_task_openapi_paths(doc: &mut Value) {
                 "responses": {
                     "200": {"description": "Artifact/output confirmation persisted"},
                     "400": {"description": "Malformed, stale, or out-of-policy artifact"},
-                    "403": {"description": "Missing team:admin or delegated artifact confirmation authority scope"},
+                    "403": {"description": "Missing managed artifact-confirmation scope"},
                     "409": {"description": "Replay or authority conflict"}
                 }
             }
