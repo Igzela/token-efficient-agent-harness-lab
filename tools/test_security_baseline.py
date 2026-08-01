@@ -983,6 +983,36 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
             )
             self.assertEqual(findings, [])
 
+    def test_multiline_cfg_test_attribute_hides_test_only_executor(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(all(\n"
+                "    test,\n"
+                "    feature = \"fixture\",\n"
+                "))]\n"
+                "mod tests {\n"
+                "    pub fn execute_test_stub() -> serde_json::Value { serde_json::json!({}) }\n"
+                "}\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_fully_qualified_value_null_executor_is_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "pub fn execute_real() -> serde_json::Value { serde_json::Value::Null }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
     def test_cfg_test_nested_opening_braces_keep_entire_region_hidden(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
@@ -997,6 +1027,26 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
                 repo, ["engine/src/executor.rs"]
             )
             self.assertEqual(findings, [])
+
+    def test_cfg_test_stripping_preserves_original_line_numbers(self):
+        source = (
+            "#[cfg(test)] mod tests {\n"
+            "    fn fixture() {}\n"
+            "}\n"
+            "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+        )
+        stripped = csb._strip_cfg_test_regions(source)
+        self.assertEqual(
+            len(stripped.splitlines()), len(source.splitlines())
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(source)
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
 
     def test_same_line_empty_cfg_test_module_does_not_hide_production_code(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1125,6 +1175,22 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
                 "enum Fixture {\n"
                 "    #[cfg(test)]\n"
                 "    Test(u8, u16), Real,\n"
+                "}\n"
+                "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_cfg_test_discriminant_with_nested_comma_preserves_production_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test = (1, 2), Real,\n"
                 "}\n"
                 "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
             )

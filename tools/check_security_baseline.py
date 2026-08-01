@@ -305,7 +305,7 @@ DORMANT_EXECUTOR_FN_RE = re.compile(
 )
 DORMANT_EMPTY_BODY_RE = re.compile(
     r"^\s*(?:return\s+)?(?:Ok\(\s*)?"
-    r"(?:(?:[A-Za-z_][\w]*::)*json!\(\s*\{\s*\}|Value::Null|\{\}\.into\(\)|HashMap::new\(\)|"
+    r"(?:(?:[A-Za-z_][\w]*::)*json!\(\s*\{\s*\}|(?:[A-Za-z_][\w]*::)*Value::Null|\{\}\.into\(\)|HashMap::new\(\)|"
     r"BTreeMap::new\(\)|Vec::new\(\)|vec!\[\]|Default::default\(\))"
     r"(?:\s*\))?\s*;?\s*$"
 )
@@ -896,14 +896,116 @@ def _strip_cfg_test_regions(content: str) -> str:
     """
     lines = content.splitlines()
     code_lines = _rust_code_mask(content).splitlines()
-    out = []
+    out = [""] * len(lines)
+
+    def emit(line_number: int, text: str) -> None:
+        text = text.strip()
+        if not text:
+            return
+        if out[line_number]:
+            out[line_number] += " "
+        out[line_number] += text
+
     in_test = False
     pending_test_item = False
     pending_item_text = ""
     pending_delimiter_depths = (0, 0, 0)
+    pending_cfg_start_line = None
+    pending_cfg_start_column = None
+    pending_cfg_text = ""
     brace_depth = 0
-    for line, code_line in zip(lines, code_lines):
+
+    def consume_test_tail(
+        line_number: int,
+        line: str,
+        tail: str,
+        raw_tail_offset: int,
+    ) -> None:
+        nonlocal in_test
+        nonlocal pending_test_item, pending_item_text
+        nonlocal pending_delimiter_depths, brace_depth
+        pending_item_text = tail
+        pending_delimiter_depths = (0, 0, 0)
+        consumed = False
+        for token_index, token in _rust_top_level_tokens(tail):
+            if token == "," and not _rust_comma_terminated_item(
+                tail[:token_index]
+            ):
+                continue
+            if token == "{":
+                item_end = _rust_balanced_brace_end(tail, token_index)
+                if item_end is None:
+                    in_test = True
+                    brace_depth = _rust_brace_delta(tail[token_index:])
+                else:
+                    suffix = line[raw_tail_offset + item_end :].strip()
+                    if suffix:
+                        emit(line_number, suffix)
+                consumed = True
+            else:
+                suffix = line[raw_tail_offset + token_index + 1 :].strip()
+                if suffix:
+                    emit(line_number, suffix)
+                consumed = True
+            if consumed:
+                pending_test_item = False
+                pending_item_text = ""
+                pending_delimiter_depths = (0, 0, 0)
+                break
+        if not consumed:
+            pending_test_item = True
+            pending_delimiter_depths = _rust_delimiter_depths(tail)
+
+    for line_number, (line, code_line) in enumerate(zip(lines, code_lines)):
         if not in_test:
+            if pending_cfg_start_line is not None:
+                closing = re.search(r"\)\s*\]", code_line)
+                if closing is None:
+                    pending_cfg_text += "\n" + code_line
+                    continue
+                attribute_text = (
+                    pending_cfg_text + "\n" + code_line[: closing.end()]
+                )
+                attribute = re.search(
+                    r"#\[\s*cfg\s*\((.*)\)\s*\]",
+                    attribute_text,
+                    re.S,
+                )
+                expression = attribute.group(1) if attribute else ""
+                test_only = bool(
+                    attribute
+                    and (
+                        re.fullmatch(r"\s*test\s*", expression)
+                        or (
+                            re.match(r"\s*all\s*\(", expression)
+                            and re.search(r"\btest\b", expression)
+                            and not re.search(r"\bany\s*\(", expression)
+                            and not re.search(
+                                r"\bnot\s*\(\s*test\s*\)", expression
+                            )
+                        )
+                    )
+                )
+                if test_only:
+                    consume_test_tail(
+                        line_number,
+                        line,
+                        code_line[closing.end() :],
+                        closing.end(),
+                    )
+                else:
+                    emit(
+                        pending_cfg_start_line,
+                        lines[pending_cfg_start_line][pending_cfg_start_column:],
+                    )
+                    for skipped_line in range(
+                        pending_cfg_start_line + 1, line_number + 1
+                    ):
+                        emit(skipped_line, lines[skipped_line])
+                pending_cfg_start_line = None
+                pending_cfg_start_column = None
+                pending_cfg_text = ""
+                continue
             if pending_test_item:
                 if not line.strip() or line.lstrip().startswith("#"):
                     continue
@@ -927,14 +1029,14 @@ def _strip_cfg_test_regions(content: str) -> str:
                         else:
                             suffix = line[item_end:].strip()
                             if suffix:
-                                out.append(suffix)
+                                emit(line_number, suffix)
                             pending_test_item = False
                         pending_item_text = ""
                         pending_delimiter_depths = (0, 0, 0)
                         break
                     suffix = line[token_index + 1 :].strip()
                     if suffix:
-                        out.append(suffix)
+                        emit(line_number, suffix)
                     pending_test_item = False
                     pending_item_text = ""
                     pending_delimiter_depths = (0, 0, 0)
@@ -965,47 +1067,30 @@ def _strip_cfg_test_regions(content: str) -> str:
             if test_only:
                 production_prefix = line[: attr.start()].strip()
                 if production_prefix:
-                    out.append(production_prefix)
-                tail = code_line[attr.end() :]
-                pending_item_text = tail
-                pending_delimiter_depths = (0, 0, 0)
-                consumed = False
-                for token_index, token in _rust_top_level_tokens(tail):
-                    if token == "," and not _rust_comma_terminated_item(
-                        tail[:token_index]
-                    ):
-                        continue
-                    if token == "{":
-                        item_end = _rust_balanced_brace_end(tail, token_index)
-                        if item_end is None:
-                            in_test = True
-                            brace_depth = _rust_brace_delta(tail[token_index:])
-                        else:
-                            suffix = line[attr.end() + item_end :].strip()
-                            if suffix:
-                                out.append(suffix)
-                        consumed = True
-                    else:
-                        suffix = line[attr.end() + token_index + 1 :].strip()
-                        if suffix:
-                            out.append(suffix)
-                        consumed = True
-                    if consumed:
-                        pending_test_item = False
-                        pending_item_text = ""
-                        pending_delimiter_depths = (0, 0, 0)
-                        break
-                if not consumed:
-                    pending_test_item = True
-                    pending_delimiter_depths = _rust_delimiter_depths(tail)
+                    emit(line_number, production_prefix)
+                consume_test_tail(
+                    line_number,
+                    line,
+                    code_line[attr.end() :],
+                    attr.end(),
+                )
+            elif attr is None and re.search(r"#\[\s*cfg\s*\(", code_line):
+                cfg_start = re.search(r"#\[\s*cfg\s*\(", code_line)
+                assert cfg_start is not None
+                production_prefix = line[: cfg_start.start()].strip()
+                if production_prefix:
+                    emit(line_number, production_prefix)
+                pending_cfg_start_line = line_number
+                pending_cfg_start_column = cfg_start.start()
+                pending_cfg_text = code_line[cfg_start.start() :]
             else:
-                out.append(line)
+                emit(line_number, line)
             continue
         item_end = _rust_region_end(code_line, brace_depth)
         if item_end is not None:
             suffix = line[item_end:].strip()
             if suffix:
-                out.append(suffix)
+                emit(line_number, suffix)
             in_test = False
             brace_depth = 0
         else:
@@ -1104,7 +1189,7 @@ def _rust_comma_terminated_item(prefix: str) -> bool:
         re.fullmatch(
             r"\s*(?:pub(?:\([^)]*\))?\s+)?[A-Za-z_][A-Za-z0-9_]*"
             r"(?:\s*::\s*[A-Za-z_][A-Za-z0-9_]*)*"
-            r"(?:\s*\([^{}]*\))?(?:\s*=\s*[^,]+)?\s*",
+            r"(?:\s*\([^{}]*\))?(?:\s*=\s*[^;]+)?\s*",
             prefix,
         )
     )
