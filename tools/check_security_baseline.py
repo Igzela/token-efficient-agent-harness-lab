@@ -923,7 +923,7 @@ def _strip_cfg_test_regions(content: str) -> str:
                         if item_end is None:
                             in_test = True
                             pending_test_item = False
-                            brace_depth = 1
+                            brace_depth = _rust_brace_delta(code_line[token_index:])
                         else:
                             suffix = line[item_end:].strip()
                             if suffix:
@@ -979,7 +979,7 @@ def _strip_cfg_test_regions(content: str) -> str:
                         item_end = _rust_balanced_brace_end(tail, token_index)
                         if item_end is None:
                             in_test = True
-                            brace_depth = 1
+                            brace_depth = _rust_brace_delta(tail[token_index:])
                         else:
                             suffix = line[attr.end() + item_end :].strip()
                             if suffix:

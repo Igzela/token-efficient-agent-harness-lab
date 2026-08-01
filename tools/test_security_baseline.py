@@ -983,6 +983,21 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
             )
             self.assertEqual(findings, [])
 
+    def test_cfg_test_nested_opening_braces_keep_entire_region_hidden(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(test)] mod tests { fn helper() {\n"
+                "}\n"
+                "pub fn execute_test_stub() -> serde_json::Value { serde_json::json!({}) }\n"
+                "}\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
     def test_same_line_empty_cfg_test_module_does_not_hide_production_code(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
