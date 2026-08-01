@@ -108,7 +108,7 @@ The repository seeks verifiable and reusable task delivery per unit of total lif
 
 ## Confirmed Integration Gaps
 
-1. No accepted live managed coding-executor E2E exists; PR #323 establishes provider-free production-path proof only, and PR #325 is the accepted live-observed budget/CAS repair. The first authorized live attempt was observed but did not seal cleanly; one clean exact-main live reseal remains and requires a new explicit one-use owner authorization.
+1. No accepted live managed coding-executor E2E exists; PR #323 establishes provider-free production-path proof only, and PR #325 is the accepted live-observed budget/CAS repair. The first authorized live attempt was observed but did not seal cleanly; one clean exact-main live reseal remains and is governed by the existing owner authorization with a fresh separately persisted and consumed sub-authorization for each attempt.
 2. No accepted live RWE baseline exists.
 3. No frozen operator-supplied real economic corpus, reviewer protocol instance, repetition grid, or accepted VDE observation exists. Provider-free schema work does not satisfy this gap.
 4. Architecture Convergence cannot begin before that baseline is frozen.
