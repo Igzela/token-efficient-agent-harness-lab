@@ -984,9 +984,15 @@ def _strip_cfg_test_regions(content: str) -> str:
             else:
                 out.append(line)
             continue
-        brace_depth += _rust_brace_delta(code_line)
-        if brace_depth <= 0:
+        item_end = _rust_region_end(code_line, brace_depth)
+        if item_end is not None:
+            suffix = line[item_end:].strip()
+            if suffix:
+                out.append(suffix)
             in_test = False
+            brace_depth = 0
+        else:
+            brace_depth += _rust_brace_delta(code_line)
     return "\n".join(out)
 
 
@@ -1000,6 +1006,19 @@ def _rust_balanced_brace_end(code: str, opening_index: int) -> int | None:
         elif current == "}":
             depth -= 1
             if depth == 0:
+                return index + 1
+    return None
+
+
+def _rust_region_end(code: str, initial_depth: int) -> int | None:
+    """Return the offset after a test region closes, if it closes on this line."""
+    depth = initial_depth
+    for index, current in enumerate(code):
+        if current == "{":
+            depth += 1
+        elif current == "}":
+            depth -= 1
+            if depth <= 0:
                 return index + 1
     return None
 
