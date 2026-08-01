@@ -123,6 +123,21 @@ Phase one was accepted through PR #302.
         self.assertEqual(summary["state"], "success")
         self.assertEqual(summary["missing_required"], [])
 
+    def test_source_matrix_excludes_terminal_context_capsule_input(self) -> None:
+        checks = [
+            {"name": name, "status": "COMPLETED", "conclusion": "SUCCESS"}
+            for name in project_context.REQUIRED_SOURCE_CI_CHECKS
+        ]
+        matrix = project_context.source_required_check_matrix(
+            project_context.summarize_checks(checks), event_name="workflow_dispatch"
+        )
+        self.assertEqual(
+            [item["logical_name"] for item in matrix],
+            list(project_context.REQUIRED_SOURCE_CI_CHECKS),
+        )
+        self.assertNotIn("context-capsule", [item["logical_name"] for item in matrix])
+        self.assertTrue(project_context.is_matrix_successful(matrix, event_name="workflow_dispatch"))
+
     def test_missing_required_check_is_incomplete(self) -> None:
         checks = [
             {"name": name, "status": "COMPLETED", "conclusion": "SUCCESS"}
@@ -381,7 +396,12 @@ PR #299
         missing = [item for item in matrix if item["conclusion"] == "missing"]
         self.assertEqual(
             sorted(item["logical_name"] for item in missing),
-            ["exact-head-check", "native-runtime", "pg-integration-tests", "rust-typescript-cutover"],
+            [
+                "exact-head-check",
+                "native-runtime",
+                "pg-integration-tests",
+                "rust-typescript-cutover",
+            ],
         )
 
     def test_successful_matrix_reports_all_required(self) -> None:
@@ -394,7 +414,7 @@ PR #299
         self.assertTrue(all(item["conclusion"] == "success" for item in matrix))
         self.assertEqual(
             [item["logical_name"] for item in matrix],
-            list(project_context.REQUIRED_CI_CHECKS),
+            list(project_context.REQUIRED_SOURCE_CI_CHECKS),
         )
 
     def test_conflicting_required_check_outcomes_fail_the_matrix(self) -> None:
@@ -501,6 +521,346 @@ PR #299
         )
         self.assertEqual(obs["unresolved_objections_state"], "explicit_blocking_comments_present")
 
+    def test_valid_structured_receipt_confirms_exact_head(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = """EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+""".format(head=head, base=base)
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(observation["review_receipt"]["state"], "valid")
+        self.assertEqual(observation["exact_head_review_state"], "confirmed")
+        self.assertEqual(observation["unresolved_objections_state"], "none_observed")
+
+    def test_receipt_without_current_head_never_confirms(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = """EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+""".format(head=head, base=base)
+        observation = project_context._build_review_observation(
+            head_sha=None,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_receipt_bound_to_wrong_base_never_confirms(self) -> None:
+        head = "a" * 40
+        expected_base = "b" * 40
+        wrong_base = "c" * 40
+        body = """EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {wrong_base}...{head}
+Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+""".format(head=head, wrong_base=wrong_base)
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=expected_base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_self_review_identity_never_confirms(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = """EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: self-review
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+""".format(head=head, base=base)
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_receipt_authored_by_pull_request_author_never_confirms(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: fabricated-independent-session
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[
+                {
+                    "author": {"login": "implementation-agent"},
+                    "body": body,
+                }
+            ],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_parent_transport_requires_authenticated_independent_session(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: 019fbc08-e766-7930-ade1-1019221d2d43
+Reviewer authenticated identity: implementation-agent
+Review transport: parent-posted-on-behalf-of-independent-session
+Implementation session identity: parent-implementation-session-338
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[
+                {"author": {"login": "implementation-agent"}, "body": body}
+            ],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_receipt_authenticated_reviewer_identity_must_match_comment_author(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Reviewer authenticated identity: another-reviewer
+Review transport: direct-github-reviewer
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_blocking_review_body_never_confirms_receipt(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[
+                {
+                    "state": "COMMENTED",
+                    "body": "BLOCKING: unresolved review objection",
+                }
+            ],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(
+            observation["unresolved_objections_state"],
+            "explicit_blocking_comments_present",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_receipt_requires_valid_timestamp_and_exact_axis_tokens(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Observed at: yesterday
+Axes: not architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_parent_receipt_rejects_non_uuid_and_embedded_negative_axes(self) -> None:
+        head = "a" * 40
+        base = "b" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: fabricated-session
+Reviewer authenticated identity: implementation-agent
+Review transport: parent-posted-on-behalf-of-independent-session
+Implementation session identity: parent-session
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture (not reviewed), authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            base_sha=base,
+            pr_author_identity="implementation-agent",
+            aggregate_review="REVIEW_REQUIRED",
+            reviews=[],
+            comments=[{"author": {"login": "implementation-agent"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_dispatch_success_binding_requires_expected_checkout_identity(self) -> None:
+        checks = {
+            name: {"result": "success"}
+            for name in project_context.REQUIRED_CI_CHECKS
+            if name != "exact-head-check"
+        }
+        sha = "a" * 40
+        capsule = {
+            "schema_version": "project_context.v1",
+            "binding": {
+                "workflow_run_identity": {
+                    "availability": "confirmed",
+                    "event_name": "workflow_dispatch",
+                },
+                "expected_head_sha": sha,
+                "checked_out_sha": "b" * 40,
+                "source_required_check_matrix": project_context.source_required_check_matrix(
+                    project_context.summarize_checks(
+                        project_context.parse_checks_json(json.dumps(checks))
+                    ),
+                    event_name="workflow_dispatch",
+                ),
+            },
+        }
+        with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_dispatch"}, clear=False):
+            self.assertFalse(project_context.has_valid_success_binding(capsule))
+
+    def test_dispatch_capsule_generation_rejects_checkout_drift(self) -> None:
+        with mock.patch.object(
+            project_context,
+            "local_checkout_state",
+            return_value={"head_sha": "b" * 40, "branch": "main", "dirty": False},
+        ):
+            with self.assertRaisesRegex(ValueError, "does not match expected exact head"):
+                project_context.build_capsule(
+                    offline=True,
+                    repository="owner/repo",
+                    event_name="workflow_dispatch",
+                    expected_head_sha="a" * 40,
+                )
+
+    def test_failed_or_incomplete_receipt_never_confirms_exact_head(self) -> None:
+        head = "c" * 40
+        body = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Outcome: FAIL
+Unresolved objections: none
+"""
+        observation = project_context._build_review_observation(
+            head_sha=head,
+            aggregate_review="APPROVED",
+            reviews=[{"state": "APPROVED", "body": "aggregate"}],
+            comments=[{"author": {"login": "reviewer"}, "body": body}],
+            observation_time="2026-08-01T06:00:00Z",
+        )
+        self.assertEqual(observation["review_receipt"]["state"], "invalid")
+        self.assertNotEqual(observation["exact_head_review_state"], "confirmed")
+
+    def test_new_repair_packet_id_routes_with_owned_pr(self) -> None:
+        text = """## Active Routing
+1. `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` — `IN_PROGRESS`.
+
+## Packet CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1
+**State:** `IN_PROGRESS`
+**Owned PR:** #338
+"""
+        self.assertEqual(
+            project_context.parse_first_routed_packet(text),
+            {
+                "packet": "CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1",
+                "state": "IN_PROGRESS",
+                "pr_number": "338",
+            },
+        )
+
     def test_approved_aggregate_not_treated_as_exact_head_acceptance(self) -> None:
         obs = project_context._build_review_observation(
             head_sha="h" * 40,
@@ -543,6 +903,7 @@ PR #299
             "native-runtime": {"result": "success"},
             "docker-build": {"result": "success"},
             "rust-typescript-cutover": {"result": "success"},
+            "context-capsule": {"result": "success"},
         }
         capsule = project_context.build_capsule(
             offline=True,
@@ -675,6 +1036,8 @@ PR #299
                     "availability": "confirmed",
                     "event_name": "push",
                 },
+                "expected_head_sha": "a" * 40,
+                "checked_out_sha": "a" * 40,
                 "source_required_check_matrix": project_context.source_required_check_matrix(
                     project_context.summarize_checks(
                         project_context.parse_checks_json(json.dumps(checks))
@@ -699,6 +1062,8 @@ PR #299
                     "availability": "confirmed",
                     "event_name": "pull_request",
                 },
+                "expected_head_sha": sha,
+                "checked_out_sha": sha,
                 "source_required_check_matrix": project_context.source_required_check_matrix(
                     project_context.summarize_checks(checks), event_name="pull_request"
                 ),

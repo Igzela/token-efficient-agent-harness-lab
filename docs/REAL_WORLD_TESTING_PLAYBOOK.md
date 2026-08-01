@@ -25,6 +25,8 @@ Two workflows have different authority:
 - `pr-fast-checks` runs on pull-request creation and replacement heads. It cancels obsolete in-progress runs and performs exact-head governance, security, handoff, workflow-contract, classifier, and diff checks. It is non-canonical feedback only and cannot authorize review, merge, release, deployment, or acceptance.
 - `tests` is the sole canonical source-test workflow. For pull requests it starts only on `ready_for_review`; normal pushes to `main` may use the same strict documentation-only mode, while explicit exact-head `workflow_dispatch` fallback runs remain complete-matrix paths. Every required source job must execute its exact-head verification step successfully.
 
+The terminal `context-capsule` is a required job in every canonical `tests` run. Successful source jobs do not make the run green when that terminal job fails, is cancelled, is skipped, is missing, or has not reached a terminal successful conclusion. Merge eligibility must be checked only after the complete required job set, including the terminal capsule and its artifact publication, has completed successfully for the unchanged exact head.
+
 For a Ready pull request, `tests` checks out the accepted base separately and uses that trusted classifier to inspect the exact `base...head` path and file-mode diff. For a normal `main` push it instead binds the accepted-before commit and classifies the complete `before...after` range. A strictly documentation-only result selects canonical `docs_only` mode: all required jobs still check out and verify the exact head and finish successfully, while compiler, runtime, database-test, TypeScript, Docker-build, and other non-applicable source-test steps report not applicable. Empty, mixed, executable, symlink, submodule, workflow, script, test, configuration, dependency, schema, migration, generated, forced, zero-base, non-ancestor, or otherwise uncertain diffs fail closed to the complete matrix. Candidate-controlled classifier code cannot grant itself documentation-only mode.
 
 Keep a changing PR in Draft. `pr-fast-checks` enforces Draft state on `opened`, `synchronize`, and `reopened`; directly opening or updating a Ready PR fails the lane guard. Before marking a PR Ready once, batch all known repairs, run focused and applicable full local checks, and review the complete diff. If a Ready candidate needs another commit, convert it back to Draft before publishing the replacement head, then mark it Ready again after the repair batch stabilizes. A new head invalidates all prior CI and review conclusions.
@@ -85,7 +87,7 @@ A PR is autonomously merge-eligible only when all are true:
 | packet/slice state | represented truthfully in active docs when state changes |
 | scope | matches goal, owners, decisions, allowed changes, and non-goals |
 | risk | classified with matching focused evidence |
-| CI | every required job completed successfully under the complete or trusted documentation-only canonical mode |
+| CI | every required job, including terminal `context-capsule` and its artifact publication, completed successfully under the complete or trusted documentation-only canonical mode |
 | handoff guard | pass |
 | review | diff reviewed against architecture, authority, compatibility, security, audit, and rollback |
 | rollback | clear and sufficient |
@@ -101,7 +103,12 @@ A review conclusion only binds the exact head it was produced against. Every mer
 1. the exact commit SHA reviewed (the PR head at review time);
 2. the complete `base...head` diff that was reviewed (not a partial or stale-range diff);
 3. the review axes applied (architecture, authority, compatibility, security, audit, rollback, scope/path binding);
-4. the review outcome and any remaining bounded findings, with no unresolved objection.
+4. the authenticated GitHub reviewer identity, reviewer session identity, and
+   transport (`direct-github-reviewer` or the explicitly recorded
+   `parent-posted-on-behalf-of-independent-session` transport);
+5. the implementation session identity when the parent transports a receipt,
+   proving it differs from the reviewer session;
+6. the review outcome and any remaining bounded findings, with no unresolved objection.
 
 A replacement head invalidates the prior receipt: the new exact head requires a new complete-diff review before Ready/merge eligibility. A receipt written against an older head is never valid evidence for a newer head. Strictly documentation-only PRs may use a simplified receipt (exact head, complete diff, outcome, rollback by revert) but still need exact-head binding. Review receipts live in the PR review thread; an aggregate approval label alone is not an exact-head independent acceptance unless its commit binding is verified.
 
@@ -182,6 +189,7 @@ For each coherent packet or slice:
 - [ ] Run `uv run --no-project python scripts/check_agent_handoff.py`
 - [ ] Mark the stable candidate Ready to trigger canonical exact-head `tests`
 - [ ] Wait for every required canonical job to complete successfully in its trusted mode
+- [ ] Confirm the terminal `context-capsule` conclusion and artifact publication are successful; source-matrix success alone is not canonical success
 - [ ] Repair failures at their root cause; return to Draft and batch changes instead of pushing during canonical CI
 - [ ] Merge only when the classifier, exact-head evidence, review, objection, rollback, and authority gates pass
 - [ ] Refresh `main`, update active state, and continue if the bounded objective includes later packets
@@ -207,7 +215,7 @@ Add browser, Docker, migration, release, signing, backup/restore, concurrency, c
 
 ## PR and Merge Policy
 
-Standing authority covers branch creation, commits, PRs, CI repair, independent review, eligible manual squash-merge, and refresh/continuation across ready packets. Automatic merge remains disabled. Manual merge requires the exact reviewed head, all required canonical jobs successful, no unresolved objection, a clean scope/path binding, and the normal classifier result; no repeated user confirmation is needed once those conditions pass.
+Standing authority covers branch creation, commits, PRs, CI repair, independent review, eligible manual squash-merge, and refresh/continuation across ready packets. Automatic merge remains disabled. Manual merge requires the exact reviewed head, every required canonical job—including terminal `context-capsule` and artifact publication—successful after reaching terminal state, no unresolved objection, a clean scope/path binding, and the normal classifier result; source-matrix success with a failed or incomplete terminal capsule is merge-ineligible.
 
 Agents may autonomously create and merge scoped PRs when the classifier passes. Do not combine unrelated packets or risk surfaces merely to reduce PR count. When `docs/NEXT_DECISION.md` declares a grouped boundary, its ordered internal packets are one coherent risk surface and may share one branch and PR.
 

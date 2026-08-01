@@ -26,6 +26,7 @@ import ast
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -171,7 +172,10 @@ DORMANT_AUTOMATION_PATTERNS = [
     ),
     (
         "gh run list --limit 1",
-        re.compile(r"\bgh\s+run\s+list\s+--limit\s+1\b"),
+        re.compile(
+            r"(?m)\bgh\s+run\s+list\b[^\n;&|]*"
+            r"(?:--limit\s*=?\s*1|-L\s*1)\b"
+        ),
     ),
     (
         "gh run watch chained to unbound gh run list",
@@ -179,7 +183,7 @@ DORMANT_AUTOMATION_PATTERNS = [
     ),
     (
         "gh run watch unbound",
-        re.compile(r"\bgh\s+run\s+watch\b\s*(?:--exit-status\s*)?(?:$|#|\||&&|;)"),
+        re.compile(r"(?m)\bgh\s+run\s+watch\b[^\n;&|]*"),
     ),
 ]
 
@@ -301,10 +305,69 @@ DORMANT_EXECUTOR_FN_RE = re.compile(
 )
 DORMANT_EMPTY_BODY_RE = re.compile(
     r"^\s*(?:return\s+)?(?:Ok\(\s*)?"
-    r"(?:json!\(\s*\{\s*\}|Value::Null|\{\}\.into\(\)|HashMap::new\(\)|"
+    r"(?:(?:[A-Za-z_][\w]*::)*json!\(\s*\{\s*\}|(?:[A-Za-z_][\w]*::)*Value::Null|\{\}\.into\(\)|HashMap::new\(\)|"
     r"BTreeMap::new\(\)|Vec::new\(\)|vec!\[\]|Default::default\(\))"
     r"(?:\s*\))?\s*;?\s*$"
 )
+
+
+def _cfg_expression_requires_test(expression: str) -> bool:
+    """Return whether a cfg meta-expression can only match test builds."""
+    tokens = re.findall(
+        r"[A-Za-z_][A-Za-z0-9_]*|[(),=]|\"(?:\\.|[^\"\\])*\"",
+        expression,
+    )
+    position = 0
+
+    def parse() -> tuple[bool, bool]:
+        """Return (can_be_true, can_be_false) with test fixed to false."""
+        nonlocal position
+        if position >= len(tokens):
+            return False, True
+        token = tokens[position]
+        position += 1
+        if token == "(":
+            value = parse()
+            while position < len(tokens) and tokens[position] != ")":
+                position += 1
+            if position < len(tokens):
+                position += 1
+            return value
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
+            return False, True
+        if position < len(tokens) and tokens[position] == "(":
+            position += 1
+            arguments = []
+            while position < len(tokens) and tokens[position] != ")":
+                arguments.append(parse())
+                if position < len(tokens) and tokens[position] == ",":
+                    position += 1
+            if position < len(tokens):
+                position += 1
+            if token == "all":
+                return (
+                    all(argument[0] for argument in arguments),
+                    any(argument[1] for argument in arguments),
+                )
+            if token == "any":
+                return (
+                    any(argument[0] for argument in arguments),
+                    all(argument[1] for argument in arguments),
+                )
+            if token == "not" and len(arguments) == 1:
+                return arguments[0][1], arguments[0][0]
+            return True, True
+        if position < len(tokens) and tokens[position] == "=":
+            position += 1
+            if position < len(tokens) and tokens[position] not in {",", ")"}:
+                position += 1
+            return True, True
+        if token == "test":
+            return False, True
+        return True, True
+
+    can_be_true, _ = parse()
+    return not can_be_true
 
 DORMANT_OWNERSHIP_CLAIM_RE = re.compile(
     r"(?i)\b(?:the\s+)?(?:sole|only|single|canonical|authoritative)\s+"
@@ -658,12 +721,120 @@ def check_dormant_automation_guard(
 
         file_allowlist = AUTOMATION_GUARD_ALLOWLIST.get(rel_path, {})
         for label, pattern in DORMANT_AUTOMATION_PATTERNS:
-            if pattern.search(content):
+            if label == "gh run list --limit 1":
+                matched = _has_unbound_latest_run_list(content)
+            elif label == "gh run watch chained to unbound gh run list":
+                matched = _has_unbound_chained_watch(content)
+            elif label == "gh run watch unbound":
+                matched = _has_unbound_run_watch(content)
+            else:
+                matched = bool(pattern.search(content))
+            if matched:
                 if file_allowlist.get(label):
                     continue
                 findings.append(f"{rel_path}: {label} pattern found")
 
     return findings
+
+
+def _has_unbound_latest_run_list(content: str) -> bool:
+    """Return true for latest-run polling that is not bound to a head/commit."""
+    content = re.sub(r"\\[ \t]*\n", " ", content)
+    for match in re.finditer(
+        r"(?m)\bgh\s+run\s+list\b([^;&|\n]*(?:\\\n[^;&|\n]*)*)", content
+    ):
+        args = match.group(1).replace("\\\n", " ")
+        if not _has_limit_one(args):
+            continue
+        if _has_nonempty_option_value(args, "--head") or _has_nonempty_option_value(
+            args, "--commit"
+        ):
+            continue
+        return True
+    return False
+
+
+def _has_unbound_run_watch(content: str) -> bool:
+    """Return true when every run-watch command lacks an explicit numeric id."""
+    content = re.sub(r"\\[ \t]*\n", " ", content)
+    for match in re.finditer(
+        r"(?m)\bgh\s+run\s+watch\b([^\n;&|]*)", content
+    ):
+        args = match.group(1)
+        nested_lists = re.findall(r"\$\(\s*gh\s+run\s+list\b([^)]*)\)", args)
+        if nested_lists:
+            # The chained detector reports nested lists with their own
+            # binding semantics; do not double-count the outer watch.
+            continue
+        args = re.sub(r"\$\([^)]*\)", "", args)
+        try:
+            tokens = shlex.split(args)
+        except ValueError:
+            return True
+        positional = []
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token in {"--interval", "-i", "--repo", "-R"}:
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            positional.append(token)
+            index += 1
+        if not positional or not re.fullmatch(r"\d+", positional[0]):
+            return True
+    return False
+
+
+def _has_unbound_chained_watch(content: str) -> bool:
+    """Return true only for a watch fed by an unbound latest-run list."""
+    content = re.sub(r"\\[ \t]*\n", " ", content)
+    for match in re.finditer(
+        r"(?m)\bgh\s+run\s+watch\b([^;&|\n]*)\$\(\s*gh\s+run\s+list\b([^)]*)\)",
+        content,
+    ):
+        nested = match.group(2)
+        if not (
+            _has_nonempty_option_value(nested, "--head")
+            or _has_nonempty_option_value(nested, "--commit")
+        ):
+            return True
+    return False
+
+
+def _has_nonempty_option_value(args: str, option: str) -> bool:
+    """Return true only when an option has a concrete non-option value."""
+    pattern = rf"(?:^|\s){re.escape(option)}(?:=([^\s;&|]+)|\s+([^\s;&|]+))"
+    match = re.search(pattern, args)
+    if not match:
+        return False
+    value = match.group(1) or match.group(2) or ""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return bool(value and not value.startswith("-"))
+
+
+def _has_limit_one(args: str) -> bool:
+    """Recognize shell-quoted and unquoted latest-run limit spellings."""
+    try:
+        tokens = shlex.split(args)
+    except ValueError:
+        return bool(
+            re.search(
+                r"(?:--limit\s*(?:=\s*)?[\"']?1[\"']?(?=\s|$)|"
+                r"-L\s*[\"']?1[\"']?(?=\s|$))",
+                args,
+            )
+        )
+    for index, token in enumerate(tokens):
+        if token in {"--limit", "-L"}:
+            if index + 1 < len(tokens) and tokens[index + 1] == "1":
+                return True
+        elif token.startswith("--limit=") and token.removeprefix("--limit=") == "1":
+            return True
+    return False
 
 
 def check_removed_plugin_surface_guard(
@@ -680,9 +851,11 @@ def check_removed_plugin_surface_guard(
     cleanup. The guard uses a composite legacy fingerprint so that generic
     business identifiers (``official``, ``verified``) stay legal: only
     resurrection of the deleted files, the unrestricted semantic, or two or
-    more legacy tokens in one file are flagged.
+    more legacy tokens in the production crate are flagged, even when split
+    across files.
     """
     findings = []
+    legacy_hits_by_file: dict[str, list[str]] = {}
 
     for rel_path in tracked_files:
         if not rel_path.startswith(PLUGIN_SURFACE_SCAN_PREFIXES):
@@ -705,21 +878,47 @@ def check_removed_plugin_surface_guard(
         except OSError:
             continue
 
-        if PLUGIN_UNRESTRICTED_SEMANTIC in content:
+        semantic_content = _rust_semantic_content(content)
+        if PLUGIN_UNRESTRICTED_SEMANTIC in semantic_content:
             findings.append(
                 f"{rel_path}: 'empty = unrestricted' trust semantic found"
             )
 
         legacy_hits = [
             token for token in PLUGIN_LEGACY_FINGERPRINT_TOKENS
-            if token in content
+            if token in semantic_content
         ]
-        if len(legacy_hits) >= 2:
+        if legacy_hits:
+            legacy_hits_by_file[rel_path] = legacy_hits
+        lower_content = semantic_content.lower()
+        if (
+            "plugin" in lower_content
+            and (
+                re.search(r"\b(?:pluginregistry|pluginsystem|pluginmanifest|plugintrust|trustlevel)\b", lower_content)
+                or (
+                    "trust" in lower_content
+                    and ("permission" in lower_content or "registry" in lower_content)
+                )
+            )
+            and re.search(r"\b(?:enum|struct|fn)\b", semantic_content)
+        ):
             findings.append(
-                f"{rel_path}: {len(legacy_hits)} legacy plugin trust tokens "
-                f"found: {', '.join(legacy_hits)}"
+                f"{rel_path}: plugin trust/permission registry structural "
+                "fingerprint found"
             )
 
+    all_legacy_hits = sorted(
+        {token for hits in legacy_hits_by_file.values() for token in hits}
+    )
+    if len(all_legacy_hits) >= 2:
+        locations = ", ".join(
+            f"{path}: {', '.join(hits)}"
+            for path, hits in sorted(legacy_hits_by_file.items())
+        )
+        findings.append(
+            "production crate contains a composite legacy plugin trust "
+            f"fingerprint: {', '.join(all_legacy_hits)} ({locations})"
+        )
     return findings
 
 
@@ -742,27 +941,474 @@ def _iter_rs_lines(repo_root: Path, tracked_files: list[str]):
             content = filepath.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        yield rel_path, content
+        yield rel_path, _strip_cfg_test_regions(content)
 
 
 def _strip_cfg_test_regions(content: str) -> str:
-    """Return content with `#[cfg(test)]` regions removed (brace balanced)."""
+    """Return Rust source with test-only items removed using lexical braces.
+
+    Attributes are matched against a code mask so a ``cfg(test)`` string in a
+    comment or literal cannot hide production code. Only unconditional
+    ``cfg(test)`` and ``cfg(all(..., test, ...))`` regions are test-only;
+    ``cfg(any(test, ...))`` and ``cfg(not(test))`` also describe production
+    configurations and must remain visible to the production heuristics.
+    """
     lines = content.splitlines()
-    out = []
+    code_lines = _rust_code_mask(content).splitlines()
+    out = [""] * len(lines)
+
+    def emit(line_number: int, text: str) -> None:
+        text = text.strip()
+        if not text:
+            return
+        if out[line_number]:
+            out[line_number] += " "
+        out[line_number] += text
+
     in_test = False
+    pending_test_item = False
+    pending_item_text = ""
+    pending_delimiter_depths = (0, 0, 0)
+    pending_cfg_start_line = None
+    pending_cfg_start_column = None
+    pending_cfg_text = ""
     brace_depth = 0
-    for line in lines:
-        if not in_test:
-            if re.match(r"^\s*#\[cfg\(test\)\]\s*$", line):
-                in_test = True
-                brace_depth = 0
+
+    def consume_test_tail(
+        line_number: int,
+        line: str,
+        tail: str,
+        raw_tail_offset: int,
+    ) -> None:
+        nonlocal in_test
+        nonlocal pending_test_item, pending_item_text
+        nonlocal pending_delimiter_depths, brace_depth
+        pending_item_text = tail
+        pending_delimiter_depths = (0, 0, 0)
+        closing_brace = _rust_first_enclosing_close(tail)
+        if closing_brace is not None:
+            emit(line_number, line[raw_tail_offset + closing_brace :].strip())
+            pending_test_item = False
+            pending_item_text = ""
+            pending_delimiter_depths = (0, 0, 0)
+            return
+        consumed = False
+        for token_index, token in _rust_top_level_tokens(tail):
+            if token == "," and not _rust_comma_terminated_item(
+                tail[:token_index]
+            ):
+                continue
+            if token == "{":
+                item_end = _rust_balanced_brace_end(tail, token_index)
+                if item_end is None:
+                    in_test = True
+                    brace_depth = _rust_brace_delta(tail[token_index:])
+                else:
+                    suffix = line[raw_tail_offset + item_end :].strip()
+                    if suffix:
+                        emit(line_number, suffix)
+                consumed = True
             else:
-                out.append(line)
+                suffix = line[raw_tail_offset + token_index + 1 :].strip()
+                if suffix:
+                    emit(line_number, suffix)
+                consumed = True
+            if consumed:
+                pending_test_item = False
+                pending_item_text = ""
+                pending_delimiter_depths = (0, 0, 0)
+                break
+        if not consumed:
+            pending_test_item = True
+            pending_delimiter_depths = _rust_delimiter_depths(tail)
+
+    for line_number, (line, code_line) in enumerate(zip(lines, code_lines)):
+        if not in_test:
+            if pending_cfg_start_line is not None:
+                closing = re.search(r"\)\s*\]", code_line)
+                if closing is None:
+                    pending_cfg_text += "\n" + code_line
+                    continue
+                attribute_text = (
+                    pending_cfg_text + "\n" + code_line[: closing.end()]
+                )
+                attribute = re.search(
+                    r"#\[\s*cfg\s*\((.*)\)\s*\]",
+                    attribute_text,
+                    re.S,
+                )
+                expression = attribute.group(1) if attribute else ""
+                test_only = bool(
+                    attribute and _cfg_expression_requires_test(expression)
+                )
+                if test_only:
+                    consume_test_tail(
+                        line_number,
+                        line,
+                        code_line[closing.end() :],
+                        closing.end(),
+                    )
+                else:
+                    emit(
+                        pending_cfg_start_line,
+                        lines[pending_cfg_start_line][pending_cfg_start_column:],
+                    )
+                    for skipped_line in range(
+                        pending_cfg_start_line + 1, line_number + 1
+                    ):
+                        emit(skipped_line, lines[skipped_line])
+                pending_cfg_start_line = None
+                pending_cfg_start_column = None
+                pending_cfg_text = ""
+                continue
+            if pending_test_item:
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                closing_brace = _rust_first_enclosing_close(
+                    code_line, pending_delimiter_depths
+                )
+                if closing_brace is not None:
+                    emit(line_number, line[closing_brace:].strip())
+                    pending_test_item = False
+                    pending_item_text = ""
+                    pending_delimiter_depths = (0, 0, 0)
+                    continue
+                item_prefix = pending_item_text
+                if item_prefix and code_line.strip():
+                    item_prefix += "\n"
+                item_prefix += code_line
+                for token_index, token in _rust_top_level_tokens(
+                    code_line, pending_delimiter_depths
+                ):
+                    if token == "," and not _rust_comma_terminated_item(
+                        pending_item_text + code_line[:token_index]
+                    ):
+                        continue
+                    if token == "{":
+                        item_end = _rust_balanced_brace_end(code_line, token_index)
+                        if item_end is None:
+                            in_test = True
+                            pending_test_item = False
+                            brace_depth = _rust_brace_delta(code_line[token_index:])
+                        else:
+                            suffix = line[item_end:].strip()
+                            if suffix:
+                                emit(line_number, suffix)
+                            pending_test_item = False
+                        pending_item_text = ""
+                        pending_delimiter_depths = (0, 0, 0)
+                        break
+                    suffix = line[token_index + 1 :].strip()
+                    if suffix:
+                        emit(line_number, suffix)
+                    pending_test_item = False
+                    pending_item_text = ""
+                    pending_delimiter_depths = (0, 0, 0)
+                    break
+                else:
+                    pending_item_text = item_prefix
+                    pending_delimiter_depths = _rust_delimiter_depths(
+                        code_line, pending_delimiter_depths
+                    )
+                continue
+            attr = re.search(
+                r"#\[\s*cfg\s*\(([^\]]*)\)\s*\]",
+                code_line,
+            )
+            expression = attr.group(1) if attr else ""
+            test_only = bool(attr and _cfg_expression_requires_test(expression))
+            if test_only:
+                production_prefix = line[: attr.start()].strip()
+                if production_prefix:
+                    emit(line_number, production_prefix)
+                consume_test_tail(
+                    line_number,
+                    line,
+                    code_line[attr.end() :],
+                    attr.end(),
+                )
+            elif attr is None and re.search(r"#\[\s*cfg\s*\(", code_line):
+                cfg_start = re.search(r"#\[\s*cfg\s*\(", code_line)
+                assert cfg_start is not None
+                production_prefix = line[: cfg_start.start()].strip()
+                if production_prefix:
+                    emit(line_number, production_prefix)
+                pending_cfg_start_line = line_number
+                pending_cfg_start_column = cfg_start.start()
+                pending_cfg_text = code_line[cfg_start.start() :]
+            else:
+                emit(line_number, line)
             continue
-        brace_depth += line.count("{") - line.count("}")
-        if brace_depth <= 0:
+        item_end = _rust_region_end(code_line, brace_depth)
+        if item_end is not None:
+            suffix = line[item_end:].strip()
+            if suffix:
+                emit(line_number, suffix)
             in_test = False
+            brace_depth = 0
+        else:
+            brace_depth += _rust_brace_delta(code_line)
     return "\n".join(out)
+
+
+def _rust_top_level_tokens(
+    code: str, initial_depths: tuple[int, int, int] = (0, 0, 0)
+):
+    """Yield item delimiters outside Rust (), [], and {} delimiters."""
+    paren_depth, bracket_depth, brace_depth = initial_depths
+    for index, current in enumerate(code):
+        if current in "{;," and not any(
+            (paren_depth, bracket_depth, brace_depth)
+        ):
+            yield index, current
+        if current == "(":
+            paren_depth += 1
+        elif current == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif current == "[":
+            bracket_depth += 1
+        elif current == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif current == "{":
+            brace_depth += 1
+        elif current == "}":
+            brace_depth = max(0, brace_depth - 1)
+
+
+def _rust_delimiter_depths(
+    code: str, initial_depths: tuple[int, int, int] = (0, 0, 0)
+) -> tuple[int, int, int]:
+    """Return unmatched Rust (), [], and {} delimiter depths for a line."""
+    paren_depth, bracket_depth, brace_depth = initial_depths
+    for current in code:
+        if current == "(":
+            paren_depth += 1
+        elif current == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif current == "[":
+            bracket_depth += 1
+        elif current == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif current == "{":
+            brace_depth += 1
+        elif current == "}":
+            brace_depth = max(0, brace_depth - 1)
+    return paren_depth, bracket_depth, brace_depth
+
+
+def _rust_first_enclosing_close(
+    code: str, initial_depths: tuple[int, int, int] = (0, 0, 0)
+) -> int | None:
+    """Return an outer ``}`` that ends a comma-optional item."""
+    paren_depth, bracket_depth, brace_depth = initial_depths
+    for index, current in enumerate(code):
+        if current == "}" and not any(
+            (paren_depth, bracket_depth, brace_depth)
+        ):
+            return index
+        if current == "(":
+            paren_depth += 1
+        elif current == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif current == "[":
+            bracket_depth += 1
+        elif current == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif current == "{":
+            brace_depth += 1
+        elif current == "}":
+            brace_depth = max(0, brace_depth - 1)
+    return None
+
+
+def _rust_balanced_brace_end(code: str, opening_index: int) -> int | None:
+    """Return the offset immediately after a balanced Rust brace item."""
+    depth = 0
+    for index in range(opening_index, len(code)):
+        current = code[index]
+        if current == "{":
+            depth += 1
+        elif current == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
+
+
+def _rust_region_end(code: str, initial_depth: int) -> int | None:
+    """Return the offset after a test region closes, if it closes on this line."""
+    depth = initial_depth
+    for index, current in enumerate(code):
+        if current == "{":
+            depth += 1
+        elif current == "}":
+            depth -= 1
+            if depth <= 0:
+                return index + 1
+    return None
+
+
+def _rust_field_prefix(prefix: str) -> bool:
+    """Identify a field prefix without treating function arguments as fields."""
+    return bool(
+        re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*[^:]", prefix)
+        and not re.search(
+            r"\b(?:fn|struct|enum|mod|const|static|type|use|impl|trait)\b",
+            prefix,
+        )
+    )
+
+
+def _rust_comma_terminated_item(prefix: str) -> bool:
+    """Identify a struct field or enum variant ending at a comma."""
+    if _rust_field_prefix(prefix):
+        return True
+    return bool(
+        re.fullmatch(
+            r"\s*(?:pub(?:\([^)]*\))?\s+)?[A-Za-z_][A-Za-z0-9_]*"
+            r"(?:\s*::\s*[A-Za-z_][A-Za-z0-9_]*)*"
+            r"(?:\s*\([^{}]*\))?(?:\s*=\s*[^;]+)?\s*",
+            prefix,
+        )
+    )
+
+
+def _rust_code_mask(content: str) -> str:
+    """Mask Rust comments and literals while preserving code punctuation."""
+    chars = list(content)
+    masked = list(content)
+    index = 0
+    block_depth = 0
+    string = False
+    char = False
+    escaped = False
+    raw_hashes: int | None = None
+    while index < len(chars):
+        current = chars[index]
+        next_char = chars[index + 1] if index + 1 < len(chars) else ""
+        if block_depth:
+            if current == "/" and next_char == "*":
+                block_depth += 1
+                masked[index] = masked[index + 1] = " "
+                index += 2
+                continue
+            if current == "*" and next_char == "/":
+                block_depth -= 1
+                masked[index] = masked[index + 1] = " "
+                index += 2
+                continue
+            if current != "\n":
+                masked[index] = " "
+            index += 1
+            continue
+        if raw_hashes is not None:
+            terminator = '"' + ("#" * raw_hashes)
+            if content.startswith(terminator, index):
+                for offset in range(len(terminator)):
+                    masked[index + offset] = " "
+                index += len(terminator)
+                raw_hashes = None
+            elif current != "\n":
+                masked[index] = " "
+                index += 1
+            else:
+                index += 1
+            continue
+        if string:
+            if current == '"' and not escaped:
+                masked[index] = " "
+                string = False
+            elif current != "\n":
+                masked[index] = " "
+            escaped = current == "\\" and not escaped
+            if current != "\\":
+                escaped = False
+            index += 1
+            continue
+        if char:
+            if current == "'" and not escaped:
+                masked[index] = " "
+                char = False
+            elif current != "\n":
+                masked[index] = " "
+            escaped = current == "\\" and not escaped
+            if current != "\\":
+                escaped = False
+            index += 1
+            continue
+        if current == "/" and next_char == "/":
+            masked[index] = masked[index + 1] = " "
+            index += 2
+            while index < len(chars) and chars[index] != "\n":
+                masked[index] = " "
+                index += 1
+            continue
+        if current == "/" and next_char == "*":
+            masked[index] = masked[index + 1] = " "
+            block_depth = 1
+            index += 2
+            continue
+        if current == "r":
+            quote_index = index + 1
+            while quote_index < len(chars) and chars[quote_index] == "#":
+                quote_index += 1
+            if quote_index < len(chars) and chars[quote_index] == '"':
+                raw_hashes = quote_index - index - 1
+                for offset in range(quote_index - index + 1):
+                    masked[index + offset] = " "
+                index = quote_index + 1
+                continue
+        if current == '"':
+            masked[index] = " "
+            string = True
+        elif current == "'":
+            char_end = index + (3 if index + 1 < len(chars) and chars[index + 1] == "\\" else 2)
+            if char_end < len(chars) and chars[char_end] == "'":
+                for offset in range(char_end - index + 1):
+                    masked[index + offset] = " "
+                index = char_end + 1
+                continue
+        index += 1
+    return "".join(masked)
+
+
+def _rust_brace_delta(line: str) -> int:
+    """Count Rust braces while ignoring comments, strings, and char literals."""
+    delta = 0
+    index = 0
+    in_string = False
+    in_char = False
+    escaped = False
+    while index < len(line):
+        char = line[index]
+        next_char = line[index + 1] if index + 1 < len(line) else ""
+        if not in_string and not in_char and char == "/" and next_char == "/":
+            break
+        if not in_string and not in_char and char == "/" and next_char == "*":
+            end = line.find("*/", index + 2)
+            if end == -1:
+                break
+            index = end + 2
+            continue
+        if not in_char and char == '"' and not escaped:
+            in_string = not in_string
+        elif not in_string and char == "'" and not escaped:
+            in_char = not in_char
+        elif not in_string and not in_char:
+            if char == "{":
+                delta += 1
+            elif char == "}":
+                delta -= 1
+        escaped = char == "\\" and not escaped
+        if char != "\\":
+            escaped = False
+        index += 1
+    return delta
+
+
+def _rust_semantic_content(content: str) -> str:
+    """Remove test-only regions, comments, and literals before fingerprinting."""
+    return _rust_code_mask(_strip_cfg_test_regions(content))
 
 
 def check_dormant_surface_heuristics(
@@ -776,10 +1422,15 @@ def check_dormant_surface_heuristics(
     Findings are suppressed only by DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
     entries.
     """
-    findings = []
+    findings = _validate_dormant_surface_allowlist()
     allowed = {
         (entry["path"], entry["classification"])
         for entry in DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
+        if isinstance(entry, dict)
+        and isinstance(entry.get("path"), str)
+        and isinstance(entry.get("classification"), str)
+        and entry.get("path", "").strip()
+        and entry.get("classification", "").strip()
     }
 
     def suppressed(rel_path: str, classification: str) -> bool:
@@ -800,6 +1451,7 @@ def check_dormant_surface_heuristics(
         lib_content = lib_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         lib_content = ""
+    lib_content = _strip_cfg_test_regions(lib_content)
     declared_modules = re.findall(
         r"^\s*(?:pub(?:\(crate\))?\s+)?mod\s+(\w+)\s*;",
         lib_content,
@@ -835,6 +1487,7 @@ def check_dormant_surface_heuristics(
                 )
             except OSError:
                 continue
+            content = _rust_semantic_content(content)
             if re.search(rf"\bcrate::{module}\b|\bengine::{module}\b", content):
                 referenced = True
                 break
@@ -861,8 +1514,9 @@ def check_dormant_surface_heuristics(
 
     # (d) executor-named empty functions
     for rel_path, content in _iter_rs_lines(repo_root, tracked_files):
-        clean = _strip_cfg_test_regions(content)
+        clean = _rust_semantic_content(content)
         for match in DORMANT_EXECUTOR_FN_RE.finditer(clean):
+            line_no = clean.count("\n", 0, match.start()) + 1
             brace = clean.find("{", match.end())
             if brace == -1:
                 continue
@@ -880,11 +1534,15 @@ def check_dormant_surface_heuristics(
                 continue
             body = clean[brace + 1 : body_end]
             if DORMANT_EMPTY_BODY_RE.search(body):
-                findings.append(
-                    f"{rel_path}: executor-named function "
-                    f"'{match.group(0)[3:]}' returns only an empty value "
-                    "(no-op executor surface)"
-                )
+                if not (
+                    suppressed(rel_path, "wired")
+                    or suppressed(rel_path, "generated")
+                ):
+                    findings.append(
+                        f"{rel_path}:{line_no}: executor-named function "
+                        f"'{match.group(0)[3:]}' returns only an empty value "
+                        "(no-op executor surface)"
+                    )
 
     # (e) conflicting sole-owner claims
     claims: dict[str, list[str]] = {}
@@ -893,12 +1551,44 @@ def check_dormant_surface_heuristics(
             claims.setdefault(match.group(1), []).append(rel_path)
     for claimed, paths in claims.items():
         unique = sorted(set(paths))
-        if len(unique) > 1:
+        unsuppressed = [
+            path for path in unique if not suppressed(path, "sole_owner")
+        ]
+        if len(unsuppressed) > 1:
             findings.append(
                 f"conflicting sole-owner claims for '{claimed}' across: "
-                + ", ".join(unique)
+                + ", ".join(unsuppressed)
             )
 
+    return findings
+
+
+def _validate_dormant_surface_allowlist() -> list[str]:
+    required = (
+        "path",
+        "classification",
+        "owner",
+        "reason",
+        "review_condition",
+        "expiry_or_recheck_condition",
+    )
+    findings = []
+    for index, entry in enumerate(DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST):
+        if not isinstance(entry, dict):
+            findings.append(
+                f"dormant classification allowlist entry {index} is not an object"
+            )
+            continue
+        missing = []
+        for field in required:
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                missing.append(field)
+        if missing:
+            findings.append(
+                f"dormant classification allowlist entry {index} missing "
+                + ", ".join(missing)
+            )
     return findings
 
 

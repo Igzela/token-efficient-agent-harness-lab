@@ -460,6 +460,18 @@ class TestDormantAutomationGuard(unittest.TestCase):
             )
             self.assertEqual(findings, [])
 
+    def test_short_explicit_run_id_watch_passes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run watch 12345 --repo owner/repo --exit-status\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(findings, [])
+
     def test_commit_bound_list_passes(self):
         """gh run list bound to a head sha or branch is legitimate."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -493,13 +505,107 @@ class TestDormantAutomationGuard(unittest.TestCase):
             repo = Path(tmpdir)
             (repo / "scripts").mkdir(parents=True)
             (repo / "scripts" / "wait.sh").write_text(
-                "gh run watch --exit-status\n"
+                "gh run watch --exit-status\nprintf 'still unbound after this line'\n"
             )
             findings = csb.check_dormant_automation_guard(
                 repo, ["scripts/wait.sh"]
             )
             self.assertEqual(len(findings), 1)
             self.assertIn("gh run watch unbound", findings[0])
+
+    def test_run_list_limit_variants_are_checked_but_head_bound_list_passes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run list --json databaseId --limit=1\n"
+                "gh run list -L 1 --repo owner/repo\n"
+                "gh run list --limit 1 --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(
+                findings.count("scripts/wait.sh: gh run list --limit 1 pattern found"),
+                1,
+            )
+
+    def test_empty_commit_binding_is_not_treated_as_bound(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                'gh run list --commit="" --limit=1\n'
+                "gh run list --commit='' --limit 1\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(len(findings), 1)
+
+    def test_quoted_limit_one_is_not_treated_as_bounded(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                'gh run list --limit "1"\n'
+                "gh run list --limit='1'\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(len(findings), 1)
+
+    def test_watch_repo_without_run_id_is_unbound(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run watch --repo owner/repo --exit-status\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertIn("gh run watch unbound", findings[0])
+
+    def test_bound_nested_watch_and_commit_equals_are_safe(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run watch $(gh run list --commit=\"$SHA\" --limit 1 -q '.[0].databaseId')\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_multiline_bound_nested_watch_and_repo_run_id_are_safe(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run watch $(gh run list --commit \\\n+  \"$SHA\" --limit 1 -q '.[0].databaseId') --exit-status\n"
+                "gh run watch --repo owner/repo 12345 --exit-status\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_multiline_latest_list_and_interval_numeric_watch_are_checked(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run list \\\n+  --limit 1\n"
+                "gh run watch --interval 123456 --exit-status\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(len(findings), 2)
 
     def test_doc_prose_is_not_scanned(self):
         """The same strings in docs prose must not be flagged."""
@@ -623,21 +729,76 @@ class TestRemovedPluginSurfaceGuard(unittest.TestCase):
                 repo, ["engine/src/plugin.rs"]
             )
             self.assertEqual(len(findings), 1)
-            self.assertIn("legacy plugin trust tokens", findings[0])
 
-    def test_detects_unrestricted_comment(self):
+    def test_legacy_tokens_split_across_production_files_are_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "trust.rs").write_text(
+                "pub const TRUST_LEVEL_OFFICIAL: &str = \"official\";\n"
+            )
+            (repo / "engine" / "src" / "permissions.rs").write_text(
+                "pub const ALL_KNOWN_PERMISSIONS: &[&str] = &[];\n"
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/trust.rs", "engine/src/permissions.rs"]
+            )
+            self.assertEqual(len(findings), 1)
+
+    def test_structural_plugin_trust_registry_fingerprint_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "renamed.rs").write_text(
+                "pub struct PluginTrustRegistry { permissions: Vec<String> }\n"
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/renamed.rs"]
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertIn("structural fingerprint", findings[0])
+
+    def test_detects_unrestricted_semantic(self):
         """The 'empty = unrestricted' trust semantic must be flagged."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
             (repo / "engine" / "src").mkdir(parents=True)
             (repo / "engine" / "src" / "trust.rs").write_text(
-                "TRUST_LEVEL_OFFICIAL => HashSet::new(), // empty = unrestricted\n"
+                "fn trust() { empty = unrestricted; }\n"
             )
             findings = csb.check_removed_plugin_surface_guard(
                 repo, ["engine/src/trust.rs"]
             )
             self.assertEqual(len(findings), 1)
             self.assertIn("empty = unrestricted", findings[0])
+
+    def test_plugin_tokens_in_test_code_or_comments_are_ignored(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "plugin.rs").write_text(
+                "// TRUST_LEVEL_OFFICIAL ALL_KNOWN_PERMISSIONS empty = unrestricted\n"
+                "#[cfg(all(test, feature = \"fixture\"))]\n"
+                "mod tests {\n"
+                "    const TRUST_LEVEL_OFFICIAL: &str = \"official\";\n"
+                "}\n"
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/plugin.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_four_hash_raw_string_plugin_tokens_are_ignored(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "strings.rs").write_text(
+                'const TEXT: &str = r####"PluginRegistry TrustLevel ALL_KNOWN_PERMISSIONS"####;\n'
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/strings.rs"]
+            )
+            self.assertEqual(findings, [])
 
     def test_resurrected_plugin_path_flagged(self):
         """Re-creating the deleted plugin files is always a finding."""
@@ -805,6 +966,413 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
             )
             self.assertEqual(findings, [])
 
+    def test_cfg_test_variants_and_braces_in_strings_do_not_leak(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(all(test, feature = \"fixture\"))] mod tests {\n"
+                "    fn execute_test_stub() -> serde_json::Value {\n"
+                "        \"{ not a brace }\"; serde_json::json!({})\n"
+                "    }\n"
+                "}\n"
+                "pub fn execute_real() -> u32 { 1 }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_multiline_cfg_test_attribute_hides_test_only_executor(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(all(\n"
+                "    test,\n"
+                "    feature = \"fixture\",\n"
+                "))]\n"
+                "mod tests {\n"
+                "    pub fn execute_test_stub() -> serde_json::Value { serde_json::json!({}) }\n"
+                "}\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_cfg_all_test_with_nested_any_hides_test_only_executor(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(all(test, any(feature = \"a\", feature = \"b\")))]\n"
+                "pub fn execute_test_stub() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_cfg_test_requirement_is_order_independent(self):
+        expressions = [
+            'all(any(test, feature = "a"), test)',
+            'all(not(feature = "x"), test)',
+        ]
+        for expression in expressions:
+            with self.subTest(expression=expression):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    repo = Path(tmpdir)
+                    (repo / "engine" / "src").mkdir(parents=True)
+                    (repo / "engine" / "src" / "executor.rs").write_text(
+                        f"#[cfg({expression})]\n"
+                        "pub fn execute_test_stub() -> serde_json::Value { serde_json::json!({}) }\n"
+                    )
+                    findings = csb.check_dormant_surface_heuristics(
+                        repo, ["engine/src/executor.rs"]
+                    )
+                    self.assertEqual(findings, [])
+
+    def test_cfg_nested_not_test_requirement_is_detected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(not(not(test)))]\n"
+                "pub fn execute_test_stub() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_fully_qualified_value_null_executor_is_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "pub fn execute_real() -> serde_json::Value { serde_json::Value::Null }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("executor.rs:1:" in finding for finding in findings))
+
+    def test_cfg_test_nested_opening_braces_keep_entire_region_hidden(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(test)] mod tests { fn helper() {\n"
+                "}\n"
+                "pub fn execute_test_stub() -> serde_json::Value { serde_json::json!({}) }\n"
+                "}\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_cfg_test_stripping_preserves_original_line_numbers(self):
+        source = (
+            "#[cfg(test)] mod tests {\n"
+            "    fn fixture() {}\n"
+            "}\n"
+            "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+        )
+        stripped = csb._strip_cfg_test_regions(source)
+        self.assertEqual(
+            len(stripped.splitlines()), len(source.splitlines())
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(source)
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("executor.rs:4:" in finding for finding in findings))
+
+    def test_same_line_empty_cfg_test_module_does_not_hide_production_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(test)] mod tests {}\n"
+                "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_same_line_cfg_test_item_preserves_production_suffix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(test)] mod tests {} fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_same_line_cfg_test_semicolon_item_preserves_production_suffix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(test)] const FIXTURE: i32 = 1; pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_cfg_test_after_production_code_preserves_production_prefix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "pub fn execute_real() -> serde_json::Value { {}.into() } "
+                "#[cfg(test)] const FIXTURE: i32 = 1;\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_own_line_cfg_test_const_preserves_production_suffix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(test)]\n"
+                "const FIXTURE: i32 = 1; pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_own_line_cfg_test_module_preserves_production_suffix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(test)]\n"
+                "mod tests {} fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_cfg_test_closing_brace_preserves_production_suffix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "#[cfg(test)] mod tests {\n"
+                "    fn fixture() {}\n"
+                "} fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_inline_cfg_test_field_preserves_following_production_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "pub struct Fixture { #[cfg(test)] test_field: i32, pub_field: i32 }\n"
+                "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_cfg_test_enum_variant_preserves_following_production_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test, Real,\n"
+                "}\n"
+                "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_cfg_test_tuple_variant_ignores_inner_commas(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test(u8, u16), Real,\n"
+                "}\n"
+                "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_cfg_test_discriminant_with_nested_comma_preserves_production_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test = (1, 2), Real,\n"
+                "}\n"
+                "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_cfg_test_comma_optional_final_items_preserve_production_code(self):
+        cases = [
+            (
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test\n"
+                "}\n"
+            ),
+            (
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test(u8, u16)\n"
+                "}\n"
+            ),
+            (
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test = (1, 2)\n"
+                "}\n"
+            ),
+            (
+                "struct Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    test_field: i32\n"
+                "}\n"
+            ),
+        ]
+        for prefix in cases:
+            with self.subTest(prefix=prefix):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    repo = Path(tmpdir)
+                    (repo / "engine" / "src").mkdir(parents=True)
+                    (repo / "engine" / "src" / "executor.rs").write_text(
+                        prefix
+                        + "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+                    )
+                    findings = csb.check_dormant_surface_heuristics(
+                        repo, ["engine/src/executor.rs"]
+                    )
+                    self.assertTrue(
+                        any("execute_real" in finding for finding in findings)
+                    )
+
+    def test_cfg_test_same_line_comma_optional_items_preserve_production_code(self):
+        cases = [
+            "enum Fixture { #[cfg(test)] Test }\n",
+            "enum Fixture { #[cfg(test)] Test(u8, u16) }\n",
+            "enum Fixture { #[cfg(test)] Test = (1, 2) }\n",
+            "struct Fixture { #[cfg(test)] test_field: i32 }\n",
+        ]
+        for prefix in cases:
+            with self.subTest(prefix=prefix):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    repo = Path(tmpdir)
+                    (repo / "engine" / "src").mkdir(parents=True)
+                    (repo / "engine" / "src" / "executor.rs").write_text(
+                        prefix
+                        + "pub fn execute_real() -> serde_json.Value { serde_json::json!({}) }\n"
+                    )
+                    findings = csb.check_dormant_surface_heuristics(
+                        repo, ["engine/src/executor.rs"]
+                    )
+                    self.assertTrue(
+                        any("execute_real" in finding for finding in findings)
+                    )
+
+    def test_cfg_test_multiline_tuple_variant_ignores_inner_commas(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "enum Fixture {\n"
+                "    #[cfg(test)]\n"
+                "    Test(\n"
+                "        u8,\n"
+                "        u16,\n"
+                "    ), Real,\n"
+                "}\n"
+                "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_cfg_all_not_test_does_not_hide_production_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                '#[cfg(all(not(test), feature = "fixture"))]\n'
+                "pub fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_cfg_comments_any_and_raw_strings_do_not_hide_production_executor(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "// #[cfg(test)]\n"
+                "#[cfg(any(test, feature = \"fixture\"))]\n"
+                "fn execute_real() -> serde_json::Value { serde_json::json!({}) }\n"
+                "const TEXT: &str = r###\"{ production braces }\"###;\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_real" in finding for finding in findings))
+
+    def test_cfg_test_module_dead_code_blanket_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "test_support.rs").write_text(
+                "#[cfg(test)]\n"
+                "mod tests {\n"
+                "    #![allow(dead_code)]\n"
+                "    fn helper() {}\n"
+                "}\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/test_support.rs"]
+            )
+            self.assertEqual(findings, [])
+
     def test_conflicting_owner_claims_flagged(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
@@ -844,6 +1412,24 @@ class TestDormantSurfaceHeuristics(unittest.TestCase):
                     repo, ["engine/src/executor.rs"]
                 )
                 self.assertEqual(findings, [])
+        finally:
+            csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST = original
+
+    def test_malformed_classification_allowlist_fails_closed(self):
+        original = csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
+        csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST = [
+            {"path": "engine/src/executor.rs", "classification": "wired"},
+            "not-an-entry",
+        ]
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                repo = Path(tmpdir)
+                (repo / "engine" / "src").mkdir(parents=True)
+                findings = csb.check_dormant_surface_heuristics(
+                    repo, ["engine/src/executor.rs"]
+                )
+                self.assertTrue(any("missing owner" in finding for finding in findings))
+                self.assertTrue(any("is not an object" in finding for finding in findings))
         finally:
             csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST = original
 

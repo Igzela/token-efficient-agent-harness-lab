@@ -148,6 +148,8 @@ def run_info(run_id: int | str) -> dict[str, Any] | None:
                 summary["workflowDatabaseId"] = details["workflow_id"]
             if "path" in details:
                 summary["path"] = details.get("path")
+            if "artifacts" in details and "artifacts" not in summary:
+                summary["artifacts"] = details.get("artifacts")
             if "run_attempt" in details:
                 summary["attempt"] = details.get("run_attempt")
             pull_requests = details.get("pull_requests")
@@ -157,6 +159,12 @@ def run_info(run_id: int | str) -> dict[str, Any] | None:
                     for item in pull_requests
                     if isinstance(item, dict) and str(item.get("number", "")).isdigit()
                 )
+            if not isinstance(summary.get("artifacts"), list):
+                artifact_payload = _gh_json(
+                    "api", f"repos/{target}/actions/runs/{run_id}/artifacts"
+                )
+                if isinstance(artifact_payload, dict):
+                    summary["artifacts"] = artifact_payload.get("artifacts")
     return summary
 
 
@@ -919,8 +927,9 @@ def acquire_exact_ci(
             else "failure" if conclusion == "failure" else None
         )
         if completion_status in {"success", "failure"}:
+            final_pr_snapshot = None
             if final_validator is not None:
-                _, final_binding_failure = final_validator()
+                final_pr_snapshot, final_binding_failure = final_validator()
                 if final_binding_failure:
                     observed_run = {
                         "databaseId": acquisition["workflow_run_id"],
@@ -938,6 +947,16 @@ def acquire_exact_ci(
                             observed_run=observed_run,
                         )
                     raise CIStaleBinding(final_binding_failure)
+            if completion_status == "success":
+                verify_exact_head_ci(
+                    pr_number,
+                    head_sha,
+                    acquisition["workflow_run_id"],
+                    pr_snapshot=final_pr_snapshot or {
+                        "headRefOid": head_sha,
+                        "headRefName": branch,
+                    },
+                )
             return {
                 "kind": "agent-orchestrator-ci-acquisition",
                 "pr_number": int(pr_number),
@@ -1118,6 +1137,26 @@ def verify_exact_head_ci(
     # step evidence) is not acceptable exact-head proof; the orchestrator
     # must fall back to a workflow_dispatch that requires expected_sha.
     _require_exact_head_checkout_evidence(by_name, required)
+    artifacts = run.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise CIVerificationError("CI artifact evidence is absent")
+    run_id = str(run.get("databaseId") or workflow_run_id)
+    run_attempt = str(run.get("attempt") or "")
+    if not run_attempt:
+        raise CIVerificationError("CI run attempt identity is absent")
+    capsule_artifacts = [
+        artifact
+        for artifact in artifacts
+        if isinstance(artifact, dict)
+        and str(artifact.get("name") or "")
+        == f"context-capsule-{run_id}-{run_attempt}-{expected_sha}"
+        and _artifact_binds_workflow_run(artifact, run_id)
+        and artifact.get("expired") is False
+    ]
+    if not capsule_artifacts:
+        raise CIVerificationError(
+            "context-capsule artifact publication evidence is absent or expired"
+        )
     if pr_snapshot is not None and pr_snapshot.get("headRefOid") != expected_sha:
         raise CIVerificationError("PR head moved while verifying CI")
 
@@ -1135,6 +1174,25 @@ def verify_exact_head_ci(
         "created_at": run.get("createdAt"),
         "updated_at": run.get("updatedAt"),
     }
+
+
+def _artifact_binds_workflow_run(artifact: dict[str, Any], run_id: str) -> bool:
+    """Require every supplied artifact workflow identity to agree exactly."""
+    identities: list[str] = []
+    if "workflow_run_id" in artifact:
+        top_level = str(artifact.get("workflow_run_id") or "")
+        if not top_level:
+            return False
+        identities.append(top_level)
+    nested = artifact.get("workflow_run")
+    if nested is not None:
+        if not isinstance(nested, dict):
+            return False
+        nested_id = str(nested.get("id") or "")
+        if not nested_id:
+            return False
+        identities.append(nested_id)
+    return bool(identities) and all(identity == run_id for identity in identities)
 
 
 def _require_exact_head_checkout_evidence(
@@ -1173,6 +1231,7 @@ def _require_exact_head_checkout_evidence(
             continue
         if status != "completed" or conclusion != "success":
             failed.append(name)
+            continue
     if absent_steps:
         raise CIVerificationError(
             f"exact-head verification step evidence is absent: {absent_steps}"

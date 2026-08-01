@@ -10,7 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "tests.yml"
 
-REQUIRED_TEST_JOBS = {
+REQUIRED_SOURCE_TEST_JOBS = {
     "python-tests",
     "rust-tests",
     "pg-integration-tests",
@@ -19,6 +19,7 @@ REQUIRED_TEST_JOBS = {
     "docker-build",
     "rust-typescript-cutover",
 }
+REQUIRED_TEST_JOBS = REQUIRED_SOURCE_TEST_JOBS | {"context-capsule"}
 
 
 def _load_yaml(path: Path) -> dict:
@@ -45,7 +46,7 @@ class WorkflowCapsuleTests(unittest.TestCase):
     def test_context_capsule_depends_on_all_test_jobs(self) -> None:
         job = self.workflow["jobs"]["context-capsule"]
         needs = set(job.get("needs") or [])
-        self.assertGreaterEqual(needs, REQUIRED_TEST_JOBS)
+        self.assertGreaterEqual(needs, REQUIRED_SOURCE_TEST_JOBS)
 
     def test_context_capsule_uses_always(self) -> None:
         job = self.workflow["jobs"]["context-capsule"]
@@ -142,7 +143,7 @@ class WorkflowCapsuleTests(unittest.TestCase):
             source,
         )
 
-    def test_context_capsule_not_in_required_checks(self) -> None:
+    def test_context_capsule_is_in_required_checks(self) -> None:
         from tools import test_project_context as tpc
 
         importlib = __import__("importlib")
@@ -154,7 +155,7 @@ class WorkflowCapsuleTests(unittest.TestCase):
         sys.modules[spec.name] = project_context
         spec.loader.exec_module(project_context)
 
-        self.assertNotIn(
+        self.assertIn(
             "context-capsule",
             set(project_context.REQUIRED_CI_CHECKS),
         )

@@ -1837,9 +1837,6 @@ fn import_session_usage_evidence(
     Some((evidence, rollup))
 }
 
-// Silence unused-import warnings when authority helpers are only used above.
-fn _codex_authority_type_anchor(_: CodexBudgetAuthority) {}
-
 fn cli_env_allowlist() -> Vec<String> {
     std::env::var("ACP_CLI_ENV_ALLOWLIST")
         .unwrap_or_default()

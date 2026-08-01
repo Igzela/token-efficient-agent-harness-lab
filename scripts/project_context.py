@@ -18,7 +18,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPOSITORY = "Igzela/token-efficient-agent-harness-lab"
-PACKET_ID = r"(?:PE\d+|PR\d+|TOOL)(?:-[A-Z0-9]+)+"
+PACKET_ID = r"(?:PE\d+|PR\d+|TOOL|CI|PRODUCT)(?:-[A-Z0-9]+)+"
 
 # Logical required check names. These are the canonical names used in the matrix.
 REQUIRED_CI_CHECKS = (
@@ -30,6 +30,12 @@ REQUIRED_CI_CHECKS = (
     "docker-build",
     "rust-typescript-cutover",
     "exact-head-check",
+    "context-capsule",
+)
+# The terminal context-capsule publisher consumes the source matrix, so it is
+# required for canonical acceptance but must not be listed as its own input.
+REQUIRED_SOURCE_CI_CHECKS = tuple(
+    name for name in REQUIRED_CI_CHECKS if name != "context-capsule"
 )
 
 # Explicit aliases for known check-name representations.
@@ -299,9 +305,11 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
         [
             "number",
             "title",
+            "author",
             "headRefName",
             "headRefOid",
             "baseRefName",
+            "baseRefOid",
             "isDraft",
             "mergeStateStatus",
             "reviewDecision",
@@ -328,11 +336,21 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
     observation_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     review_observation = _build_review_observation(
         head_sha=head_sha,
+        base_sha=payload.get("baseRefOid"),
+        pr_author_identity=(payload.get("author") or {}).get("login"),
         aggregate_review=aggregate_review,
         reviews=payload.get("reviews") or [],
         comments=payload.get("comments") or [],
         observation_time=observation_time,
     )
+    exact_review_state = review_observation.get("exact_head_review_state")
+    exact_head_review = {
+        "state": "confirmed" if exact_review_state == "confirmed" else "unverified",
+        "reason": None
+        if exact_review_state == "confirmed"
+        else review_observation.get("unavailable_reason")
+        or "exact_head_review_receipt_not_confirmed",
+    }
     return {
         "number": payload.get("number", pr_number),
         "availability": "confirmed",
@@ -344,21 +362,167 @@ def load_pr(repository: str, pr_number: int, *, offline: bool) -> dict[str, Any]
         "draft": payload.get("isDraft"),
         "merge_state": payload.get("mergeStateStatus"),
         "review_decision": aggregate_review,
-        "exact_head_review": {
-            "state": "unverified",
-            "reason": "aggregate_review_decision_is_not_exact_head_bound",
-        },
+        "exact_head_review": exact_head_review,
         "review_observation": review_observation,
         "ci": summarize_checks(payload.get("statusCheckRollup") or []),
     }
 
 
 REVIEW_RECEIPT_MARKER = "EXACT-HEAD REVIEW RECEIPT"
+REVIEW_RECEIPT_REQUIRED_AXES = {
+    "architecture",
+    "authority",
+    "compatibility",
+    "security",
+    "audit",
+    "rollback",
+    "scope/path binding",
+}
+REVIEW_SESSION_ID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+
+
+def _receipt_field(body: str, label: str) -> str | None:
+    match = re.search(
+        rf"(?im)^\s*{re.escape(label)}\s*:\s*(.*?)\s*$", body
+    )
+    value = match.group(1).strip() if match else ""
+    return value or None
+
+
+def _parse_review_receipt(
+    comment: dict[str, Any],
+    expected_head_sha: str | None,
+    expected_base_sha: str | None,
+    expected_pr_author_identity: str | None,
+) -> dict[str, Any]:
+    body = str(comment.get("body") or "")
+    author = comment.get("author") or comment.get("user") or {}
+    author_identity = (
+        author.get("login")
+        if isinstance(author, dict)
+        else None
+    )
+    reviewer_identity = _receipt_field(body, "Reviewer session identity")
+    authenticated_identity = _receipt_field(body, "Reviewer authenticated identity")
+    transport = _receipt_field(body, "Review transport")
+    implementation_identity = _receipt_field(body, "Implementation session identity")
+    reviewed_sha = _receipt_field(body, "Reviewed SHA")
+    reviewed_range = _receipt_field(body, "Reviewed range")
+    observed_at = _receipt_field(body, "Observed at")
+    axes_value = _receipt_field(body, "Axes")
+    outcome = (_receipt_field(body, "Outcome") or "").upper()
+    unresolved = (_receipt_field(body, "Unresolved objections") or "").lower()
+    errors: list[str] = []
+
+    if not author_identity:
+        errors.append("reviewer_author_identity_missing")
+    if not authenticated_identity:
+        errors.append("reviewer_authenticated_identity_missing")
+    elif author_identity and authenticated_identity.lower() != author_identity.lower():
+        errors.append("reviewer_authenticated_identity_mismatch")
+    if not expected_pr_author_identity:
+        errors.append("pull_request_author_identity_missing")
+    if not reviewer_identity or reviewer_identity.lower() in {
+        "self",
+        "self-review",
+        "implementation-agent",
+        "unknown",
+    }:
+        errors.append("reviewer_session_identity_missing")
+    elif transport == "parent-posted-on-behalf-of-independent-session" and not REVIEW_SESSION_ID_PATTERN.fullmatch(
+        reviewer_identity
+    ):
+        errors.append("parent_reviewer_session_identity_is_not_a_uuid")
+    if author_identity and expected_pr_author_identity and author_identity.lower() == expected_pr_author_identity.lower():
+        if transport != "parent-posted-on-behalf-of-independent-session":
+            errors.append("same-author-review-requires-independent-transport")
+        if not implementation_identity:
+            errors.append("implementation_session_identity_missing")
+        elif implementation_identity.lower() == reviewer_identity.lower():
+            errors.append("reviewer_and_implementation_sessions_match")
+    elif transport != "direct-github-reviewer":
+        errors.append("direct-review-requires-authenticated-reviewer-transport")
+    if not expected_head_sha or not re.fullmatch(r"[0-9a-f]{40}", expected_head_sha):
+        errors.append("current_head_sha_missing_or_invalid")
+    if not reviewed_sha or not re.fullmatch(r"[0-9a-f]{40}", reviewed_sha):
+        errors.append("reviewed_sha_missing_or_invalid")
+    if reviewed_sha and reviewed_sha != expected_head_sha:
+        errors.append("reviewed_sha_does_not_match_current_head")
+    range_match = (
+        re.fullmatch(r"([0-9a-f]{40})\.\.\.([0-9a-f]{40})", reviewed_range or "")
+        if reviewed_range
+        else None
+    )
+    if not range_match:
+        errors.append("complete_diff_range_missing_or_invalid")
+    elif expected_head_sha and range_match.group(2) != expected_head_sha:
+        errors.append("complete_diff_range_does_not_match_current_head")
+    if not expected_base_sha or not re.fullmatch(r"[0-9a-f]{40}", expected_base_sha):
+        errors.append("accepted_base_sha_missing_or_invalid")
+    elif range_match and range_match.group(1) != expected_base_sha:
+        errors.append("complete_diff_range_does_not_match_accepted_base")
+    if not observed_at:
+        errors.append("observation_time_missing")
+    else:
+        try:
+            parsed_observed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        except ValueError:
+            parsed_observed_at = None
+        if parsed_observed_at is None or parsed_observed_at.tzinfo is None:
+            errors.append("observation_time_is_not_iso8601_with_timezone")
+    axes_lower = (axes_value or "").lower()
+    negative_review = r"\b(?:not|no|missing|excluded|unreviewed|unavailable|without|never)\b"
+    negated_axes = sorted(
+        axis
+        for axis in REVIEW_RECEIPT_REQUIRED_AXES
+        if re.search(
+            rf"(?:{negative_review}[^,;\n]*{re.escape(axis)}|"
+            rf"{re.escape(axis)}[^,;\n]*{negative_review})",
+            axes_lower,
+        )
+    )
+    if negated_axes:
+        errors.append("review_axes_negated:" + ",".join(negated_axes))
+    missing_axes = sorted(
+        axis
+        for axis in REVIEW_RECEIPT_REQUIRED_AXES
+        if not re.search(
+            rf"(?<![a-z0-9]){re.escape(axis)}(?![a-z0-9])", axes_lower
+        )
+    )
+    if missing_axes:
+        errors.append("review_axes_missing:" + ",".join(missing_axes))
+    if outcome not in {"PASS", "PASS_WITH_NOTES"}:
+        errors.append("review_outcome_is_not_passing")
+    if unresolved not in {"none", "none observed"}:
+        errors.append("unresolved_objections_present_or_unspecified")
+
+    state = "valid" if not errors else "invalid"
+    return {
+        "state": state,
+        "observed_head_sha": reviewed_sha,
+        "complete_diff_range": reviewed_range,
+        "reviewer_session_identity": reviewer_identity,
+        "reviewer_authenticated_identity": authenticated_identity,
+        "review_transport": transport,
+        "implementation_session_identity": implementation_identity,
+        "reviewer_author_identity": author_identity,
+        "observation_time": observed_at,
+        "axes": axes_value,
+        "outcome": outcome or None,
+        "unresolved_objections": unresolved or None,
+        "errors": errors,
+    }
 
 
 def _build_review_observation(
     *,
     head_sha: str | None,
+    base_sha: str | None = None,
+    pr_author_identity: str | None = None,
     aggregate_review: str | None,
     reviews: list[dict[str, Any]],
     comments: list[dict[str, Any]],
@@ -392,24 +556,15 @@ def _build_review_observation(
     ]
     if receipt_comments:
         receipt = receipt_comments[-1]
-        receipt_body = str(receipt.get("body") or "")
-        receipt_sha_match = re.search(r"\b([0-9a-f]{40})\b", receipt_body)
-        receipt_sha = receipt_sha_match.group(1) if receipt_sha_match else None
-        outcome_match = re.search(
-            r"(?i)\b(PASS|PASS_WITH_NOTES|BLOCKED|FAIL)\b", receipt_body
+        parsed_receipt = _parse_review_receipt(
+            receipt, head_sha, base_sha, pr_author_identity
         )
-        observation["review_receipt"] = {
-            "state": "observed",
-            "observed_head_sha": receipt_sha,
-            "outcome": outcome_match.group(1) if outcome_match else None,
-        }
-        if receipt_sha and receipt_sha == head_sha:
+        observation["review_receipt"] = parsed_receipt
+        if parsed_receipt["state"] == "valid":
             observation["exact_head_review_state"] = "receipt_observed"
         else:
-            observation["exact_head_review_state"] = "receipt_stale"
-            observation["unavailable_reason"] = (
-                "review_receipt_head_does_not_match_current_head"
-            )
+            observation["exact_head_review_state"] = "receipt_invalid"
+            observation["unavailable_reason"] = "review_receipt_is_invalid"
     if not reviews and not comments:
         observation["unresolved_objections_state"] = "unavailable"
         observation["unavailable_reason"] = "no_reviews_or_comments_exposed"
@@ -422,20 +577,33 @@ def _build_review_observation(
     ]
     if blocking_reviews:
         observation["unresolved_objections_state"] = "blocking_reviews_present"
+        observation["exact_head_review_state"] = "unverified"
         return observation
 
     # Comments from the GitHub REST API do not expose resolved/unresolved state
     # reliably. We only flag explicit BLOCKING mentions so we do not hide them.
     explicit_blocking = [
+        review
+        for review in reviews
+        if "BLOCKING" in str(review.get("body") or "").upper()
+    ] + [
         comment
         for comment in comments
         if "BLOCKING" in str(comment.get("body") or "").upper()
     ]
     if explicit_blocking:
         observation["unresolved_objections_state"] = "explicit_blocking_comments_present"
+        observation["exact_head_review_state"] = "unverified"
         return observation
 
-    if aggregate_review == "APPROVED" and reviews:
+    if (
+        observation["review_receipt"].get("state") == "valid"
+        and observation["review_receipt"].get("unresolved_objections")
+        in {"none", "none observed"}
+    ):
+        observation["unresolved_objections_state"] = "none_observed"
+        observation["exact_head_review_state"] = "confirmed"
+    elif aggregate_review == "APPROVED" and reviews:
         # Aggregate approval exists, but we still do not treat it as exact-head
         # independent acceptance. Mark objections as none observed, not resolved.
         observation["unresolved_objections_state"] = "none_observed"
@@ -519,7 +687,7 @@ def source_required_check_matrix(
     pending = canonical_names(ci_summary.get("pending") or [])
     raw_by_canonical = ci_summary.get("raw_by_canonical") or {}
     matrix: list[dict[str, Any]] = []
-    for required in REQUIRED_CI_CHECKS:
+    for required in REQUIRED_SOURCE_CI_CHECKS:
         raw_names = raw_by_canonical.get(required) or []
         if required in failed:
             conclusion = "failed"
@@ -578,7 +746,7 @@ def is_matrix_successful(
     matrix: list[dict[str, Any]], *, event_name: str | None = None
 ) -> bool:
     """True only for one complete, successful entry per required check."""
-    if not isinstance(matrix, list) or len(matrix) != len(REQUIRED_CI_CHECKS):
+    if not isinstance(matrix, list) or len(matrix) != len(REQUIRED_SOURCE_CI_CHECKS):
         return False
     observed_required: set[str] = set()
     for item in matrix:
@@ -588,7 +756,7 @@ def is_matrix_successful(
         conclusion = item.get("conclusion")
         raw_names = item.get("raw_names")
         if (
-            required not in REQUIRED_CI_CHECKS
+            required not in REQUIRED_SOURCE_CI_CHECKS
             or required in observed_required
             or not isinstance(raw_names, list)
             or conclusion not in {"success", "not_applicable"}
@@ -608,7 +776,7 @@ def is_matrix_successful(
         ):
             return False
         observed_required.add(required)
-    return observed_required == set(REQUIRED_CI_CHECKS)
+    return observed_required == set(REQUIRED_SOURCE_CI_CHECKS)
 
 
 def has_valid_success_binding(capsule: dict[str, Any]) -> bool:
@@ -633,6 +801,14 @@ def has_valid_success_binding(capsule: dict[str, Any]) -> bool:
         return False
     matrix = binding.get("source_required_check_matrix")
     if not is_matrix_successful(matrix, event_name=event_name):
+        return False
+    expected_head = binding.get("expected_head_sha")
+    checked_out = binding.get("checked_out_sha")
+    if (
+        not isinstance(expected_head, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", expected_head)
+        or checked_out != expected_head
+    ):
         return False
     if event_name == "pull_request":
         requested = binding.get("requested_pr_exact_head")
@@ -815,6 +991,7 @@ def compute_fingerprint(capsule: dict[str, Any]) -> str:
         "requested_pr_number": requested_pr.get("number"),
         "requested_pr_exact_head_sha": requested_pr.get("head_sha"),
         "checked_out_sha": binding.get("checked_out_sha"),
+        "expected_head_sha": binding.get("expected_head_sha"),
         "workflow_run_id": run.get("run_id"),
         "workflow_run_attempt": run.get("run_attempt"),
     }
@@ -900,6 +1077,12 @@ def build_capsule(
         if target_pr_number is None or frontier["pr"] != target_pr_number
     ]
     checkout = local_checkout_state()
+    if (
+        expected_head_sha
+        and event_name in {"push", "workflow_dispatch"}
+        and checkout.get("head_sha") != expected_head_sha
+    ):
+        raise ValueError("capsule checkout does not match expected exact head")
     checkout["matches_accepted_baseline"] = bool(
         checkout.get("head_sha")
         and baseline.get("sha")
@@ -981,6 +1164,7 @@ def build_capsule(
             "head_sha": expected_head_sha,
         },
         "checked_out_sha": checkout.get("head_sha"),
+        "expected_head_sha": expected_head_sha,
         "workflow_run_identity": run_identity,
         "source_required_check_matrix": matrix,
         "review_observation": review_observation,
