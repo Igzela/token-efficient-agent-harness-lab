@@ -13565,6 +13565,7 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
     use engine::executor_pool::{
         CostProfile, ExecutorCapabilities, ExecutorEntry, ExecutorMetrics, ExecutorStatus,
     };
+    use engine::infrastructure::auth::{hash_api_key, APIKey, LOCAL_BOOTSTRAP_API_KEY_ID};
     use engine::node_executor::FailNodeExecutor;
     use engine::provider::config::{CredentialRef, ProviderConfig};
     use engine::provider::credential::CredentialBoundary;
@@ -13578,8 +13579,9 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
     use engine::provider::transport::{HttpResponse, HttpTransport, MockTransport};
     use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
     use engine::storage::local_product_store::{
-        ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_DELEGATED_ARTIFACT_CONFIRM,
-        SCOPE_DELEGATED_MANIFEST_APPROVE,
+        ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_ATTEMPT_ADMIT, SCOPE_DELEGATED_ARTIFACT_CONFIRM,
+        SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_EXECUTE, SCOPE_DELEGATED_MANIFEST_APPROVE,
+        SCOPE_IDENTITY_DELEGATE, SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
     };
     use std::sync::Mutex as StdMutex;
 
@@ -13637,50 +13639,61 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
     let store =
         Arc::new(LocalProductStore::new(dir.path().join("delegated-success-http.db")).unwrap());
     let mut resolver = TenantResolver::new();
-    let admin_scopes = HashSet::from([
+    let bootstrap_raw = format!("harness_{}", "b".repeat(64));
+    let bootstrap_scopes = HashSet::from([
         "team:admin".to_string(),
+        "team:read".to_string(),
         "dispatch:execute".to_string(),
-        SCOPE_DELEGATED_ARTIFACT_CONFIRM.to_string(),
-        SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+        SCOPE_IDENTITY_DELEGATE.to_string(),
     ]);
+    let mut tenant_scopes = bootstrap_scopes.clone();
+    tenant_scopes.extend(
+        ALL_MANAGED_ACCEPTANCE_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string()),
+    );
     resolver.add_tenant(Tenant {
         tenant_id: "tenant-a".to_string(),
         name: "Delegated Success".to_string(),
-        scopes: admin_scopes.clone(),
+        scopes: tenant_scopes.clone(),
         rate_limit: Some(100),
     });
-    let (approver_key, approver_raw) = resolver
-        .create_api_key("tenant-a", Some(admin_scopes.clone()), None, 1.0)
-        .unwrap();
-    let (activator_key, activator_raw) = resolver
+    resolver.add_api_key(APIKey {
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.to_string(),
+        tenant_id: "tenant-a".to_string(),
+        key_hash: hash_api_key(&bootstrap_raw, "delegated-success-bootstrap-salt"),
+        key_salt: "delegated-success-bootstrap-salt".to_string(),
+        scopes: bootstrap_scopes,
+        created_at: 0.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    resolver.add_tenant(Tenant {
+        tenant_id: "foreign-tenant".to_string(),
+        name: "Foreign Tenant".to_string(),
+        scopes: tenant_scopes,
+        rate_limit: Some(100),
+    });
+    let (foreign_key, foreign_raw) = resolver
         .create_api_key(
-            "tenant-a",
-            Some(HashSet::from(["dispatch:execute".to_string()])),
+            "foreign-tenant",
+            Some(HashSet::from(
+                [SCOPE_DELEGATED_ARTIFACT_CONFIRM.to_string()],
+            )),
             None,
             1.0,
         )
         .unwrap();
-    let (confirmer_key, confirmer_raw) = resolver
-        .create_api_key("tenant-a", Some(admin_scopes.clone()), None, 1.0)
+    store
+        .record_api_key_metadata(
+            &foreign_key.key_id,
+            "foreign-confirm-user",
+            "operator",
+            &[SCOPE_DELEGATED_ARTIFACT_CONFIRM.to_string()],
+            "delegated-success-http-test",
+        )
         .unwrap();
-    for (key, user) in [
-        (&approver_key, "delegated-approver-user"),
-        (&activator_key, "delegated-activator-user"),
-        (&confirmer_key, "delegated-confirmer-user"),
-    ] {
-        store
-            .record_api_key_metadata(
-                &key.key_id,
-                user,
-                "operator",
-                &ALL_MANAGED_ACCEPTANCE_SCOPES
-                    .iter()
-                    .map(|scope| (*scope).to_string())
-                    .collect::<Vec<_>>(),
-                "delegated-success-http-test",
-            )
-            .unwrap();
-    }
 
     fn openai_mock(
         id: &str,
@@ -13763,6 +13776,65 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
             .with_scheduler(Arc::new(StdMutex::new(scheduler)))
             .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
     );
+
+    // Mint every managed principal through the canonical bootstrap API. The
+    // test must exercise the same least-privilege role validator as production;
+    // direct metadata insertion would not prove bootstrap issuance works.
+    let create_managed_key = |user_id: String, role: String, scopes: Vec<String>| {
+        let app = app.clone();
+        let bootstrap_raw = bootstrap_raw.clone();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/v1/keys")
+                        .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({"user_id": user_id, "role": role, "scopes": scopes}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response_json(response).await;
+            assert_eq!(status, StatusCode::OK, "canonical key issuance: {body:#}");
+            body["raw_key"].as_str().unwrap().to_string()
+        }
+    };
+    let approver_raw = create_managed_key(
+        "delegated-approver-user".into(),
+        "reviewer".into(),
+        vec![
+            SCOPE_RISK_ACKNOWLEDGE.into(),
+            SCOPE_DELEGATED_AUTONOMY.into(),
+            SCOPE_DELEGATED_MANIFEST_APPROVE.into(),
+            SCOPE_SPEND_AUTHORIZE.into(),
+        ],
+    )
+    .await;
+    let activator_raw = create_managed_key(
+        "delegated-activator-user".into(),
+        "output_operator".into(),
+        vec![
+            "dispatch:execute".into(),
+            SCOPE_RISK_ACKNOWLEDGE.into(),
+            SCOPE_DELEGATED_EXECUTE.into(),
+            SCOPE_ATTEMPT_ADMIT.into(),
+        ],
+    )
+    .await;
+    let confirmer_raw = create_managed_key(
+        "delegated-confirmer-user".into(),
+        "reviewer".into(),
+        vec![
+            SCOPE_RISK_ACKNOWLEDGE.into(),
+            SCOPE_DELEGATED_ARTIFACT_CONFIRM.into(),
+        ],
+    )
+    .await;
 
     let task_response = app
         .clone()
@@ -14011,6 +14083,33 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
     assert_eq!(finalized["task"]["status"], "awaiting_approval");
     let task_version = finalized["task"]["version"].as_u64().unwrap();
 
+    let foreign_approval = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/product/tasks/{task_id}/delegated/approve"))
+                .header(header::AUTHORIZATION, format!("Bearer {foreign_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "expected_task_version": task_version,
+                        "delegation_id": delegation_id,
+                        "final_manifest": final_manifest,
+                        "current_target_main_sha": revision
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(foreign_approval.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(foreign_approval).await["code"],
+        "delegated_authority_invalid"
+    );
+
     let same_as_approver = app
         .clone()
         .oneshot(
@@ -14067,20 +14166,36 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
     );
 
     // Provider-free Draft PR plan (network effect off) under the existing
-    // product output owner. Full progressive Draft-PR completion and delegated
-    // terminal success remain covered by store-level managed_acceptance and
-    // product golden path evidence tests; this HTTP path proves prepare →
-    // activate → mock Pro/Flash/verify/Pro → independent approve → planned
-    // Draft PR with target main unchanged.
-    let pending = store
-        .output_product_task(
-            &task_id,
-            "http-success-output",
-            task_version,
-            Some(&approval_id),
-            true,
+    // product output owner. Exercise the authenticated HTTP output route so
+    // tenant and dispatch:execute checks cover the same path as production.
+    let pending_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/product/tasks/{task_id}/output"))
+                .header(header::AUTHORIZATION, format!("Bearer {activator_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "expected_task_version": task_version,
+                        "approval_id": approval_id,
+                        "confirm_output": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
         )
+        .await
         .unwrap();
+    let pending_status = pending_response.status();
+    let pending_body = response_json(pending_response).await;
+    assert_eq!(
+        pending_status,
+        StatusCode::OK,
+        "output body={pending_body:#}"
+    );
+    let pending = pending_body["result"].clone();
     assert_eq!(pending["output"]["mode"], "draft_pr");
     assert_eq!(pending["output"]["status"], "planned");
     assert_eq!(pending["output"]["network_effect"], false);
