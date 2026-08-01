@@ -59,7 +59,7 @@ Normal reversible repository work and already-configured local/GitHub services a
 
 Keep an implementation PR in Draft while its diff is changing. The `pr-fast-checks` workflow enforces that `opened`, `synchronize`, and `reopened` heads are Draft; a non-Draft mutating event fails immediately and must be corrected by converting the PR to Draft. Draft pushes provide exact-head governance feedback only and cannot authorize review, merge, release, deployment, or acceptance.
 
-Run focused and applicable full checks locally, finish the complete-diff review, collect all known findings into one repair batch, and only then mark the PR Ready once. The `ready_for_review` event triggers the single canonical `tests` workflow. Its trusted classifier selects either the complete source-test matrix or strict documentation-only mode. A normal `main` push may use documentation-only mode only from the previous-main `before...after` diff and accepted-before classifier; forced, zero-base, non-ancestor, mixed, or uncertain pushes fail closed to the complete matrix. Explicit exact-head fallback dispatches always use the complete matrix.
+Run focused and applicable full checks locally, finish the complete-diff review, post the exact-head review receipt on the stable head (exact SHA, complete diff, axes, outcome — see `docs/REAL_WORLD_TESTING_PLAYBOOK.md`), collect all known findings into one repair batch, and only then mark the PR Ready once. A replacement head invalidates the prior review receipt; re-receipt the new exact head before Ready. The `ready_for_review` event triggers the single canonical `tests` workflow. Its trusted classifier selects either the complete source-test matrix or strict documentation-only mode. A normal `main` push may use documentation-only mode only from the previous-main `before...after` diff and accepted-before classifier; forced, zero-base, non-ancestor, mixed, or uncertain pushes fail closed to the complete matrix. Explicit exact-head fallback dispatches always use the complete matrix.
 
 A documentation-only candidate remains canonical CI, not fast feedback. Classification is computed from the accepted base checkout, not candidate-controlled classifier code. Every required job must still check out and verify the exact head and finish successfully; only compiler, runtime, database-test, TypeScript, Docker-build, and other non-applicable source-test steps are skipped. Empty, mixed, executable, symlink, submodule, workflow, script, test, configuration, dependency, schema, migration, generated, or otherwise uncertain diffs fail closed to the complete matrix.
 
@@ -119,6 +119,8 @@ uv run --no-project python tools/check_security_baseline.py
 uv run --no-project python scripts/check_agent_handoff.py
 git diff --check
 ```
+
+New dormant production surfaces (module-level dead-code blankets, module islands, self-described placeholder modules, no-op executors, conflicting sole-owner claims) fail closed in `tools/check_security_baseline.py`; exceptions require a classification entry with owner, reason, review condition, and expiry/recheck condition.
 
 Add migration, recovery, concurrency, browser, evaluator, or external-validation checks when relevant. Never claim a check, review, acceptance, cost, or benchmark that was not run and evidenced.
 

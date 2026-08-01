@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Security baseline checker for CA-7 sealed baseline.
 
-Read-only, pure stdlib. Performs seven checks against the repository:
+Read-only, pure stdlib. Performs eight checks against the repository:
   1. Secret scan — regex scan for credential patterns in git-tracked files
   2. Import scan — AST-based scan for prohibited network/SDK imports
   3. Active routing guard — scan JSON for active_routing_allowed: true
@@ -11,6 +11,11 @@ Read-only, pure stdlib. Performs seven checks against the repository:
      can bypass exact-head, review, packet, and permission discipline
   7. Removed plugin-surface guard — fail closed if the old in-memory plugin
      trust semantics are reintroduced into the production crate source
+  8. Dormant surface heuristics — fail closed on new dormant production
+     surfaces (module-level dead-code blankets, module islands,
+     self-described placeholder modules, empty-executor functions, and
+     duplicate canonical ownership claims) unless classified in
+     DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
 
 Exit code 0 = all checks pass, 1 = at least one check fails.
 """
@@ -151,19 +156,30 @@ ACTIVE_ROUTING_EXCLUDE_PREFIXES = (
 # Repository-controlled automation (workflows and automation scripts) may not
 # contain patterns that bypass exact-head, review, packet, or permission
 # discipline. Every finding fails closed unless the exact file and pattern
-# pair is listed in AUTOMATION_GUARD_ALLOWLIST with a reviewable reason.
+# label pair is listed in AUTOMATION_GUARD_ALLOWLIST with a reviewable reason.
+#
+# The guard is semantic, not a raw-token blacklist: it rejects the specific
+# unbound judgments that bypass exact-head evidence (latest-run polling with
+# ``--limit 1`` as success evidence, ``gh run watch`` chained to an unbound
+# ``gh run list``, and ``gh run watch`` with no run id at all). Explicit run
+# ids, commit/head-bound queries, and informational bounded queries
+# (``--limit`` >= 2) are legitimate and are NOT flagged.
 DORMANT_AUTOMATION_PATTERNS = [
     (
         "dangerously-skip-permissions",
         re.compile(r"dangerously-skip-permissions"),
     ),
     (
-        "gh run list",
-        re.compile(r"\bgh\s+run\s+list\b"),
+        "gh run list --limit 1",
+        re.compile(r"\bgh\s+run\s+list\s+--limit\s+1\b"),
     ),
     (
-        "gh run watch",
-        re.compile(r"\bgh\s+run\s+watch\b"),
+        "gh run watch chained to unbound gh run list",
+        re.compile(r"\bgh\s+run\s+watch\b[^\n]{0,160}\$\(\s*gh\s+run\s+list\b"),
+    ),
+    (
+        "gh run watch unbound",
+        re.compile(r"\bgh\s+run\s+watch\b\s*(?:--exit-status\s*)?(?:$|#|\||&&|;)"),
     ),
 ]
 
@@ -195,17 +211,22 @@ AUTOMATION_GUARD_ALLOWLIST: dict[str, dict[str, str]] = {
     "tools/check_security_baseline.py": {
         "dangerously-skip-permissions": "guard detector definition itself; "
         "scanning the guard's own pattern table would be self-referential",
-        "gh run list": "guard detector definition itself; "
+        "gh run list --limit 1": "guard detector definition itself; "
         "scanning the guard's own pattern table would be self-referential",
-        "gh run watch": "guard detector definition itself; "
+        "gh run watch chained to unbound gh run list": "guard detector "
+        "definition itself; scanning the guard's own pattern table would be "
+        "self-referential",
+        "gh run watch unbound": "guard detector definition itself; "
         "scanning the guard's own pattern table would be self-referential",
     },
     "tools/test_security_baseline.py": {
         "dangerously-skip-permissions": "positive/negative fixture tests "
         "for the guard detector; not an automation surface",
-        "gh run list": "positive/negative fixture tests "
+        "gh run list --limit 1": "positive/negative fixture tests "
         "for the guard detector; not an automation surface",
-        "gh run watch": "positive/negative fixture tests "
+        "gh run watch chained to unbound gh run list": "positive/negative "
+        "fixture tests for the guard detector; not an automation surface",
+        "gh run watch unbound": "positive/negative fixture tests "
         "for the guard detector; not an automation surface",
     },
 }
@@ -216,22 +237,127 @@ AUTOMATION_GUARD_ALLOWLIST: dict[str, dict[str, str]] = {
 # The in-memory plugin system (infrastructure/plugin_system.rs and
 # plugin_registry.rs) was deleted as a dormant surface: it never loaded or
 # verified plugin binaries and its `official = unrestricted` trust semantics
-# could be mistaken for a production security boundary. These semantic tokens
-# must not reappear in the production crate source.
-PLUGIN_TRUST_FORBIDDEN_TOKENS = (
+# could be mistaken for a production security boundary. The guard is a
+# composite legacy fingerprint rather than a single-token blacklist, so
+# generic business identifiers (e.g. ``verified``, ``official``) remain legal:
+#   - re-creating the deleted files themselves is always a finding;
+#   - the ``empty = unrestricted`` semantic is always a finding;
+#   - two or more legacy tokens in the same file signal a revival attempt.
+PLUGIN_LEGACY_FINGERPRINT_TOKENS = (
     "TRUST_LEVEL_OFFICIAL",
     "TRUST_LEVEL_VERIFIED",
     "TRUST_LEVEL_COMMUNITY",
     "PLUGIN_SYSTEM_SCHEMA_VERSION",
     "ALL_KNOWN_PERMISSIONS",
-    "empty = unrestricted",
+)
+
+PLUGIN_UNRESTRICTED_SEMANTIC = "empty = unrestricted"
+
+PLUGIN_RESURRECTED_PATHS = (
+    "engine/src/infrastructure/plugin_system.rs",
+    "engine/src/infrastructure/plugin_registry.rs",
 )
 
 PLUGIN_SURFACE_SCAN_PREFIXES = (
     "engine/src/",
 )
 
+# ---------------------------------------------------------------------------
+# Dormant surface heuristics configuration
+# ---------------------------------------------------------------------------
+# Fail-closed heuristic gate over the production crate source. A new dormant
+# production surface is a governance regression: it accumulates code with no
+# runtime path, invites a mistaken sense of capability, and contradicts the
+# established authority/owner model. The gate flags:
+#   (a) module-level `#![allow(dead_code)]` blankets in engine/src;
+#   (b) top-level modules declared in lib.rs with no consumer outside their
+#       own directory, lib.rs, engine/tests, or engine/src/bin;
+#   (c) files whose own header describes them as a stub, placeholder,
+#       reference-only, or not-wired module;
+#   (d) executor-named functions whose entire body returns an empty value
+#       (json!({}), Value::Null, empty collections, Default::default());
+#   (e) conflicting "sole/single/canonical owner" claims across different
+#       engine/src files.
+# Findings are suppressed only by an explicit classification entry in
+# DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST carrying owner, reason, review
+# condition, and expiry/recheck condition. `#[cfg(test)]` regions and
+# engine/tests are not production surface.
+DORMANT_SURFACE_SCAN_PREFIX = "engine/src/"
 
+DORMANT_SURFACE_SELF_DESCRIPTORS = (
+    re.compile(
+        r"(?i)\b(?:this|the)\s+(?:module|file|component|surface)\s+"
+        r"(?:is|acts as|serves as|declared as)\s+(?:a\s+)?"
+        r"(?:stub|placeholder|reference-only|not wired|dormant)\b"
+    ),
+    re.compile(
+        r"(?i)\b(?:marked|declared|treated|considered|flagged)\s+as\s+"
+        r"(?:a\s+)?(?:stub|placeholder|reference-only|not wired|dormant)\b"
+    ),
+)
+
+DORMANT_EXECUTOR_FN_RE = re.compile(
+    r"\bfn\s+(?:execute|invoke|run|dispatch|handle|process)_\w+"
+)
+DORMANT_EMPTY_BODY_RE = re.compile(
+    r"^\s*(?:return\s+)?(?:Ok\(\s*)?"
+    r"(?:json!\(\s*\{\s*\}|Value::Null|\{\}\.into\(\)|HashMap::new\(\)|"
+    r"BTreeMap::new\(\)|Vec::new\(\)|vec!\[\]|Default::default\(\))"
+    r"(?:\s*\))?\s*;?\s*$"
+)
+
+DORMANT_OWNERSHIP_CLAIM_RE = re.compile(
+    r"(?i)\b(?:the\s+)?(?:sole|only|single|canonical|authoritative)\s+"
+    r"(?:owner|authority|runtime|store|scheduler|evaluator)\s+"
+    r"(?:of|for|over)\s+(?:the\s+)?(\w+(?:\s+\w+)?)"
+)
+
+# Baseline audit (2026-08-01, PR C): every engine/src top-level module has at
+# least one consumer (wire_types is codegen output consumed by the SDK;
+# efficiency_benchmark_runtime is consumed by engine/src/bin targets;
+# http_server is consumed by engine/src/main.rs and integration tests).
+# No module-level `#![allow(dead_code)]` remains; the two former blankets
+# (schema.rs, workflow_runs/queue_lease.rs) were removed and their genuinely
+# dead items deleted. Classification entries below document the remaining
+# boundary cases; an entry expires when its recheck condition stops holding.
+DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST = [
+    {
+        "path": "engine/src/wire_types.rs",
+        "classification": "generated",
+        "owner": "codegen/generate_wire_types.py",
+        "reason": "generated output consumed as "
+        "sdk/python/src/agent_control_plane_sdk/wire_types.py; "
+        "drift-guarded by scripts/check_wire_codegen_drift.sh",
+        "review_condition": "file header still carries the DO NOT EDIT "
+        "codegen marker",
+        "expiry_or_recheck_condition": "recheck on any codegen or wire "
+        "schema change",
+    },
+    {
+        "path": "engine/src/efficiency_benchmark_runtime.rs",
+        "classification": "bin_consumer",
+        "owner": "engine/src/bin/efficiency_langgraph_runtime.rs, "
+        "engine/src/bin/efficiency_native_runtime.rs",
+        "reason": "benchmark runtime consumed exclusively by the "
+        "efficiency binary targets; not reachable from the library",
+        "review_condition": "binary targets still reference it via "
+        "engine::efficiency_benchmark_runtime",
+        "expiry_or_recheck_condition": "recheck when the efficiency "
+        "benchmark binaries change or are removed",
+    },
+    {
+        "path": "engine/src/quality/quality_gate.rs",
+        "classification": "wired",
+        "owner": "engine/src/read_only_planner.rs, "
+        "engine/src/dispatch_engine.rs",
+        "reason": "header comment documents local type stubs FOR removed "
+        "placeholder modules; the file itself is a wired production gate "
+        "consumed by read_only_planner and dispatch_engine",
+        "review_condition": "at least one production consumer remains",
+        "expiry_or_recheck_condition": "recheck if the header comment is "
+        "rewritten or consumers change",
+    },
+]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -550,8 +676,11 @@ def check_removed_plugin_surface_guard(
     loading, signature verification, sandboxing, or capability enforcement;
     its ``official`` trust level mapped to an empty permission set labeled
     ``empty = unrestricted`` and could be mistaken for a mature security
-    boundary. Reintroducing those semantic tokens into ``engine/src/`` is a
-    regression of the accepted cleanup.
+    boundary. Reintroducing that surface is a regression of the accepted
+    cleanup. The guard uses a composite legacy fingerprint so that generic
+    business identifiers (``official``, ``verified``) stay legal: only
+    resurrection of the deleted files, the unrestricted semantic, or two or
+    more legacy tokens in one file are flagged.
     """
     findings = []
 
@@ -563,6 +692,11 @@ def check_removed_plugin_surface_guard(
         ):
             continue
 
+        if rel_path in PLUGIN_RESURRECTED_PATHS:
+            findings.append(
+                f"{rel_path}: deleted plugin surface file resurrected"
+            )
+
         filepath = repo_root / rel_path
         if not filepath.is_file():
             continue
@@ -571,9 +705,199 @@ def check_removed_plugin_surface_guard(
         except OSError:
             continue
 
-        for token in PLUGIN_TRUST_FORBIDDEN_TOKENS:
-            if token in content:
-                findings.append(f"{rel_path}: forbidden plugin trust token {token!r}")
+        if PLUGIN_UNRESTRICTED_SEMANTIC in content:
+            findings.append(
+                f"{rel_path}: 'empty = unrestricted' trust semantic found"
+            )
+
+        legacy_hits = [
+            token for token in PLUGIN_LEGACY_FINGERPRINT_TOKENS
+            if token in content
+        ]
+        if len(legacy_hits) >= 2:
+            findings.append(
+                f"{rel_path}: {len(legacy_hits)} legacy plugin trust tokens "
+                f"found: {', '.join(legacy_hits)}"
+            )
+
+    return findings
+
+
+def _iter_rs_lines(repo_root: Path, tracked_files: list[str]):
+    """Yield (rel_path, line) for engine/src rust files, skipping cfg(test)
+    regions and generated/vendored directories."""
+    for rel_path in tracked_files:
+        if not rel_path.startswith(DORMANT_SURFACE_SCAN_PREFIX):
+            continue
+        if not rel_path.endswith(".rs"):
+            continue
+        if any(
+            part in AUTOMATION_GUARD_EXCLUDE_DIRS for part in Path(rel_path).parts
+        ):
+            continue
+        filepath = repo_root / rel_path
+        if not filepath.is_file():
+            continue
+        try:
+            content = filepath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        yield rel_path, content
+
+
+def _strip_cfg_test_regions(content: str) -> str:
+    """Return content with `#[cfg(test)]` regions removed (brace balanced)."""
+    lines = content.splitlines()
+    out = []
+    in_test = False
+    brace_depth = 0
+    for line in lines:
+        if not in_test:
+            if re.match(r"^\s*#\[cfg\(test\)\]\s*$", line):
+                in_test = True
+                brace_depth = 0
+            else:
+                out.append(line)
+            continue
+        brace_depth += line.count("{") - line.count("}")
+        if brace_depth <= 0:
+            in_test = False
+    return "\n".join(out)
+
+
+def check_dormant_surface_heuristics(
+    repo_root: Path, tracked_files: list[str]
+) -> list[str]:
+    """Fail closed on new dormant production surfaces in engine/src.
+
+    Categories: module-level dead-code blankets, lib.rs-declared module
+    islands, self-described placeholder/stub/not-wired module headers,
+    executor-named empty functions, and conflicting sole-owner claims.
+    Findings are suppressed only by DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
+    entries.
+    """
+    findings = []
+    allowed = {
+        (entry["path"], entry["classification"])
+        for entry in DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
+    }
+
+    def suppressed(rel_path: str, classification: str) -> bool:
+        return (rel_path, classification) in allowed
+
+    # (a) module-level dead-code blankets
+    for rel_path, content in _iter_rs_lines(repo_root, tracked_files):
+        for line_no, line in enumerate(content.splitlines(), 1):
+            if line.strip() == "#![allow(dead_code)]":
+                findings.append(
+                    f"{rel_path}:{line_no}: module-level "
+                    "#![allow(dead_code)] blanket in production crate"
+                )
+
+    # (b) module islands among top-level lib.rs modules
+    lib_path = repo_root / "engine" / "src" / "lib.rs"
+    try:
+        lib_content = lib_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        lib_content = ""
+    declared_modules = re.findall(
+        r"^\s*(?:pub(?:\(crate\))?\s+)?mod\s+(\w+)\s*;",
+        lib_content,
+        re.M,
+    )
+    src_dir = repo_root / "engine" / "src"
+    all_src_files = [
+        f for f in tracked_files if f.startswith("engine/src/") and f.endswith(".rs")
+    ]
+    for module in declared_modules:
+        module_file = (
+            f"engine/src/{module}.rs"
+            if (src_dir / f"{module}.rs").is_file()
+            else f"engine/src/{module}/"
+        )
+        if suppressed(module_file, "generated") or suppressed(
+            module_file, "bin_consumer"
+        ):
+            continue
+        consumers = [
+            f
+            for f in all_src_files
+            if f != f"engine/src/lib.rs"
+            and not f.startswith(f"engine/src/{module}/")
+            and not f.startswith(f"engine/src/{module}.")
+            and not f.startswith("engine/src/bin/")
+        ]
+        referenced = False
+        for f in consumers:
+            try:
+                content = (repo_root / f).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except OSError:
+                continue
+            if re.search(rf"\bcrate::{module}\b|\bengine::{module}\b", content):
+                referenced = True
+                break
+        if not referenced:
+            findings.append(
+                f"engine/src/lib.rs: module '{module}' has no consumer "
+                "outside its own directory, lib.rs, engine/tests, or "
+                "engine/src/bin (dormant module island)"
+            )
+
+    # (c) self-described dormant module headers
+    for rel_path, content in _iter_rs_lines(repo_root, tracked_files):
+        header = "\n".join(content.splitlines()[:40])
+        for descriptor in DORMANT_SURFACE_SELF_DESCRIPTORS:
+            if descriptor.search(header):
+                if suppressed(rel_path, "wired") or suppressed(
+                    rel_path, "generated"
+                ):
+                    continue
+                findings.append(
+                    f"{rel_path}: header self-describes as dormant surface "
+                    f"({descriptor.pattern})"
+                )
+
+    # (d) executor-named empty functions
+    for rel_path, content in _iter_rs_lines(repo_root, tracked_files):
+        clean = _strip_cfg_test_regions(content)
+        for match in DORMANT_EXECUTOR_FN_RE.finditer(clean):
+            brace = clean.find("{", match.end())
+            if brace == -1:
+                continue
+            depth = 0
+            body_end = -1
+            for idx in range(brace, len(clean)):
+                if clean[idx] == "{":
+                    depth += 1
+                elif clean[idx] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        body_end = idx
+                        break
+            if body_end == -1:
+                continue
+            body = clean[brace + 1 : body_end]
+            if DORMANT_EMPTY_BODY_RE.search(body):
+                findings.append(
+                    f"{rel_path}: executor-named function "
+                    f"'{match.group(0)[3:]}' returns only an empty value "
+                    "(no-op executor surface)"
+                )
+
+    # (e) conflicting sole-owner claims
+    claims: dict[str, list[str]] = {}
+    for rel_path, content in _iter_rs_lines(repo_root, tracked_files):
+        for match in DORMANT_OWNERSHIP_CLAIM_RE.finditer(content):
+            claims.setdefault(match.group(1), []).append(rel_path)
+    for claimed, paths in claims.items():
+        unique = sorted(set(paths))
+        if len(unique) > 1:
+            findings.append(
+                f"conflicting sole-owner claims for '{claimed}' across: "
+                + ", ".join(unique)
+            )
 
     return findings
 
@@ -581,6 +905,18 @@ def check_removed_plugin_surface_guard(
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+CHECK_LABELS = [
+    "Secret scan",
+    "Import scan (AST)",
+    "Active routing guard",
+    "Governance boundary guard",
+    "Stage-0 event guard",
+    "Dormant automation guard",
+    "Removed plugin-surface guard",
+    "Dormant surface heuristics",
+]
+
 
 def main() -> int:
     print("=" * 60)
@@ -594,84 +930,31 @@ def main() -> int:
         print("WARNING: Could not list git-tracked files")
         tracked_files = []
 
+    checks = [
+        lambda: check_secret_scan(REPO_ROOT, tracked_files),
+        lambda: check_import_scan(REPO_ROOT, tracked_files),
+        lambda: check_active_routing(REPO_ROOT, tracked_files),
+        lambda: check_governance_boundary(REPO_ROOT),
+        lambda: check_stage0_event_guard(REPO_ROOT),
+        lambda: check_dormant_automation_guard(REPO_ROOT, tracked_files),
+        lambda: check_removed_plugin_surface_guard(REPO_ROOT, tracked_files),
+        lambda: check_dormant_surface_heuristics(REPO_ROOT, tracked_files),
+    ]
+
     all_pass = True
-
-    # Check 1: Secret scan
-    print("[1/5] Secret scan...")
-    secret_findings = check_secret_scan(REPO_ROOT, tracked_files)
-    if secret_findings:
-        print("  FAIL — credential patterns found:")
-        for f in secret_findings:
-            print(f"    {f}")
-        all_pass = False
-    else:
-        print("  PASS")
-
-    # Check 2: Import scan
-    print("[2/5] Import scan (AST)...")
-    import_findings = check_import_scan(REPO_ROOT, tracked_files)
-    if import_findings:
-        print("  FAIL — prohibited imports found:")
-        for f in import_findings:
-            print(f"    {f}")
-        all_pass = False
-    else:
-        print("  PASS")
-
-    # Check 3: Active routing guard
-    print("[3/5] Active routing guard...")
-    routing_findings = check_active_routing(REPO_ROOT, tracked_files)
-    if routing_findings:
-        print("  FAIL — active routing detected:")
-        for f in routing_findings:
-            print(f"    {f}")
-        all_pass = False
-    else:
-        print("  PASS")
-
-    # Check 4: Governance boundary guard
-    print("[4/5] Governance boundary guard...")
-    gov_findings = check_governance_boundary(REPO_ROOT)
-    if gov_findings:
-        print("  FAIL — governance boundary issues:")
-        for f in gov_findings:
-            print(f"    {f}")
-        all_pass = False
-    else:
-        print("  PASS")
-
-    # Check 5: Stage-0 event guard
-    print("[5/6] Stage-0 event guard...")
-    event_findings = check_stage0_event_guard(REPO_ROOT)
-    if event_findings:
-        print("  FAIL — event guard issues:")
-        for f in event_findings:
-            print(f"    {f}")
-        all_pass = False
-    else:
-        print("  PASS")
-
-    # Check 6: Dormant automation guard
-    print("[6/7] Dormant automation guard...")
-    automation_findings = check_dormant_automation_guard(REPO_ROOT, tracked_files)
-    if automation_findings:
-        print("  FAIL — forbidden unattended-automation patterns found:")
-        for f in automation_findings:
-            print(f"    {f}")
-        all_pass = False
-    else:
-        print("  PASS")
-
-    # Check 7: Removed plugin-surface guard
-    print("[7/7] Removed plugin-surface guard...")
-    plugin_findings = check_removed_plugin_surface_guard(REPO_ROOT, tracked_files)
-    if plugin_findings:
-        print("  FAIL — deleted plugin trust semantics reintroduced:")
-        for f in plugin_findings:
-            print(f"    {f}")
-        all_pass = False
-    else:
-        print("  PASS")
+    total = len(CHECK_LABELS)
+    for index, (label, check_fn) in enumerate(
+        zip(CHECK_LABELS, checks), start=1
+    ):
+        print(f"[{index}/{total}] {label}...")
+        findings = check_fn()
+        if findings:
+            print("  FAIL:")
+            for f in findings:
+                print(f"    {f}")
+            all_pass = False
+        else:
+            print("  PASS")
 
     # Summary
     print()

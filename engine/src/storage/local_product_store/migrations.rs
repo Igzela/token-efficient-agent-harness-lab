@@ -429,7 +429,7 @@ fn verified_embedded_archive_json_hash(
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
 
 impl LocalProductStore {

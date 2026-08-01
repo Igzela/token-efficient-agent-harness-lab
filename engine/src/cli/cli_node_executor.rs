@@ -1838,7 +1838,6 @@ fn import_session_usage_evidence(
 }
 
 // Silence unused-import warnings when authority helpers are only used above.
-#[allow(dead_code)]
 fn _codex_authority_type_anchor(_: CodexBudgetAuthority) {}
 
 fn cli_env_allowlist() -> Vec<String> {

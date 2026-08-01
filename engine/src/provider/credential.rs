@@ -1,8 +1,6 @@
 use std::env;
 
 pub struct CredentialBoundary {
-    #[allow(dead_code)]
-    backend: String,
     #[cfg(test)]
     fixture_secret: Option<String>,
 }
@@ -13,7 +11,6 @@ impl CredentialBoundary {
             return Err(format!("Only 'env' backend supported, got '{backend}'"));
         }
         Ok(Self {
-            backend: backend.to_string(),
             #[cfg(test)]
             fixture_secret: None,
         })
@@ -32,7 +29,6 @@ impl CredentialBoundary {
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
         Self {
-            backend: "test-memory".to_string(),
             fixture_secret: Some("fixture-provider-credential".to_string()),
         }
     }

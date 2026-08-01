@@ -414,7 +414,7 @@ class TestDormantAutomationGuard(unittest.TestCase):
             self.assertEqual(len(findings), 1)
             self.assertIn("dangerously-skip-permissions", findings[0])
 
-    def test_detects_gh_run_list(self):
+    def test_detects_gh_run_list_limit_1(self):
         """gh run list --limit 1 (unbound CI judgment) must be flagged."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
@@ -427,10 +427,10 @@ class TestDormantAutomationGuard(unittest.TestCase):
                 repo, ["scripts/wait.sh"]
             )
             self.assertEqual(len(findings), 1)
-            self.assertIn("gh run list", findings[0])
+            self.assertIn("gh run list --limit 1", findings[0])
 
-    def test_detects_gh_run_watch(self):
-        """gh run watch with an unbound run id must be flagged."""
+    def test_detects_gh_run_watch_chained_to_unbound_list(self):
+        """gh run watch $(gh run list --limit 1 ...) must be flagged twice."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
             (repo / ".github" / "workflows").mkdir(parents=True)
@@ -442,8 +442,64 @@ class TestDormantAutomationGuard(unittest.TestCase):
                 repo, [".github/workflows/agent.yml"]
             )
             self.assertEqual(len(findings), 2)
-            self.assertTrue(any("gh run watch" in f for f in findings))
-            self.assertTrue(any("gh run list" in f for f in findings))
+            self.assertTrue(
+                any("gh run watch" in f for f in findings)
+            )
+            self.assertTrue(any("gh run list --limit 1" in f for f in findings))
+
+    def test_explicit_run_id_watch_passes(self):
+        """gh run watch with an explicit run id must not be flagged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run watch 1234567890 --exit-status\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_commit_bound_list_passes(self):
+        """gh run list bound to a head sha or branch is legitimate."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run list --branch main --head "
+                "ac50c3860ad1dccd5ef72a166cd609688c253a98 --json databaseId\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_informational_bounded_list_passes(self):
+        """gh run list --limit >= 2 is an informational query, not a finding."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "status.sh").write_text(
+                "gh run list --limit 3 --json status,conclusion\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/status.sh"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_bare_watch_with_exit_status_flagged(self):
+        """gh run watch --exit-status with no run id is unbound."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "scripts").mkdir(parents=True)
+            (repo / "scripts" / "wait.sh").write_text(
+                "gh run watch --exit-status\n"
+            )
+            findings = csb.check_dormant_automation_guard(
+                repo, ["scripts/wait.sh"]
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertIn("gh run watch unbound", findings[0])
 
     def test_doc_prose_is_not_scanned(self):
         """The same strings in docs prose must not be flagged."""
@@ -481,7 +537,7 @@ class TestDormantAutomationGuard(unittest.TestCase):
         original = csb.AUTOMATION_GUARD_ALLOWLIST
         csb.AUTOMATION_GUARD_ALLOWLIST = {
             "scripts/special_loop.sh": {
-                "gh run list": "bounded maintenance fixture; reviewed"
+                "gh run list --limit 1": "bounded maintenance fixture; reviewed"
             }
         }
         try:
@@ -503,7 +559,7 @@ class TestDormantAutomationGuard(unittest.TestCase):
         original = csb.AUTOMATION_GUARD_ALLOWLIST
         csb.AUTOMATION_GUARD_ALLOWLIST = {
             "scripts/special_loop.sh": {
-                "gh run list": "bounded maintenance fixture; reviewed"
+                "gh run list --limit 1": "bounded maintenance fixture; reviewed"
             }
         }
         try:
@@ -514,7 +570,7 @@ class TestDormantAutomationGuard(unittest.TestCase):
                     "gh run list --limit 1\n"
                 )
                 (repo / "scripts" / "special_loop.sh").write_text(
-                    "gh run watch\n"
+                    "gh run watch --exit-status\n"
                 )
                 findings = csb.check_dormant_automation_guard(
                     repo,
@@ -541,8 +597,8 @@ class TestRemovedPluginSurfaceGuard(unittest.TestCase):
             )
             self.assertEqual(findings, [])
 
-    def test_detects_official_trust_token(self):
-        """TRUST_LEVEL_OFFICIAL must be flagged in engine/src."""
+    def test_single_legacy_token_is_allowed(self):
+        """A single legacy-named constant is business code, not a revival."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
             (repo / "engine" / "src").mkdir(parents=True)
@@ -552,8 +608,22 @@ class TestRemovedPluginSurfaceGuard(unittest.TestCase):
             findings = csb.check_removed_plugin_surface_guard(
                 repo, ["engine/src/plugin.rs"]
             )
+            self.assertEqual(findings, [])
+
+    def test_two_legacy_tokens_flagged(self):
+        """Two or more legacy tokens in one file signal a revival attempt."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "plugin.rs").write_text(
+                "pub const TRUST_LEVEL_OFFICIAL: &str = \"official\";\n"
+                "pub const ALL_KNOWN_PERMISSIONS: &[&str] = &[];\n"
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/plugin.rs"]
+            )
             self.assertEqual(len(findings), 1)
-            self.assertIn("TRUST_LEVEL_OFFICIAL", findings[0])
+            self.assertIn("legacy plugin trust tokens", findings[0])
 
     def test_detects_unrestricted_comment(self):
         """The 'empty = unrestricted' trust semantic must be flagged."""
@@ -566,7 +636,35 @@ class TestRemovedPluginSurfaceGuard(unittest.TestCase):
             findings = csb.check_removed_plugin_surface_guard(
                 repo, ["engine/src/trust.rs"]
             )
-            self.assertEqual(len(findings), 2)
+            self.assertEqual(len(findings), 1)
+            self.assertIn("empty = unrestricted", findings[0])
+
+    def test_resurrected_plugin_path_flagged(self):
+        """Re-creating the deleted plugin files is always a finding."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src" / "infrastructure").mkdir(parents=True)
+            (repo / "engine" / "src" / "infrastructure" / "plugin_system.rs").write_text(
+                "pub fn load() -> Result<(), String> { Ok(()) }\n"
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/infrastructure/plugin_system.rs"]
+            )
+            self.assertEqual(len(findings), 1)
+            self.assertIn("resurrected", findings[0])
+
+    def test_generic_verified_identifier_passes(self):
+        """Generic verified/official identifiers are legal business names."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "trust.rs").write_text(
+                "pub fn is_verified(sha: &str) -> bool { sha.len() == 64 }\n"
+            )
+            findings = csb.check_removed_plugin_surface_guard(
+                repo, ["engine/src/trust.rs"]
+            )
+            self.assertEqual(findings, [])
 
     def test_engine_tests_are_not_scanned(self):
         """engine/tests is outside the production crate source scan scope."""
@@ -580,6 +678,174 @@ class TestRemovedPluginSurfaceGuard(unittest.TestCase):
                 repo, ["engine/tests/test_plugin.rs"]
             )
             self.assertEqual(findings, [])
+
+
+class TestCheckNumbering(unittest.TestCase):
+    """The main() progress labels must be sequential 1/N..N/N."""
+
+    def test_labels_are_sequential(self):
+        for index, label in enumerate(csb.CHECK_LABELS, start=1):
+            self.assertEqual(label, csb.CHECK_LABELS[index - 1])
+        self.assertGreaterEqual(len(csb.CHECK_LABELS), 7)
+
+    def test_label_count_matches_checks(self):
+        self.assertEqual(len(csb.CHECK_LABELS), 8)
+
+
+class TestDormantSurfaceHeuristics(unittest.TestCase):
+    """Tests for the dormant surface heuristic gate."""
+
+    def test_module_level_dead_code_blanket_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "dormant.rs").write_text(
+                "#![allow(dead_code)]\n\npub fn helper() -> u8 { 1 }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/dormant.rs"]
+            )
+            self.assertTrue(
+                any("allow(dead_code)" in f for f in findings)
+            )
+
+    def test_clean_source_passes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "wired.rs").write_text(
+                "pub fn helper() -> u8 { 1 }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/wired.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_module_island_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "lib.rs").write_text(
+                "pub mod ghost_module;\n"
+            )
+            (repo / "engine" / "src" / "ghost_module.rs").write_text(
+                "pub fn nothing() {}\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/lib.rs", "engine/src/ghost_module.rs"]
+            )
+            self.assertTrue(any("ghost_module" in f for f in findings))
+
+    def test_self_described_placeholder_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "future.rs").write_text(
+                "//! This module is a placeholder for the future workstream.\n"
+                "pub fn stub_thing() {}\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/future.rs"]
+            )
+            self.assertTrue(any("placeholder" in f for f in findings))
+
+    def test_quality_gate_style_header_passes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "gate.rs").write_text(
+                "// Local type stubs for removed placeholder modules.\n"
+                "pub fn gate() -> bool { true }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/gate.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_empty_executor_fn_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "use serde_json::{json, Value};\n"
+                "pub fn execute_task(_input: &Value) -> Value {\n"
+                "    json!({})\n"
+                "}\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertTrue(any("execute_task" in f for f in findings))
+
+    def test_non_empty_executor_passes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "pub fn execute_task(input: u32) -> u32 { input + 1 }\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_cfg_test_empty_executor_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "executor.rs").write_text(
+                "use serde_json::json;\n"
+                "#[cfg(test)]\n"
+                "fn execute_test_stub() -> serde_json::Value {\n"
+                "    json!({})\n"
+                "}\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/executor.rs"]
+            )
+            self.assertEqual(findings, [])
+
+    def test_conflicting_owner_claims_flagged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "engine" / "src").mkdir(parents=True)
+            (repo / "engine" / "src" / "alpha.rs").write_text(
+                "//! Alpha is the sole owner of the session store.\n"
+            )
+            (repo / "engine" / "src" / "beta.rs").write_text(
+                "//! Beta is the sole owner of the session store.\n"
+            )
+            findings = csb.check_dormant_surface_heuristics(
+                repo, ["engine/src/alpha.rs", "engine/src/beta.rs"]
+            )
+            self.assertTrue(any("session store" in f for f in findings))
+
+    def test_classification_allowlist_suppresses(self):
+        original = csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST
+        csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST = original + [
+            {
+                "path": "engine/src/executor.rs",
+                "classification": "wired",
+                "owner": "test",
+                "reason": "fixture",
+                "review_condition": "test",
+                "expiry_or_recheck_condition": "test",
+            }
+        ]
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                repo = Path(tmpdir)
+                (repo / "engine" / "src").mkdir(parents=True)
+                (repo / "engine" / "src" / "executor.rs").write_text(
+                    "pub fn execute_task() -> serde_json::Value { "
+                    "serde_json::json!({}) }\n"
+                )
+                findings = csb.check_dormant_surface_heuristics(
+                    repo, ["engine/src/executor.rs"]
+                )
+                self.assertEqual(findings, [])
+        finally:
+            csb.DORMANT_SURFACE_CLASSIFICATION_ALLOWLIST = original
 
 
 if __name__ == "__main__":

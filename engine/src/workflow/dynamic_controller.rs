@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::workflow::dag_manager::types::DAGMutationProposal;
+#[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -5,7 +8,6 @@ use serde_json::{json, Value};
 
 use crate::node_executor::{NodeExecutor, NoopNodeExecutor};
 use crate::storage::local_product_store::LocalProductStore;
-use crate::workflow::dag_manager::types::DAGMutationProposal;
 use crate::workflow::dynamic_decomposer::{
     node_proposals_to_dag_mutations, Decomposer, DecompositionContext, DecompositionTrigger,
     RuleBasedDecomposer,
@@ -1368,7 +1370,7 @@ fn extract_executor_type(
     executor.executor_type_name().to_string()
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn build_auto_fix_proposals(
     run_id: &str,
     failed_node_id: &str,
@@ -1443,7 +1445,7 @@ fn build_auto_fix_proposals(
     ]
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn build_quality_review_proposals(
     run_id: &str,
     source_node_id: &str,

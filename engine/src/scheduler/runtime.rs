@@ -9,8 +9,7 @@ use crate::orchestration::{
     WorkflowEngine,
 };
 use crate::routing::{
-    AutoDowngradePolicy, AutoUpgradePolicy, FeedbackIntegrator, RoutingHistoryStore,
-    RoutingObservationStore,
+    AutoDowngradePolicy, AutoUpgradePolicy, FeedbackIntegrator, RoutingObservationStore,
 };
 use crate::storage::local_product_store::LocalProductStore;
 use crate::workflow::backpressure::{Backpressure, BackpressureConfig};
@@ -62,7 +61,6 @@ pub(super) struct SchedulerModules {
     pub(super) aggregator: ResultAggregator,
     pub(super) feedback: FeedbackIntegrator,
     pub(super) observation_store: RoutingObservationStore,
-    pub(super) history_store: RoutingHistoryStore,
     pub(super) conflict_resolver: ConflictResolver,
     pub(super) approval_gate: HumanApprovalGate,
     pub(super) workflow_engine: WorkflowEngine,
@@ -78,7 +76,6 @@ impl SchedulerModules {
                 Some(AutoUpgradePolicy::new("scheduler_upgrade")),
             ),
             observation_store: RoutingObservationStore::new(),
-            history_store: RoutingHistoryStore::new(None),
             conflict_resolver: ConflictResolver::new(),
             approval_gate: HumanApprovalGate::new(0.7),
             workflow_engine: WorkflowEngine::new(TaskDecomposer::new(None)),
@@ -86,7 +83,7 @@ impl SchedulerModules {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn scheduler_tick(
     store: &LocalProductStore,
     config: &SchedulerConfig,
@@ -115,7 +112,6 @@ fn scheduler_tick_with_limit(
     let _recovered = store.recover_stale_leases(config.lease_timeout_ms)?;
 
     let mut paused_runs = Vec::new();
-    let mut degraded_runs = Vec::new();
     let mut backpressure_active = false;
     let mut queue_depth = 0usize;
 
@@ -130,12 +126,8 @@ fn scheduler_tick_with_limit(
                 .unwrap_or("")
                 .to_string();
             let pause = run.get("pause_reason").and_then(Value::as_str);
-            let degrade = run.get("degrade_mode").and_then(Value::as_str);
             if pause.is_some() {
                 paused_runs.push(run_id);
-            } else if degrade.is_some() {
-                degraded_runs.push(run_id.clone());
-                selected.push(run_id);
             } else {
                 selected.push(run_id);
             }
@@ -242,8 +234,6 @@ fn scheduler_tick_with_limit(
 
     let mut ticks = 0u64;
     let mut retries = 0u64;
-    let mut aggregations = 0u64;
-    let mut recommendations = Vec::new();
     let mut modules = SchedulerModules::new();
 
     for run_id in active_runs.iter().take(tick_limit) {
@@ -402,21 +392,6 @@ fn scheduler_tick_with_limit(
                         false,
                         &mut crate::runtime::FixtureRuntime::new(),
                     );
-
-                    let task_group = crate::routing::make_task_group("scheduler", "auto");
-                    let (should_adapt, reason) = modules.feedback.should_adapt(
-                        &modules.observation_store,
-                        &mut modules.history_store,
-                        &task_group,
-                        executor_type,
-                    );
-                    if should_adapt {
-                        recommendations.push(super::AdaptationRecommendation {
-                            task_group,
-                            should_adapt,
-                            reason,
-                        });
-                    }
                 }
 
                 if let Some(run_data) = store.get_workflow_run(run_id).ok().flatten() {
@@ -451,7 +426,6 @@ fn scheduler_tick_with_limit(
 
                         if modules.aggregator.is_complete(&engine_graph) {
                             let _result_map = modules.aggregator.aggregate(&engine_graph);
-                            aggregations += 1;
                         }
                     }
                 }
@@ -466,10 +440,7 @@ fn scheduler_tick_with_limit(
     Ok(TickResult {
         ticks,
         retries,
-        aggregations,
-        adaptation_recommendations: recommendations,
         paused_runs,
-        degraded_runs,
         backpressure_active,
         queue_depth,
     })
@@ -485,7 +456,6 @@ fn dynamic_scheduler_tick(
     let _recovered = store.recover_stale_leases(config.lease_timeout_ms)?;
 
     let mut paused_runs = Vec::new();
-    let mut degraded_runs = Vec::new();
     let mut backpressure_active = false;
     let mut queue_depth = 0usize;
 
@@ -500,12 +470,8 @@ fn dynamic_scheduler_tick(
                 .unwrap_or("")
                 .to_string();
             let pause = run.get("pause_reason").and_then(Value::as_str);
-            let degrade = run.get("degrade_mode").and_then(Value::as_str);
             if pause.is_some() {
                 paused_runs.push(run_id);
-            } else if degrade.is_some() {
-                degraded_runs.push(run_id.clone());
-                selected.push(run_id);
             } else {
                 selected.push(run_id);
             }
@@ -550,7 +516,6 @@ fn dynamic_scheduler_tick(
     }
     let mut ticks = 0u64;
     let mut retries = 0u64;
-    let mut aggregations = 0u64;
 
     for run_id in active_runs.iter().take(tick_limit) {
         let route = scheduler_route_for_run(store, run_id, config);
@@ -584,13 +549,6 @@ fn dynamic_scheduler_tick(
                     .iter()
                     .filter(|action| matches!(action, ControllerAction::NodeRetried { .. }))
                     .count() as u64;
-                if result
-                    .actions
-                    .iter()
-                    .any(|action| matches!(action, ControllerAction::RunCompleted))
-                {
-                    aggregations += 1;
-                }
 
                 if let Some(ref executor_type) = acquired_type {
                     let execution_statuses: Vec<&str> = result
@@ -628,10 +586,7 @@ fn dynamic_scheduler_tick(
     Ok(TickResult {
         ticks,
         retries,
-        aggregations,
-        adaptation_recommendations: Vec::new(),
         paused_runs,
-        degraded_runs,
         backpressure_active,
         queue_depth,
     })

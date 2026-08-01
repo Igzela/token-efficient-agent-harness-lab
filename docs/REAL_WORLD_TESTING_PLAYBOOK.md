@@ -94,6 +94,17 @@ A PR is autonomously merge-eligible only when all are true:
 
 Green CI alone is not permission to merge a misleading, incompatible, or unreviewed change.
 
+## Exact-Head Review Receipt
+
+A review conclusion only binds the exact head it was produced against. Every merge-eligible PR must carry a complete-diff review receipt that records:
+
+1. the exact commit SHA reviewed (the PR head at review time);
+2. the complete `base...head` diff that was reviewed (not a partial or stale-range diff);
+3. the review axes applied (architecture, authority, compatibility, security, audit, rollback, scope/path binding);
+4. the review outcome and any remaining bounded findings, with no unresolved objection.
+
+A replacement head invalidates the prior receipt: the new exact head requires a new complete-diff review before Ready/merge eligibility. A receipt written against an older head is never valid evidence for a newer head. Strictly documentation-only PRs may use a simplified receipt (exact head, complete diff, outcome, rollback by revert) but still need exact-head binding. Review receipts live in the PR review thread; an aggregate approval label alone is not an exact-head independent acceptance unless its commit binding is verified.
+
 ## Documentation-Only Canonical Mode
 
 A Ready PR may use the targeted canonical mode only when its final exact diff is strictly documentation-only.
@@ -167,6 +178,7 @@ For each coherent packet or slice:
 - [ ] Implement one coherent reviewable slice in Draft and use `pr-fast-checks` for replacement-head feedback
 - [ ] Run focused checks and applicable full verification locally
 - [ ] Review the diff against packet, architecture, module ownership, authority, security, compatibility, audit, and rollback
+- [ ] Post the exact-head review receipt (exact SHA, complete diff, axes, outcome) on the stable head before marking Ready; re-receipt after any replacement head
 - [ ] Run `uv run --no-project python scripts/check_agent_handoff.py`
 - [ ] Mark the stable candidate Ready to trigger canonical exact-head `tests`
 - [ ] Wait for every required canonical job to complete successfully in its trusted mode
