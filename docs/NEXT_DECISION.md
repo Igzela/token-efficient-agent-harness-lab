@@ -24,6 +24,7 @@ provider-free RWE authority reconciliation (#300)
 → production DeepSeek ProductTask runner wiring (#322 accepted)
 → delegated autonomous Golden Path authority and provider-free proof (#323 accepted)
 → exactly one owner-authorized bounded DeepSeek Golden Path live seal
+→ non-authoritative independent-review transport idempotency/recovery repair
 → freeze one operator-supplied real RWE corpus under the accepted protocol
 → first frozen Real Workload Evidence baseline
 → Architecture Convergence AC1–AC7
@@ -36,15 +37,17 @@ provider-free RWE authority reconciliation (#300)
 
 The owner has authorized and accepted the production runner repair (#322), the delegated autonomous authority packet (#323), and the repair/reseal objective in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801` issued at `2026-08-01T14:29:00+09:00`. The earlier observed attempts remain non-accepted: the first used a dirty/non-exact source identity, and the later `Igzela/alters-lab#4` recovery required direct SQLite authority mutation plus a manual ProductTask version rollback. The current authorization permits a maximum of three separately consumed attempts, one ProductTask per attempt, at most three provider requests per attempt, zero retries, at most one new `acp/*` branch and one Draft PR per attempt, and a combined provider spend cap of `$1.00`. Its route is `deepseek-v4-pro` planning, `deepseek-v4-flash` implementation, deterministic non-provider verification, and `deepseek-v4-pro` review. Each attempt binds `Igzela/alters-lab/main` to a freshly resolved exact SHA, leaves target main unchanged, and forbids merge, auto-merge, release, deployment, RWE, direct SQL mutation, credential disclosure, raw prompt/output persistence, or outcome-unknown retry. Fixture completion is not live acceptance. Context-capsule automation is transport, not authority. VDE is a read-only evidence projection, not a new execution or adoption authority.
 
+Clean reseal attempt-1 has been consumed, terminalized, and independently accepted. The remaining attempt-2 and attempt-3 allowances are unused ceilings, not authority to run additional reseals after acceptance; any further live-seal attempt requires a new planning-layer decision.
+
 ## Active Routing
 
-1. `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` — `READY_FOR_EXECUTION`: Packets A and B are accepted; the clean reseal loop remains bounded to the three separately consumed attempts in authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`.
-2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the live seal and its separately authorized RWE envelope.
+1. `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` — `READY_FOR_EXECUTION`: harden the non-authoritative independent-review transport before automated review reuse or RWE.
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the accepted review-transport repair, frozen real corpus/protocol, and separately persisted one-use RWE spend envelope.
 3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
 4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
 5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
 6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
-The delegated autonomous Golden Path packet is complete through merged PR #323 and is no longer the active frontier (see the COMPLETE packet section below).
+The delegated autonomous Golden Path packet remains complete through merged PR #323 and is no longer routed. The live-seal packet becomes accepted `COMPLETE` only when this canonical closeout diff passes exact-head review, canonical CI, and merge.
 
 ## Packet States
 
@@ -69,9 +72,10 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #336 is merged as `17723bb66a1274498c32aef0f6cac85ad339efea`, but canonical acceptance is incomplete. Its run `30680937667` is recorded as `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure`, `failure_reason: PR merged before terminal required job`; Packet A repairs the material governance findings. It does not authorize a live task, provider call, spend, merge policy change, or any RWE/VDE reclassification.
 - PR #342 is merged and accepted as `e1e08ddcb745b02892f099b9de1436c99c25d533` from exact head `666cabeab31c14c77389646edc140c2d8ae7eb86`. It completes Packet B's canonical restart recovery and minimal managed-identity authority. Exact-head run `30710854561` passed all source jobs, `pg-integration-tests`, and terminal context capsule `91399051309`; the exact-head independent delta review was PASS with no unresolved objections.
 - PR #346 is merged and accepted as `adcb87b4a3ece961a46455117ae4323b4f54c2fa` from exact head `64d45f5e55f4393737c26b26dbd66976b8145d5d`. It is the Packet B closeout repair binding managed identity mutation to the canonical bootstrap store owner (reviewer/output-operator identity creation and mutation require the store-owned canonical bootstrap principal and exact local tenant), serializing the canonical Rust test lane, and wrapping PostgreSQL key-authority store calls in `spawn_blocking` to remove an async-handler runtime-in-runtime panic. Exact-head run `30732749013` passed all source jobs including `pg-integration-tests` and the terminal context capsule; the exact-head independent delta review for `89920d99..64d45f5` was APPROVED with no blocking findings.
+- External evidence PR `Igzela/alters-lab#5` remains OPEN, Draft, and unmerged at exact head `967c902487edf3959090e76c442092f75b0ba10a` over target-main base `6240768506320a324d68787b9eaa86971c8c930c`. Exact-head independent terminal-evidence receipt comment `5158092741` is PASS and explicitly grants no merge authority.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, delegated autonomous authority through PR #323, Packet A through PRs #339/#340, and Packet B through PRs #342 and #346. The clean live reseal is now the active frontier. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, delegated autonomous authority through PR #323, Packet A through PRs #339/#340, and Packet B through PRs #342 and #346. The clean live reseal has accepted terminal evidence; the canonical closeout and then `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` are the active route. Do not begin RWE or later stages before their updated prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -362,11 +366,11 @@ Repair the ProductTask output path so a known pre-effect GitHub credential failu
 
 ## Packet PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
 **Prerequisite:** Packets `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` and `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` accepted and merged. Satisfied by PRs #339/#340, #342, and the #346 Packet B closeout repair.
 
-**Authority:** owner authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`, with separately persisted and consumed sub-authorizations `.../attempt-1`, `.../attempt-2`, and `.../attempt-3`; combined provider spend cap `$1.00`, zero retries, and one ProductTask per attempt.
+**Authority record:** owner authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801` allowed at most three separately consumed attempts. Clean reseal attempt-1 was consumed and terminalized successfully. Attempt-2 and attempt-3 remain unused and confer no authority for additional reseal execution after this accepted completion without a new planning-layer decision.
 
 Before any provider request, persist and display the complete derived final manifest, recalculate its SHA-256, verify the delegated approval/spend receipt binds that exact hash, confirm accepted Harness and target main SHAs are unchanged, and report only that the parent-held credential is present. Never print, persist, request, unset, rotate, or forward it to a child.
 
@@ -391,30 +395,86 @@ PR #325 is the accepted live-observed repair for budget reservation release and 
 
 The prior `Igzela/alters-lab#4` attempt remains `LIVE_OBSERVED_NOT_ACCEPTED`. Its realized evidence is preserved: three provider requests, 6,976 realized tokens, realized cost `$0.00143`, target main unchanged, one new unmerged Draft PR, and terminal task state `succeeded` after manual recovery. The recovery directly modified SQLite authority, manually reduced the ProductTask version from v8 to v7, manually reapplied scopes, and retried `/output`; those actions invalidate clean acceptance because canonical restart recovery failed. PR #4 and its branch must not be reused for a clean attempt.
 
-### Remaining acceptance condition — one clean exact-main live reseal
+### Clean reseal attempt-1 — accepted terminal evidence
 
-One clean exact-main live reseal using:
+The clean post-#346 exact-main reseal satisfied the previously remaining acceptance condition:
 
-- the merged post-#346 `main`;
-- a clean worktree;
-- recorded exact source tree and binary SHA before execution;
-- no uncommitted patches or one-shot helper;
-- one ProductTask from intake through terminal closure;
-- fresh one-use delegation/spend/lease;
-- one bounded unmerged `acp/*` Draft PR;
-- exact terminal evidence.
+- Harness accepted commit: `a1878b2a282303d6e187f35c437875493c0f5296`;
+- accepted source tree: `2280632259cc78bf9e252dfded39cccd20cd99d7`;
+- runtime binary SHA-256: `3d6322ed046ebe217456d933f762d336770680ec37ab357970600a2313b53017`;
+- ProductTask: `ptask-20260802061735-18c7e889a3570d82`, version `9`, status `completed`;
+- run: `run-0001`, status `completed`;
+- attempt: `attempt-pe7-live-seal-1785651576`;
+- delegation: `delegation-pe7-live-seal-1785651576`;
+- target repository/base: `Igzela/alters-lab` / `6240768506320a324d68787b9eaa86971c8c930c`;
+- output: one OPEN, Draft, unmerged PR #5 at exact head `967c902487edf3959090e76c442092f75b0ba10a`;
+- provider sequence: Pro planning → Flash bounded implementation → deterministic verification → Pro review;
+- provider requests: `3`; retries: `0`; realized tokens: `6800`;
+- reconciled client-side realized cost: `$0.000583862`;
+- terminal receipt SHA-256: `205ad9539155bb0100709e88a16360ac9a5325df42449206e4ce0345f2955477`;
+- evidence-index SHA-256: `d9a8e5b8be5dcfe35a9c3cb70a50a2a9a06d26c701ab5a854400bad19c5de82c`;
+- exact-head independent receipt: `Igzela/alters-lab#5` comment `5158092741`, PASS;
+- spend authorization and delegation expired, attempt lease closed, workspace cleanup/rollback completed;
+- target main remained unchanged.
 
-Do not start an attempt until its separately persisted sub-authorization is consumed, the exact accepted main/source/binary manifest is frozen, and the preceding attempt (if any) is terminalized with any code defect repaired, reviewed, CI-green, and merged.
+This is one realized workflow sample labeled `INSUFFICIENT_REPETITIONS`. It is not an RWE baseline, success-probability estimate, reliability result, economic comparison, ROI result, learning result, release/deployment proof, installation authority, target-main authority, or merge approval.
 
-Completion requires reconciled redacted usage/cost evidence, expired one-use spend, closed attempt lease, cleanup and rollback receipts, independently reviewed terminal evidence, exactly one realized workflow sample labeled `INSUFFICIENT_REPETITIONS`, and post-observation canonical-document updates. It authorizes neither RWE nor economic, reliability, learning, ROI, success-probability, release, deployment, installation, target-main, or auto-merge claims.
+### Completion boundary
+
+The previously remaining clean exact-main live-reseal condition is satisfied by the accepted attempt above. This packet becomes accepted `COMPLETE` only when the canonical-document closeout PR containing this record:
+
+- passes a complete exact-head independent documentation review;
+- passes canonical trusted `docs_only` CI, including the required terminal `context-capsule`;
+- merges to `main`;
+- is followed by a refreshed accepted-main handoff.
+
+Until that merge, branch-local `COMPLETE` prose is proposed state only. Completion authorizes neither RWE execution nor economic, reliability, learning, ROI, success-probability, release, deployment, installation, target-main, auto-merge, or PR #5 merge claims.
+
+## Packet TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1 — non-authoritative independent-review transport hardening
+
+**State:** `READY_FOR_EXECUTION`
+
+**Prerequisite:** `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` accepted `COMPLETE`.
+
+**Goal:** make repository-controlled independent-review request construction, delivery reconciliation, verdict parsing, and GitHub receipt commenting idempotent, live-validated, single-process, recoverable, and fail closed.
+
+**Owned paths:**
+
+- `scripts/agent-control/review_loop/`
+- one thin repository CLI entrypoint under `scripts/agent-control/`
+- `tests/test_review_loop.py`
+- the smallest required packet-state documentation
+
+**Required behavior:**
+
+- canonical request envelope and visible `Review-Request-SHA256`;
+- live PR base/head/state and evidence-index validation before delivery;
+- `ALREADY_PRESENT`, `SENT_CONFIRMED`, and `DELIVERY_OUTCOME_UNKNOWN` semantics;
+- no resend after an unknown effect until the thread is reconciled;
+- per-chat single-process lock and owned-process cleanup only;
+- append-only local journal plus rebuildable non-authoritative projection;
+- strict versioned receipt parsing; only exact structured `PASS` with matching identities and no objections is acceptable;
+- exact-head revalidation before posting;
+- idempotent ordinary GitHub comment posting with conflict detection;
+- provider-free CI using fakes/fixtures only.
+
+**Forbidden:**
+
+- changes under `engine/`, `wire_contract/`, migrations, schema, auth scopes, ProductTask/store/scheduler/provider/output owners;
+- a second runtime, state, authority, approval, budget, audit, rollback, merge, release, or deployment owner;
+- ChatGPT login, real ChatGPT traffic, provider calls, credentials, cookies, or browser profiles in CI;
+- GitHub APPROVE, mark-ready, merge, release, deployment, protected-branch writes, or automatic canonical-document state changes;
+- treating malformed, partial, conflicting, `PASS_WITH_NOTES`, `NEEDS_CHANGES`, `UNREVIEWABLE`, or outcome-unknown results as PASS.
+
+**Acceptance:** focused deterministic tests, full canonical source matrix, one bounded operator smoke outside CI, exact-head independent review, successful terminal context-capsule, rollback by revert/removing the local launcher, and a separate canonical closeout before `COMPLETE`.
 
 ## Packet PE7-REAL-WORKLOAD-EVIDENCE-1 — first bounded baseline
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1`
+**Prerequisite:** `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` and `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1`
 
-PR #300 may prepare provider-free corpus, authorization, runner, and evidence contracts, but live RWE requires accepted Golden Path terminal evidence plus a separately persisted one-use RWE spend envelope.
+PR #300 may prepare provider-free corpus, authorization, runner, and evidence contracts, but live RWE requires the accepted Golden Path terminal evidence, accepted review-transport repair, a frozen operator-supplied real corpus/protocol, and a separately persisted one-use RWE spend envelope.
 
 Before execution, freeze a real, versioned, hash-bound, replayable `rwe_economic_corpus.v1`-class contract. Each task binds exact source repository/commit, task definition/reference, allowed mutable surface, verification, expected class, output bounds, timeout/cancel behavior, executor identity, budget, cleanup, primary value basis/source/confidence, layered acceptance rubric, reviewer policy, minimum repetitions, budget points, stop rules, non-inferiority margins, cost-completeness requirements, seeds, and statistical method.
 
