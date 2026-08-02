@@ -2469,7 +2469,8 @@ mod tests {
             .map(|scope| (*scope).to_string())
             .collect::<Vec<_>>();
         store
-            .record_api_key_metadata(
+            .record_api_key_metadata_for_tenant(
+                "managed-codex-tenant",
                 key_id,
                 "operator-user-managed-codex",
                 "operator",

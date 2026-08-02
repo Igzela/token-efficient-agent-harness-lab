@@ -87,6 +87,23 @@ fn bootstrap_resolver(bootstrap_raw: &str) -> TenantResolver {
 }
 
 fn bootstrap_app(store: Arc<LocalProductStore>, bootstrap_raw: &str) -> axum::Router {
+    store
+        .upsert_team_member("local-admin", "Local Admin", "admin")
+        .unwrap();
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &[
+                "team:read".to_string(),
+                "team:admin".to_string(),
+                SCOPE_IDENTITY_DELEGATE.to_string(),
+            ],
+            "bootstrap-test",
+        )
+        .unwrap();
     build_axum_router(AxumApiState::new().with_local_store_arc(store).with_auth(
         bootstrap_resolver(bootstrap_raw),
         RateLimiter::new(60.0, 10_000),
@@ -319,7 +336,11 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "cross-tenant mutation is intentionally indistinguishable from a missing key"
+        );
     }
 
     // A tenant admin must not be able to rewrite a managed identity into an
@@ -339,7 +360,11 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
         )
         .await
         .unwrap();
-    assert_eq!(ordinary_rewrite.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        ordinary_rewrite.status(),
+        StatusCode::NOT_FOUND,
+        "cross-tenant mutation is intentionally indistinguishable from a missing key"
+    );
 
     // Restart keeps only the parent bootstrap credential in the resolver. The
     // child identity is reissued through the canonical API, not SQL mutation.

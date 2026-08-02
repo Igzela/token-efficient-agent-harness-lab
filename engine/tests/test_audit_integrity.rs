@@ -73,7 +73,8 @@ fn audit_log_entries_after_api_key_create_and_revoke() {
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
 
     store
-        .record_api_key_metadata(
+        .record_api_key_metadata_for_tenant(
+            "local",
             "key-001",
             "user-1",
             "member",
@@ -91,7 +92,7 @@ fn audit_log_entries_after_api_key_create_and_revoke() {
     assert_eq!(create_event["resource"], "key-001");
 
     store
-        .revoke_api_key_metadata("key-001", "admin-actor")
+        .revoke_api_key_metadata_for_tenant("key-001", "local", "admin-actor")
         .unwrap();
 
     let events = store.audit_events(10).unwrap();

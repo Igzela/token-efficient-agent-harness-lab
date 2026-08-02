@@ -18,6 +18,7 @@ use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
+use crate::infrastructure::auth::{LOCAL_BOOTSTRAP_API_KEY_ID, LOCAL_BOOTSTRAP_TENANT_ID};
 
 /// Required scopes for managed-acceptance authority operations.
 pub const SCOPE_RISK_ACKNOWLEDGE: &str = "managed_acceptance:risk_acknowledge";
@@ -96,6 +97,24 @@ pub fn validate_managed_acceptance_role_scopes(
     {
         return Err(format!(
             "scope {scope:?} is outside the least-privilege {role} managed-acceptance profile"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_bootstrap_identity_delegation_scopes(scopes: &[String]) -> Result<(), String> {
+    if !BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES
+        .iter()
+        .all(|required| scopes.iter().any(|scope| scope == required))
+    {
+        return Err("canonical bootstrap identity-delegation scope is missing".into());
+    }
+    if let Some(scope) = scopes.iter().find(|scope| {
+        scope.starts_with("managed_acceptance:")
+            && !BOOTSTRAP_MANAGED_ACCEPTANCE_DELEGATION_SCOPES.contains(&scope.as_str())
+    }) {
+        return Err(format!(
+            "canonical bootstrap carries a managed-operation scope outside its delegation ceiling: {scope:?}"
         ));
     }
     Ok(())
@@ -901,17 +920,19 @@ fn validate_existing_manifest_approval(
 }
 
 impl LocalProductStore {
-    pub(crate) fn require_delegation_tenant(
+    pub(crate) fn require_delegation_product_task(
         &self,
         delegation_id: &str,
         expected_tenant_id: &str,
+        expected_product_task_id: &str,
     ) -> Result<(), String> {
-        let persisted_tenant = match &self.db {
+        let row: Option<(String, Option<String>)> = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 conn.query_row(
-                    "SELECT tenant_id FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                    "SELECT tenant_id, product_task_id
+                     FROM managed_acceptance_delegations WHERE delegation_id=?1",
                     params![delegation_id],
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
                 .map_err(|error| error.to_string())
@@ -920,18 +941,90 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 client
                     .query_opt(
-                        "SELECT tenant_id FROM managed_acceptance_delegations WHERE delegation_id=$1",
+                        "SELECT tenant_id, product_task_id
+                         FROM managed_acceptance_delegations WHERE delegation_id=$1",
                         &[&delegation_id],
                     )
-                    .map(|row| row.map(|row| row.get::<_, String>(0)))
+                    .map(|row| row.map(|row| (row.get(0), row.get(1))))
                     .map_err(|error| error.to_string())
             })?,
-        }
-        .ok_or("delegation is not persisted")?;
-        if persisted_tenant != expected_tenant_id {
+        };
+        let Some((stored_tenant, stored_product_task_id)) = row else {
+            return Err("delegation is not persisted".into());
+        };
+        if stored_tenant != expected_tenant_id {
             return Err("delegation tenant does not match ProductTask tenant".into());
         }
+        if stored_product_task_id.as_deref() != Some(expected_product_task_id) {
+            return Err("delegation ProductTask binding is stale or mismatched".into());
+        }
         Ok(())
+    }
+
+    /// Validate the ProductTask identity carried by a delegated manifest.
+    /// Every downstream production authority operation requires the immutable
+    /// store-owned binding; a caller cannot manufacture a task identity in a
+    /// manifest or use an unbound legacy delegation.
+    pub(crate) fn require_manifest_product_task_binding(
+        &self,
+        delegation_id: &str,
+        expected_tenant_id: &str,
+        manifest: &Value,
+    ) -> Result<String, String> {
+        let execution = manifest
+            .get("execution")
+            .ok_or("delegated manifest execution is missing")?;
+        let product_task_id = execution
+            .get("product_task_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("delegated manifest ProductTask identity is missing")?;
+        let manifest_tenant_id = execution
+            .get("tenant_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("delegated manifest tenant identity is missing")?;
+        if manifest_tenant_id != expected_tenant_id {
+            return Err("delegated manifest tenant does not match authenticated principal".into());
+        }
+
+        let binding: Option<(String, Option<String>)> = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT tenant_id, product_task_id
+                     FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                    params![delegation_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT tenant_id, product_task_id
+                         FROM managed_acceptance_delegations WHERE delegation_id=$1",
+                        &[&delegation_id],
+                    )
+                    .map(|row| row.map(|row| (row.get(0), row.get(1))))
+                    .map_err(|error| error.to_string())
+            })?,
+        };
+        let Some((stored_tenant_id, stored_product_task_id)) = binding else {
+            return Err("delegation is not persisted".into());
+        };
+        if stored_tenant_id != expected_tenant_id {
+            return Err("delegation tenant does not match authenticated principal".into());
+        }
+        if let Some(stored_product_task_id) = stored_product_task_id {
+            if stored_product_task_id != product_task_id {
+                return Err("delegation ProductTask binding is stale or mismatched".into());
+            }
+        } else {
+            return Err("delegation ProductTask binding is missing".into());
+        }
+        Ok(product_task_id.to_string())
     }
 
     /// Persist the operator-issued delegation. Re-submitting the identical
@@ -940,6 +1033,27 @@ impl LocalProductStore {
         &self,
         principal: &AuthenticatedPrincipal,
         delegation: &DelegationContract,
+    ) -> Result<Value, String> {
+        self.persist_delegation_with_product_task(principal, delegation, None)
+    }
+
+    /// Persist a delegation and its ProductTask identity in one store-owned
+    /// transaction. The live product route uses this form so a restart cannot
+    /// leave an operation with a caller-selected first task binding.
+    pub fn persist_delegation_for_product_task(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        task_id: &str,
+        delegation: &DelegationContract,
+    ) -> Result<Value, String> {
+        self.persist_delegation_with_product_task(principal, delegation, Some(task_id))
+    }
+
+    fn persist_delegation_with_product_task(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        delegation: &DelegationContract,
+        product_task_id: Option<&str>,
     ) -> Result<Value, String> {
         principal.require_scope(SCOPE_DELEGATED_AUTONOMY)?;
         // Preparing the immutable delegation and reserving spend is not the
@@ -961,13 +1075,15 @@ impl LocalProductStore {
         let existing = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 Ok(conn.query_row(
-                    "SELECT delegation_sha256, body_json, status, manifest_approver_id, artifact_confirmer_id FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                    "SELECT delegation_sha256, body_json, status, manifest_approver_id,
+                            artifact_confirmer_id, product_task_id
+                     FROM managed_acceptance_delegations WHERE delegation_id=?1",
                     params![delegation.delegation_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, Option<String>>(5)?)),
                 )
                 .optional()
                 .map_err(|e| e.to_string())?
-                .map(|(sha, body_json, status, manifest_approver_id, artifact_confirmer_id)| json!({
+                .map(|(sha, body_json, status, manifest_approver_id, artifact_confirmer_id, product_task_id)| json!({
                     "schema_version": DELEGATION_SCHEMA_VERSION,
                     "delegation_id": delegation.delegation_id,
                     "delegation_sha256": sha,
@@ -975,6 +1091,7 @@ impl LocalProductStore {
                     "status": status,
                     "manifest_approver_id": manifest_approver_id,
                     "artifact_confirmer_id": artifact_confirmer_id,
+                    "product_task_id": product_task_id,
                     "replayed": true
                 })))
             }),
@@ -982,7 +1099,9 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 client
                     .query_opt(
-                        "SELECT delegation_sha256, body_json, status, manifest_approver_id, artifact_confirmer_id FROM managed_acceptance_delegations WHERE delegation_id=$1",
+                        "SELECT delegation_sha256, body_json, status, manifest_approver_id,
+                                artifact_confirmer_id, product_task_id
+                         FROM managed_acceptance_delegations WHERE delegation_id=$1",
                         &[&delegation.delegation_id],
                     )
                     .map(|row| {
@@ -996,6 +1115,7 @@ impl LocalProductStore {
                                 "status": row.get::<_, String>(2),
                                 "manifest_approver_id": row.get::<_, String>(3),
                                 "artifact_confirmer_id": row.get::<_, String>(4),
+                                "product_task_id": row.get::<_, Option<String>>(5),
                                 "replayed": true
                             })
                         })
@@ -1013,6 +1133,7 @@ impl LocalProductStore {
                     .get("artifact_confirmer_id")
                     .and_then(Value::as_str)
                     != Some(artifact_confirmer_id.as_str())
+                || existing.get("product_task_id").and_then(Value::as_str) != product_task_id
             {
                 return Err("delegation replay conflicts with persisted immutable body".into());
             }
@@ -1022,14 +1143,29 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
                     .map_err(|e| e.to_string())?;
+                if let Some(task_id) = product_task_id {
+                    let task_tenant: Option<String> = tx
+                        .query_row(
+                            "SELECT tenant_id FROM product_tasks WHERE task_id=?1",
+                            params![task_id],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(|e| e.to_string())?;
+                    if task_tenant.as_deref() != Some(principal.tenant_id()) {
+                        return Err(
+                            "ProductTask is missing or does not match delegation principal".into(),
+                        );
+                    }
+                }
                 let inserted = tx.execute(
                     "INSERT OR IGNORE INTO managed_acceptance_delegations (
                         delegation_id, tenant_id, principal_kind, principal_id, manifest_approver_id,
-                        artifact_confirmer_id,
+                        artifact_confirmer_id, product_task_id,
                         delegation_sha256, body_json, status, executions_allowed, executions_used,
                         max_total_cost_usd, total_cost_usd, created_at, updated_at, expires_at,
                         terminal_at, revoked_at
-                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'active',?9,0,?10,0,?11,?11,?12,NULL,NULL)",
+                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',?10,0,?11,0,?12,?12,?13,NULL,NULL)",
                     params![
                         delegation.delegation_id,
                         principal.tenant_id(),
@@ -1037,6 +1173,7 @@ impl LocalProductStore {
                         principal.principal_id(),
                         manifest_approver_id,
                         artifact_confirmer_id,
+                        product_task_id,
                         delegation_sha256,
                         body_json,
                         delegation.executions as i64,
@@ -1047,18 +1184,28 @@ impl LocalProductStore {
                 )
                 .map_err(|e| e.to_string())?;
                 if inserted == 0 {
-                    let row: (String, String, String, String) = tx
+                    let row: (String, String, String, String, Option<String>) = tx
                         .query_row(
-                            "SELECT delegation_sha256, body_json, manifest_approver_id, artifact_confirmer_id
+                            "SELECT delegation_sha256, body_json, manifest_approver_id,
+                                    artifact_confirmer_id, product_task_id
                              FROM managed_acceptance_delegations WHERE delegation_id=?1",
                             params![delegation.delegation_id],
-                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                            |row| {
+                                Ok((
+                                    row.get(0)?,
+                                    row.get(1)?,
+                                    row.get(2)?,
+                                    row.get(3)?,
+                                    row.get(4)?,
+                                ))
+                            },
                         )
                         .map_err(|e| e.to_string())?;
                     if row.0 != delegation_sha256
                         || row.1 != body_json
                         || row.2 != manifest_approver_id
                         || row.3 != artifact_confirmer_id
+                        || row.4.as_deref() != product_task_id
                     {
                         return Err(
                             "delegation replay conflicts with persisted immutable body".into()
@@ -1071,14 +1218,28 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                if let Some(task_id) = product_task_id {
+                    let task_tenant: Option<String> = tx
+                        .query_opt(
+                            "SELECT tenant_id FROM product_tasks WHERE task_id=$1 FOR SHARE",
+                            &[&task_id],
+                        )
+                        .map(|row| row.map(|row| row.get(0)))
+                        .map_err(|e| e.to_string())?;
+                    if task_tenant.as_deref() != Some(principal.tenant_id()) {
+                        return Err(
+                            "ProductTask is missing or does not match delegation principal".into(),
+                        );
+                    }
+                }
                 let inserted = tx.execute(
                     "INSERT INTO managed_acceptance_delegations (
                         delegation_id, tenant_id, principal_kind, principal_id, manifest_approver_id,
-                        artifact_confirmer_id,
+                        artifact_confirmer_id, product_task_id,
                         delegation_sha256, body_json, status, executions_allowed, executions_used,
                         max_total_cost_usd, total_cost_usd, created_at, updated_at, expires_at,
                         terminal_at, revoked_at
-                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,0,$10,0,$11,$11,$12,NULL,NULL)
+                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',$10,0,$11,0,$12,$12,$13,NULL,NULL)
                      ON CONFLICT DO NOTHING",
                     &[
                         &delegation.delegation_id,
@@ -1087,6 +1248,7 @@ impl LocalProductStore {
                         &principal.principal_id(),
                         &manifest_approver_id,
                         &artifact_confirmer_id,
+                        &product_task_id,
                         &delegation_sha256,
                         &body_json,
                         &(delegation.executions as i64),
@@ -1099,7 +1261,8 @@ impl LocalProductStore {
                 if inserted == 0 {
                     let row = tx
                         .query_one(
-                            "SELECT delegation_sha256, body_json, manifest_approver_id, artifact_confirmer_id
+                            "SELECT delegation_sha256, body_json, manifest_approver_id,
+                                    artifact_confirmer_id, product_task_id
                              FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
                             &[&delegation.delegation_id],
                         )
@@ -1108,6 +1271,7 @@ impl LocalProductStore {
                         || row.get::<_, String>(1) != body_json
                         || row.get::<_, String>(2) != manifest_approver_id
                         || row.get::<_, String>(3) != artifact_confirmer_id
+                        || row.get::<_, Option<String>>(4).as_deref() != product_task_id
                     {
                         return Err(
                             "delegation replay conflicts with persisted immutable body".into()
@@ -1125,9 +1289,282 @@ impl LocalProductStore {
             "status": "active",
             "manifest_approver_id": manifest_approver_id,
             "artifact_confirmer_id": artifact_confirmer_id,
+            "product_task_id": product_task_id,
             "execution_granted": false,
             "replayed": !inserted
         }))
+    }
+
+    /// Bind an admitted ProductTask to the same immutable delegation that the
+    /// prepare route just persisted. The binding is store-owned and monotonic:
+    /// it can be filled once, or replayed for the same task and principal, but
+    /// it cannot be moved to another task or principal.
+    #[cfg(test)]
+    pub(crate) fn bind_delegation_to_product_task(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        task_id: &str,
+        delegation_id: &str,
+    ) -> Result<Value, String> {
+        principal.require_scope(SCOPE_DELEGATED_AUTONOMY)?;
+        principal.require_scope(SCOPE_DELEGATED_MANIFEST_APPROVE)?;
+        principal.require_scope(SCOPE_SPEND_AUTHORIZE)?;
+        if matches!(principal.principal_kind(), PrincipalKind::FixturePrincipal) {
+            return Err(
+                "delegation ProductTask binding requires an authenticated non-fixture operator"
+                    .into(),
+            );
+        }
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        if task.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id()) {
+            return Err("ProductTask tenant does not match delegation principal".into());
+        }
+        let now = self.now();
+        let details = json!({
+            "task_id": task_id,
+            "delegation_id": delegation_id,
+            "principal_id": principal.principal_id(),
+        });
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let row: (String, String, Option<String>, String, String, String) = tx
+                    .query_row(
+                        "SELECT tenant_id, status, product_task_id, principal_id,
+                                manifest_approver_id, expires_at
+                         FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                            ))
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                if row.0 != principal.tenant_id() {
+                    return Err("delegation tenant does not match ProductTask tenant".into());
+                }
+                if row.1 != "active" {
+                    return Err("delegation is not active for ProductTask binding".into());
+                }
+                if is_at_or_before(&row.5, &now)? {
+                    return Err("delegation is expired for ProductTask binding".into());
+                }
+                if row.3 != principal.principal_id() || row.4 != principal.principal_id() {
+                    return Err("delegation principal does not match ProductTask binder".into());
+                }
+                if let Some(bound_task_id) = row.2.as_deref() {
+                    if bound_task_id != task_id {
+                        return Err(
+                            "delegation ProductTask binding does not match requested task".into(),
+                        );
+                    }
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(json!({
+                        "delegation_id": delegation_id,
+                        "product_task_id": task_id,
+                        "replayed": true,
+                    }));
+                }
+                let safe_state: i64 = tx
+                    .query_row(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM managed_acceptance_delegations
+                             WHERE delegation_id=?1 AND tenant_id=?2 AND status='active'
+                               AND product_task_id IS NULL AND executions_used=0
+                               AND total_cost_usd=0 AND proposal_sha256 IS NULL
+                               AND proposal_json IS NULL AND spend_authorization_id IS NULL
+                               AND manifest_approval_sha256 IS NULL
+                               AND manifest_approval_json IS NULL AND spend_body_sha256 IS NULL
+                               AND spend_status IS NULL AND spend_body_json IS NULL
+                               AND manifest_json IS NULL AND attempt_id IS NULL
+                               AND attempt_lease_id IS NULL AND attempt_lease_token IS NULL
+                               AND attempt_status IS NULL AND attempt_activator_id IS NULL
+                               AND artifact_confirmation_sha256 IS NULL
+                               AND artifact_confirmation_json IS NULL
+                               AND provider_request_journal_json='[]'
+                               AND terminal_receipt_json IS NULL AND terminal_at IS NULL
+                               AND revoked_at IS NULL AND artifact_confirmer_id=''
+                         )",
+                        params![delegation_id, principal.tenant_id()],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if safe_state != 1 {
+                    return Err(
+                        "delegation ProductTask binding requires untouched pre-admission state"
+                            .into(),
+                    );
+                }
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET product_task_id=?1, updated_at=?2
+                         WHERE delegation_id=?3 AND tenant_id=?4 AND status='active'
+                           AND product_task_id IS NULL AND executions_used=0 AND total_cost_usd=0
+                           AND proposal_sha256 IS NULL AND proposal_json IS NULL
+                           AND spend_authorization_id IS NULL AND manifest_approval_sha256 IS NULL
+                           AND manifest_approval_json IS NULL AND spend_body_sha256 IS NULL
+                           AND spend_status IS NULL AND spend_body_json IS NULL
+                           AND manifest_json IS NULL AND attempt_id IS NULL
+                           AND attempt_lease_id IS NULL AND attempt_lease_token IS NULL
+                           AND attempt_status IS NULL AND attempt_activator_id IS NULL
+                           AND artifact_confirmation_sha256 IS NULL
+                           AND artifact_confirmation_json IS NULL
+                           AND provider_request_journal_json='[]'
+                           AND terminal_receipt_json IS NULL AND terminal_at IS NULL
+                           AND revoked_at IS NULL AND artifact_confirmer_id=''",
+                        params![task_id, now, delegation_id, principal.tenant_id()],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err(
+                        "delegation ProductTask binding lost its pre-admission state".into(),
+                    );
+                }
+                append_audit_locked(
+                    &tx,
+                    &now,
+                    principal.principal_id(),
+                    "managed_acceptance.delegation_product_task_bound",
+                    delegation_id,
+                    &details,
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(json!({
+                    "delegation_id": delegation_id,
+                    "product_task_id": task_id,
+                    "replayed": false,
+                }))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let row = tx
+                    .query_one(
+                        "SELECT tenant_id, status, product_task_id, principal_id,
+                                manifest_approver_id, expires_at
+                         FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                        &[&delegation_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let stored_tenant: String = row.get(0);
+                let status: String = row.get(1);
+                let stored_task_id: Option<String> = row.get(2);
+                let stored_principal_id: String = row.get(3);
+                let stored_manifest_approver_id: String = row.get(4);
+                let expires_at: String = row.get(5);
+                if stored_tenant != principal.tenant_id() {
+                    return Err("delegation tenant does not match ProductTask tenant".into());
+                }
+                if status != "active" {
+                    return Err("delegation is not active for ProductTask binding".into());
+                }
+                if is_at_or_before(&expires_at, &now)? {
+                    return Err("delegation is expired for ProductTask binding".into());
+                }
+                if stored_principal_id != principal.principal_id()
+                    || stored_manifest_approver_id != principal.principal_id()
+                {
+                    return Err("delegation principal does not match ProductTask binder".into());
+                }
+                if let Some(bound_task_id) = stored_task_id.as_deref() {
+                    if bound_task_id != task_id {
+                        return Err(
+                            "delegation ProductTask binding does not match requested task".into(),
+                        );
+                    }
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(json!({
+                        "delegation_id": delegation_id,
+                        "product_task_id": task_id,
+                        "replayed": true,
+                    }));
+                }
+                let safe_state: bool = tx
+                    .query_one(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM managed_acceptance_delegations
+                             WHERE delegation_id=$1 AND tenant_id=$2 AND status='active'
+                               AND product_task_id IS NULL AND executions_used=0
+                               AND total_cost_usd=0 AND proposal_sha256 IS NULL
+                               AND proposal_json IS NULL AND spend_authorization_id IS NULL
+                               AND manifest_approval_sha256 IS NULL
+                               AND manifest_approval_json IS NULL AND spend_body_sha256 IS NULL
+                               AND spend_status IS NULL AND spend_body_json IS NULL
+                               AND manifest_json IS NULL AND attempt_id IS NULL
+                               AND attempt_lease_id IS NULL AND attempt_lease_token IS NULL
+                               AND attempt_status IS NULL AND attempt_activator_id IS NULL
+                               AND artifact_confirmation_sha256 IS NULL
+                               AND artifact_confirmation_json IS NULL
+                               AND provider_request_journal_json='[]'
+                               AND terminal_receipt_json IS NULL AND terminal_at IS NULL
+                               AND revoked_at IS NULL AND artifact_confirmer_id=''
+                         )",
+                        &[&delegation_id, &principal.tenant_id()],
+                    )
+                    .map(|row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                if !safe_state {
+                    return Err(
+                        "delegation ProductTask binding requires untouched pre-admission state"
+                            .into(),
+                    );
+                }
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET product_task_id=$1, updated_at=$2
+                         WHERE delegation_id=$3 AND tenant_id=$4 AND status='active'
+                           AND product_task_id IS NULL AND executions_used=0 AND total_cost_usd=0
+                           AND proposal_sha256 IS NULL AND proposal_json IS NULL
+                           AND spend_authorization_id IS NULL AND manifest_approval_sha256 IS NULL
+                           AND manifest_approval_json IS NULL AND spend_body_sha256 IS NULL
+                           AND spend_status IS NULL AND spend_body_json IS NULL
+                           AND manifest_json IS NULL AND attempt_id IS NULL
+                           AND attempt_lease_id IS NULL AND attempt_lease_token IS NULL
+                           AND attempt_status IS NULL AND attempt_activator_id IS NULL
+                           AND artifact_confirmation_sha256 IS NULL
+                           AND artifact_confirmation_json IS NULL
+                           AND provider_request_journal_json='[]'
+                           AND terminal_receipt_json IS NULL AND terminal_at IS NULL
+                           AND revoked_at IS NULL AND artifact_confirmer_id=''",
+                        &[&task_id, &now, &delegation_id, &principal.tenant_id()],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err(
+                        "delegation ProductTask binding lost its pre-admission state".into(),
+                    );
+                }
+                let details_json = details.to_string();
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES ($1, $2, 'managed_acceptance.delegation_product_task_bound', $3, $4)",
+                    &[
+                        &now,
+                        &principal.principal_id(),
+                        &delegation_id,
+                        &details_json,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(json!({
+                    "delegation_id": delegation_id,
+                    "product_task_id": task_id,
+                    "replayed": false,
+                }))
+            }),
+        }
     }
 
     /// Bind the separately owner-approved proposal to this delegation exactly
@@ -1295,6 +1732,7 @@ impl LocalProductStore {
             return Err("fixture principal cannot approve a production delegated manifest".into());
         }
         let manifest_sha256 = validate_delegated_manifest_policy(manifest)?;
+        self.require_manifest_product_task_binding(delegation_id, principal.tenant_id(), manifest)?;
         self.require_final_manifest_approved_proposal(delegation_id, manifest)?;
         let now = self.now();
         let receipt = match &self.db {
@@ -1459,6 +1897,7 @@ impl LocalProductStore {
         principal.require_scope(SCOPE_DELEGATED_MANIFEST_APPROVE)?;
         principal.require_scope(SCOPE_SPEND_AUTHORIZE)?;
         let manifest_sha256 = validate_delegated_manifest_policy(manifest)?;
+        self.require_manifest_product_task_binding(delegation_id, principal.tenant_id(), manifest)?;
         let now = self.now();
         let spend_id = format!("mds-{}", Uuid::new_v4());
         let body = sort_value(&json!({
@@ -1708,6 +2147,7 @@ impl LocalProductStore {
         if manifest_sha256 != compute_attempt_manifest_sha256(manifest)? {
             return Err("final manifest hash mismatch".into());
         }
+        self.require_manifest_product_task_binding(delegation_id, principal.tenant_id(), manifest)?;
         let manifest_json = manifest.to_string();
         let now = self.now();
         let lease_token = format!("lease-{}", Uuid::new_v4());
@@ -1841,6 +2281,7 @@ impl LocalProductStore {
             return Err("fixture principal cannot confirm a production delegated artifact".into());
         }
         let _manifest_sha256 = validate_delegated_manifest_policy(manifest)?;
+        self.require_manifest_product_task_binding(delegation_id, principal.tenant_id(), manifest)?;
         let manifest_json = manifest.to_string();
         let now = self.now();
         let confirm = |delegation_sha: &str,
@@ -2151,6 +2592,7 @@ impl LocalProductStore {
         let manifest: Value = serde_json::from_str(&manifest_json)
             .map_err(|_| "persisted delegated manifest is invalid")?;
         validate_delegated_manifest_policy(&manifest)?;
+        self.require_delegation_product_task(delegation_id, &tenant_id, product_task_id)?;
         let task = self
             .get_product_task(product_task_id)?
             .ok_or("delegated terminal ProductTask is missing")?;
@@ -2279,7 +2721,11 @@ impl LocalProductStore {
         if task.get("tenant_id").and_then(Value::as_str) != Some(principal.tenant_id()) {
             return Err("delegated terminal ProductTask tenant does not match principal".into());
         }
-        self.require_delegation_tenant(delegation_id, principal.tenant_id())?;
+        self.require_delegation_product_task(
+            delegation_id,
+            principal.tenant_id(),
+            product_task_id,
+        )?;
         self.complete_delegated_product_task_terminal(
             delegation_id,
             attempt_id,
@@ -2373,6 +2819,11 @@ impl LocalProductStore {
         let ((delegation_id, attempt_id, lease_token, _manifest_json, journal_json), manifest) =
             matched.pop().expect("one matched delegated attempt");
         validate_delegated_manifest_policy(&manifest)?;
+        let task_tenant_id = task
+            .get("tenant_id")
+            .and_then(Value::as_str)
+            .ok_or("delegated failure ProductTask tenant is missing")?;
+        self.require_delegation_product_task(&delegation_id, task_tenant_id, product_task_id)?;
         if manifest
             .pointer("/execution/attempt_id")
             .and_then(Value::as_str)
@@ -2652,6 +3103,409 @@ impl LocalProductStore {
         }?;
         self.close_revoked_delegation_attempt(delegation_id, principal.principal_id())?;
         Ok(())
+    }
+
+    /// Rebind an active delegation that never reached spend or attempt
+    /// admission after a restart/preparation interruption. The delegation
+    /// id, body, and creation identity remain immutable; only the canonical
+    /// reissued reviewer principal and ProductTask binding may be filled in.
+    /// No admitted, spent, confirmed, outcome-unknown, revoked, or terminal
+    /// operation can enter this recovery path.
+    pub fn rebind_unadmitted_delegation_for_bootstrap(
+        &self,
+        bootstrap: &AuthenticatedPrincipal,
+        task_id: &str,
+        delegation_id: &str,
+        reviewer: &AuthenticatedPrincipal,
+    ) -> Result<Value, String> {
+        if bootstrap.principal_kind() != &PrincipalKind::OperatorApiKey
+            || bootstrap.principal_id() != LOCAL_BOOTSTRAP_API_KEY_ID
+            || !bootstrap.has_scope(SCOPE_IDENTITY_DELEGATE)
+        {
+            return Err("canonical bootstrap identity-delegation authority is required".into());
+        }
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or(0.0);
+        let canonical_bootstrap = self.authenticate_bootstrap_identity_delegation_principal(
+            bootstrap.tenant_id(),
+            Some(now_unix),
+        )?;
+        if canonical_bootstrap.principal_id() != bootstrap.principal_id()
+            || canonical_bootstrap.scopes() != bootstrap.scopes()
+        {
+            return Err("bootstrap authority context is stale or mismatched".into());
+        }
+        let canonical_reviewer = self.authenticate_managed_acceptance_principal_for_tenant(
+            reviewer.tenant_id(),
+            reviewer.principal_id(),
+            Some(now_unix),
+        )?;
+        if canonical_reviewer.principal_kind() != &PrincipalKind::OperatorApiKey
+            || canonical_reviewer.tenant_id() != canonical_bootstrap.tenant_id()
+            || is_forbidden_principal_id(canonical_reviewer.principal_id())
+            || is_forbidden_role(canonical_reviewer.role())
+        {
+            return Err("reissued reviewer principal is not an authenticated operator".into());
+        }
+        if canonical_reviewer.role() != "reviewer" {
+            return Err("reissued identity must use the reviewer profile".into());
+        }
+        validate_managed_acceptance_role_scopes(
+            canonical_reviewer.role(),
+            canonical_reviewer.scopes(),
+        )?;
+        canonical_reviewer.require_scope(SCOPE_DELEGATED_AUTONOMY)?;
+        canonical_reviewer.require_scope(SCOPE_DELEGATED_MANIFEST_APPROVE)?;
+        canonical_reviewer.require_scope(SCOPE_SPEND_AUTHORIZE)?;
+        let bootstrap_scopes_json = serde_json::to_string(canonical_bootstrap.scopes())
+            .map_err(|error| error.to_string())?;
+        let reviewer_scopes_json = serde_json::to_string(canonical_reviewer.scopes())
+            .map_err(|error| error.to_string())?;
+        let tenant_id = canonical_bootstrap.tenant_id();
+        let reviewer_key_id = canonical_reviewer.principal_id();
+        let task = self
+            .get_product_task(task_id)?
+            .ok_or_else(|| format!("product task not found: {task_id}"))?;
+        if task.get("tenant_id").and_then(Value::as_str) != Some(tenant_id) {
+            return Err("product task tenant does not match bootstrap authority".into());
+        }
+        let task_version = task
+            .get("version")
+            .and_then(Value::as_i64)
+            .ok_or("product task version is missing")?;
+        if reviewer_key_id.trim().is_empty() {
+            return Err("reissued reviewer principal is required".into());
+        }
+        let now = self.now();
+        let details = json!({
+            "authority_owner": "managed_acceptance_bootstrap",
+            "pre_admission_only": true,
+            "task_id": task_id,
+            "task_version": task_version,
+            "reissued_reviewer_principal": reviewer_key_id,
+        });
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                    .map_err(|error| error.to_string())?;
+                let current_task_version: i64 = tx
+                    .query_row(
+                        "SELECT version FROM product_tasks WHERE task_id=?1",
+                        params![task_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if current_task_version != task_version {
+                    return Err("ProductTask version moved during bootstrap recovery".into());
+                }
+                let row: (String, String, Option<String>, String, String, String) = tx
+                    .query_row(
+                        "SELECT tenant_id, status, product_task_id, principal_id,
+                                manifest_approver_id, expires_at
+                         FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                        params![delegation_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                            ))
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                if row.0 != tenant_id {
+                    return Err("delegation tenant does not match ProductTask tenant".into());
+                }
+                if row.1 != "active" {
+                    return Err(
+                        "bootstrap delegation recovery only permits active pre-admission state"
+                            .into(),
+                    );
+                }
+                if is_at_or_before(&row.5, &now)? {
+                    return Err("bootstrap delegation recovery refuses an expired delegation".into());
+                }
+                if row.2.as_deref() != Some(task_id) {
+                    return Err(
+                        "bootstrap recovery requires an existing immutable ProductTask binding"
+                            .into(),
+                    );
+                }
+                let safe_state: i64 = tx
+                    .query_row(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM managed_acceptance_delegations
+                             WHERE delegation_id=?1 AND tenant_id=?2 AND status='active'
+                               AND product_task_id=?3
+                               AND executions_used=0 AND total_cost_usd=0
+                               AND proposal_sha256 IS NULL AND proposal_json IS NULL
+                               AND spend_authorization_id IS NULL
+                               AND manifest_approval_sha256 IS NULL AND manifest_approval_json IS NULL
+                               AND spend_body_sha256 IS NULL AND spend_status IS NULL
+                               AND spend_body_json IS NULL AND manifest_json IS NULL
+                               AND attempt_id IS NULL AND attempt_lease_id IS NULL
+                               AND attempt_lease_token IS NULL AND attempt_status IS NULL
+                               AND attempt_activator_id IS NULL
+                               AND artifact_confirmation_sha256 IS NULL
+                               AND artifact_confirmation_json IS NULL
+                               AND provider_request_journal_json='[]'
+                               AND terminal_receipt_json IS NULL AND terminal_at IS NULL
+                               AND revoked_at IS NULL AND artifact_confirmer_id=''
+                         )",
+                        params![delegation_id, tenant_id, task_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if safe_state != 1 {
+                    return Err(
+                        "bootstrap delegation recovery requires an untouched pre-admission operation"
+                            .into(),
+                    );
+                }
+                if row.4 != reviewer_key_id && row.4 != row.3 {
+                    return Err(
+                        "bootstrap recovery cannot replace an already rebound reviewer".into(),
+                    );
+                }
+                let replayed = row.4 == reviewer_key_id;
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET manifest_approver_id=?1,
+                             updated_at=CASE WHEN manifest_approver_id=?1 THEN updated_at ELSE ?2 END
+                         WHERE delegation_id=?3 AND tenant_id=?4 AND status='active'
+                           AND product_task_id=?5
+                           AND executions_used=0 AND total_cost_usd=0
+                           AND proposal_sha256 IS NULL AND proposal_json IS NULL
+                           AND spend_authorization_id IS NULL
+                           AND manifest_approval_sha256 IS NULL AND manifest_approval_json IS NULL
+                           AND spend_body_sha256 IS NULL AND spend_status IS NULL
+                           AND spend_body_json IS NULL AND manifest_json IS NULL
+                           AND attempt_id IS NULL AND attempt_lease_id IS NULL
+                           AND attempt_lease_token IS NULL AND attempt_status IS NULL
+                           AND attempt_activator_id IS NULL
+                           AND artifact_confirmation_sha256 IS NULL
+                           AND artifact_confirmation_json IS NULL
+                           AND provider_request_journal_json='[]'
+                           AND terminal_receipt_json IS NULL AND terminal_at IS NULL
+                           AND revoked_at IS NULL AND artifact_confirmer_id=''
+                           AND (manifest_approver_id=?1 OR manifest_approver_id=principal_id)
+                           AND EXISTS (
+                               SELECT 1 FROM api_key_metadata
+                               WHERE key_id=?6 AND tenant_id=?4 AND role='reviewer'
+                                 AND scopes_json=?7 AND revoked_at IS NULL
+                                 AND (expires_at IS NULL OR CAST(expires_at AS REAL) >= ?9)
+                           )
+                           AND EXISTS (
+                               SELECT 1 FROM api_key_metadata
+                               WHERE key_id=?8 AND tenant_id=?4 AND role IN ('admin','bootstrap')
+                                 AND scopes_json=?10 AND revoked_at IS NULL
+                                 AND (expires_at IS NULL OR CAST(expires_at AS REAL) >= ?9)
+                           )",
+                        params![
+                            reviewer_key_id,
+                            now,
+                            delegation_id,
+                            tenant_id,
+                            task_id,
+                            reviewer_key_id,
+                            reviewer_scopes_json,
+                            LOCAL_BOOTSTRAP_API_KEY_ID,
+                            now_unix,
+                            bootstrap_scopes_json,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("delegation recovery lost its current authenticated pre-admission state".into());
+                }
+                if !replayed {
+                    append_audit_locked(
+                        &tx,
+                        &now,
+                        canonical_bootstrap.principal_id(),
+                        "managed_acceptance.delegation_bootstrap_rebound",
+                        delegation_id,
+                        &details,
+                    )?;
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(json!({
+                    "status": "active",
+                    "delegation_state": "active",
+                    "operation_identity": delegation_id,
+                    "product_task_id": task_id,
+                    "reviewer_principal_id": reviewer_key_id,
+                    "original_principal_id": row.3,
+                    "replayed": replayed,
+                }))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let current_task_version: i64 = tx
+                    .query_one(
+                        "SELECT version FROM product_tasks WHERE task_id=$1 FOR UPDATE",
+                        &[&task_id],
+                    )
+                    .map(|row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                if current_task_version != task_version {
+                    return Err("ProductTask version moved during bootstrap recovery".into());
+                }
+                let row = tx
+                    .query_one(
+                        "SELECT tenant_id, status, product_task_id, principal_id,
+                                manifest_approver_id, expires_at
+                         FROM managed_acceptance_delegations WHERE delegation_id=$1 FOR UPDATE",
+                        &[&delegation_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let stored_tenant: String = row.get(0);
+                let status: String = row.get(1);
+                let stored_task_id: Option<String> = row.get(2);
+                let stored_principal_id: String = row.get(3);
+                let stored_manifest_approver_id: String = row.get(4);
+                let expires_at: String = row.get(5);
+                if stored_tenant != tenant_id {
+                    return Err("delegation tenant does not match ProductTask tenant".into());
+                }
+                if status != "active" {
+                    return Err(
+                        "bootstrap delegation recovery only permits active pre-admission state"
+                            .into(),
+                    );
+                }
+                if is_at_or_before(&expires_at, &now)? {
+                    return Err("bootstrap delegation recovery refuses an expired delegation".into());
+                }
+                if stored_task_id.as_deref() != Some(task_id) {
+                    return Err(
+                        "bootstrap recovery requires an existing immutable ProductTask binding"
+                            .into(),
+                    );
+                }
+                let safe_state: bool = tx
+                    .query_one(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM managed_acceptance_delegations
+                             WHERE delegation_id=$1 AND tenant_id=$2 AND status='active'
+                               AND product_task_id=$3
+                               AND executions_used=0 AND total_cost_usd=0
+                               AND proposal_sha256 IS NULL AND proposal_json IS NULL
+                               AND spend_authorization_id IS NULL
+                               AND manifest_approval_sha256 IS NULL AND manifest_approval_json IS NULL
+                               AND spend_body_sha256 IS NULL AND spend_status IS NULL
+                               AND spend_body_json IS NULL AND manifest_json IS NULL
+                               AND attempt_id IS NULL AND attempt_lease_id IS NULL
+                               AND attempt_lease_token IS NULL AND attempt_status IS NULL
+                               AND attempt_activator_id IS NULL
+                               AND artifact_confirmation_sha256 IS NULL
+                               AND artifact_confirmation_json IS NULL
+                               AND provider_request_journal_json='[]'
+                               AND terminal_receipt_json IS NULL AND terminal_at IS NULL
+                               AND revoked_at IS NULL AND artifact_confirmer_id=''
+                         )",
+                        &[&delegation_id, &tenant_id, &task_id],
+                    )
+                    .map(|row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                if !safe_state {
+                    return Err(
+                        "bootstrap delegation recovery requires an untouched pre-admission operation"
+                            .into(),
+                    );
+                }
+                if stored_manifest_approver_id != reviewer_key_id
+                    && stored_manifest_approver_id != stored_principal_id
+                {
+                    return Err(
+                        "bootstrap recovery cannot replace an already rebound reviewer".into(),
+                    );
+                }
+                let replayed = stored_manifest_approver_id == reviewer_key_id;
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET manifest_approver_id=$1,
+                             updated_at=CASE WHEN manifest_approver_id=$1 THEN updated_at ELSE $2 END
+                         WHERE delegation_id=$3 AND tenant_id=$4 AND status='active'
+                           AND product_task_id=$5
+                           AND executions_used=0 AND total_cost_usd=0
+                           AND proposal_sha256 IS NULL AND proposal_json IS NULL
+                           AND spend_authorization_id IS NULL
+                           AND manifest_approval_sha256 IS NULL AND manifest_approval_json IS NULL
+                           AND spend_body_sha256 IS NULL AND spend_status IS NULL
+                           AND spend_body_json IS NULL AND manifest_json IS NULL
+                           AND attempt_id IS NULL AND attempt_lease_id IS NULL
+                           AND attempt_lease_token IS NULL AND attempt_status IS NULL
+                           AND attempt_activator_id IS NULL
+                           AND artifact_confirmation_sha256 IS NULL
+                           AND artifact_confirmation_json IS NULL
+                           AND provider_request_journal_json='[]'
+                           AND terminal_receipt_json IS NULL AND terminal_at IS NULL
+                           AND revoked_at IS NULL AND artifact_confirmer_id=''
+                           AND (manifest_approver_id=$1 OR manifest_approver_id=principal_id)
+                           AND EXISTS (
+                               SELECT 1 FROM api_key_metadata
+                               WHERE key_id=$6 AND tenant_id=$4 AND role='reviewer'
+                                 AND scopes_json=$7 AND revoked_at IS NULL
+                                 AND (expires_at IS NULL OR CAST(expires_at AS DOUBLE PRECISION) >= $9)
+                           )
+                           AND EXISTS (
+                               SELECT 1 FROM api_key_metadata
+                               WHERE key_id=$8 AND tenant_id=$4 AND role IN ('admin','bootstrap')
+                                 AND scopes_json=$10 AND revoked_at IS NULL
+                                 AND (expires_at IS NULL OR CAST(expires_at AS DOUBLE PRECISION) >= $9)
+                           )",
+                        &[
+                            &reviewer_key_id,
+                            &now,
+                            &delegation_id,
+                            &tenant_id,
+                            &task_id,
+                            &reviewer_key_id,
+                            &reviewer_scopes_json,
+                            &LOCAL_BOOTSTRAP_API_KEY_ID,
+                            &now_unix,
+                            &bootstrap_scopes_json,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("delegation recovery lost its current authenticated pre-admission state".into());
+                }
+                if !replayed {
+                    let details_json = details.to_string();
+                    tx.execute(
+                        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                         VALUES ($1, $2, 'managed_acceptance.delegation_bootstrap_rebound', $3, $4)",
+                        &[
+                            &now,
+                            &canonical_bootstrap.principal_id(),
+                            &delegation_id,
+                            &details_json,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(json!({
+                    "status": "active",
+                    "delegation_state": "active",
+                    "operation_identity": delegation_id,
+                    "product_task_id": task_id,
+                    "reviewer_principal_id": reviewer_key_id,
+                    "original_principal_id": stored_principal_id,
+                    "replayed": replayed,
+                }))
+            }),
+        }
     }
 
     pub fn delegated_authority_state(&self, delegation_id: &str) -> Result<Value, String> {
@@ -3617,6 +4471,72 @@ fn persist_transition_pg(
 }
 
 impl LocalProductStore {
+    /// Re-authenticate the immutable environment bootstrap owner from the
+    /// store-owned key metadata. This capability is intentionally narrower
+    /// than normal managed-acceptance authentication: identity delegation is
+    /// sufficient, while child principals must be authenticated separately
+    /// with their own least-privilege scopes.
+    pub fn authenticate_bootstrap_identity_delegation_principal(
+        &self,
+        tenant_id: &str,
+        now_unix: Option<f64>,
+    ) -> Result<AuthenticatedPrincipal, String> {
+        let tenant_id = tenant_id.trim();
+        if tenant_id != LOCAL_BOOTSTRAP_TENANT_ID {
+            return Err("canonical bootstrap tenant does not match local authority".into());
+        }
+        let meta = self
+            .get_api_key_metadata_for_tenant(LOCAL_BOOTSTRAP_API_KEY_ID, tenant_id)?
+            .ok_or("canonical bootstrap key metadata is missing")?;
+        if meta.get("tenant_id").and_then(Value::as_str) != Some(tenant_id) {
+            return Err("canonical bootstrap key tenant binding is missing or invalid".into());
+        }
+        if meta.get("revoked_at").and_then(Value::as_str).is_some() {
+            return Err("canonical bootstrap key is revoked".into());
+        }
+        if let Some(exp) = meta.get("expires_at").and_then(Value::as_f64) {
+            let now = now_unix.unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs_f64())
+                    .unwrap_or(0.0)
+            });
+            if now > exp {
+                return Err("canonical bootstrap key is expired".into());
+            }
+        }
+        let user_id = meta
+            .get("user_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("canonical bootstrap user_id is missing")?;
+        let role = meta
+            .get("role")
+            .and_then(Value::as_str)
+            .filter(|value| matches!(*value, "admin" | "bootstrap"))
+            .ok_or("canonical bootstrap role is invalid")?;
+        let scopes: Vec<String> = meta
+            .get("scopes")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        validate_bootstrap_identity_delegation_scopes(&scopes)?;
+        let _ = self.touch_api_key_last_used_for_tenant(LOCAL_BOOTSTRAP_API_KEY_ID, tenant_id);
+        Ok(AuthenticatedPrincipal {
+            tenant_id: tenant_id.to_string(),
+            principal_id: LOCAL_BOOTSTRAP_API_KEY_ID.to_string(),
+            principal_kind: PrincipalKind::OperatorApiKey,
+            scopes,
+            user_id: user_id.to_string(),
+            role: role.to_string(),
+        })
+    }
+
     /// Derive a production principal from verified store-owned API key metadata.
     /// Rejects missing, revoked, expired, inactive, forbidden, or under-scoped keys.
     pub fn authenticate_managed_acceptance_principal(
@@ -3636,8 +4556,15 @@ impl LocalProductStore {
             ));
         }
         let meta = self
-            .get_api_key_metadata(key_id)?
-            .ok_or_else(|| format!("api key {key_id} not found"))?;
+            .get_api_key_metadata_for_tenant(key_id, tenant_id)?
+            .ok_or_else(|| {
+                format!("api key {key_id} not found or tenant binding is missing or invalid")
+            })?;
+        if meta.get("tenant_id").and_then(Value::as_str) != Some(tenant_id) {
+            return Err(
+                "api key tenant binding is missing or does not match requested tenant".into(),
+            );
+        }
         if meta.get("revoked_at").and_then(Value::as_str).is_some() {
             return Err("api key revoked".into());
         }
@@ -3688,7 +4615,28 @@ impl LocalProductStore {
         };
         // Must hold at least risk-ack scope to be usable as a managed-acceptance principal.
         principal.require_scope(SCOPE_RISK_ACKNOWLEDGE)?;
-        let _ = self.touch_api_key_last_used(key_id);
+        let _ = self.touch_api_key_last_used_for_tenant(key_id, tenant_id);
+        Ok(principal)
+    }
+
+    /// Authenticate a canonical managed identity whose store record is
+    /// immutably bound to the requested tenant. The generic production
+    /// authentication path is strict as well; this named variant documents
+    /// the tenant-bound contract at identity-reissuance call sites.
+    pub fn authenticate_managed_acceptance_principal_for_tenant(
+        &self,
+        tenant_id: &str,
+        key_id: &str,
+        now_unix: Option<f64>,
+    ) -> Result<AuthenticatedPrincipal, String> {
+        let principal =
+            self.authenticate_managed_acceptance_principal(tenant_id, key_id, now_unix)?;
+        let metadata = self
+            .get_api_key_metadata_for_tenant(key_id, tenant_id)?
+            .ok_or_else(|| format!("api key {key_id} not found"))?;
+        if metadata.get("tenant_id").and_then(Value::as_str) != Some(tenant_id.trim()) {
+            return Err("canonical managed identity tenant binding is missing or invalid".into());
+        }
         Ok(principal)
     }
 
@@ -8499,7 +9447,7 @@ impl LocalProductStore {
             .pointer("/execution/tenant_id")
             .and_then(Value::as_str)
             .ok_or("delegated manifest tenant_id is missing")?;
-        self.require_delegation_tenant(delegation_id, manifest_tenant)?;
+        self.require_manifest_product_task_binding(delegation_id, manifest_tenant, &manifest)?;
         if delegation_status != "active" || is_at_or_before(&expires_at, &now)? {
             return Err("delegated provider authority is expired or revoked".into());
         }
@@ -9220,9 +10168,10 @@ mod tests {
         })
     }
 
-    fn seed_key(store: &LocalProductStore, key_id: &str) {
+    fn seed_key(store: &LocalProductStore, tenant_id: &str, key_id: &str) {
         store
-            .record_api_key_metadata(
+            .record_api_key_metadata_for_tenant(
+                tenant_id,
                 key_id,
                 "user-operator-1",
                 "operator",
@@ -9328,12 +10277,30 @@ mod tests {
             err.contains("not admitted") || err.contains("not found"),
             "{err}"
         );
-        seed_key(&store, "key_operator_ok");
+        seed_key(&store, "tenant-a", "key_operator_ok");
         let p = store
             .authenticate_managed_acceptance_principal("tenant-a", "key_operator_ok", Some(1.0))
             .unwrap();
         assert_eq!(p.principal_id(), "key_operator_ok");
         assert!(p.has_scope(SCOPE_RISK_ACKNOWLEDGE));
+    }
+
+    #[test]
+    fn managed_principal_auth_rejects_unbound_metadata() {
+        let (_dir, store) = store();
+        store
+            .record_api_key_metadata(
+                "unbound-operator",
+                "operator-user",
+                "operator",
+                &[SCOPE_RISK_ACKNOWLEDGE.to_string()],
+                "test-setup",
+            )
+            .unwrap();
+        let error = store
+            .authenticate_managed_acceptance_principal("tenant-a", "unbound-operator", Some(1.0))
+            .unwrap_err();
+        assert!(error.contains("tenant binding"), "{error}");
     }
 
     #[test]
@@ -9347,7 +10314,8 @@ mod tests {
         let store = LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".to_string())
             .unwrap();
         store
-            .record_api_key_metadata(
+            .record_api_key_metadata_for_tenant(
+                "tenant-a",
                 "restart-operator-key",
                 "operator-user",
                 "operator",
@@ -9385,7 +10353,8 @@ mod tests {
         // Key expired at unix 100. A mistaken cost-cap "now" of 0.50 never exceeds
         // real production expiry timestamps and would keep keys alive forever.
         store
-            .record_api_key_metadata_with_expiry(
+            .record_api_key_metadata_with_expiry_for_tenant(
+                "tenant-a",
                 "key_expired",
                 "operator",
                 "operator",
@@ -11415,12 +12384,55 @@ mod tests {
         let path = dir.path().join("delegated.db");
         let store =
             LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".into()).unwrap();
-        seed_key(&store, "delegated-operator");
+        seed_key(&store, "tenant-a", "delegated-operator");
         let principal = store
             .authenticate_managed_acceptance_principal("tenant-a", "delegated-operator", Some(1.0))
             .unwrap();
         let delegation = delegated_contract();
         let persisted = store.persist_delegation(&principal, &delegation).unwrap();
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO product_tasks (
+                            task_id, schema_version, tenant_id, workspace_id, idempotency_key,
+                            status, version, objective_fingerprint, target_id, target_repo_path,
+                            source_revision, source_tree_hash, output_intent, risk_class,
+                            approval_required, confirm_execution, confirm_output,
+                            intake_contract_sha256, intake_json, workspace_binding_json,
+                            plan_id, run_id, workspace_record_id, failure_code, failure_detail,
+                            created_at, updated_at, created_by
+                         ) VALUES (
+                            ?1, 'product_task.v1', 'tenant-a', 'default',
+                            'provider-journal-restart', 'graph_ready', 1, ?2,
+                            'alters-lab-docs', '/redacted/target', ?3, NULL, 'draft_pr', 'low',
+                            1, 1, 1, ?4, '{}', ?5, NULL, 'run-provider-journal-1',
+                            NULL, NULL, NULL, ?6, ?6, 'test'
+                         )",
+                        params![
+                            "product-task-golden-path-1",
+                            "a".repeat(64),
+                            "b".repeat(40),
+                            "c".repeat(64),
+                            json!({
+                                "allowed_paths": ["docs/USER_GUIDE.md"],
+                                "workspace_path": "/redacted/not-used"
+                            })
+                            .to_string(),
+                            "2026-07-25T12:00:00Z"
+                        ],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        store
+            .bind_delegation_to_product_task(
+                &principal,
+                "product-task-golden-path-1",
+                &delegation.delegation_id,
+            )
+            .unwrap();
         let proposal = delegated_proposal();
         store
             .persist_approved_delegated_proposal(
@@ -11531,37 +12543,6 @@ mod tests {
         )];
         store
             .with_conn(|connection| {
-                connection
-                    .execute(
-                        "INSERT INTO product_tasks (
-                            task_id, schema_version, tenant_id, workspace_id, idempotency_key,
-                            status, version, objective_fingerprint, target_id, target_repo_path,
-                            source_revision, source_tree_hash, output_intent, risk_class,
-                            approval_required, confirm_execution, confirm_output,
-                            intake_contract_sha256, intake_json, workspace_binding_json,
-                            plan_id, run_id, workspace_record_id, failure_code, failure_detail,
-                            created_at, updated_at, created_by
-                         ) VALUES (
-                            ?1, 'product_task.v1', 'tenant-a', 'default',
-                            'provider-journal-restart', 'graph_ready', 1, ?2,
-                            'alters-lab-docs', '/redacted/target', ?3, NULL, 'draft_pr', 'low',
-                            1, 1, 1, ?4, '{}', ?5, NULL, 'run-provider-journal-1',
-                            NULL, NULL, NULL, ?6, ?6, 'test'
-                         )",
-                        params![
-                            delegated_binding.product_task_id,
-                            "a".repeat(64),
-                            "b".repeat(40),
-                            "c".repeat(64),
-                            json!({
-                                "allowed_paths": ["docs/USER_GUIDE.md"],
-                                "workspace_path": "/redacted/not-used"
-                            })
-                            .to_string(),
-                            "2026-07-25T12:00:00Z"
-                        ],
-                    )
-                    .map_err(|error| error.to_string())?;
                 connection
                     .execute(
                         "INSERT INTO workflow_runs (
@@ -11703,7 +12684,69 @@ mod tests {
         // The test store clock is fixed before the delegation expiry and this
         // direct authenticated principal is deliberately non-fixture.
         assert!(delegation.validate(now).is_ok());
-        store.persist_delegation(&principal, &delegation).unwrap();
+        let target_repo = _dir.path().join("revocation-target");
+        let workspace_path = _dir.path().join("revocation-workspace");
+        std::fs::create_dir_all(&target_repo).unwrap();
+        std::fs::create_dir_all(&workspace_path).unwrap();
+        let workspace = store
+            .record_supervised_patch_workspace(
+                &json!({
+                    "run_id": "run-revocation-recheck",
+                    "target_id": "alters-lab-docs",
+                    "target_repo_path": target_repo,
+                    "workspace_path": workspace_path,
+                    "source_revision": "source-revocation-recheck",
+                    "workspace_mode": "copy",
+                    "status": "workspace_created"
+                }),
+                "test",
+            )
+            .unwrap();
+        let workspace_id = workspace["workspace_id"].as_str().unwrap();
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO product_tasks (
+                            task_id, schema_version, tenant_id, workspace_id, idempotency_key,
+                            status, version, objective_fingerprint, target_id, target_repo_path,
+                            source_revision, source_tree_hash, output_intent, risk_class,
+                            approval_required, confirm_execution, confirm_output,
+                            intake_contract_sha256, intake_json, workspace_binding_json,
+                            plan_id, run_id, workspace_record_id, failure_code, failure_detail,
+                            created_at, updated_at, created_by
+                         ) VALUES (
+                            ?1, 'product_task.v1', 'tenant-a', 'default',
+                            'revocation-recheck', 'graph_ready', 1, ?2,
+                            'alters-lab-docs', '/redacted/target', ?3, NULL, 'draft_pr', 'low',
+                            1, 1, 1, ?4, '{}', ?5, NULL, NULL,
+                            ?6, NULL, NULL, ?7, ?7, 'test'
+                         )",
+                        params![
+                            "product-task-golden-path-1",
+                            "a".repeat(64),
+                            "b".repeat(40),
+                            "c".repeat(64),
+                            json!({
+                                "allowed_paths": ["docs/USER_GUIDE.md"],
+                                "workspace_path": "/redacted/not-used"
+                            })
+                            .to_string(),
+                            workspace_id,
+                            now
+                        ],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        store
+            .persist_delegation_for_product_task(
+                &principal,
+                "product-task-golden-path-1",
+                &delegation,
+            )
+            .unwrap();
         let proposal = delegated_proposal();
         store
             .persist_approved_delegated_proposal(
@@ -11743,10 +12786,9 @@ mod tests {
             spend_authorization_id: spend["spend_authorization_id"].as_str().unwrap().into(),
             attempt_lease_id: lease["attempt_lease_id"].as_str().unwrap().into(),
         };
-        assert!(store
+        store
             .revoke_delegation(&principal, &delegation.delegation_id)
-            .unwrap_err()
-            .contains("ProductTask is missing"));
+            .unwrap();
         let recoverable: (String, String, String, Option<String>) = store
             .with_conn(|connection| {
                 connection
@@ -11761,8 +12803,8 @@ mod tests {
             .unwrap();
         assert_eq!(recoverable.0, "revoked");
         assert_eq!(recoverable.1, "revoked");
-        assert_eq!(recoverable.2, "admitted");
-        assert!(recoverable.3.is_none());
+        assert_eq!(recoverable.2, "closed");
+        assert!(recoverable.3.is_some());
         assert!(<LocalProductStore as crate::provider::managed_deepseek::ManagedAuthoritySource>::current_authority(&store, &binding).is_err());
     }
 
@@ -12064,8 +13106,8 @@ mod tests {
         };
         let mut foreign_intake = intake.clone();
         foreign_intake.idempotency_key = "delegated-product-route-foreign-tenant".into();
-        foreign_intake.tenant_id = Some("local".into());
-        let foreign_validated = validate_intake(&foreign_intake, "local", "default").unwrap();
+        foreign_intake.tenant_id = Some("foreign".into());
+        let foreign_validated = validate_intake(&foreign_intake, "foreign", "default").unwrap();
         let foreign_task = store
             .admit_product_task(&foreign_validated, "executor")
             .unwrap();
@@ -12073,12 +13115,15 @@ mod tests {
         let task = store.admit_product_task(&validated, "executor").unwrap();
         let task_id = task["task_id"].as_str().unwrap();
 
-        seed_key(&store, "delegated-operator");
+        seed_key(&store, "tenant-a", "delegated-operator");
         let principal = store
             .authenticate_managed_acceptance_principal("tenant-a", "delegated-operator", Some(1.0))
             .unwrap();
         let delegation = delegated_contract();
         store.persist_delegation(&principal, &delegation).unwrap();
+        store
+            .bind_delegation_to_product_task(&principal, task_id, &delegation.delegation_id)
+            .unwrap();
         let mut proposal = json!({
             "schema_version": "pe7_product_golden_path_live_seal_manifest.v1",
             "target": {
@@ -12989,5 +14034,338 @@ mod tests {
                 .unwrap()["replayed"],
             true
         );
+    }
+
+    #[test]
+    fn bootstrap_rebinds_only_unadmitted_delegation_and_is_idempotent() {
+        struct ProductGateGuard(Option<std::ffi::OsString>);
+
+        impl Drop for ProductGateGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var(PRODUCT_TASK_GATE, value),
+                    None => std::env::remove_var(PRODUCT_TASK_GATE),
+                }
+            }
+        }
+
+        let _env_lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prior_gate = std::env::var_os(PRODUCT_TASK_GATE);
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+        let _gate = ProductGateGuard(prior_gate);
+
+        let (dir, store) = store();
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(target.join("docs")).unwrap();
+        std::fs::write(target.join("docs/USER_GUIDE.md"), "guide\n").unwrap();
+        let intake = ProductTaskIntakeRequest {
+            objective: "Create a bounded local artifact".into(),
+            target_id: "bootstrap-recovery".into(),
+            target_repo_path: target.to_string_lossy().into_owned(),
+            source_kind: Some("local_folder".into()),
+            source_revision: "unused-local-folder-revision".into(),
+            source_tree_hash: None,
+            allowed_paths: vec!["docs/USER_GUIDE.md".into()],
+            verification_commands: vec![ProductVerificationCommand {
+                command: "test -f docs/USER_GUIDE.md".into(),
+                timeout_ms: 5_000,
+            }],
+            output_intent: "artifact_only".into(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["deterministic".into()],
+                prefer: Some("deterministic".into()),
+            },
+            budget: None,
+            risk_class: "low".into(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(true),
+            idempotency_key: "bootstrap-recovery-rebind".into(),
+            expected_version: None,
+            tenant_id: Some("local".into()),
+            workspace_id: Some("default".into()),
+            workspace_mode: Some("local_folder".into()),
+        };
+        let validated = validate_intake(&intake, "local", "default").unwrap();
+        let task = store.admit_product_task(&validated, "operator").unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        let task_version_before = task["version"].as_i64().unwrap();
+
+        seed_key(&store, "local", "bootstrap-reconcile-operator");
+        let principal = store
+            .authenticate_managed_acceptance_principal(
+                "local",
+                "bootstrap-reconcile-operator",
+                Some(1.0),
+            )
+            .unwrap();
+        let bootstrap_scopes = vec![SCOPE_IDENTITY_DELEGATE.to_string()];
+        let over_scoped_bootstrap = vec![
+            SCOPE_IDENTITY_DELEGATE.to_string(),
+            SCOPE_RISK_ACKNOWLEDGE.to_string(),
+        ];
+        store
+            .record_api_key_metadata_for_tenant(
+                "local",
+                LOCAL_BOOTSTRAP_API_KEY_ID,
+                "local-admin",
+                "admin",
+                &over_scoped_bootstrap,
+                "test-bootstrap",
+            )
+            .unwrap();
+        assert!(store
+            .authenticate_bootstrap_identity_delegation_principal("local", Some(1.0))
+            .is_err());
+        store
+            .record_api_key_metadata_for_tenant(
+                "local",
+                LOCAL_BOOTSTRAP_API_KEY_ID,
+                "local-admin",
+                "admin",
+                &bootstrap_scopes,
+                "test-bootstrap",
+            )
+            .unwrap();
+        let bootstrap = store
+            .authenticate_bootstrap_identity_delegation_principal("local", Some(1.0))
+            .unwrap();
+        let mut delegation = delegated_contract();
+        delegation.delegation_id = "bootstrap-rebind-delegation".into();
+        store
+            .persist_delegation_for_product_task(&principal, task_id, &delegation)
+            .unwrap();
+        let reviewer_scopes = vec![
+            SCOPE_RISK_ACKNOWLEDGE.to_string(),
+            SCOPE_DELEGATED_AUTONOMY.to_string(),
+            SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+            SCOPE_SPEND_AUTHORIZE.to_string(),
+        ];
+        store
+            .record_api_key_metadata_for_tenant(
+                "local",
+                "bootstrap-reconcile-reissued",
+                "reviewer-user",
+                "reviewer",
+                &reviewer_scopes,
+                "test-bootstrap",
+            )
+            .unwrap();
+        let reissued_reviewer = store
+            .authenticate_managed_acceptance_principal_for_tenant(
+                "local",
+                "bootstrap-reconcile-reissued",
+                Some(1.0),
+            )
+            .unwrap();
+
+        let rebound = store
+            .rebind_unadmitted_delegation_for_bootstrap(
+                &bootstrap,
+                task_id,
+                &delegation.delegation_id,
+                &reissued_reviewer,
+            )
+            .unwrap();
+        assert_eq!(rebound["status"], "active");
+        assert_eq!(rebound["delegation_state"], "active");
+        assert_eq!(rebound["operation_identity"], delegation.delegation_id);
+        assert_eq!(rebound["product_task_id"], task_id);
+        assert_eq!(
+            rebound["reviewer_principal_id"],
+            "bootstrap-reconcile-reissued"
+        );
+        let original_principal: String = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT principal_id FROM managed_acceptance_delegations WHERE delegation_id=?1",
+                    params![delegation.delegation_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(original_principal, "bootstrap-reconcile-operator");
+        assert_eq!(rebound["replayed"], false);
+        assert_eq!(
+            store
+                .delegated_authority_state(&delegation.delegation_id)
+                .unwrap()["delegation_state"],
+            "active"
+        );
+        assert_eq!(
+            store.get_product_task(task_id).unwrap().unwrap()["version"],
+            task_version_before
+        );
+
+        let audit_count_before_replay = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM audit_log WHERE action='managed_acceptance.delegation_bootstrap_rebound' AND resource=?1",
+                    params![delegation.delegation_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let replay = store
+            .rebind_unadmitted_delegation_for_bootstrap(
+                &bootstrap,
+                task_id,
+                &delegation.delegation_id,
+                &reissued_reviewer,
+            )
+            .unwrap();
+        assert_eq!(replay["replayed"], true);
+        assert_eq!(
+            store.get_product_task(task_id).unwrap().unwrap()["version"],
+            task_version_before
+        );
+        let audit_count_after_replay = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM audit_log WHERE action='managed_acceptance.delegation_bootstrap_rebound' AND resource=?1",
+                    params![delegation.delegation_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(audit_count_after_replay, audit_count_before_replay);
+
+        store
+            .record_api_key_metadata_for_tenant(
+                "local",
+                "bootstrap-reconcile-second-reviewer",
+                "second-reviewer-user",
+                "reviewer",
+                &reviewer_scopes,
+                "test-bootstrap",
+            )
+            .unwrap();
+        let second_reviewer = store
+            .authenticate_managed_acceptance_principal_for_tenant(
+                "local",
+                "bootstrap-reconcile-second-reviewer",
+                Some(1.0),
+            )
+            .unwrap();
+        assert!(store
+            .rebind_unadmitted_delegation_for_bootstrap(
+                &bootstrap,
+                task_id,
+                &delegation.delegation_id,
+                &second_reviewer,
+            )
+            .is_err());
+        let mut foreign_intake = intake;
+        foreign_intake.idempotency_key = "bootstrap-rebind-foreign-task".into();
+        let foreign_task = store
+            .admit_product_task(
+                &validate_intake(&foreign_intake, "local", "default").unwrap(),
+                "operator",
+            )
+            .unwrap();
+        let foreign_task_id = foreign_task["task_id"].as_str().unwrap();
+        assert_ne!(foreign_task_id, task_id);
+        assert!(store
+            .rebind_unadmitted_delegation_for_bootstrap(
+                &bootstrap,
+                foreign_task_id,
+                &delegation.delegation_id,
+                &reissued_reviewer,
+            )
+            .is_err());
+        assert!(store
+            .authenticate_bootstrap_identity_delegation_principal("foreign-tenant", Some(1.0))
+            .is_err());
+
+        store
+            .record_api_key_metadata_with_expiry_for_tenant(
+                "foreign",
+                "bootstrap-reconcile-foreign-reviewer",
+                "foreign-reviewer-user",
+                "reviewer",
+                &reviewer_scopes,
+                None,
+                "test-bootstrap",
+            )
+            .unwrap();
+        let foreign_reviewer = store
+            .authenticate_managed_acceptance_principal(
+                "foreign",
+                "bootstrap-reconcile-foreign-reviewer",
+                Some(1.0),
+            )
+            .unwrap();
+        assert!(store
+            .rebind_unadmitted_delegation_for_bootstrap(
+                &bootstrap,
+                task_id,
+                &delegation.delegation_id,
+                &foreign_reviewer,
+            )
+            .is_err());
+
+        store
+            .record_api_key_metadata_for_tenant(
+                "local",
+                "bootstrap-reconcile-operator-profile",
+                "operator-profile-user",
+                "operator",
+                &ALL_MANAGED_ACCEPTANCE_SCOPES
+                    .iter()
+                    .map(|scope| (*scope).to_string())
+                    .collect::<Vec<_>>(),
+                "test-bootstrap",
+            )
+            .unwrap();
+        let operator_profile = store
+            .authenticate_managed_acceptance_principal_for_tenant(
+                "local",
+                "bootstrap-reconcile-operator-profile",
+                Some(1.0),
+            )
+            .unwrap();
+        assert!(store
+            .rebind_unadmitted_delegation_for_bootstrap(
+                &bootstrap,
+                task_id,
+                &delegation.delegation_id,
+                &operator_profile,
+            )
+            .is_err());
+
+        let mut unbound = delegated_contract();
+        unbound.delegation_id = "bootstrap-rebind-unbound".into();
+        store.persist_delegation(&principal, &unbound).unwrap();
+        assert!(store
+            .rebind_unadmitted_delegation_for_bootstrap(
+                &bootstrap,
+                task_id,
+                &unbound.delegation_id,
+                &principal,
+            )
+            .is_err());
+
+        let mut revoked = delegated_contract();
+        revoked.delegation_id = "bootstrap-rebind-revoked".into();
+        store
+            .persist_delegation_for_product_task(&principal, task_id, &revoked)
+            .unwrap();
+        store
+            .revoke_delegation(&principal, &revoked.delegation_id)
+            .unwrap();
+        assert!(store
+            .rebind_unadmitted_delegation_for_bootstrap(
+                &bootstrap,
+                task_id,
+                &revoked.delegation_id,
+                &principal,
+            )
+            .is_err());
     }
 }

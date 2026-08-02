@@ -12926,6 +12926,259 @@ async fn axum_delegated_product_task_endpoints_enforce_separated_scopes_before_b
         assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
         assert_eq!(response_json(response).await["code"], "missing_scope");
     }
+
+    let bootstrap_reconcile_attempt = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/product/tasks/missing/delegated/reconcile-unadmitted")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_only_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"delegation_id": "missing"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bootstrap_reconcile_attempt.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(bootstrap_reconcile_attempt).await["code"],
+        "bootstrap_identity_authority_required"
+    );
+}
+
+#[tokio::test]
+async fn axum_bootstrap_reconciliation_uses_canonical_identity_and_is_idempotent() {
+    use engine::infrastructure::auth::{
+        hash_api_key, APIKey, LOCAL_BOOTSTRAP_API_KEY_ID, LOCAL_BOOTSTRAP_TENANT_ID,
+    };
+    use engine::product_golden_path::{
+        validate_intake, ProductExecutorPolicy, ProductTaskIntakeRequest,
+        ProductVerificationCommand,
+    };
+    use engine::storage::local_product_store::{
+        DelegationContract, ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_DELEGATED_AUTONOMY,
+        SCOPE_DELEGATED_MANIFEST_APPROVE, SCOPE_IDENTITY_DELEGATE, SCOPE_RISK_ACKNOWLEDGE,
+        SCOPE_SPEND_AUTHORIZE,
+    };
+
+    let _product_env_lock = product_golden_path_env_lock().lock().await;
+    let _product_env = ProductGoldenPathDisabledEnvGuard::enable();
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("target");
+    std::fs::create_dir_all(target.join("docs")).unwrap();
+    std::fs::write(target.join("docs/USER_GUIDE.md"), "bootstrap recovery\n").unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("bootstrap-route.db")).unwrap());
+
+    let intake = ProductTaskIntakeRequest {
+        objective: "Exercise canonical bootstrap recovery".into(),
+        target_id: "bootstrap-route".into(),
+        target_repo_path: target.to_string_lossy().into_owned(),
+        source_kind: Some("local_folder".into()),
+        source_revision: "unused-local-folder-revision".into(),
+        source_tree_hash: None,
+        allowed_paths: vec!["docs/USER_GUIDE.md".into()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f docs/USER_GUIDE.md".into(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: "artifact_only".into(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["deterministic".into()],
+            prefer: Some("deterministic".into()),
+        },
+        budget: None,
+        risk_class: "low".into(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: Some(true),
+        idempotency_key: "bootstrap-route-recovery".into(),
+        expected_version: None,
+        tenant_id: Some(LOCAL_BOOTSTRAP_TENANT_ID.into()),
+        workspace_id: Some("default".into()),
+        workspace_mode: Some("local_folder".into()),
+    };
+    let validated = validate_intake(&intake, LOCAL_BOOTSTRAP_TENANT_ID, "default").unwrap();
+    let task = store
+        .admit_product_task(&validated, "bootstrap-test-operator")
+        .unwrap();
+    let task_id = task["task_id"].as_str().unwrap().to_string();
+    let task_version = task["version"].clone();
+
+    let operator_scopes = ALL_MANAGED_ACCEPTANCE_SCOPES
+        .iter()
+        .map(|scope| (*scope).to_string())
+        .collect::<Vec<_>>();
+    store
+        .record_api_key_metadata_for_tenant(
+            LOCAL_BOOTSTRAP_TENANT_ID,
+            "bootstrap-route-operator",
+            "operator-user",
+            "operator",
+            &operator_scopes,
+            "bootstrap-route-test",
+        )
+        .unwrap();
+    let operator = store
+        .authenticate_managed_acceptance_principal_for_tenant(
+            LOCAL_BOOTSTRAP_TENANT_ID,
+            "bootstrap-route-operator",
+            Some(1.0),
+        )
+        .unwrap();
+
+    let created_at = chrono::Utc::now();
+    let delegation = DelegationContract {
+        schema_version: "managed_autonomous_delegation.v1".into(),
+        delegation_id: "bootstrap-route-delegation".into(),
+        created_at: created_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        expires_at: (created_at + chrono::Duration::hours(24))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string(),
+        executions: 1,
+        repositories: vec!["Igzela/alters-lab".into()],
+        task_classes: vec!["documentation".into()],
+        allowed_paths: vec!["docs/USER_GUIDE.md".into()],
+        max_changed_files: 1,
+        max_changed_lines: 100,
+        max_cost_usd_per_run: 0.50,
+        max_total_cost_usd: 0.50,
+        protocol: "openai_compatible".into(),
+        models: json!({
+            "planner": "deepseek-v4-pro",
+            "implementer": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro"
+        }),
+        output: json!({
+            "draft_pr_only": true,
+            "target_main_write": false,
+            "merge": false,
+            "auto_merge": false
+        }),
+        forbidden: vec![
+            "credential changes".into(),
+            "authentication or permission changes".into(),
+            "schema or database migrations".into(),
+            "dependency changes".into(),
+            "executable or workflow changes".into(),
+            "destructive operations".into(),
+            "release".into(),
+            "deployment".into(),
+        ],
+    };
+    store
+        .persist_delegation_for_product_task(&operator, &task_id, &delegation)
+        .unwrap();
+
+    let reviewer_scopes = vec![
+        SCOPE_RISK_ACKNOWLEDGE.to_string(),
+        SCOPE_DELEGATED_AUTONOMY.to_string(),
+        SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+        SCOPE_SPEND_AUTHORIZE.to_string(),
+    ];
+    store
+        .record_api_key_metadata_for_tenant(
+            LOCAL_BOOTSTRAP_TENANT_ID,
+            "bootstrap-route-reviewer",
+            "reviewer-user",
+            "reviewer",
+            &reviewer_scopes,
+            "bootstrap-route-test",
+        )
+        .unwrap();
+    store
+        .record_api_key_metadata_for_tenant(
+            LOCAL_BOOTSTRAP_TENANT_ID,
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &[SCOPE_IDENTITY_DELEGATE.to_string()],
+            "bootstrap-route-test",
+        )
+        .unwrap();
+
+    let bootstrap_raw = format!("harness_{}", "c".repeat(64));
+    let resolver_scopes = HashSet::from([
+        "team:admin".to_string(),
+        SCOPE_IDENTITY_DELEGATE.to_string(),
+    ]);
+    let mut resolver = TenantResolver::new();
+    resolver.add_tenant(Tenant {
+        tenant_id: LOCAL_BOOTSTRAP_TENANT_ID.into(),
+        name: "Canonical local bootstrap".into(),
+        scopes: resolver_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    resolver.add_api_key(APIKey {
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.into(),
+        tenant_id: LOCAL_BOOTSTRAP_TENANT_ID.into(),
+        key_hash: hash_api_key(&bootstrap_raw, "bootstrap-route-salt"),
+        key_salt: "bootstrap-route-salt".into(),
+        scopes: resolver_scopes,
+        created_at: 0.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+    let body = json!({
+        "delegation_id": delegation.delegation_id,
+        "reviewer_key_id": "bootstrap-route-reviewer"
+    });
+    let request = || {
+        Request::builder()
+            .method(Method::POST)
+            .uri(format!(
+                "/api/v1/product/tasks/{task_id}/delegated/reconcile-unadmitted"
+            ))
+            .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+
+    let first = app.clone().oneshot(request()).await.unwrap();
+    let first_status = first.status();
+    let first_body = response_json(first).await;
+    assert_eq!(first_status, StatusCode::OK, "{first_body:#}");
+    assert_eq!(first_body["result"]["replayed"], false);
+    assert_eq!(first_body["result"]["product_task_id"], task_id);
+    assert_eq!(
+        first_body["result"]["reviewer_principal_id"],
+        "bootstrap-route-reviewer"
+    );
+
+    let replay = app.clone().oneshot(request()).await.unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replay_body = response_json(replay).await;
+    assert_eq!(replay_body["result"]["replayed"], true);
+    assert_eq!(
+        store.get_product_task(&task_id).unwrap().unwrap()["version"],
+        task_version
+    );
+
+    store
+        .record_api_key_metadata_for_tenant(
+            LOCAL_BOOTSTRAP_TENANT_ID,
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &[
+                SCOPE_IDENTITY_DELEGATE.to_string(),
+                SCOPE_RISK_ACKNOWLEDGE.to_string(),
+            ],
+            "bootstrap-route-test",
+        )
+        .unwrap();
+    let over_scoped = app.oneshot(request()).await.unwrap();
+    assert_eq!(over_scoped.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(over_scoped).await["code"],
+        "bootstrap_identity_authority_required"
+    );
 }
 
 #[tokio::test]
@@ -13164,7 +13417,8 @@ async fn axum_delegated_prepare_rejects_expired_api_key_metadata() {
         .create_api_key("tenant-a", Some(scopes), None, 1.0)
         .unwrap();
     store
-        .record_api_key_metadata_with_expiry(
+        .record_api_key_metadata_with_expiry_for_tenant(
+            "tenant-a",
             &key.key_id,
             "expired-operator",
             "operator",
@@ -13320,7 +13574,8 @@ async fn axum_delegated_prepare_activate_and_revocation_terminal_are_provider_fr
         (&activator_key, "delegated-activator-user"),
     ] {
         store
-            .record_api_key_metadata(
+            .record_api_key_metadata_for_tenant(
+                "tenant-a",
                 &key.key_id,
                 user,
                 "operator",
@@ -13547,7 +13802,11 @@ async fn axum_delegated_prepare_activate_and_revocation_terminal_are_provider_fr
     assert_eq!(activated.status(), StatusCode::OK);
 
     let approver = store
-        .authenticate_managed_acceptance_principal("tenant-a", &approver_key.key_id, None)
+        .authenticate_managed_acceptance_principal_for_tenant(
+            "tenant-a",
+            &approver_key.key_id,
+            None,
+        )
         .unwrap();
     store.revoke_delegation(&approver, &delegation_id).unwrap();
     let terminal = store.delegated_authority_state(&delegation_id).unwrap();
@@ -13565,7 +13824,9 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
     use engine::executor_pool::{
         CostProfile, ExecutorCapabilities, ExecutorEntry, ExecutorMetrics, ExecutorStatus,
     };
-    use engine::infrastructure::auth::{hash_api_key, APIKey, LOCAL_BOOTSTRAP_API_KEY_ID};
+    use engine::infrastructure::auth::{
+        hash_api_key, APIKey, LOCAL_BOOTSTRAP_API_KEY_ID, LOCAL_BOOTSTRAP_TENANT_ID,
+    };
     use engine::node_executor::FailNodeExecutor;
     use engine::provider::config::{CredentialRef, ProviderConfig};
     use engine::provider::credential::CredentialBoundary;
@@ -13640,6 +13901,16 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
         Arc::new(LocalProductStore::new(dir.path().join("delegated-success-http.db")).unwrap());
     let mut resolver = TenantResolver::new();
     let bootstrap_raw = format!("harness_{}", "b".repeat(64));
+    store
+        .record_api_key_metadata_for_tenant(
+            LOCAL_BOOTSTRAP_TENANT_ID,
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &[SCOPE_IDENTITY_DELEGATE.to_string()],
+            "delegated-success-http-test",
+        )
+        .unwrap();
     let bootstrap_scopes = HashSet::from([
         "team:admin".to_string(),
         "team:read".to_string(),
@@ -13653,14 +13924,14 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
             .map(|scope| (*scope).to_string()),
     );
     resolver.add_tenant(Tenant {
-        tenant_id: "tenant-a".to_string(),
+        tenant_id: LOCAL_BOOTSTRAP_TENANT_ID.to_string(),
         name: "Delegated Success".to_string(),
         scopes: tenant_scopes.clone(),
         rate_limit: Some(100),
     });
     resolver.add_api_key(APIKey {
         key_id: LOCAL_BOOTSTRAP_API_KEY_ID.to_string(),
-        tenant_id: "tenant-a".to_string(),
+        tenant_id: LOCAL_BOOTSTRAP_TENANT_ID.to_string(),
         key_hash: hash_api_key(&bootstrap_raw, "delegated-success-bootstrap-salt"),
         key_salt: "delegated-success-bootstrap-salt".to_string(),
         scopes: bootstrap_scopes,
@@ -13686,7 +13957,8 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
         )
         .unwrap();
     store
-        .record_api_key_metadata(
+        .record_api_key_metadata_for_tenant(
+            "foreign-tenant",
             &foreign_key.key_id,
             "foreign-confirm-user",
             "operator",
@@ -13868,7 +14140,7 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
                         "confirm_execution": true,
                         "confirm_output": true,
                         "idempotency_key": "delegated-success-http-1",
-                        "tenant_id": "tenant-a",
+                        "tenant_id": LOCAL_BOOTSTRAP_TENANT_ID,
                         "workspace_id": "default",
                         "workspace_mode": "git_worktree"
                     })

@@ -68,7 +68,8 @@ use engine::storage::local_product_store::{
     MemoryRetrievalRequest, MemoryScope, ProviderEmbeddingResolutionAction,
     ProviderEmbeddingResolutionRequest, RiskAcknowledgementRequest, RwePerTaskBudget,
     SpendAuthorizationRequest, ALL_MANAGED_ACCEPTANCE_SCOPES, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES,
-    MANAGED_REVIEWER_KEY_SCOPES, SCOPE_IDENTITY_DELEGATE,
+    MANAGED_REVIEWER_KEY_SCOPES, SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_MANIFEST_APPROVE,
+    SCOPE_IDENTITY_DELEGATE, SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -209,6 +210,34 @@ async fn pg_response_json(response: axum::response::Response) -> Value {
 fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart() {
     let Some(store) = test_store() else { return };
     let store = Arc::new(store);
+    if store
+        .get_api_key_metadata(LOCAL_BOOTSTRAP_API_KEY_ID)
+        .unwrap()
+        .is_none()
+    {
+        store
+            .record_api_key_metadata(
+                LOCAL_BOOTSTRAP_API_KEY_ID,
+                "local-admin",
+                "admin",
+                &[
+                    "team:admin".to_string(),
+                    SCOPE_IDENTITY_DELEGATE.to_string(),
+                ],
+                "legacy-fixture",
+            )
+            .unwrap();
+    }
+    assert!(store
+        .bind_legacy_bootstrap_api_key_metadata("local", "bootstrap")
+        .unwrap());
+    assert_eq!(
+        store
+            .get_api_key_metadata_for_tenant(LOCAL_BOOTSTRAP_API_KEY_ID, "local")
+            .unwrap()
+            .unwrap()["tenant_id"],
+        "local"
+    );
     let bootstrap_raw = format!("harness_{}", "a".repeat(64));
     let ordinary_raw = format!("harness_{}", "b".repeat(64));
     let mut resolver = TenantResolver::new();
@@ -412,6 +441,43 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
         revoked_at: None,
         last_used_at: None,
     });
+    restarted_resolver.add_tenant(Tenant {
+        tenant_id: "foreign".into(),
+        name: "PostgreSQL foreign tenant".into(),
+        scopes: ["team:read", "team:admin"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        rate_limit: Some(10_000),
+    });
+    let foreign_binding_key_id = "pg-foreign-binding";
+    store
+        .record_api_key_metadata_for_tenant(
+            "foreign",
+            foreign_binding_key_id,
+            "pg-foreign-binding",
+            "reviewer",
+            &MANAGED_REVIEWER_KEY_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "pg-foreign-binding-fixture",
+        )
+        .unwrap();
+    restarted_resolver.add_api_key(APIKey {
+        key_id: foreign_binding_key_id.into(),
+        tenant_id: "foreign".into(),
+        key_hash: hash_api_key("unused-foreign-binding", "foreign-binding-salt"),
+        key_salt: "foreign-binding-salt".into(),
+        scopes: MANAGED_REVIEWER_KEY_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
     let restarted_app = build_axum_router(
         AxumApiState::new()
             .with_local_store_arc(store.clone())
@@ -453,14 +519,354 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
     let reissued_key_id = reissued_body["key_id"].as_str().unwrap().to_string();
     let persisted = store.get_api_key_metadata(&reissued_key_id).unwrap();
     assert!(persisted.is_some());
+    let rebinding = store
+        .record_api_key_metadata_for_tenant(
+            "ordinary",
+            &reissued_key_id,
+            "pg-foreign-rebind",
+            "admin",
+            &["team:admin".to_string()],
+            "pg-foreign-rebind-test",
+        )
+        .expect_err("PostgreSQL key tenant bindings must be immutable");
+    assert!(rebinding.contains("tenant binding is immutable"));
+    let local_keys = store
+        .list_api_key_metadata_for_tenant("local", 10_000)
+        .unwrap();
+    assert!(local_keys
+        .iter()
+        .any(|key| key["key_id"] == reissued_key_id));
+    assert!(local_keys.iter().all(|key| key["tenant_id"] == "local"));
 
-    // `postgres::Client` performs synchronous runtime work from Drop. Keep
-    // the router and pool teardown off the Tokio test runtime as well as
-    // their initialization, otherwise a successful assertion can abort the
-    // process during destructor cleanup.
+    let updated = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/keys/{reissued_key_id}/scopes"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"scopes": MANAGED_REVIEWER_KEY_SCOPES}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(updated.status(), StatusCode::OK);
+    let rotated = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/keys/{reissued_key_id}/rotate"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(rotated.status(), StatusCode::OK);
+    let rotated_key_id = runtime.block_on(pg_response_json(rotated))["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let revoked = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/keys/{rotated_key_id}/revoke"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(revoked.status(), StatusCode::OK);
+    let repeated_revoke = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/keys/{rotated_key_id}/revoke"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(repeated_revoke.status(), StatusCode::NOT_FOUND);
+
+    let foreign_revoke = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/keys/{foreign_binding_key_id}/revoke"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(foreign_revoke.status(), StatusCode::NOT_FOUND);
+
     runtime.shutdown_background();
     drop(restarted_app);
     drop(store);
+}
+
+#[cfg(feature = "pg-tests")]
+#[test]
+fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
+    let Some(store) = test_store() else { return };
+    let previous_gate = std::env::var_os(PRODUCT_TASK_GATE);
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    let previous_target_repo_output = std::env::var_os("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let tag = uuid_tag();
+    let (repo, revision) = pg_product_repo(&format!("rebind-{tag}"));
+    std::fs::create_dir_all(repo.path().join("docs")).unwrap();
+    std::fs::write(
+        repo.path().join("docs/USER_GUIDE.md"),
+        "delegated rebind fixture\n",
+    )
+    .unwrap();
+    let request = ProductTaskIntakeRequest {
+        objective: "bind a PostgreSQL recovery task".into(),
+        target_id: format!("pg-rebind-{tag}"),
+        target_repo_path: repo.path().to_string_lossy().into_owned(),
+        source_kind: Some("git_repository".into()),
+        source_revision: revision,
+        source_tree_hash: None,
+        allowed_paths: vec!["docs/USER_GUIDE.md".into()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f docs/USER_GUIDE.md".into(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: "artifact_only".into(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["command".into()],
+            prefer: Some("command".into()),
+        },
+        budget: None,
+        risk_class: "low".into(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: Some(true),
+        idempotency_key: format!("pg-rebind-primary-{tag}"),
+        expected_version: None,
+        tenant_id: Some("local".into()),
+        workspace_id: Some("default".into()),
+        workspace_mode: Some("git_worktree".into()),
+    };
+    let task = store
+        .admit_product_task(
+            &validate_intake(&request, "local", "default").unwrap(),
+            "pg-rebind",
+        )
+        .unwrap();
+    let task_id = task["task_id"].as_str().unwrap();
+    let task_version = task["version"].as_i64().unwrap();
+    let mut foreign_request = request.clone();
+    foreign_request.idempotency_key = format!("pg-rebind-foreign-{tag}");
+    let foreign_task = store
+        .admit_product_task(
+            &validate_intake(&foreign_request, "local", "default").unwrap(),
+            "pg-rebind",
+        )
+        .unwrap();
+    let foreign_task_id = foreign_task["task_id"].as_str().unwrap();
+    assert_ne!(task_id, foreign_task_id);
+
+    let reviewer_key_id = format!("pg-rebind-reviewer-original-{tag}");
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            &reviewer_key_id,
+            "pg-rebind-reviewer",
+            "reviewer",
+            &[
+                SCOPE_RISK_ACKNOWLEDGE.to_string(),
+                SCOPE_DELEGATED_AUTONOMY.to_string(),
+                SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+                SCOPE_SPEND_AUTHORIZE.to_string(),
+            ],
+            "pg-rebind-test-setup",
+        )
+        .unwrap();
+    let principal = store
+        .authenticate_managed_acceptance_principal_for_tenant("local", &reviewer_key_id, Some(1.0))
+        .unwrap();
+    let reissued_reviewer_key_id = format!("pg-rebind-reviewer-reissued-{tag}");
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            &reissued_reviewer_key_id,
+            "pg-rebind-reissued-reviewer",
+            "reviewer",
+            &[
+                SCOPE_RISK_ACKNOWLEDGE.to_string(),
+                SCOPE_DELEGATED_AUTONOMY.to_string(),
+                SCOPE_DELEGATED_MANIFEST_APPROVE.to_string(),
+                SCOPE_SPEND_AUTHORIZE.to_string(),
+            ],
+            "pg-rebind-test-setup",
+        )
+        .unwrap();
+    let reissued_reviewer = store
+        .authenticate_managed_acceptance_principal_for_tenant(
+            "local",
+            &reissued_reviewer_key_id,
+            Some(1.0),
+        )
+        .unwrap();
+    let bootstrap_scopes = vec![SCOPE_IDENTITY_DELEGATE.to_string()];
+    let over_scoped_bootstrap = vec![
+        SCOPE_IDENTITY_DELEGATE.to_string(),
+        SCOPE_RISK_ACKNOWLEDGE.to_string(),
+    ];
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &over_scoped_bootstrap,
+            "pg-bootstrap-test",
+        )
+        .unwrap();
+    assert!(store
+        .authenticate_bootstrap_identity_delegation_principal("local", Some(1.0))
+        .is_err());
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &bootstrap_scopes,
+            "pg-bootstrap-test",
+        )
+        .unwrap();
+    let bootstrap = store
+        .authenticate_bootstrap_identity_delegation_principal("local", Some(1.0))
+        .unwrap();
+    let created_at = utc_now_string();
+    let expires_at = (chrono::DateTime::parse_from_rfc3339(&created_at)
+        .unwrap()
+        .with_timezone(&chrono::Utc)
+        + chrono::Duration::hours(24))
+    .format("%Y-%m-%dT%H:%M:%SZ")
+    .to_string();
+    let delegation = DelegationContract {
+        schema_version: "managed_autonomous_delegation.v1".into(),
+        delegation_id: format!("pg-rebind-delegation-{tag}"),
+        created_at,
+        expires_at,
+        executions: 1,
+        repositories: vec!["Igzela/alters-lab".into()],
+        task_classes: vec!["documentation".into()],
+        allowed_paths: vec!["docs/USER_GUIDE.md".into()],
+        max_changed_files: 1,
+        max_changed_lines: 100,
+        max_cost_usd_per_run: 0.50,
+        max_total_cost_usd: 0.50,
+        protocol: "openai_compatible".into(),
+        models: json!({
+            "planner": "deepseek-v4-pro",
+            "implementer": "deepseek-v4-flash",
+            "reviewer": "deepseek-v4-pro"
+        }),
+        output: json!({
+            "draft_pr_only": true,
+            "target_main_write": false,
+            "merge": false,
+            "auto_merge": false
+        }),
+        forbidden: vec![
+            "credential changes".into(),
+            "authentication or permission changes".into(),
+            "schema or database migrations".into(),
+            "dependency changes".into(),
+            "executable or workflow changes".into(),
+            "destructive operations".into(),
+            "release".into(),
+            "deployment".into(),
+        ],
+    };
+    store
+        .persist_delegation_for_product_task(&principal, task_id, &delegation)
+        .unwrap();
+    let rebound = store
+        .rebind_unadmitted_delegation_for_bootstrap(
+            &bootstrap,
+            task_id,
+            &delegation.delegation_id,
+            &reissued_reviewer,
+        )
+        .unwrap();
+    assert_eq!(rebound["status"], "active");
+    assert_eq!(rebound["operation_identity"], delegation.delegation_id);
+    assert_eq!(rebound["product_task_id"], task_id);
+    assert_eq!(rebound["replayed"], false);
+    assert_eq!(
+        store.get_product_task(task_id).unwrap().unwrap()["version"],
+        task_version
+    );
+    assert!(store
+        .rebind_unadmitted_delegation_for_bootstrap(
+            &bootstrap,
+            foreign_task_id,
+            &delegation.delegation_id,
+            &reissued_reviewer,
+        )
+        .is_err());
+    let replay = store
+        .rebind_unadmitted_delegation_for_bootstrap(
+            &bootstrap,
+            task_id,
+            &delegation.delegation_id,
+            &reissued_reviewer,
+        )
+        .unwrap();
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(
+        store
+            .delegated_authority_state(&delegation.delegation_id)
+            .unwrap()["delegation_state"],
+        "active"
+    );
+    assert!(store
+        .rebind_unadmitted_delegation_for_bootstrap(
+            &bootstrap,
+            task_id,
+            &delegation.delegation_id,
+            &principal,
+        )
+        .is_err());
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    match previous_target_repo_output {
+        Some(value) => std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", value),
+        None => std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT"),
+    }
+    match previous_gate {
+        Some(value) => std::env::set_var(PRODUCT_TASK_GATE, value),
+        None => std::env::remove_var(PRODUCT_TASK_GATE),
+    }
 }
 
 #[cfg(feature = "pg-tests")]
@@ -2259,12 +2665,54 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_preserves_spend_rollback_gua
         .count();
     assert_eq!(output_audits, 1);
 
+    let rollback_bound_key = format!("pg-rollback-bound-{tag}");
+    let rollback_legacy_key = format!("pg-rollback-legacy-{tag}");
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            &rollback_bound_key,
+            "pg-rollback-bound-user",
+            "reviewer",
+            &["managed_acceptance:risk_acknowledge".to_string()],
+            "pg-rollback-test",
+        )
+        .unwrap();
+    store
+        .record_api_key_metadata(
+            &rollback_legacy_key,
+            "pg-rollback-legacy-user",
+            "admin",
+            &["team:admin".to_string()],
+            "pg-rollback-test",
+        )
+        .unwrap();
+
     // Drain through v36 only when the shared PG fixture has no incomplete
     // delegated rows. Residual incomplete delegated authority must fail closed
     // rather than soft-pass; the spend residual assertion below applies only
     // when the multi-step drain can reach v33.
     match store.rollback_v36_to_v35("pg-rollback-operator", true) {
-        Ok(()) => {}
+        Ok(()) => {
+            let rollback_archives = store
+                .audit_events(10_000)
+                .unwrap()
+                .into_iter()
+                .filter(|event| {
+                    event["action"] == "schema.rollback.v36_api_key_tenant_archived"
+                        && (event["resource"]
+                            == format!("api_key_tenant_binding:{rollback_bound_key}")
+                            || event["resource"]
+                                == format!("api_key_tenant_binding:{rollback_legacy_key}"))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(rollback_archives.len(), 2);
+            assert!(rollback_archives
+                .iter()
+                .any(|event| event["details"].to_string().contains("local")));
+            assert!(rollback_archives
+                .iter()
+                .any(|event| event["details"].to_string().contains("tenant_id")));
+        }
         Err(error) if error.contains("v36 rollback blocked") => {
             // Shared-database residue correctly refuses destructive drain.
             return;
@@ -3847,10 +4295,13 @@ fn pg_managed_acceptance_attempt_replay_lease_terminal_restart_and_principal_par
 #[cfg(feature = "pg-tests")]
 fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() {
     let Some(store) = test_store() else { return };
+    let previous_gate = std::env::var_os(PRODUCT_TASK_GATE);
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
     let tag = uuid_tag();
     let key_id = format!("delegated-pg-operator-{tag}");
     store
-        .record_api_key_metadata(
+        .record_api_key_metadata_for_tenant(
+            "tenant-a",
             &key_id,
             &format!("delegated-pg-user-{tag}"),
             "operator",
@@ -3866,7 +4317,8 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
         .unwrap();
     let activator_key_id = format!("delegated-pg-activator-{tag}");
     store
-        .record_api_key_metadata(
+        .record_api_key_metadata_for_tenant(
+            "tenant-a",
             &activator_key_id,
             &format!("delegated-pg-activator-user-{tag}"),
             "operator",
@@ -3927,7 +4379,49 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
         .map(str::to_string)
         .collect(),
     };
-    store.persist_delegation(&principal, &delegation).unwrap();
+    let workspace_root = tempfile::tempdir().unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(target_dir.path().join("docs")).unwrap();
+    std::fs::write(target_dir.path().join("docs/USER_GUIDE.md"), "pg test\n").unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
+    let intake = ProductTaskIntakeRequest {
+        objective: "Run bounded delegated PostgreSQL test".into(),
+        target_id: format!("delegated-pg-test-{tag}"),
+        target_repo_path: target_dir.path().to_string_lossy().into_owned(),
+        source_kind: Some("local_folder".into()),
+        source_revision: "pg-delegated-source".into(),
+        source_tree_hash: None,
+        allowed_paths: vec!["docs/USER_GUIDE.md".into()],
+        verification_commands: vec![ProductVerificationCommand {
+            command: "test -f docs/USER_GUIDE.md".into(),
+            timeout_ms: 5_000,
+        }],
+        output_intent: "artifact_only".into(),
+        executor_policy: ProductExecutorPolicy {
+            allowed_executors: vec!["deterministic".into()],
+            prefer: Some("deterministic".into()),
+        },
+        budget: None,
+        risk_class: "low".into(),
+        approval_required: true,
+        confirm_execution: Some(true),
+        confirm_output: Some(true),
+        idempotency_key: format!("delegated-pg-task-{tag}"),
+        expected_version: None,
+        tenant_id: Some("tenant-a".into()),
+        workspace_id: Some("default".into()),
+        workspace_mode: Some("local_folder".into()),
+    };
+    let product_task = store
+        .admit_product_task(
+            &validate_intake(&intake, "tenant-a", "default").unwrap(),
+            "pg-test",
+        )
+        .unwrap();
+    let product_task_id = product_task["task_id"].as_str().unwrap().to_owned();
+    store
+        .persist_delegation_for_product_task(&principal, &product_task_id, &delegation)
+        .unwrap();
     let target_sha = "6".repeat(40);
     let mut proposal = json!({
         "schema_version": "managed_proposal_manifest.v1",
@@ -3945,7 +4439,6 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
             proposal["manifest_sha256"].as_str().unwrap(),
         )
         .unwrap();
-    let product_task_id = format!("product-task-pg-{tag}");
     let workflow_id = format!("workflow-pg-{tag}");
     let attempt_id = format!("attempt-pg-{tag}");
     let manifest = derive_final_execution_manifest(
@@ -4039,6 +4532,11 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
             .unwrap()["replayed"],
         true
     );
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    match previous_gate {
+        Some(value) => std::env::set_var(PRODUCT_TASK_GATE, value),
+        None => std::env::remove_var(PRODUCT_TASK_GATE),
+    }
 }
 
 #[test]

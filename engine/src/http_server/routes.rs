@@ -272,6 +272,11 @@ fn axum_routes() -> Router<AxumApiState> {
             post(product_tasks::api_recover_product_task_workspace).options(cors_preflight),
         )
         .route(
+            "/api/v1/product/tasks/:task_id/delegated/reconcile-unadmitted",
+            post(product_tasks::api_reconcile_unadmitted_delegated_product_task)
+                .options(cors_preflight),
+        )
+        .route(
             "/api/v1/product/tasks/:task_id/compile-and-schedule",
             post(product_tasks::api_compile_and_schedule_product_task).options(cors_preflight),
         )

@@ -68,9 +68,11 @@ pub(super) const V35_TABLES: [&str; 1] = ["product_task_workspace_preparations"]
 pub(super) const V36_TABLES: [&str; 1] = ["managed_acceptance_delegations"];
 pub(super) const V36_DELEGATED_PLAN_OWNER_COLUMN: &str = "delegated_plan_owner_id";
 pub(super) const V36_DELEGATED_PLAN_OWNER_INDEX: &str = "idx_workflow_plans_delegated_owner";
-pub(super) const V36_COLUMNS: [&str; 36] = [
+pub(super) const V36_API_KEY_TENANT_COLUMN: &str = "tenant_id";
+pub(super) const V36_COLUMNS: [&str; 37] = [
     "delegation_id",
     "tenant_id",
+    "product_task_id",
     "principal_kind",
     "principal_id",
     "manifest_approver_id",
@@ -115,6 +117,7 @@ pub(super) const V36_INDEXES: [&str; 4] = [
 
 pub(super) struct V36DelegationArchiveSource {
     pub delegation_sha256: String,
+    pub product_task_id: Option<String>,
     pub body_json: String,
     pub proposal_sha256: Option<String>,
     pub proposal_json: Option<String>,
@@ -321,6 +324,7 @@ pub(super) fn build_v36_delegation_downgrade_archive(
     }))?;
     let source_evidence = json!({
         "delegation_sha256": source.delegation_sha256,
+        "product_task_id": source.product_task_id,
         "proposal_sha256": proposal_sha256,
         "final_manifest_sha256": final_manifest_sha256,
         "manifest_approval_sha256": manifest_approval_sha256,
@@ -350,6 +354,28 @@ pub(super) fn build_v36_delegation_downgrade_archive(
         "source_schema_version": 36,
         "source_evidence": source_evidence,
         "source_evidence_sha256": source_evidence_sha256,
+    });
+    let archive_sha256 = archive_value_sha256(&archive)?;
+    archive["archive_sha256"] = json!(archive_sha256);
+    Ok(archive)
+}
+
+pub(super) fn build_v36_api_key_tenant_binding_archive(metadata: Value) -> Result<Value, String> {
+    if metadata
+        .get("key_id")
+        .and_then(Value::as_str)
+        .is_none_or(|value| value.is_empty())
+    {
+        return Err("v36 rollback blocked: API-key binding key_id is missing".into());
+    }
+    if !metadata.get("scopes").is_some_and(Value::is_array) {
+        return Err("v36 rollback blocked: API-key binding scopes are invalid".into());
+    }
+    let metadata_sha256 = archive_value_sha256(&metadata)?;
+    let mut archive = json!({
+        "schema_version": "managed_api_key_tenant_binding_downgrade_archive.v1",
+        "source_evidence": metadata,
+        "metadata_sha256": metadata_sha256,
     });
     let archive_sha256 = archive_value_sha256(&archive)?;
     archive["archive_sha256"] = json!(archive_sha256);
@@ -718,11 +744,22 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_created ON scheduler_feedback(
             rows.filter_map(|r| r.ok()).collect()
         };
         if !columns.contains(&"last_used_at".to_string()) {
-            conn.execute_batch(
-                "ALTER TABLE api_key_metadata ADD COLUMN last_used_at TEXT;
-                 ALTER TABLE api_key_metadata ADD COLUMN expires_at TEXT;",
+            conn.execute(
+                "ALTER TABLE api_key_metadata ADD COLUMN last_used_at TEXT",
+                [],
             )
             .map_err(|e| e.to_string())?;
+        }
+        if !columns.contains(&"expires_at".to_string()) {
+            conn.execute(
+                "ALTER TABLE api_key_metadata ADD COLUMN expires_at TEXT",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !columns.contains(&V36_API_KEY_TENANT_COLUMN.to_string()) {
+            conn.execute("ALTER TABLE api_key_metadata ADD COLUMN tenant_id TEXT", [])
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -1249,10 +1286,48 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                     "v36 rollback requires current schema version 36; found {version}"
                 ));
             }
+            let api_key_tenant_archives = {
+                let mut statement = tx
+                    .prepare(
+                        "SELECT key_id, user_id, role, tenant_id, scopes_json, revoked_at, expires_at
+                         FROM api_key_metadata ORDER BY key_id",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, Option<String>>(6)?,
+                        ))
+                    })
+                    .map_err(|error| error.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?;
+                rows.into_iter()
+                    .map(|(key_id, user_id, role, tenant_id, scopes_json, revoked_at, expires_at)| {
+                        let scopes: Value = serde_json::from_str(&scopes_json)
+                            .map_err(|error| format!("v36 rollback blocked: API-key scopes JSON is invalid: {error}"))?;
+                        build_v36_api_key_tenant_binding_archive(json!({
+                            "key_id": key_id,
+                            "user_id": user_id,
+                            "role": role,
+                            "tenant_id": tenant_id,
+                            "scopes": scopes,
+                            "revoked_at": revoked_at,
+                            "expires_at": expires_at,
+                        }))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            }?;
             let archives = {
                 let mut statement = tx
                     .prepare(
-                        "SELECT delegation_sha256, body_json, proposal_sha256, proposal_json,
+                        "SELECT delegation_sha256, product_task_id, body_json, proposal_sha256, proposal_json,
                                 status, total_cost_usd, manifest_approval_sha256,
                                 manifest_approval_json, spend_body_sha256, spend_body_json,
                                 spend_status, manifest_json, attempt_id, attempt_lease_id,
@@ -1267,26 +1342,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                     .query_map([], |row| {
                         Ok(V36DelegationArchiveSource {
                             delegation_sha256: row.get(0)?,
-                            body_json: row.get(1)?,
-                            proposal_sha256: row.get(2)?,
-                            proposal_json: row.get(3)?,
-                            status: row.get(4)?,
-                            total_cost_usd: row.get(5)?,
-                            manifest_approval_sha256: row.get(6)?,
-                            manifest_approval_json: row.get(7)?,
-                            spend_body_sha256: row.get(8)?,
-                            spend_body_json: row.get(9)?,
-                            spend_status: row.get(10)?,
-                            manifest_json: row.get(11)?,
-                            attempt_id: row.get(12)?,
-                            attempt_lease_id: row.get(13)?,
-                            attempt_lease_token: row.get(14)?,
-                            attempt_status: row.get(15)?,
-                            artifact_confirmation_sha256: row.get(16)?,
-                            artifact_confirmation_json: row.get(17)?,
-                            provider_request_journal_json: row.get(18)?,
-                            terminal_receipt_json: row.get(19)?,
-                            terminal_at: row.get(20)?,
+                            product_task_id: row.get(1)?,
+                            body_json: row.get(2)?,
+                            proposal_sha256: row.get(3)?,
+                            proposal_json: row.get(4)?,
+                            status: row.get(5)?,
+                            total_cost_usd: row.get(6)?,
+                            manifest_approval_sha256: row.get(7)?,
+                            manifest_approval_json: row.get(8)?,
+                            spend_body_sha256: row.get(9)?,
+                            spend_body_json: row.get(10)?,
+                            spend_status: row.get(11)?,
+                            manifest_json: row.get(12)?,
+                            attempt_id: row.get(13)?,
+                            attempt_lease_id: row.get(14)?,
+                            attempt_lease_token: row.get(15)?,
+                            attempt_status: row.get(16)?,
+                            artifact_confirmation_sha256: row.get(17)?,
+                            artifact_confirmation_json: row.get(18)?,
+                            provider_request_journal_json: row.get(19)?,
+                            terminal_receipt_json: row.get(20)?,
+                            terminal_at: row.get(21)?,
                         })
                     })
                     .map_err(|error| error.to_string())?
@@ -1322,6 +1398,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                     .collect(),
             );
             let archive_set_sha256 = archive_value_sha256(&archive_hashes)?;
+            for archive in &api_key_tenant_archives {
+                let key_id = archive
+                    .pointer("/source_evidence/key_id")
+                    .and_then(Value::as_str)
+                    .ok_or("v36 API-key binding archive key_id is missing")?;
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES (?1,?2,'schema.rollback.v36_api_key_tenant_archived',?3,?4)",
+                    params![
+                        now,
+                        actor,
+                        format!("api_key_tenant_binding:{key_id}"),
+                        super::managed_acceptance::canonical_json(archive)?,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            let api_key_tenant_archive_hashes = Value::Array(
+                api_key_tenant_archives
+                    .iter()
+                    .filter_map(|archive| archive.get("archive_sha256").cloned())
+                    .collect(),
+            );
+            let api_key_tenant_archive_set_sha256 =
+                archive_value_sha256(&api_key_tenant_archive_hashes)?;
             tx.execute_batch(
                 "DROP INDEX IF EXISTS idx_workflow_plans_delegated_owner;
                  ALTER TABLE workflow_plans DROP COLUMN delegated_plan_owner_id;
@@ -1329,7 +1430,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_attempt;
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_spend;
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_status;
-                 DROP TABLE IF EXISTS managed_acceptance_delegations;",
+                 DROP TABLE IF EXISTS managed_acceptance_delegations;
+                 ALTER TABLE api_key_metadata DROP COLUMN tenant_id;",
             )
             .map_err(|e| e.to_string())?;
             tx.execute(
@@ -1344,6 +1446,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
                         "tables": V36_TABLES,
                         "archived_delegations": archives.len(),
                         "archive_set_sha256": archive_set_sha256,
+                        "archived_api_key_tenant_bindings": api_key_tenant_archives.len(),
+                        "api_key_tenant_archive_set_sha256": api_key_tenant_archive_set_sha256,
                     })
                     .to_string()
                 ],
@@ -2742,6 +2846,12 @@ fn validate_sqlite_v36_schema(conn: &Connection) -> Result<(), String> {
             V36_DELEGATED_PLAN_OWNER_COLUMN
         ));
     }
+    if !column_exists(conn, "api_key_metadata", V36_API_KEY_TENANT_COLUMN)? {
+        return Err(format!(
+            "SQLite v36 schema missing api_key_metadata column {}",
+            V36_API_KEY_TENANT_COLUMN
+        ));
+    }
     let owner_index_exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
@@ -2759,6 +2869,17 @@ fn validate_sqlite_v36_schema(conn: &Connection) -> Result<(), String> {
 }
 
 fn repair_sqlite_v36_delegated_plan_owner(conn: &Connection) -> Result<(), String> {
+    if !column_exists(conn, "api_key_metadata", V36_API_KEY_TENANT_COLUMN)? {
+        conn.execute("ALTER TABLE api_key_metadata ADD COLUMN tenant_id TEXT", [])
+            .map_err(|error| format!("v36 API-key tenant binding repair failed: {error}"))?;
+    }
+    if !column_exists(conn, "managed_acceptance_delegations", "product_task_id")? {
+        conn.execute(
+            "ALTER TABLE managed_acceptance_delegations ADD COLUMN product_task_id TEXT",
+            [],
+        )
+        .map_err(|error| format!("v36 ProductTask delegation binding repair failed: {error}"))?;
+    }
     if !column_exists(conn, "workflow_plans", V36_DELEGATED_PLAN_OWNER_COLUMN)? {
         conn.execute(
             "ALTER TABLE workflow_plans ADD COLUMN delegated_plan_owner_id TEXT",
@@ -3712,7 +3833,7 @@ mod tests {
                 connection
                     .execute(
                         "INSERT INTO managed_acceptance_delegations (
-                            delegation_id, tenant_id, principal_kind, principal_id,
+                            delegation_id, tenant_id, product_task_id, principal_kind, principal_id,
                             manifest_approver_id, artifact_confirmer_id, attempt_activator_id,
                             delegation_sha256, body_json, proposal_sha256, proposal_json,
                             status, executions_allowed, executions_used, max_total_cost_usd,
@@ -3724,7 +3845,7 @@ mod tests {
                             terminal_receipt_json, created_at, updated_at, expires_at,
                             terminal_at, revoked_at
                          ) VALUES (
-                            'delegation-terminal', 'tenant-sensitive', 'operator_api_key',
+                            'delegation-terminal', 'tenant-sensitive', 'task-terminal', 'operator_api_key',
                             'principal-sensitive', 'approver-sensitive', 'confirmer-sensitive',
                             'activator-sensitive', ?1, ?2, ?3, ?4, ?5, 1, 1, 0.5, 0.125,
                             'spend-sensitive', ?6, ?7, ?8, ?9, ?10, ?11,
@@ -3764,12 +3885,36 @@ mod tests {
         let database_path = directory.path().join("terminal-v36.db");
         let store = LocalProductStore::new(&database_path).unwrap();
         insert_terminal_v36_delegation(&store, "expired");
+        store
+            .record_api_key_metadata_for_tenant(
+                "tenant-a",
+                "tenant-bound-key",
+                "tenant-user",
+                "reviewer",
+                &["managed_acceptance:risk_acknowledge".to_string()],
+                "migration-test",
+            )
+            .unwrap();
+        store
+            .record_api_key_metadata(
+                "legacy-unbound-key",
+                "legacy-user",
+                "admin",
+                &["team:admin".to_string()],
+                "migration-test",
+            )
+            .unwrap();
 
         store
             .rollback_v36_to_v35("migration-test", true)
             .expect("fully closed delegation evidence must be archived");
         assert_eq!(store.schema_version().unwrap(), V35_SCHEMA_VERSION);
         assert!(!table_exists(&store, "managed_acceptance_delegations"));
+        assert!(!store
+            .with_conn(|connection| {
+                column_exists(connection, "api_key_metadata", V36_API_KEY_TENANT_COLUMN)
+            })
+            .unwrap());
         store.with_conn(validate_sqlite_v35_schema).unwrap();
         let archive: Value = store
             .with_conn(|connection| {
@@ -3789,6 +3934,31 @@ mod tests {
         assert!(!encoded.contains("must-not-survive-v36-rollback"));
         assert!(!encoded.contains("principal-sensitive"));
         assert!(!encoded.contains("token-sensitive"));
+        let binding_archives: Vec<(String, String)> = store
+            .with_conn(|connection| {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT resource, details_json FROM audit_log
+                         WHERE action='schema.rollback.v36_api_key_tenant_archived'
+                         ORDER BY resource",
+                    )
+                    .map_err(|error| error.to_string())?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map_err(|error| error.to_string())?
+                    .collect::<Result<Vec<(String, String)>, _>>()
+                    .map_err(|error| error.to_string())?;
+                Ok(rows)
+            })
+            .unwrap();
+        assert_eq!(binding_archives.len(), 2);
+        assert!(binding_archives
+            .iter()
+            .any(|(resource, details)| resource.ends_with("tenant-bound-key")
+                && details.contains("tenant-a")));
+        assert!(binding_archives.iter().any(|(resource, details)| resource
+            .ends_with("legacy-unbound-key")
+            && details.contains("\"tenant_id\":null")));
         assert_eq!(
             archive["schema_version"],
             "managed_delegation_downgrade_archive.v1"
@@ -3804,6 +3974,10 @@ mod tests {
         assert_eq!(
             archive["source_evidence"]["provider_request_status_counts"]["succeeded"],
             1
+        );
+        assert_eq!(
+            archive["source_evidence"]["product_task_id"],
+            "task-terminal"
         );
         let mut unhashed = archive.clone();
         let archive_sha = unhashed

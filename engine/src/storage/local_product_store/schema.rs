@@ -752,6 +752,7 @@ pub(super) const V36_DDL: &str = "
 CREATE TABLE IF NOT EXISTS managed_acceptance_delegations (
     delegation_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
+    product_task_id TEXT,
     principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
     principal_id TEXT NOT NULL,
     manifest_approver_id TEXT NOT NULL,
@@ -906,6 +907,7 @@ CREATE TABLE IF NOT EXISTS api_key_metadata (
     key_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     role TEXT NOT NULL,
+    tenant_id TEXT,
     scopes_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL,
@@ -1973,6 +1975,7 @@ CREATE INDEX IF NOT EXISTS idx_product_task_workspace_preparations_state
 CREATE TABLE IF NOT EXISTS managed_acceptance_delegations (
     delegation_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
+    product_task_id TEXT,
     principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
     principal_id TEXT NOT NULL,
     manifest_approver_id TEXT NOT NULL,
@@ -2065,6 +2068,7 @@ CREATE TABLE IF NOT EXISTS api_key_metadata (
     key_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     role TEXT NOT NULL,
+    tenant_id TEXT,
     scopes_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL,
@@ -3166,6 +3170,7 @@ CREATE INDEX IF NOT EXISTS idx_product_task_workspace_preparations_state
 CREATE TABLE IF NOT EXISTS managed_acceptance_delegations (
     delegation_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
+    product_task_id TEXT,
     principal_kind TEXT NOT NULL CHECK (principal_kind IN ('operator_api_key','fixture_principal')),
     principal_id TEXT NOT NULL,
     manifest_approver_id TEXT NOT NULL,

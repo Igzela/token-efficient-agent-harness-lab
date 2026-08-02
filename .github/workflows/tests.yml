@@ -277,7 +277,9 @@ jobs:
             ${{ runner.os }}-rust-deps-2026-07-10-
       - name: Run cargo test
         if: needs.classify-change-impact.outputs.docs_only != 'true'
-        run: cargo test -p engine
+        # HTTP integration tests use process-wide environment gates; keep the
+        # canonical Rust lane deterministic and aligned with the release lane.
+        run: cargo test -p engine -- --test-threads=1
       - name: Check formatting
         if: needs.classify-change-impact.outputs.docs_only != 'true'
         run: cargo fmt --check
@@ -313,6 +315,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ACP_TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/testdb
+      ACP_PRODUCT_GOLDEN_PATH: "1"
       CARGO_INCREMENTAL: "0"
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache

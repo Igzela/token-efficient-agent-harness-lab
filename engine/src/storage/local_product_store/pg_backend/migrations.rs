@@ -628,7 +628,11 @@ fn repair_pg_v36_delegated_plan_owner(
 ) -> Result<(), String> {
     client
         .batch_execute(
-            "ALTER TABLE workflow_plans
+            "ALTER TABLE managed_acceptance_delegations
+                 ADD COLUMN IF NOT EXISTS product_task_id TEXT;
+             ALTER TABLE api_key_metadata
+                 ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+             ALTER TABLE workflow_plans
                  ADD COLUMN IF NOT EXISTS delegated_plan_owner_id TEXT;
              UPDATE workflow_plans
              SET delegated_plan_owner_id =
@@ -750,6 +754,16 @@ fn validate_pg_v36_schema(client: &mut impl postgres::GenericClient) -> Result<(
         return Err(format!(
             "PostgreSQL v36 schema missing workflow_plans column {}",
             super::super::migrations::V36_DELEGATED_PLAN_OWNER_COLUMN
+        ));
+    }
+    if !pg_column_exists(
+        client,
+        "api_key_metadata",
+        super::super::migrations::V36_API_KEY_TENANT_COLUMN,
+    )? {
+        return Err(format!(
+            "PostgreSQL v36 schema missing api_key_metadata column {}",
+            super::super::migrations::V36_API_KEY_TENANT_COLUMN
         ));
     }
     let owner_index_present = client
@@ -1759,12 +1773,38 @@ impl LocalProductStore {
                 return Err(format!("v36 rollback requires current schema version 36; found {version}"));
             }
             tx.batch_execute(
-                "LOCK TABLE managed_acceptance_delegations IN ACCESS EXCLUSIVE MODE",
+                "LOCK TABLE managed_acceptance_delegations, api_key_metadata IN ACCESS EXCLUSIVE MODE",
             )
             .map_err(|e| e.to_string())?;
+            let api_key_tenant_archives = tx
+                .query(
+                    "SELECT key_id, user_id, role, tenant_id, scopes_json, revoked_at, expires_at
+                     FROM api_key_metadata ORDER BY key_id",
+                    &[],
+                )
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|row| {
+                    let scopes_json: String = row.get(4);
+                    let scopes: Value = serde_json::from_str(&scopes_json).map_err(|error| {
+                        format!("v36 rollback blocked: API-key scopes JSON is invalid: {error}")
+                    })?;
+                    super::super::migrations::build_v36_api_key_tenant_binding_archive(
+                        serde_json::json!({
+                            "key_id": row.get::<_, String>(0),
+                            "user_id": row.get::<_, String>(1),
+                            "role": row.get::<_, String>(2),
+                            "tenant_id": row.get::<_, Option<String>>(3),
+                            "scopes": scopes,
+                            "revoked_at": row.get::<_, Option<String>>(5),
+                            "expires_at": row.get::<_, Option<String>>(6),
+                        }),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let archives = tx
                 .query(
-                    "SELECT delegation_sha256, body_json, proposal_sha256, proposal_json,
+                    "SELECT delegation_sha256, product_task_id, body_json, proposal_sha256, proposal_json,
                             status, total_cost_usd, manifest_approval_sha256,
                             manifest_approval_json, spend_body_sha256, spend_body_json,
                             spend_status, manifest_json, attempt_id, attempt_lease_id,
@@ -1781,26 +1821,27 @@ impl LocalProductStore {
                     super::super::migrations::build_v36_delegation_downgrade_archive(
                         super::super::migrations::V36DelegationArchiveSource {
                             delegation_sha256: row.get(0),
-                            body_json: row.get(1),
-                            proposal_sha256: row.get(2),
-                            proposal_json: row.get(3),
-                            status: row.get(4),
-                            total_cost_usd: row.get(5),
-                            manifest_approval_sha256: row.get(6),
-                            manifest_approval_json: row.get(7),
-                            spend_body_sha256: row.get(8),
-                            spend_body_json: row.get(9),
-                            spend_status: row.get(10),
-                            manifest_json: row.get(11),
-                            attempt_id: row.get(12),
-                            attempt_lease_id: row.get(13),
-                            attempt_lease_token: row.get(14),
-                            attempt_status: row.get(15),
-                            artifact_confirmation_sha256: row.get(16),
-                            artifact_confirmation_json: row.get(17),
-                            provider_request_journal_json: row.get(18),
-                            terminal_receipt_json: row.get(19),
-                            terminal_at: row.get(20),
+                            product_task_id: row.get(1),
+                            body_json: row.get(2),
+                            proposal_sha256: row.get(3),
+                            proposal_json: row.get(4),
+                            status: row.get(5),
+                            total_cost_usd: row.get(6),
+                            manifest_approval_sha256: row.get(7),
+                            manifest_approval_json: row.get(8),
+                            spend_body_sha256: row.get(9),
+                            spend_body_json: row.get(10),
+                            spend_status: row.get(11),
+                            manifest_json: row.get(12),
+                            attempt_id: row.get(13),
+                            attempt_lease_id: row.get(14),
+                            attempt_lease_token: row.get(15),
+                            attempt_status: row.get(16),
+                            artifact_confirmation_sha256: row.get(17),
+                            artifact_confirmation_json: row.get(18),
+                            provider_request_journal_json: row.get(19),
+                            terminal_receipt_json: row.get(20),
+                            terminal_at: row.get(21),
                         },
                     )
                 })
@@ -1834,6 +1875,37 @@ impl LocalProductStore {
                     super::super::managed_acceptance::canonical_json(&archive_hashes)?
                         .as_bytes(),
                 );
+            for archive in &api_key_tenant_archives {
+                let key_id = archive
+                    .pointer("/source_evidence/key_id")
+                    .and_then(Value::as_str)
+                    .ok_or("v36 API-key binding archive key_id is missing")?;
+                let details = super::super::managed_acceptance::canonical_json(archive)?;
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES ($1,$2,'schema.rollback.v36_api_key_tenant_archived',$3,$4)",
+                    &[
+                        &now,
+                        &actor,
+                        &format!("api_key_tenant_binding:{key_id}"),
+                        &details,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            let api_key_tenant_archive_hashes = Value::Array(
+                api_key_tenant_archives
+                    .iter()
+                    .filter_map(|archive| archive.get("archive_sha256").cloned())
+                    .collect(),
+            );
+            let api_key_tenant_archive_set_sha256 =
+                super::super::managed_acceptance::sha256_hex(
+                    super::super::managed_acceptance::canonical_json(
+                        &api_key_tenant_archive_hashes,
+                    )?
+                    .as_bytes(),
+                );
             tx.batch_execute(
                 "DROP INDEX IF EXISTS idx_workflow_plans_delegated_owner;
                  ALTER TABLE workflow_plans DROP COLUMN delegated_plan_owner_id;
@@ -1841,7 +1913,8 @@ impl LocalProductStore {
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_attempt;
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_spend;
                  DROP INDEX IF EXISTS idx_managed_acceptance_delegations_status;
-                 DROP TABLE IF EXISTS managed_acceptance_delegations;",
+                 DROP TABLE IF EXISTS managed_acceptance_delegations;
+                 ALTER TABLE api_key_metadata DROP COLUMN tenant_id;",
             )
             .map_err(|e| e.to_string())?;
             let details = serde_json::json!({
@@ -1850,6 +1923,8 @@ impl LocalProductStore {
                 "tables": super::super::migrations::V36_TABLES,
                 "archived_delegations": archives.len(),
                 "archive_set_sha256": archive_set_sha256,
+                "archived_api_key_tenant_bindings": api_key_tenant_archives.len(),
+                "api_key_tenant_archive_set_sha256": api_key_tenant_archive_set_sha256,
             })
             .to_string();
             tx.execute(
@@ -2898,7 +2973,9 @@ mod tests {
 
     #[cfg(feature = "pg-tests")]
     use crate::storage::local_product_store::{
-        managed_acceptance, migrations::V36_DELEGATED_PLAN_OWNER_COLUMN, DatabaseConnection,
+        managed_acceptance,
+        migrations::{V36_API_KEY_TENANT_COLUMN, V36_DELEGATED_PLAN_OWNER_COLUMN},
+        DatabaseConnection,
     };
     #[cfg(feature = "pg-tests")]
     use postgres::NoTls;
@@ -3250,7 +3327,7 @@ mod tests {
                 client
                     .execute(
                         "INSERT INTO managed_acceptance_delegations (
-                            delegation_id, tenant_id, principal_kind, principal_id,
+                            delegation_id, tenant_id, product_task_id, principal_kind, principal_id,
                             manifest_approver_id, artifact_confirmer_id, attempt_activator_id,
                             delegation_sha256, body_json, proposal_sha256, proposal_json,
                             status, executions_allowed, executions_used, max_total_cost_usd,
@@ -3262,7 +3339,7 @@ mod tests {
                             terminal_receipt_json, created_at, updated_at, expires_at,
                             terminal_at, revoked_at
                          ) VALUES (
-                            'delegation-terminal', 'tenant-sensitive', 'operator_api_key',
+                            'delegation-terminal', 'tenant-sensitive', 'task-terminal', 'operator_api_key',
                             'principal-sensitive', 'approver-sensitive', 'confirmer-sensitive',
                             'activator-sensitive', $1,$2,$3,$4,'expired',1,1,0.5,0.125,
                             'spend-sensitive',$5,$6,$7,'expired',$8,$9,
@@ -3292,6 +3369,12 @@ mod tests {
             })
             .unwrap();
         assert!(!owner_column_exists);
+        let key_tenant_column_exists = store
+            .with_pg_conn(|client| {
+                pg_column_exists(client, "api_key_metadata", V36_API_KEY_TENANT_COLUMN)
+            })
+            .unwrap();
+        assert!(!key_tenant_column_exists);
         let archive: Value = store
             .with_pg_conn(|client| {
                 client
@@ -3309,6 +3392,10 @@ mod tests {
         assert!(!encoded.contains("must-not-survive-pg-v36-rollback"));
         assert!(!encoded.contains("principal-sensitive"));
         assert!(!encoded.contains("token-sensitive"));
+        assert_eq!(
+            archive["source_evidence"]["product_task_id"],
+            "task-terminal"
+        );
         let mut unhashed = archive.clone();
         let archive_sha = unhashed
             .as_object_mut()

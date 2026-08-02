@@ -98,7 +98,11 @@ fn main() {
             .upsert_team_member("local-admin", "Local Admin", "admin")
             .expect("failed to record local admin team member");
         store
-            .record_api_key_metadata(
+            .bind_legacy_bootstrap_api_key_metadata("local", "bootstrap")
+            .expect("failed to bind legacy local bootstrap API key metadata");
+        store
+            .record_api_key_metadata_for_tenant(
+                "local",
                 "local-admin-env",
                 "local-admin",
                 "admin",
@@ -1144,14 +1148,40 @@ mod tests {
             std::env::set_var("ACP_REQUIRE_AUTH", "1");
             std::env::set_var("ACP_ADMIN_API_KEY", &bootstrap_raw);
             let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+            store
+                .upsert_team_member("local-admin", "Local Admin", "admin")
+                .unwrap();
+            store
+                .record_api_key_metadata_for_tenant(
+                    "local",
+                    LOCAL_BOOTSTRAP_API_KEY_ID,
+                    "local-admin",
+                    "admin",
+                    &local_admin_scope_list(),
+                    "bootstrap",
+                )
+                .unwrap();
             let app =
                 build_axum_router(configure_auth(AxumApiState::new()).with_local_store_arc(store));
             // Construct the restart instance before releasing the environment
             // lock, so unrelated tests cannot clear the bootstrap configuration
             // between the two lifecycle checks.
+            let restarted_store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+            restarted_store
+                .upsert_team_member("local-admin", "Local Admin", "admin")
+                .unwrap();
+            restarted_store
+                .record_api_key_metadata_for_tenant(
+                    "local",
+                    LOCAL_BOOTSTRAP_API_KEY_ID,
+                    "local-admin",
+                    "admin",
+                    &local_admin_scope_list(),
+                    "bootstrap",
+                )
+                .unwrap();
             let restarted = build_axum_router(
-                configure_auth(AxumApiState::new())
-                    .with_local_store_arc(Arc::new(LocalProductStore::new(":memory:").unwrap())),
+                configure_auth(AxumApiState::new()).with_local_store_arc(restarted_store),
             );
             clear_trusted_provider_env();
             (app, restarted)

@@ -9,6 +9,7 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{ProductTaskIntakeApiRequest, AXUM_API_SCHEMA_VERSION};
+use crate::infrastructure::auth::LOCAL_BOOTSTRAP_API_KEY_ID;
 use crate::product_golden_path::{
     product_gate_enabled, product_scheduler_kill_active, validate_intake, ProductExecutorPolicy,
     ProductTaskBudget, ProductTaskIntakeRequest, ProductVerificationCommand,
@@ -18,7 +19,8 @@ use crate::storage::local_product_store::product_tasks::{
     public_product_task_projection, public_product_task_result_projection,
 };
 use crate::storage::local_product_store::{
-    SCOPE_DELEGATED_ARTIFACT_CONFIRM, SCOPE_DELEGATED_MANIFEST_APPROVE,
+    SCOPE_DELEGATED_ARTIFACT_CONFIRM, SCOPE_DELEGATED_AUTONOMY, SCOPE_DELEGATED_MANIFEST_APPROVE,
+    SCOPE_IDENTITY_DELEGATE, SCOPE_SPEND_AUTHORIZE,
 };
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, GitHubPullRequestConfig, GitHubPullRequestRequest,
@@ -381,8 +383,13 @@ pub(crate) async fn api_prepare_delegated_product_task(
         )
     })?;
     let persisted = store
-        .persist_delegation(&principal, &delegation)
+        .persist_delegation_for_product_task(&principal, &task_id, &delegation)
         .map_err(|error| delegated_api_error(&error, "delegation_persist_failed"))?;
+    let task_binding = json!({
+        "delegation_id": delegation.delegation_id,
+        "product_task_id": persisted.get("product_task_id"),
+        "replayed": persisted.get("replayed"),
+    });
     let proposal_receipt = store
         .persist_approved_delegated_proposal(
             &delegation.delegation_id,
@@ -422,6 +429,7 @@ pub(crate) async fn api_prepare_delegated_product_task(
         cors_headers(),
         Json(delegated_prepare_response(
             &persisted,
+            &task_binding,
             &proposal_receipt,
             &manifest,
             &approval,
@@ -433,6 +441,7 @@ pub(crate) async fn api_prepare_delegated_product_task(
 
 fn delegated_prepare_response(
     persisted: &serde_json::Value,
+    task_binding: &serde_json::Value,
     proposal_receipt: &serde_json::Value,
     manifest: &serde_json::Value,
     approval: &serde_json::Value,
@@ -442,6 +451,7 @@ fn delegated_prepare_response(
     json!({
         "schema_version": AXUM_API_SCHEMA_VERSION,
         "delegation_sha256": persisted.get("delegation_sha256"),
+        "delegation_product_task_binding": task_binding,
         "approved_proposal_sha256": proposal_receipt.get("proposal_manifest_sha256"),
         "final_manifest": manifest,
         "manifest_approval_receipt_sha256": approval.get("approval_receipt_sha256"),
@@ -1098,6 +1108,77 @@ pub(crate) async fn api_recover_product_task_workspace(
     }
 }
 
+pub(crate) async fn api_reconcile_unadmitted_delegated_product_task(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(task_id): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    if context.api_key_id != LOCAL_BOOTSTRAP_API_KEY_ID
+        || !context
+            .scopes
+            .iter()
+            .any(|scope| scope == SCOPE_IDENTITY_DELEGATE)
+    {
+        return Err(ApiError::with_code(
+            StatusCode::FORBIDDEN,
+            "bootstrap_identity_authority_required",
+            "only the canonical bootstrap identity-delegation authority may rebind an unadmitted delegation",
+        ));
+    }
+    let delegation_id = body
+        .get("delegation_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| delegated_request_error("delegation_id is required"))?;
+    let reviewer_key_id = body
+        .get("reviewer_key_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| delegated_request_error("reviewer_key_id is required"))?;
+    let store = require_store(&state)?;
+    let reviewer = store
+        .authenticate_managed_acceptance_principal_for_tenant(
+            &context.tenant_id,
+            reviewer_key_id,
+            None,
+        )
+        .map_err(|error| delegated_api_error(&error, "delegated_reviewer_authentication_failed"))?;
+    reviewer
+        .require_scope(SCOPE_DELEGATED_AUTONOMY)
+        .map_err(|error| delegated_api_error(&error, "delegated_reviewer_scope_denied"))?;
+    reviewer
+        .require_scope(SCOPE_DELEGATED_MANIFEST_APPROVE)
+        .map_err(|error| delegated_api_error(&error, "delegated_reviewer_scope_denied"))?;
+    reviewer
+        .require_scope(SCOPE_SPEND_AUTHORIZE)
+        .map_err(|error| delegated_api_error(&error, "delegated_reviewer_scope_denied"))?;
+    let bootstrap = store
+        .authenticate_bootstrap_identity_delegation_principal(&context.tenant_id, None)
+        .map_err(|error| {
+            ApiError::with_code(
+                StatusCode::FORBIDDEN,
+                "bootstrap_identity_authority_required",
+                error,
+            )
+        })?;
+    let result = store
+        .rebind_unadmitted_delegation_for_bootstrap(&bootstrap, &task_id, delegation_id, &reviewer)
+        .map_err(|error| {
+            delegated_api_error(&error, "delegated_bootstrap_reconciliation_failed")
+        })?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "result": result,
+        })),
+    ))
+}
+
 /// Executor types the attached scheduler can actually route to a worker right now.
 /// Pool-routed modes expose admitted live entries; fixed modes expose only their exact
 /// configured executor. Fixture/failure scheduler modes cannot admit automatic product work.
@@ -1226,6 +1307,7 @@ mod tests {
     fn delegated_prepare_response_never_admits_or_exposes_an_attempt_lease() {
         let response = delegated_prepare_response(
             &json!({"delegation_sha256": "d".repeat(64)}),
+            &json!({"product_task_id": "ptask-1", "replayed": false}),
             &json!({"proposal_manifest_sha256": "p".repeat(64)}),
             &json!({"schema_version": "managed_final_execution_manifest.v1"}),
             &json!({"approval_receipt_sha256": "a".repeat(64)}),

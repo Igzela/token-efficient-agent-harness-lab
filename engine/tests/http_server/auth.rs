@@ -16,7 +16,8 @@ use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::provider::audit::{ProviderAuditEvent, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION};
 use engine::storage::local_product_store::LocalProductStore;
 use engine::storage::local_product_store::{
-    ALL_MANAGED_ACCEPTANCE_SCOPES, SCOPE_IDENTITY_DELEGATE,
+    ALL_MANAGED_ACCEPTANCE_SCOPES, MANAGED_OUTPUT_OPERATOR_KEY_SCOPES, MANAGED_REVIEWER_KEY_SCOPES,
+    SCOPE_IDENTITY_DELEGATE,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -431,8 +432,18 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
     let dir = tempdir().unwrap();
     let store = Arc::new(LocalProductStore::new(dir.path().join("team.db")).unwrap());
     let bootstrap_raw = format!("harness_{}", "b".repeat(64));
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &[SCOPE_IDENTITY_DELEGATE.to_string()],
+            "test-bootstrap",
+        )
+        .unwrap();
 
-    let mut local_scopes: HashSet<String> = ["team:read", "team:admin"]
+    let mut local_scopes: HashSet<String> = ["team:read", "team:admin", "dispatch:execute"]
         .into_iter()
         .map(String::from)
         .collect();
@@ -487,11 +498,186 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         )
         .unwrap();
 
+    let (stale_key, stale_raw) = resolver
+        .create_api_key(
+            "local",
+            Some(HashSet::from(["team:read".to_string()])),
+            None,
+            1.0,
+        )
+        .unwrap();
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            &stale_key.key_id,
+            "stale-key",
+            "member",
+            &["team:read".to_string()],
+            "test-stale-key",
+        )
+        .unwrap();
+    store
+        .revoke_api_key_metadata_for_tenant(&stale_key.key_id, "local", "test-stale-key")
+        .unwrap();
+    let (stale_delete_key, stale_delete_raw) = resolver
+        .create_api_key(
+            "local",
+            Some(HashSet::from(["team:read".to_string()])),
+            None,
+            1.0,
+        )
+        .unwrap();
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            &stale_delete_key.key_id,
+            "stale-delete-key",
+            "member",
+            &["team:read".to_string()],
+            "test-stale-delete-key",
+        )
+        .unwrap();
+    store
+        .delete_api_key_metadata_for_tenant(
+            &stale_delete_key.key_id,
+            "local",
+            "test-stale-delete-key",
+        )
+        .unwrap();
+
+    let mismatched_reviewer_id = "foreign-persisted-reviewer".to_string();
+    store
+        .record_api_key_metadata_for_tenant(
+            "foreign",
+            &mismatched_reviewer_id,
+            "foreign-persisted-reviewer",
+            "reviewer",
+            &MANAGED_REVIEWER_KEY_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "test-foreign-binding",
+        )
+        .unwrap();
+    resolver.add_api_key(APIKey {
+        key_id: mismatched_reviewer_id.clone(),
+        tenant_id: "local".into(),
+        key_hash: hash_api_key("unused-foreign-binding", "foreign-binding-salt"),
+        key_salt: "foreign-binding-salt".into(),
+        scopes: MANAGED_REVIEWER_KEY_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    let unbound_reviewer_id = "legacy-unbound-reviewer".to_string();
+    store
+        .record_api_key_metadata(
+            &unbound_reviewer_id,
+            "legacy-unbound-reviewer",
+            "reviewer",
+            &MANAGED_REVIEWER_KEY_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "test-unbound-binding",
+        )
+        .unwrap();
+    resolver.add_api_key(APIKey {
+        key_id: unbound_reviewer_id.clone(),
+        tenant_id: "local".into(),
+        key_hash: hash_api_key("unused-unbound-binding", "unbound-binding-salt"),
+        key_salt: "unbound-binding-salt".into(),
+        scopes: MANAGED_REVIEWER_KEY_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+
     let app = build_axum_router(
         AxumApiState::new()
             .with_local_store_arc(store.clone())
             .with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 1.0),
     );
+    let stale_revoke = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{}/revoke", stale_key.key_id))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_revoke.status(), StatusCode::NOT_FOUND);
+    let stale_auth = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {stale_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_auth.status(), StatusCode::UNAUTHORIZED);
+    let stale_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/v1/keys/{}", stale_delete_key.key_id))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_delete.status(), StatusCode::NOT_FOUND);
+    let stale_delete_auth = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {stale_delete_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_delete_auth.status(), StatusCode::UNAUTHORIZED);
+    let listed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed_keys = response_json(listed).await["keys"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(listed_keys.iter().all(|key| {
+        key["tenant_id"] == "local" && key["key_id"] != "foreign-persisted-reviewer"
+    }));
     let reviewer = app
         .clone()
         .oneshot(
@@ -648,6 +834,184 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
             "managed_acceptance:attempt_admit"
         ])
     );
+    let operator_id = operator_body["key_id"].as_str().unwrap().to_string();
+
+    // The canonical bootstrap owner may mutate managed identities through the
+    // same API, while repeated terminal operations fail closed instead of
+    // creating a second durable authority record.
+    let update_operator = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{operator_id}/scopes"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"scopes": MANAGED_OUTPUT_OPERATOR_KEY_SCOPES}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let update_operator_status = update_operator.status();
+    let update_operator_body = response_json(update_operator).await;
+    assert_eq!(
+        update_operator_status,
+        StatusCode::OK,
+        "{update_operator_body}"
+    );
+
+    let rotated_operator = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{operator_id}/rotate"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rotated_operator.status(), StatusCode::OK);
+    let rotated_operator_id = response_json(rotated_operator).await["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let revoked_operator = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{rotated_operator_id}/revoke"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoked_operator.status(), StatusCode::OK);
+    let repeated_revoke = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{rotated_operator_id}/revoke"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repeated_revoke.status(), StatusCode::NOT_FOUND);
+
+    let disposable_reviewer = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "managed-reviewer-disposable",
+                        "role": "reviewer",
+                        "scopes": MANAGED_REVIEWER_KEY_SCOPES
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disposable_reviewer.status(), StatusCode::OK);
+    let disposable_reviewer_id = response_json(disposable_reviewer).await["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let deleted_reviewer = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/v1/keys/{disposable_reviewer_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted_reviewer.status(), StatusCode::OK);
+    let repeated_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/v1/keys/{disposable_reviewer_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repeated_delete.status(), StatusCode::NOT_FOUND);
+
+    // Resolver and store authority must agree on the tenant. A fixture with a
+    // foreign or legacy-unbound persisted binding cannot be mutated merely
+    // because the in-memory resolver has the reserved managed key.
+    for (method, uri, body) in [
+        (
+            Method::POST,
+            format!("/api/v1/keys/{mismatched_reviewer_id}/scopes"),
+            Body::from(json!({"scopes": MANAGED_REVIEWER_KEY_SCOPES}).to_string()),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/keys/{mismatched_reviewer_id}/rotate"),
+            Body::empty(),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/keys/{mismatched_reviewer_id}/revoke"),
+            Body::empty(),
+        ),
+        (
+            Method::DELETE,
+            format!("/api/v1/keys/{mismatched_reviewer_id}"),
+            Body::empty(),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    let unbound_revoke = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{unbound_reviewer_id}/revoke"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unbound_revoke.status(), StatusCode::NOT_FOUND);
 
     let ordinary_create = app
         .clone()
@@ -671,6 +1035,67 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         .unwrap();
     assert_eq!(ordinary_create.status(), StatusCode::FORBIDDEN);
 
+    // A reserved bootstrap key ID in a foreign resolver tenant is not the
+    // canonical local bootstrap authority and must not issue managed identities.
+    let foreign_bootstrap_raw = format!("harness_{}", "d".repeat(64));
+    let mut foreign_resolver = TenantResolver::new();
+    foreign_resolver.add_tenant(Tenant {
+        tenant_id: "foreign".into(),
+        name: "Foreign tenant".into(),
+        scopes: ["team:admin", SCOPE_IDENTITY_DELEGATE]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        rate_limit: Some(10_000),
+    });
+    foreign_resolver.add_api_key(APIKey {
+        key_id: LOCAL_BOOTSTRAP_API_KEY_ID.into(),
+        tenant_id: "foreign".into(),
+        key_hash: hash_api_key(&foreign_bootstrap_raw, "foreign-bootstrap-salt"),
+        key_salt: "foreign-bootstrap-salt".into(),
+        scopes: ["team:admin", SCOPE_IDENTITY_DELEGATE]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    let foreign_app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_auth(
+                foreign_resolver,
+                RateLimiter::new(60.0, 10_000),
+                Some(10_000),
+                1.0,
+            ),
+    );
+    let foreign_create = foreign_app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {foreign_bootstrap_raw}"),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "foreign-reviewer",
+                        "role": "reviewer",
+                        "scopes": ["managed_acceptance:risk_acknowledge"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(foreign_create.status(), StatusCode::FORBIDDEN);
+
     let ordinary_update = app
         .clone()
         .oneshot(
@@ -686,7 +1111,7 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         )
         .await
         .unwrap();
-    assert_eq!(ordinary_update.status(), StatusCode::FORBIDDEN);
+    assert_eq!(ordinary_update.status(), StatusCode::NOT_FOUND);
 
     let ordinary_rotate = app
         .oneshot(
@@ -699,7 +1124,7 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         )
         .await
         .unwrap();
-    assert_eq!(ordinary_rotate.status(), StatusCode::FORBIDDEN);
+    assert_eq!(ordinary_rotate.status(), StatusCode::NOT_FOUND);
 
     // Simulate an engine restart: the resolver is reconstructed from the
     // bootstrap environment, while the same store is retained. Reissuance is

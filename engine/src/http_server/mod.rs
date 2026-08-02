@@ -1405,6 +1405,29 @@ fn append_delegated_product_task_openapi_paths(doc: &mut Value) {
         }),
     );
     paths.insert(
+        "/api/v1/product/tasks/{task_id}/delegated/reconcile-unadmitted".to_string(),
+        json!({
+            "post": {
+                "summary": "Rebind one pre-admission delegated preparation",
+                "description": "Requires the canonical bootstrap key and managed_acceptance:identity_delegate plus a separately reissued reviewer_key_id. The store first checks the ProductTask tenant and atomically rebinds only an active untouched delegation to the current ProductTask, preserving the delegation operation identity. Ordinary tenants, managed identities, revoked rows, and any admitted or outcome-bearing delegation are rejected.",
+                "parameters": [path_parameter("task_id")],
+                "requestBody": json_request_body(
+                    &["delegation_id", "reviewer_key_id"],
+                    json!({
+                        "delegation_id": {"type": "string"},
+                        "reviewer_key_id": {"type": "string"}
+                    }),
+                ),
+                "responses": {
+                    "200": {"description": "Unadmitted delegation rebound and audited"},
+                    "400": {"description": "Delegation is not in the pre-admission state"},
+                    "403": {"description": "Canonical bootstrap authority is required"},
+                    "404": {"description": "ProductTask or delegation was not found"}
+                }
+            }
+        }),
+    );
+    paths.insert(
         "/api/v1/product/tasks/{task_id}/delegated/activate".to_string(),
         json!({
             "post": {
@@ -2136,6 +2159,7 @@ mod tests {
             "memory_id",
         );
         for path in [
+            "/api/v1/product/tasks/{task_id}/delegated/reconcile-unadmitted",
             "/api/v1/product/tasks/{task_id}/delegated/prepare",
             "/api/v1/product/tasks/{task_id}/delegated/activate",
             "/api/v1/product/tasks/{task_id}/delegated/approve",
@@ -2249,6 +2273,12 @@ mod tests {
             "/api/v1/offline-replays/production-profile",
             "put",
             &["profile", "confirm_profile"],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/product/tasks/{task_id}/delegated/reconcile-unadmitted",
+            "post",
+            &["delegation_id", "reviewer_key_id"],
         );
         assert_required_body_fields(
             &doc,
