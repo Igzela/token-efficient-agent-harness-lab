@@ -44,7 +44,7 @@ def _gh_json(*args: str) -> Any:
 def _open_prs(repo: str) -> list[dict[str, Any]]:
     data = _gh_json(
         "pr", "list", "--repo", repo, "--state", "open", "--limit", "100",
-        "--json", "number,headRefName,headRefOid,state,baseRefName,body,url",
+        "--json", "number,headRefName,headRefOid,state,baseRefName,body,url,isDraft",
     )
     if not isinstance(data, list):
         raise PRBindingError("open PR response was not a list")
@@ -71,6 +71,8 @@ def _verify_pr(
     state = str(pr.get("state", "")).upper()
     if state not in {"OPEN", ""}:
         raise PRBindingError("bound PR is not open")
+    if pr.get("isDraft") is not True:
+        raise PRBindingError("bound PR is not a Draft")
     if pr.get("baseRefName") != "main":
         raise PRBindingError("bound PR does not target main")
     if pr.get("headRefName") != branch or pr.get("headRefOid") != expected_sha:
@@ -89,7 +91,7 @@ def _verify_pr(
 def _view_pr(repo: str, number: int) -> dict[str, Any]:
     data = _gh_json(
         "pr", "view", str(number), "--repo", repo,
-        "--json", "number,state,baseRefName,headRefName,headRefOid,body,url",
+        "--json", "number,state,baseRefName,headRefName,headRefOid,body,url,isDraft",
     )
     if not isinstance(data, dict):
         raise PRBindingError("PR view response was not an object")
@@ -114,6 +116,8 @@ def create_or_update_pr(
         number = candidates[0].get("number")
         if not isinstance(number, int):
             raise PRBindingError("existing PR number is invalid")
+        if candidates[0].get("isDraft") is not True:
+            raise PRBindingError("existing PR is not a Draft; refusing to mutate it")
         _gh(
             "api", "--method", "PATCH", f"repos/{target}/pulls/{number}",
             "--field", f"body={body}",
@@ -123,6 +127,7 @@ def create_or_update_pr(
             "api", "--method", "POST", f"repos/{target}/pulls",
             "--field", f"title={title}", "--field", f"head={branch}",
             "--field", "base=main", "--field", f"body={body}",
+            "--field", "draft=true",
         )
         if not isinstance(created, dict) or not created.get("html_url") or not isinstance(created.get("number"), int):
             raise PRBindingError("PR creation returned no URL or number")

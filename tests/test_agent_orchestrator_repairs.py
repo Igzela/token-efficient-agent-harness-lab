@@ -52,6 +52,26 @@ def _successful_required_jobs():
     ]
 
 
+def _pr_binding_fixture(number=207, sha=None, issue_number=42, branch="agent/issue-42", is_draft=True):
+    """A valid Issue-bound PR fixture that also carries the Draft flag."""
+    if sha is None:
+        sha = "b" * 40
+    body = (
+        f"Closes #{issue_number}\n\n"
+        f'<!-- agent-orchestrator-binding: {{"issue_number": {issue_number}, "branch": "{branch}"}} -->'
+    )
+    return {
+        "number": number,
+        "state": "OPEN",
+        "baseRefName": "main",
+        "headRefName": branch,
+        "headRefOid": sha,
+        "body": body,
+        "url": f"https://github.com/acme/repo/pull/{number}",
+        "isDraft": is_draft,
+    }
+
+
 class TestWorkflowContracts(unittest.TestCase):
     def read(self, name: str) -> str:
         return (WORKFLOWS / name).read_text()
@@ -218,6 +238,22 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("ci_verifier.py acquire-run", repair)
         self.assertNotIn("ci_verifier.py acquire ", worker)
         self.assertNotIn("ci_verifier.py acquire ", repair)
+
+    def test_pr_binding_failure_precedes_worker_state_and_ci_acquisition(self):
+        worker = self.read("agent-worker.yml")
+        repair = self.read("agent-ci-repair.yml")
+        worker_create = worker.index("pr_binding.py create-or-update")
+        worker_record = worker.index("state_manager.py record-worker")
+        worker_acquire = worker.index("ci_verifier.py acquire-run")
+        self.assertLess(worker_create, worker_record)
+        self.assertLess(worker_record, worker_acquire)
+        repair_verify = repair.index("pr_binding.py verify-post-push")
+        repair_update = repair.index("pr_binding.py create-or-update")
+        repair_record = repair.index("state_manager.py record-worker")
+        repair_acquire = repair.index("ci_verifier.py acquire-run")
+        self.assertLess(repair_verify, repair_update)
+        self.assertLess(repair_update, repair_record)
+        self.assertLess(repair_record, repair_acquire)
 
     def test_review_worker_is_read_only_and_only_pass_authorizes_merge(self):
         source = self.read("agent-review.yml")
@@ -1723,10 +1759,14 @@ class TestDispatcher(unittest.TestCase):
                 "if args[:2] == ['pr', 'list']:\n"
                 "    print(json.dumps([json.load(open(state))]) if os.path.exists(state) else '[]')\n"
                 "elif args[:2] == ['api', '--method'] and 'POST' in args:\n"
+                "    if 'draft=true' not in args:\n"
+                "        raise SystemExit('POST missing draft flag: ' + repr(args))\n"
                 "    url = 'https://github.com/acme/repo/pull/123'\n"
-                "    value = {'number':123,'html_url':url,'url':url,'state':'OPEN','baseRefName':'main','headRefName':'agent/issue-42','headRefOid':os.environ['PR_SHA'],'body':'Closes #42\\n\\n<!-- agent-orchestrator-binding: {\\\"issue_number\\\": 42, \\\"branch\\\": \\\"agent/issue-42\\\"} -->'}\n"
+                "    value = {'number':123,'html_url':url,'url':url,'state':'OPEN','baseRefName':'main','headRefName':'agent/issue-42','headRefOid':os.environ['PR_SHA'],'isDraft':True,'body':'Closes #42\\n\\n<!-- agent-orchestrator-binding: {\\\"issue_number\\\": 42, \\\"branch\\\": \\\"agent/issue-42\\\"} -->'}\n"
                 "    json.dump(value, open(state, 'w')); print(json.dumps({'number':123,'html_url':url}))\n"
                 "elif args[:2] == ['api', '--method'] and 'PATCH' in args:\n"
+                "    if 'draft=true' in args:\n"
+                "        raise SystemExit('PATCH must not convert draft state: ' + repr(args))\n"
                 "    value = json.load(open(state)); print(json.dumps(value))\n"
                 "elif args[:2] == ['pr', 'view']:\n"
                 "    print(json.dumps(json.load(open(state))))\n"
@@ -2833,17 +2873,123 @@ class TestCIEventTrust(unittest.TestCase):
         self.assertEqual(result["reason"], "ci_stale_binding:pr_head_moved:current_head_changed")
 
 
+class TestPRBindingDraftGate(unittest.TestCase):
+    def test_create_post_sends_draft_true_gh_field_and_accepts_draft_pr(self):
+        sha = "b" * 40
+        pr = _pr_binding_fixture(number=123, sha=sha)
+        with mock.patch.object(pr_binding, "_open_prs", side_effect=[[], [pr]]), \
+             mock.patch.object(pr_binding, "_gh_json", return_value={
+                 "number": 123, "html_url": "https://github.com/acme/repo/pull/123",
+             }) as gh_json, \
+             mock.patch.object(pr_binding, "_view_pr", return_value=pr):
+            result = pr_binding.create_or_update_pr(
+                42, "agent/issue-42", sha, "agent: implement #42",
+                "Closes #42\n\n<!-- agent-orchestrator-binding: {\"issue_number\": 42, \"branch\": \"agent/issue-42\"} -->",
+                "acme/repo",
+            )
+        post = gh_json.call_args_list[0]
+        self.assertEqual(post.args[0:3], ("api", "--method", "POST"))
+        self.assertIn("repos/acme/repo/pulls", post.args)
+        self.assertIn("draft=true", post.args)
+        self.assertEqual(result["number"], 123)
+        self.assertEqual(result["head_sha"], sha)
+
+    def test_reuse_patches_existing_draft_without_touching_draft_state(self):
+        sha = "b" * 40
+        pr = _pr_binding_fixture(number=207, sha=sha)
+        with mock.patch.object(pr_binding, "_open_prs", side_effect=[[pr], [pr]]), \
+             mock.patch.object(pr_binding, "_gh") as gh, \
+             mock.patch.object(pr_binding, "_view_pr", return_value=pr):
+            result = pr_binding.create_or_update_pr(
+                42, "agent/issue-42", sha, "agent: implement #42",
+                "Closes #42\n\n<!-- agent-orchestrator-binding: {\"issue_number\": 42, \"branch\": \"agent/issue-42\"} -->",
+                "acme/repo",
+            )
+        patch = gh.call_args_list[0]
+        self.assertEqual(patch.args[0:3], ("api", "--method", "PATCH"))
+        self.assertIn("repos/acme/repo/pulls/207", patch.args)
+        self.assertNotIn("draft", patch.args)
+        self.assertEqual(result["number"], 207)
+
+    def test_reuse_rejects_ready_pr_without_converting_it(self):
+        sha = "b" * 40
+        ready = _pr_binding_fixture(number=207, sha=sha, is_draft=False)
+        with mock.patch.object(pr_binding, "_open_prs", return_value=[ready]), \
+             mock.patch.object(pr_binding, "_gh") as gh, \
+             mock.patch.object(pr_binding, "_view_pr") as view:
+            with self.assertRaisesRegex(pr_binding.PRBindingError, "not a Draft"):
+                pr_binding.create_or_update_pr(
+                    42, "agent/issue-42", sha, "agent: implement #42",
+                    "Closes #42\n\n<!-- agent-orchestrator-binding: {\"issue_number\": 42, \"branch\": \"agent/issue-42\"} -->",
+                    "acme/repo",
+                )
+        gh.assert_not_called()
+        view.assert_not_called()
+
+    def test_reuse_rejects_missing_draft_candidate_without_patching(self):
+        sha = "b" * 40
+        missing = _pr_binding_fixture(number=207, sha=sha)
+        del missing["isDraft"]
+        with mock.patch.object(pr_binding, "_open_prs", return_value=[missing]), \
+             mock.patch.object(pr_binding, "_gh") as gh, \
+             mock.patch.object(pr_binding, "_view_pr") as view:
+            with self.assertRaisesRegex(pr_binding.PRBindingError, "not a Draft"):
+                pr_binding.create_or_update_pr(
+                    42, "agent/issue-42", sha, "agent: implement #42",
+                    "Closes #42\n\n<!-- agent-orchestrator-binding: {\"issue_number\": 42, \"branch\": \"agent/issue-42\"} -->",
+                    "acme/repo",
+                )
+        gh.assert_not_called()
+        view.assert_not_called()
+
+    def test_verify_pr_rejects_missing_or_false_draft_field(self):
+        sha = "b" * 40
+        missing = _pr_binding_fixture(number=207, sha=sha)
+        del missing["isDraft"]
+        with self.assertRaisesRegex(pr_binding.PRBindingError, "not a Draft"):
+            pr_binding._verify_pr(missing, 42, "agent/issue-42", sha, [missing])
+        ready = _pr_binding_fixture(number=207, sha=sha, is_draft=False)
+        with self.assertRaisesRegex(pr_binding.PRBindingError, "not a Draft"):
+            pr_binding._verify_pr(ready, 42, "agent/issue-42", sha, [ready])
+
+    def test_draft_gate_preserves_exact_head_marker_and_closing_link_checks(self):
+        sha = "b" * 40
+        wrong_head = _pr_binding_fixture(number=207, sha=sha)
+        with self.assertRaisesRegex(pr_binding.PRBindingError, "branch or head does not match"):
+            pr_binding._verify_pr(wrong_head, 42, "agent/issue-42", "c" * 40, [wrong_head])
+        no_marker = _pr_binding_fixture(number=207, sha=sha)
+        no_marker["body"] = "Closes #42"
+        with self.assertRaisesRegex(pr_binding.PRBindingError, "Issue marker is invalid"):
+            pr_binding._verify_pr(no_marker, 42, "agent/issue-42", sha, [no_marker])
+        ok = _pr_binding_fixture(number=207, sha=sha)
+        self.assertEqual(pr_binding._verify_pr(ok, 42, "agent/issue-42", sha, [ok])["number"], 207)
+
+
 class TestRepairHeadTransition(unittest.TestCase):
     def test_post_push_verification_accepts_h2_before_new_worker_state(self):
-        body = 'Closes #42\n\n<!-- agent-orchestrator-binding: {"issue_number": 42, "branch": "agent/issue-42"} -->'
-        pr = {
-            "number": 207, "state": "OPEN", "baseRefName": "main",
-            "headRefName": "agent/issue-42", "headRefOid": "b" * 40,
-            "body": body, "url": "https://github.com/acme/repo/pull/207",
-        }
+        pr = _pr_binding_fixture(number=207, sha="b" * 40)
         with mock.patch.object(pr_binding, "_open_prs", return_value=[pr]):
             result = pr_binding.verify_post_push_binding(42, 207, "agent/issue-42", "b" * 40, "acme/repo")
         self.assertEqual(result["head_sha"], "b" * 40)
+
+    def test_post_push_verification_rejects_ready_pr(self):
+        sha = "b" * 40
+        pr = _pr_binding_fixture(number=207, sha=sha, is_draft=False)
+        with mock.patch.object(pr_binding.time, "sleep"), \
+             mock.patch.object(pr_binding.time, "monotonic", side_effect=[0.0, 0.0, 30.0]), \
+             mock.patch.object(pr_binding, "_open_prs", return_value=[pr]):
+            with self.assertRaisesRegex(pr_binding.PRBindingError, "not a Draft"):
+                pr_binding.verify_post_push_binding(42, 207, "agent/issue-42", sha, "acme/repo")
+
+    def test_post_push_verification_rejects_missing_draft_field(self):
+        sha = "b" * 40
+        pr = _pr_binding_fixture(number=207, sha=sha)
+        del pr["isDraft"]
+        with mock.patch.object(pr_binding.time, "sleep"), \
+             mock.patch.object(pr_binding.time, "monotonic", side_effect=[0.0, 0.0, 30.0]), \
+             mock.patch.object(pr_binding, "_open_prs", return_value=[pr]):
+            with self.assertRaisesRegex(pr_binding.PRBindingError, "not a Draft"):
+                pr_binding.verify_post_push_binding(42, 207, "agent/issue-42", sha, "acme/repo")
 
     def test_new_worker_state_binds_h2_and_old_head_is_rejected(self):
         pr = {
