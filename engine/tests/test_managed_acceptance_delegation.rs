@@ -336,7 +336,11 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "cross-tenant mutation is intentionally indistinguishable from a missing key"
+        );
     }
 
     // A tenant admin must not be able to rewrite a managed identity into an
@@ -356,7 +360,11 @@ async fn bootstrap_only_delegates_minimal_managed_identities_and_reissues_after_
         )
         .await
         .unwrap();
-    assert_eq!(ordinary_rewrite.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        ordinary_rewrite.status(),
+        StatusCode::NOT_FOUND,
+        "cross-tenant mutation is intentionally indistinguishable from a missing key"
+    );
 
     // Restart keeps only the parent bootstrap credential in the resolver. The
     // child identity is reissued through the canonical API, not SQL mutation.

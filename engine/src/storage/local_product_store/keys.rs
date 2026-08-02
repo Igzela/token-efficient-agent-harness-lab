@@ -4,6 +4,26 @@ use serde_json::{json, Value};
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
 use crate::infrastructure::auth::LOCAL_BOOTSTRAP_API_KEY_ID;
 
+fn api_key_metadata_from_sqlite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    let scopes_text: String = row.get(4)?;
+    let scopes: Vec<String> = serde_json::from_str(&scopes_text).unwrap_or_default();
+    let expires_at = row
+        .get::<_, Option<String>>(9)?
+        .and_then(|value| value.parse::<f64>().ok());
+    Ok(json!({
+        "key_id": row.get::<_, String>(0)?,
+        "user_id": row.get::<_, String>(1)?,
+        "role": row.get::<_, String>(2)?,
+        "tenant_id": row.get::<_, Option<String>>(3)?,
+        "scopes": scopes,
+        "created_at": row.get::<_, String>(5)?,
+        "created_by": row.get::<_, String>(6)?,
+        "revoked_at": row.get::<_, Option<String>>(7)?,
+        "last_used_at": row.get::<_, Option<String>>(8)?,
+        "expires_at": expires_at,
+    }))
+}
+
 impl LocalProductStore {
     /// Bind only the reserved bootstrap row left unbound by the v36 tenant
     /// column migration. Ordinary legacy rows remain unbound and are never
@@ -328,33 +348,24 @@ impl LocalProductStore {
     ) -> Result<Option<Value>, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let result = conn.query_row(
-                    "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
-                            revoked_at, last_used_at, expires_at
-                     FROM api_key_metadata
-                     WHERE key_id = ?1 AND (?2 IS NULL OR tenant_id = ?2)",
-                    params![key_id, tenant_id],
-                    |row| {
-                        let scopes_text: String = row.get(4)?;
-                        let scopes: Vec<String> =
-                            serde_json::from_str(&scopes_text).unwrap_or_default();
-                        let expires_at = row
-                            .get::<_, Option<String>>(9)?
-                            .and_then(|value| value.parse::<f64>().ok());
-                        Ok(json!({
-                            "key_id": row.get::<_, String>(0)?,
-                            "user_id": row.get::<_, String>(1)?,
-                            "role": row.get::<_, String>(2)?,
-                            "tenant_id": row.get::<_, Option<String>>(3)?,
-                            "scopes": scopes,
-                            "created_at": row.get::<_, String>(5)?,
-                            "created_by": row.get::<_, String>(6)?,
-                            "revoked_at": row.get::<_, Option<String>>(7)?,
-                            "last_used_at": row.get::<_, Option<String>>(8)?,
-                            "expires_at": expires_at,
-                        }))
-                    },
-                );
+                let result = match tenant_id {
+                    Some(tenant_id) => conn.query_row(
+                        "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
+                                revoked_at, last_used_at, expires_at
+                         FROM api_key_metadata
+                         WHERE key_id = ?1 AND tenant_id = ?2",
+                        params![key_id, tenant_id],
+                        api_key_metadata_from_sqlite_row,
+                    ),
+                    None => conn.query_row(
+                        "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
+                                revoked_at, last_used_at, expires_at
+                         FROM api_key_metadata
+                         WHERE key_id = ?1",
+                        params![key_id],
+                        api_key_metadata_from_sqlite_row,
+                    ),
+                };
                 match result {
                     Ok(value) => Ok(Some(value)),
                     Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -363,15 +374,26 @@ impl LocalProductStore {
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                let rows = client
-                    .query(
-                        "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
-                                revoked_at, last_used_at, expires_at
-                         FROM api_key_metadata
-                         WHERE key_id = $1 AND ($2 IS NULL OR tenant_id = $2)",
-                        &[&key_id, &tenant_id],
-                    )
-                    .map_err(|e| e.to_string())?;
+                let rows = match tenant_id {
+                    Some(tenant_id) => client
+                        .query(
+                            "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
+                                    revoked_at, last_used_at, expires_at
+                             FROM api_key_metadata
+                             WHERE key_id = $1 AND tenant_id = $2",
+                            &[&key_id, &tenant_id],
+                        )
+                        .map_err(|e| e.to_string())?,
+                    None => client
+                        .query(
+                            "SELECT key_id, user_id, role, tenant_id, scopes_json, created_at, created_by,
+                                    revoked_at, last_used_at, expires_at
+                             FROM api_key_metadata
+                             WHERE key_id = $1",
+                            &[&key_id],
+                        )
+                        .map_err(|e| e.to_string())?,
+                };
                 if rows.is_empty() {
                     return Ok(None);
                 }
