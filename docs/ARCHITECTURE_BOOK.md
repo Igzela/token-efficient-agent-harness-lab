@@ -1,12 +1,12 @@
 # Architecture Book
 
-Last updated: 2026-07-28.
+Last updated: 2026-08-02.
 
 Current version: v36.
 
 This is the durable architecture and safety baseline for the Token-Efficient Agent Harness Lab. Current facts live in `docs/CURRENT_STATUS.md`; routing and gates live in `docs/NEXT_DECISION.md`; concrete owners live in `docs/MODULE_MAP.md`. Historical packet details remain available in git history.
 
-The schema carries **v32** hash-linked decision-transition receipts, **v33** managed-acceptance spend/lease logical authorization, **v34** RWE authority rows, **v35** ProductTask workspace-preparation receipts, and **v36** immutable proposal/final-manifest delegation state plus the durable managed-provider request journal. v36 reuses `LocalProductStore`, ProductTask budget, attempt, approval, output, audit, and rollback owners; it does not create another scheduler, runtime, store, budget, workspace, evaluator, or target-output owner.
+The schema carries **v32** hash-linked decision-transition receipts, **v33** managed-acceptance spend/lease logical authorization, **v34** RWE authority rows, **v35** ProductTask workspace-preparation receipts, and **v36** immutable proposal/final-manifest delegation state plus the durable managed-provider request journal. The repository-agent two-loop control-plane seam described below adds no runtime schema or persisted product state. v36 reuses `LocalProductStore`, ProductTask budget, attempt, approval, output, audit, and rollback owners; it does not create another scheduler, runtime, store, budget, workspace, evaluator, or target-output owner.
 
 ## Mission
 
@@ -17,6 +17,23 @@ Its single first-order objective is:
 > Under non-negotiable quality, safety, traceability, compatibility, and rollback constraints, continuously increase verifiable and reusable task delivery per unit of total lifecycle cost.
 
 The system does not optimize token count in isolation. A lower-token result is not better unless it meets the same accepted quality, safety, and integrity gates.
+
+## Repository Agent Loop Control Plane
+
+Repository automation separates two loops:
+
+```text
+execution inner loop: model -> tool -> observation -> next step
+engineering outer loop: task state -> isolated execution -> verification -> repair -> review -> terminal state
+```
+
+The inner loop is disposable computation. A local Codex/OpenCode/Claude session may operate only inside its admitted worktree and bounded task packet; its conversation memory and self-reported completion are never durable authority.
+
+The outer loop persists coarse state in GitHub Issue labels, typed/hash-bound events and receipts in Issue or PR comments, candidate changes in Draft PRs and exact commit SHAs, and machine verification in exact-head Actions checks/artifacts. Canonical documents own accepted direction and facts. Local worktrees, processes, caches, checkpoints, and journals are rebuildable projections, never the unique source of truth.
+
+For a public repository, the preferred host interaction is an outbound local worker. One bounded `loopctl poll` may admit a capacity-bounded batch whose declared paths do not overlap active or selected tasks; independent `run-once` processes then claim one task and start one fresh isolated session each. A stateless supervisor may run those processes concurrently, but GitHub remains the queue and lease owner. Repository text and model output are untrusted data: the controller executes only repository-owned commands and never forwards GitHub/API credentials into the model child.
+
+The local adapter must reuse the existing `state_manager`, dispatcher, worktree, prompt, artifact, PR-binding, CI, review, and merge owners. It may not form a second controller or output authority. Before the self-hosted workflow path can be retired, `run-once` must prove remote serialization/lease recovery, exact accepted-main binding, one worktree per task, process-tree timeout/cancellation, validated patch artifact finalization, Draft-PR-only output, CI/review handoff, bounded repair, and safe restart after every externally visible transition.
 
 ## Decision Model
 
