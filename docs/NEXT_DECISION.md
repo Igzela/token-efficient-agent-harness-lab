@@ -41,7 +41,7 @@ Clean reseal attempt-1 has been consumed, terminalized, and independently accept
 
 ## Active Routing
 
-1. `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` — `READY_FOR_EXECUTION`: harden the non-authoritative independent-review transport before automated review reuse or RWE.
+1. `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` — `IN_PROGRESS`: PR #350 (Draft) implements the non-authoritative independent-review transport hardening before automated review reuse or RWE.
 2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the accepted review-transport repair, frozen real corpus/protocol, and separately persisted one-use RWE spend envelope.
 3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
 4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
@@ -432,7 +432,9 @@ Until that merge, branch-local `COMPLETE` prose is proposed state only. Completi
 
 ## Packet TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1 — non-authoritative independent-review transport hardening
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `IN_PROGRESS`
+
+**Owned PR:** #350 (Draft)
 
 **Prerequisite:** `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` accepted `COMPLETE`.
 
