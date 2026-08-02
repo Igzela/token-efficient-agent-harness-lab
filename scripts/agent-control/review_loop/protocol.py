@@ -22,8 +22,17 @@ def canonicalize(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
 
+def canonical_bytes(request_text: str) -> bytes:
+    """The single immutable canonical byte sequence for this request.
+
+    The envelope hash, the thread marker, and the delivered message are all
+    derived from these exact bytes; no later strip/rejoin is allowed.
+    """
+    return canonicalize(request_text).strip().encode("utf-8") + b"\n"
+
+
 def request_sha256(request_text: str) -> str:
-    return hashlib.sha256(canonicalize(request_text).encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical_bytes(request_text)).hexdigest()
 
 
 def marker_line(sha: str) -> str:
@@ -31,10 +40,19 @@ def marker_line(sha: str) -> str:
 
 
 def build_message(request_text: str) -> tuple[str, str]:
-    """Envelope: marker first, then blank line, then canonical request text."""
-    body = canonicalize(request_text).strip() + "\n"
-    sha = request_sha256(body)
+    """Envelope: marker first, then blank line, then the canonical bytes.
+
+    The SHA is derived from the same canonical bytes that are delivered, so
+    the envelope hash, the marker, and the thread body can never diverge.
+    """
+    body = canonical_bytes(request_text).decode("utf-8")
+    sha = request_sha256(request_text)
     return f"{marker_line(sha)}\n\n{body}", sha
+
+
+def canonical_body(request_text: str) -> str:
+    """The exact delivered body text (marker-excluded)."""
+    return canonical_bytes(request_text).decode("utf-8")
 
 
 def extract_marker(text: str | None) -> str | None:

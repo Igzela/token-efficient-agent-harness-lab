@@ -30,6 +30,15 @@ TERMINAL = {
     models.DeliveryOutcome.FAILED,
 }
 
+# A terminal outcome that forbids any resend until the thread is reconciled.
+# SENT_CONFIRMED / ALREADY_PRESENT are NOT in this set: re-running the same
+# request after a confirmed delivery must be allowed so the marker check can
+# still report ALREADY_PRESENT instead of double posting.
+RESEND_BLOCKED = {
+    models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+    models.DeliveryOutcome.AUTH_REQUIRED,
+}
+
 TERMINAL_MESSAGE_OUTCOMES = {
     models.DeliveryOutcome.ALREADY_PRESENT,
     models.DeliveryOutcome.SENT_CONFIRMED,

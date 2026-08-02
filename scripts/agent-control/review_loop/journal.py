@@ -35,6 +35,10 @@ class Journal:
             raise ValueError("journal tail is corrupt; refusing to append")
 
     def append(self, *, event: str, chat_key: str, request_text_sha256: str, detail: str = "") -> models.TransportEvent:
+        # B11: refuse to append onto a broken/truncated chain.  replay()
+        # validates seq, prev_sha and each record sha before we write.
+        if self.path.exists():
+            self.replay()
         previous = self._previous_tail()
         seq = (previous.seq + 1) if previous else 1
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

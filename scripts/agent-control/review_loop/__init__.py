@@ -8,8 +8,10 @@ owner.
 
 from . import (
     comment_poster,
+    github_adapter,
     journal,
     live_validation,
+    locking,
     models,
     protocol,
     receipt_parser,
@@ -19,8 +21,10 @@ from . import (
 
 __all__ = [
     "comment_poster",
+    "github_adapter",
     "journal",
     "live_validation",
+    "locking",
     "models",
     "protocol",
     "receipt_parser",

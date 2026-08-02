@@ -17,6 +17,7 @@ ENVELOPE_SCHEMA = "independent_review_request.v1"
 RECEIPT_SCHEMA = "independent_review_receipt.v1"
 JOURNAL_SCHEMA = "review_loop_journal.v1"
 
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -65,6 +66,10 @@ class ReviewRequestEnvelope:
         for name, value in (
             ("base_sha", self.base_sha),
             ("head_sha", self.head_sha),
+        ):
+            if not HEX40.fullmatch(value):
+                errors.append(f"{name} is not a 40-hex git object id: {value!r}")
+        for name, value in (
             ("evidence_index_sha256", self.evidence_index_sha256),
             ("request_text_sha256", self.request_text_sha256),
         ):
@@ -110,14 +115,23 @@ class ReviewReceipt:
             ("base_sha", self.base_sha),
             ("head_sha", self.head_sha),
         ):
-            if not HEX64.fullmatch(value):
-                errors.append(f"{name} is not a 64-hex sha: {value!r}")
+            if not HEX40.fullmatch(value):
+                errors.append(f"{name} is not a 40-hex git object id: {value!r}")
         if self.blockers:
             errors.append(f"receipt has blockers: {self.blockers}")
         if self.unresolved_objections:
             errors.append(f"receipt has unresolved objections: {self.unresolved_objections}")
         if self.diff_scope != "complete_base_head":
             errors.append(f"diff_scope {self.diff_scope!r} is not complete_base_head")
+        if not self.reviewer_session_id:
+            errors.append("reviewer_session_id is empty")
+        if self.reviewer_session_id == self.implementation_session_id:
+            errors.append("reviewer session must differ from implementation session")
+        allowed_transports = {
+            "parent-posted-on-behalf-of-independent-session",
+        }
+        if self.transport not in allowed_transports:
+            errors.append(f"transport {self.transport!r} is not in the allowed set")
         return errors
 
     def matches_envelope(self, envelope: ReviewRequestEnvelope) -> list[str]:

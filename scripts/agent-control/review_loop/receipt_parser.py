@@ -60,35 +60,35 @@ def parse_receipt(markdown: str) -> tuple[models.ReviewReceipt | None, list[str]
     if not candidates:
         return None, errors or ["no receipt block matched the schema"]
 
-    for data in candidates:
-        blockers, err = _coerce_string_list(data.get("blockers"), "blockers")
-        if err:
-            errors.append(err)
-            continue
-        objections, err = _coerce_string_list(
-            data.get("unresolved_objections"), "unresolved_objections"
-        )
-        if err:
-            errors.append(err)
-            continue
-        receipt = models.ReviewReceipt(
-            schema_version=str(data.get("schema_version", "")),
-            verdict=str(data.get("verdict", "")),
-            repository=str(data.get("repository", "")),
-            pr_number=int(data.get("pr_number", 0)),
-            base_sha=str(data.get("base_sha", "")),
-            head_sha=str(data.get("head_sha", "")),
-            diff_scope=str(data.get("diff_scope", "")),
-            blockers=tuple(blockers),
-            unresolved_objections=tuple(objections),
-            reviewer_session_id=str(data.get("reviewer_session_id", "")),
-            implementation_session_id=str(data.get("implementation_session_id", "")),
-            transport=str(data.get("transport", "")),
-        )
-        validation = receipt.validate()
-        if validation:
-            errors.extend(validation)
-            continue
-        return receipt, []
+    # B6: exactly one schema-matching receipt object is required; multiple
+    # receipts (even identical) fail closed.
+    if len(candidates) != 1:
+        return None, [f"expected exactly one receipt object, found {len(candidates)}"]
 
-    return None, errors or ["no receipt block passed validation"]
+    data = candidates[0]
+    blockers, err = _coerce_string_list(data.get("blockers"), "blockers")
+    if err:
+        return None, [err]
+    objections, err = _coerce_string_list(
+        data.get("unresolved_objections"), "unresolved_objections"
+    )
+    if err:
+        return None, [err]
+    receipt = models.ReviewReceipt(
+        schema_version=str(data.get("schema_version", "")),
+        verdict=str(data.get("verdict", "")),
+        repository=str(data.get("repository", "")),
+        pr_number=int(data.get("pr_number", 0)),
+        base_sha=str(data.get("base_sha", "")),
+        head_sha=str(data.get("head_sha", "")),
+        diff_scope=str(data.get("diff_scope", "")),
+        blockers=tuple(blockers),
+        unresolved_objections=tuple(objections),
+        reviewer_session_id=str(data.get("reviewer_session_id", "")),
+        implementation_session_id=str(data.get("implementation_session_id", "")),
+        transport=str(data.get("transport", "")),
+    )
+    validation = receipt.validate()
+    if validation:
+        return None, validation
+    return receipt, []

@@ -70,15 +70,31 @@ def sha256_file(path: pathlib.Path) -> str:
 
 
 def check_symlink_escape(root: pathlib.Path, paths: list[str]) -> list[str]:
-    """Reject any path that escapes the evidence root or is a symlink."""
+    """Reject any path that escapes the evidence root or is a symlink.
+
+    Checks every component: a `..` traversal or a symlinked parent must fail.
+    """
     errors = []
     resolved_root = root.resolve()
     for rel in paths:
-        candidate = (root / rel).resolve()
-        if not candidate.is_relative_to(resolved_root):
+        if ".." in pathlib.PurePosixPath(rel).parts:
+            errors.append(f"path contains ..: {rel}")
+            continue
+        candidate = (root / rel)
+        if not candidate.exists() and not candidate.is_symlink():
+            errors.append(f"evidence path missing: {rel}")
+            continue
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(resolved_root):
             errors.append(f"path escapes evidence root: {rel}")
-        if (root / rel).is_symlink():
+            continue
+        if candidate.is_symlink():
             errors.append(f"path is a symlink: {rel}")
+            continue
+        for parent in candidate.parents:
+            if parent.is_symlink():
+                errors.append(f"parent component is a symlink: {parent}")
+                break
     return errors
 
 
@@ -117,6 +133,7 @@ def validate_evidence_index(
     root = index_path.resolve().parent
     total = 0
     seen = set()
+    rel_paths = []
     for entry in entries:
         if not isinstance(entry, dict):
             errors.append("evidence entry is not an object")
@@ -126,20 +143,29 @@ def validate_evidence_index(
         if not isinstance(rel, str) or not isinstance(digest, str):
             errors.append(f"invalid evidence entry: {entry!r}")
             continue
+        rel_paths.append(rel)
         if rel in seen:
             errors.append(f"duplicate evidence path: {rel}")
             continue
         seen.add(rel)
-        if not (root / rel).is_relative_to(root.resolve()):
-            errors.append(f"evidence path escapes root: {rel}")
+        if ".." in pathlib.PurePosixPath(rel).parts:
+            errors.append(f"evidence path contains ..: {rel}")
             continue
         candidate = root / rel
-        if not candidate.exists():
+        if not candidate.exists() and not candidate.is_symlink():
             errors.append(f"evidence file missing: {rel}")
+            continue
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(root.resolve()):
+            errors.append(f"evidence file escapes root: {rel}")
             continue
         if candidate.is_symlink():
             errors.append(f"evidence file is a symlink: {rel}")
             continue
+        for parent in candidate.parents:
+            if parent.is_symlink():
+                errors.append(f"evidence parent component is a symlink: {rel}")
+                break
         try:
             size = candidate.stat().st_size
         except OSError as exc:

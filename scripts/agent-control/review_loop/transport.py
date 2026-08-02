@@ -11,6 +11,32 @@ from __future__ import annotations
 import typing
 
 
+class ThreadInspection(typing.NamedTuple):
+    """Three-state result of inspecting the thread before a send.
+
+    - EMPTY_THREAD: provably no prior user message (first send allowed).
+    - MESSAGE: the thread's newest user message text is known.
+    - INSPECTION_UNAVAILABLE: the transport could not prove the state
+      (page not loaded, selector failure, login issue).  A caller must stop,
+      never treat this as "no message".
+    """
+
+    state: str
+    text: str | None = None
+
+    @classmethod
+    def empty(cls) -> "ThreadInspection":
+        return cls("EMPTY_THREAD")
+
+    @classmethod
+    def message(cls, text: str) -> "ThreadInspection":
+        return cls("MESSAGE", text)
+
+    @classmethod
+    def unavailable(cls, reason: str = "") -> "ThreadInspection":
+        return cls("INSPECTION_UNAVAILABLE", reason)
+
+
 class Transport(typing.Protocol):
     """Minimal browser transport surface (operator-local implementation)."""
 
@@ -18,8 +44,8 @@ class Transport(typing.Protocol):
         """Return True when the session is authenticated, False when logged out."""
         ...
 
-    def read_last_user_message(self) -> str | None:
-        """Return the text of the thread's newest user message, or None."""
+    def inspect_last_user_message(self) -> ThreadInspection:
+        """Inspect the thread's newest user message (three-state)."""
         ...
 
     def send_user_message(self, text: str) -> None:
@@ -44,19 +70,28 @@ class FakeTransport:
         authed: bool = True,
         user_messages: list[str] | None = None,
         assistant_replies: list[str] | None = None,
+        inspect_state: str = "auto",
     ):
         self.authed = authed
         self.user_messages: list[str] = list(user_messages or [])
         self.assistant_replies: list[str] = list(assistant_replies or [])
         self.sent_calls: list[str] = []
+        self.inspect_state = inspect_state  # auto | unavailable
+        self.send_failure: BaseException | None = None
 
     def read_auth_state(self) -> bool:
         return self.authed
 
-    def read_last_user_message(self) -> str | None:
-        return self.user_messages[-1] if self.user_messages else None
+    def inspect_last_user_message(self) -> ThreadInspection:
+        if self.inspect_state == "unavailable":
+            return ThreadInspection.unavailable("scripted inspection failure")
+        if not self.user_messages:
+            return ThreadInspection.empty()
+        return ThreadInspection.message(self.user_messages[-1])
 
     def send_user_message(self, text: str) -> None:
+        if self.send_failure is not None:
+            raise self.send_failure
         self.sent_calls.append(text)
         self.user_messages.append(text)
 
