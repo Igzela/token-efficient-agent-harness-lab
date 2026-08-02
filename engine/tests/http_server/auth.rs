@@ -498,11 +498,87 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         )
         .unwrap();
 
+    let mismatched_reviewer_id = "foreign-persisted-reviewer".to_string();
+    store
+        .record_api_key_metadata_for_tenant(
+            "foreign",
+            &mismatched_reviewer_id,
+            "foreign-persisted-reviewer",
+            "reviewer",
+            &MANAGED_REVIEWER_KEY_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "test-foreign-binding",
+        )
+        .unwrap();
+    resolver.add_api_key(APIKey {
+        key_id: mismatched_reviewer_id.clone(),
+        tenant_id: "local".into(),
+        key_hash: hash_api_key("unused-foreign-binding", "foreign-binding-salt"),
+        key_salt: "foreign-binding-salt".into(),
+        scopes: MANAGED_REVIEWER_KEY_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+    let unbound_reviewer_id = "legacy-unbound-reviewer".to_string();
+    store
+        .record_api_key_metadata(
+            &unbound_reviewer_id,
+            "legacy-unbound-reviewer",
+            "reviewer",
+            &MANAGED_REVIEWER_KEY_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "test-unbound-binding",
+        )
+        .unwrap();
+    resolver.add_api_key(APIKey {
+        key_id: unbound_reviewer_id.clone(),
+        tenant_id: "local".into(),
+        key_hash: hash_api_key("unused-unbound-binding", "unbound-binding-salt"),
+        key_salt: "unbound-binding-salt".into(),
+        scopes: MANAGED_REVIEWER_KEY_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+
     let app = build_axum_router(
         AxumApiState::new()
             .with_local_store_arc(store.clone())
             .with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 1.0),
     );
+    let listed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed_keys = response_json(listed).await["keys"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(listed_keys.iter().all(|key| {
+        key["tenant_id"] == "local" && key["key_id"] != "foreign-persisted-reviewer"
+    }));
     let reviewer = app
         .clone()
         .oneshot(
@@ -786,44 +862,6 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
     // Resolver and store authority must agree on the tenant. A fixture with a
     // foreign or legacy-unbound persisted binding cannot be mutated merely
     // because the in-memory resolver has the reserved managed key.
-    let mismatched_reviewer = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/v1/keys")
-                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "user_id": "foreign-persisted-reviewer",
-                        "role": "reviewer",
-                        "scopes": MANAGED_REVIEWER_KEY_SCOPES
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(mismatched_reviewer.status(), StatusCode::OK);
-    let mismatched_reviewer_id = response_json(mismatched_reviewer).await["key_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    store
-        .record_api_key_metadata_for_tenant(
-            "foreign",
-            &mismatched_reviewer_id,
-            "foreign-persisted-reviewer",
-            "reviewer",
-            &MANAGED_REVIEWER_KEY_SCOPES
-                .iter()
-                .map(|scope| (*scope).to_string())
-                .collect::<Vec<_>>(),
-            "test-foreign-binding",
-        )
-        .unwrap();
     for (method, uri, body) in [
         (
             Method::POST,
@@ -862,43 +900,6 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
-    let unbound_reviewer = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/v1/keys")
-                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "user_id": "legacy-unbound-reviewer",
-                        "role": "reviewer",
-                        "scopes": MANAGED_REVIEWER_KEY_SCOPES
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(unbound_reviewer.status(), StatusCode::OK);
-    let unbound_reviewer_id = response_json(unbound_reviewer).await["key_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    store
-        .record_api_key_metadata(
-            &unbound_reviewer_id,
-            "legacy-unbound-reviewer",
-            "reviewer",
-            &MANAGED_REVIEWER_KEY_SCOPES
-                .iter()
-                .map(|scope| (*scope).to_string())
-                .collect::<Vec<_>>(),
-            "test-unbound-binding",
-        )
-        .unwrap();
     let unbound_revoke = app
         .clone()
         .oneshot(
@@ -1011,7 +1012,7 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         )
         .await
         .unwrap();
-    assert_eq!(ordinary_update.status(), StatusCode::FORBIDDEN);
+    assert_eq!(ordinary_update.status(), StatusCode::NOT_FOUND);
 
     let ordinary_rotate = app
         .oneshot(
@@ -1024,7 +1025,7 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         )
         .await
         .unwrap();
-    assert_eq!(ordinary_rotate.status(), StatusCode::FORBIDDEN);
+    assert_eq!(ordinary_rotate.status(), StatusCode::NOT_FOUND);
 
     // Simulate an engine restart: the resolver is reconstructed from the
     // bootstrap environment, while the same store is retained. Reissuance is

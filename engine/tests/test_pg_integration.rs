@@ -454,6 +454,24 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
     let reissued_key_id = reissued_body["key_id"].as_str().unwrap().to_string();
     let persisted = store.get_api_key_metadata(&reissued_key_id).unwrap();
     assert!(persisted.is_some());
+    let rebinding = store
+        .record_api_key_metadata_for_tenant(
+            "ordinary",
+            &reissued_key_id,
+            "pg-foreign-rebind",
+            "admin",
+            &["team:admin".to_string()],
+            "pg-foreign-rebind-test",
+        )
+        .expect_err("PostgreSQL key tenant bindings must be immutable");
+    assert!(rebinding.contains("tenant binding is immutable"));
+    let local_keys = store
+        .list_api_key_metadata_for_tenant("local", 10_000)
+        .unwrap();
+    assert!(local_keys
+        .iter()
+        .any(|key| key["key_id"] == reissued_key_id));
+    assert!(local_keys.iter().all(|key| key["tenant_id"] == "local"));
 
     let updated = runtime.block_on(async {
         restarted_app
@@ -2596,12 +2614,54 @@ fn pg_duplicate_terminal_output_is_exactly_once_and_preserves_spend_rollback_gua
         .count();
     assert_eq!(output_audits, 1);
 
+    let rollback_bound_key = format!("pg-rollback-bound-{tag}");
+    let rollback_legacy_key = format!("pg-rollback-legacy-{tag}");
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            &rollback_bound_key,
+            "pg-rollback-bound-user",
+            "reviewer",
+            &["managed_acceptance:risk_acknowledge".to_string()],
+            "pg-rollback-test",
+        )
+        .unwrap();
+    store
+        .record_api_key_metadata(
+            &rollback_legacy_key,
+            "pg-rollback-legacy-user",
+            "admin",
+            &["team:admin".to_string()],
+            "pg-rollback-test",
+        )
+        .unwrap();
+
     // Drain through v36 only when the shared PG fixture has no incomplete
     // delegated rows. Residual incomplete delegated authority must fail closed
     // rather than soft-pass; the spend residual assertion below applies only
     // when the multi-step drain can reach v33.
     match store.rollback_v36_to_v35("pg-rollback-operator", true) {
-        Ok(()) => {}
+        Ok(()) => {
+            let rollback_archives = store
+                .audit_events(10_000)
+                .unwrap()
+                .into_iter()
+                .filter(|event| {
+                    event["action"] == "schema.rollback.v36_api_key_tenant_archived"
+                        && (event["resource"]
+                            == format!("api_key_tenant_binding:{rollback_bound_key}")
+                            || event["resource"]
+                                == format!("api_key_tenant_binding:{rollback_legacy_key}"))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(rollback_archives.len(), 2);
+            assert!(rollback_archives
+                .iter()
+                .any(|event| event["details"].to_string().contains("local")));
+            assert!(rollback_archives
+                .iter()
+                .any(|event| event["details"].to_string().contains("tenant_id")));
+        }
         Err(error) if error.contains("v36 rollback blocked") => {
             // Shared-database residue correctly refuses destructive drain.
             return;

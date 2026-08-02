@@ -99,7 +99,7 @@ fn require_managed_actor_key_mutation_allowed(
     context: &ApiRequestContext,
 ) -> Result<(), ApiError> {
     let actor_role = store
-        .get_api_key_metadata(&context.api_key_id)
+        .get_api_key_metadata_for_tenant(&context.api_key_id, &context.tenant_id)
         .map_err(internal_error)?
         .and_then(|metadata| {
             metadata
@@ -134,9 +134,11 @@ pub(crate) async fn api_list_keys(
     uri: Uri,
     Extension(request_id): Extension<RequestId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "team:read", uri.path(), &request_id.0)?;
+    let context = authorize(&state, &headers, "team:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    let keys = store.list_api_key_metadata(100).map_err(internal_error)?;
+    let keys = store
+        .list_api_key_metadata_for_tenant(&context.tenant_id, 100)
+        .map_err(internal_error)?;
     Ok((
         cors_headers(),
         Json(json!({
@@ -173,7 +175,7 @@ pub(crate) async fn api_create_key(
         )
     })?;
     let (key, raw_key) = {
-        let mut guard = resolver.lock().map_err(|_| {
+        let guard = resolver.lock().map_err(|_| {
             ApiError::new(
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "auth unavailable",
@@ -183,7 +185,7 @@ pub(crate) async fn api_create_key(
             request.scopes.iter().cloned().collect();
         let now = state.now();
         guard
-            .create_api_key(
+            .prepare_api_key(
                 &context.tenant_id,
                 Some(scopes_set),
                 request.expires_at,
@@ -216,9 +218,6 @@ pub(crate) async fn api_create_key(
     {
         Ok(result) => result,
         Err(error) => {
-            if let Ok(mut guard) = resolver.lock() {
-                guard.remove_api_key(&key_id);
-            }
             return Err(internal_error(format!(
                 "key metadata worker failed: {error}"
             )));
@@ -226,11 +225,17 @@ pub(crate) async fn api_create_key(
     };
 
     if let Err(error) = persist_result {
-        if let Ok(mut guard) = resolver.lock() {
-            guard.remove_api_key(&key_id);
-        }
         return Err(internal_error(error));
     }
+    resolver
+        .lock()
+        .map_err(|_| {
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "auth unavailable",
+            )
+        })?
+        .add_api_key(key.clone());
 
     Ok((
         cors_headers(),
@@ -257,7 +262,7 @@ pub(crate) async fn api_revoke_key(
     let store = require_store(&state)?;
     require_managed_actor_key_mutation_allowed(&store, &context)?;
     let role = store
-        .get_api_key_metadata(&key_id)
+        .get_api_key_metadata_for_tenant(&key_id, &context.tenant_id)
         .map_err(internal_error)?
         .and_then(|metadata| {
             metadata
@@ -282,8 +287,6 @@ pub(crate) async fn api_revoke_key(
         .api_key(&key_id)
         .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
     require_key_target_authority(&store, &context, &target, role.as_deref())?;
-    guard.remove_api_key(&key_id);
-
     let revoked = match store.revoke_api_key_metadata_for_tenant(
         &key_id,
         &context.tenant_id,
@@ -291,18 +294,21 @@ pub(crate) async fn api_revoke_key(
     ) {
         Ok(revoked) => revoked,
         Err(error) => {
-            guard.add_api_key(target);
+            // A commit error has unknown durable outcome. Fail closed in the
+            // in-memory resolver instead of restoring a key that may already
+            // be revoked in the canonical store.
+            guard.remove_api_key(&key_id);
             return Err(internal_error(error));
         }
     };
 
     if !revoked {
-        guard.add_api_key(target);
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
             "key not found or already revoked",
         ));
     }
+    guard.remove_api_key(&key_id);
 
     Ok((
         cors_headers(),
@@ -322,7 +328,7 @@ pub(crate) async fn api_rotate_key(
     require_managed_actor_key_mutation_allowed(&store, &context)?;
 
     let old_key = store
-        .get_api_key_metadata(&key_id)
+        .get_api_key_metadata_for_tenant(&key_id, &context.tenant_id)
         .map_err(internal_error)?
         .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
 
@@ -377,7 +383,7 @@ pub(crate) async fn api_rotate_key(
     let scopes_set: std::collections::HashSet<String> = scopes.iter().cloned().collect();
     let now = state.now();
     let (new_key, raw_key) = guard
-        .create_api_key(&context.tenant_id, Some(scopes_set), expires_at, now)
+        .prepare_api_key(&context.tenant_id, Some(scopes_set), expires_at, now)
         .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     match store.rotate_api_key_metadata_for_tenant(
@@ -392,16 +398,15 @@ pub(crate) async fn api_rotate_key(
     ) {
         Ok(true) => {
             guard.remove_api_key(&key_id);
+            guard.add_api_key(new_key.clone());
         }
         Ok(false) => {
-            guard.remove_api_key(&new_key.key_id);
             return Err(ApiError::new(
                 axum::http::StatusCode::NOT_FOUND,
                 "key not found or already revoked",
             ));
         }
         Err(error) => {
-            guard.remove_api_key(&new_key.key_id);
             return Err(internal_error(error));
         }
     }
@@ -432,7 +437,7 @@ pub(crate) async fn api_delete_key(
     let store = require_store(&state)?;
     require_managed_actor_key_mutation_allowed(&store, &context)?;
     let role = store
-        .get_api_key_metadata(&key_id)
+        .get_api_key_metadata_for_tenant(&key_id, &context.tenant_id)
         .map_err(internal_error)?
         .and_then(|metadata| {
             metadata
@@ -457,8 +462,6 @@ pub(crate) async fn api_delete_key(
         .api_key(&key_id)
         .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
     require_key_target_authority(&store, &context, &target, role.as_deref())?;
-    guard.remove_api_key(&key_id);
-
     let deleted = match store.delete_api_key_metadata_for_tenant(
         &key_id,
         &context.tenant_id,
@@ -466,18 +469,20 @@ pub(crate) async fn api_delete_key(
     ) {
         Ok(deleted) => deleted,
         Err(error) => {
-            guard.add_api_key(target);
+            // Keep the resolver fail-closed when the durable outcome is
+            // unknown; restoring the key could resurrect revoked authority.
+            guard.remove_api_key(&key_id);
             return Err(internal_error(error));
         }
     };
 
     if !deleted {
-        guard.add_api_key(target);
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
             "key not found",
         ));
     }
+    guard.remove_api_key(&key_id);
 
     Ok((
         cors_headers(),
@@ -498,7 +503,7 @@ pub(crate) async fn api_update_key_scopes(
     require_managed_actor_key_mutation_allowed(&store, &context)?;
 
     let old_key = store
-        .get_api_key_metadata(&key_id)
+        .get_api_key_metadata_for_tenant(&key_id, &context.tenant_id)
         .map_err(internal_error)?
         .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
     let role = old_key["role"].as_str().ok_or_else(|| {
@@ -533,15 +538,6 @@ pub(crate) async fn api_update_key_scopes(
         .validate_api_key_scopes(&key_id, &scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
 
-    guard
-        .update_api_key_scopes(&key_id, scopes.clone())
-        .map_err(|_| {
-            ApiError::new(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "auth state update failed",
-            )
-        })?;
-
     let updated = match store.update_api_key_scopes_for_tenant(
         &key_id,
         &context.tenant_id,
@@ -550,18 +546,33 @@ pub(crate) async fn api_update_key_scopes(
     ) {
         Ok(updated) => updated,
         Err(error) => {
-            let _ = guard.update_api_key_scopes(&key_id, old_scopes);
             return Err(internal_error(error));
         }
     };
 
     if !updated {
-        let _ = guard.update_api_key_scopes(&key_id, old_scopes);
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
             "key not found",
         ));
     }
+    guard
+        .update_api_key_scopes(&key_id, scopes.clone())
+        .map_err(|_| {
+            // The resolver was validated above; if its update nevertheless
+            // fails after the store commit, restore the canonical old value
+            // before returning a bounded authority error.
+            let _ = store.update_api_key_scopes_for_tenant(
+                &key_id,
+                &context.tenant_id,
+                &old_scopes.iter().cloned().collect::<Vec<_>>(),
+                &context.api_key_id,
+            );
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "auth state update failed",
+            )
+        })?;
 
     Ok((
         cors_headers(),

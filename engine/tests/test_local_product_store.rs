@@ -3151,12 +3151,15 @@ fn test_list_api_key_metadata() {
     let store = LocalProductStore::new(dir.path().join("keys.db")).unwrap();
 
     // Empty list initially
-    let keys = store.list_api_key_metadata(100).unwrap();
+    let keys = store
+        .list_api_key_metadata_for_tenant("local", 100)
+        .unwrap();
     assert!(keys.is_empty());
 
     // Record two keys
     store
-        .record_api_key_metadata(
+        .record_api_key_metadata_for_tenant(
+            "local",
             "key_1",
             "user_a",
             "admin",
@@ -3165,7 +3168,8 @@ fn test_list_api_key_metadata() {
         )
         .unwrap();
     store
-        .record_api_key_metadata(
+        .record_api_key_metadata_for_tenant(
+            "local",
             "key_2",
             "user_b",
             "readonly",
@@ -3174,7 +3178,9 @@ fn test_list_api_key_metadata() {
         )
         .unwrap();
 
-    let keys = store.list_api_key_metadata(100).unwrap();
+    let keys = store
+        .list_api_key_metadata_for_tenant("local", 100)
+        .unwrap();
     assert_eq!(keys.len(), 2);
     // Ordered by created_at DESC (both have same timestamp, so order is insertion order)
     let key_ids: Vec<&str> = keys.iter().map(|k| k["key_id"].as_str().unwrap()).collect();
@@ -3191,8 +3197,77 @@ fn test_list_api_key_metadata() {
     }
 
     // Limit works
-    let keys = store.list_api_key_metadata(1).unwrap();
+    let keys = store.list_api_key_metadata_for_tenant("local", 1).unwrap();
     assert_eq!(keys.len(), 1);
+}
+
+#[test]
+fn test_api_key_tenant_binding_is_immutable_and_listing_is_scoped() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tenant-keys.db")).unwrap();
+    store
+        .record_api_key_metadata_for_tenant(
+            "tenant-a",
+            "tenant-key-a",
+            "user-a",
+            "reviewer",
+            &["managed_acceptance:risk_acknowledge".to_string()],
+            "tenant-a-admin",
+        )
+        .unwrap();
+    store
+        .record_api_key_metadata_for_tenant(
+            "tenant-b",
+            "tenant-key-b",
+            "user-b",
+            "reviewer",
+            &["managed_acceptance:risk_acknowledge".to_string()],
+            "tenant-b-admin",
+        )
+        .unwrap();
+    store
+        .record_api_key_metadata(
+            "legacy-unbound-key",
+            "legacy-user",
+            "admin",
+            &["team:admin".to_string()],
+            "legacy-fixture",
+        )
+        .unwrap();
+
+    let rebinding = store
+        .record_api_key_metadata_for_tenant(
+            "tenant-b",
+            "tenant-key-a",
+            "attacker",
+            "admin",
+            &["team:admin".to_string()],
+            "tenant-b-admin",
+        )
+        .expect_err("a key binding must never move between tenants");
+    assert!(rebinding.contains("tenant binding is immutable"));
+    assert_eq!(
+        store
+            .get_api_key_metadata_for_tenant("tenant-key-a", "tenant-a")
+            .unwrap()
+            .unwrap()["user_id"],
+        "user-a"
+    );
+    assert!(store
+        .get_api_key_metadata_for_tenant("tenant-key-a", "tenant-b")
+        .unwrap()
+        .is_none());
+
+    let tenant_a_keys = store
+        .list_api_key_metadata_for_tenant("tenant-a", 100)
+        .unwrap();
+    assert_eq!(tenant_a_keys.len(), 1);
+    assert_eq!(tenant_a_keys[0]["key_id"], "tenant-key-a");
+    let tenant_b_keys = store
+        .list_api_key_metadata_for_tenant("tenant-b", 100)
+        .unwrap();
+    assert_eq!(tenant_b_keys.len(), 1);
+    assert_eq!(tenant_b_keys[0]["key_id"], "tenant-key-b");
 }
 
 // ---------------------------------------------------------------------------

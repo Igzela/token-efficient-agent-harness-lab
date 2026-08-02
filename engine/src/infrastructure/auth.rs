@@ -162,6 +162,21 @@ impl TenantResolver {
         expires_at: Option<f64>,
         now: f64,
     ) -> Result<(APIKey, String), String> {
+        let (key, raw_key) = self.prepare_api_key(tenant_id, scopes, expires_at, now)?;
+        self.api_keys.insert(key.key_id.clone(), key.clone());
+        Ok((key, raw_key))
+    }
+
+    /// Prepare a key without registering it in the in-memory resolver. The
+    /// caller can persist the key through its canonical store owner first and
+    /// register it only after durable metadata succeeds.
+    pub fn prepare_api_key(
+        &self,
+        tenant_id: &str,
+        scopes: Option<HashSet<String>>,
+        expires_at: Option<f64>,
+        now: f64,
+    ) -> Result<(APIKey, String), String> {
         let tenant = self
             .tenants
             .get(tenant_id)
@@ -194,7 +209,6 @@ impl TenantResolver {
             revoked_at: None,
             last_used_at: None,
         };
-        self.api_keys.insert(key.key_id.clone(), key.clone());
         Ok((key, raw_key))
     }
 

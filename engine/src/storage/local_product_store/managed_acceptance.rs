@@ -4486,7 +4486,7 @@ impl LocalProductStore {
             return Err("canonical bootstrap tenant does not match local authority".into());
         }
         let meta = self
-            .get_api_key_metadata(LOCAL_BOOTSTRAP_API_KEY_ID)?
+            .get_api_key_metadata_for_tenant(LOCAL_BOOTSTRAP_API_KEY_ID, tenant_id)?
             .ok_or("canonical bootstrap key metadata is missing")?;
         if meta.get("tenant_id").and_then(Value::as_str) != Some(tenant_id) {
             return Err("canonical bootstrap key tenant binding is missing or invalid".into());
@@ -4526,7 +4526,7 @@ impl LocalProductStore {
             })
             .unwrap_or_default();
         validate_bootstrap_identity_delegation_scopes(&scopes)?;
-        let _ = self.touch_api_key_last_used(LOCAL_BOOTSTRAP_API_KEY_ID);
+        let _ = self.touch_api_key_last_used_for_tenant(LOCAL_BOOTSTRAP_API_KEY_ID, tenant_id);
         Ok(AuthenticatedPrincipal {
             tenant_id: tenant_id.to_string(),
             principal_id: LOCAL_BOOTSTRAP_API_KEY_ID.to_string(),
@@ -4556,8 +4556,10 @@ impl LocalProductStore {
             ));
         }
         let meta = self
-            .get_api_key_metadata(key_id)?
-            .ok_or_else(|| format!("api key {key_id} not found"))?;
+            .get_api_key_metadata_for_tenant(key_id, tenant_id)?
+            .ok_or_else(|| {
+                format!("api key {key_id} not found or tenant binding is missing or invalid")
+            })?;
         if meta.get("tenant_id").and_then(Value::as_str) != Some(tenant_id) {
             return Err(
                 "api key tenant binding is missing or does not match requested tenant".into(),
@@ -4613,7 +4615,7 @@ impl LocalProductStore {
         };
         // Must hold at least risk-ack scope to be usable as a managed-acceptance principal.
         principal.require_scope(SCOPE_RISK_ACKNOWLEDGE)?;
-        let _ = self.touch_api_key_last_used(key_id);
+        let _ = self.touch_api_key_last_used_for_tenant(key_id, tenant_id);
         Ok(principal)
     }
 
@@ -4630,7 +4632,7 @@ impl LocalProductStore {
         let principal =
             self.authenticate_managed_acceptance_principal(tenant_id, key_id, now_unix)?;
         let metadata = self
-            .get_api_key_metadata(key_id)?
+            .get_api_key_metadata_for_tenant(key_id, tenant_id)?
             .ok_or_else(|| format!("api key {key_id} not found"))?;
         if metadata.get("tenant_id").and_then(Value::as_str) != Some(tenant_id.trim()) {
             return Err("canonical managed identity tenant binding is missing or invalid".into());
