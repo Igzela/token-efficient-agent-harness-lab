@@ -58,10 +58,12 @@ def reconcile_comments(
 ) -> tuple[str, list[str]]:
     """Decide posting action: skip / post / conflict / stop.
 
-    Every marker across every comment is scanned and classified before any
-    decision (R2-B4).  One malformed marker, or one same-request marker with a
-    different receipt, is a conflict regardless of what else is present.  Only
-    when all relevant markers are exactly identical is posting skipped.
+    Every marker occurrence across every comment is scanned and classified
+    before any decision (R2-B4/R3-B4).  A malformed marker occurrence wins
+    over a valid identical marker even inside the same comment body; one
+    same-request marker with a different receipt is a conflict regardless of
+    what else is present.  Only when all relevant markers are exactly
+    identical is posting skipped.
     """
     if existing_comments is None:
         return "unknown", ["existing comments unavailable"]
@@ -69,8 +71,10 @@ def reconcile_comments(
     reasons: list[str] = []
     for body in existing_comments:
         text = body or ""
-        matches = list(MARKER_RE.finditer(text))
-        for match in matches:
+        # Remove every valid marker so any remaining COMMENT_MARKER token is a
+        # malformed/partial occurrence that must win (R3-B4).
+        scrubbed = text
+        for match in MARKER_RE.finditer(text):
             found_request, found_receipt = match.group(1), match.group(2)
             if found_request == request_sha:
                 if found_receipt == receipt_sha:
@@ -80,9 +84,11 @@ def reconcile_comments(
                         f"same request {request_sha[:12]}... but different receipt "
                         f"{found_receipt[:12]}... already posted"
                     ]
-        if COMMENT_MARKER in text and not matches:
-            # The marker token appears but no valid full marker: cannot tell
-            # whether a prior receipt exists; stop instead of double posting.
+            scrubbed = scrubbed.replace(match.group(0), "", 1)
+        if COMMENT_MARKER in scrubbed:
+            # A marker token remains that is not part of any valid full
+            # marker: cannot tell whether a prior receipt exists; stop
+            # instead of double posting.
             return "conflict", ["malformed or partial review-receipt marker present"]
     if identical_count:
         return "skip", [f"identical receipt already posted ({request_sha[:12]}...)"]

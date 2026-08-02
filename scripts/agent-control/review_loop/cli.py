@@ -221,7 +221,10 @@ def _reconcile(
     request_text_sha: str,
     current: models.DeliveryOutcome | None,
 ) -> tuple[models.DeliveryOutcome, str]:
-    """Read-only thread reconciliation (R2-B1).
+    """Read-only thread reconciliation (R2-B1/R3-B1).
+
+    Authorized from SEND_OUTCOME_UNKNOWN (effect uncertain) and from
+    DELIVERY_INSPECTED (send in-flight after a hard interruption).
 
     Returns (latest_state, action) where action is one of:
     - "already_present": the identical marker is in the thread (converged).
@@ -230,8 +233,8 @@ def _reconcile(
     """
     inspection = _inspect(transport)
     if inspection is None or inspection.state == "INSPECTION_UNAVAILABLE":
-        # Do not overwrite the UNKNOWN state; keep blocking without a new
-        # terminal event (INSPECTION_UNAVAILABLE is not reachable from UNKNOWN).
+        # Do not overwrite the blocked state; keep blocking without a new
+        # event (INSPECTION_UNAVAILABLE is not reachable from these states).
         return current, "blocked"
     if inspection.state == "MESSAGE":
         existing_sha = protocol.extract_marker(inspection.text)
@@ -248,7 +251,7 @@ def _reconcile(
                 "already_present",
             )
         _fail(
-            f"DELIVERY_OUTCOME_UNKNOWN: thread holds a different message; "
+            f"SEND_OUTCOME_UNKNOWN: thread holds a different message; "
             "reconciliation cannot prove non-delivery; manual review required",
             2,
         )
@@ -282,16 +285,19 @@ def cmd_send(
     if request_text_sha != envelope.request_text_sha256:
         _fail("canonical body does not hash to the envelope sha")
 
-    # B4/R2-B1: rebuild persisted state; only effect-unknown blocks blindly.
+    # B4/R2-B1/R3-B1: rebuild persisted state.  Both the send-side unknown and
+    # the send in-flight state (DELIVERY_INSPECTED, stuck after a hard
+    # interruption between the effect and the journal write) require read-only
+    # thread reconciliation before any resend.
     current = _journal_state(journal, envelope.chat_key, request_text_sha)
     if current in {models.DeliveryOutcome.SENT_CONFIRMED, models.DeliveryOutcome.ALREADY_PRESENT}:
         # Idempotent re-run of an already-confirmed delivery.
         print(f"ALREADY_PRESENT: sha {request_text_sha[:12]}... already delivered "
               f"(latest {current.value})")
         raise SystemExit(0)
-    if current in state_machine.RESEND_BLOCKED:
+    if current in state_machine.SEND_BLOCKED or current == models.DeliveryOutcome.DELIVERY_INSPECTED:
         print(
-            f"DELIVERY_OUTCOME_UNKNOWN recorded; running read-only "
+            f"{current.value} recorded; running read-only "
             "reconciliation before any resend"
         )
         current, action = _reconcile(
@@ -301,7 +307,7 @@ def cmd_send(
             print(f"ALREADY_PRESENT: sha {request_text_sha[:12]}... already delivered")
             raise SystemExit(0)
         if action == "blocked":
-            print("DELIVERY_OUTCOME_UNKNOWN: still unresolved; reconcile the thread manually")
+            print("SEND_OUTCOME_UNKNOWN: still unresolved; reconcile the thread manually")
             raise SystemExit(2)
         print("reconciled: thread provably empty; resend authorized")
 
@@ -381,17 +387,18 @@ def cmd_send(
     try:
         transport.send_user_message(message)
     except Exception as exc:
-        # B4/R2-B1: a raised send means the effect is unknown; only
-        # reconciliation may unblock this.
+        # B4/R2-B1/R3-B3: a raised send means the send effect is unknown.
+        # SEND_OUTCOME_UNKNOWN is send-phase specific; only thread
+        # reconciliation may unblock it (never the comment path).
         current = _record(
             journal,
             current,
             envelope.chat_key,
             request_text_sha,
-            models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+            models.DeliveryOutcome.SEND_OUTCOME_UNKNOWN,
             f"send raised {type(exc).__name__}: {str(exc)[:200]}",
         )
-        print("DELIVERY_OUTCOME_UNKNOWN: send raised; effect unknown; reconcile before resend")
+        print("SEND_OUTCOME_UNKNOWN: send raised; effect unknown; reconcile before resend")
         raise SystemExit(2)
     current = _record(
         journal,
@@ -409,12 +416,12 @@ def cmd_reconcile(
     transport: Transport,
     journal: journal_mod.Journal,
 ) -> None:
-    """Read-only reconciliation subcommand (R2-B1)."""
+    """Read-only reconciliation subcommand (R2-B1/R3-B1)."""
     envelope = _load_envelope(args)
     request_text_sha = envelope.request_text_sha256
     current = _journal_state(journal, envelope.chat_key, request_text_sha)
-    if current not in state_machine.RESEND_BLOCKED:
-        print(f"reconcile: no outcome-unknown terminal recorded (latest {current}); nothing to do")
+    if current not in state_machine.SEND_BLOCKED and current != models.DeliveryOutcome.DELIVERY_INSPECTED:
+        print(f"reconcile: nothing to reconcile (latest {current}); nothing to do")
         raise SystemExit(0)
     current, action = _reconcile(transport, journal, envelope, request_text_sha, current)
     if action == "already_present":
@@ -423,7 +430,7 @@ def cmd_reconcile(
     if action == "may_send":
         print("RECONCILED: thread provably empty; send is authorized")
         raise SystemExit(0)
-    print("DELIVERY_OUTCOME_UNKNOWN: reconciliation could not prove non-delivery; stop")
+    print("SEND_OUTCOME_UNKNOWN: reconciliation could not prove non-delivery; stop")
     raise SystemExit(2)
 
 
@@ -522,11 +529,12 @@ def cmd_post(
         _fail("stored receipt does not match envelope")
     current = _journal_state(journal, envelope.chat_key, envelope.request_text_sha256)
 
-    # Post-side reconciliation (R2-B1): after a POST outcome-unknown, re-query
-    # the comments first.  A present identical receipt converges (skip); an
-    # absent receipt proves the post never landed, authorizing a fresh
-    # revalidation and post.
-    if current == models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN:
+    # Post-side reconciliation (R2-B1/R3-B2/R3-B3).  Only comment-phase states
+    # may be consumed here: COMMENT_OUTCOME_UNKNOWN (effect uncertain) and
+    # HEAD_REVALIDATED (comment in-flight, stuck after a hard interruption
+    # between create_comment and the journal write).  A send-phase state is
+    # never touched by the post command.
+    if current in state_machine.COMMENT_BLOCKED or current == models.DeliveryOutcome.HEAD_REVALIDATED:
         existing = github.list_comments(envelope.repository, envelope.pr_number)
         action, reasons = comment_poster.reconcile_comments(
             existing,
@@ -546,7 +554,7 @@ def cmd_post(
             raise SystemExit(0)
         if action != "post":
             _fail(
-                "comment state unknown after POST outcome-unknown: " + "; ".join(reasons),
+                "comment state unknown after post outcome-unknown: " + "; ".join(reasons),
                 2,
             )
         print("post reconciled: receipt provably absent; re-posting is safe")
@@ -605,14 +613,15 @@ def cmd_post(
     try:
         url = github.create_comment(envelope.repository, envelope.pr_number, body)
     except Exception as exc:
-        # B10/R2-B1: POST outcome unknown must be recorded; reconciliation
-        # means re-querying comments before any retry.
+        # B10/R2-B1/R3-B3: a raised POST means the comment effect is unknown.
+        # COMMENT_OUTCOME_UNKNOWN is comment-phase specific; only a comment
+        # re-query may unblock it (never the send path).
         current = _record(
             journal,
             current,
             envelope.chat_key,
             envelope.request_text_sha256,
-            models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+            models.DeliveryOutcome.COMMENT_OUTCOME_UNKNOWN,
             f"comment POST raised {type(exc).__name__}: {str(exc)[:200]}",
         )
         print("COMMENT_OUTCOME_UNKNOWN: re-query comments before retrying")

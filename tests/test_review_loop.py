@@ -139,11 +139,15 @@ class TestEnvelope(unittest.TestCase):
 class TestStateMachine(unittest.TestCase):
     def test_unknown_effect_is_terminal(self):
         self.assertIn(
-            models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+            models.DeliveryOutcome.SEND_OUTCOME_UNKNOWN,
+            state_machine.TERMINAL_MESSAGE_OUTCOMES,
+        )
+        self.assertIn(
+            models.DeliveryOutcome.COMMENT_OUTCOME_UNKNOWN,
             state_machine.TERMINAL_MESSAGE_OUTCOMES,
         )
         self.assertFalse(
-            state_machine.can_send(models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN)
+            state_machine.can_send(models.DeliveryOutcome.SEND_OUTCOME_UNKNOWN)
         )
 
     def test_send_allowed_only_from_provable_states(self):
@@ -155,14 +159,46 @@ class TestStateMachine(unittest.TestCase):
         # A re-run after a confirmed delivery must be allowed so the marker
         # check can report ALREADY_PRESENT instead of double posting.
         self.assertNotIn(
-            models.DeliveryOutcome.SENT_CONFIRMED, state_machine.RESEND_BLOCKED
+            models.DeliveryOutcome.SENT_CONFIRMED, state_machine.SEND_BLOCKED
         )
         self.assertNotIn(
-            models.DeliveryOutcome.ALREADY_PRESENT, state_machine.RESEND_BLOCKED
+            models.DeliveryOutcome.ALREADY_PRESENT, state_machine.SEND_BLOCKED
         )
         self.assertIn(
-            models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
-            state_machine.RESEND_BLOCKED,
+            models.DeliveryOutcome.SEND_OUTCOME_UNKNOWN,
+            state_machine.SEND_BLOCKED,
+        )
+
+    def test_send_and_comment_unknown_are_phase_separated(self):
+        """R3-B3: a send-phase unknown must never be consumed by post."""
+        self.assertNotIn(
+            models.DeliveryOutcome.SEND_OUTCOME_UNKNOWN,
+            state_machine.COMMENT_BLOCKED,
+        )
+        self.assertNotIn(
+            models.DeliveryOutcome.COMMENT_OUTCOME_UNKNOWN,
+            state_machine.SEND_BLOCKED,
+        )
+
+    def test_in_flight_states_allow_reconciliation(self):
+        """R3-B1/R3-B2: in-flight states are restart-recoverable."""
+        self.assertTrue(
+            state_machine.transition_allowed(
+                models.DeliveryOutcome.DELIVERY_INSPECTED,
+                models.DeliveryOutcome.ALREADY_PRESENT,
+            )
+        )
+        self.assertTrue(
+            state_machine.transition_allowed(
+                models.DeliveryOutcome.DELIVERY_INSPECTED,
+                models.DeliveryOutcome.RECONCILED,
+            )
+        )
+        self.assertTrue(
+            state_machine.transition_allowed(
+                models.DeliveryOutcome.HEAD_REVALIDATED,
+                models.DeliveryOutcome.COMMENT_POSTED,
+            )
         )
 
     def test_valid_progression(self):
@@ -562,7 +598,7 @@ class TestReconciliation(unittest.TestCase):
                 run_send(tmp, transport=t1, journal=journal)
             self.assertEqual(
                 journal_mod.Journal(tmp / "events.jsonl").replay()[-1].event,
-                "DELIVERY_OUTCOME_UNKNOWN",
+                "SEND_OUTCOME_UNKNOWN",
             )
 
             # Reconciliation: thread provably empty -> RECONCILED, send safe.
@@ -761,6 +797,15 @@ class TestMixedCommentMarkers(unittest.TestCase):
             REQ_SHA,
             receipt_sha,
         )
+        self.assertEqual(action, "conflict")
+
+    def test_same_comment_malformed_plus_valid_is_conflict(self):
+        """R3-B4: a malformed marker wins even inside the same comment body."""
+        receipt = make_receipt()
+        receipt_sha = comment_poster.receipt_sha256(receipt)
+        body = comment_poster.build_comment_body(make_envelope(), receipt)
+        mixed = body + "\n<!-- independent-review-receipt:broken -->"
+        action, _ = comment_poster.reconcile_comments([mixed], REQ_SHA, receipt_sha)
         self.assertEqual(action, "conflict")
 
 
@@ -1030,7 +1075,7 @@ class TestCliOrchestration(unittest.TestCase):
                     lock_dir=tmp / "locks",
                 )
             self.assertEqual(ctx.exception.code, 2)
-            self.assertEqual(journal.replay()[-1].event, "DELIVERY_OUTCOME_UNKNOWN")
+            self.assertEqual(journal.replay()[-1].event, "COMMENT_OUTCOME_UNKNOWN")
             # Retry after reconciliation (the comment never landed).
             cli.main(
                 ["post", "--envelope", str(env_path), "--receipt", str(receipt_path),
@@ -1040,6 +1085,142 @@ class TestCliOrchestration(unittest.TestCase):
                 lock_dir=tmp / "locks",
             )
             self.assertEqual(len(g.posted), 1)
+
+    def test_send_unknown_not_consumed_by_post(self):
+        """R3-B3: a send-phase unknown is never consumed by the post command."""
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            env_path = build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            journal.append(
+                event="SEND_OUTCOME_UNKNOWN",
+                chat_key=chat_key,
+                request_text_sha256=req_sha,
+            )
+            receipt_path = tmp / "receipt.json"
+            receipt_path.write_text(make_receipt().to_json(), encoding="utf-8")
+            g = github_adapter.FakeGitHub(live_facts())
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(
+                    ["post", "--envelope", str(env_path), "--receipt", str(receipt_path),
+                     "--allowed-paths", "docs/A.md"],
+                    github=g,
+                    journal=journal,
+                    lock_dir=tmp / "locks",
+                )
+            self.assertEqual(ctx.exception.code, 2)
+            self.assertEqual(len(g.posted), 0)
+            # The journal still shows the send-phase unknown: post must not
+            # have consumed it.
+            self.assertEqual(journal.replay()[-1].event, "SEND_OUTCOME_UNKNOWN")
+
+    def test_delivery_inspected_restart_converges_already_present(self):
+        """R3-B1: send in-flight after hard interruption recovers."""
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            # Process killed between the send effect and the SENT_CONFIRMED
+            # journal write; the durable state is stuck at DELIVERY_INSPECTED.
+            journal.append(
+                event="DELIVERY_INSPECTED",
+                chat_key=chat_key,
+                request_text_sha256=req_sha,
+            )
+            # The message actually landed in the thread.
+            body = (tmp / "body.txt").read_text(encoding="utf-8")
+            msg, _ = protocol.build_message(body)
+            t = transport.FakeTransport(user_messages=[msg])
+            with self.assertRaises(SystemExit) as ctx:
+                run_send(tmp, transport=t, journal=journal)
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertEqual(len(t.sent_calls), 0)
+            self.assertEqual(journal.replay()[-1].event, "ALREADY_PRESENT")
+
+    def test_delivery_inspected_restart_empty_thread_resends(self):
+        """R3-B1: send in-flight with a provably empty thread resends."""
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            journal.append(
+                event="DELIVERY_INSPECTED",
+                chat_key=chat_key,
+                request_text_sha256=req_sha,
+            )
+            t = transport.FakeTransport()
+            run_send(tmp, transport=t, journal=journal)
+            self.assertEqual(len(t.sent_calls), 1)
+            self.assertEqual(journal.replay()[-1].event, "SENT_CONFIRMED")
+
+    def test_head_revalidated_restart_comment_absent_posts(self):
+        """R3-B2: comment in-flight with a provably absent comment re-posts."""
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            env_path = build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            journal.append(
+                event="HEAD_REVALIDATED",
+                chat_key=chat_key,
+                request_text_sha256=req_sha,
+            )
+            receipt_path = tmp / "receipt.json"
+            receipt_path.write_text(make_receipt().to_json(), encoding="utf-8")
+            g = github_adapter.FakeGitHub(live_facts())
+            cli.main(
+                ["post", "--envelope", str(env_path), "--receipt", str(receipt_path),
+                 "--allowed-paths", "docs/A.md"],
+                github=g,
+                journal=journal,
+                lock_dir=tmp / "locks",
+            )
+            self.assertEqual(len(g.posted), 1)
+            self.assertEqual(journal.replay()[-1].event, "COMMENT_POSTED")
+
+    def test_head_revalidated_restart_comment_present_skips(self):
+        """R3-B2: comment in-flight with a landed comment converges to skip."""
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            env_path = build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            journal.append(
+                event="HEAD_REVALIDATED",
+                chat_key=chat_key,
+                request_text_sha256=req_sha,
+            )
+            receipt_path = tmp / "receipt.json"
+            receipt_path.write_text(make_receipt().to_json(), encoding="utf-8")
+            env_data = models.ReviewRequestEnvelope.from_json(
+                (tmp / "env.json").read_text(encoding="utf-8")
+            )
+            body = comment_poster.build_comment_body(env_data, make_receipt())
+            g = github_adapter.FakeGitHub(live_facts(), comments=[body])
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(
+                    ["post", "--envelope", str(env_path), "--receipt", str(receipt_path),
+                     "--allowed-paths", "docs/A.md"],
+                    github=g,
+                    journal=journal,
+                    lock_dir=tmp / "locks",
+                )
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertEqual(len(g.posted), 0)
+            self.assertEqual(journal.replay()[-1].event, "COMMENT_POSTED")
 
 
 if __name__ == "__main__":

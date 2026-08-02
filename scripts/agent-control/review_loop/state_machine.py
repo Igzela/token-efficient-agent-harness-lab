@@ -18,7 +18,8 @@ ORDER = [
     models.DeliveryOutcome.DELIVERY_INSPECTED,
     models.DeliveryOutcome.SENT_CONFIRMED,
     models.DeliveryOutcome.ALREADY_PRESENT,
-    models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+    models.DeliveryOutcome.SEND_OUTCOME_UNKNOWN,
+    models.DeliveryOutcome.COMMENT_OUTCOME_UNKNOWN,
     models.DeliveryOutcome.RECONCILED,
     models.DeliveryOutcome.RESPONSE_CAPTURED,
     models.DeliveryOutcome.RESPONSE_UNAVAILABLE,
@@ -29,25 +30,37 @@ ORDER = [
     models.DeliveryOutcome.COMPLETE,
 ]
 
-# States that terminate the whole delivery lifecycle and may not transition.
-TERMINAL = {
-    models.DeliveryOutcome.COMPLETE,
-    models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+# Effect-blocking outcomes: no blind retry until the thread/comments are
+# reconciled.  These are NOT durable dead-ends; read-only reconciliation is
+# the only authorized way out (send marker check, comment re-query).
+BLOCKED_UNTIL_RECONCILED = {
+    models.DeliveryOutcome.SEND_OUTCOME_UNKNOWN,
+    models.DeliveryOutcome.COMMENT_OUTCOME_UNKNOWN,
     models.DeliveryOutcome.FAILED,
 }
 
-# A terminal outcome that forbids any resend until the thread is reconciled.
-# SENT_CONFIRMED / ALREADY_PRESENT are NOT in this set: re-running the same
-# request after a confirmed delivery must be allowed so the marker check can
-# still report ALREADY_PRESENT instead of double posting.
-RESEND_BLOCKED = {
-    models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+# Durable dead-end: no authorized transition at all.
+TERMINAL = {
+    models.DeliveryOutcome.COMPLETE,
+    models.DeliveryOutcome.FAILED,
+}
+
+# Send-side effect-unknown outcomes: reconciliation is the thread marker
+# check only.  A comment-side unknown must never be consumed by the send path.
+SEND_BLOCKED = {
+    models.DeliveryOutcome.SEND_OUTCOME_UNKNOWN,
+}
+
+# Comment-side effect-unknown outcomes: reconciliation is the comment re-query
+# only.  A send-side unknown must never be consumed by the post path.
+COMMENT_BLOCKED = {
+    models.DeliveryOutcome.COMMENT_OUTCOME_UNKNOWN,
 }
 
 # Pre-effect failures (auth expired, inspection unavailable) are recoverable:
 # retrying the same request after the condition clears is safe because the
-# send effect provably never happened.  These are distinct from
-# DELIVERY_OUTCOME_UNKNOWN (the send effect itself is uncertain).
+# send effect provably never happened.  These are distinct from the
+# outcome-unknown states (the effect itself is uncertain).
 RECOVERABLE_PRE_EFFECT = {
     models.DeliveryOutcome.AUTH_REQUIRED,
     models.DeliveryOutcome.INSPECTION_UNAVAILABLE,
@@ -56,12 +69,19 @@ RECOVERABLE_PRE_EFFECT = {
 TERMINAL_MESSAGE_OUTCOMES = {
     models.DeliveryOutcome.ALREADY_PRESENT,
     models.DeliveryOutcome.SENT_CONFIRMED,
-    models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+    models.DeliveryOutcome.SEND_OUTCOME_UNKNOWN,
+    models.DeliveryOutcome.COMMENT_OUTCOME_UNKNOWN,
 }
 
 # Explicit transition table: current -> allowed observed outcomes.
 # The CLI records nothing at build time; a fresh send starts from None with a
 # LIVE_VALIDATED append, so None must allow it (plus pre-effect failures).
+#
+# R3-B1/R3-B2: DELIVERY_INSPECTED (send in-flight) and HEAD_REVALIDATED
+# (comment in-flight) are restart-recoverable: after a hard interruption the
+# journal may be stuck at the in-flight state, and reconciliation is the only
+# authorized next step.  The recovery edges are deliberately limited to the
+# convergence outcomes plus the same-phase retry.
 _EDGES: dict[models.DeliveryOutcome | None, set[models.DeliveryOutcome]] = {
     None: {
         models.DeliveryOutcome.LIVE_VALIDATED,
@@ -89,10 +109,14 @@ _EDGES: dict[models.DeliveryOutcome | None, set[models.DeliveryOutcome]] = {
         models.DeliveryOutcome.LIVE_VALIDATED,
         models.DeliveryOutcome.FAILED,
     },
+    # Send in-flight: the effect may or may not have landed.  Restart must
+    # reconcile the thread: identical marker -> ALREADY_PRESENT, provably
+    # empty -> RECONCILED (resend safe), anything else stays blocked.
     models.DeliveryOutcome.DELIVERY_INSPECTED: {
         models.DeliveryOutcome.SENT_CONFIRMED,
         models.DeliveryOutcome.ALREADY_PRESENT,
-        models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+        models.DeliveryOutcome.SEND_OUTCOME_UNKNOWN,
+        models.DeliveryOutcome.RECONCILED,
         models.DeliveryOutcome.FAILED,
     },
     models.DeliveryOutcome.SENT_CONFIRMED: {
@@ -103,14 +127,19 @@ _EDGES: dict[models.DeliveryOutcome | None, set[models.DeliveryOutcome]] = {
         models.DeliveryOutcome.RESPONSE_CAPTURED,
         models.DeliveryOutcome.RESPONSE_UNAVAILABLE,
     },
-    # Outcome-unknown: only read-only reconciliation may follow.  The marker
-    # check can converge to ALREADY_PRESENT (already delivered) or to
-    # RECONCILED (thread provably empty, so a resend is safe).  For the
-    # comment-post side, re-querying comments first may authorize a fresh
-    # revalidation (HEAD_REVALIDATED) when the comment provably never landed.
-    models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN: {
+    # Send-side outcome-unknown: only read-only thread reconciliation may
+    # follow.  The marker check can converge to ALREADY_PRESENT (already
+    # delivered) or to RECONCILED (thread provably empty, resend safe).
+    models.DeliveryOutcome.SEND_OUTCOME_UNKNOWN: {
         models.DeliveryOutcome.ALREADY_PRESENT,
         models.DeliveryOutcome.RECONCILED,
+        models.DeliveryOutcome.FAILED,
+    },
+    # Comment-side outcome-unknown: only a comment re-query may follow.
+    # Converges to COMMENT_POSTED (comment landed) or back to
+    # HEAD_REVALIDATED (provably absent, re-post authorized).
+    models.DeliveryOutcome.COMMENT_OUTCOME_UNKNOWN: {
+        models.DeliveryOutcome.COMMENT_POSTED,
         models.DeliveryOutcome.HEAD_REVALIDATED,
         models.DeliveryOutcome.FAILED,
     },
@@ -135,9 +164,13 @@ _EDGES: dict[models.DeliveryOutcome | None, set[models.DeliveryOutcome]] = {
         models.DeliveryOutcome.RECEIPT_PARSED,
         models.DeliveryOutcome.FAILED,
     },
+    # Comment in-flight: the comment may or may not have landed.  Restart
+    # must re-query comments: present identical receipt -> COMMENT_POSTED,
+    # provably absent -> revalidate (fresh live facts) then post again.
     models.DeliveryOutcome.HEAD_REVALIDATED: {
+        models.DeliveryOutcome.HEAD_REVALIDATED,
         models.DeliveryOutcome.COMMENT_POSTED,
-        models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+        models.DeliveryOutcome.COMMENT_OUTCOME_UNKNOWN,
         models.DeliveryOutcome.FAILED,
     },
     models.DeliveryOutcome.COMMENT_POSTED: {
