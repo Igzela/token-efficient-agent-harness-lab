@@ -42,13 +42,12 @@ Clean reseal attempt-1 has been consumed, terminalized, and independently accept
 
 ## Active Routing
 
-1. `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` — `READY_FOR_EXECUTION`: harden the non-authoritative independent-review transport before automated review reuse or RWE.
-2. `TOOL-LOCAL-LOOP-CONTROL-PLANE-1` — `BLOCKED_PREREQUISITE`: a separate Draft may prepare the outbound local `poll`/`run-once` adapter, but implementation acceptance and merge wait for the review-transport prerequisite.
-3. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the accepted review-transport and local-loop repairs, frozen real corpus/protocol, and separately persisted one-use RWE spend envelope.
-4. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-7. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `TOOL-LOCAL-LOOP-CONTROL-PLANE-1` — `IN_PROGRESS`: Draft PR #351 implements the outbound local `poll`/`run-once` adapter on the review-transport prerequisite now `COMPLETE`; it must not merge or claim acceptance first.
+2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the accepted review-transport repair (now `COMPLETE`), the accepted local-loop control-plane, frozen real corpus/protocol, and separately persisted one-use RWE spend envelope.
+3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 The delegated autonomous Golden Path packet remains complete through merged PR #323 and is no longer routed. The live-seal packet becomes accepted `COMPLETE` only when this canonical closeout diff passes exact-head review, canonical CI, and merge.
 
 ## Packet States
@@ -434,7 +433,9 @@ Until that merge, branch-local `COMPLETE` prose is proposed state only. Completi
 
 ## Packet TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1 — non-authoritative independent-review transport hardening
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
+
+**Owned PR:** #350 merged at `0bd9501235767dc680a40196080c271c5049f91d`
 
 **Prerequisite:** `PE7-PRODUCT-GOLDEN-PATH-DEEPSEEK-LIVE-SEAL-1` accepted `COMPLETE`.
 
@@ -472,7 +473,7 @@ Until that merge, branch-local `COMPLETE` prose is proposed state only. Completi
 
 ## Packet TOOL-LOCAL-LOOP-CONTROL-PLANE-1 — outbound local worker and durable engineering loop
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` accepted `COMPLETE`. Work may proceed on a separate Draft PR, but it must not merge or claim acceptance first.
 

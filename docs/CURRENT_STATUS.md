@@ -55,6 +55,7 @@ A new PR head invalidates earlier CI and review conclusions for that PR.
 |---|---|---|
 | #225 | Presentation-only Dashboard work | Independent and last |
 | `Igzela/alters-lab#5` | External Draft-PR evidence output for the accepted clean live seal | OPEN, Draft, unmerged; exact head `967c902487edf3959090e76c442092f75b0ba10a`; receipt comment `5158092741`; no merge authority |
+| #350 | Packet `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` implementation | MERGED at `0bd95012…` after exact-head independent review PASS and full canonical source matrix; non-authoritative review-loop transport core (idempotent delivery, strict receipt parsing, comment idempotency) + provider-free tests |
 
 PR #297 and #298 are closed without merge as superseded by accepted PR #299. PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304. PR #301, PR #306, PR #308, PR #310, PR #311, PR #313, and PR #315 are merged and accepted.
 
@@ -95,7 +96,7 @@ Therefore live acceptance is not blocked only by credential presence.
 | DeepSeek live-runner wiring repair | `COMPLETE` | Packet `PE7-DEEPSEEK-LIVE-RUNNER-WIRING-REPAIR-1`; PR #322 merged at `13f725f9…` with provider-free scheduler-path proof |
 | Delegated autonomous Golden Path | `COMPLETE` | Packet `PE7-DELEGATED-AUTONOMOUS-GOLDEN-PATH-1`; PR #323 merged as `8d9f8dc4…` after exact-head CI `30607238397` and Theo GO on `3ca951dd…` |
 | Golden Path live residual seal | `COMPLETE` | Attempt-1 completed from accepted exact-main source/binary identity through independently reviewed terminal closure; target main unchanged; one unmerged Draft PR; one sample remains `INSUFFICIENT_REPETITIONS` |
-| Independent review transport hardening | `READY_FOR_EXECUTION` | Packet `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1`; repository-owned non-authoritative protocol/validation/parser logic with local-only browser session transport |
+| Independent review transport hardening | `COMPLETE` | Packet `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1`; PR #350 merged at `0bd95012…` after exact-head independent review PASS and full canonical source matrix |
 | Context capsule automation | `COMPLETE` | PR #306 provides publication/injection; PR #313 proves the repaired post-merge push terminal path on `ca5ce102…` |
 | VDE decision and measurement contract | `COMPLETE` | Provider-free architecture/routing contract only; no accepted live measurement or implementation artifact exists |
 | First Real Workload Evidence | `BLOCKED_PREREQUISITE` | Accepted review-transport repair, frozen operator-supplied real corpus/protocol, and separately persisted one-use RWE spend envelope |
