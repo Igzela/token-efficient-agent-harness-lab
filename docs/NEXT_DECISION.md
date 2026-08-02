@@ -41,12 +41,11 @@ Clean reseal attempt-1 has been consumed, terminalized, and independently accept
 
 ## Active Routing
 
-1. `TOOL-REVIEW-TRANSPORT-IDEMPOTENCY-REPAIR-1` — `COMPLETE`: PR #350 merged at `0bd95012…` after exact-head independent review PASS and full canonical source matrix.
-2. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the accepted review-transport repair, frozen real corpus/protocol, and separately persisted one-use RWE spend envelope.
-3. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
-4. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
-5. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
-6. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
+1. `PE7-REAL-WORKLOAD-EVIDENCE-1` — `BLOCKED_PREREQUISITE` on the accepted review-transport repair (now `COMPLETE`), frozen real corpus/protocol, and separately persisted one-use RWE spend envelope.
+2. `PE7-ARCHITECTURE-CONVERGENCE-1` — `BLOCKED_PREREQUISITE`.
+3. `PE7-REAL-WORKLOAD-EVIDENCE-REPLAY-1` — `BLOCKED_PREREQUISITE`.
+4. `PE7-HARNESS-EVOLUTION-LEVEL2-GENERATIONAL-CONTROLLER-1` — `BLOCKED_PREREQUISITE`.
+5. `PE7-META-IMPROVER-EXPERIMENT-1` — `BLOCKED_PREREQUISITE`.
 The delegated autonomous Golden Path packet remains complete through merged PR #323 and is no longer routed. The live-seal packet becomes accepted `COMPLETE` only when this canonical closeout diff passes exact-head review, canonical CI, and merge.
 
 ## Packet States
