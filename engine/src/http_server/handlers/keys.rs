@@ -484,6 +484,7 @@ pub(crate) async fn api_delete_key(
     };
 
     if !deleted {
+        fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
             "key not found",

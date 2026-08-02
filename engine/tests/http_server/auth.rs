@@ -519,6 +519,31 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
     store
         .revoke_api_key_metadata_for_tenant(&stale_key.key_id, "local", "test-stale-key")
         .unwrap();
+    let (stale_delete_key, stale_delete_raw) = resolver
+        .create_api_key(
+            "local",
+            Some(HashSet::from(["team:read".to_string()])),
+            None,
+            1.0,
+        )
+        .unwrap();
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            &stale_delete_key.key_id,
+            "stale-delete-key",
+            "member",
+            &["team:read".to_string()],
+            "test-stale-delete-key",
+        )
+        .unwrap();
+    store
+        .delete_api_key_metadata_for_tenant(
+            &stale_delete_key.key_id,
+            "local",
+            "test-stale-delete-key",
+        )
+        .unwrap();
 
     let mismatched_reviewer_id = "foreign-persisted-reviewer".to_string();
     store
@@ -607,6 +632,32 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         .await
         .unwrap();
     assert_eq!(stale_auth.status(), StatusCode::UNAUTHORIZED);
+    let stale_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/v1/keys/{}", stale_delete_key.key_id))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_delete.status(), StatusCode::NOT_FOUND);
+    let stale_delete_auth = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {stale_delete_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_delete_auth.status(), StatusCode::UNAUTHORIZED);
     let listed = app
         .clone()
         .oneshot(
