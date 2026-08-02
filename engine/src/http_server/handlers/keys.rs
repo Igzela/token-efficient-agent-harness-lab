@@ -10,7 +10,7 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{CreateApiKeyRequest, UpdateKeyScopesRequest, AXUM_API_SCHEMA_VERSION};
-use crate::infrastructure::auth::LOCAL_BOOTSTRAP_API_KEY_ID;
+use crate::infrastructure::auth::{TenantResolver, LOCAL_BOOTSTRAP_API_KEY_ID};
 use crate::storage::local_product_store::{
     validate_managed_acceptance_role_scopes, LocalProductStore, ALL_MANAGED_ACCEPTANCE_SCOPES,
     SCOPE_IDENTITY_DELEGATE,
@@ -20,6 +20,10 @@ fn requests_managed_acceptance_scope(scopes: &[String]) -> bool {
     scopes
         .iter()
         .any(|scope| ALL_MANAGED_ACCEPTANCE_SCOPES.contains(&scope.as_str()))
+}
+
+fn fail_closed_resolver_after_durable_key_uncertainty(resolver: &mut TenantResolver, key_id: &str) {
+    resolver.remove_api_key(key_id);
 }
 
 fn require_bootstrap_for_managed_delegation(
@@ -297,12 +301,13 @@ pub(crate) async fn api_revoke_key(
             // A commit error has unknown durable outcome. Fail closed in the
             // in-memory resolver instead of restoring a key that may already
             // be revoked in the canonical store.
-            guard.remove_api_key(&key_id);
+            fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
             return Err(internal_error(error));
         }
     };
 
     if !revoked {
+        fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
             "key not found or already revoked",
@@ -401,12 +406,14 @@ pub(crate) async fn api_rotate_key(
             guard.add_api_key(new_key.clone());
         }
         Ok(false) => {
+            fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
             return Err(ApiError::new(
                 axum::http::StatusCode::NOT_FOUND,
                 "key not found or already revoked",
             ));
         }
         Err(error) => {
+            fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
             return Err(internal_error(error));
         }
     }
@@ -471,7 +478,7 @@ pub(crate) async fn api_delete_key(
         Err(error) => {
             // Keep the resolver fail-closed when the durable outcome is
             // unknown; restoring the key could resurrect revoked authority.
-            guard.remove_api_key(&key_id);
+            fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
             return Err(internal_error(error));
         }
     };
@@ -546,33 +553,37 @@ pub(crate) async fn api_update_key_scopes(
     ) {
         Ok(updated) => updated,
         Err(error) => {
+            fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
             return Err(internal_error(error));
         }
     };
 
     if !updated {
+        fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
             "key not found",
         ));
     }
-    guard
+    if guard
         .update_api_key_scopes(&key_id, scopes.clone())
-        .map_err(|_| {
-            // The resolver was validated above; if its update nevertheless
-            // fails after the store commit, restore the canonical old value
-            // before returning a bounded authority error.
-            let _ = store.update_api_key_scopes_for_tenant(
-                &key_id,
-                &context.tenant_id,
-                &old_scopes.iter().cloned().collect::<Vec<_>>(),
-                &context.api_key_id,
-            );
-            ApiError::new(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "auth state update failed",
-            )
-        })?;
+        .is_err()
+    {
+        // The resolver was validated above; if its update nevertheless
+        // fails after the store commit, restore the canonical old value
+        // when possible, and always remove the in-memory authority.
+        let _ = store.update_api_key_scopes_for_tenant(
+            &key_id,
+            &context.tenant_id,
+            &old_scopes.iter().cloned().collect::<Vec<_>>(),
+            &context.api_key_id,
+        );
+        fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
+        return Err(ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "auth state update failed",
+        ));
+    }
 
     Ok((
         cors_headers(),
@@ -583,4 +594,35 @@ pub(crate) async fn api_update_key_scopes(
             "scopes": request.scopes,
         })),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fail_closed_resolver_after_durable_key_uncertainty;
+    use crate::infrastructure::auth::{Tenant, TenantResolver};
+    use std::collections::HashSet;
+
+    #[test]
+    fn durable_key_uncertainty_removes_resolver_authority() {
+        let mut resolver = TenantResolver::new();
+        resolver.add_tenant(Tenant {
+            tenant_id: "local".into(),
+            name: "Local".into(),
+            scopes: HashSet::from(["team:read".to_string()]),
+            rate_limit: None,
+        });
+        let (key, _) = resolver
+            .create_api_key(
+                "local",
+                Some(HashSet::from(["team:read".to_string()])),
+                None,
+                1.0,
+            )
+            .unwrap();
+        assert!(resolver.api_key(&key.key_id).is_some());
+
+        fail_closed_resolver_after_durable_key_uncertainty(&mut resolver, &key.key_id);
+
+        assert!(resolver.api_key(&key.key_id).is_none());
+    }
 }

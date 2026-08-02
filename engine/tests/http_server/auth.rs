@@ -498,6 +498,28 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         )
         .unwrap();
 
+    let (stale_key, stale_raw) = resolver
+        .create_api_key(
+            "local",
+            Some(HashSet::from(["team:read".to_string()])),
+            None,
+            1.0,
+        )
+        .unwrap();
+    store
+        .record_api_key_metadata_for_tenant(
+            "local",
+            &stale_key.key_id,
+            "stale-key",
+            "member",
+            &["team:read".to_string()],
+            "test-stale-key",
+        )
+        .unwrap();
+    store
+        .revoke_api_key_metadata_for_tenant(&stale_key.key_id, "local", "test-stale-key")
+        .unwrap();
+
     let mismatched_reviewer_id = "foreign-persisted-reviewer".to_string();
     store
         .record_api_key_metadata_for_tenant(
@@ -559,6 +581,32 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
             .with_local_store_arc(store.clone())
             .with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 1.0),
     );
+    let stale_revoke = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{}/revoke", stale_key.key_id))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_revoke.status(), StatusCode::NOT_FOUND);
+    let stale_auth = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {stale_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_auth.status(), StatusCode::UNAUTHORIZED);
     let listed = app
         .clone()
         .oneshot(

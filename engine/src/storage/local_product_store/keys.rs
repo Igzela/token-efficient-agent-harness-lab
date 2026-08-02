@@ -2,8 +2,119 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
+use crate::infrastructure::auth::LOCAL_BOOTSTRAP_API_KEY_ID;
 
 impl LocalProductStore {
+    /// Bind only the reserved bootstrap row left unbound by the v36 tenant
+    /// column migration. Ordinary legacy rows remain unbound and are never
+    /// silently assigned to the local tenant.
+    pub fn bind_legacy_bootstrap_api_key_metadata(
+        &self,
+        tenant_id: &str,
+        actor: &str,
+    ) -> Result<bool, String> {
+        if tenant_id.trim().is_empty() {
+            return Err("tenant_id must not be empty".into());
+        }
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_sqlite_transaction(|conn| {
+                let existing: Option<Option<String>> = conn
+                    .query_row(
+                        "SELECT tenant_id FROM api_key_metadata WHERE key_id = ?1",
+                        [LOCAL_BOOTSTRAP_API_KEY_ID],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                match existing {
+                    None => Ok(false),
+                    Some(Some(existing_tenant)) if existing_tenant == tenant_id => Ok(true),
+                    Some(Some(_)) => Err("canonical bootstrap key tenant binding is immutable".into()),
+                    Some(None) => {
+                        let now = self.now();
+                        let changed = conn
+                            .execute(
+                                "UPDATE api_key_metadata SET tenant_id = ?1
+                                 WHERE key_id = ?2 AND tenant_id IS NULL",
+                                params![tenant_id, LOCAL_BOOTSTRAP_API_KEY_ID],
+                            )
+                            .map_err(|e| e.to_string())?;
+                        if changed != 1 {
+                            return Err("canonical bootstrap key tenant binding changed concurrently".into());
+                        }
+                        append_audit_locked(
+                            conn,
+                            &now,
+                            actor,
+                            "api_key.bootstrap_tenant_bound",
+                            LOCAL_BOOTSTRAP_API_KEY_ID,
+                            &json!({
+                                "key_id": LOCAL_BOOTSTRAP_API_KEY_ID,
+                                "tenant_id": tenant_id,
+                            }),
+                        )?;
+                        Ok(true)
+                    }
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut transaction = client.transaction().map_err(|e| e.to_string())?;
+                let existing: Option<Option<String>> = transaction
+                    .query_opt(
+                        "SELECT tenant_id FROM api_key_metadata WHERE key_id = $1 FOR UPDATE",
+                        &[&LOCAL_BOOTSTRAP_API_KEY_ID],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .map(|row| row.get(0));
+                match existing {
+                    None => {
+                        transaction.commit().map_err(|e| e.to_string())?;
+                        Ok(false)
+                    }
+                    Some(Some(existing_tenant)) if existing_tenant == tenant_id => {
+                        transaction.commit().map_err(|e| e.to_string())?;
+                        Ok(true)
+                    }
+                    Some(Some(_)) => Err("canonical bootstrap key tenant binding is immutable".into()),
+                    Some(None) => {
+                        let now = self.now();
+                        let changed = transaction
+                            .execute(
+                                "UPDATE api_key_metadata SET tenant_id = $1
+                                 WHERE key_id = $2 AND tenant_id IS NULL",
+                                &[&tenant_id, &LOCAL_BOOTSTRAP_API_KEY_ID],
+                            )
+                            .map_err(|e| e.to_string())?;
+                        if changed != 1 {
+                            return Err("canonical bootstrap key tenant binding changed concurrently".into());
+                        }
+                        let details = json!({
+                            "key_id": LOCAL_BOOTSTRAP_API_KEY_ID,
+                            "tenant_id": tenant_id,
+                        })
+                        .to_string();
+                        transaction
+                            .execute(
+                                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                                 VALUES ($1, $2, $3, $4, $5)",
+                                &[
+                                    &now,
+                                    &actor,
+                                    &"api_key.bootstrap_tenant_bound",
+                                    &LOCAL_BOOTSTRAP_API_KEY_ID,
+                                    &details,
+                                ],
+                            )
+                            .map_err(|e| e.to_string())?;
+                        transaction.commit().map_err(|e| e.to_string())?;
+                        Ok(true)
+                    }
+                }
+            }),
+        }
+    }
+
     pub fn record_api_key_metadata(
         &self,
         key_id: &str,

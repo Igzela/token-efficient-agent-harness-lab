@@ -98,6 +98,9 @@ fn main() {
             .upsert_team_member("local-admin", "Local Admin", "admin")
             .expect("failed to record local admin team member");
         store
+            .bind_legacy_bootstrap_api_key_metadata("local", "bootstrap")
+            .expect("failed to bind legacy local bootstrap API key metadata");
+        store
             .record_api_key_metadata_for_tenant(
                 "local",
                 "local-admin-env",

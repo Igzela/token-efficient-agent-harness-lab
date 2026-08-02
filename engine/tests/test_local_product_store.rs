@@ -1,3 +1,4 @@
+use engine::infrastructure::auth::LOCAL_BOOTSTRAP_API_KEY_ID;
 use engine::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
 use engine::provider::audit::{
     ProviderAuditEvent, ProviderAuditRecorder, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION,
@@ -3268,6 +3269,50 @@ fn test_api_key_tenant_binding_is_immutable_and_listing_is_scoped() {
         .unwrap();
     assert_eq!(tenant_b_keys.len(), 1);
     assert_eq!(tenant_b_keys[0]["key_id"], "tenant-key-b");
+}
+
+#[test]
+fn test_legacy_bootstrap_binding_is_canonical_and_idempotent() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("bootstrap-binding.db")).unwrap();
+    store
+        .record_api_key_metadata(
+            LOCAL_BOOTSTRAP_API_KEY_ID,
+            "local-admin",
+            "admin",
+            &["team:admin".to_string()],
+            "legacy-fixture",
+        )
+        .unwrap();
+
+    assert!(store
+        .bind_legacy_bootstrap_api_key_metadata("local", "bootstrap")
+        .unwrap());
+    assert!(store
+        .bind_legacy_bootstrap_api_key_metadata("local", "bootstrap")
+        .unwrap());
+    assert_eq!(
+        store
+            .get_api_key_metadata_for_tenant(LOCAL_BOOTSTRAP_API_KEY_ID, "local")
+            .unwrap()
+            .unwrap()["tenant_id"],
+        "local"
+    );
+
+    let ordinary_legacy = "ordinary-legacy-unbound";
+    store
+        .record_api_key_metadata(
+            ordinary_legacy,
+            "ordinary",
+            "admin",
+            &["team:admin".to_string()],
+            "legacy-fixture",
+        )
+        .unwrap();
+    assert!(store
+        .get_api_key_metadata_for_tenant(ordinary_legacy, "local")
+        .unwrap()
+        .is_none());
 }
 
 // ---------------------------------------------------------------------------

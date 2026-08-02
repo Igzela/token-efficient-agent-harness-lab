@@ -210,6 +210,31 @@ async fn pg_response_json(response: axum::response::Response) -> Value {
 fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart() {
     let Some(store) = test_store() else { return };
     let store = Arc::new(store);
+    if store
+        .get_api_key_metadata(LOCAL_BOOTSTRAP_API_KEY_ID)
+        .unwrap()
+        .is_none()
+    {
+        store
+            .record_api_key_metadata(
+                LOCAL_BOOTSTRAP_API_KEY_ID,
+                "local-admin",
+                "admin",
+                &["team:admin".to_string()],
+                "legacy-fixture",
+            )
+            .unwrap();
+    }
+    assert!(store
+        .bind_legacy_bootstrap_api_key_metadata("local", "bootstrap")
+        .unwrap());
+    assert_eq!(
+        store
+            .get_api_key_metadata_for_tenant(LOCAL_BOOTSTRAP_API_KEY_ID, "local")
+            .unwrap()
+            .unwrap()["tenant_id"],
+        "local"
+    );
     let bootstrap_raw = format!("harness_{}", "a".repeat(64));
     let ordinary_raw = format!("harness_{}", "b".repeat(64));
     let mut resolver = TenantResolver::new();
