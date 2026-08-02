@@ -220,7 +220,10 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
                 LOCAL_BOOTSTRAP_API_KEY_ID,
                 "local-admin",
                 "admin",
-                &["team:admin".to_string()],
+                &[
+                    "team:admin".to_string(),
+                    SCOPE_IDENTITY_DELEGATE.to_string(),
+                ],
                 "legacy-fixture",
             )
             .unwrap();
@@ -438,6 +441,43 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
         revoked_at: None,
         last_used_at: None,
     });
+    restarted_resolver.add_tenant(Tenant {
+        tenant_id: "foreign".into(),
+        name: "PostgreSQL foreign tenant".into(),
+        scopes: ["team:read", "team:admin"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        rate_limit: Some(10_000),
+    });
+    let foreign_binding_key_id = "pg-foreign-binding";
+    store
+        .record_api_key_metadata_for_tenant(
+            "foreign",
+            foreign_binding_key_id,
+            "pg-foreign-binding",
+            "reviewer",
+            &MANAGED_REVIEWER_KEY_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "pg-foreign-binding-fixture",
+        )
+        .unwrap();
+    restarted_resolver.add_api_key(APIKey {
+        key_id: foreign_binding_key_id.into(),
+        tenant_id: "foreign".into(),
+        key_hash: hash_api_key("unused-foreign-binding", "foreign-binding-salt"),
+        key_salt: "foreign-binding-salt".into(),
+        scopes: MANAGED_REVIEWER_KEY_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .collect(),
+        created_at: 1.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
     let restarted_app = build_axum_router(
         AxumApiState::new()
             .with_local_store_arc(store.clone())
@@ -566,46 +606,6 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
     });
     assert_eq!(repeated_revoke.status(), StatusCode::NOT_FOUND);
 
-    let foreign_binding = runtime.block_on(async {
-        restarted_app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/v1/keys")
-                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        json!({
-                            "user_id": "pg-foreign-binding",
-                            "role": "reviewer",
-                            "scopes": MANAGED_REVIEWER_KEY_SCOPES
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-    });
-    assert_eq!(foreign_binding.status(), StatusCode::OK);
-    let foreign_binding_key_id = runtime.block_on(pg_response_json(foreign_binding))["key_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    store
-        .record_api_key_metadata_for_tenant(
-            "foreign",
-            &foreign_binding_key_id,
-            "pg-foreign-binding",
-            "reviewer",
-            &MANAGED_REVIEWER_KEY_SCOPES
-                .iter()
-                .map(|scope| (*scope).to_string())
-                .collect::<Vec<_>>(),
-            "pg-foreign-binding-test",
-        )
-        .unwrap();
     let foreign_revoke = runtime.block_on(async {
         restarted_app
             .clone()
@@ -622,10 +622,6 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
     });
     assert_eq!(foreign_revoke.status(), StatusCode::NOT_FOUND);
 
-    // `postgres::Client` performs synchronous runtime work from Drop. Keep
-    // the router and pool teardown off the Tokio test runtime as well as
-    // their initialization, otherwise a successful assertion can abort the
-    // process during destructor cleanup.
     runtime.shutdown_background();
     drop(restarted_app);
     drop(store);
@@ -635,18 +631,30 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
 #[test]
 fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
     let Some(store) = test_store() else { return };
+    let previous_gate = std::env::var_os(PRODUCT_TASK_GATE);
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
+    let previous_target_repo_output = std::env::var_os("ACP_ENABLE_TARGET_REPO_OUTPUT");
+    std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", "1");
+    let workspace_root = tempfile::tempdir().unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
     let tag = uuid_tag();
-    let (_repo, repo_path) = pg_product_repo(&format!("rebind-{tag}"));
+    let (repo, revision) = pg_product_repo(&format!("rebind-{tag}"));
+    std::fs::create_dir_all(repo.path().join("docs")).unwrap();
+    std::fs::write(
+        repo.path().join("docs/USER_GUIDE.md"),
+        "delegated rebind fixture\n",
+    )
+    .unwrap();
     let request = ProductTaskIntakeRequest {
         objective: "bind a PostgreSQL recovery task".into(),
         target_id: format!("pg-rebind-{tag}"),
-        target_repo_path: repo_path,
+        target_repo_path: repo.path().to_string_lossy().into_owned(),
         source_kind: Some("git_repository".into()),
-        source_revision: "unused-at-intake".into(),
+        source_revision: revision,
         source_tree_hash: None,
-        allowed_paths: vec!["README.md".into()],
+        allowed_paths: vec!["docs/USER_GUIDE.md".into()],
         verification_commands: vec![ProductVerificationCommand {
-            command: "test -f README.md".into(),
+            command: "test -f docs/USER_GUIDE.md".into(),
             timeout_ms: 5_000,
         }],
         output_intent: "artifact_only".into(),
@@ -772,7 +780,7 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
         executions: 1,
         repositories: vec!["Igzela/alters-lab".into()],
         task_classes: vec!["documentation".into()],
-        allowed_paths: vec!["README.md".into()],
+        allowed_paths: vec!["docs/USER_GUIDE.md".into()],
         max_changed_files: 1,
         max_changed_lines: 100,
         max_cost_usd_per_run: 0.50,
@@ -789,7 +797,16 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
             "merge": false,
             "auto_merge": false
         }),
-        forbidden: vec!["credential changes".into(), "destructive operations".into()],
+        forbidden: vec![
+            "credential changes".into(),
+            "authentication or permission changes".into(),
+            "schema or database migrations".into(),
+            "dependency changes".into(),
+            "executable or workflow changes".into(),
+            "destructive operations".into(),
+            "release".into(),
+            "deployment".into(),
+        ],
     };
     store
         .persist_delegation_for_product_task(&principal, task_id, &delegation)
@@ -841,6 +858,15 @@ fn pg_pre_admission_delegation_rebind_preserves_operation_and_task_version() {
             &principal,
         )
         .is_err());
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    match previous_target_repo_output {
+        Some(value) => std::env::set_var("ACP_ENABLE_TARGET_REPO_OUTPUT", value),
+        None => std::env::remove_var("ACP_ENABLE_TARGET_REPO_OUTPUT"),
+    }
+    match previous_gate {
+        Some(value) => std::env::set_var(PRODUCT_TASK_GATE, value),
+        None => std::env::remove_var(PRODUCT_TASK_GATE),
+    }
 }
 
 #[cfg(feature = "pg-tests")]
@@ -4269,6 +4295,8 @@ fn pg_managed_acceptance_attempt_replay_lease_terminal_restart_and_principal_par
 #[cfg(feature = "pg-tests")]
 fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() {
     let Some(store) = test_store() else { return };
+    let previous_gate = std::env::var_os(PRODUCT_TASK_GATE);
+    std::env::set_var(PRODUCT_TASK_GATE, "1");
     let tag = uuid_tag();
     let key_id = format!("delegated-pg-operator-{tag}");
     store
@@ -4351,9 +4379,11 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
         .map(str::to_string)
         .collect(),
     };
+    let workspace_root = tempfile::tempdir().unwrap();
     let target_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(target_dir.path().join("docs")).unwrap();
     std::fs::write(target_dir.path().join("docs/USER_GUIDE.md"), "pg test\n").unwrap();
+    std::env::set_var("ACP_PRODUCT_WORKSPACE_ROOT", workspace_root.path());
     let intake = ProductTaskIntakeRequest {
         objective: "Run bounded delegated PostgreSQL test".into(),
         target_id: format!("delegated-pg-test-{tag}"),
@@ -4502,6 +4532,11 @@ fn pg_delegated_manifest_spend_lease_cancel_and_restart_match_sqlite_contract() 
             .unwrap()["replayed"],
         true
     );
+    std::env::remove_var("ACP_PRODUCT_WORKSPACE_ROOT");
+    match previous_gate {
+        Some(value) => std::env::set_var(PRODUCT_TASK_GATE, value),
+        None => std::env::remove_var(PRODUCT_TASK_GATE),
+    }
 }
 
 #[test]

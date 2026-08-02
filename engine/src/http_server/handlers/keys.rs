@@ -10,7 +10,7 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{CreateApiKeyRequest, UpdateKeyScopesRequest, AXUM_API_SCHEMA_VERSION};
-use crate::infrastructure::auth::{TenantResolver, LOCAL_BOOTSTRAP_API_KEY_ID};
+use crate::infrastructure::auth::{APIKey, TenantResolver, LOCAL_BOOTSTRAP_API_KEY_ID};
 use crate::storage::local_product_store::{
     validate_managed_acceptance_role_scopes, LocalProductStore, ALL_MANAGED_ACCEPTANCE_SCOPES,
     SCOPE_IDENTITY_DELEGATE,
@@ -24,6 +24,84 @@ fn requests_managed_acceptance_scope(scopes: &[String]) -> bool {
 
 fn fail_closed_resolver_after_durable_key_uncertainty(resolver: &mut TenantResolver, key_id: &str) {
     resolver.remove_api_key(key_id);
+}
+
+async fn run_store_operation<T, F>(operation: F) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| internal_error(format!("key authority worker failed: {error}")))?
+        .map_err(internal_error)
+}
+
+fn resolver_api_key(
+    resolver: &Arc<std::sync::Mutex<TenantResolver>>,
+    key_id: &str,
+) -> Result<APIKey, ApiError> {
+    resolver
+        .lock()
+        .map_err(|_| {
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "auth unavailable",
+            )
+        })?
+        .api_key(key_id)
+        .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))
+}
+
+fn resolver_remove_key(
+    resolver: &Arc<std::sync::Mutex<TenantResolver>>,
+    key_id: &str,
+) -> Result<(), ApiError> {
+    let mut guard = resolver.lock().map_err(|_| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "auth unavailable",
+        )
+    })?;
+    fail_closed_resolver_after_durable_key_uncertainty(&mut guard, key_id);
+    Ok(())
+}
+
+fn fail_closed_missing_scoped_key(
+    resolver: &Arc<std::sync::Mutex<TenantResolver>>,
+    key_id: &str,
+    tenant_id: &str,
+) -> Result<(), ApiError> {
+    let same_tenant = resolver
+        .lock()
+        .map_err(|_| {
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "auth unavailable",
+            )
+        })?
+        .api_key(key_id)
+        .is_some_and(|key| key.tenant_id == tenant_id);
+    if same_tenant {
+        resolver_remove_key(resolver, key_id)?;
+    }
+    Ok(())
+}
+
+fn resolver_update_key_scopes(
+    resolver: &Arc<std::sync::Mutex<TenantResolver>>,
+    key_id: &str,
+    scopes: std::collections::HashSet<String>,
+) -> Result<(), ApiError> {
+    let mut guard = resolver.lock().map_err(|_| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "auth unavailable",
+        )
+    })?;
+    guard
+        .update_api_key_scopes(key_id, scopes)
+        .map_err(internal_error)
 }
 
 fn require_bootstrap_for_managed_delegation(
@@ -140,9 +218,12 @@ pub(crate) async fn api_list_keys(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    let keys = store
-        .list_api_key_metadata_for_tenant(&context.tenant_id, 100)
-        .map_err(internal_error)?;
+    let keys = run_store_operation({
+        let store = Arc::clone(&store);
+        let tenant_id = context.tenant_id.clone();
+        move || store.list_api_key_metadata_for_tenant(&tenant_id, 100)
+    })
+    .await?;
     Ok((
         cors_headers(),
         Json(json!({
@@ -161,7 +242,20 @@ pub(crate) async fn api_create_key(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    require_bootstrap_for_managed_delegation(&store, &context, &request.role, &request.scopes)?;
+    let bootstrap_store = Arc::clone(&store);
+    let bootstrap_context = context.clone();
+    let bootstrap_role = request.role.clone();
+    let bootstrap_scopes = request.scopes.clone();
+    tokio::task::spawn_blocking(move || {
+        require_bootstrap_for_managed_delegation(
+            &bootstrap_store,
+            &bootstrap_context,
+            &bootstrap_role,
+            &bootstrap_scopes,
+        )
+    })
+    .await
+    .map_err(|error| internal_error(format!("bootstrap authority worker failed: {error}")))??;
     validate_managed_acceptance_role_scopes(&request.role, &request.scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
     let actor_store = Arc::clone(&store);
@@ -264,45 +358,76 @@ pub(crate) async fn api_revoke_key(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    require_managed_actor_key_mutation_allowed(&store, &context)?;
-    let role = store
-        .get_api_key_metadata_for_tenant(&key_id, &context.tenant_id)
-        .map_err(internal_error)?
-        .and_then(|metadata| {
-            metadata
-                .get("role")
-                .and_then(|value| value.as_str())
-                .map(str::to_string)
-        });
-
-    let resolver = state.tenant_resolver.as_ref().ok_or_else(|| {
+    let actor_store = Arc::clone(&store);
+    let actor_context = context.clone();
+    tokio::task::spawn_blocking(move || {
+        require_managed_actor_key_mutation_allowed(&actor_store, &actor_context)
+    })
+    .await
+    .map_err(|error| internal_error(format!("key authority worker failed: {error}")))??;
+    let resolver = state.tenant_resolver.as_ref().cloned().ok_or_else(|| {
         ApiError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "auth unavailable",
         )
     })?;
+    let metadata = run_store_operation({
+        let store = Arc::clone(&store);
+        let key_id = key_id.clone();
+        let tenant_id = context.tenant_id.clone();
+        move || store.get_api_key_metadata_for_tenant(&key_id, &tenant_id)
+    })
+    .await?;
+    let metadata = match metadata {
+        Some(metadata) => metadata,
+        None => {
+            fail_closed_missing_scoped_key(&resolver, &key_id, &context.tenant_id)?;
+            return Err(ApiError::new(
+                axum::http::StatusCode::NOT_FOUND,
+                "key not found",
+            ));
+        }
+    };
+    let role = metadata
+        .get("role")
+        .and_then(|value| value.as_str().map(str::to_string));
+
+    let target = resolver_api_key(&resolver, &key_id)?;
+    let target_context = context.clone();
+    let target_store = Arc::clone(&store);
+    let target_role = role.clone();
+    tokio::task::spawn_blocking(move || {
+        require_key_target_authority(
+            &target_store,
+            &target_context,
+            &target,
+            target_role.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| internal_error(format!("key authority worker failed: {error}")))??;
+    let revoked = run_store_operation({
+        let store = Arc::clone(&store);
+        let key_id = key_id.clone();
+        let tenant_id = context.tenant_id.clone();
+        let actor_key_id = context.api_key_id.clone();
+        move || store.revoke_api_key_metadata_for_tenant(&key_id, &tenant_id, &actor_key_id)
+    })
+    .await;
     let mut guard = resolver.lock().map_err(|_| {
         ApiError::new(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "auth unavailable",
         )
     })?;
-    let target = guard
-        .api_key(&key_id)
-        .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
-    require_key_target_authority(&store, &context, &target, role.as_deref())?;
-    let revoked = match store.revoke_api_key_metadata_for_tenant(
-        &key_id,
-        &context.tenant_id,
-        &context.api_key_id,
-    ) {
+    let revoked = match revoked {
         Ok(revoked) => revoked,
         Err(error) => {
             // A commit error has unknown durable outcome. Fail closed in the
             // in-memory resolver instead of restoring a key that may already
             // be revoked in the canonical store.
             fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
-            return Err(internal_error(error));
+            return Err(error);
         }
     };
 
@@ -330,41 +455,62 @@ pub(crate) async fn api_rotate_key(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    require_managed_actor_key_mutation_allowed(&store, &context)?;
+    let actor_store = Arc::clone(&store);
+    let actor_context = context.clone();
+    tokio::task::spawn_blocking(move || {
+        require_managed_actor_key_mutation_allowed(&actor_store, &actor_context)
+    })
+    .await
+    .map_err(|error| internal_error(format!("key authority worker failed: {error}")))??;
 
-    let old_key = store
-        .get_api_key_metadata_for_tenant(&key_id, &context.tenant_id)
-        .map_err(internal_error)?
-        .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
+    let old_key = run_store_operation({
+        let store = Arc::clone(&store);
+        let key_id = key_id.clone();
+        let tenant_id = context.tenant_id.clone();
+        move || store.get_api_key_metadata_for_tenant(&key_id, &tenant_id)
+    })
+    .await?
+    .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
 
-    let user_id = old_key["user_id"].as_str().ok_or_else(|| {
-        ApiError::new(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "invalid key metadata",
-        )
-    })?;
-    let role = old_key["role"].as_str().ok_or_else(|| {
-        ApiError::new(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "invalid key metadata",
-        )
-    })?;
-    let resolver = state.tenant_resolver.as_ref().ok_or_else(|| {
+    let user_id = old_key["user_id"]
+        .as_str()
+        .ok_or_else(|| {
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid key metadata",
+            )
+        })?
+        .to_string();
+    let role = old_key["role"]
+        .as_str()
+        .ok_or_else(|| {
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid key metadata",
+            )
+        })?
+        .to_string();
+    let resolver = state.tenant_resolver.as_ref().cloned().ok_or_else(|| {
         ApiError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "auth unavailable",
         )
     })?;
-    let mut guard = resolver.lock().map_err(|_| {
-        ApiError::new(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "auth unavailable",
+    let target = resolver_api_key(&resolver, &key_id)?;
+    let target_store = Arc::clone(&store);
+    let target_context = context.clone();
+    let target_role = role.clone();
+    let target_for_check = target.clone();
+    tokio::task::spawn_blocking(move || {
+        require_key_target_authority(
+            &target_store,
+            &target_context,
+            &target_for_check,
+            Some(target_role.as_str()),
         )
-    })?;
-    let target = guard
-        .api_key(&key_id)
-        .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
-    require_key_target_authority(&store, &context, &target, Some(role))?;
+    })
+    .await
+    .map_err(|error| internal_error(format!("key authority worker failed: {error}")))??;
     let scopes: Vec<String> = old_key["scopes"]
         .as_array()
         .map(|arr| {
@@ -373,34 +519,75 @@ pub(crate) async fn api_rotate_key(
                 .collect()
         })
         .unwrap_or_default();
-    require_bootstrap_for_managed_delegation(&store, &context, role, &scopes)?;
-    validate_managed_acceptance_role_scopes(role, &scopes)
+    let bootstrap_store = Arc::clone(&store);
+    let bootstrap_context = context.clone();
+    let bootstrap_role = role.clone();
+    let bootstrap_scopes = scopes.clone();
+    tokio::task::spawn_blocking(move || {
+        require_bootstrap_for_managed_delegation(
+            &bootstrap_store,
+            &bootstrap_context,
+            &bootstrap_role,
+            &bootstrap_scopes,
+        )
+    })
+    .await
+    .map_err(|error| internal_error(format!("bootstrap authority worker failed: {error}")))??;
+    validate_managed_acceptance_role_scopes(&role, &scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
     let expires_at = old_key["expires_at"].as_f64();
-    if old_key["revoked_at"].as_str().is_some() {
-        guard.remove_api_key(&key_id);
-        return Err(ApiError::new(
-            axum::http::StatusCode::NOT_FOUND,
-            "key not found or already revoked",
-        ));
-    }
-
     let scopes_set: std::collections::HashSet<String> = scopes.iter().cloned().collect();
     let now = state.now();
-    let (new_key, raw_key) = guard
-        .prepare_api_key(&context.tenant_id, Some(scopes_set), expires_at, now)
-        .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let (new_key, raw_key) = {
+        let mut guard = resolver.lock().map_err(|_| {
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "auth unavailable",
+            )
+        })?;
+        if old_key["revoked_at"].as_str().is_some() {
+            guard.remove_api_key(&key_id);
+            return Err(ApiError::new(
+                axum::http::StatusCode::NOT_FOUND,
+                "key not found or already revoked",
+            ));
+        }
+        guard
+            .prepare_api_key(&context.tenant_id, Some(scopes_set), expires_at, now)
+            .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?
+    };
 
-    match store.rotate_api_key_metadata_for_tenant(
-        &key_id,
-        &context.tenant_id,
-        &new_key.key_id,
-        user_id,
-        role,
-        &scopes,
-        new_key.expires_at,
-        &context.api_key_id,
-    ) {
+    let rotate_result = run_store_operation({
+        let store = Arc::clone(&store);
+        let key_id = key_id.clone();
+        let tenant_id = context.tenant_id.clone();
+        let new_key_id = new_key.key_id.clone();
+        let user_id = user_id.clone();
+        let role = role.clone();
+        let scopes = scopes.clone();
+        let expires_at = new_key.expires_at;
+        let actor_key_id = context.api_key_id.clone();
+        move || {
+            store.rotate_api_key_metadata_for_tenant(
+                &key_id,
+                &tenant_id,
+                &new_key_id,
+                &user_id,
+                &role,
+                &scopes,
+                expires_at,
+                &actor_key_id,
+            )
+        }
+    })
+    .await;
+    let mut guard = resolver.lock().map_err(|_| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "auth unavailable",
+        )
+    })?;
+    match rotate_result {
         Ok(true) => {
             guard.remove_api_key(&key_id);
             guard.add_api_key(new_key.clone());
@@ -414,7 +601,7 @@ pub(crate) async fn api_rotate_key(
         }
         Err(error) => {
             fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
-            return Err(internal_error(error));
+            return Err(error);
         }
     }
 
@@ -442,44 +629,75 @@ pub(crate) async fn api_delete_key(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    require_managed_actor_key_mutation_allowed(&store, &context)?;
-    let role = store
-        .get_api_key_metadata_for_tenant(&key_id, &context.tenant_id)
-        .map_err(internal_error)?
-        .and_then(|metadata| {
-            metadata
-                .get("role")
-                .and_then(|value| value.as_str())
-                .map(str::to_string)
-        });
-
-    let resolver = state.tenant_resolver.as_ref().ok_or_else(|| {
+    let actor_store = Arc::clone(&store);
+    let actor_context = context.clone();
+    tokio::task::spawn_blocking(move || {
+        require_managed_actor_key_mutation_allowed(&actor_store, &actor_context)
+    })
+    .await
+    .map_err(|error| internal_error(format!("key authority worker failed: {error}")))??;
+    let resolver = state.tenant_resolver.as_ref().cloned().ok_or_else(|| {
         ApiError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "auth unavailable",
         )
     })?;
+    let metadata = run_store_operation({
+        let store = Arc::clone(&store);
+        let key_id = key_id.clone();
+        let tenant_id = context.tenant_id.clone();
+        move || store.get_api_key_metadata_for_tenant(&key_id, &tenant_id)
+    })
+    .await?;
+    let metadata = match metadata {
+        Some(metadata) => metadata,
+        None => {
+            fail_closed_missing_scoped_key(&resolver, &key_id, &context.tenant_id)?;
+            return Err(ApiError::new(
+                axum::http::StatusCode::NOT_FOUND,
+                "key not found",
+            ));
+        }
+    };
+    let role = metadata
+        .get("role")
+        .and_then(|value| value.as_str().map(str::to_string));
+
+    let target = resolver_api_key(&resolver, &key_id)?;
+    let target_store = Arc::clone(&store);
+    let target_context = context.clone();
+    let target_role = role.clone();
+    tokio::task::spawn_blocking(move || {
+        require_key_target_authority(
+            &target_store,
+            &target_context,
+            &target,
+            target_role.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| internal_error(format!("key authority worker failed: {error}")))??;
+    let deleted = run_store_operation({
+        let store = Arc::clone(&store);
+        let key_id = key_id.clone();
+        let tenant_id = context.tenant_id.clone();
+        let actor_key_id = context.api_key_id.clone();
+        move || store.delete_api_key_metadata_for_tenant(&key_id, &tenant_id, &actor_key_id)
+    })
+    .await;
     let mut guard = resolver.lock().map_err(|_| {
         ApiError::new(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "auth unavailable",
         )
     })?;
-    let target = guard
-        .api_key(&key_id)
-        .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
-    require_key_target_authority(&store, &context, &target, role.as_deref())?;
-    let deleted = match store.delete_api_key_metadata_for_tenant(
-        &key_id,
-        &context.tenant_id,
-        &context.api_key_id,
-    ) {
+    let deleted = match deleted {
         Ok(deleted) => deleted,
         Err(error) => {
             // Keep the resolver fail-closed when the durable outcome is
             // unknown; restoring the key could resurrect revoked authority.
             fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
-            return Err(internal_error(error));
+            return Err(error);
         }
     };
 
@@ -508,78 +726,125 @@ pub(crate) async fn api_update_key_scopes(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    require_managed_actor_key_mutation_allowed(&store, &context)?;
+    let actor_store = Arc::clone(&store);
+    let actor_context = context.clone();
+    tokio::task::spawn_blocking(move || {
+        require_managed_actor_key_mutation_allowed(&actor_store, &actor_context)
+    })
+    .await
+    .map_err(|error| internal_error(format!("key authority worker failed: {error}")))??;
 
-    let old_key = store
-        .get_api_key_metadata_for_tenant(&key_id, &context.tenant_id)
-        .map_err(internal_error)?
-        .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
-    let role = old_key["role"].as_str().ok_or_else(|| {
-        ApiError::new(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "invalid key metadata",
-        )
-    })?;
-    let resolver = state.tenant_resolver.as_ref().ok_or_else(|| {
+    let old_key = run_store_operation({
+        let store = Arc::clone(&store);
+        let key_id = key_id.clone();
+        let tenant_id = context.tenant_id.clone();
+        move || store.get_api_key_metadata_for_tenant(&key_id, &tenant_id)
+    })
+    .await?
+    .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
+    let role = old_key["role"]
+        .as_str()
+        .ok_or_else(|| {
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid key metadata",
+            )
+        })?
+        .to_string();
+    let resolver = state.tenant_resolver.as_ref().cloned().ok_or_else(|| {
         ApiError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "auth unavailable",
         )
     })?;
-    let mut guard = resolver.lock().map_err(|_| {
-        ApiError::new(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "auth unavailable",
+    let target = resolver_api_key(&resolver, &key_id)?;
+    let target_store = Arc::clone(&store);
+    let target_context = context.clone();
+    let target_role = role.clone();
+    let target_for_check = target.clone();
+    tokio::task::spawn_blocking(move || {
+        require_key_target_authority(
+            &target_store,
+            &target_context,
+            &target_for_check,
+            Some(target_role.as_str()),
         )
-    })?;
-    let target = guard
-        .api_key(&key_id)
-        .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "key not found"))?;
-    require_key_target_authority(&store, &context, &target, Some(role))?;
-    require_bootstrap_for_managed_delegation(&store, &context, role, &request.scopes)?;
-    validate_managed_acceptance_role_scopes(role, &request.scopes)
+    })
+    .await
+    .map_err(|error| internal_error(format!("key authority worker failed: {error}")))??;
+    let bootstrap_store = Arc::clone(&store);
+    let bootstrap_context = context.clone();
+    let bootstrap_role = role.clone();
+    let bootstrap_scopes = request.scopes.clone();
+    tokio::task::spawn_blocking(move || {
+        require_bootstrap_for_managed_delegation(
+            &bootstrap_store,
+            &bootstrap_context,
+            &bootstrap_role,
+            &bootstrap_scopes,
+        )
+    })
+    .await
+    .map_err(|error| internal_error(format!("bootstrap authority worker failed: {error}")))??;
+    validate_managed_acceptance_role_scopes(&role, &request.scopes)
         .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
 
     let old_scopes = target.scopes.clone();
     let scopes: std::collections::HashSet<String> = request.scopes.iter().cloned().collect();
-    guard
-        .validate_api_key_scopes(&key_id, &scopes)
-        .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
+    {
+        let guard = resolver.lock().map_err(|_| {
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "auth unavailable",
+            )
+        })?;
+        guard
+            .validate_api_key_scopes(&key_id, &scopes)
+            .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
+    }
 
-    let updated = match store.update_api_key_scopes_for_tenant(
-        &key_id,
-        &context.tenant_id,
-        &request.scopes,
-        &context.api_key_id,
-    ) {
-        Ok(updated) => updated,
-        Err(error) => {
-            fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
-            return Err(internal_error(error));
+    let updated = run_store_operation({
+        let store = Arc::clone(&store);
+        let key_id = key_id.clone();
+        let tenant_id = context.tenant_id.clone();
+        let requested_scopes = request.scopes.clone();
+        let actor_key_id = context.api_key_id.clone();
+        move || {
+            store.update_api_key_scopes_for_tenant(
+                &key_id,
+                &tenant_id,
+                &requested_scopes,
+                &actor_key_id,
+            )
         }
-    };
-
+    })
+    .await?;
     if !updated {
-        fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
+        resolver_remove_key(&resolver, &key_id)?;
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
             "key not found",
         ));
     }
-    if guard
-        .update_api_key_scopes(&key_id, scopes.clone())
-        .is_err()
-    {
+    if resolver_update_key_scopes(&resolver, &key_id, scopes.clone()).is_err() {
         // The resolver was validated above; if its update nevertheless
         // fails after the store commit, restore the canonical old value
         // when possible, and always remove the in-memory authority.
-        let _ = store.update_api_key_scopes_for_tenant(
-            &key_id,
-            &context.tenant_id,
-            &old_scopes.iter().cloned().collect::<Vec<_>>(),
-            &context.api_key_id,
-        );
-        fail_closed_resolver_after_durable_key_uncertainty(&mut guard, &key_id);
+        let rollback_scopes = old_scopes.iter().cloned().collect::<Vec<_>>();
+        let rollback_store = Arc::clone(&store);
+        let rollback_key_id = key_id.clone();
+        let rollback_tenant_id = context.tenant_id.clone();
+        let rollback_actor_key_id = context.api_key_id.clone();
+        let _ = run_store_operation(move || {
+            rollback_store.update_api_key_scopes_for_tenant(
+                &rollback_key_id,
+                &rollback_tenant_id,
+                &rollback_scopes,
+                &rollback_actor_key_id,
+            )
+        })
+        .await;
+        resolver_remove_key(&resolver, &key_id)?;
         return Err(ApiError::new(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "auth state update failed",
