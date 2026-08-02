@@ -8,21 +8,39 @@ whether to post a comment.
 
 from __future__ import annotations
 
+import dataclasses
 import typing
 
+# Closed set of thread-inspection states (R2-B2).  Anything outside this set
+# must fail closed, never fall through to a send.
+VALID_INSPECTION_STATES = frozenset({"EMPTY_THREAD", "MESSAGE", "INSPECTION_UNAVAILABLE"})
 
-class ThreadInspection(typing.NamedTuple):
+
+@dataclasses.dataclass(frozen=True)
+class ThreadInspection:
     """Three-state result of inspecting the thread before a send.
 
     - EMPTY_THREAD: provably no prior user message (first send allowed).
-    - MESSAGE: the thread's newest user message text is known.
+    - MESSAGE: the thread's newest user message text is known (text required).
     - INSPECTION_UNAVAILABLE: the transport could not prove the state
       (page not loaded, selector failure, login issue).  A caller must stop,
       never treat this as "no message".
+
+    ``state`` is a closed enum: ``VALID_INSPECTION_STATES``.  Any other value
+    is a transport bug and must fail closed (R2-B2).
     """
 
     state: str
     text: str | None = None
+
+    def __post_init__(self):
+        if self.state not in VALID_INSPECTION_STATES:
+            raise ValueError(
+                f"invalid ThreadInspection state {self.state!r}; "
+                f"must be one of {sorted(VALID_INSPECTION_STATES)}"
+            )
+        if self.state == "MESSAGE" and not self.text:
+            raise ValueError("MESSAGE inspection requires the message text")
 
     @classmethod
     def empty(cls) -> "ThreadInspection":

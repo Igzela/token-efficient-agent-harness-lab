@@ -16,8 +16,9 @@ class LiveGitHub(typing.Protocol):
     """Read-only live GitHub facts a review-loop command needs."""
 
     def fetch_pr(self, repository: str, pr_number: int) -> dict[str, Any]:
-        """Return live PR facts: state, is_draft, merged, base_sha, head_sha,
-        changed_files (complete base...head list).  Raises on unavailability."""
+        """Return live PR facts: repository, pr_number (observed identity),
+        state, is_draft, merged, base_sha, head_sha, changed_files (complete
+        base...head list).  Raises on unavailability."""
         ...
 
     def list_comments(self, repository: str, pr_number: int) -> list[str]:
@@ -44,7 +45,10 @@ class FakeGitHub:
         if self.fail_next_fetch:
             self.fail_next_fetch = False
             raise RuntimeError("live GitHub unavailable")
-        return self.pr_facts
+        facts = dict(self.pr_facts)
+        facts.setdefault("repository", repository)
+        facts.setdefault("pr_number", pr_number)
+        return facts
 
     def list_comments(self, repository: str, pr_number: int) -> list[str]:
         return list(self.comments)

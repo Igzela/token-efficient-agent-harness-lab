@@ -58,27 +58,34 @@ def reconcile_comments(
 ) -> tuple[str, list[str]]:
     """Decide posting action: skip / post / conflict / stop.
 
-    Marker matching is strict (anchored full-marker regex), not substring.
-    A malformed marker is treated as a conflict (stop) so accidental or
-    malicious text cannot cause a false skip.
+    Every marker across every comment is scanned and classified before any
+    decision (R2-B4).  One malformed marker, or one same-request marker with a
+    different receipt, is a conflict regardless of what else is present.  Only
+    when all relevant markers are exactly identical is posting skipped.
     """
-    reasons: list[str] = []
     if existing_comments is None:
         return "unknown", ["existing comments unavailable"]
+    identical_count = 0
+    reasons: list[str] = []
     for body in existing_comments:
-        matches = list(MARKER_RE.finditer(body or ""))
+        text = body or ""
+        matches = list(MARKER_RE.finditer(text))
         for match in matches:
             found_request, found_receipt = match.group(1), match.group(2)
             if found_request == request_sha:
                 if found_receipt == receipt_sha:
-                    return "skip", [f"identical receipt already posted ({request_sha[:12]}...)"]
-                return "conflict", [
-                    f"same request {request_sha[:12]}... but different receipt sha already posted"
-                ]
-        if COMMENT_MARKER in (body or "") and not matches:
+                    identical_count += 1
+                else:
+                    return "conflict", [
+                        f"same request {request_sha[:12]}... but different receipt "
+                        f"{found_receipt[:12]}... already posted"
+                    ]
+        if COMMENT_MARKER in text and not matches:
             # The marker token appears but no valid full marker: cannot tell
             # whether a prior receipt exists; stop instead of double posting.
             return "conflict", ["malformed or partial review-receipt marker present"]
+    if identical_count:
+        return "skip", [f"identical receipt already posted ({request_sha[:12]}...)"]
     return "post", reasons
 
 

@@ -198,6 +198,8 @@ class TestLiveValidation(unittest.TestCase):
             live_validation.validate_pr_live_state(
                 repository=REPO,
                 pr_number=349,
+                observed_repository=REPO,
+                observed_pr_number=349,
                 observed_state="OPEN",
                 observed_is_draft=True,
                 observed_base_sha=BASE,
@@ -213,6 +215,8 @@ class TestLiveValidation(unittest.TestCase):
         errors = live_validation.validate_pr_live_state(
             repository=REPO,
             pr_number=349,
+            observed_repository=REPO,
+            observed_pr_number=349,
             observed_state="OPEN",
             observed_is_draft=True,
             observed_base_sha=BASE,
@@ -227,6 +231,8 @@ class TestLiveValidation(unittest.TestCase):
         errors = live_validation.validate_pr_live_state(
             repository=REPO,
             pr_number=349,
+            observed_repository=REPO,
+            observed_pr_number=349,
             observed_state="OPEN",
             observed_is_draft=True,
             observed_base_sha=BASE,
@@ -461,6 +467,579 @@ class TestFailClosedLauncher(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("refuses to run", result.stderr)
+
+
+class TestFailClosedLauncher(unittest.TestCase):
+    def test_default_launcher_fails_closed_without_env(self):
+        import os
+        import subprocess
+
+        env = dict(os.environ)
+        env.pop("REVIEW_TRANSPORT_MODULE", None)
+        env.pop("REVIEW_GITHUB_MODULE", None)
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "agent-control" / "review_loop_cli.py"), "status"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("refuses to run", result.stderr)
+
+
+def make_evidence_index(root: pathlib.Path) -> pathlib.Path:
+    """Create a valid evidence index with one hashed file; return its path."""
+    target = root / "evidence.txt"
+    target.write_text("evidence-content", encoding="utf-8")
+    digest = live_validation.sha256_file(target)
+    index = {"files": [{"path": "evidence.txt", "sha256": digest}]}
+    index_path = root / "index.json"
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+    return index_path
+
+
+def build_envelope(tmp: pathlib.Path, chat_key: str = CHAT) -> pathlib.Path:
+    """Run the build subcommand end to end; return the envelope path."""
+    from review_loop import cli
+
+    request_path = tmp / "request.md"
+    request_path.write_text("Independent review request body.\n", encoding="utf-8")
+    index = make_evidence_index(tmp)
+    env_path = tmp / "env.json"
+    cli.main(
+        [
+            "build",
+            "--request", str(request_path),
+            "--repository", REPO,
+            "--pr", "349",
+            "--base-sha", BASE,
+            "--head-sha", HEAD,
+            "--chat-key", chat_key,
+            "--evidence-index", str(index),
+            "--evidence-index-sha256", live_validation.sha256_file(index),
+            "--session-id", SESSION,
+            "--out", str(env_path),
+            "--message-out", str(tmp / "message.txt"),
+            "--body-out", str(tmp / "body.txt"),
+        ]
+    )
+    return env_path
+
+
+def run_send(tmp: pathlib.Path, transport=None, github=None, journal=None, chat_key: str = CHAT):
+    from review_loop import cli
+
+    return cli.main(
+        ["send", "--envelope", str(tmp / "env.json"), "--body", str(tmp / "body.txt"),
+         "--evidence-index", str(tmp / "index.json"), "--allowed-paths", "docs/A.md"],
+        transport=transport or transport.FakeTransport(),
+        github=github or github_adapter.FakeGitHub(live_facts()),
+        journal=journal,
+        lock_dir=tmp / "locks",
+    )
+
+
+def env_keys(tmp: pathlib.Path) -> tuple[str, str]:
+    """Return (chat_key, request_text_sha256) bound to the built envelope."""
+    data = json.loads((tmp / "env.json").read_text(encoding="utf-8"))
+    return data["chat_key"], data["request_text_sha256"]
+
+
+class TestReconciliation(unittest.TestCase):
+    """R2-B1: outcome-unknown has a read-only reconciliation path."""
+
+    def test_unknown_then_reconcile_empty_thread_resends(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+
+            t1 = transport.FakeTransport()
+            t1.send_failure = RuntimeError("network dropped")
+            with self.assertRaises(SystemExit):
+                run_send(tmp, transport=t1, journal=journal)
+            self.assertEqual(
+                journal_mod.Journal(tmp / "events.jsonl").replay()[-1].event,
+                "DELIVERY_OUTCOME_UNKNOWN",
+            )
+
+            # Reconciliation: thread provably empty -> RECONCILED, send safe.
+            t2 = transport.FakeTransport()
+            run_send(tmp, transport=t2, journal=journal)
+            self.assertEqual(len(t2.sent_calls), 1)
+            self.assertEqual(
+                journal_mod.Journal(tmp / "events.jsonl").replay()[-1].event,
+                "SENT_CONFIRMED",
+            )
+
+    def test_reconcile_converges_to_already_present(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+
+            t1 = transport.FakeTransport()
+            t1.send_failure = RuntimeError("network dropped")
+            with self.assertRaises(SystemExit):
+                run_send(tmp, transport=t1, journal=journal)
+
+            # The message actually landed: thread now holds the marker.
+            body = (tmp / "body.txt").read_text(encoding="utf-8")
+            msg, _ = protocol.build_message(body)
+            t2 = transport.FakeTransport(user_messages=[msg])
+            with self.assertRaises(SystemExit) as ctx:
+                run_send(tmp, transport=t2, journal=journal)
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertEqual(len(t2.sent_calls), 0)
+            self.assertEqual(
+                journal_mod.Journal(tmp / "events.jsonl").replay()[-1].event,
+                "ALREADY_PRESENT",
+            )
+
+    def test_reconcile_blocks_on_unavailable(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+
+            t1 = transport.FakeTransport()
+            t1.send_failure = RuntimeError("network dropped")
+            with self.assertRaises(SystemExit):
+                run_send(tmp, transport=t1, journal=journal)
+
+            t2 = transport.FakeTransport(inspect_state="unavailable")
+            with self.assertRaises(SystemExit) as ctx:
+                run_send(tmp, transport=t2, journal=journal)
+            self.assertEqual(ctx.exception.code, 2)
+            self.assertEqual(len(t2.sent_calls), 0)
+
+    def test_reconcile_subcommand_empty_thread(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            t1 = transport.FakeTransport()
+            t1.send_failure = RuntimeError("network dropped")
+            with self.assertRaises(SystemExit):
+                run_send(tmp, transport=t1, journal=journal)
+            t2 = transport.FakeTransport()
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(
+                    ["reconcile", "--envelope", str(tmp / "env.json")],
+                    transport=t2,
+                    journal=journal,
+                    lock_dir=tmp / "locks",
+                )
+            self.assertEqual(ctx.exception.code, 0)
+
+
+class TestInspectionClosedState(unittest.TestCase):
+    """R2-B2: unknown inspection states fail closed instead of sending."""
+
+    def test_invalid_inspection_state_fails_closed(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+
+            class BrokenTransport(transport.FakeTransport):
+                def inspect_last_user_message(self):
+                    return "GARBAGE"
+
+            t = BrokenTransport()
+            with self.assertRaises(SystemExit) as ctx:
+                run_send(tmp, transport=t, journal=journal)
+            self.assertEqual(ctx.exception.code, 2)
+            self.assertEqual(len(t.sent_calls), 0)
+            self.assertEqual(
+                journal_mod.Journal(tmp / "events.jsonl").replay()[-1].event,
+                "INSPECTION_UNAVAILABLE",
+            )
+
+    def test_message_requires_text(self):
+        with self.assertRaises(ValueError):
+            transport.ThreadInspection.message("")
+
+
+class TestCommentConcurrency(unittest.TestCase):
+    """R2-B3: comment list -> create is serialized per chat by ChatLock."""
+
+    def test_post_requires_lock_directory(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            receipt_path = tmp / "receipt.json"
+            receipt_path.write_text(make_receipt().to_json(), encoding="utf-8")
+            github = github_adapter.FakeGitHub(live_facts())
+            with self.assertRaises(SystemExit):
+                cli.main(
+                    ["post", "--envelope", str(tmp / "env.json"), "--receipt", str(receipt_path),
+                     "--allowed-paths", "docs/A.md"],
+                    github=github,
+                    journal=journal_mod.Journal(tmp / "events.jsonl"),
+                    lock_dir=None,
+                )
+
+    def test_concurrent_posts_serialize(self):
+        import threading
+
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            receipt_path = tmp / "receipt.json"
+            receipt_path.write_text(make_receipt().to_json(), encoding="utf-8")
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            journal.append(
+                event="RECEIPT_PARSED", chat_key=chat_key, request_text_sha256=req_sha
+            )
+            github = github_adapter.FakeGitHub(live_facts())
+
+            errors: list[BaseException] = []
+
+            def post_once():
+                try:
+                    cli.main(
+                        ["post", "--envelope", str(tmp / "env.json"), "--receipt", str(receipt_path),
+                         "--allowed-paths", "docs/A.md"],
+                        github=github,
+                        journal=journal,
+                        lock_dir=tmp / "locks",
+                    )
+                except SystemExit as exc:
+                    if exc.code != 0:
+                        errors.append(exc)
+
+            threads = [threading.Thread(target=post_once) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(errors, [])
+            self.assertEqual(len(github.posted), 1)
+
+
+class TestMixedCommentMarkers(unittest.TestCase):
+    """R2-B4: all markers are scanned before any decision."""
+
+    def test_identical_then_conflict_is_conflict(self):
+        receipt = make_receipt()
+        receipt_sha = comment_poster.receipt_sha256(receipt)
+        other = make_receipt(reviewer="other")
+        body_identical = comment_poster.build_comment_body(make_envelope(), receipt)
+        body_conflict = comment_poster.build_comment_body(
+            models.ReviewRequestEnvelope(
+                **{**make_envelope().__dict__, "request_text_sha256": REQ_SHA}
+            ),
+            other,
+        )
+        action, _ = comment_poster.reconcile_comments(
+            [body_identical, body_conflict], REQ_SHA, receipt_sha
+        )
+        self.assertEqual(action, "conflict")
+
+    def test_malformed_plus_identical_is_conflict(self):
+        receipt = make_receipt()
+        receipt_sha = comment_poster.receipt_sha256(receipt)
+        body_identical = comment_poster.build_comment_body(make_envelope(), receipt)
+        action, _ = comment_poster.reconcile_comments(
+            [body_identical, "<!-- independent-review-receipt:broken -->"],
+            REQ_SHA,
+            receipt_sha,
+        )
+        self.assertEqual(action, "conflict")
+
+
+class TestJournalConcurrency(unittest.TestCase):
+    """R2-B5: global journal flock keeps the chain intact across writers."""
+
+    def test_concurrent_appends_keep_chain(self):
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            path = pathlib.Path(tmpd) / "events.jsonl"
+            journal = journal_mod.Journal(path)
+            errors: list[BaseException] = []
+
+            def append(event_name: str):
+                try:
+                    for _ in range(20):
+                        journal.append(
+                            event=event_name, chat_key=CHAT, request_text_sha256=REQ_SHA
+                        )
+                except BaseException as exc:
+                    errors.append(exc)
+
+            threads = [
+                threading.Thread(target=append, args=(name,))
+                for name in ("BUILT", "SENT_CONFIRMED", "RESPONSE_CAPTURED")
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(errors, [])
+            records = journal.replay()
+            self.assertEqual(len(records), 60)
+            self.assertEqual([r.seq for r in records], list(range(1, 61)))
+
+
+class TestStateMachineEnforced(unittest.TestCase):
+    """R2-B6: the CLI rejects journal transitions the state machine forbids."""
+
+    def test_poll_before_delivery_rejected(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            t = transport.FakeTransport(assistant_replies=["reply"])
+            with self.assertRaises(SystemExit):
+                cli.main(
+                    ["poll", "--chat-key", CHAT, "--request-text-sha256", REQ_SHA,
+                     "--out", str(tmp / "reply.json")],
+                    transport=t,
+                    journal=journal,
+                )
+
+    def test_poll_no_reply_is_response_unavailable(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            journal.append(event="SENT_CONFIRMED", chat_key=chat_key, request_text_sha256=req_sha)
+            t = transport.FakeTransport(assistant_replies=[""])
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(
+                    ["poll", "--chat-key", chat_key, "--request-text-sha256", req_sha,
+                     "--out", str(tmp / "reply.json")],
+                    transport=t,
+                    journal=journal,
+                )
+            self.assertEqual(ctx.exception.code, 2)
+            self.assertEqual(
+                journal.replay()[-1].event, "RESPONSE_UNAVAILABLE"
+            )
+
+    def test_parse_failure_is_receipt_rejected(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            journal.append(
+                event="RESPONSE_CAPTURED", chat_key=chat_key, request_text_sha256=req_sha
+            )
+            reply_path = tmp / "reply.md"
+            reply_path.write_text("no json here", encoding="utf-8")
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(
+                    ["parse", "--envelope", str(tmp / "env.json"), "--reply", str(reply_path),
+                     "--out", str(tmp / "receipt.json")],
+                    journal=journal,
+                )
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertEqual(journal.replay()[-1].event, "RECEIPT_REJECTED")
+
+
+class TestEvidenceBinding(unittest.TestCase):
+    """R2-B7: evidence index path/hash pair is mandatory and revalidated."""
+
+    def test_build_requires_evidence_pair(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            request_path = tmp / "request.md"
+            request_path.write_text("request", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                cli.main(
+                    ["build", "--request", str(request_path), "--repository", REPO,
+                     "--pr", "349", "--base-sha", BASE, "--head-sha", HEAD,
+                     "--chat-key", CHAT, "--evidence-index", "",
+                     "--evidence-index-sha256", "x" * 64, "--out", str(tmp / "e.json"),
+                     "--message-out", str(tmp / "m.txt"), "--body-out", str(tmp / "b.txt")],
+                )
+
+    def test_send_revalidates_evidence(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            # Tamper with the evidence file after build.
+            index = json.loads((tmp / "index.json").read_text(encoding="utf-8"))
+            index["files"][0]["sha256"] = "f" * 64
+            (tmp / "index.json").write_text(json.dumps(index), encoding="utf-8")
+            t = transport.FakeTransport()
+            with self.assertRaises(SystemExit) as ctx:
+                run_send(tmp, transport=t, journal=journal)
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertEqual(len(t.sent_calls), 0)
+
+
+class TestLiveIdentity(unittest.TestCase):
+    """R2-B8: observed repository/PR identity is validated, not caller-asserted."""
+
+    def test_observed_repository_mismatch_rejected(self):
+        errors = live_validation.validate_pr_live_state(
+            repository=REPO,
+            pr_number=349,
+            observed_repository="Other/Repo",
+            observed_pr_number=349,
+            observed_state="OPEN",
+            observed_is_draft=True,
+            observed_base_sha=BASE,
+            observed_head_sha=HEAD,
+            expected_base_sha=BASE,
+            expected_head_sha=HEAD,
+            observed_merged=False,
+        )
+        self.assertTrue(any("repository mismatch" in e for e in errors))
+
+    def test_observed_pr_mismatch_rejected(self):
+        errors = live_validation.validate_pr_live_state(
+            repository=REPO,
+            pr_number=349,
+            observed_repository=REPO,
+            observed_pr_number=999,
+            observed_state="OPEN",
+            observed_is_draft=True,
+            observed_base_sha=BASE,
+            observed_head_sha=HEAD,
+            expected_base_sha=BASE,
+            expected_head_sha=HEAD,
+            observed_merged=False,
+        )
+        self.assertTrue(any("PR mismatch" in e for e in errors))
+
+    def test_send_rejects_fetch_misrouted_to_other_pr(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            t = transport.FakeTransport()
+            github = github_adapter.FakeGitHub({**live_facts(), "pr_number": 999})
+            with self.assertRaises(SystemExit) as ctx:
+                run_send(tmp, transport=t, github=github, journal=journal)
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertEqual(len(t.sent_calls), 0)
+
+
+class TestCliOrchestration(unittest.TestCase):
+    """R2-B9: the committed suite exercises the real CLI effect paths."""
+
+    def test_full_chain_build_send_poll_parse_post(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            env_path = build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            t = transport.FakeTransport()
+            g = github_adapter.FakeGitHub(live_facts())
+
+            run_send(tmp, transport=t, github=g, journal=journal)
+            self.assertEqual(len(t.sent_calls), 1)
+            self.assertEqual(journal.replay()[-1].event, "SENT_CONFIRMED")
+
+            receipt = make_receipt()
+            reply_text = "prose\n```json\n" + receipt.to_json() + "\n```\n"
+            t2 = transport.FakeTransport(assistant_replies=[reply_text])
+            cli.main(
+                ["poll", "--chat-key", chat_key, "--request-text-sha256", req_sha,
+                 "--out", str(tmp / "reply.md")],
+                transport=t2,
+                journal=journal,
+            )
+            self.assertEqual(journal.replay()[-1].event, "RESPONSE_CAPTURED")
+
+            cli.main(
+                ["parse", "--envelope", str(env_path), "--reply", str(tmp / "reply.md"),
+                 "--out", str(tmp / "receipt.json")],
+                journal=journal,
+            )
+            self.assertEqual(journal.replay()[-1].event, "RECEIPT_PARSED")
+
+            cli.main(
+                ["post", "--envelope", str(env_path), "--receipt", str(tmp / "receipt.json"),
+                 "--allowed-paths", "docs/A.md"],
+                github=g,
+                journal=journal,
+                lock_dir=tmp / "locks",
+            )
+            self.assertEqual(len(g.posted), 1)
+            self.assertEqual(journal.replay()[-1].event, "COMMENT_POSTED")
+
+            # Idempotent re-post is a skip with zero new comments (exit 0).
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(
+                    ["post", "--envelope", str(env_path), "--receipt", str(tmp / "receipt.json"),
+                     "--allowed-paths", "docs/A.md"],
+                    github=g,
+                    journal=journal,
+                    lock_dir=tmp / "locks",
+                )
+            self.assertEqual(ctx.exception.code, 0)
+            self.assertEqual(len(g.posted), 1)
+
+    def test_post_outcome_unknown_then_reconcile(self):
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            env_path = build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            journal.append(
+                event="RECEIPT_PARSED", chat_key=chat_key, request_text_sha256=req_sha
+            )
+            receipt_path = tmp / "receipt.json"
+            receipt_path.write_text(make_receipt().to_json(), encoding="utf-8")
+            g = github_adapter.FakeGitHub(live_facts())
+            g.fail_next_post = True
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(
+                    ["post", "--envelope", str(env_path), "--receipt", str(receipt_path),
+                     "--allowed-paths", "docs/A.md"],
+                    github=g,
+                    journal=journal,
+                    lock_dir=tmp / "locks",
+                )
+            self.assertEqual(ctx.exception.code, 2)
+            self.assertEqual(journal.replay()[-1].event, "DELIVERY_OUTCOME_UNKNOWN")
+            # Retry after reconciliation (the comment never landed).
+            cli.main(
+                ["post", "--envelope", str(env_path), "--receipt", str(receipt_path),
+                 "--allowed-paths", "docs/A.md"],
+                github=g,
+                journal=journal,
+                lock_dir=tmp / "locks",
+            )
+            self.assertEqual(len(g.posted), 1)
 
 
 if __name__ == "__main__":

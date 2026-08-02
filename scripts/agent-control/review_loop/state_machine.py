@@ -3,6 +3,9 @@
 The critical invariant: an outcome-unknown delivery is never retried blindly.
 A caller must reconcile the thread (or abort) before any resend; this module
 simply refuses to authorize a send when the outcome is unknown.
+
+Every journal append in the CLI must pass through ``transition_allowed`` so
+the persisted sequence can never drift from the state machine (R2-B6).
 """
 
 from __future__ import annotations
@@ -16,17 +19,20 @@ ORDER = [
     models.DeliveryOutcome.SENT_CONFIRMED,
     models.DeliveryOutcome.ALREADY_PRESENT,
     models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+    models.DeliveryOutcome.RECONCILED,
     models.DeliveryOutcome.RESPONSE_CAPTURED,
+    models.DeliveryOutcome.RESPONSE_UNAVAILABLE,
     models.DeliveryOutcome.RECEIPT_PARSED,
+    models.DeliveryOutcome.RECEIPT_REJECTED,
     models.DeliveryOutcome.HEAD_REVALIDATED,
     models.DeliveryOutcome.COMMENT_POSTED,
     models.DeliveryOutcome.COMPLETE,
 ]
 
+# States that terminate the whole delivery lifecycle and may not transition.
 TERMINAL = {
     models.DeliveryOutcome.COMPLETE,
     models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
-    models.DeliveryOutcome.AUTH_REQUIRED,
     models.DeliveryOutcome.FAILED,
 }
 
@@ -36,7 +42,15 @@ TERMINAL = {
 # still report ALREADY_PRESENT instead of double posting.
 RESEND_BLOCKED = {
     models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+}
+
+# Pre-effect failures (auth expired, inspection unavailable) are recoverable:
+# retrying the same request after the condition clears is safe because the
+# send effect provably never happened.  These are distinct from
+# DELIVERY_OUTCOME_UNKNOWN (the send effect itself is uncertain).
+RECOVERABLE_PRE_EFFECT = {
     models.DeliveryOutcome.AUTH_REQUIRED,
+    models.DeliveryOutcome.INSPECTION_UNAVAILABLE,
 }
 
 TERMINAL_MESSAGE_OUTCOMES = {
@@ -44,6 +58,116 @@ TERMINAL_MESSAGE_OUTCOMES = {
     models.DeliveryOutcome.SENT_CONFIRMED,
     models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
 }
+
+# Explicit transition table: current -> allowed observed outcomes.
+# The CLI records nothing at build time; a fresh send starts from None with a
+# LIVE_VALIDATED append, so None must allow it (plus pre-effect failures).
+_EDGES: dict[models.DeliveryOutcome | None, set[models.DeliveryOutcome]] = {
+    None: {
+        models.DeliveryOutcome.LIVE_VALIDATED,
+        models.DeliveryOutcome.BUILT,
+        models.DeliveryOutcome.FAILED,
+        models.DeliveryOutcome.AUTH_REQUIRED,
+        models.DeliveryOutcome.INSPECTION_UNAVAILABLE,
+    },
+    models.DeliveryOutcome.BUILT: {
+        models.DeliveryOutcome.LIVE_VALIDATED,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.LIVE_VALIDATED: {
+        models.DeliveryOutcome.DELIVERY_INSPECTED,
+        models.DeliveryOutcome.AUTH_REQUIRED,
+        models.DeliveryOutcome.INSPECTION_UNAVAILABLE,
+        models.DeliveryOutcome.FAILED,
+    },
+    # AUTH_REQUIRED / INSPECTION_UNAVAILABLE: retry re-validates live state.
+    models.DeliveryOutcome.AUTH_REQUIRED: {
+        models.DeliveryOutcome.LIVE_VALIDATED,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.INSPECTION_UNAVAILABLE: {
+        models.DeliveryOutcome.LIVE_VALIDATED,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.DELIVERY_INSPECTED: {
+        models.DeliveryOutcome.SENT_CONFIRMED,
+        models.DeliveryOutcome.ALREADY_PRESENT,
+        models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.SENT_CONFIRMED: {
+        models.DeliveryOutcome.RESPONSE_CAPTURED,
+        models.DeliveryOutcome.RESPONSE_UNAVAILABLE,
+    },
+    models.DeliveryOutcome.ALREADY_PRESENT: {
+        models.DeliveryOutcome.RESPONSE_CAPTURED,
+        models.DeliveryOutcome.RESPONSE_UNAVAILABLE,
+    },
+    # Outcome-unknown: only read-only reconciliation may follow.  The marker
+    # check can converge to ALREADY_PRESENT (already delivered) or to
+    # RECONCILED (thread provably empty, so a resend is safe).  For the
+    # comment-post side, re-querying comments first may authorize a fresh
+    # revalidation (HEAD_REVALIDATED) when the comment provably never landed.
+    models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN: {
+        models.DeliveryOutcome.ALREADY_PRESENT,
+        models.DeliveryOutcome.RECONCILED,
+        models.DeliveryOutcome.HEAD_REVALIDATED,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.RECONCILED: {
+        models.DeliveryOutcome.LIVE_VALIDATED,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.RESPONSE_CAPTURED: {
+        models.DeliveryOutcome.RECEIPT_PARSED,
+        models.DeliveryOutcome.RECEIPT_REJECTED,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.RESPONSE_UNAVAILABLE: {
+        models.DeliveryOutcome.RESPONSE_CAPTURED,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.RECEIPT_PARSED: {
+        models.DeliveryOutcome.HEAD_REVALIDATED,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.RECEIPT_REJECTED: {
+        models.DeliveryOutcome.RECEIPT_PARSED,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.HEAD_REVALIDATED: {
+        models.DeliveryOutcome.COMMENT_POSTED,
+        models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.COMMENT_POSTED: {
+        models.DeliveryOutcome.COMPLETE,
+        models.DeliveryOutcome.FAILED,
+    },
+    models.DeliveryOutcome.COMPLETE: set(),
+    models.DeliveryOutcome.FAILED: set(),
+}
+
+
+def transition_allowed(
+    current: models.DeliveryOutcome | None,
+    observed: models.DeliveryOutcome,
+) -> bool:
+    """Whether the observed outcome is an authorized transition from current."""
+    allowed = _EDGES.get(current)
+    if allowed is None:
+        return False
+    return observed in allowed
+
+
+def next_state(
+    current: models.DeliveryOutcome | None,
+    observed: models.DeliveryOutcome,
+) -> models.DeliveryOutcome | None:
+    """Validate a transition; return the resulting state or None if invalid."""
+    if transition_allowed(current, observed):
+        return observed
+    return None
 
 
 def can_send(current: models.DeliveryOutcome | None) -> bool:
@@ -60,32 +184,5 @@ def can_poll(current: models.DeliveryOutcome | None) -> bool:
         models.DeliveryOutcome.SENT_CONFIRMED,
         models.DeliveryOutcome.ALREADY_PRESENT,
         models.DeliveryOutcome.RESPONSE_CAPTURED,
+        models.DeliveryOutcome.RESPONSE_UNAVAILABLE,
     }
-
-
-def next_state(
-    current: models.DeliveryOutcome | None,
-    observed: models.DeliveryOutcome,
-) -> models.DeliveryOutcome | None:
-    """Validate a transition; return the resulting state or None if invalid."""
-    if current is None:
-        return observed if observed in {models.DeliveryOutcome.BUILT, models.DeliveryOutcome.FAILED, models.DeliveryOutcome.AUTH_REQUIRED} else None
-    if current in TERMINAL:
-        return None
-    if observed == models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN:
-        return observed
-    if observed == models.DeliveryOutcome.ALREADY_PRESENT:
-        return observed if current in {models.DeliveryOutcome.BUILT, models.DeliveryOutcome.LIVE_VALIDATED, models.DeliveryOutcome.DELIVERY_INSPECTED} else None
-    try:
-        current_index = ORDER.index(current)
-    except ValueError:
-        return None
-    observed_index = ORDER.index(observed)
-    if observed_index == current_index + 1:
-        return observed
-    if observed_index == current_index + 2 and current in {
-        models.DeliveryOutcome.DELIVERY_INSPECTED,
-        models.DeliveryOutcome.RESPONSE_CAPTURED,
-    }:
-        return observed
-    return None

@@ -1,10 +1,13 @@
 """CLI orchestration for the review-loop transport (repository-owned logic).
 
-Subcommands: build, send, poll, parse, post, status.  The browser transport
-and the read-only GitHub adapter are injected by the operator; CI exercises
-everything with fakes.  All decisions (resend, PASS meaning, comment posting,
-live-state acceptance) come from the pure modules and the read-only adapter,
-never from caller-asserted JSON or from the transport.
+Subcommands: build, send, reconcile, poll, parse, post, status.  The browser
+transport and the read-only GitHub adapter are injected by the operator; CI
+exercises everything with fakes.  All decisions (resend, PASS meaning, comment
+posting, live-state acceptance) come from the pure modules and the read-only
+adapter, never from caller-asserted JSON or from the transport.
+
+Every journal append passes through the state machine (R2-B6); an invalid
+transition fails closed instead of corrupting the chain.
 """
 
 from __future__ import annotations
@@ -27,12 +30,36 @@ from . import (
     receipt_parser,
     state_machine,
 )
-from .transport import ThreadInspection, Transport
+from .transport import ThreadInspection, Transport, VALID_INSPECTION_STATES
 
 
 def _fail(message: str, code: int = 1) -> None:
     print(f"error: {message}", file=sys.stderr)
     raise SystemExit(code)
+
+
+def _record(
+    journal: journal_mod.Journal,
+    current: models.DeliveryOutcome | None,
+    chat_key: str,
+    request_sha: str,
+    observed: models.DeliveryOutcome,
+    detail: str,
+) -> models.DeliveryOutcome:
+    """Append one journal event only when the state machine allows it (R2-B6)."""
+    if not state_machine.transition_allowed(current, observed):
+        _fail(
+            f"invalid journal transition {current} -> {observed.value}; "
+            "state machine rejected the append",
+            2,
+        )
+    journal.append(
+        event=observed.value,
+        chat_key=chat_key,
+        request_text_sha256=request_sha,
+        detail=detail,
+    )
+    return observed
 
 
 def cmd_build(args: argparse.Namespace) -> None:
@@ -43,13 +70,17 @@ def cmd_build(args: argparse.Namespace) -> None:
     if not request_text.strip():
         _fail("empty request text")
     request_sha = protocol.request_sha256(request_text)
-    evidence_index = args.evidence_index_sha256 or "unavailable"
-    if args.evidence_index and evidence_index != "unavailable":
-        errors, _ = live_validation.validate_evidence_index(
-            pathlib.Path(args.evidence_index), evidence_index
-        )
-        if errors:
-            _fail("evidence index validation failed: " + "; ".join(errors[:10]))
+    # R2-B7: evidence index path and hash are a mandatory pair; the claimed
+    # hash is verified against the file now, and re-verified before send.
+    if not args.evidence_index:
+        _fail("--evidence-index path is required (path/hash pair, R2-B7)")
+    if not args.evidence_index_sha256:
+        _fail("--evidence-index-sha256 is required (path/hash pair, R2-B7)")
+    errors, _ = live_validation.validate_evidence_index(
+        pathlib.Path(args.evidence_index), args.evidence_index_sha256
+    )
+    if errors:
+        _fail("evidence index validation failed: " + "; ".join(errors[:10]))
     envelope = models.ReviewRequestEnvelope(
         schema_version=models.ENVELOPE_SCHEMA,
         repository=args.repository,
@@ -57,7 +88,7 @@ def cmd_build(args: argparse.Namespace) -> None:
         base_sha=args.base_sha,
         head_sha=args.head_sha,
         chat_key=args.chat_key,
-        evidence_index_sha256=evidence_index,
+        evidence_index_sha256=args.evidence_index_sha256,
         request_text_sha256=request_sha,
         implementation_session_id=args.session_id or uuid.uuid4().hex,
     )
@@ -98,9 +129,10 @@ def _live_facts(
     envelope: models.ReviewRequestEnvelope,
     allowed_paths: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Mandatory live validation via the read-only adapter (B13/B14/B15).
+    """Mandatory live validation via the read-only adapter (B13/B14/B15/R2-B8).
 
     The adapter is the only source of live facts; no caller JSON is accepted.
+    The observed repository/PR identity is checked against the envelope.
     """
     live = github.fetch_pr(envelope.repository, envelope.pr_number)
     if not live:
@@ -108,6 +140,8 @@ def _live_facts(
     errors = live_validation.validate_pr_live_state(
         repository=envelope.repository,
         pr_number=envelope.pr_number,
+        observed_repository=str(live.get("repository", "")),
+        observed_pr_number=int(live.get("pr_number", -1)),
         observed_state=str(live.get("state", "")),
         observed_is_draft=bool(live.get("is_draft")),
         observed_base_sha=str(live.get("base_sha", "")),
@@ -125,6 +159,17 @@ def _live_facts(
     return live
 
 
+def _revalidate_evidence(args: argparse.Namespace, envelope: models.ReviewRequestEnvelope) -> None:
+    """R2-B7: re-verify the evidence index right before the send effect."""
+    if not args.evidence_index:
+        _fail("--evidence-index path is required at send (R2-B7)")
+    errors, _ = live_validation.validate_evidence_index(
+        pathlib.Path(args.evidence_index), envelope.evidence_index_sha256
+    )
+    if errors:
+        _fail("evidence index revalidation failed: " + "; ".join(errors[:10]))
+
+
 def _journal_state(
     journal: journal_mod.Journal, chat_key: str, request_sha: str
 ) -> models.DeliveryOutcome | None:
@@ -137,6 +182,89 @@ def _journal_state(
             except ValueError:
                 continue
     return latest
+
+
+def _inspect(transport: Transport) -> ThreadInspection | None:
+    """Inspect the thread with a closed-state guard (R2-B2).
+
+    Returns None when the transport returned something that is not a valid
+    ThreadInspection (a transport bug); the caller decides how to record it.
+    """
+    inspection = transport.inspect_last_user_message()
+    if not isinstance(inspection, ThreadInspection) or inspection.state not in VALID_INSPECTION_STATES:
+        return None
+    return inspection
+
+
+def _record_inspection_unavailable(
+    journal: journal_mod.Journal,
+    current: models.DeliveryOutcome | None,
+    envelope: models.ReviewRequestEnvelope,
+    request_text_sha: str,
+    detail: str,
+) -> models.DeliveryOutcome:
+    """Record the recoverable pre-effect inspection failure (R2-B1/R2-B2)."""
+    return _record(
+        journal,
+        current,
+        envelope.chat_key,
+        request_text_sha,
+        models.DeliveryOutcome.INSPECTION_UNAVAILABLE,
+        detail,
+    )
+
+
+def _reconcile(
+    transport: Transport,
+    journal: journal_mod.Journal,
+    envelope: models.ReviewRequestEnvelope,
+    request_text_sha: str,
+    current: models.DeliveryOutcome | None,
+) -> tuple[models.DeliveryOutcome, str]:
+    """Read-only thread reconciliation (R2-B1).
+
+    Returns (latest_state, action) where action is one of:
+    - "already_present": the identical marker is in the thread (converged).
+    - "may_send": the thread is provably empty; a resend is authorized.
+    - "blocked": reconciliation cannot prove non-delivery; keep blocking.
+    """
+    inspection = _inspect(transport)
+    if inspection is None or inspection.state == "INSPECTION_UNAVAILABLE":
+        # Do not overwrite the UNKNOWN state; keep blocking without a new
+        # terminal event (INSPECTION_UNAVAILABLE is not reachable from UNKNOWN).
+        return current, "blocked"
+    if inspection.state == "MESSAGE":
+        existing_sha = protocol.extract_marker(inspection.text)
+        if existing_sha == request_text_sha:
+            return (
+                _record(
+                    journal,
+                    current,
+                    envelope.chat_key,
+                    request_text_sha,
+                    models.DeliveryOutcome.ALREADY_PRESENT,
+                    f"reconcile: identical marker {existing_sha[:12]}... in thread",
+                ),
+                "already_present",
+            )
+        _fail(
+            f"DELIVERY_OUTCOME_UNKNOWN: thread holds a different message; "
+            "reconciliation cannot prove non-delivery; manual review required",
+            2,
+        )
+    if inspection.state == "EMPTY_THREAD":
+        return (
+            _record(
+                journal,
+                current,
+                envelope.chat_key,
+                request_text_sha,
+                models.DeliveryOutcome.RECONCILED,
+                "reconcile: thread provably empty; resend is safe",
+            ),
+            "may_send",
+        )
+    return current, "blocked"
 
 
 def cmd_send(
@@ -154,90 +282,149 @@ def cmd_send(
     if request_text_sha != envelope.request_text_sha256:
         _fail("canonical body does not hash to the envelope sha")
 
-    # B4: rebuild persisted state and refuse a blind resend after an
-    # outcome-unknown (or auth-required) terminal event.
+    # B4/R2-B1: rebuild persisted state; only effect-unknown blocks blindly.
     current = _journal_state(journal, envelope.chat_key, request_text_sha)
+    if current in {models.DeliveryOutcome.SENT_CONFIRMED, models.DeliveryOutcome.ALREADY_PRESENT}:
+        # Idempotent re-run of an already-confirmed delivery.
+        print(f"ALREADY_PRESENT: sha {request_text_sha[:12]}... already delivered "
+              f"(latest {current.value})")
+        raise SystemExit(0)
     if current in state_machine.RESEND_BLOCKED:
-        journal.append(
-            event=models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN.value,
-            chat_key=envelope.chat_key,
-            request_text_sha256=request_text_sha,
-            detail=f"refusing resend after terminal event {current.value}",
+        print(
+            f"DELIVERY_OUTCOME_UNKNOWN recorded; running read-only "
+            "reconciliation before any resend"
         )
-        print(f"DELIVERY_OUTCOME_UNKNOWN: outcome-unknown terminal {current.value} already "
-              "recorded; reconcile the thread before any resend")
-        raise SystemExit(2)
+        current, action = _reconcile(
+            transport, journal, envelope, request_text_sha, current
+        )
+        if action == "already_present":
+            print(f"ALREADY_PRESENT: sha {request_text_sha[:12]}... already delivered")
+            raise SystemExit(0)
+        if action == "blocked":
+            print("DELIVERY_OUTCOME_UNKNOWN: still unresolved; reconcile the thread manually")
+            raise SystemExit(2)
+        print("reconciled: thread provably empty; resend authorized")
+
+    # R2-B7: re-verify the evidence index immediately before the send effect.
+    _revalidate_evidence(args, envelope)
 
     live = _live_facts(github, envelope, tuple(args.allowed_paths or []))
-    journal.append(
-        event=models.DeliveryOutcome.LIVE_VALIDATED.value,
-        chat_key=envelope.chat_key,
-        request_text_sha256=request_text_sha,
-        detail="live PR and diff validated via read-only adapter",
+    current = _record(
+        journal,
+        current,
+        envelope.chat_key,
+        request_text_sha,
+        models.DeliveryOutcome.LIVE_VALIDATED,
+        "live PR and diff validated via read-only adapter",
     )
 
     if not transport.read_auth_state():
-        journal.append(
-            event=models.DeliveryOutcome.AUTH_REQUIRED.value,
-            chat_key=envelope.chat_key,
-            request_text_sha256=request_text_sha,
-            detail="login expired; no blind resend",
+        # Pre-effect failure: recoverable, NOT effect-unknown (R2-B1).
+        current = _record(
+            journal,
+            current,
+            envelope.chat_key,
+            request_text_sha,
+            models.DeliveryOutcome.AUTH_REQUIRED,
+            "login expired; no send attempted; retry after login",
         )
-        print("DELIVERY_OUTCOME_UNKNOWN (auth required); no send")
+        print("AUTH_REQUIRED: login expired; no send attempted")
         raise SystemExit(2)
 
-    inspection = transport.inspect_last_user_message()
-    if inspection.state == "INSPECTION_UNAVAILABLE":
-        journal.append(
-            event=models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN.value,
-            chat_key=envelope.chat_key,
-            request_text_sha256=request_text_sha,
-            detail="thread inspection unavailable; refusing to send",
+    inspection = _inspect(transport)
+    if inspection is None:
+        # R2-B2: a transport bug must fail closed, never fall through to send.
+        current = _record_inspection_unavailable(
+            journal,
+            current,
+            envelope,
+            request_text_sha,
+            f"transport returned invalid inspection state; fail closed",
         )
-        print("DELIVERY_OUTCOME_UNKNOWN: thread inspection unavailable; stop")
+        print("INSPECTION_UNAVAILABLE: invalid inspection state from transport; no send attempted")
+        raise SystemExit(2)
+    if inspection.state == "INSPECTION_UNAVAILABLE":
+        current = _record_inspection_unavailable(
+            journal,
+            current,
+            envelope,
+            request_text_sha,
+            "thread inspection unavailable; pre-effect; retry is safe",
+        )
+        print("INSPECTION_UNAVAILABLE: cannot prove thread state; no send attempted")
         raise SystemExit(2)
 
     existing_sha = None
     if inspection.state == "MESSAGE":
         existing_sha = protocol.extract_marker(inspection.text)
         if existing_sha == request_text_sha:
-            journal.append(
-                event=models.DeliveryOutcome.ALREADY_PRESENT.value,
-                chat_key=envelope.chat_key,
-                request_text_sha256=request_text_sha,
-                detail=f"identical marker {existing_sha[:12]}... already in thread",
+            current = _record(
+                journal,
+                current,
+                envelope.chat_key,
+                request_text_sha,
+                models.DeliveryOutcome.ALREADY_PRESENT,
+                f"identical marker {existing_sha[:12]}... already in thread",
             )
             print(f"ALREADY_PRESENT: sha {request_text_sha[:12]}... already delivered")
             raise SystemExit(0)
-    journal.append(
-        event=models.DeliveryOutcome.DELIVERY_INSPECTED.value,
-        chat_key=envelope.chat_key,
-        request_text_sha256=request_text_sha,
-        detail=(
-            f"inspection={inspection.state} prior_marker={existing_sha or 'NONE'}; sending"
-        ),
+    current = _record(
+        journal,
+        current,
+        envelope.chat_key,
+        request_text_sha,
+        models.DeliveryOutcome.DELIVERY_INSPECTED,
+        f"inspection={inspection.state} prior_marker={existing_sha or 'NONE'}; sending",
     )
 
     message, _ = protocol.build_message(body)
     try:
         transport.send_user_message(message)
     except Exception as exc:
-        # B4: an exception means the send effect is unknown; record terminal.
-        journal.append(
-            event=models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN.value,
-            chat_key=envelope.chat_key,
-            request_text_sha256=request_text_sha,
-            detail=f"send raised {type(exc).__name__}: {str(exc)[:200]}",
+        # B4/R2-B1: a raised send means the effect is unknown; only
+        # reconciliation may unblock this.
+        current = _record(
+            journal,
+            current,
+            envelope.chat_key,
+            request_text_sha,
+            models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+            f"send raised {type(exc).__name__}: {str(exc)[:200]}",
         )
         print("DELIVERY_OUTCOME_UNKNOWN: send raised; effect unknown; reconcile before resend")
         raise SystemExit(2)
-    journal.append(
-        event=models.DeliveryOutcome.SENT_CONFIRMED.value,
-        chat_key=envelope.chat_key,
-        request_text_sha256=request_text_sha,
-        detail="message delivered and transport confirmed",
+    current = _record(
+        journal,
+        current,
+        envelope.chat_key,
+        request_text_sha,
+        models.DeliveryOutcome.SENT_CONFIRMED,
+        "message delivered and transport confirmed",
     )
     print(f"SENT_CONFIRMED: sha {request_text_sha[:12]}...")
+
+
+def cmd_reconcile(
+    args: argparse.Namespace,
+    transport: Transport,
+    journal: journal_mod.Journal,
+) -> None:
+    """Read-only reconciliation subcommand (R2-B1)."""
+    envelope = _load_envelope(args)
+    request_text_sha = envelope.request_text_sha256
+    current = _journal_state(journal, envelope.chat_key, request_text_sha)
+    if current not in state_machine.RESEND_BLOCKED:
+        print(f"reconcile: no outcome-unknown terminal recorded (latest {current}); nothing to do")
+        raise SystemExit(0)
+    current, action = _reconcile(transport, journal, envelope, request_text_sha, current)
+    if action == "already_present":
+        print("RECONCILED: identical marker found; already delivered")
+        raise SystemExit(0)
+    if action == "may_send":
+        print("RECONCILED: thread provably empty; send is authorized")
+        raise SystemExit(0)
+    print("DELIVERY_OUTCOME_UNKNOWN: reconciliation could not prove non-delivery; stop")
+    raise SystemExit(2)
 
 
 def cmd_poll(
@@ -245,58 +432,76 @@ def cmd_poll(
     transport: Transport,
     journal: journal_mod.Journal,
 ) -> None:
+    current = _journal_state(journal, args.chat_key, args.request_text_sha256)
+    if current is None or not state_machine.can_poll(current):
+        _fail(
+            f"poll not allowed from journal state {current}; "
+            "expected a confirmed delivery first",
+            2,
+        )
     reply = transport.read_latest_assistant_message()
     if not reply or not reply.strip():
-        journal.append(
-            event=models.DeliveryOutcome.RESPONSE_CAPTURED.value,
-            chat_key=args.chat_key,
-            request_text_sha256=args.request_text_sha256,
-            detail="no assistant reply captured",
+        current = _record(
+            journal,
+            current,
+            args.chat_key,
+            args.request_text_sha256,
+            models.DeliveryOutcome.RESPONSE_UNAVAILABLE,
+            "no assistant reply captured",
         )
         _fail("no assistant reply captured", 2)
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(reply, encoding="utf-8")
-    journal.append(
-        event=models.DeliveryOutcome.RESPONSE_CAPTURED.value,
-        chat_key=args.chat_key,
-        request_text_sha256=args.request_text_sha256,
-        detail=f"reply {len(reply)} chars saved to {out}",
+    current = _record(
+        journal,
+        current,
+        args.chat_key,
+        args.request_text_sha256,
+        models.DeliveryOutcome.RESPONSE_CAPTURED,
+        f"reply {len(reply)} chars saved to {out}",
     )
     print(f"RESPONSE_CAPTURED: {len(reply)} chars -> {out}")
 
 
 def cmd_parse(args: argparse.Namespace, journal: journal_mod.Journal) -> None:
     envelope = _load_envelope(args)
+    current = _journal_state(journal, envelope.chat_key, envelope.request_text_sha256)
     reply_path = pathlib.Path(args.reply)
     if not reply_path.exists():
         _fail(f"reply not found: {reply_path}")
     receipt, errors = receipt_parser.parse_receipt(reply_path.read_text(encoding="utf-8"))
     if receipt is None:
-        journal.append(
-            event=models.DeliveryOutcome.RECEIPT_PARSED.value,
-            chat_key=envelope.chat_key,
-            request_text_sha256=envelope.request_text_sha256,
-            detail="parse failed: " + "; ".join(errors),
+        current = _record(
+            journal,
+            current,
+            envelope.chat_key,
+            envelope.request_text_sha256,
+            models.DeliveryOutcome.RECEIPT_REJECTED,
+            "parse rejected: " + "; ".join(errors),
         )
         _fail("receipt parse failed: " + "; ".join(errors))
     match_errors = receipt.matches_envelope(envelope)
     if match_errors:
-        journal.append(
-            event=models.DeliveryOutcome.RECEIPT_PARSED.value,
-            chat_key=envelope.chat_key,
-            request_text_sha256=envelope.request_text_sha256,
-            detail="identity mismatch: " + "; ".join(match_errors),
+        current = _record(
+            journal,
+            current,
+            envelope.chat_key,
+            envelope.request_text_sha256,
+            models.DeliveryOutcome.RECEIPT_REJECTED,
+            "identity mismatch: " + "; ".join(match_errors),
         )
         _fail("receipt does not match envelope: " + "; ".join(match_errors))
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(receipt.to_json(), encoding="utf-8")
-    journal.append(
-        event=models.DeliveryOutcome.RECEIPT_PARSED.value,
-        chat_key=envelope.chat_key,
-        request_text_sha256=envelope.request_text_sha256,
-        detail=f"exact structured PASS parsed -> {out}",
+    current = _record(
+        journal,
+        current,
+        envelope.chat_key,
+        envelope.request_text_sha256,
+        models.DeliveryOutcome.RECEIPT_PARSED,
+        f"exact structured PASS parsed -> {out}",
     )
     print(receipt.to_json())
     print(f"RECEIPT_PARSED: exact PASS for head {receipt.head_sha[:12]}...")
@@ -315,14 +520,64 @@ def cmd_post(
         _fail("stored receipt does not validate")
     if receipt.matches_envelope(envelope):
         _fail("stored receipt does not match envelope")
+    current = _journal_state(journal, envelope.chat_key, envelope.request_text_sha256)
 
-    # B8/B13/B14/B15: mandatory head revalidation via the adapter before posting.
+    # Post-side reconciliation (R2-B1): after a POST outcome-unknown, re-query
+    # the comments first.  A present identical receipt converges (skip); an
+    # absent receipt proves the post never landed, authorizing a fresh
+    # revalidation and post.
+    if current == models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN:
+        existing = github.list_comments(envelope.repository, envelope.pr_number)
+        action, reasons = comment_poster.reconcile_comments(
+            existing,
+            envelope.request_text_sha256,
+            comment_poster.receipt_sha256(receipt),
+        )
+        if action == "skip":
+            current = _record(
+                journal,
+                current,
+                envelope.chat_key,
+                envelope.request_text_sha256,
+                models.DeliveryOutcome.COMMENT_POSTED,
+                "post reconcile: " + "; ".join(reasons),
+            )
+            print("COMMENT_SKIPPED: " + "; ".join(reasons))
+            raise SystemExit(0)
+        if action != "post":
+            _fail(
+                "comment state unknown after POST outcome-unknown: " + "; ".join(reasons),
+                2,
+            )
+        print("post reconciled: receipt provably absent; re-posting is safe")
+
+    # Idempotent re-post: the journal already shows a posted comment.  The
+    # comments are re-consulted; only an identical receipt may skip.  Anything
+    # else is a state/comment disagreement and fails closed.
+    if current == models.DeliveryOutcome.COMMENT_POSTED:
+        existing = github.list_comments(envelope.repository, envelope.pr_number)
+        action, reasons = comment_poster.reconcile_comments(
+            existing,
+            envelope.request_text_sha256,
+            comment_poster.receipt_sha256(receipt),
+        )
+        if action == "skip":
+            print("COMMENT_SKIPPED: " + "; ".join(reasons))
+            raise SystemExit(0)
+        _fail(
+            "comment state disagrees with journal: " + "; ".join(reasons),
+            2,
+        )
+
+    # B8/B13/B14/B15/R2-B8: mandatory head revalidation via the adapter.
     live = _live_facts(github, envelope, tuple(args.allowed_paths or []))
-    journal.append(
-        event=models.DeliveryOutcome.HEAD_REVALIDATED.value,
-        chat_key=envelope.chat_key,
-        request_text_sha256=envelope.request_text_sha256,
-        detail=f"live head {live.get('head_sha', '')[:12]}... revalidated",
+    current = _record(
+        journal,
+        current,
+        envelope.chat_key,
+        envelope.request_text_sha256,
+        models.DeliveryOutcome.HEAD_REVALIDATED,
+        f"live head {live.get('head_sha', '')[:12]}... revalidated",
     )
 
     existing = github.list_comments(envelope.repository, envelope.pr_number)
@@ -332,11 +587,13 @@ def cmd_post(
         comment_poster.receipt_sha256(receipt),
     )
     if action == "skip":
-        journal.append(
-            event=models.DeliveryOutcome.COMMENT_POSTED.value,
-            chat_key=envelope.chat_key,
-            request_text_sha256=envelope.request_text_sha256,
-            detail="; ".join(reasons),
+        current = _record(
+            journal,
+            current,
+            envelope.chat_key,
+            envelope.request_text_sha256,
+            models.DeliveryOutcome.COMMENT_POSTED,
+            "skip; " + "; ".join(reasons),
         )
         print("COMMENT_SKIPPED: " + "; ".join(reasons))
         raise SystemExit(0)
@@ -348,20 +605,25 @@ def cmd_post(
     try:
         url = github.create_comment(envelope.repository, envelope.pr_number, body)
     except Exception as exc:
-        # B10: POST outcome unknown must be recorded; reconciliation required.
-        journal.append(
-            event=models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN.value,
-            chat_key=envelope.chat_key,
-            request_text_sha256=envelope.request_text_sha256,
-            detail=f"comment POST raised {type(exc).__name__}: {str(exc)[:200]}",
+        # B10/R2-B1: POST outcome unknown must be recorded; reconciliation
+        # means re-querying comments before any retry.
+        current = _record(
+            journal,
+            current,
+            envelope.chat_key,
+            envelope.request_text_sha256,
+            models.DeliveryOutcome.DELIVERY_OUTCOME_UNKNOWN,
+            f"comment POST raised {type(exc).__name__}: {str(exc)[:200]}",
         )
         print("COMMENT_OUTCOME_UNKNOWN: re-query comments before retrying")
         raise SystemExit(2)
-    journal.append(
-        event=models.DeliveryOutcome.COMMENT_POSTED.value,
-        chat_key=envelope.chat_key,
-        request_text_sha256=envelope.request_text_sha256,
-        detail=url,
+    current = _record(
+        journal,
+        current,
+        envelope.chat_key,
+        envelope.request_text_sha256,
+        models.DeliveryOutcome.COMMENT_POSTED,
+        url,
     )
     print(f"COMMENT_POSTED: {url}")
 
@@ -388,8 +650,8 @@ def main(
     build.add_argument("--base-sha", required=True)
     build.add_argument("--head-sha", required=True)
     build.add_argument("--chat-key", required=True)
-    build.add_argument("--evidence-index-sha256", default="")
-    build.add_argument("--evidence-index", default="", help="path to evidence index json (validated when provided)")
+    build.add_argument("--evidence-index-sha256", required=True)
+    build.add_argument("--evidence-index", required=True, help="path to evidence index json")
     build.add_argument("--session-id", default="")
     build.add_argument("--out", required=True)
     build.add_argument("--message-out", required=True)
@@ -399,8 +661,13 @@ def main(
     send = sub.add_parser("send")
     send.add_argument("--envelope", required=True)
     send.add_argument("--body", required=True)
+    send.add_argument("--evidence-index", required=True, help="path to evidence index json (revalidated)")
     send.add_argument("--allowed-paths", nargs="*", default=[])
     send.set_defaults(func=cmd_send)
+
+    reconcile = sub.add_parser("reconcile")
+    reconcile.add_argument("--envelope", required=True)
+    reconcile.set_defaults(func=cmd_reconcile)
 
     poll = sub.add_parser("poll")
     poll.add_argument("--chat-key", required=True)
@@ -439,6 +706,14 @@ def main(
         envelope = _load_envelope(args)
         with locking.ChatLock(lock_dir, envelope.chat_key):
             func(args, transport, journal, github)
+    elif func is cmd_reconcile:
+        if transport is None:
+            _fail("reconcile requires a transport")
+        if lock_dir is None:
+            _fail("reconcile requires a lock directory")
+        envelope = _load_envelope(args)
+        with locking.ChatLock(lock_dir, envelope.chat_key):
+            func(args, transport, journal)
     elif func is cmd_poll:
         if transport is None:
             _fail("poll requires a transport")
@@ -446,7 +721,12 @@ def main(
     elif func is cmd_post:
         if github is None:
             _fail("post requires a read-only GitHub adapter")
-        func(args, github, journal)
+        if lock_dir is None:
+            _fail("post requires a lock directory")
+        # R2-B3: comment list -> create must be serialized per chat.
+        envelope = _load_envelope(args)
+        with locking.ChatLock(lock_dir, envelope.chat_key):
+            func(args, github, journal)
     else:
         func(args, journal)
 

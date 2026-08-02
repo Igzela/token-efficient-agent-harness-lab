@@ -18,6 +18,8 @@ def validate_pr_live_state(
     *,
     repository: str,
     pr_number: int,
+    observed_repository: str,
+    observed_pr_number: int,
     observed_state: str,
     observed_is_draft: bool,
     observed_base_sha: str,
@@ -28,10 +30,18 @@ def validate_pr_live_state(
 ) -> list[str]:
     """Reject drift between the envelope and the live PR before delivery/post.
 
+    The observed identity (repository, PR number) comes from the read-only
+    adapter's returned facts, never from the caller, so a misrouted or cached
+    fetch cannot be accepted (R2-B8).
+
     An open unmerged Draft PR with unchanged base/head is the only accepted
     live state for evidence delivery and receipt posting.
     """
     errors = []
+    if observed_repository != repository:
+        errors.append(f"observed repository mismatch: {observed_repository} != {repository}")
+    if observed_pr_number != pr_number:
+        errors.append(f"observed PR mismatch: {observed_pr_number} != {pr_number}")
     if observed_state != "OPEN":
         errors.append(f"PR is not OPEN: {observed_state}")
     if observed_merged:
