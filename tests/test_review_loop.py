@@ -505,24 +505,6 @@ class TestFailClosedLauncher(unittest.TestCase):
         self.assertIn("refuses to run", result.stderr)
 
 
-class TestFailClosedLauncher(unittest.TestCase):
-    def test_default_launcher_fails_closed_without_env(self):
-        import os
-        import subprocess
-
-        env = dict(os.environ)
-        env.pop("REVIEW_TRANSPORT_MODULE", None)
-        env.pop("REVIEW_GITHUB_MODULE", None)
-        result = subprocess.run(
-            [sys.executable, str(ROOT / "scripts" / "agent-control" / "review_loop_cli.py"), "status"],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("refuses to run", result.stderr)
-
-
 def make_evidence_index(root: pathlib.Path) -> pathlib.Path:
     """Create a valid evidence index with one hashed file; return its path."""
     target = root / "evidence.txt"
@@ -877,6 +859,7 @@ class TestStateMachineEnforced(unittest.TestCase):
                      "--out", str(tmp / "reply.json")],
                     transport=t,
                     journal=journal,
+                    lock_dir=tmp / "locks",
                 )
             self.assertEqual(ctx.exception.code, 2)
             self.assertEqual(
@@ -901,6 +884,7 @@ class TestStateMachineEnforced(unittest.TestCase):
                     ["parse", "--envelope", str(tmp / "env.json"), "--reply", str(reply_path),
                      "--out", str(tmp / "receipt.json")],
                     journal=journal,
+                    lock_dir=tmp / "locks",
                 )
             self.assertEqual(ctx.exception.code, 1)
             self.assertEqual(journal.replay()[-1].event, "RECEIPT_REJECTED")
@@ -1019,6 +1003,7 @@ class TestCliOrchestration(unittest.TestCase):
                  "--out", str(tmp / "reply.md")],
                 transport=t2,
                 journal=journal,
+                lock_dir=tmp / "locks",
             )
             self.assertEqual(journal.replay()[-1].event, "RESPONSE_CAPTURED")
 
@@ -1026,6 +1011,7 @@ class TestCliOrchestration(unittest.TestCase):
                 ["parse", "--envelope", str(env_path), "--reply", str(tmp / "reply.md"),
                  "--out", str(tmp / "receipt.json")],
                 journal=journal,
+                lock_dir=tmp / "locks",
             )
             self.assertEqual(journal.replay()[-1].event, "RECEIPT_PARSED")
 
@@ -1221,6 +1207,132 @@ class TestCliOrchestration(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 0)
             self.assertEqual(len(g.posted), 0)
             self.assertEqual(journal.replay()[-1].event, "COMMENT_POSTED")
+
+    def test_live_validated_restart_resumes_send(self):
+        """R4-B1: a restart stuck at LIVE_VALIDATED resumes the send."""
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            # Process killed between the LIVE_VALIDATED journal write and the
+            # auth/inspection/delivery steps; nothing external happened.
+            journal.append(
+                event="LIVE_VALIDATED",
+                chat_key=chat_key,
+                request_text_sha256=req_sha,
+            )
+            t = transport.FakeTransport()
+            run_send(tmp, transport=t, journal=journal)
+            self.assertEqual(len(t.sent_calls), 1)
+            self.assertEqual(journal.replay()[-1].event, "SENT_CONFIRMED")
+
+    def test_concurrent_polls_append_one_transition(self):
+        """R4-B2: concurrent poll calls cannot both append RESPONSE_CAPTURED."""
+        import threading
+
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            journal.append(
+                event="SENT_CONFIRMED", chat_key=CHAT, request_text_sha256=REQ_SHA
+            )
+            t = transport.FakeTransport(assistant_replies=["the reply"])
+            exits: list[int | None] = []
+
+            def poll_once():
+                try:
+                    cli.main(
+                        ["poll", "--chat-key", CHAT, "--request-text-sha256", REQ_SHA,
+                         "--out", str(tmp / "reply.json")],
+                        transport=t,
+                        journal=journal,
+                        lock_dir=tmp / "locks",
+                    )
+                    exits.append(None)
+                except SystemExit as exc:
+                    exits.append(exc.code)
+
+            threads = [threading.Thread(target=poll_once) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            events = [r.event for r in journal.replay()]
+            self.assertEqual(events.count("RESPONSE_CAPTURED"), 1)
+            self.assertEqual(len(events), 2)  # SENT_CONFIRMED + one capture
+
+    def test_concurrent_parses_append_one_transition(self):
+        """R4-B2: concurrent parse calls cannot both append RECEIPT_PARSED."""
+        import threading
+
+        from review_loop import cli
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            tmp = pathlib.Path(tmpd)
+            build_envelope(tmp)
+            chat_key, req_sha = env_keys(tmp)
+            journal = journal_mod.Journal(tmp / "events.jsonl")
+            journal.append(
+                event="RESPONSE_CAPTURED",
+                chat_key=chat_key,
+                request_text_sha256=req_sha,
+            )
+            receipt = make_receipt()
+            reply_text = "prose\n```json\n" + receipt.to_json() + "\n```\n"
+            reply_path = tmp / "reply.md"
+            reply_path.write_text(reply_text, encoding="utf-8")
+            exits: list[int | None] = []
+
+            def parse_once():
+                try:
+                    cli.main(
+                        ["parse", "--envelope", str(tmp / "env.json"), "--reply", str(reply_path),
+                         "--out", str(tmp / "receipt.json")],
+                        journal=journal,
+                        lock_dir=tmp / "locks",
+                    )
+                    exits.append(None)
+                except SystemExit as exc:
+                    exits.append(exc.code)
+
+            threads = [threading.Thread(target=parse_once) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            events = [r.event for r in journal.replay()]
+            self.assertEqual(events.count("RECEIPT_PARSED"), 1)
+            self.assertEqual(len(events), 2)  # RESPONSE_CAPTURED + one parse
+
+    def test_transition_cas_rejects_stale_append(self):
+        """R4-B2: the journal rejects a transition computed from stale state."""
+        with tempfile.TemporaryDirectory() as tmpd:
+            journal = journal_mod.Journal(pathlib.Path(tmpd) / "events.jsonl")
+            journal.append(
+                event="SENT_CONFIRMED", chat_key=CHAT, request_text_sha256=REQ_SHA
+            )
+            # Second caller still believes SENT_CONFIRMED is current, but the
+            # actual tail has moved to RESPONSE_CAPTURED: the atomic check
+            # must reject a second RESPONSE_CAPTURED.
+            journal.append(
+                event="RESPONSE_CAPTURED", chat_key=CHAT, request_text_sha256=REQ_SHA
+            )
+            with self.assertRaises(journal_mod.TransitionRejected):
+                journal.transition_append(
+                    event="RESPONSE_CAPTURED",
+                    chat_key=CHAT,
+                    request_text_sha256=REQ_SHA,
+                )
+            # Nothing was written by the rejected append.
+            self.assertEqual(
+                [r.event for r in journal.replay()],
+                ["SENT_CONFIRMED", "RESPONSE_CAPTURED"],
+            )
 
 
 if __name__ == "__main__":

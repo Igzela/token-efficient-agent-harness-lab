@@ -176,6 +176,9 @@ def validate_evidence_index(
             if parent.is_symlink():
                 errors.append(f"evidence parent component is a symlink: {rel}")
                 break
+        if not candidate.is_file():
+            errors.append(f"evidence path is not a regular file: {rel}")
+            continue
         try:
             size = candidate.stat().st_size
         except OSError as exc:

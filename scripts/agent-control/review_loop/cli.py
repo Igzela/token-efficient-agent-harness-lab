@@ -46,19 +46,25 @@ def _record(
     observed: models.DeliveryOutcome,
     detail: str,
 ) -> models.DeliveryOutcome:
-    """Append one journal event only when the state machine allows it (R2-B6)."""
-    if not state_machine.transition_allowed(current, observed):
+    """Append one journal event only when the state machine allows it (R2-B6).
+
+    The transition is validated atomically inside the journal's global flock
+    against the ACTUAL latest event for this (chat, request) (R4-B2), so a
+    stale caller-side state can never produce a forbidden sequence.
+    """
+    try:
+        journal.transition_append(
+            event=observed.value,
+            chat_key=chat_key,
+            request_text_sha256=request_sha,
+            detail=detail,
+        )
+    except journal_mod.TransitionRejected as exc:
         _fail(
-            f"invalid journal transition {current} -> {observed.value}; "
+            f"invalid journal transition {exc.current} -> {exc.observed}; "
             "state machine rejected the append",
             2,
         )
-    journal.append(
-        event=observed.value,
-        chat_key=chat_key,
-        request_text_sha256=request_sha,
-        detail=detail,
-    )
     return observed
 
 
@@ -726,7 +732,12 @@ def main(
     elif func is cmd_poll:
         if transport is None:
             _fail("poll requires a transport")
-        func(args, transport, journal)
+        if lock_dir is None:
+            _fail("poll requires a lock directory")
+        # R4-B2: poll holds the per-chat lock so its state check + append
+        # cannot race another command on the same chat.
+        with locking.ChatLock(lock_dir, args.chat_key):
+            func(args, transport, journal)
     elif func is cmd_post:
         if github is None:
             _fail("post requires a read-only GitHub adapter")
@@ -736,6 +747,13 @@ def main(
         envelope = _load_envelope(args)
         with locking.ChatLock(lock_dir, envelope.chat_key):
             func(args, github, journal)
+    elif func is cmd_parse:
+        if lock_dir is None:
+            _fail("parse requires a lock directory")
+        # R4-B2: parse holds the per-chat lock for the same atomicity reason.
+        envelope = _load_envelope(args)
+        with locking.ChatLock(lock_dir, envelope.chat_key):
+            func(args, journal)
     else:
         func(args, journal)
 

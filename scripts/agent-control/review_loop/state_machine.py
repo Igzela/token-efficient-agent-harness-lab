@@ -95,6 +95,7 @@ _EDGES: dict[models.DeliveryOutcome | None, set[models.DeliveryOutcome]] = {
         models.DeliveryOutcome.FAILED,
     },
     models.DeliveryOutcome.LIVE_VALIDATED: {
+        models.DeliveryOutcome.LIVE_VALIDATED,
         models.DeliveryOutcome.DELIVERY_INSPECTED,
         models.DeliveryOutcome.AUTH_REQUIRED,
         models.DeliveryOutcome.INSPECTION_UNAVAILABLE,

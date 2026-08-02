@@ -42,6 +42,15 @@ def _verify_chain(records: list[models.TransportEvent]) -> None:
             raise ValueError(f"seq {record.seq} sha does not verify")
 
 
+class TransitionRejected(RuntimeError):
+    """Raised when an append is not an authorized state-machine transition."""
+
+    def __init__(self, current: object, observed: str):
+        self.current = current
+        self.observed = observed
+        super().__init__(f"invalid journal transition {current} -> {observed}")
+
+
 class Journal:
     """Append-only JSONL journal.  The file path is caller-owned (operator side)."""
 
@@ -85,34 +94,93 @@ class Journal:
                 existing = self._locked_read_all(handle)
                 if existing:
                     _verify_chain(existing)
-                previous = existing[-1] if existing else None
-                seq = (previous.seq + 1) if previous else 1
-                ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                record = models.TransportEvent(
-                    seq=seq,
-                    ts=ts,
-                    event=event,
-                    chat_key=chat_key,
-                    request_text_sha256=request_text_sha256,
-                    detail=detail,
-                    prev_sha=previous.sha if previous else "",
-                )
-                payload = record.to_json()
-                record = models.TransportEvent(
-                    seq=seq,
-                    ts=ts,
-                    event=event,
-                    chat_key=chat_key,
-                    request_text_sha256=request_text_sha256,
-                    detail=detail,
-                    prev_sha=record.prev_sha,
-                    sha=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
-                )
+                record = self._build_record(existing, event=event, chat_key=chat_key,
+                                            request_text_sha256=request_text_sha256, detail=detail)
                 handle.write(record.to_json() + "\n")
                 handle.flush()
                 return record
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def transition_append(
+        self,
+        *,
+        event: str,
+        chat_key: str,
+        request_text_sha256: str,
+        detail: str = "",
+    ) -> models.TransportEvent:
+        """Atomic transition-checked append (R4-B2).
+
+        The state-machine transition is validated against the journal's
+        ACTUAL latest event for (chat_key, request_text_sha256) under the
+        same global flock that serializes the physical append.  A stale
+        caller-side state can therefore never be accepted: two concurrent
+        callers cannot both append from the same old tail, and a transition
+        the state machine forbids from the real tail is rejected
+        (TransitionRejected) without any write.
+        """
+        import fcntl
+
+        from . import state_machine
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path, "a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                existing = self._locked_read_all(handle)
+                if existing:
+                    _verify_chain(existing)
+                latest: models.DeliveryOutcome | None = None
+                for record in existing:
+                    if record.chat_key == chat_key and record.request_text_sha256 == request_text_sha256:
+                        try:
+                            latest = models.DeliveryOutcome(record.event)
+                        except ValueError:
+                            continue
+                observed = models.DeliveryOutcome(event)
+                if not state_machine.transition_allowed(latest, observed):
+                    raise TransitionRejected(latest, event)
+                record = self._build_record(existing, event=event, chat_key=chat_key,
+                                            request_text_sha256=request_text_sha256, detail=detail)
+                handle.write(record.to_json() + "\n")
+                handle.flush()
+                return record
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _build_record(
+        self,
+        existing: list[models.TransportEvent],
+        *,
+        event: str,
+        chat_key: str,
+        request_text_sha256: str,
+        detail: str = "",
+    ) -> models.TransportEvent:
+        previous = existing[-1] if existing else None
+        seq = (previous.seq + 1) if previous else 1
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        record = models.TransportEvent(
+            seq=seq,
+            ts=ts,
+            event=event,
+            chat_key=chat_key,
+            request_text_sha256=request_text_sha256,
+            detail=detail,
+            prev_sha=previous.sha if previous else "",
+        )
+        payload = record.to_json()
+        return models.TransportEvent(
+            seq=seq,
+            ts=ts,
+            event=event,
+            chat_key=chat_key,
+            request_text_sha256=request_text_sha256,
+            detail=detail,
+            prev_sha=record.prev_sha,
+            sha=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+        )
 
     def replay(self) -> list[models.TransportEvent]:
         """Replay the chain, rejecting breakage between seq and prev_sha."""
