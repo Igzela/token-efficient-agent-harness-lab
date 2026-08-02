@@ -68,9 +68,10 @@ Historical compatibility labels retained for handoff checks only: Packet PR207-R
 - PR #325 is merged and accepted as `0da5c6c785004784d9ffa3b20e0068f4bac6be71` from exact head `7ecffd5a30426dd1f26ab4d46a8f2a36e7594568`: live-seal budget reservation release and Draft PR terminal CAS rebind. Exact-head canonical `tests` runs `30613256286` (full) and `30613256266` (PR) were successful; post-merge `push: main` run `30636441727` passed all jobs and bound context-capsule artifact to the merge SHA.
 - PR #336 is merged as `17723bb66a1274498c32aef0f6cac85ad339efea`, but canonical acceptance is incomplete. Its run `30680937667` is recorded as `source_matrix: success`, `terminal_context_capsule: failure`, `overall_canonical_run: failure`, `failure_reason: PR merged before terminal required job`; Packet A repairs the material governance findings. It does not authorize a live task, provider call, spend, merge policy change, or any RWE/VDE reclassification.
 - PR #342 is merged and accepted as `e1e08ddcb745b02892f099b9de1436c99c25d533` from exact head `666cabeab31c14c77389646edc140c2d8ae7eb86`. It completes Packet B's canonical restart recovery and minimal managed-identity authority. Exact-head run `30710854561` passed all source jobs, `pg-integration-tests`, and terminal context capsule `91399051309`; the exact-head independent delta review was PASS with no unresolved objections.
+- PR #346 is merged and accepted as `adcb87b4a3ece961a46455117ae4323b4f54c2fa` from exact head `64d45f5e55f4393737c26b26dbd66976b8145d5d`. It is the Packet B closeout repair binding managed identity mutation to the canonical bootstrap store owner (reviewer/output-operator identity creation and mutation require the store-owned canonical bootstrap principal and exact local tenant), serializing the canonical Rust test lane, and wrapping PostgreSQL key-authority store calls in `spawn_blocking` to remove an async-handler runtime-in-runtime panic. Exact-head run `30732749013` passed all source jobs including `pg-integration-tests` and the terminal context capsule; the exact-head independent delta review for `89920d99..64d45f5` was APPROVED with no blocking findings.
 - PR #225 is presentation-only and remains last.
 
-The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, delegated autonomous authority through PR #323, Packet A through PRs #339/#340, and Packet B through PR #342. The clean live reseal is now the active frontier. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
+The provider-free `PE7-VDE-RWE-ARTIFACT-CONTRACTS-1` packet is complete through PR #319, managed-coding generalization through PR #320, protocol support through PR #321, live-runner wiring through PR #322, delegated autonomous authority through PR #323, Packet A through PRs #339/#340, and Packet B through PRs #342 and #346. The clean live reseal is now the active frontier. Do not begin RWE, Architecture Convergence, or later stages before their named prerequisites.
 
 ## Evidence Required for Every Engineering Board
 
@@ -363,7 +364,7 @@ Repair the ProductTask output path so a known pre-effect GitHub credential failu
 
 **State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** Packets `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` and `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` accepted and merged. Satisfied by PRs #339/#340 and #342.
+**Prerequisite:** Packets `CI-EVIDENCE-AND-GOVERNANCE-CLOSEOUT-REPAIR-1` and `PRODUCT-OUTPUT-RESTART-RECOVERY-REPAIR-1` accepted and merged. Satisfied by PRs #339/#340, #342, and the #346 Packet B closeout repair.
 
 **Authority:** owner authorization `GOLDEN-PATH-RECOVERY-AND-CLEAN-RESEAL-20260801`, with separately persisted and consumed sub-authorizations `.../attempt-1`, `.../attempt-2`, and `.../attempt-3`; combined provider spend cap `$1.00`, zero retries, and one ProductTask per attempt.
 
@@ -394,7 +395,7 @@ The prior `Igzela/alters-lab#4` attempt remains `LIVE_OBSERVED_NOT_ACCEPTED`. It
 
 One clean exact-main live reseal using:
 
-- the merged post-#342 `main`;
+- the merged post-#346 `main`;
 - a clean worktree;
 - recorded exact source tree and binary SHA before execution;
 - no uncommitted patches or one-shot helper;
