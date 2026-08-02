@@ -7,6 +7,7 @@ import os
 import sys
 import uuid
 
+import artifact_contract
 import control_state
 import state_manager as sm
 
@@ -35,8 +36,18 @@ def _claim(
     except sm.StateUnavailableError:
         return False, [], "dispatch_state_unavailable"
     if previous and previous.get("status") in {"claimed", "dispatched"}:
-        if not claim_details or not sm.dispatch_state_binding_matches(
-            previous, issue, action, claim_details, target_label
+        # The claim_nonce is a per-attempt generation token, never a binding
+        # field: a retry generates a fresh one, so comparing it here would
+        # turn every legitimately-claimed retry into an unverifiable state.
+        # The durable identity is the dispatch_id; the nonce binds the worker
+        # run to the claim through the workflow input, not through this check.
+        binding_details = {
+            key: value
+            for key, value in (claim_details or {}).items()
+            if key != "claim_nonce"
+        }
+        if not binding_details or not sm.dispatch_state_binding_matches(
+            previous, issue, action, binding_details, target_label
         ):
             return False, [], "dispatch_state_binding_unverified"
         if previous.get("status") == "dispatched":
@@ -45,12 +56,16 @@ def _claim(
     labels = sm.get_issue_labels_checked(issue, repo)
     if labels is None:
         return False, [], "label_state_unavailable"
+    task_scope = None
+    task_binding = None
     if target_label == sm.LABEL_RUNNING:
         if sm.LABEL_READY not in labels or labels & (sm.ACTIVE_LABELS | sm.TERMINAL_LABELS):
             return False, [], "issue_not_ready"
-        scope_valid, scope = sm.validate_task_scope(issue, repo)
+        scope_valid, scope_binding = sm.read_task_scope_binding(issue, repo)
         if not scope_valid:
-            return False, [], f"invalid_scope:{scope}"
+            return False, [], f"invalid_scope:{scope_binding}"
+        task_binding = scope_binding
+        task_scope = scope_binding["allowed_paths"]
         dependencies_ready, blocker = sm.check_dependencies_complete(issue, repo)
         if not dependencies_ready:
             return False, [], f"dependencies_not_ready:{blocker}"
@@ -84,12 +99,27 @@ def _claim(
         return False, [], "capacity_state_unavailable"
     if issue not in active and len(active) >= MAX_ACTIVE:
         return False, [], "capacity_full"
+    if target_label == sm.LABEL_RUNNING and issue not in active:
+        active_scopes = sm.get_active_issue_scopes(active, repo)
+        if active_scopes is None:
+            return False, [], "active_scope_state_unavailable"
+        for active_issue in sorted(active_scopes):
+            if artifact_contract.scopes_overlap(
+                task_scope or [], active_scopes[active_issue]
+            ):
+                return False, [], f"scope_conflict:{active_issue}"
     previous_known = sorted(labels & (sm.ACTIVE_LABELS | {sm.LABEL_READY, sm.LABEL_REVIEW_PASSED}))
     claim_details_payload = {
         "previous_labels": previous_known,
         "target_label": target_label,
         **(claim_details or {}),
     }
+    # Bind the persisted claim to the exact scope and complete-body digest
+    # read at claim time, before any label mutation.  A later retry keeps this
+    # original binding and never re-reads a mutable Issue body.
+    if task_binding is not None:
+        claim_details_payload["allowed_paths"] = task_binding["allowed_paths"]
+        claim_details_payload["task_body_sha256"] = task_binding["task_body_sha256"]
     # Persist the claim before changing the Issue label.  An emergency-stop
     # cancellation can interrupt the label mutation lane; the durable claim
     # then gives retry/compensation an exact identity instead of leaving an
@@ -119,10 +149,32 @@ def _claim(
 def _rollback(issue: int, dispatch_id: str, previous_labels: list[str], reason: str) -> bool:
     repo = _repo()
     labels_restored = sm.set_labels(issue, *(previous_labels or [sm.LABEL_READY]), repo=repo)
+    try:
+        previous = sm.read_dispatch_state(issue, dispatch_id, repo)
+    except sm.StateUnavailableError:
+        previous = None
+    details = _claim_details_copy(previous) or {}
+    details["reason"] = reason
     rollback_recorded = sm.record_dispatch_state(
-        issue, dispatch_id, "rollback", "failed", {"reason": reason}, repo
+        issue, dispatch_id, "rollback", "failed", details, repo
     )
     return labels_restored and rollback_recorded
+
+
+def _claim_details_copy(state: dict[str, object] | None) -> dict[str, object] | None:
+    """Copy a persisted claim's details only when they are a valid object.
+
+    ``read_dispatch_state`` does not validate ``details``; a corrupted or
+    edited trusted comment could carry a non-object value.  Fail closed to
+    ``None`` instead of raising, and record only the truthful minimal fields.
+    """
+
+    if not isinstance(state, dict):
+        return None
+    details = state.get("details")
+    if not isinstance(details, dict):
+        return None
+    return dict(details)
 
 
 def _record_dispatched(
@@ -135,7 +187,7 @@ def _record_dispatched(
         previous = sm.read_dispatch_state(issue, dispatch_id, _repo())
     except sm.StateUnavailableError:
         return False
-    merged_details = dict((previous or {}).get("details") or {})
+    merged_details = _claim_details_copy(previous) or {}
     merged_details.update(details)
     return sm.record_dispatch_state(
         issue, dispatch_id, action, "dispatched", merged_details, _repo()
@@ -153,18 +205,32 @@ def _run_workflow(workflow: str, fields: dict[str, object]) -> bool:
     return sm._gh(*args) is not None
 
 
+def _new_claim_nonce() -> str:
+    """Return one unpredictable per-claim nonce for a genuinely new claim.
+
+    ``dispatch_id`` values are deterministic and may be reused after a claim
+    is released, so an old worker run could otherwise terminalize a newer
+    claim that shares its dispatch-id.  The nonce is the per-generation
+    discriminator: it is persisted with the claim, carried into the worker
+    workflow input, and required again for terminalization.
+    """
+
+    return uuid.uuid4().hex
+
+
 def dispatch_ready(issue: int, dispatch_id: str | None = None) -> dict[str, object]:
     dispatch_id = dispatch_id or _dispatch_id("worker", issue)
     try:
         control_state.require_live(_repo() or None)
     except control_state.ControlStateError:
         return {"dispatched": False, "issue": issue, "reason": "disabled_or_emergency_stopped"}
+    claim_nonce = _new_claim_nonce()
     claimed, previous, reason = _claim(
         issue,
         sm.LABEL_RUNNING,
         dispatch_id,
         "worker",
-        {"issue_number": issue},
+        {"issue_number": issue, "claim_nonce": claim_nonce},
     )
     if not claimed:
         if reason.startswith("invalid_scope:"):
@@ -173,7 +239,15 @@ def dispatch_ready(issue: int, dispatch_id: str | None = None) -> dict[str, obje
                 {"reason": "invalid_scope", "detail": reason.removeprefix("invalid_scope:")}, _repo(),
             )
         return {"dispatched": reason == "already_dispatched", "issue": issue, "reason": reason}
-    if not _run_workflow("agent-worker.yml", {"issue": issue, "dry_run": "false"}):
+    if not _run_workflow(
+        "agent-worker.yml",
+        {
+            "issue": issue,
+            "dry_run": "false",
+            "dispatch_id": dispatch_id,
+            "claim_nonce": claim_nonce,
+        },
+    ):
         rolled_back = _rollback(issue, dispatch_id, previous, "workflow_dispatch_failed")
         reason = "workflow_dispatch_failed" if rolled_back else "workflow_dispatch_failed_rollback_failed"
         return {"dispatched": False, "issue": issue, "reason": reason}

@@ -670,15 +670,117 @@ def read_ci_state(issue_number, repo=""):
     return state if isinstance(state, dict) and state.get("kind") == "agent-orchestrator-ci-state" else None
 
 
-def validate_task_scope(issue_number, repo=""):
-    """Validate the canonical scope marker before a task can be dispatched."""
+WORKER_SCOPE_ACTIONS = frozenset({"worker", "local-run"})
+WORKER_SCOPE_STATUSES = frozenset({"claimed", "dispatched"})
+WORKER_SCOPE_TERMINAL_STATUSES = frozenset({"failed"})
+CLAIM_NONCE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+
+
+def read_task_scope_binding(issue_number, repo=""):
+    """Read the Issue body exactly once and bind its scope and complete-body digest.
+
+    Returns ``(True, binding)`` with ``binding`` containing ``allowed_paths``
+    and ``task_body_sha256``, or ``(False, reason)`` on any failure.
+    """
 
     try:
         import artifact_contract
-        scope = artifact_contract.parse_issue_scope(get_issue_body(issue_number, repo))
-        return True, scope
-    except (RuntimeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+    except ImportError:
+        return False, "artifact_contract_unavailable"
+    body = get_issue_body(issue_number, repo)
+    if not isinstance(body, str):
+        return False, "task_body_unavailable"
+    try:
+        binding = artifact_contract.build_issue_scope_binding(body)
+    except (artifact_contract.ArtifactContractError, ValueError, TypeError) as exc:
         return False, str(exc)
+    return True, binding
+
+
+def validate_task_scope(issue_number, repo=""):
+    """Validate the canonical scope marker before a task can be dispatched.
+
+    Reuses ``read_task_scope_binding`` so the Issue body is read exactly once;
+    the compatible ``(valid, scope_paths)`` return shape is preserved.
+    """
+
+    valid, value = read_task_scope_binding(issue_number, repo)
+    if not valid:
+        return False, value
+    return True, value["allowed_paths"]
+
+
+def read_worker_claim_scope(issue_number, repo=""):
+    """Read the newest trusted worker/local-run claim scope.
+
+    ``get_issue_comments`` returns comments newest first, so the first
+    relevant comment is authoritative.  Relevance is precisely the
+    dispatch-state document kind: only a trusted comment whose body parses to
+    a ``agent-orchestrator-dispatch-state`` object counts.  Every other
+    trusted comment (review/ci/failure documents, prose) is skipped, so
+    unrelated content can never become a claim-scope denial of service.
+
+    Within the relevant worker/local-run states the newest one wins: a newer
+    terminal state (failed/rejected/rollback) shadows every older dispatched
+    scope, and a newer same-Issue state with a future version, unparseable
+    JSON, or an invalid binding fails closed to ``None`` instead of falling
+    back to an older claim.  States bound to a different Issue are unrelated
+    and skipped.  Missing or API-unavailable state fails closed to ``None``.
+    """
+
+    try:
+        comments = get_issue_comments(issue_number, repo)
+    except StateUnavailableError:
+        return None
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        body = comment.get("body", "")
+        if not isinstance(body, str) or "agent-orchestrator-dispatch-state" not in body:
+            continue
+        try:
+            state = json.loads(body)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(state, dict) or state.get("kind") != "agent-orchestrator-dispatch-state":
+            continue
+        if state.get("issue_number") != int(issue_number):
+            continue
+        if state.get("version") != 1:
+            return None
+        if state.get("action") not in WORKER_SCOPE_ACTIONS:
+            continue
+        if state.get("status") not in WORKER_SCOPE_STATUSES:
+            return None
+        try:
+            import artifact_contract
+            return artifact_contract.validate_issue_scope_binding(state.get("details"))
+        except (artifact_contract.ArtifactContractError, ValueError, TypeError):
+            return None
+    return None
+
+
+def verify_task_scope_binding(issue_number, repo=""):
+    """Re-read the current Issue body and require its complete digest to match the claim.
+
+    Returns ``(True, "ok", binding)`` with the claim-bound binding, or
+    ``(False, reason, None)`` on any mismatch or unavailable state.
+    """
+
+    claim = read_worker_claim_scope(issue_number, repo)
+    if claim is None:
+        return False, "claim_scope_unavailable", None
+    body = get_issue_body(issue_number, repo)
+    if not isinstance(body, str):
+        return False, "task_body_unavailable", None
+    try:
+        import artifact_contract
+        current = artifact_contract.build_issue_scope_binding(body)
+    except (artifact_contract.ArtifactContractError, ValueError, TypeError) as exc:
+        return False, str(exc), None
+    if current["task_body_sha256"] != claim["task_body_sha256"]:
+        return False, "task_body_changed", None
+    return True, "ok", claim
 
 
 def record_review_state(
@@ -1001,6 +1103,27 @@ def get_active_issue_numbers(repo=""):
             result.update(int(item["number"]) for item in json.loads(raw))
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
+    return result
+
+
+def get_active_issue_scopes(issue_numbers, repo=""):
+    """Return claim-bound scopes for one authoritative active-Issue snapshot.
+
+    Reads only trusted persisted worker claims; the mutable Issue body is
+    never consulted.  Any unavailable, missing, or invalid claim fails the
+    whole snapshot closed.
+    """
+
+    if not isinstance(issue_numbers, set) or not all(
+        isinstance(issue, int) and issue > 0 for issue in issue_numbers
+    ):
+        return None
+    result = {}
+    for issue in sorted(issue_numbers):
+        claim = read_worker_claim_scope(issue, repo)
+        if claim is None:
+            return None
+        result[issue] = claim["allowed_paths"]
     return result
 
 
@@ -1535,22 +1658,195 @@ def release_and_record_failure(
     return release_ok, release_reason
 
 
+def _claim_nonce_valid(value: object) -> bool:
+    """Return whether a persisted claim carries a well-formed per-claim nonce."""
+
+    return isinstance(value, str) and CLAIM_NONCE_PATTERN.fullmatch(value) is not None
+
+
+def _claim_binding_valid(details: object) -> bool:
+    """Return whether persisted claim details carry a valid task scope binding.
+
+    The binding must carry a non-empty bounded ``allowed_paths`` list and a
+    64-hex ``task_body_sha256`` digest; any malformed binding fails closed.
+    """
+
+    if not isinstance(details, dict):
+        return False
+    try:
+        import artifact_contract
+        artifact_contract.validate_issue_scope_binding(details)
+    except (artifact_contract.ArtifactContractError, ValueError, TypeError):
+        return False
+    return True
+
+
+def _newest_worker_claim_outcome(issue_number, dispatch_id, claim_nonce, repo=""):
+    """Classify the newest trusted worker/local-run claim on an Issue.
+
+    ``get_issue_comments`` returns comments newest first, so the first
+    matching state is the newest relevant worker/local-run generation.
+    Unrelated trusted comments (review/repair/ci/failure documents, prose,
+    other-Issue states) are skipped; the caller's exact
+    ``(dispatch_id, claim_nonce)`` pair is the generation discriminator.
+
+    Returns ``(outcome, payload)`` where ``outcome`` is one of::
+
+        ("own-active", state)    the newest relevant state is the caller's
+                                 exact claim (``claimed``/``dispatched``)
+        ("own-terminal", state)  the newest relevant state is the caller's
+                                 exact terminal failure (``failed``)
+        ("superseded", state)    the newest relevant state is a valid claim
+                                 or terminal of another generation
+        ("unverifiable", reason) a newer relevant state cannot be verified
+                                 (comment-API failure, unparseable body,
+                                 wrong version, unknown status, or a missing
+                                 or malformed claim nonce)
+        ("absent", None)         no relevant worker/local-run state exists
+
+    Every unprovable condition fails closed: the caller must neither write a
+    terminal nor change a label unless the outcome is ``own-active`` or
+    ``own-terminal``.
+    """
+
+    try:
+        comments = get_issue_comments(issue_number, repo)
+    except StateUnavailableError:
+        return "unverifiable", "claim_state_unavailable"
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        body = comment.get("body", "")
+        if not isinstance(body, str) or "agent-orchestrator-dispatch-state" not in body:
+            continue
+        try:
+            state = json.loads(body)
+        except (json.JSONDecodeError, TypeError):
+            return "unverifiable", "claim_state_unverifiable"
+        if not isinstance(state, dict) or state.get("kind") != "agent-orchestrator-dispatch-state":
+            continue
+        if state.get("issue_number") != int(issue_number):
+            continue
+        if state.get("version") != 1:
+            return "unverifiable", "claim_state_unverifiable"
+        if state.get("action") not in WORKER_SCOPE_ACTIONS:
+            continue
+        details = state.get("details")
+        if not isinstance(details, dict) or not _claim_nonce_valid(details.get("claim_nonce")):
+            return "unverifiable", "claim_nonce_unavailable"
+        status = state.get("status")
+        if (
+            status not in WORKER_SCOPE_STATUSES
+            and status not in WORKER_SCOPE_TERMINAL_STATUSES
+        ):
+            return "unverifiable", "claim_state_unverifiable"
+        if (
+            state.get("dispatch_id") == dispatch_id
+            and details.get("claim_nonce") == claim_nonce
+        ):
+            if status in WORKER_SCOPE_STATUSES:
+                return "own-active", state
+            return "own-terminal", state
+        return "superseded", state
+    return "absent", None
+
+
 def release_rejected_worker(
     issue_number, gate_enabled, validate_result, can_start, repo="", workflow_run_id=None,
-    rejection_reason=None,
+    rejection_reason=None, dispatch_id=None, claim_nonce=None,
 ):
-    """Release a dispatcher claim when a worker safely rejects before Vader."""
+    """Crash-safely release a dispatcher claim when a worker rejects before Vader.
+
+    The rejected-before-Vader path is ordered terminal-first so a crash can
+    never leave an un-owned active label with no durable terminal, and so a
+    stale run can never shadow or demote a newer claim generation:
+
+    1. The caller's exact ``dispatch_id`` and per-claim ``claim_nonce`` must
+       name the newest relevant worker/local-run state.  Unrelated newer
+       review/repair states are skipped; a newer relevant state with a
+       different identity is ``superseded`` (this run writes nothing and
+       changes no label); a newer unverifiable state fails closed before any
+       mutation.
+    2. The exact claim's details must still carry a valid scope binding
+       (``allowed_paths`` and a 64-hex ``task_body_sha256``) whether the
+       newest exact state is still active or already terminal; a malformed
+       binding fails closed with ``claim_binding_unverifiable`` before any
+       mutation.
+    3. Only then is the exact claim's terminal ``failed`` state persisted,
+       preserving its binding (``allowed_paths``, ``task_body_sha256``) and
+       its ``claim_nonce``.  An already-durable exact terminal is an
+       idempotent crash retry and skips the write.
+    4. Capacity is released (``release_failed_capacity``) only after the
+       terminal write succeeded or the exact terminal already existed.
+
+    No new claim can be inserted between the terminal write and the label
+    release: a new worker claim requires the Issue to be ``agent-ready`` with
+    no active or terminal label (``dispatcher._claim``), while the exact
+    claim's own ``agent-running`` label persists until
+    ``release_failed_capacity`` mutates it.  ``release_failed_capacity`` also
+    re-reads the labels immediately before the mutation and fails closed on
+    any change, so an unrelated repair/review claim or manual label change
+    can never be demoted by this stale run.
+
+    Returns ``(True, reason)`` for the safe outcomes ``released``,
+    ``already_released``, or ``superseded``.  Every unprovable condition
+    fails closed to ``(False, reason)`` before any mutation.
+    """
 
     rejected = gate_enabled != "true" or (
         validate_result == "success" and can_start != "true"
     )
     if not rejected:
         return True, "worker_not_rejected"
+    if not isinstance(dispatch_id, str) or not dispatch_id:
+        return False, "claim_dispatch_id_unavailable"
+    if not _claim_nonce_valid(claim_nonce):
+        return False, "claim_nonce_unavailable"
+    reason = (
+        rejection_reason if rejection_reason in PREFLIGHT_FAILURE_REASONS
+        else "dispatcher_claim_invalid"
+    )
+    outcome, payload = _newest_worker_claim_outcome(
+        issue_number, dispatch_id, claim_nonce, repo
+    )
+    if outcome == "unverifiable":
+        return False, payload
+    if outcome == "absent":
+        return False, "claim_not_found"
+    if outcome == "superseded":
+        # A newer generation owns this Issue.  This stale run must not write
+        # a comment or change a label; success means "no-op, superseded".
+        return True, "superseded"
+    if outcome == "own-active":
+        claim_state = payload
+        details = claim_state.get("details")
+        if not _claim_binding_valid(details):
+            return False, "claim_binding_unverifiable"
+        terminal_details = dict(details)
+        terminal_details["reason"] = reason
+        if not record_dispatch_state(
+            issue_number,
+            dispatch_id,
+            claim_state.get("action"),
+            "failed",
+            terminal_details,
+            repo,
+        ):
+            return False, "claim_state_failed_write"
+    elif outcome == "own-terminal":
+        # A terminal claim authorizes release only while it still carries the
+        # exact claim's verifiable binding; a malformed terminal fails closed
+        # and stays durable for the next dispatcher repair instead.
+        claim_state = payload
+        if not _claim_binding_valid(claim_state.get("details")):
+            return False, "claim_binding_unverifiable"
+    # The exact claim is now durably terminal (written above or already
+    # present with a valid binding), so releasing capacity can no longer
+    # strand a non-terminal claim behind an active label.
     released, release_reason = release_failed_capacity(
         issue_number, LABEL_RUNNING, LABEL_BLOCKED, repo=repo
     )
     if workflow_run_id is not None:
-        reason = rejection_reason if rejection_reason in PREFLIGHT_FAILURE_REASONS else "dispatcher_claim_invalid"
         recorded, record_reason = _record_workflow_failure(
             issue_number,
             "implementation",
@@ -1991,6 +2287,12 @@ def main():
         print(reason)
 
     elif command == "release-rejected-worker":
+        if not 6 <= len(sys.argv) <= 10:
+            print(
+                "Usage: state_manager.py release-rejected-worker <issue> <gate_enabled> <validate_result> <can_start> [workflow_run_id [rejection_reason [dispatch_id [claim_nonce]]]]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         issue_number = int(sys.argv[2])
         ok, reason = release_rejected_worker(
             issue_number,
@@ -2000,6 +2302,8 @@ def main():
             repo,
             int(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else None,
             sys.argv[7] if len(sys.argv) > 7 else None,
+            sys.argv[8] if len(sys.argv) > 8 else None,
+            sys.argv[9] if len(sys.argv) > 9 else None,
         )
         if not ok:
             print(f"FATAL: unable to release rejected worker: {reason}", file=sys.stderr)
@@ -2013,6 +2317,28 @@ def main():
             print(f"FATAL: invalid task scope: {value}", file=sys.stderr)
             sys.exit(1)
         print(json.dumps({"allowed_paths": value}, sort_keys=True))
+
+    elif command == "read-task-scope-binding":
+        if len(sys.argv) != 3:
+            print("Usage: state_manager.py read-task-scope-binding <issue>", file=sys.stderr)
+            sys.exit(1)
+        issue_number = int(sys.argv[2])
+        valid, binding = read_task_scope_binding(issue_number, repo)
+        if not valid:
+            print(f"FATAL: unable to read task scope binding: {binding}", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(binding, sort_keys=True))
+
+    elif command == "verify-task-scope-binding":
+        if len(sys.argv) != 3:
+            print("Usage: state_manager.py verify-task-scope-binding <issue>", file=sys.stderr)
+            sys.exit(1)
+        issue_number = int(sys.argv[2])
+        ok, reason, binding = verify_task_scope_binding(issue_number, repo)
+        if not ok:
+            print(f"FATAL: task scope binding rejected: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(binding, sort_keys=True))
 
     elif command == "add-labels":
         issue_number = int(sys.argv[2])

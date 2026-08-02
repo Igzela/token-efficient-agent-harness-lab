@@ -57,20 +57,6 @@ def _decision(status: str, *, action: str = "none", **fields: Any) -> dict[str, 
     }
 
 
-def _scopes_overlap(left: list[str], right: list[str]) -> bool:
-    """Return whether two validated Issue scopes can name the same path."""
-
-    for first in left:
-        for second in right:
-            if first == second:
-                return True
-            if first.endswith("/") and second.startswith(first):
-                return True
-            if second.endswith("/") and first.startswith(second):
-                return True
-    return False
-
-
 def _task_main_sha(body: str) -> str:
     matches = TASK_MARKER.findall(body or "")
     if len(matches) != 1:
@@ -222,7 +208,9 @@ class LoopController:
                     (
                         issue
                         for issue, paths in occupied
-                        if _scopes_overlap(candidate["allowed_paths"], paths)
+                        if artifact_contract.scopes_overlap(
+                            candidate["allowed_paths"], paths
+                        )
                     ),
                     None,
                 )

@@ -12,6 +12,14 @@ on:
         required: false
         default: false
         type: boolean
+      dispatch_id:
+        description: Exact dispatcher claim identity carried by this worker run
+        required: true
+        type: string
+      claim_nonce:
+        description: Unpredictable per-claim nonce carried by this worker run
+        required: true
+        type: string
 
 permissions:
   actions: write
@@ -130,10 +138,10 @@ jobs:
             echo "repository capability rejected worker before Vader: $REASON"
             exit 0
           fi
-          if ! python3 scripts/agent-control/state_manager.py validate-scope "${{ inputs.issue }}" >/dev/null; then
+          if ! python3 scripts/agent-control/state_manager.py verify-task-scope-binding "${{ inputs.issue }}" >/dev/null; then
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             echo "rejection_reason=invalid_issue_scope" >> "$GITHUB_OUTPUT"
-            echo "invalid Issue scope; no Vader worker will start"
+            echo "Issue scope no longer matches the persisted claim; no Vader worker will start"
             exit 0
           fi
           LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ inputs.issue }}")
@@ -191,11 +199,13 @@ jobs:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/agent-control/prompt_builder.py implementation "${{ inputs.issue }}" > "$RUNNER_TEMP/implementation-prompt.txt"
-      - name: Recheck control immediately before Codex
+      - name: Recheck control and claim-bound task scope immediately before Codex
         env:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+        run: |
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py verify-task-scope-binding "${{ inputs.issue }}"
       - name: Run Codex in worktree with no GitHub credentials
         run: |
           bash scripts/agent-control/codex_wrapper.sh implement "$RUNNER_TEMP/implementation-prompt.txt" \
@@ -280,8 +290,9 @@ jobs:
           test "$ACTUAL_REMOTE" = "$EXPECTED_REMOTE_SHA"
           python3 scripts/agent-control/artifact_contract.py validate implementation "${{ inputs.issue }}" 0 \
             "$BASE_SHA" "$EXPECTED_REMOTE_SHA" "$BRANCH" "$RUNNER_TEMP/agent-artifact"
-          gh issue view "${{ inputs.issue }}" --json body --jq .body > "$RUNNER_TEMP/task-issue-body.md"
-          python3 scripts/agent-control/artifact_contract.py validate-scope "$RUNNER_TEMP/task-issue-body.md" \
+          python3 scripts/agent-control/state_manager.py verify-task-scope-binding "${{ inputs.issue }}" \
+            > "$RUNNER_TEMP/task-scope-binding.json"
+          python3 scripts/agent-control/artifact_contract.py validate-scope-binding "$RUNNER_TEMP/task-scope-binding.json" \
             "$RUNNER_TEMP/agent-artifact/agent-result.json"
       - name: Recheck control immediately before applying implementation patch
         env:
@@ -463,10 +474,12 @@ jobs:
           VALIDATE_RESULT: ${{ needs.validate.result }}
           CAN_START: ${{ needs.validate.outputs.can_start }}
           REJECTION_REASON: ${{ needs.validate.outputs.rejection_reason }}
+          INPUT_DISPATCH_ID: ${{ inputs.dispatch_id }}
+          INPUT_CLAIM_NONCE: ${{ inputs.claim_nonce }}
         run: |
           python3 scripts/agent-control/state_manager.py release-rejected-worker \
             "${{ inputs.issue }}" "$GATE_ENABLED" "$VALIDATE_RESULT" "$CAN_START" \
-            "${{ github.run_id }}" "$REJECTION_REASON"
+            "${{ github.run_id }}" "$REJECTION_REASON" "$INPUT_DISPATCH_ID" "$INPUT_CLAIM_NONCE"
 
   failure-handler:
     needs: [gate, validate, vader-implementation, finalize]

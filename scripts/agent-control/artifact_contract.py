@@ -287,10 +287,14 @@ def validate_index(repo: Path, manifest: dict[str, Any]) -> None:
 def validate_issue_scope(issue_body: str, manifest: dict[str, Any]) -> None:
     """Require every changed path to be declared by the task Issue itself."""
 
-    allowed = parse_issue_scope(issue_body)
-    for changed in manifest["changed_files"]:
-        if not any(changed == path or (path.endswith("/") and changed.startswith(path)) for path in allowed):
-            raise ArtifactContractError(f"artifact path is outside the task Issue scope: {changed}")
+    _validate_paths_within(parse_issue_scope(issue_body), manifest["changed_files"])
+
+
+def validate_scope_binding(binding: Any, manifest: dict[str, Any]) -> None:
+    """Require every changed path to be declared by the claim-bound task scope."""
+
+    normalized = validate_issue_scope_binding(binding)
+    _validate_paths_within(normalized["allowed_paths"], manifest["changed_files"])
 
 
 def _scope_path_safe(path: str) -> bool:
@@ -299,6 +303,18 @@ def _scope_path_safe(path: str) -> bool:
     if path.endswith("/") and path[:-1] in {"", "."}:
         return False
     return True
+
+
+def validate_allowed_paths(value: Any) -> list[str]:
+    """Validate and return a non-empty, non-duplicated bounded path list."""
+
+    if not isinstance(value, list) or not value or len(value) > MAX_ALLOWED_PATHS or not all(
+        isinstance(path, str) and _scope_path_safe(path) for path in value
+    ):
+        raise ArtifactContractError("task Issue scope has no valid allowed_paths")
+    if len(value) != len(set(value)):
+        raise ArtifactContractError("task Issue scope has duplicate allowed paths")
+    return value
 
 
 def parse_issue_scope(issue_body: str) -> list[str]:
@@ -311,14 +327,59 @@ def parse_issue_scope(issue_body: str) -> list[str]:
         scope = json.loads(matches[0])
     except json.JSONDecodeError as exc:
         raise ArtifactContractError("task Issue scope marker is invalid JSON") from exc
-    allowed = scope.get("allowed_paths") if isinstance(scope, dict) else None
-    if not isinstance(allowed, list) or not allowed or len(allowed) > MAX_ALLOWED_PATHS or not all(
-        isinstance(path, str) and _scope_path_safe(path) for path in allowed
-    ):
+    if not isinstance(scope, dict):
         raise ArtifactContractError("task Issue scope has no valid allowed_paths")
-    if len(allowed) != len(set(allowed)):
-        raise ArtifactContractError("task Issue scope has duplicate allowed paths")
-    return allowed
+    return validate_allowed_paths(scope.get("allowed_paths"))
+
+
+def build_issue_scope_binding(issue_body: str) -> dict[str, str]:
+    """Bind the parsed Issue scope to a digest of the complete untrusted body."""
+
+    if not isinstance(issue_body, str):
+        raise ArtifactContractError("task Issue body is unavailable")
+    return {
+        "allowed_paths": parse_issue_scope(issue_body),
+        "task_body_sha256": _sha256(issue_body.encode("utf-8")),
+    }
+
+
+def validate_issue_scope_binding(value: Any) -> dict[str, str]:
+    """Validate a claim-bound scope binding extracted from untrusted JSON.
+
+    The input may carry extra dispatch-state fields; only the two canonical
+    binding fields are required and returned.
+    """
+
+    if not isinstance(value, dict):
+        raise ArtifactContractError("task scope binding is not an object")
+    allowed = validate_allowed_paths(value.get("allowed_paths"))
+    digest = value.get("task_body_sha256")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ArtifactContractError("task scope binding digest is invalid")
+    return {"allowed_paths": allowed, "task_body_sha256": digest}
+
+
+def _validate_paths_within(allowed_paths: list[str], changed_files: list[str]) -> None:
+    for changed in changed_files:
+        if not any(
+            changed == path or (path.endswith("/") and changed.startswith(path))
+            for path in allowed_paths
+        ):
+            raise ArtifactContractError(f"artifact path is outside the task Issue scope: {changed}")
+
+
+def scopes_overlap(left: list[str], right: list[str]) -> bool:
+    """Return whether two validated Issue scopes can name the same path."""
+
+    for first in left:
+        for second in right:
+            if first == second:
+                return True
+            if first.endswith("/") and second.startswith(first):
+                return True
+            if second.endswith("/") and first.startswith(second):
+                return True
+    return False
 
 
 def _optional_sha(value: str) -> str | None:
@@ -327,7 +388,7 @@ def _optional_sha(value: str) -> str | None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        raise SystemExit("Usage: artifact_contract.py <create|validate|validate-index|validate-scope-definition> ...")
+        raise SystemExit("Usage: artifact_contract.py <create|validate|validate-index|validate-scope|validate-scope-binding|validate-scope-definition> ...")
     command = sys.argv[1]
     try:
         if command == "create":
@@ -366,6 +427,12 @@ def main() -> None:
                 raise ArtifactContractError("invalid validate-scope arguments")
             manifest = _validate_manifest(json.loads(Path(sys.argv[3]).read_text()))
             validate_issue_scope(Path(sys.argv[2]).read_text(), manifest)
+        elif command == "validate-scope-binding":
+            if len(sys.argv) != 4:
+                raise ArtifactContractError("invalid validate-scope-binding arguments")
+            binding = json.loads(Path(sys.argv[2]).read_text())
+            manifest = _validate_manifest(json.loads(Path(sys.argv[3]).read_text()))
+            validate_scope_binding(binding, manifest)
         elif command == "validate-scope-definition":
             if len(sys.argv) != 3:
                 raise ArtifactContractError("invalid validate-scope-definition arguments")

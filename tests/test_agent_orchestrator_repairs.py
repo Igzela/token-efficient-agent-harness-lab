@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import ast
+import hashlib
 import os
 import pathlib
 import stat
@@ -21,6 +22,7 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 os.environ.setdefault("AGENT_CI_FIXTURE_MODE", "true")
 sys.path.insert(0, str(CONTROL))
 
+import artifact_contract
 import ci_handler
 import ci_verifier
 import control_state
@@ -79,7 +81,7 @@ class TestWorkflowContracts(unittest.TestCase):
     def test_all_workflow_dispatch_callers_and_inputs_match(self):
         expected = {
             "agent-controller.yml": {"command", "issue", "pr_number", "head_sha", "ci_run_id", "repair_count", "source_issue", "dispatch_id"},
-            "agent-worker.yml": {"issue", "dry_run"},
+            "agent-worker.yml": {"issue", "dry_run", "dispatch_id", "claim_nonce"},
             "agent-ci-repair.yml": {"pr_number", "issue_number", "head_sha", "ci_run_id", "repair_count"},
             "agent-review.yml": {"pr_number", "issue_number", "head_sha"},
             "agent-merge.yml": {"pr_number", "issue_number", "head_sha"},
@@ -151,7 +153,7 @@ class TestWorkflowContracts(unittest.TestCase):
             source = self.read(name)
             with self.subTest(name=name):
                 self.assertIn("artifact_contract.py validate", source)
-                self.assertIn("artifact_contract.py validate-scope", source)
+                self.assertIn("artifact_contract.py validate-scope-binding", source)
                 self.assertIn("git apply --index --binary", source)
                 self.assertIn("artifact_contract.py validate-index", source)
                 self.assertIn("git diff --cached --check", source)
@@ -159,6 +161,37 @@ class TestWorkflowContracts(unittest.TestCase):
                 self.assertIn("control_state.py require-live", source)
                 self.assertIn("agent.patch", source)
                 self.assertIn("agent-result.json", source)
+
+    def test_finalizers_and_workers_use_claim_bound_task_scope(self):
+        for name in ("agent-worker.yml", "agent-ci-repair.yml"):
+            source = self.read(name)
+            with self.subTest(name=name):
+                self.assertIn("verify-task-scope-binding", source)
+                self.assertIn("artifact_contract.py validate-scope-binding", source)
+                self.assertIn("task-scope-binding.json", source)
+                self.assertNotIn("gh issue view", source)
+                self.assertNotIn("task-issue-body.md", source)
+                self.assertNotIn("artifact_contract.py validate-scope ", source)
+
+    def test_worker_rechecks_claim_bound_scope_immediately_before_codex(self):
+        source = self.read("agent-worker.yml")
+        step = source.split("Recheck control and claim-bound task scope immediately before Codex", 1)[1]
+        step = step.split("\n  - name:", 1)[0]
+        self.assertIn("verify-task-scope-binding", step)
+        self.assertIn("control_state.py require-live", step)
+
+    def test_repair_prepare_rechecks_claim_bound_scope_before_codex(self):
+        source = self.read("agent-ci-repair.yml")
+        prepare = source.split("  prepare:", 1)[1].split("\n  vader-repair:", 1)[0]
+        self.assertIn("verify-task-scope-binding", prepare)
+        self.assertIn("verify-binding", prepare)
+
+    def test_repair_rechecks_claim_bound_scope_immediately_before_codex_repair(self):
+        source = self.read("agent-ci-repair.yml")
+        step = source.split("Recheck control immediately before Codex repair", 1)[1]
+        step = step.split("\n  - name:", 1)[0]
+        self.assertIn("control_state.py require-live", step)
+        self.assertIn('verify-task-scope-binding "${{ inputs.issue_number }}"', step)
 
     def test_finalizers_use_verified_pr_binding_cli_and_supported_ci_acquisition(self):
         worker = self.read("agent-worker.yml")
@@ -222,6 +255,7 @@ class TestWorkflowContracts(unittest.TestCase):
             "agent-review.yml": ("${{ inputs.head_sha }}",),
             "agent-merge.yml": ("${{ inputs.head_sha }}",),
             "tests.yml": ("${{ inputs.expected_sha }}",),
+            "agent-worker.yml": ("${{ inputs.dispatch_id }}", "${{ inputs.claim_nonce }}"),
         }
         for name, expressions in forbidden.items():
             scripts = self.shell_scripts(name)
@@ -480,6 +514,16 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("rejected-before-vader:", source)
         self.assertIn("release-rejected-worker", source)
         self.assertIn("needs: [gate, validate, vader-implementation, finalize]", source)
+        step = source.split("Release a successfully rejected dispatcher claim", 1)[1]
+        step = step.split("\n  - name:", 1)[0]
+        self.assertIn("INPUT_DISPATCH_ID: ${{ inputs.dispatch_id }}", step)
+        self.assertIn('"$INPUT_DISPATCH_ID"', step)
+        self.assertIn("INPUT_CLAIM_NONCE: ${{ inputs.claim_nonce }}", step)
+        self.assertIn('"$INPUT_CLAIM_NONCE"', step)
+        self.assertEqual(source.count("${{ inputs.dispatch_id }}"), 1)
+        self.assertEqual(source.count("${{ inputs.claim_nonce }}"), 1)
+        self.assertIn("      dispatch_id:\n", source)
+        self.assertIn("      claim_nonce:\n", source)
 
 
 class TestCITerminalState(unittest.TestCase):
@@ -877,6 +921,327 @@ class TestCITerminalState(unittest.TestCase):
 
 
 class TestDispatcher(unittest.TestCase):
+    def test_active_scope_comes_from_trusted_claim_not_mutable_issue_body(self):
+        claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": 41,
+            "dispatch_id": "worker:41",
+            "action": "worker",
+            "status": "dispatched",
+            "details": {
+                "allowed_paths": ["scripts/"],
+                "task_body_sha256": "a" * 64,
+            },
+        }
+        comments = [{
+            "author": {"login": "github-actions[bot]"},
+            "body": json.dumps(claim),
+        }]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "validate_task_scope", side_effect=AssertionError("mutable body read")):
+            scopes = state_manager.get_active_issue_scopes({41}, "acme/repo")
+
+        self.assertEqual(scopes, {41: ["scripts/"]})
+
+    def test_current_task_body_must_match_claim_bound_digest(self):
+        original = '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["src/"]} -->'
+        changed = '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["docs/"]} -->'
+        binding = artifact_contract.build_issue_scope_binding(original)
+        claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": 41,
+            "dispatch_id": "worker:41",
+            "action": "worker",
+            "status": "dispatched",
+            "details": binding,
+        }
+        comments = [{
+            "author": {"login": "github-actions[bot]"},
+            "body": json.dumps(claim),
+        }]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "get_issue_body", return_value=changed):
+            ok, reason, observed = state_manager.verify_task_scope_binding(41, "acme/repo")
+
+        self.assertFalse(ok)
+        self.assertEqual(reason, "task_body_changed")
+        self.assertIsNone(observed)
+
+    def worker_claim(self, **overrides):
+        claim = {
+            "kind": "agent-orchestrator-dispatch-state",
+            "version": 1,
+            "issue_number": 41,
+            "dispatch_id": "worker:41",
+            "action": "worker",
+            "status": "dispatched",
+            "details": {
+                "allowed_paths": ["src/"],
+                "task_body_sha256": "a" * 64,
+                "claim_nonce": "a" * 32,
+            },
+        }
+        claim.update(overrides)
+        return claim
+
+    def trusted_comment(self, state):
+        return {"author": {"login": "github-actions[bot]"}, "body": json.dumps(state)}
+
+    def test_verify_task_scope_binding_accepts_unchanged_body(self):
+        body = '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["src/"]} -->'
+        claim = self.worker_claim(details=artifact_contract.build_issue_scope_binding(body))
+        comments = [self.trusted_comment(claim)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "get_issue_body", return_value=body):
+            ok, reason, observed = state_manager.verify_task_scope_binding(41, "acme/repo")
+        self.assertTrue(ok)
+        self.assertEqual(reason, "ok")
+        self.assertEqual(observed["allowed_paths"], ["src/"])
+
+    def test_verify_task_scope_binding_fails_closed_without_a_claim(self):
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=[]), \
+             mock.patch.object(state_manager, "get_issue_body", side_effect=AssertionError("claim required")):
+            ok, reason, observed = state_manager.verify_task_scope_binding(41, "acme/repo")
+        self.assertFalse(ok)
+        self.assertEqual(reason, "claim_scope_unavailable")
+        self.assertIsNone(observed)
+
+    def test_read_task_scope_binding_reads_the_body_exactly_once(self):
+        body = '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["src/"]} -->'
+        calls = []
+
+        def get_body(issue, repo=""):
+            calls.append(issue)
+            return body
+
+        with mock.patch.object(state_manager, "get_issue_body", side_effect=get_body):
+            ok, binding = state_manager.read_task_scope_binding(41, "acme/repo")
+        self.assertTrue(ok)
+        self.assertEqual(binding["allowed_paths"], ["src/"])
+        self.assertEqual(binding["task_body_sha256"], hashlib.sha256(body.encode("utf-8")).hexdigest())
+        self.assertEqual(calls, [41])
+
+    def test_read_task_scope_binding_fails_closed_on_unavailable_body(self):
+        with mock.patch.object(state_manager, "get_issue_body", return_value=None):
+            ok, reason = state_manager.read_task_scope_binding(41, "acme/repo")
+        self.assertFalse(ok)
+        self.assertEqual(reason, "task_body_unavailable")
+
+    def test_validate_task_scope_reuses_read_task_scope_binding(self):
+        body = '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["src/"]} -->'
+        with mock.patch.object(state_manager, "get_issue_body", return_value=body):
+            valid, scope = state_manager.validate_task_scope(41, "acme/repo")
+        self.assertEqual((valid, scope), (True, ["src/"]))
+
+    def test_claim_scope_ignores_untrusted_authors(self):
+        claim = self.worker_claim()
+        comments = [{"author": {"login": "some-user"}, "body": json.dumps(claim)}]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            self.assertIsNone(state_manager.read_worker_claim_scope(41, "acme/repo"))
+            self.assertIsNone(state_manager.get_active_issue_scopes({41}, "acme/repo"))
+
+    def test_claim_scope_rejects_wrong_identity_fields(self):
+        variants = [
+            {"action": "review"},
+            {"action": "repair"},
+            {"status": "failed"},
+            {"status": "rejected"},
+            {"status": "rollback"},
+            {"version": 2},
+            {"issue_number": 42},
+        ]
+        for mutation in variants:
+            claim = self.worker_claim(**mutation)
+            comments = [self.trusted_comment(claim)]
+            with self.subTest(mutation=mutation):
+                with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+                    self.assertIsNone(state_manager.read_worker_claim_scope(41, "acme/repo"))
+
+    def test_claim_scope_rejects_invalid_binding_fields(self):
+        invalid_digests = ["A" * 64, "a" * 63, "", "g" * 64, None, 5]
+        invalid_paths = [[], ["../src/"], ["src/", "src/"], ["src/*"]]
+        for digest in invalid_digests:
+            claim = self.worker_claim(details={"allowed_paths": ["src/"], "task_body_sha256": digest})
+            comments = [self.trusted_comment(claim)]
+            with self.subTest(digest=digest):
+                with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+                    self.assertIsNone(state_manager.read_worker_claim_scope(41, "acme/repo"))
+        for paths in invalid_paths:
+            claim = self.worker_claim(details={"allowed_paths": paths, "task_body_sha256": "a" * 64})
+            comments = [self.trusted_comment(claim)]
+            with self.subTest(paths=paths):
+                with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+                    self.assertIsNone(state_manager.read_worker_claim_scope(41, "acme/repo"))
+
+    def test_claim_scope_accepts_details_with_extra_dispatch_fields(self):
+        claim = self.worker_claim(details={
+            "previous_labels": [state_manager.LABEL_READY],
+            "target_label": state_manager.LABEL_RUNNING,
+            "issue_number": 41,
+            "allowed_paths": ["scripts/"],
+            "task_body_sha256": "a" * 64,
+        })
+        comments = [self.trusted_comment(claim)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            scopes = state_manager.get_active_issue_scopes({41}, "acme/repo")
+        self.assertEqual(scopes, {41: ["scripts/"]})
+
+    def test_newer_terminal_worker_state_blocks_older_dispatched_scope(self):
+        older = self.worker_claim()
+        newer = self.worker_claim(status="failed", details={"reason": "reconciled"})
+        comments = [self.trusted_comment(newer), self.trusted_comment(older)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            self.assertIsNone(state_manager.read_worker_claim_scope(41, "acme/repo"))
+            self.assertIsNone(state_manager.get_active_issue_scopes({41}, "acme/repo"))
+
+    def test_newer_claimed_scope_supersedes_older_terminal_worker_state(self):
+        older = self.worker_claim(status="failed", details={"reason": "reconciled"})
+        newer = self.worker_claim(details={"allowed_paths": ["docs/"], "task_body_sha256": "b" * 64})
+        comments = [self.trusted_comment(newer), self.trusted_comment(older)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            scopes = state_manager.get_active_issue_scopes({41}, "acme/repo")
+        self.assertEqual(scopes, {41: ["docs/"]})
+
+    def test_newer_review_and_repair_states_still_find_worker_binding(self):
+        repair = {
+            "kind": "agent-orchestrator-dispatch-state", "version": 1, "issue_number": 41,
+            "dispatch_id": "repair:207", "action": "repair", "status": "dispatched",
+            "details": {"pr_number": 207, "issue_number": 41, "head_sha": "a" * 40},
+        }
+        review = {
+            "kind": "agent-orchestrator-dispatch-state", "version": 1, "issue_number": 41,
+            "dispatch_id": "review:207", "action": "review", "status": "dispatched",
+            "details": {"pr_number": 207, "issue_number": 41, "head_sha": "a" * 40},
+        }
+        worker = self.worker_claim()
+        comments = [self.trusted_comment(repair), self.trusted_comment(review), self.trusted_comment(worker)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            claim = state_manager.read_worker_claim_scope(41, "acme/repo")
+        self.assertEqual(claim, {"allowed_paths": ["src/"], "task_body_sha256": "a" * 64})
+
+    def test_newer_malformed_worker_state_blocks_older_dispatched_scope(self):
+        older = self.worker_claim()
+        truncated = {
+            "author": {"login": "github-actions[bot]"},
+            "body": '{"kind": "agent-orchestrator-dispatch-state", "status": "dispatched", "details": {"allowed_paths": ["src/"]',
+        }
+        comments = [truncated, self.trusted_comment(older)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            self.assertIsNone(state_manager.read_worker_claim_scope(41, "acme/repo"))
+            self.assertIsNone(state_manager.get_active_issue_scopes({41}, "acme/repo"))
+
+    def test_newer_wrong_version_worker_state_blocks_older_dispatched_scope(self):
+        older = self.worker_claim()
+        newer = self.worker_claim(version=2)
+        comments = [self.trusted_comment(newer), self.trusted_comment(older)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            self.assertIsNone(state_manager.read_worker_claim_scope(41, "acme/repo"))
+            self.assertIsNone(state_manager.get_active_issue_scopes({41}, "acme/repo"))
+
+    def test_newer_unrelated_issue_state_does_not_shadow_claim(self):
+        unrelated = self.worker_claim(issue_number=42, dispatch_id="worker:42")
+        claim = self.worker_claim()
+        comments = [self.trusted_comment(unrelated), self.trusted_comment(claim)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            observed = state_manager.read_worker_claim_scope(41, "acme/repo")
+        self.assertEqual(observed, {"allowed_paths": ["src/"], "task_body_sha256": "a" * 64})
+
+    def test_other_state_documents_quoting_the_marker_do_not_shadow_claim(self):
+        review = {
+            "kind": "agent-orchestrator-review-state", "version": 2, "issue_number": 41,
+            "pr_number": 207, "head_sha": "a" * 40, "verdict": "BLOCKED",
+            "summary": 'quotes issue text "agent-orchestrator-dispatch-state"',
+            "blockers": [], "major_notes": [], "minor_notes": [], "artifact_sha256": "",
+        }
+        claim = self.worker_claim()
+        comments = [self.trusted_comment(review), self.trusted_comment(claim)]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            observed = state_manager.read_worker_claim_scope(41, "acme/repo")
+        self.assertEqual(observed, {"allowed_paths": ["src/"], "task_body_sha256": "a" * 64})
+
+    def test_active_scope_conflict_uses_claim_bound_scope_after_body_change(self):
+        claim = self.worker_claim(details={
+            "allowed_paths": ["scripts/agent-control/"],
+            "task_body_sha256": "a" * 64,
+        })
+        comments = [self.trusted_comment(claim)]
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_READY}), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
+                 "allowed_paths": ["scripts/"], "task_body_sha256": "b" * 64,
+             })), \
+             mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
+             mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value={41}), \
+             mock.patch.object(dispatcher.sm, "get_issue_comments", return_value=comments), \
+             mock.patch.object(dispatcher.sm, "get_issue_body", side_effect=AssertionError("mutable body read")), \
+             mock.patch.object(dispatcher, "_run_workflow") as workflow:
+            result = dispatcher.dispatch_ready(77, "worker:77")
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["reason"], "scope_conflict:41")
+        workflow.assert_not_called()
+
+    def test_rollback_preserves_the_original_claim_binding(self):
+        claim = self.worker_claim(status="claimed", details={
+            "previous_labels": [state_manager.LABEL_READY],
+            "target_label": state_manager.LABEL_RUNNING,
+            "issue_number": 41,
+            "allowed_paths": ["src/"],
+            "task_body_sha256": "a" * 64,
+        })
+        with mock.patch.object(dispatcher.sm, "set_labels", return_value=True), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=claim), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True) as record:
+            result = dispatcher._rollback(41, "worker:41", [state_manager.LABEL_READY], "workflow_dispatch_failed")
+        self.assertTrue(result)
+        details = record.call_args[0][4]
+        self.assertEqual(details["allowed_paths"], ["src/"])
+        self.assertEqual(details["task_body_sha256"], "a" * 64)
+        self.assertEqual(details["reason"], "workflow_dispatch_failed")
+        self.assertEqual(record.call_args[0][1:3], ("worker:41", "rollback"))
+        self.assertEqual(record.call_args[0][3], "failed")
+
+    def test_rollback_fails_closed_on_malformed_previous_details(self):
+        malformed = self.worker_claim(status="claimed", details="not-an-object")
+        with mock.patch.object(dispatcher.sm, "set_labels", return_value=True), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=malformed), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True) as record:
+            result = dispatcher._rollback(41, "worker:41", [state_manager.LABEL_READY], "workflow_dispatch_failed")
+        self.assertTrue(result)
+        details = record.call_args[0][4]
+        self.assertEqual(details, {"reason": "workflow_dispatch_failed"})
+
+    def test_record_dispatched_fails_closed_on_malformed_previous_details(self):
+        malformed = self.worker_claim(status="claimed", details=["not", "a", "dict"])
+        with mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=malformed), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True) as record:
+            result = dispatcher._record_dispatched(41, "worker:41", "worker", {"workflow": "agent-worker.yml"})
+        self.assertTrue(result)
+        details = record.call_args[0][4]
+        self.assertEqual(details, {"workflow": "agent-worker.yml"})
+
+    def test_reconcile_preserves_the_original_claim_binding(self):
+        claim = self.worker_claim(status="claimed", details={
+            "previous_labels": [state_manager.LABEL_READY],
+            "target_label": state_manager.LABEL_RUNNING,
+            "issue_number": 41,
+            "allowed_paths": ["src/"],
+            "task_body_sha256": "a" * 64,
+        })
+        with mock.patch.object(state_manager, "read_dispatch_state", return_value=claim), \
+             mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")), \
+             mock.patch.object(state_manager, "record_dispatch_state", return_value=True) as record:
+            result = state_manager.reconcile_claimed_dispatch(41, "worker:41", "workflow_cancelled")
+        self.assertEqual(result, (True, "released"))
+        details = record.call_args[0][4]
+        self.assertEqual(details["allowed_paths"], ["src/"])
+        self.assertEqual(details["task_body_sha256"], "a" * 64)
+        self.assertEqual(details["reason"], "workflow_cancelled")
+
     def test_duplicate_delivery_dispatches_once(self):
         labels = {state_manager.LABEL_READY}
         recorded = {}
@@ -901,7 +1266,9 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
              mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
              mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
-             mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(True, ["src/"])), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
+                 "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
+             })), \
              mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
@@ -911,6 +1278,8 @@ class TestDispatcher(unittest.TestCase):
         self.assertTrue(first["dispatched"])
         self.assertTrue(second["dispatched"])
         self.assertEqual(len(workflow_calls), 1)
+        self.assertEqual(recorded["worker:12"]["details"]["allowed_paths"], ["src/"])
+        self.assertEqual(recorded["worker:12"]["details"]["task_body_sha256"], "a" * 64)
 
     def test_claimed_dispatch_is_not_reissued_when_final_audit_write_failed(self):
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
@@ -1060,7 +1429,7 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_READY}), \
-             mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(False, "wildcard")), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(False, "wildcard")), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True) as record, \
              mock.patch.object(dispatcher, "_run_workflow") as workflow:
             result = dispatcher.dispatch_ready(77, "worker:77")
@@ -1069,17 +1438,54 @@ class TestDispatcher(unittest.TestCase):
         record.assert_called_once()
         workflow.assert_not_called()
 
+    def test_missing_binding_blocks_claim_label_and_dispatch(self):
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_READY}), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(False, "task_body_unavailable")), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True) as record, \
+             mock.patch.object(dispatcher.sm, "set_labels") as set_labels, \
+             mock.patch.object(dispatcher, "_run_workflow") as workflow:
+            result = dispatcher.dispatch_ready(77, "worker:77")
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["reason"], "invalid_scope:task_body_unavailable")
+        self.assertEqual(record.call_args.args[3], "rejected")
+        set_labels.assert_not_called()
+        workflow.assert_not_called()
+
     def test_dependency_is_rechecked_by_the_serialized_claim(self):
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
              mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_READY}), \
-             mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(True, ["src/"])), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
+                 "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
+             })), \
              mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(False, 41)), \
              mock.patch.object(dispatcher, "_run_workflow") as workflow:
             result = dispatcher.dispatch_ready(77, "worker:77")
         self.assertFalse(result["dispatched"])
         self.assertEqual(result["reason"], "dependencies_not_ready:41")
+        workflow.assert_not_called()
+
+    def test_serialized_claim_rejects_scope_conflict_with_active_issue(self):
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_READY}), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
+                 "allowed_paths": ["scripts/"], "task_body_sha256": "a" * 64,
+             })), \
+             mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
+             mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value={41}), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_scopes", return_value={41: ["scripts/agent-control/"]}, create=True), \
+             mock.patch.object(dispatcher, "_run_workflow") as workflow:
+            result = dispatcher.dispatch_ready(77, "worker:77")
+
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["reason"], "scope_conflict:41")
         workflow.assert_not_called()
 
     def test_failed_dispatch_reports_failed_rollback(self):
@@ -1092,10 +1498,12 @@ class TestDispatcher(unittest.TestCase):
 
     def test_dispatch_claim_is_persisted_before_label_mutation(self):
         calls = []
+        recorded_details = []
         labels = {state_manager.LABEL_READY}
 
         def record(*args, **kwargs):
             calls.append("state")
+            recorded_details.append(args[4])
             return True
 
         def set_labels(*args, **kwargs):
@@ -1109,13 +1517,17 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
              mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
              mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
-             mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(True, ["src/"])), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
+                 "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
+             }), create=True), \
              mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels):
             claimed = dispatcher._claim(12, state_manager.LABEL_RUNNING, "worker:12", "worker", {"issue_number": 12})
         self.assertTrue(claimed[0])
         self.assertEqual(calls[:2], ["state", "label"])
+        self.assertEqual(recorded_details[0]["allowed_paths"], ["src/"])
+        self.assertEqual(recorded_details[0]["task_body_sha256"], "a" * 64)
 
     def test_reselection_stop_preserves_identity_unavailable_audit_fields(self):
         replacement = {
@@ -1355,7 +1767,9 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
              mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
              mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
-             mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(True, ["src/"])), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
+                 "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
+             })), \
              mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record_dispatch), \
@@ -1366,6 +1780,560 @@ class TestDispatcher(unittest.TestCase):
         self.assertEqual(first["reason"], "dispatch_state_failed_capacity_retained")
         self.assertEqual(second["reason"], "dispatch_in_flight")
         self.assertEqual(len(workflow_calls), 1)
+
+    def test_rejected_worker_terminates_claim_and_preserves_binding(self):
+        claim = self.worker_claim(details={
+            "previous_labels": [state_manager.LABEL_READY],
+            "target_label": state_manager.LABEL_RUNNING,
+            "issue_number": 41,
+            "allowed_paths": ["src/"],
+            "task_body_sha256": "a" * 64,
+            "claim_nonce": "a" * 32,
+        })
+        recorded = []
+
+        def record_dispatch(_issue, _dispatch_id, action, status, details=None, repo=""):
+            recorded.append((_dispatch_id, action, status, details))
+            return True
+
+        comments = [self.trusted_comment(claim)]
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "comment_on_issue", return_value=True), \
+             mock.patch.object(state_manager, "record_dispatch_state", side_effect=record_dispatch):
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo", 123, "invalid_issue_scope",
+                "worker:41", "a" * 32,
+            )
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "released")
+        self.assertEqual(len(recorded), 1)
+        dispatch_id, action, status, details = recorded[-1]
+        self.assertEqual(dispatch_id, "worker:41")
+        self.assertEqual((action, status), ("worker", "failed"))
+        self.assertEqual(details["allowed_paths"], ["src/"])
+        self.assertEqual(details["task_body_sha256"], "a" * 64)
+        self.assertEqual(details["claim_nonce"], "a" * 32)
+        self.assertEqual(details["reason"], "invalid_issue_scope")
+        self.assertNotIn("capacity_release", details)
+        terminal = self.trusted_comment({
+            "kind": "agent-orchestrator-dispatch-state", "version": 1,
+            "issue_number": 41, "dispatch_id": "worker:41", "action": "worker",
+            "status": "failed", "details": details,
+        })
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=[terminal, self.trusted_comment(claim)]):
+            self.assertIsNone(state_manager.read_worker_claim_scope(41, "acme/repo"))
+
+    def test_rejected_worker_release_failure_leaves_terminal_durable_for_retry(self):
+        claim = self.worker_claim()
+        comments = [self.trusted_comment(claim)]
+        recorded = []
+
+        def record_dispatch(_issue, _dispatch_id, action, status, details=None, repo=""):
+            recorded.append((_dispatch_id, action, status))
+            return True
+
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(False, "active_state_mismatch")), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state", side_effect=record_dispatch):
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "active_state_mismatch")
+        self.assertEqual(recorded, [("worker:41", "worker", "failed")])
+
+    def test_rejected_worker_retry_after_terminal_before_release_crash_is_idempotent(self):
+        claim = self.worker_claim()
+        terminal = self.worker_claim(status="failed", details={
+            "allowed_paths": ["src/"],
+            "task_body_sha256": "a" * 64,
+            "claim_nonce": "a" * 32,
+            "reason": "invalid_issue_scope",
+        })
+        comments = [self.trusted_comment(terminal), self.trusted_comment(claim)]
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")) as release, \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "released")
+        record.assert_not_called()
+        release.assert_called_once_with(
+            41, state_manager.LABEL_RUNNING, state_manager.LABEL_BLOCKED, repo="acme/repo"
+        )
+
+    def test_rejected_worker_fails_closed_on_comments_api_failure(self):
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")), \
+             mock.patch.object(state_manager, "get_issue_comments", side_effect=state_manager.StateUnavailableError("api")), \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "claim_state_unavailable")
+        record.assert_not_called()
+
+    def test_rejected_worker_superseded_by_newer_generation_has_no_side_effects(self):
+        newer = self.worker_claim(dispatch_id="next:5:41", details={
+            "allowed_paths": ["docs/"],
+            "task_body_sha256": "b" * 64,
+            "claim_nonce": "b" * 32,
+        })
+        older = self.worker_claim(details={
+            "allowed_paths": ["src/"],
+            "task_body_sha256": "a" * 64,
+            "claim_nonce": "a" * 32,
+        })
+        comments = [self.trusted_comment(newer), self.trusted_comment(older)]
+        with mock.patch.object(state_manager, "release_failed_capacity") as release, \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "comment_on_issue") as comment, \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "superseded")
+        record.assert_not_called()
+        comment.assert_not_called()
+        release.assert_not_called()
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            claim = state_manager.read_worker_claim_scope(41, "acme/repo")
+        self.assertEqual(claim, {"allowed_paths": ["docs/"], "task_body_sha256": "b" * 64})
+
+    def test_rejected_worker_fails_closed_when_no_worker_claim_state_exists(self):
+        unrelated = {
+            "kind": "agent-orchestrator-review-state", "version": 2,
+            "issue_number": 41, "pr_number": 7, "head_sha": "a" * 40,
+            "verdict": "BLOCKED", "summary": "unrelated",
+        }
+        comments = [self.trusted_comment(unrelated)]
+        with mock.patch.object(state_manager, "release_failed_capacity") as release, \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "claim_not_found")
+        record.assert_not_called()
+        release.assert_not_called()
+
+    def test_rejected_worker_fails_closed_on_terminal_write_failure(self):
+        claim = self.worker_claim()
+        comments = [self.trusted_comment(claim)]
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")) as release, \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state", return_value=False):
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "claim_state_failed_write")
+        release.assert_not_called()
+
+    def test_rejected_worker_fails_closed_on_unparseable_latest_state(self):
+        comments = [{
+            "author": {"login": "github-actions[bot]"},
+            "body": '{"kind": "agent-orchestrator-dispatch-state", "status": "dispatched"',
+        }]
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "claim_state_unverifiable")
+        record.assert_not_called()
+
+    def test_rejected_worker_fails_closed_on_wrong_version(self):
+        comments = [self.trusted_comment(self.worker_claim(version=2))]
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "claim_state_unverifiable")
+        record.assert_not_called()
+
+    def test_rejected_worker_fails_closed_on_invalid_claim_binding(self):
+        comments = [self.trusted_comment(self.worker_claim(details={
+            "allowed_paths": ["src/"], "claim_nonce": "a" * 32,
+        }))]
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "claim_binding_unverifiable")
+        record.assert_not_called()
+
+    def test_rejected_worker_fails_closed_without_an_explicit_dispatch_id(self):
+        claim = self.worker_claim()
+        comments = [self.trusted_comment(claim)]
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "already_released")), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "claim_dispatch_id_unavailable")
+        record.assert_not_called()
+
+    def test_rejected_worker_fails_closed_without_a_claim_nonce(self):
+        claim = self.worker_claim()
+        comments = [self.trusted_comment(claim)]
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "already_released")), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                dispatch_id="worker:41",
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "claim_nonce_unavailable")
+        record.assert_not_called()
+
+    def test_rejected_worker_retry_completes_after_capacity_already_released(self):
+        claim = self.worker_claim()
+        comments = [self.trusted_comment(claim)]
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "already_released")), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state", return_value=True):
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "already_released")
+
+    def test_rejected_worker_is_idempotent_when_the_exact_claim_is_already_terminal(self):
+        comments = [self.trusted_comment(self.worker_claim(
+            status="failed", details={
+                "allowed_paths": ["src/"],
+                "task_body_sha256": "a" * 64,
+                "reason": "reconciled", "claim_nonce": "a" * 32,
+            },
+        ))]
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")), \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertTrue(ok)
+        record.assert_not_called()
+
+    def test_rejected_worker_fails_closed_on_terminal_claim_without_a_digest(self):
+        terminal = self.worker_claim(status="failed", details={
+            "allowed_paths": ["src/"],
+            "claim_nonce": "a" * 32,
+            "reason": "invalid_issue_scope",
+        })
+        comments = [self.trusted_comment(terminal)]
+        with mock.patch.object(state_manager, "release_failed_capacity") as release, \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "comment_on_issue") as comment, \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "claim_binding_unverifiable")
+        record.assert_not_called()
+        comment.assert_not_called()
+        release.assert_not_called()
+
+    def test_rejected_worker_fails_closed_on_terminal_claim_with_an_invalid_path(self):
+        terminal = self.worker_claim(status="failed", details={
+            "allowed_paths": ["src/*"],
+            "task_body_sha256": "a" * 64,
+            "claim_nonce": "a" * 32,
+            "reason": "invalid_issue_scope",
+        })
+        comments = [self.trusted_comment(terminal)]
+        with mock.patch.object(state_manager, "release_failed_capacity") as release, \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "comment_on_issue") as comment, \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "claim_binding_unverifiable")
+        record.assert_not_called()
+        comment.assert_not_called()
+        release.assert_not_called()
+
+    def test_new_run_nonce_terminates_only_its_own_claim_generation(self):
+        newer = self.worker_claim(details={
+            "allowed_paths": ["docs/"],
+            "task_body_sha256": "b" * 64,
+            "claim_nonce": "b" * 32,
+        })
+        older = self.worker_claim(details={
+            "allowed_paths": ["src/"],
+            "task_body_sha256": "a" * 64,
+            "claim_nonce": "a" * 32,
+        })
+        recorded = []
+
+        def record_dispatch(_issue, _dispatch_id, action, status, details=None, repo=""):
+            recorded.append((_dispatch_id, action, status, details))
+            return True
+
+        comments = [self.trusted_comment(newer), self.trusted_comment(older)]
+        with mock.patch.object(state_manager, "release_failed_capacity", return_value=(True, "released")) as release, \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state", side_effect=record_dispatch):
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="b" * 32,
+            )
+        self.assertTrue(ok, reason)
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0][:3], ("worker:41", "worker", "failed"))
+        self.assertEqual(recorded[0][3]["claim_nonce"], "b" * 32)
+        release.assert_called_once_with(
+            41, state_manager.LABEL_RUNNING, state_manager.LABEL_BLOCKED, repo="acme/repo"
+        )
+        terminal = self.trusted_comment({
+            "kind": "agent-orchestrator-dispatch-state", "version": 1,
+            "issue_number": 41, "dispatch_id": "worker:41", "action": "worker",
+            "status": "failed", "details": recorded[0][3],
+        })
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=[terminal] + comments):
+            self.assertIsNone(state_manager.read_worker_claim_scope(41, "acme/repo"))
+
+    def test_old_run_nonce_cannot_terminalize_or_release_a_newer_claim_reusing_the_dispatch_id(self):
+        newer = self.worker_claim(details={
+            "allowed_paths": ["docs/"],
+            "task_body_sha256": "b" * 64,
+            "claim_nonce": "b" * 32,
+        })
+        older = self.worker_claim(details={
+            "allowed_paths": ["src/"],
+            "task_body_sha256": "a" * 64,
+            "claim_nonce": "a" * 32,
+        })
+        comments = [self.trusted_comment(newer), self.trusted_comment(older)]
+        with mock.patch.object(state_manager, "release_failed_capacity") as release, \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "comment_on_issue") as comment, \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "superseded")
+        record.assert_not_called()
+        comment.assert_not_called()
+        release.assert_not_called()
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            claim = state_manager.read_worker_claim_scope(41, "acme/repo")
+        self.assertEqual(claim, {"allowed_paths": ["docs/"], "task_body_sha256": "b" * 64})
+
+    def test_old_run_nonce_superseded_when_only_a_newer_claim_generation_exists(self):
+        newer = self.worker_claim(details={
+            "allowed_paths": ["docs/"],
+            "task_body_sha256": "b" * 64,
+            "claim_nonce": "b" * 32,
+        })
+        comments = [self.trusted_comment(newer)]
+        with mock.patch.object(state_manager, "release_failed_capacity") as release, \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "superseded")
+        record.assert_not_called()
+        release.assert_not_called()
+
+    def test_old_run_nonce_cannot_claim_idempotency_of_a_newer_terminal_claim(self):
+        newer = self.worker_claim(status="failed", details={
+            "reason": "reconciled", "claim_nonce": "b" * 32,
+        })
+        comments = [self.trusted_comment(newer)]
+        with mock.patch.object(state_manager, "release_failed_capacity") as release, \
+             mock.patch.object(state_manager, "get_issue_comments", return_value=comments), \
+             mock.patch.object(state_manager, "comment_on_issue") as comment, \
+             mock.patch.object(state_manager, "record_dispatch_state") as record:
+            ok, reason = state_manager.release_rejected_worker(
+                41, "true", "success", "false", "acme/repo",
+                rejection_reason="invalid_issue_scope", dispatch_id="worker:41",
+                claim_nonce="a" * 32,
+            )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "superseded")
+        record.assert_not_called()
+        comment.assert_not_called()
+        release.assert_not_called()
+
+    def test_terminal_comment_never_shadows_a_later_created_new_claim(self):
+        new_claim = self.worker_claim(dispatch_id="next:6:41", details={
+            "allowed_paths": ["docs/"],
+            "task_body_sha256": "c" * 64,
+            "claim_nonce": "c" * 32,
+        })
+        terminal = self.worker_claim(status="failed", details={
+            "allowed_paths": ["src/"],
+            "task_body_sha256": "a" * 64,
+            "claim_nonce": "a" * 32,
+            "reason": "invalid_issue_scope",
+        })
+        old_claim = self.worker_claim()
+        comments = [
+            self.trusted_comment(new_claim),
+            self.trusted_comment(terminal),
+            self.trusted_comment(old_claim),
+        ]
+        with mock.patch.object(state_manager, "get_issue_comments", return_value=comments):
+            claim = state_manager.read_worker_claim_scope(41, "acme/repo")
+        self.assertEqual(claim, {"allowed_paths": ["docs/"], "task_body_sha256": "c" * 64})
+
+    def test_dispatch_retry_keeps_the_original_claim_nonce(self):
+        labels = {state_manager.LABEL_READY}
+        recorded = {}
+        workflow_calls = []
+
+        def set_labels(_issue, *new_labels, repo=""):
+            labels.clear()
+            labels.update(new_labels)
+            return True
+
+        def record(_issue, dispatch_id, action, status, details=None, repo=""):
+            recorded[dispatch_id] = {
+                "kind": "agent-orchestrator-dispatch-state",
+                "issue_number": _issue, "status": status, "action": action,
+                "details": details or {},
+            }
+            return True
+
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=lambda _i, key, _r: recorded.get(key)), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
+             mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
+             mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
+                 "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
+             })), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
+             mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
+             mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
+            first = dispatcher.dispatch_ready(12, "worker:12")
+            second = dispatcher.dispatch_ready(12, "worker:12")
+        self.assertTrue(first["dispatched"])
+        self.assertTrue(second["dispatched"])
+        self.assertEqual(second["reason"], "already_dispatched")
+        self.assertEqual(len(workflow_calls), 1)
+        original_nonce = recorded["worker:12"]["details"]["claim_nonce"]
+        self.assertRegex(original_nonce, r"^[0-9a-f]{32}$")
+        self.assertEqual(workflow_calls[0][1]["claim_nonce"], original_nonce)
+        self.assertEqual(recorded["worker:12"]["details"]["allowed_paths"], ["src/"])
+        self.assertEqual(recorded["worker:12"]["details"]["task_body_sha256"], "a" * 64)
+
+    def test_worker_dispatch_carries_the_exact_claim_identity(self):
+        workflow_calls = []
+        labels = {state_manager.LABEL_READY}
+        persisted = {}
+
+        def record_dispatch(_issue, _dispatch_id, action, status, details=None, repo=""):
+            if status == "claimed":
+                persisted.update(details or {})
+            return True
+
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
+             mock.patch.object(dispatcher.sm, "read_task_scope_binding", return_value=(True, {
+                 "allowed_paths": ["src/"], "task_body_sha256": "a" * 64,
+             })), \
+             mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
+             mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
+             mock.patch.object(dispatcher.sm, "set_labels", return_value=True), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record_dispatch), \
+             mock.patch.object(dispatcher, "_run_workflow", side_effect=lambda *args: workflow_calls.append(args) or True):
+            result = dispatcher.dispatch_ready(12, "next:5:12")
+        self.assertTrue(result["dispatched"])
+        nonce = persisted["claim_nonce"]
+        self.assertRegex(nonce, r"^[0-9a-f]{32}$")
+        self.assertEqual(
+            workflow_calls[0],
+            ("agent-worker.yml", {
+                "issue": 12, "dry_run": "false", "dispatch_id": "next:5:12",
+                "claim_nonce": nonce,
+            }),
+        )
+
+    def test_new_scope_binding_clis_validate_arity(self):
+        for command in ("read-task-scope-binding", "verify-task-scope-binding"):
+            for args in ([command], [command, "41", "extra"]):
+                with self.subTest(args=args):
+                    result = subprocess.run(
+                        [sys.executable, str(CONTROL / "state_manager.py"), *args],
+                        cwd=ROOT, capture_output=True, text=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Usage:", result.stderr)
+
+    def test_release_rejected_worker_cli_validates_arity(self):
+        for args in (
+            ["release-rejected-worker"],
+            ["release-rejected-worker", "41"],
+            ["release-rejected-worker", "41", "true", "success", "false", "123", "x", "y", "z", "w", "v"],
+        ):
+            with self.subTest(args=args):
+                result = subprocess.run(
+                    [sys.executable, str(CONTROL / "state_manager.py"), *args],
+                    cwd=ROOT, capture_output=True, text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Usage:", result.stderr)
 
 
 class TestCIEventTrust(unittest.TestCase):

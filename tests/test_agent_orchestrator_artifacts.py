@@ -103,6 +103,122 @@ class TestControlIssueResolution(unittest.TestCase):
 
 
 class TestPatchArtifactContract(unittest.TestCase):
+    def test_scope_overlap_distinguishes_directory_ownership_from_file_prefixes(self):
+        self.assertTrue(
+            artifact_contract.scopes_overlap(
+                ["scripts/"], ["scripts/agent-control/local_loop.py"]
+            )
+        )
+        self.assertTrue(
+            artifact_contract.scopes_overlap(["src/lib.rs"], ["src/lib.rs"])
+        )
+        self.assertFalse(
+            artifact_contract.scopes_overlap(["src/lib.rs"], ["src/lib.rs.bak"])
+        )
+        self.assertFalse(
+            artifact_contract.scopes_overlap(["docs/a.md"], ["docs/b.md"])
+        )
+
+    def test_issue_scope_binding_covers_the_complete_task_body(self):
+        body = '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["src/"]} -->\nTask A'
+        binding = artifact_contract.build_issue_scope_binding(body)
+
+        self.assertEqual(binding["allowed_paths"], ["src/"])
+        self.assertEqual(
+            binding["task_body_sha256"],
+            hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        )
+
+    def test_allowed_paths_reuse_rejects_broad_or_duplicate_lists(self):
+        for value in (None, "src/", [], ["../src/"], ["src/", "src/"], ["src/*"], ["/etc/"]):
+            with self.subTest(value=value):
+                with self.assertRaises(artifact_contract.ArtifactContractError):
+                    artifact_contract.validate_allowed_paths(value)
+        self.assertEqual(
+            artifact_contract.validate_allowed_paths(["src/", "docs/a.md"]),
+            ["src/", "docs/a.md"],
+        )
+
+    def test_scope_binding_validation_accepts_claim_details_with_extra_fields(self):
+        details = {
+            "previous_labels": ["agent-ready"],
+            "target_label": "agent-running",
+            "issue_number": 41,
+            "allowed_paths": ["scripts/"],
+            "task_body_sha256": "a" * 64,
+        }
+        binding = artifact_contract.validate_issue_scope_binding(details)
+        self.assertEqual(binding, {"allowed_paths": ["scripts/"], "task_body_sha256": "a" * 64})
+
+    def test_scope_binding_validation_rejects_malformed_bindings(self):
+        for bad in (
+            None,
+            "binding",
+            {"allowed_paths": ["src/"]},
+            {"task_body_sha256": "a" * 64},
+            {"allowed_paths": [], "task_body_sha256": "a" * 64},
+            {"allowed_paths": ["../src/"], "task_body_sha256": "a" * 64},
+            {"allowed_paths": ["src/"], "task_body_sha256": "A" * 64},
+            {"allowed_paths": ["src/"], "task_body_sha256": "a" * 63},
+            {"allowed_paths": ["src/"], "task_body_sha256": ""},
+        ):
+            with self.subTest(binding=bad):
+                with self.assertRaises(artifact_contract.ArtifactContractError):
+                    artifact_contract.validate_issue_scope_binding(bad)
+
+    def test_validate_scope_binding_checks_manifest_against_claim_bound_paths(self):
+        manifest = {"changed_files": ["scripts/agent-control/state_manager.py"]}
+        artifact_contract.validate_scope_binding(
+            {"allowed_paths": ["scripts/"], "task_body_sha256": "a" * 64}, manifest
+        )
+        artifact_contract.validate_scope_binding(
+            {"allowed_paths": ["scripts/agent-control/state_manager.py"], "task_body_sha256": "a" * 64}, manifest
+        )
+        for binding in (
+            {"allowed_paths": ["docs/"], "task_body_sha256": "a" * 64},
+            {"allowed_paths": ["scripts/agent-control/"], "task_body_sha256": "a" * 63},
+        ):
+            with self.subTest(binding=binding):
+                with self.assertRaises(artifact_contract.ArtifactContractError):
+                    artifact_contract.validate_scope_binding(binding, manifest)
+
+    def test_validate_scope_binding_cli_reads_binding_and_manifest_files(self):
+        manifest = {
+            "schema_version": 1,
+            "worker_type": "implementation",
+            "issue_number": 12,
+            "pr_number": 0,
+            "base_sha": "a" * 40,
+            "expected_remote_sha": None,
+            "branch": "agent/issue-12",
+            "changed_files": ["src/lib.rs"],
+            "file_count": 1,
+            "patch_sha256": "a" * 64,
+            "patch_size_bytes": 10,
+            "codex_exit_code": 0,
+            "local_checks": [],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            binding_file = temp_path / "binding.json"
+            manifest_file = temp_path / "manifest.json"
+            binding_file.write_text(json.dumps({"allowed_paths": ["src/"], "task_body_sha256": "a" * 64}))
+            manifest_file.write_text(json.dumps(manifest))
+            ok = subprocess.run(
+                [sys.executable, str(CONTROL / "artifact_contract.py"), "validate-scope-binding",
+                 str(binding_file), str(manifest_file)],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            binding_file.write_text(json.dumps({"allowed_paths": ["docs/"], "task_body_sha256": "a" * 64}))
+            rejected = subprocess.run(
+                [sys.executable, str(CONTROL / "artifact_contract.py"), "validate-scope-binding",
+                 str(binding_file), str(manifest_file)],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("ARTIFACT_CONTRACT_ERROR", rejected.stderr)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.repo = Path(self.directory.name) / "repo"
