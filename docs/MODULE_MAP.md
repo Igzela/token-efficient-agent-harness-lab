@@ -80,7 +80,7 @@ No earlier authority implies a later one. In particular, risk acknowledgement is
 
 PR #297/#298 are closed without merge as superseded by accepted PR #299. PR #300 is merged and accepted. PR #301 is merged and accepted (observation-only; no authority import). PR #306 is merged and accepted (context transport only; no authority import). PR #308 is merged and accepted (provider-free workspace preparation/recovery only; no live authority import). PR #303 is closed without merge as superseded by accepted PostgreSQL ordering repair PR #304.
 
-Managed-coding profiles, DeepSeek protocol adapters, production runner wiring, and delegated autonomous Golden Path authority reuse the owners above. The next external-effect frontier is the single separately bounded live seal; RWE and later architecture/evolution work remain blocked by their named evidence gates. PR #225 remains independent and last.
+Managed-coding profiles, DeepSeek protocol adapters, production runner wiring, and delegated autonomous Golden Path authority reuse the owners above. External packet order is owned solely by `docs/NEXT_DECISION.md`; no repository automation may become a second runtime, scheduler, store, budget, approval, output, audit, rollback, merge, release, or deployment owner. PR #225 remains independent and last.
 
 Do not copy explanatory labels into file names. Always inspect the actual final branch tree before documenting an owner.
 
