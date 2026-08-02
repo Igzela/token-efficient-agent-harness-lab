@@ -783,6 +783,136 @@ async fn axum_managed_acceptance_key_delegation_is_bootstrap_only_and_restart_re
         .unwrap();
     assert_eq!(repeated_delete.status(), StatusCode::NOT_FOUND);
 
+    // Resolver and store authority must agree on the tenant. A fixture with a
+    // foreign or legacy-unbound persisted binding cannot be mutated merely
+    // because the in-memory resolver has the reserved managed key.
+    let mismatched_reviewer = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "foreign-persisted-reviewer",
+                        "role": "reviewer",
+                        "scopes": MANAGED_REVIEWER_KEY_SCOPES
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mismatched_reviewer.status(), StatusCode::OK);
+    let mismatched_reviewer_id = response_json(mismatched_reviewer).await["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    store
+        .record_api_key_metadata_for_tenant(
+            "foreign",
+            &mismatched_reviewer_id,
+            "foreign-persisted-reviewer",
+            "reviewer",
+            &MANAGED_REVIEWER_KEY_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "test-foreign-binding",
+        )
+        .unwrap();
+    for (method, uri, body) in [
+        (
+            Method::POST,
+            format!("/api/v1/keys/{mismatched_reviewer_id}/scopes"),
+            Body::from(json!({"scopes": MANAGED_REVIEWER_KEY_SCOPES}).to_string()),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/keys/{mismatched_reviewer_id}/rotate"),
+            Body::empty(),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/keys/{mismatched_reviewer_id}/revoke"),
+            Body::empty(),
+        ),
+        (
+            Method::DELETE,
+            format!("/api/v1/keys/{mismatched_reviewer_id}"),
+            Body::empty(),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    let unbound_reviewer = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "legacy-unbound-reviewer",
+                        "role": "reviewer",
+                        "scopes": MANAGED_REVIEWER_KEY_SCOPES
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unbound_reviewer.status(), StatusCode::OK);
+    let unbound_reviewer_id = response_json(unbound_reviewer).await["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    store
+        .record_api_key_metadata(
+            &unbound_reviewer_id,
+            "legacy-unbound-reviewer",
+            "reviewer",
+            &MANAGED_REVIEWER_KEY_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "test-unbound-binding",
+        )
+        .unwrap();
+    let unbound_revoke = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{unbound_reviewer_id}/revoke"))
+                .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unbound_revoke.status(), StatusCode::NOT_FOUND);
+
     let ordinary_create = app
         .clone()
         .oneshot(

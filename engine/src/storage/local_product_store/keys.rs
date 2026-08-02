@@ -327,15 +327,39 @@ impl LocalProductStore {
     }
 
     pub fn revoke_api_key_metadata(&self, key_id: &str, actor: &str) -> Result<bool, String> {
+        self.revoke_api_key_metadata_scoped(key_id, None, actor)
+    }
+
+    pub fn revoke_api_key_metadata_for_tenant(
+        &self,
+        key_id: &str,
+        tenant_id: &str,
+        actor: &str,
+    ) -> Result<bool, String> {
+        self.revoke_api_key_metadata_scoped(key_id, Some(tenant_id), actor)
+    }
+
+    fn revoke_api_key_metadata_scoped(
+        &self,
+        key_id: &str,
+        tenant_id: Option<&str>,
+        actor: &str,
+    ) -> Result<bool, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_sqlite_transaction(|conn| {
                 let now = self.now();
-                let rows = conn
-                    .execute(
+                let rows = if let Some(tenant_id) = tenant_id {
+                    conn.execute(
+                        "UPDATE api_key_metadata SET revoked_at = ?1 WHERE key_id = ?2 AND tenant_id = ?3 AND revoked_at IS NULL",
+                        params![now, key_id, tenant_id],
+                    )
+                } else {
+                    conn.execute(
                         "UPDATE api_key_metadata SET revoked_at = ?1 WHERE key_id = ?2 AND revoked_at IS NULL",
                         params![now, key_id],
                     )
-                    .map_err(|e| e.to_string())?;
+                }
+                .map_err(|e| e.to_string())?;
                 if rows > 0 {
                     append_audit_locked(
                         conn,
@@ -352,12 +376,18 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut transaction = client.transaction().map_err(|e| e.to_string())?;
                 let now = self.now();
-                let rows = transaction
-                    .execute(
+                let rows = if let Some(tenant_id) = tenant_id {
+                    transaction.execute(
+                        "UPDATE api_key_metadata SET revoked_at = $1 WHERE key_id = $2 AND tenant_id = $3 AND revoked_at IS NULL",
+                        &[&now, &key_id, &tenant_id],
+                    )
+                } else {
+                    transaction.execute(
                         "UPDATE api_key_metadata SET revoked_at = $1 WHERE key_id = $2 AND revoked_at IS NULL",
                         &[&now, &key_id],
                     )
-                    .map_err(|e| e.to_string())?;
+                }
+                .map_err(|e| e.to_string())?;
                 if rows > 0 {
                     let details = json!({"key_id": key_id}).to_string();
                     transaction.execute(
@@ -384,26 +414,84 @@ impl LocalProductStore {
         expires_at: Option<f64>,
         actor: &str,
     ) -> Result<bool, String> {
+        self.rotate_api_key_metadata_scoped(
+            old_key_id, None, new_key_id, user_id, role, scopes, expires_at, actor,
+        )
+    }
+
+    pub fn rotate_api_key_metadata_for_tenant(
+        &self,
+        old_key_id: &str,
+        tenant_id: &str,
+        new_key_id: &str,
+        user_id: &str,
+        role: &str,
+        scopes: &[String],
+        expires_at: Option<f64>,
+        actor: &str,
+    ) -> Result<bool, String> {
+        self.rotate_api_key_metadata_scoped(
+            old_key_id,
+            Some(tenant_id),
+            new_key_id,
+            user_id,
+            role,
+            scopes,
+            expires_at,
+            actor,
+        )
+    }
+
+    fn rotate_api_key_metadata_scoped(
+        &self,
+        old_key_id: &str,
+        tenant_id: Option<&str>,
+        new_key_id: &str,
+        user_id: &str,
+        role: &str,
+        scopes: &[String],
+        expires_at: Option<f64>,
+        actor: &str,
+    ) -> Result<bool, String> {
         let scopes_json = serde_json::to_string(scopes).map_err(|e| e.to_string())?;
         let expires_at_text = expires_at.map(|value| value.to_string());
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_sqlite_transaction(|conn| {
                 let now = self.now();
-                let old_tenant_id: Option<String> = conn
-                    .query_row(
+                let old_tenant_id: Option<String> = if let Some(tenant_id) = tenant_id {
+                    conn.query_row(
+                        "SELECT tenant_id FROM api_key_metadata WHERE key_id=?1 AND tenant_id=?2",
+                        params![old_key_id, tenant_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?
+                } else {
+                    conn.query_row(
                         "SELECT tenant_id FROM api_key_metadata WHERE key_id=?1",
                         params![old_key_id],
                         |row| row.get(0),
                     )
                     .optional()
-                    .map_err(|e| e.to_string())?;
-                let revoked = conn
-                    .execute(
+                    .map_err(|e| e.to_string())?
+                };
+                if tenant_id.is_some() && old_tenant_id.is_none() {
+                    return Ok(false);
+                }
+                let revoked = if let Some(tenant_id) = tenant_id {
+                    conn.execute(
+                        "UPDATE api_key_metadata SET revoked_at = ?1
+                         WHERE key_id = ?2 AND tenant_id = ?3 AND revoked_at IS NULL",
+                        params![now, old_key_id, tenant_id],
+                    )
+                } else {
+                    conn.execute(
                         "UPDATE api_key_metadata SET revoked_at = ?1
                          WHERE key_id = ?2 AND revoked_at IS NULL",
                         params![now, old_key_id],
                     )
-                    .map_err(|e| e.to_string())?;
+                }
+                .map_err(|e| e.to_string())?;
                 if revoked == 0 {
                     return Ok(false);
                 }
@@ -445,20 +533,41 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut transaction = client.transaction().map_err(|e| e.to_string())?;
                 let now = self.now();
-                let old_tenant_id: Option<String> = transaction
-                    .query_opt(
-                        "SELECT tenant_id FROM api_key_metadata WHERE key_id=$1",
-                        &[&old_key_id],
+                let old_tenant_id: Option<String> = if let Some(tenant_id) = tenant_id {
+                    transaction
+                        .query_opt(
+                            "SELECT tenant_id FROM api_key_metadata WHERE key_id=$1 AND tenant_id=$2",
+                            &[&old_key_id, &tenant_id],
+                        )
+                        .map_err(|e| e.to_string())?
+                        .map(|row| row.get(0))
+                } else {
+                    transaction
+                        .query_opt(
+                            "SELECT tenant_id FROM api_key_metadata WHERE key_id=$1",
+                            &[&old_key_id],
+                        )
+                        .map_err(|e| e.to_string())?
+                        .map(|row| row.get(0))
+                };
+                if tenant_id.is_some() && old_tenant_id.is_none() {
+                    transaction.rollback().map_err(|e| e.to_string())?;
+                    return Ok(false);
+                }
+                let revoked = if let Some(tenant_id) = tenant_id {
+                    transaction.execute(
+                        "UPDATE api_key_metadata SET revoked_at = $1
+                         WHERE key_id = $2 AND tenant_id = $3 AND revoked_at IS NULL",
+                        &[&now, &old_key_id, &tenant_id],
                     )
-                    .map_err(|e| e.to_string())?
-                    .map(|row| row.get(0));
-                let revoked = transaction
-                    .execute(
+                } else {
+                    transaction.execute(
                         "UPDATE api_key_metadata SET revoked_at = $1
                          WHERE key_id = $2 AND revoked_at IS NULL",
                         &[&now, &old_key_id],
                     )
-                    .map_err(|e| e.to_string())?;
+                }
+                .map_err(|e| e.to_string())?;
                 if revoked == 0 {
                     transaction.rollback().map_err(|e| e.to_string())?;
                     return Ok(false);
@@ -516,14 +625,38 @@ impl LocalProductStore {
     }
 
     pub fn delete_api_key_metadata(&self, key_id: &str, actor: &str) -> Result<bool, String> {
+        self.delete_api_key_metadata_scoped(key_id, None, actor)
+    }
+
+    pub fn delete_api_key_metadata_for_tenant(
+        &self,
+        key_id: &str,
+        tenant_id: &str,
+        actor: &str,
+    ) -> Result<bool, String> {
+        self.delete_api_key_metadata_scoped(key_id, Some(tenant_id), actor)
+    }
+
+    fn delete_api_key_metadata_scoped(
+        &self,
+        key_id: &str,
+        tenant_id: Option<&str>,
+        actor: &str,
+    ) -> Result<bool, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_sqlite_transaction(|conn| {
-                let rows = conn
-                    .execute(
+                let rows = if let Some(tenant_id) = tenant_id {
+                    conn.execute(
+                        "DELETE FROM api_key_metadata WHERE key_id = ?1 AND tenant_id = ?2",
+                        params![key_id, tenant_id],
+                    )
+                } else {
+                    conn.execute(
                         "DELETE FROM api_key_metadata WHERE key_id = ?1",
                         params![key_id],
                     )
-                    .map_err(|e| e.to_string())?;
+                }
+                .map_err(|e| e.to_string())?;
                 if rows > 0 {
                     append_audit_locked(
                         conn,
@@ -540,9 +673,16 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut transaction = client.transaction().map_err(|e| e.to_string())?;
                 let now = self.now();
-                let rows = transaction
-                    .execute("DELETE FROM api_key_metadata WHERE key_id = $1", &[&key_id])
-                    .map_err(|e| e.to_string())?;
+                let rows = if let Some(tenant_id) = tenant_id {
+                    transaction.execute(
+                        "DELETE FROM api_key_metadata WHERE key_id = $1 AND tenant_id = $2",
+                        &[&key_id, &tenant_id],
+                    )
+                } else {
+                    transaction
+                        .execute("DELETE FROM api_key_metadata WHERE key_id = $1", &[&key_id])
+                }
+                .map_err(|e| e.to_string())?;
                 if rows > 0 {
                     let details = json!({"key_id": key_id}).to_string();
                     transaction.execute(
@@ -563,15 +703,41 @@ impl LocalProductStore {
         scopes: &[String],
         actor: &str,
     ) -> Result<bool, String> {
+        self.update_api_key_scopes_scoped(key_id, None, scopes, actor)
+    }
+
+    pub fn update_api_key_scopes_for_tenant(
+        &self,
+        key_id: &str,
+        tenant_id: &str,
+        scopes: &[String],
+        actor: &str,
+    ) -> Result<bool, String> {
+        self.update_api_key_scopes_scoped(key_id, Some(tenant_id), scopes, actor)
+    }
+
+    fn update_api_key_scopes_scoped(
+        &self,
+        key_id: &str,
+        tenant_id: Option<&str>,
+        scopes: &[String],
+        actor: &str,
+    ) -> Result<bool, String> {
         let scopes_json = serde_json::to_string(scopes).map_err(|e| e.to_string())?;
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_sqlite_transaction(|conn| {
-                let rows = conn
-                    .execute(
+                let rows = if let Some(tenant_id) = tenant_id {
+                    conn.execute(
+                        "UPDATE api_key_metadata SET scopes_json = ?1 WHERE key_id = ?2 AND tenant_id = ?3",
+                        params![scopes_json, key_id, tenant_id],
+                    )
+                } else {
+                    conn.execute(
                         "UPDATE api_key_metadata SET scopes_json = ?1 WHERE key_id = ?2",
                         params![scopes_json, key_id],
                     )
-                    .map_err(|e| e.to_string())?;
+                }
+                .map_err(|e| e.to_string())?;
                 if rows > 0 {
                     append_audit_locked(
                         conn,
@@ -588,12 +754,18 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut transaction = client.transaction().map_err(|e| e.to_string())?;
                 let now = self.now();
-                let rows = transaction
-                    .execute(
+                let rows = if let Some(tenant_id) = tenant_id {
+                    transaction.execute(
+                        "UPDATE api_key_metadata SET scopes_json = $1 WHERE key_id = $2 AND tenant_id = $3",
+                        &[&scopes_json, &key_id, &tenant_id],
+                    )
+                } else {
+                    transaction.execute(
                         "UPDATE api_key_metadata SET scopes_json = $1 WHERE key_id = $2",
                         &[&scopes_json, &key_id],
                     )
-                    .map_err(|e| e.to_string())?;
+                }
+                .map_err(|e| e.to_string())?;
                 if rows > 0 {
                     let details = json!({"key_id": key_id, "scopes": scopes}).to_string();
                     transaction.execute(

@@ -284,7 +284,11 @@ pub(crate) async fn api_revoke_key(
     require_key_target_authority(&store, &context, &target, role.as_deref())?;
     guard.remove_api_key(&key_id);
 
-    let revoked = match store.revoke_api_key_metadata(&key_id, &context.api_key_id) {
+    let revoked = match store.revoke_api_key_metadata_for_tenant(
+        &key_id,
+        &context.tenant_id,
+        &context.api_key_id,
+    ) {
         Ok(revoked) => revoked,
         Err(error) => {
             guard.add_api_key(target);
@@ -376,8 +380,9 @@ pub(crate) async fn api_rotate_key(
         .create_api_key(&context.tenant_id, Some(scopes_set), expires_at, now)
         .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    match store.rotate_api_key_metadata(
+    match store.rotate_api_key_metadata_for_tenant(
         &key_id,
+        &context.tenant_id,
         &new_key.key_id,
         user_id,
         role,
@@ -454,7 +459,11 @@ pub(crate) async fn api_delete_key(
     require_key_target_authority(&store, &context, &target, role.as_deref())?;
     guard.remove_api_key(&key_id);
 
-    let deleted = match store.delete_api_key_metadata(&key_id, &context.api_key_id) {
+    let deleted = match store.delete_api_key_metadata_for_tenant(
+        &key_id,
+        &context.tenant_id,
+        &context.api_key_id,
+    ) {
         Ok(deleted) => deleted,
         Err(error) => {
             guard.add_api_key(target);
@@ -533,7 +542,12 @@ pub(crate) async fn api_update_key_scopes(
             )
         })?;
 
-    let updated = match store.update_api_key_scopes(&key_id, &request.scopes, &context.api_key_id) {
+    let updated = match store.update_api_key_scopes_for_tenant(
+        &key_id,
+        &context.tenant_id,
+        &request.scopes,
+        &context.api_key_id,
+    ) {
         Ok(updated) => updated,
         Err(error) => {
             let _ = guard.update_api_key_scopes(&key_id, old_scopes);

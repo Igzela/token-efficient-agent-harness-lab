@@ -1773,9 +1773,35 @@ impl LocalProductStore {
                 return Err(format!("v36 rollback requires current schema version 36; found {version}"));
             }
             tx.batch_execute(
-                "LOCK TABLE managed_acceptance_delegations IN ACCESS EXCLUSIVE MODE",
+                "LOCK TABLE managed_acceptance_delegations, api_key_metadata IN ACCESS EXCLUSIVE MODE",
             )
             .map_err(|e| e.to_string())?;
+            let api_key_tenant_archives = tx
+                .query(
+                    "SELECT key_id, user_id, role, tenant_id, scopes_json, revoked_at, expires_at
+                     FROM api_key_metadata ORDER BY key_id",
+                    &[],
+                )
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|row| {
+                    let scopes_json: String = row.get(4);
+                    let scopes: Value = serde_json::from_str(&scopes_json).map_err(|error| {
+                        format!("v36 rollback blocked: API-key scopes JSON is invalid: {error}")
+                    })?;
+                    super::super::migrations::build_v36_api_key_tenant_binding_archive(
+                        serde_json::json!({
+                            "key_id": row.get::<_, String>(0),
+                            "user_id": row.get::<_, String>(1),
+                            "role": row.get::<_, String>(2),
+                            "tenant_id": row.get::<_, Option<String>>(3),
+                            "scopes": scopes,
+                            "revoked_at": row.get::<_, Option<String>>(5),
+                            "expires_at": row.get::<_, Option<String>>(6),
+                        }),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let archives = tx
                 .query(
                     "SELECT delegation_sha256, product_task_id, body_json, proposal_sha256, proposal_json,
@@ -1849,6 +1875,37 @@ impl LocalProductStore {
                     super::super::managed_acceptance::canonical_json(&archive_hashes)?
                         .as_bytes(),
                 );
+            for archive in &api_key_tenant_archives {
+                let key_id = archive
+                    .pointer("/source_evidence/key_id")
+                    .and_then(Value::as_str)
+                    .ok_or("v36 API-key binding archive key_id is missing")?;
+                let details = super::super::managed_acceptance::canonical_json(archive)?;
+                tx.execute(
+                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                     VALUES ($1,$2,'schema.rollback.v36_api_key_tenant_archived',$3,$4)",
+                    &[
+                        &now,
+                        &actor,
+                        &format!("api_key_tenant_binding:{key_id}"),
+                        &details,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            let api_key_tenant_archive_hashes = Value::Array(
+                api_key_tenant_archives
+                    .iter()
+                    .filter_map(|archive| archive.get("archive_sha256").cloned())
+                    .collect(),
+            );
+            let api_key_tenant_archive_set_sha256 =
+                super::super::managed_acceptance::sha256_hex(
+                    super::super::managed_acceptance::canonical_json(
+                        &api_key_tenant_archive_hashes,
+                    )?
+                    .as_bytes(),
+                );
             tx.batch_execute(
                 "DROP INDEX IF EXISTS idx_workflow_plans_delegated_owner;
                  ALTER TABLE workflow_plans DROP COLUMN delegated_plan_owner_id;
@@ -1866,6 +1923,8 @@ impl LocalProductStore {
                 "tables": super::super::migrations::V36_TABLES,
                 "archived_delegations": archives.len(),
                 "archive_set_sha256": archive_set_sha256,
+                "archived_api_key_tenant_bindings": api_key_tenant_archives.len(),
+                "api_key_tenant_archive_set_sha256": api_key_tenant_archive_set_sha256,
             })
             .to_string();
             tx.execute(

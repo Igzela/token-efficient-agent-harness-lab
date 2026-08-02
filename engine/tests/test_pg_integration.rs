@@ -455,6 +455,130 @@ fn pg_managed_acceptance_bootstrap_api_reissues_minimal_identities_after_restart
     let persisted = store.get_api_key_metadata(&reissued_key_id).unwrap();
     assert!(persisted.is_some());
 
+    let updated = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/keys/{reissued_key_id}/scopes"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"scopes": MANAGED_REVIEWER_KEY_SCOPES}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(updated.status(), StatusCode::OK);
+    let rotated = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/keys/{reissued_key_id}/rotate"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(rotated.status(), StatusCode::OK);
+    let rotated_key_id = runtime.block_on(pg_response_json(rotated))["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let revoked = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/keys/{rotated_key_id}/revoke"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(revoked.status(), StatusCode::OK);
+    let repeated_revoke = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/keys/{rotated_key_id}/revoke"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(repeated_revoke.status(), StatusCode::NOT_FOUND);
+
+    let foreign_binding = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "user_id": "pg-foreign-binding",
+                            "role": "reviewer",
+                            "scopes": MANAGED_REVIEWER_KEY_SCOPES
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(foreign_binding.status(), StatusCode::OK);
+    let foreign_binding_key_id = runtime.block_on(pg_response_json(foreign_binding))["key_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    store
+        .record_api_key_metadata_for_tenant(
+            "foreign",
+            &foreign_binding_key_id,
+            "pg-foreign-binding",
+            "reviewer",
+            &MANAGED_REVIEWER_KEY_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect::<Vec<_>>(),
+            "pg-foreign-binding-test",
+        )
+        .unwrap();
+    let foreign_revoke = runtime.block_on(async {
+        restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/keys/{foreign_binding_key_id}/revoke"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bootstrap_raw}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(foreign_revoke.status(), StatusCode::NOT_FOUND);
+
     // `postgres::Client` performs synchronous runtime work from Drop. Keep
     // the router and pool teardown off the Tokio test runtime as well as
     // their initialization, otherwise a successful assertion can abort the
