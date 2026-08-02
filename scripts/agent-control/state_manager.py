@@ -38,6 +38,11 @@ ALL_LABELS = ACTIVE_LABELS | TERMINAL_LABELS | {
 # dispatcher, local_loop, and loopctl must reuse this constant, never
 # redefine a literal capacity ceiling.
 MAX_ACTIVE = 2
+# Repository-controlled lease bound for a trusted local-run claim: the
+# dispatcher derives one UTC deadline as now + this constant and persists it
+# in the claimed dispatch state before any label mutation.  Local processes
+# never supply a lease; compensation of an expired lease is out of scope.
+LOCAL_CLAIM_LEASE_HOURS = 4
 MAX_REPAIR_ATTEMPTS = 2
 MAX_REVIEW_EVIDENCE_BYTES = 64 * 1024
 MAX_REVIEW_API_PAGES = 20
@@ -298,6 +303,27 @@ def get_issue_body(issue_number, repo=""):
         return None
 
 
+def get_issue_author(issue_number, repo=""):
+    """Return the Issue author login, or None when unavailable or malformed."""
+    if repo:
+        raw = _gh("issue", "view", str(issue_number), "--repo", repo, "--json", "author")
+    else:
+        raw = _gh("issue", "view", str(issue_number), "--json", "author")
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    author = parsed.get("author")
+    if not isinstance(author, dict):
+        return None
+    login = author.get("login")
+    return login if isinstance(login, str) and login else None
+
+
 def add_labels(issue_number, *labels, repo=""):
     args = ["issue", "edit", str(issue_number)]
     if repo:
@@ -401,8 +427,17 @@ def parse_dependencies(body):
     return deps
 
 
-def check_dependencies_complete(issue_number, repo=""):
-    body = get_issue_body(issue_number, repo)
+def check_dependencies_complete(issue_number, repo="", body=None):
+    """Return whether every declared dependency of the Issue is complete.
+
+    ``body`` is an optional precomputed Issue body: a caller that already read
+    the body exactly once (the trusted local-run claim gateway) passes it so
+    the mutable body is never re-read.  When omitted, the body is read from
+    GitHub exactly as before.
+    """
+
+    if body is None:
+        body = get_issue_body(issue_number, repo)
     if body is None:
         return False, "dependency_state_unavailable"
     deps = parse_dependencies(body)

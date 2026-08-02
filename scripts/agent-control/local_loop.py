@@ -57,7 +57,15 @@ def _decision(status: str, *, action: str = "none", **fields: Any) -> dict[str, 
     }
 
 
-def _task_main_sha(body: str) -> str:
+def task_main_sha(body: str) -> str:
+    """Parse the task body's accepted-main binding marker.
+
+    This is the canonical parser for the ``repo-agent-task:v1`` marker; the
+    trusted controller gateway (``dispatcher.claim_local``) reuses it so the
+    local loop and the server-side claim gate can never disagree about which
+    marker binds a task to its accepted main SHA.
+    """
+
     matches = TASK_MARKER.findall(body or "")
     if len(matches) != 1:
         raise ValueError("task must contain exactly one repo-agent-task.v1 marker")
@@ -263,7 +271,7 @@ class LoopController:
         if issue["author"].casefold() != owner.casefold():
             return {"reason": "untrusted_author"}
         try:
-            task_main = _task_main_sha(issue["body"])
+            task_main = task_main_sha(issue["body"])
         except ValueError:
             return {"reason": "invalid_task_binding"}
         if task_main != accepted_main:

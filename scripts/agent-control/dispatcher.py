@@ -6,9 +6,11 @@ import json
 import os
 import sys
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import artifact_contract
 import control_state
+import local_loop
 import state_manager as sm
 
 
@@ -26,7 +28,28 @@ def _claim(
     dispatch_id: str,
     action: str,
     claim_details: dict[str, object] | None = None,
+    *,
+    scope_binding: dict[str, object] | None = None,
+    dependencies_ready: tuple[bool, object] | None = None,
+    require_claim_readback: bool = False,
 ) -> tuple[bool, list[str], str]:
+    """Claim one Issue through the existing durable owners.
+
+    ``scope_binding`` and ``dependencies_ready`` are narrow precomputed
+    inputs: a caller that already read the Issue body exactly once (the
+    trusted local-run gateway) hands over the derived binding and dependency
+    outcome so ``_claim`` never re-reads the mutable body.  Ordinary Actions
+    dispatchers pass nothing and keep the previous read-from-GitHub behavior.
+
+    ``require_claim_readback`` makes the trusted readback mandatory for the
+    caller's own claim generation: after the claimed comment is persisted and
+    before any label mutation, the claim is re-read through the
+    trusted-author-filtered ``read_dispatch_state`` and its exact dispatch id,
+    binding, and nonce are verified.  A local human-authored direct invocation
+    writes an untrusted comment that the readback filters out, so it fails
+    closed here without ever changing a label.
+    """
+
     repo = _repo()
     try:
         previous = sm.read_dispatch_state(issue, dispatch_id, repo)
@@ -38,10 +61,15 @@ def _claim(
         # turn every legitimately-claimed retry into an unverifiable state.
         # The durable identity is the dispatch_id; the nonce binds the worker
         # run to the claim through the workflow input, not through this check.
+        # lease_deadline is a derived time bound recomputed on every retry, so
+        # it is likewise excluded: the dispatch_id plus the client-bound
+        # details are what make a retry verifiable, and a retry that arrives
+        # after the label write must not be denied merely because its clock
+        # differs from the original claim's.
         binding_details = {
             key: value
             for key, value in (claim_details or {}).items()
-            if key != "claim_nonce"
+            if key not in {"claim_nonce", "lease_deadline"}
         }
         if not binding_details or not sm.dispatch_state_binding_matches(
             previous, issue, action, binding_details, target_label
@@ -58,12 +86,16 @@ def _claim(
     if target_label == sm.LABEL_RUNNING:
         if sm.LABEL_READY not in labels or labels & (sm.ACTIVE_LABELS | sm.TERMINAL_LABELS):
             return False, [], "issue_not_ready"
-        scope_valid, scope_binding = sm.read_task_scope_binding(issue, repo)
-        if not scope_valid:
-            return False, [], f"invalid_scope:{scope_binding}"
+        if scope_binding is None:
+            scope_valid, scope_binding = sm.read_task_scope_binding(issue, repo)
+            if not scope_valid:
+                return False, [], f"invalid_scope:{scope_binding}"
         task_binding = scope_binding
         task_scope = scope_binding["allowed_paths"]
-        dependencies_ready, blocker = sm.check_dependencies_complete(issue, repo)
+        if dependencies_ready is None:
+            dependencies_ready, blocker = sm.check_dependencies_complete(issue, repo)
+        else:
+            dependencies_ready, blocker = dependencies_ready
         if not dependencies_ready:
             return False, [], f"dependencies_not_ready:{blocker}"
         associated = sm.has_open_issue_pr(issue, repo)
@@ -130,6 +162,21 @@ def _claim(
         repo,
     ):
         return False, [], "claim_state_failed"
+    if require_claim_readback:
+        try:
+            persisted_claim = sm.read_dispatch_state(issue, dispatch_id, repo)
+        except sm.StateUnavailableError:
+            persisted_claim = None
+        if not sm.dispatch_state_binding_matches(
+            persisted_claim, issue, action, claim_details_payload, target_label
+        ):
+            # The persisted claim could not be verified through the trusted
+            # author filter, so no label mutation is authorized.  Leave the
+            # claimed comment in place: a genuine retry resolves through the
+            # existing binding, and a human-authored direct invocation (which
+            # `read_dispatch_state` never trusts) ends here without touching
+            # the Issue label.
+            return False, [], "claim_readback_unverified"
     if not sm.set_labels(issue, target_label, repo=repo):
         sm.record_dispatch_state(
             issue,
@@ -274,6 +321,150 @@ def dispatch_ready(issue: int, dispatch_id: str | None = None) -> dict[str, obje
     ):
         # The external workflow has already been accepted.  Keep the claimed
         # state and active label so a retry cannot dispatch it a second time.
+        return {
+            "dispatched": False,
+            "issue": issue,
+            "reason": "dispatch_state_failed_capacity_retained",
+        }
+    return {"dispatched": True, "issue": issue, "dispatch_id": dispatch_id}
+
+
+def _normalized_attempt_id(value: object) -> str | None:
+    """Return the canonical lowercase hyphenated UUID text, or None.
+
+    The canonical attempt id is exactly lowercase hyphenated UUID text
+    (``123e4567-e89b-12d3-a456-426614174000``) and is persisted exactly as
+    such.  Any other spelling -- uppercase, undashed hex, URN, braces, or a
+    malformed string -- fails closed to ``None``.
+    """
+
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        return None
+    return value if value == str(parsed) else None
+
+
+def claim_local(issue: int, attempt_id: str, client_token: str) -> dict[str, object]:
+    """Claim one GitHub-serialized local-run attempt for a trusted local process.
+
+    The repository, default branch, accepted main SHA, issue author, and
+    canonical branch are all derived server-side from GitHub; a local process
+    supplies only the Issue, a canonical lowercase-hyphenated UUID attempt id,
+    and a 32-lower-hex client token, and never any SHA, branch, scope, or
+    lease.  The Issue body is read exactly once and both the repo-agent-task
+    main binding and the issue-scope binding are derived from that same body;
+    the scope binding and dependency outcome are precomputed into ``_claim``
+    so the mutable body is never re-read.  The claim is persisted before label
+    mutation, the claimed comment is re-read and verified through the trusted
+    author filter before any label change, then the authoritative capacity is
+    rechecked; a dispatched state is recorded without ever starting a GitHub
+    workflow (the local process executes the task itself).
+    """
+
+    repo = _repo()
+    attempt = _normalized_attempt_id(attempt_id)
+    if attempt is None:
+        return {"dispatched": False, "issue": issue, "reason": "invalid_attempt_id"}
+    if not isinstance(client_token, str) or sm.CLAIM_NONCE_PATTERN.fullmatch(client_token) is None:
+        return {"dispatched": False, "issue": issue, "reason": "invalid_client_token"}
+    dispatch_id = _dispatch_id("local-run", issue, attempt)
+    try:
+        control_state.require_live(repo or None)
+    except control_state.ControlStateError:
+        return {"dispatched": False, "issue": issue, "reason": "disabled_or_emergency_stopped"}
+    if not repo:
+        return {"dispatched": False, "issue": issue, "reason": "repository_unavailable"}
+    try:
+        adapter = local_loop.GitHubAdapter(repo)
+    except ValueError:
+        return {"dispatched": False, "issue": issue, "reason": "repository_malformed"}
+    try:
+        metadata = adapter.repository_metadata()
+    except local_loop.LoopUnavailable:
+        return {"dispatched": False, "issue": issue, "reason": "repository_state_unavailable"}
+    owner = metadata.get("owner")
+    branch = metadata.get("default_branch")
+    if not isinstance(owner, str) or not owner:
+        return {"dispatched": False, "issue": issue, "reason": "repository_state_unavailable"}
+    if not isinstance(branch, str) or not local_loop.BRANCH.fullmatch(branch):
+        return {"dispatched": False, "issue": issue, "reason": "default_branch_unavailable"}
+    try:
+        accepted_main = adapter.accepted_main_sha(branch)
+    except local_loop.LoopUnavailable:
+        return {"dispatched": False, "issue": issue, "reason": "accepted_main_unavailable"}
+    if not local_loop.HEX40.fullmatch(accepted_main):
+        return {"dispatched": False, "issue": issue, "reason": "accepted_main_unavailable"}
+    # The canonical branch is derived from the Issue number only; it is never
+    # required to exist yet.  An existing Issue PR is rejected through the
+    # existing owner inside ``_claim``.
+    canonical_branch = f"agent/issue-{issue}"
+    author = sm.get_issue_author(issue, repo)
+    if author is None:
+        return {"dispatched": False, "issue": issue, "reason": "issue_state_unavailable"}
+    if author.casefold() != owner.casefold():
+        return {"dispatched": False, "issue": issue, "reason": "untrusted_author"}
+    body = sm.get_issue_body(issue, repo)
+    if not isinstance(body, str):
+        return {"dispatched": False, "issue": issue, "reason": "task_body_unavailable"}
+    try:
+        task_main = local_loop.task_main_sha(body)
+    except ValueError:
+        return {"dispatched": False, "issue": issue, "reason": "invalid_task_binding"}
+    if task_main != accepted_main:
+        return {"dispatched": False, "issue": issue, "reason": "accepted_main_mismatch"}
+    # The scope binding and the dependency outcome come from the same single
+    # body read; any failure here writes no dispatch state, no label, and
+    # starts no workflow.
+    try:
+        scope_binding = artifact_contract.build_issue_scope_binding(body)
+    except (artifact_contract.ArtifactContractError, ValueError, TypeError) as exc:
+        return {"dispatched": False, "issue": issue, "reason": f"invalid_scope:{exc}"}
+    dependencies_ready = sm.check_dependencies_complete(issue, repo, body=body)
+    lease_deadline = (
+        datetime.now(timezone.utc) + timedelta(hours=sm.LOCAL_CLAIM_LEASE_HOURS)
+    ).isoformat().replace("+00:00", "Z")
+    claimed, previous, reason = _claim(
+        issue,
+        sm.LABEL_RUNNING,
+        dispatch_id,
+        "local-run",
+        {
+            "issue_number": issue,
+            "attempt_id": attempt,
+            "client_token": client_token,
+            "accepted_main_sha": accepted_main,
+            "canonical_branch": canonical_branch,
+            "lease_deadline": lease_deadline,
+            "claim_nonce": _new_claim_nonce(),
+        },
+        scope_binding=scope_binding,
+        dependencies_ready=dependencies_ready,
+        require_claim_readback=True,
+    )
+    if not claimed:
+        return {"dispatched": reason == "already_dispatched", "issue": issue, "reason": reason}
+    # Defensive post-label capacity recheck, identical to dispatch_ready: the
+    # agent-dispatch-global group normally serializes claims, so a breach here
+    # means a bypass or stale read.  Re-read the authoritative active union
+    # after the label write; if it is unreadable or exceeds the canonical K,
+    # compensate by restoring the previous labels and terminalizing the claim
+    # (preserving its binding and nonce) without ever handing the attempt to
+    # the local process.
+    recheck = sm.get_active_issue_numbers(repo)
+    if recheck is None:
+        rolled_back = _rollback(issue, dispatch_id, previous, "capacity_recheck_unavailable")
+        reason = "capacity_recheck_unavailable" if rolled_back else "capacity_recheck_unavailable_rollback_failed"
+        return {"dispatched": False, "issue": issue, "reason": reason}
+    if len(recheck) > sm.MAX_ACTIVE:
+        rolled_back = _rollback(issue, dispatch_id, previous, "capacity_recheck_exceeded")
+        reason = "capacity_recheck_exceeded" if rolled_back else "capacity_recheck_exceeded_rollback_failed"
+        return {"dispatched": False, "issue": issue, "reason": reason}
+    if not _record_dispatched(issue, dispatch_id, "local-run", {"workflow": "local-run"}):
+        # The claim and active label stand; a retry must resolve through the
+        # existing binding instead of dispatching a second local process.
         return {
             "dispatched": False,
             "issue": issue,
@@ -502,10 +693,15 @@ def dispatch_next(source_issue: str | None = None) -> dict[str, object]:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        raise SystemExit("Usage: dispatcher.py <dispatch-ready|dispatch-repair|dispatch-review|retry-review|dispatch-merge|dispatch-next> ...")
+        raise SystemExit(
+            "Usage: dispatcher.py <dispatch-ready|dispatch-repair|dispatch-review|"
+            "retry-review|dispatch-merge|dispatch-next|claim-local> ..."
+        )
     command = sys.argv[1]
     if command == "dispatch-ready" and len(sys.argv) in {3, 4}:
         result = dispatch_ready(int(sys.argv[2]), sys.argv[3] if len(sys.argv) == 4 else None)
+    elif command == "claim-local" and len(sys.argv) == 5:
+        result = claim_local(int(sys.argv[2]), sys.argv[3], sys.argv[4])
     elif command == "dispatch-repair" and len(sys.argv) == 7:
         result = dispatch_repair(int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6])
     elif command == "dispatch-review" and len(sys.argv) == 5:

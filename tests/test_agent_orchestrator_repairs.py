@@ -101,7 +101,7 @@ class TestWorkflowContracts(unittest.TestCase):
 
     def test_all_workflow_dispatch_callers_and_inputs_match(self):
         expected = {
-            "agent-controller.yml": {"command", "issue", "pr_number", "head_sha", "ci_run_id", "repair_count", "source_issue", "dispatch_id"},
+            "agent-controller.yml": {"command", "issue", "pr_number", "head_sha", "ci_run_id", "repair_count", "source_issue", "dispatch_id", "attempt_id", "client_token"},
             "agent-worker.yml": {"issue", "dry_run", "dispatch_id", "claim_nonce"},
             "agent-ci-repair.yml": {"pr_number", "issue_number", "head_sha", "ci_run_id", "repair_count"},
             "agent-review.yml": {"pr_number", "issue_number", "head_sha"},
@@ -299,6 +299,8 @@ class TestWorkflowContracts(unittest.TestCase):
                 "${{ inputs.command }}",
                 "${{ inputs.dispatch_id }}",
                 "${{ inputs.head_sha }}",
+                "${{ inputs.attempt_id }}",
+                "${{ inputs.client_token }}",
             ),
             "agent-ci-repair.yml": ("${{ inputs.head_sha }}",),
             "agent-review.yml": ("${{ inputs.head_sha }}",),
